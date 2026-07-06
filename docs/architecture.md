@@ -15,7 +15,7 @@ exact board before move_t = ChessRules(moves_0 ... moves_t-1)
 board_embedding_t         = BoardEncoder(exact board before move_t)
 previous_move_embedding   = MoveEmbedding(move_t-1)
 dynamic_embedding_t       = Phase features, plus clock features when available
-static_game_embedding     = Rating/style settings, plus clock settings when enabled
+static_game_embedding     = Rating/preference settings, plus clock settings when enabled
 
 x_t = combine(
   board_embedding_t,
@@ -45,9 +45,9 @@ including:
 - draw-rule counters if used;
 - any other state required for complete move generation.
 
-The likely first board encoder is simple square and piece embeddings followed by
-pooling, an MLP, or another small learned encoder. A larger encoder can be
-considered if simple encodings fail.
+A simple board encoder may use square and piece embeddings followed by pooling,
+an MLP, or another small learned encoder. Larger encoders can be considered if
+simple encodings are insufficient.
 
 ## Sequence Model
 
@@ -76,7 +76,7 @@ Static game settings include:
 - starting clock time when timing is enabled;
 - increment when timing is enabled;
 - bot color;
-- optional style settings.
+- optional preference settings.
 
 The current preference is to broadcast a small `static_game_embedding` at every
 timestep. This is cheap and more reliable than depending only on a prefix token.

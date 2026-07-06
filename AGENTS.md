@@ -1,7 +1,7 @@
 # Agent Guide
 
 This project is `anthro-chess`: a chess model intended to mimic human play,
-optional timing, and controllable style in chess games.
+optional timing, and controllable soft preferences in chess games.
 
 Before making substantive changes, read:
 
@@ -11,6 +11,11 @@ Before making substantive changes, read:
 4. `docs/engine-behavior.md`
 5. `docs/training-and-runtime.md`
 6. Any relevant records in `docs/decisions/`
+
+For preference-control work, also read `docs/preference-controls.md`.
+
+For data, training, evaluation, or preference-control work, read
+`docs/research.md` when related outside work or source links are relevant.
 
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project
@@ -29,7 +34,7 @@ project's end state.
   practical choices over experiments whose main value is answering a research
   question.
 - Make behavior controllable through explicit dials such as target rating, time
-  settings when enabled, temperature, and optional style settings.
+  settings when enabled, temperature, and optional preference settings.
 - Human-like imperfections should emerge from training on human games, not from
   special-case mistake injection.
 

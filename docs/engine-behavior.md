@@ -11,9 +11,9 @@ rather than behave like a top engine with random weakening.
 The bot's behavior is shaped by both user-chosen controls and game-derived
 context.
 
-User-chosen controls include target rating, temperature, and optional style
-settings. Game-derived context includes the current position, game phase, move
-history, and clock information when timing is enabled.
+User-chosen controls include target rating, temperature, and optional soft
+preference settings. Game-derived context includes the current position, game
+phase, move history, and clock information when timing is enabled.
 
 The full model input shape belongs in `docs/architecture.md` and
 `docs/training-and-runtime.md`. This document describes the behavior those
@@ -28,7 +28,7 @@ The model outputs a policy over a fixed move vocabulary. Runtime then:
 3. samples a legal move using the configured temperature.
 
 The sampled policy should reflect the human-game distribution represented by
-the configured rating, optional time context, and style settings.
+the configured rating, optional time context, and preference settings.
 
 ## Optional Timing Behavior
 
@@ -53,7 +53,7 @@ Runtime:         wait until the current time is at or after submit_at
 Sub-second or centisecond clock labels are preferred for training realistic
 fast-game behavior.
 
-## Rating And Style
+## Rating And Preferences
 
 Rating should affect the kind of human play being imitated:
 
@@ -62,6 +62,17 @@ Rating should affect the kind of human play being imitated:
 - consistency;
 - risk appetite;
 - familiarity with common patterns.
+
+Optional preference settings should express taste rather than skill. Examples
+may include broad opening-family preferences, aggression, solidity, or other
+human-play concepts. These controls should be soft: they can bias the bot toward
+certain kinds of play when the position supports them, but they should not force
+incoherent moves or override legal move generation.
+
+The same target rating should still apply when preference settings are changed.
+A lower-rated bot with an opening preference should still behave like a
+lower-rated human who favors that kind of position, while a higher-rated bot with
+the same preference should remain higher-rated.
 
 Temperature should remain a separate knob. A low-rating model setting with low
 temperature and a high-rating model setting with high temperature should be

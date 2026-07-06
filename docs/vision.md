@@ -14,7 +14,8 @@ The final product should be able to:
 - play complete legal games against real players;
 - operate in both untimed games and games with clocks;
 - choose a move and, when timing is enabled, a realistic time-to-move;
-- expose dials for target rating, time behavior, randomness, and optional style;
+- expose dials for target rating, time behavior, randomness, and optional soft
+  preferences;
 - run and train within practical high-end consumer hardware constraints.
 
 ## Experience Goal

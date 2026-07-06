@@ -42,13 +42,17 @@ Important user-facing controls should remain distinct:
 
 - Target rating controls the skill and style level to imitate.
 - Temperature controls sampling variety.
-- Optional style settings should be explicit.
+- Optional preference settings should be explicit and soft.
 
 Game-derived context such as clocks, move history, and phase should be modeled
 as inputs, but it is not the same kind of thing as a user-facing behavior dial.
 
 Temperature should not be hardwired as a hidden function of rating or clock
 state.
+
+Preference settings should not secretly change the target rating. They should
+shape which human-like choices are favored within a rating level, not make the
+bot stronger or weaker by default.
 
 ## Prefer Compact Per-Ply Context
 

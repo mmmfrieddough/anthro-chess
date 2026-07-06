@@ -1,6 +1,6 @@
 # Training And Runtime
 
-The preferred first approach is supervised learning from human games.
+The training approach is supervised learning from human games.
 
 The model should learn move choice from data. When timing is enabled, it should
 also learn move timing from clock data. Exact chess logic handles state
@@ -19,6 +19,10 @@ Useful game records should include:
 Clock precision below one second is preferred for realistic fast-game behavior.
 Centisecond or millisecond precision would be better if available.
 
+Opening and preference labels are not required for the base move model, but
+derived labels may be useful for optional preference controls. These labels
+should be treated as training metadata rather than fixed product requirements.
+
 ## Preprocessing
 
 For each game:
@@ -33,6 +37,21 @@ For each game:
 
 Board generation should use exact chess rules. The neural model should not need
 to infer the current board from raw notation.
+
+Optional preference labels should be allowed to be multi-label. A single ply may
+belong to several useful concepts, such as an opening family, a pawn structure,
+an attacking pattern, or a material-sacrifice pattern. These labels should be
+attached at the ply or position-window level when possible rather than copied
+blindly across an entire game.
+
+Opening-family labels should usually apply only while the opening or related
+structure is active.
+
+Other preference labels should be designed case by case. Some concepts may be
+mostly structural, such as fianchetto setups or closed centers. Others may need
+event-style definitions, such as sacrifices or early piece development. The goal
+is to create useful contrast sets for learning or discovering behavior controls,
+not to build a perfect chess taxonomy.
 
 ## Sequence Training
 
@@ -49,7 +68,7 @@ move and optional move time at each timestep.
 
 ## Losses
 
-The expected first losses are:
+The core losses are:
 
 - move cross-entropy over the fixed move vocabulary;
 - sampling cross-entropy for the sampleable move-time distribution when timing
@@ -62,6 +81,9 @@ Other useful losses may include:
 
 - auxiliary value or phase prediction;
 - calibration losses for timing, when timing is enabled, or skill control.
+
+Optional preference-control mechanisms should be learned or derived from data,
+not implemented as hardcoded post-processing rules over move logits.
 
 ## Inference Loop
 
@@ -90,7 +112,7 @@ The runtime must:
 - respect clocks when timing is enabled;
 - sample timing plausibly rather than always moving at fixed intervals when
   timing is enabled;
-- expose configuration for target rating, temperature, optional style, and
+- expose configuration for target rating, temperature, optional preferences, and
   optional clock settings.
 
 ## Hardware Assumptions

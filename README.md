@@ -5,8 +5,8 @@ human-like chess model.
 
 The intended product is a chess bot that can play competent games while
 exposing dials for target rating, optional time behavior, randomness, and
-optional style. The goal is not top engine strength. The goal is a usable
-opponent that feels plausibly human at adjustable levels.
+optional soft preferences. The goal is not top engine strength. The goal is a
+usable opponent that feels plausibly human at adjustable levels.
 
 ## Design Docs
 
@@ -17,6 +17,11 @@ The main docs describe the intended end state of the project:
 - [Architecture](docs/architecture.md)
 - [Engine behavior](docs/engine-behavior.md)
 - [Training and runtime](docs/training-and-runtime.md)
+- [Preference controls](docs/preference-controls.md)
+
+Supporting background:
+
+- [Related research](docs/research.md)
 
 Implementation planning lives separately:
 
