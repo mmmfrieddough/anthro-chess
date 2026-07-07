@@ -84,7 +84,7 @@ Relevance:
 Project areas:
 
 - `docs/planning/roadmap.md`: late-stage activation steering.
-- Future evaluation docs: compare steering approaches under chess-specific
+- `docs/evaluation.md`: compare steering approaches under chess-specific
   metrics.
 
 ### When The Coffee Feature Activates On Coffins
@@ -171,3 +171,77 @@ Project areas:
 - `docs/planning/roadmap.md`: late-stage opening-family labels and activation
   steering.
 - Future data docs: opening taxonomy and derived label generation.
+
+## Evaluation And Human-Likeness
+
+### Lichess Kaladin
+
+Link: <https://github.com/lichess-org/kaladin>
+
+Key information:
+
+- Open-source Lichess project described as a machine-learning tool for
+  automating cheat detection using insights data.
+- The README says it uses CNNs with Keras/TensorFlow.
+- It is aimed at platform cheating detection, not at evaluating a human-like
+  chess bot.
+
+Relevance:
+
+- Useful background for the idea that chess behavior can be classified from
+  game-derived signals.
+- Not something Anthro Chess should copy wholesale as a product requirement.
+- Reinforces the need to scope any human-likeness classifier as an internal
+  evaluation tool, not a real anti-cheat system.
+
+Project areas:
+
+- `docs/evaluation.md`: human-vs-engine classifier as a late-stage evaluation
+  metric.
+
+### Kenneth Regan-Style Engine Agreement
+
+Link: <https://time.com/6227677/magnus-carlsen-hans-niemann-kenneth-regan-chess-scandal/>
+
+Key information:
+
+- Public reporting describes Kenneth Regan's chess cheating-detection work as
+  comparing player moves to engine recommendations and estimating how likely
+  that agreement is for a player of a given strength.
+- The reporting emphasizes uncertainty, thresholds, and the risk of false
+  accusations.
+
+Relevance:
+
+- Supports using engine agreement, centipawn loss, and strength-adjusted move
+  quality as supporting evaluation metrics.
+- Also cautions against presenting Anthro Chess evaluation as a cheating
+  detector or as proof about real players.
+
+Project areas:
+
+- `docs/evaluation.md`: engine agreement and human-likeness supporting metrics.
+
+### Large-Scale Analysis Of Chess Games With Chess Engines
+
+Link: <https://arxiv.org/abs/1607.04186>
+
+Key information:
+
+- Describes large-scale analysis of chess games with Stockfish.
+- Discusses engine evaluations as useful for applications such as cheating
+  detection, intrinsic ratings, skill assessment, and studying human
+  decision-making.
+- Emphasizes the cost of analyzing large numbers of positions with engines.
+
+Relevance:
+
+- Supports using engine-derived metrics such as centipawn loss, move quality,
+  and engine agreement as evaluation diagnostics.
+- Also warns that large engine-evaluation datasets can be expensive to produce,
+  so Anthro Chess should use them selectively.
+
+Project areas:
+
+- `docs/evaluation.md`: rating calibration, engine agreement, and
+  human-likeness diagnostics.

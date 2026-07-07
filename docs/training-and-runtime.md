@@ -82,8 +82,24 @@ Other useful losses may include:
 - auxiliary value or phase prediction;
 - calibration losses for timing, when timing is enabled, or skill control.
 
+Mask penalty can be considered as an auxiliary legality loss if evaluation shows
+the model gives too much probability to illegal moves before runtime masking.
+It should not be part of the initial core loss.
+
 Optional preference-control mechanisms should be learned or derived from data,
 not implemented as hardcoded post-processing rules over move logits.
+
+## Training Evaluation
+
+Training should report a compact default set of validation metrics and preserve
+deeper diagnostics for regressions.
+
+Default validation metrics should include move loss, timing loss when timing is
+enabled, rating-sliced validation metrics, and illegal-move mask penalty.
+
+See `docs/evaluation.md` for the full evaluation design, including legality,
+rating calibration, timing rollouts, human-likeness metrics, and
+preference-control evaluation.
 
 ## Inference Loop
 

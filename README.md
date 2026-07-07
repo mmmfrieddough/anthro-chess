@@ -8,6 +8,15 @@ exposing dials for target rating, optional time behavior, randomness, and
 optional soft preferences. The goal is not top engine strength. The goal is a
 usable opponent that feels plausibly human at adjustable levels.
 
+## Intended Use
+
+Anthro Chess is intended as a standalone human-like chess opponent, sparring
+partner, and training sandbox.
+
+It is not intended to provide assistance in games against other people where
+outside chess help is disallowed. Do not use Anthro Chess to cheat, evade fair
+play rules, or misrepresent bot-generated moves as unaided human play.
+
 ## Design Docs
 
 The main docs describe the intended end state of the project:
@@ -17,6 +26,7 @@ The main docs describe the intended end state of the project:
 - [Architecture](docs/architecture.md)
 - [Engine behavior](docs/engine-behavior.md)
 - [Training and runtime](docs/training-and-runtime.md)
+- [Evaluation](docs/evaluation.md)
 - [Preference controls](docs/preference-controls.md)
 
 Supporting background:

@@ -244,20 +244,11 @@ preferences:
 
 ## Evaluation
 
-Preference controls need their own evaluation before they are exposed as a
-product feature.
+Preference controls need their own evaluation before they are exposed in the
+application. See `docs/evaluation.md` for the main evaluation design.
 
-Required checks:
-
-- legality is unchanged;
-- target rating remains approximately calibrated;
-- the intended preference increases when its slider increases;
-- unrelated preferences do not change too much;
-- the bot can pivot when the position no longer supports a preference;
-- multiple sliders combine without obvious instability;
-- timing behavior remains plausible when timing is enabled;
-- games still feel human rather than mechanically forced.
-
-Opening sliders can be evaluated with opening-family classifiers and structure
-frequency. Style sliders may need a mix of structural metrics, event metrics,
-and human review.
+At minimum, preference-control evaluation should check that the intended
+preference increases, unrelated preferences do not drift too much, target rating
+stays approximately calibrated, legal masking behavior remains stable, timing
+remains plausible when timing is enabled, and generated games still look human
+rather than mechanically forced.

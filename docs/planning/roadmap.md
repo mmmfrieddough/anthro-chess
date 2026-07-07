@@ -10,6 +10,7 @@ The main project docs describe the intended end state:
 - `docs/architecture.md`
 - `docs/engine-behavior.md`
 - `docs/training-and-runtime.md`
+- `docs/evaluation.md`
 
 Roadmap items are allowed to change as the project develops. When the roadmap
 and the end-state docs disagree, the end-state docs are authoritative unless we
@@ -35,20 +36,28 @@ and core chess/data representations.
 Build the deterministic chess-state layer and the pipeline for turning human
 games into model-ready examples.
 
+Begin the test and evaluation foundation here: chess-rule tests, encoding
+tests, preprocessing checks, and legal-mask evaluation on held-out positions.
+
 ### 3. Model Training
 
 Train models that predict both move choice and move timing from human-game
-data.
+data. Track training-time and validation metrics early, including move loss,
+optional timing loss, illegal-move mask penalty, and rating-sliced validation
+metrics.
 
 ### 4. Playable Runtime
 
 Connect the model to a runtime that can maintain game state, choose legal moves,
-and optionally play with clocks.
+and optionally play with clocks. Add simulated rollout benchmarks for generated
+games, timing behavior, and early rating calibration once the runtime can play
+coherent games.
 
 ### 5. Iteration
 
 Tune controls, improve data and model quality, tune optional timing behavior,
-and keep the end-state docs aligned with what the project becomes.
+expand benchmark coverage, and keep the end-state docs aligned with what the
+project becomes.
 
 Learned preference controls for openings, style, and other human-play concepts
 belong late in the process, after a model and runtime are clearly working. This
@@ -68,6 +77,11 @@ Possible late-stage work includes:
 - calibrating preference sliders so rating, legality, and position coherence
   remain intact.
 
+Human-likeness evaluation beyond simple distribution metrics belongs later in
+the process. A compact human-vs-engine classifier can be useful once the model
+can generate coherent games, but it should not block the basic bot or become a
+separate anti-cheat project.
+
 Suggested late-stage order:
 
 1. Define a small opening-family taxonomy.
@@ -83,3 +97,4 @@ Suggested late-stage order:
 8. Add application sliders once the controls are stable enough to be useful.
 
 See `docs/preference-controls.md` for the preference-control subsystem design.
+See `docs/evaluation.md` for the evaluation design.

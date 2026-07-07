@@ -49,8 +49,13 @@ Anthro Chess is intended to be:
 
 - a practical chess-playing project;
 - a human-like chess opponent for timed or untimed play;
+- a standalone opponent, sparring partner, or training sandbox;
 - a model controlled through explicit user-facing settings;
 - a system where board state is constructed by exact chess logic instead of
   inferred from raw notation;
 - a project whose success is judged by whether it is fun, playable, and
   plausibly human.
+
+Anthro Chess is not intended to provide assistance in games against other
+people where outside chess help is disallowed, or to misrepresent bot-generated
+moves as unaided human play.

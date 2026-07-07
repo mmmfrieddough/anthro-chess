@@ -10,7 +10,8 @@ Before making substantive changes, read:
 3. `docs/architecture.md`
 4. `docs/engine-behavior.md`
 5. `docs/training-and-runtime.md`
-6. Any relevant records in `docs/decisions/`
+6. `docs/evaluation.md`
+7. Any relevant records in `docs/decisions/`
 
 For preference-control work, also read `docs/preference-controls.md`.
 
