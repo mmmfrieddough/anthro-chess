@@ -135,6 +135,85 @@ Different from Anthro Chess:
 - Anthro Chess does not currently need a separate outcome model as a core
   product feature.
 
+### UniMaia: Learning Unified Human-Aligned Chess With Textual Descriptions
+
+Link: <https://arxiv.org/abs/2605.27767>
+
+Key information:
+
+- Builds a controllable human-aligned chess model from a frozen Lc0-style
+  policy network.
+- Uses textual descriptions and a conditioning mechanism to steer behavior.
+- Reports controls for strength and opening preference.
+
+Applies to Anthro Chess:
+
+- Controllable human-like chess policy.
+- Strength conditioning.
+- Opening and style preference controls.
+- A close comparison point for steering behavior without hand-authored move
+  rules.
+
+Different from Anthro Chess:
+
+- UniMaia uses text-conditioned control over a frozen policy network.
+- Anthro Chess currently prefers a causal trajectory model trained on per-ply
+  human-game sequences, with optional timing output and runtime action sampling.
+- Anthro Chess preference controls are planned around activation-space steering
+  from project-owned labels, with direct input conditioning only as a fallback.
+
+### Learning To Imitate With Less
+
+Link: <https://arxiv.org/abs/2507.21488>
+
+Key information:
+
+- Introduces Maia4All for adapting population-level chess behavior models to
+  individual players.
+- Focuses on learning individual move tendencies from limited personal data.
+- Reports that individual behavior can be modeled with far fewer games than
+  earlier approaches required.
+
+Applies to Anthro Chess:
+
+- Possible later player-style controls.
+- Efficient adaptation to specific players or player clusters.
+- Style presets derived from real games rather than hand-authored profiles.
+
+Different from Anthro Chess:
+
+- Maia4All focuses on personalized move prediction.
+- Anthro Chess would need to preserve target rating, optional timing behavior,
+  legal runtime behavior, and the broader application controls while using any
+  player-style signal.
+
+### Elo-Disentangled Player-Style Embeddings
+
+Link: <https://arxiv.org/abs/2606.25176>
+
+Key information:
+
+- Learns compact per-player style embeddings while trying to separate style
+  from playing strength.
+- Uses a rating-conditioned base move model and represents individual style as
+  deviations from rating-typical play.
+- Evaluates whether learned embeddings capture player identity without simply
+  encoding rating.
+
+Applies to Anthro Chess:
+
+- Player-style imitation.
+- Rating-preserving preference controls.
+- Style embeddings or steering directions that should not collapse into target
+  rating.
+
+Different from Anthro Chess:
+
+- The paper is about representation learning for player style, not a full
+  playable bot.
+- Anthro Chess may use activation steering, sliders, timing controls, and
+  runtime action sampling rather than exposing raw player embeddings directly.
+
 ### Skill-Group N-Gram Move Models
 
 Link: <https://arxiv.org/abs/2512.01880>

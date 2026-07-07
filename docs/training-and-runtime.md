@@ -13,6 +13,7 @@ Useful game records should include:
 - moves;
 - game termination information, including resignation when available;
 - player ratings;
+- player identity when intentionally modeling individual or famous-player style;
 - starting clock time and increment when timing is available;
 - clock states or move times when timing is available;
 - enough metadata to derive bot color and game phase.
@@ -50,9 +51,11 @@ structure is active.
 
 Other preference labels should be designed case by case. Some concepts may be
 mostly structural, such as fianchetto setups or closed centers. Others may need
-event-style definitions, such as sacrifices or early piece development. The goal
-is to create useful contrast sets for learning or discovering behavior controls,
-not to build a perfect chess taxonomy.
+event-style definitions, such as sacrifices or early piece development. Timing
+style labels may come from clock usage and time-pressure context. Player-style
+labels may come from games by a specific well-represented player. The goal is to
+create useful contrast sets for learning or discovering behavior controls, not
+to build a perfect chess taxonomy.
 
 ## Sequence Training
 

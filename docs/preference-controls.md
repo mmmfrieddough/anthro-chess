@@ -12,7 +12,11 @@ Examples:
 - opening families, such as Sicilian, French, Caro-Kann, Queen's Gambit, or
   King's Indian structures;
 - broader style concepts, such as aggression, solidity, development, fianchetto
-  preference, simplification, gambit play, or sacrifice tolerance.
+  preference, simplification, gambit play, or sacrifice tolerance;
+- timing style, such as how readily the bot spends time, saves time, or plays
+  quickly under pressure when timing is enabled;
+- player-style imitation, such as learned tendencies from games by a specific
+  famous player or a cluster of similar players.
 
 These controls should be soft. If the current position does not support a
 preference, the model should be able to pivot naturally.
@@ -39,6 +43,7 @@ open_center
 opposite_side_castling
 kingside_attack
 material_imbalance
+time_pressure_fast
 ```
 
 The labels are not the training target for the base model. They are used to
@@ -137,6 +142,49 @@ It is acceptable for these labels to be imperfect. The important requirement is
 that each label can produce useful positive and negative sets for discovering or
 learning controls.
 
+## Timing Preference Labels
+
+Timing behavior can also be a preference dimension when timing is enabled.
+
+These controls should shape time usage without changing the selected rating or
+the legal move policy directly. Examples include:
+
+- time-aggressive play that spends clock readily in critical positions;
+- time-conservative play that preserves clock more often;
+- low-clock scramble behavior;
+- opening speed;
+- endgame patience.
+
+Timing preference labels should be derived from clock data and game context, not
+from named time-control categories. Useful signals may include move time,
+remaining clock, increment, move number, phase, complexity proxies, and whether
+the player was already under time pressure.
+
+Timing preferences can share infrastructure with move preferences, but they may
+need separate steering or calibration because they primarily affect the time
+head rather than the action head.
+
+## Player-Style Labels
+
+Player-style imitation is a possible later preference-control category.
+
+For famous or well-represented players, data can be labeled by player identity
+and used to learn style tendencies from that player's games. The goal would be
+to isolate how a player tends to differ from rating-typical play, not merely to
+copy their strength.
+
+Possible approaches:
+
+- learn player-specific steering directions from that player's positions;
+- learn compact player-style embeddings;
+- map a famous-player style into a bundle of broader project preferences;
+- compare the learned style against existing labels such as openings,
+  aggression, simplification, sacrifices, piece activity, and timing behavior.
+
+This should remain separate from target rating. A player-style control should
+not secretly become a strength control, and it should be evaluated for rating
+preservation before being exposed.
+
 ## Matched Contrast Sets
 
 Preference steering can start by comparing labeled positions against broad
@@ -223,7 +271,7 @@ Good UI behavior:
 
 - keep target rating separate from preferences;
 - keep temperature separate from preferences;
-- group related sliders, such as openings, structures, and style;
+- group related sliders, such as openings, structures, timing, and style;
 - allow zero/neutral values;
 - make preferences feel like tendencies, not commands;
 - avoid exposing raw ECO codes or overly specific variation names as the main
@@ -240,6 +288,7 @@ preferences:
   fianchetto_structure: 0.4
   aggression: 0.6
   simplification: -0.2
+  time_conservation: 0.3
 ```
 
 ## Evaluation

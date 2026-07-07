@@ -71,14 +71,20 @@ Rating should affect the kind of human play being imitated:
 
 Optional preference settings should express taste rather than skill. Examples
 may include broad opening-family preferences, aggression, solidity, or other
-human-play concepts. These controls should be soft: they can bias the bot toward
-certain kinds of play when the position supports them, but they should not force
+human-play concepts. When timing is enabled, preferences may also include
+timing style, such as whether the bot tends to spend time readily or conserve
+clock. These controls should be soft: they can bias the bot toward certain
+kinds of play when the position supports them, but they should not force
 incoherent moves or override legal move generation.
 
 The same target rating should still apply when preference settings are changed.
 A lower-rated bot with an opening preference should still behave like a
 lower-rated human who favors that kind of position, while a higher-rated bot with
 the same preference should remain higher-rated.
+
+Player-style controls, if added, should also preserve rating. A famous-player
+style should mean a learned tendency profile inspired by that player's games,
+not a hidden way to set the bot to that player's strength.
 
 Temperature should remain a separate knob. A low-rating model setting with low
 temperature and a high-rating model setting with high temperature should be
