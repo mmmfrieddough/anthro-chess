@@ -11,6 +11,7 @@ reconstruction and legal-output filtering.
 Useful game records should include:
 
 - moves;
+- game termination information, including resignation when available;
 - player ratings;
 - starting clock time and increment when timing is available;
 - clock states or move times when timing is available;
@@ -70,7 +71,7 @@ move and optional move time at each timestep.
 
 The core losses are:
 
-- move cross-entropy over the fixed move vocabulary;
+- action cross-entropy over the fixed action vocabulary;
 - sampling cross-entropy for the sampleable move-time distribution when timing
   is enabled.
 
@@ -112,18 +113,20 @@ When it is the bot's turn:
    - current clocks and previous move times when timing is enabled;
    - static game settings.
 3. Run the model with the causal KV cache.
-4. Mask illegal moves.
-5. Sample a legal move using temperature.
+4. Mask illegal moves while preserving enabled non-move actions such as
+   resignation.
+5. Sample a valid action using temperature.
 6. If timing is enabled, sample move time from the time distribution.
 7. If timing is enabled, set `submit_at = received_at + sampled_time_ms`.
 8. If timing is enabled, wait until the current time is at or after `submit_at`.
-9. Submit the move and update local game state.
+9. Submit the move or game-ending action and update local game state.
 
 ## Runtime Requirements
 
 The runtime must:
 
 - never submit illegal moves;
+- support resignation as a valid game-ending action when enabled;
 - support untimed play;
 - respect clocks when timing is enabled;
 - sample timing plausibly rather than always moving at fixed intervals when

@@ -150,7 +150,7 @@ metrics should be averaged per position and reported by legal-move-count slices,
 such as `1-10`, `11-25`, and `26+` legal moves.
 
 A normalized diagnostic can compare the model against uniform probability over
-the move vocabulary:
+the move portion of the action vocabulary:
 
 ```text
 uniform_legal_mass = num_legal_moves / move_vocab_size

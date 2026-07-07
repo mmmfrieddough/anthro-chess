@@ -92,13 +92,19 @@ Dynamic features include:
 Dynamic metadata must be represented per ply because it changes throughout the
 game.
 
-## Move Output
+## Action Output
 
-The move head should output logits over a fixed move vocabulary, likely based on
-UCI-style move tokens.
+The action head should output logits over a fixed action vocabulary. Most
+actions are UCI-style chess moves. The vocabulary should also include a
+resignation action.
 
 Before sampling, the runtime must mask all illegal moves using exact chess
-logic. The sampled move must always be legal in the current position.
+logic. If the sampled action is a move, it must always be legal in the current
+position.
+
+Resignation is not a board move and is not produced by legal move generation.
+Runtime should treat it as a valid game-ending action when enabled by the
+application or benchmark context.
 
 ## Optional Time Output
 

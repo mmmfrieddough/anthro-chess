@@ -1,7 +1,8 @@
 # Engine Behavior
 
-Anthro Chess should always produce a chess move. When timing is enabled, it
-should also produce a human-like time-to-move.
+Anthro Chess should always produce a game action: either a chess move or, when
+enabled, resignation. When timing is enabled, it should also produce a
+human-like time-to-move.
 
 The model should imitate human play patterns under configurable conditions
 rather than behave like a top engine with random weakening.
@@ -19,16 +20,21 @@ The full model input shape belongs in `docs/architecture.md` and
 `docs/training-and-runtime.md`. This document describes the behavior those
 inputs are intended to produce.
 
-## Move Selection
+## Action Selection
 
-The model outputs a policy over a fixed move vocabulary. Runtime then:
+The model outputs a policy over a fixed action vocabulary. Runtime then:
 
 1. computes legal moves from exact chess state;
 2. masks illegal move logits;
-3. samples a legal move using the configured temperature.
+3. keeps any enabled non-move game actions, such as resignation, available;
+4. samples a valid action using the configured temperature.
 
 The sampled policy should reflect the human-game distribution represented by
 the configured rating, optional time context, and preference settings.
+
+Resignation should be learned from human game records when resignation labels
+are available. It should not be implemented as a hardcoded engine-evaluation
+rule.
 
 ## Optional Timing Behavior
 
