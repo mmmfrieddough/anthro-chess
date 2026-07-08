@@ -30,6 +30,35 @@ CausalTransformer(x_0 ... x_t) -> move_t, optional time_t
 The board state is not learned from the move sequence. It is computed exactly
 from the game history and then embedded by a learned board encoder.
 
+## Runtime Layering
+
+The implementation should keep a small number of conceptual layers distinct.
+These layers do not need to be separate processes. In the normal case they
+should be modules in one application process, with clear APIs between them.
+
+Recommended layers:
+
+- model definition: neural network modules and learned parameters;
+- model runner: checkpoint loading, device placement, tensor construction,
+  cached inference, and conversion from raw model outputs into runtime-facing
+  distributions;
+- chess logic: exact board reconstruction, rule bookkeeping, legal move
+  generation, move encoding, and move-string conversion;
+- decision runtime: game-session state, configuration, legal masking, action
+  sampling, optional timing behavior, and local game updates;
+- interfaces: UCI, native CLI, web UI, benchmark harnesses, or any other way
+  outside callers interact with the runtime.
+
+The decision runtime is the core application boundary. Interfaces should call
+the runtime. The runtime may call the model runner and chess logic. The model
+itself should remain protocol-agnostic and should not know whether a request
+came from UCI, a native UI, or an evaluation benchmark.
+
+Chess logic is worth treating as its own conceptual layer even if runtime code
+uses it constantly. It is deterministic infrastructure shared by training,
+inference, evaluation, and interfaces. Keeping it separate avoids mixing exact
+rule enforcement with learned behavior or protocol handling.
+
 ## Board State
 
 The system should compute exact board state before each ply. The model input may
