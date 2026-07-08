@@ -26,6 +26,7 @@ The main docs describe the intended end state of the project:
 - [Architecture](docs/architecture.md)
 - [Engine behavior](docs/engine-behavior.md)
 - [Training and runtime](docs/training-and-runtime.md)
+- [Interfaces](docs/interfaces.md)
 - [Evaluation](docs/evaluation.md)
 - [Preference controls](docs/preference-controls.md)
 

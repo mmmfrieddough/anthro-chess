@@ -10,8 +10,9 @@ Before making substantive changes, read:
 3. `docs/architecture.md`
 4. `docs/engine-behavior.md`
 5. `docs/training-and-runtime.md`
-6. `docs/evaluation.md`
-7. Any relevant records in `docs/decisions/`
+6. `docs/interfaces.md`
+7. `docs/evaluation.md`
+8. Any relevant records in `docs/decisions/`
 
 For preference-control work, also read `docs/preference-controls.md`.
 
@@ -45,6 +46,8 @@ project's end state.
   rule bookkeeping.
 - Legal-mask model move outputs before sampling.
 - Keep temperature independent from rating and time settings.
+- Keep UCI and other outside protocols as runtime interfaces, not model-native
+  representations.
 - Add tests for chess-rule changes, model-facing encodings, data preprocessing,
   and runtime behavior.
 - Document major architectural choices in `docs/decisions/`.

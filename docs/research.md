@@ -6,6 +6,37 @@ reference list, not a roadmap and not a list of product requirements.
 Each entry notes what part of Anthro Chess it applies to and how it differs
 from this project.
 
+## Interfaces And Engine Protocols
+
+### Universal Chess Interface
+
+Link: <https://backscattering.de/chess/uci/>
+
+Key information:
+
+- Defines the common text protocol used by chess GUIs to launch and talk to
+  chess engines over standard input and standard output.
+- Covers engine identification, option advertisement, option setting, position
+  setup, search/start commands, stop handling, and `bestmove` responses.
+- UCI options support defaults, bounded integer `spin` values, booleans,
+  enumerated strings, buttons, and free strings.
+
+Applies to Anthro Chess:
+
+- Default compatibility interface for local chess GUIs and engine tools.
+- A way to expose target rating, temperature, optional timing settings, and
+  optional preference controls to existing GUI configuration dialogs.
+- A source of clock context through `go` fields such as `wtime`, `btime`,
+  `winc`, and `binc`.
+
+Different from Anthro Chess:
+
+- UCI is an outside interface, not a model input format.
+- Standard UCI expects `bestmove` and does not provide a portable engine-to-GUI
+  resignation action.
+- UCI settings are not a bidirectional synchronized config system; native
+  Anthro interfaces may expose richer controls.
+
 ## Human-Like Chess Modeling
 
 ### Maia: Aligning Superhuman AI With Human Behavior

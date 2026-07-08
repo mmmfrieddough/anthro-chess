@@ -106,6 +106,11 @@ Resignation is not a board move and is not produced by legal move generation.
 Runtime should treat it as a valid game-ending action when enabled by the
 application or benchmark context.
 
+Outside protocols may support only part of the action vocabulary. For example,
+standard UCI requires a `bestmove` response and does not provide a portable
+engine-to-GUI resignation response. Protocol adapters should translate the
+subset they can represent without changing the model's native action space.
+
 ## Optional Time Output
 
 When timing is enabled, the time head should predict a distribution over move

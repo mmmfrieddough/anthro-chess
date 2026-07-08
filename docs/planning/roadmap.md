@@ -10,6 +10,7 @@ The main project docs describe the intended end state:
 - `docs/architecture.md`
 - `docs/engine-behavior.md`
 - `docs/training-and-runtime.md`
+- `docs/interfaces.md`
 - `docs/evaluation.md`
 
 Roadmap items are allowed to change as the project develops. When the roadmap
@@ -52,6 +53,11 @@ Connect the model to a runtime that can maintain game state, choose legal moves,
 and optionally play with clocks. Add simulated rollout benchmarks for generated
 games, timing behavior, and early rating calibration once the runtime can play
 coherent games.
+
+Add a direct UCI executable around the runtime for local chess GUI
+compatibility. It should run as a normal engine process, load the model itself,
+advertise supported options, keep UCI stdout clean, and rely on config defaults
+plus `setoption` overrides.
 
 ### 5. Iteration
 

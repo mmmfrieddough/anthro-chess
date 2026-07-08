@@ -137,6 +137,19 @@ The runtime must:
 - expose configuration for target rating, temperature, optional preferences, and
   optional clock settings.
 
+## Runtime Interfaces
+
+The Anthro runtime should have a direct internal API that can be used by several
+frontends. UCI should be the default compatibility interface for local chess
+GUIs and engine tools, but UCI should remain an interface layer over the runtime
+rather than a model input format.
+
+In UCI mode, the engine process should load the runtime and model directly.
+Keep standard output reserved for UCI messages and send ordinary logs to files
+or standard error.
+
+See `docs/interfaces.md` for the UCI and native-interface design.
+
 ## Hardware Assumptions
 
 The project should favor architectures that can be trained on high-end consumer
