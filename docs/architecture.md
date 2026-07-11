@@ -24,11 +24,26 @@ x_t = combine(
   static_game_embedding
 )
 
-CausalTransformer(x_0 ... x_t) -> move_t, optional time_t
+CausalTransformer(x_0 ... x_t) -> h_t
+action_head(h_t) -> action_t
+time_head(h_t, action_embedding_t) -> optional move_time_t
 ```
 
 The board state is not learned from the move sequence. It is computed exactly
 from the game history and then embedded by a learned board encoder.
+
+When timing is enabled, action and move time should be treated as a dependent
+structured output rather than two unrelated samples. The preferred
+factorization is:
+
+```text
+p(action_t, move_time_t | context_t)
+  = p(action_t | context_t) * p(move_time_t | context_t, action_t)
+```
+
+This keeps the shared sequence representation responsible for the chess
+context, while letting the time distribution depend on the actual action that
+will be submitted.
 
 ## Runtime Layering
 
@@ -145,6 +160,12 @@ subset they can represent without changing the model's native action space.
 When timing is enabled, the time head should predict a distribution over move
 time rather than a single average scalar. Untimed games should not require
 timing inputs or a model-sampled move delay.
+
+The time head should condition on the chosen action as well as the shared
+context state. This avoids forcing the runtime to sample action and time
+independently from marginal distributions that may not agree. For example, the
+same position may support both an automatic recapture and a difficult quiet
+move, and those actions may have different plausible timing distributions.
 
 The time distribution should be directly sampleable and trained with the
 sampling cross-entropy approach against the observed move time. Do not model

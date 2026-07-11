@@ -75,6 +75,26 @@ embedding. It is also compatible with teacher forcing: previous moves are known
 from the human game record during training, while the model predicts the current
 move and optional move time at each timestep.
 
+When timing is enabled, the time target should be trained conditionally on the
+observed human action for that ply:
+
+```text
+action_loss = -log p(human_action | context)
+time_loss   = -log p(human_time | context, human_action)
+```
+
+At inference, the runtime samples a legal action first, then samples move time
+conditioned on that selected action. This is a small structured-output
+factorization. It avoids treating move choice and timing as independent outputs
+while preserving efficient full-sequence training with teacher forcing.
+
+This creates the ordinary train/inference distinction that the time head sees
+human actions during training and sampled model actions during inference. That
+is acceptable for the initial design because the dataset only gives a true time
+target for the action the human actually played. Evaluation should watch for
+move-time incoherence in generated games rather than trying to invent timing
+targets for actions humans did not choose.
+
 ## Losses
 
 The core losses are:
@@ -131,7 +151,8 @@ When it is the bot's turn:
 4. Mask illegal moves while preserving enabled non-move actions such as
    resignation.
 5. Sample a valid action using temperature.
-6. If timing is enabled, sample move time from the time distribution.
+6. If timing is enabled, condition the time head on the sampled action and
+   sample move time from that action-conditional time distribution.
 7. If timing is enabled, set `submit_at = received_at + sampled_time_ms`.
 8. If timing is enabled, wait until the current time is at or after `submit_at`.
 9. Submit the move or game-ending action and update local game state.

@@ -45,8 +45,11 @@ When timing is enabled, human move times are multimodal. In the same position,
 one player may move instantly while another spends significant time.
 
 The time head should therefore predict a sampleable distribution, not just an
-average and not a fixed bucket classification. Runtime should sample from that
-distribution and submit the move after a concrete millisecond delay.
+average and not a fixed bucket classification. The timing distribution should
+be conditioned on the action that will be submitted, so a simple move and a
+more unusual move from the same position can have different plausible delays.
+Runtime should sample from that distribution and submit the move after a
+concrete millisecond delay.
 
 ```text
 Model output:    distribution over log(move_time_ms + 1)

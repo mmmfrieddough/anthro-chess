@@ -25,6 +25,7 @@ Useful metric families:
 - legality;
 - rating calibration;
 - timing;
+- move-time coherence;
 - human-likeness;
 - preference controls.
 
@@ -84,6 +85,7 @@ Useful periodic benchmarks include:
 
 - held-out move distribution checks;
 - timing distribution checks;
+- move-time coherence checks;
 - legality diagnostics on tricky rule positions;
 - fixed position suites;
 - early rating-calibration checks;
@@ -263,6 +265,69 @@ move time.
 Target timing values should come from human data where possible. The goal is not
 to minimize timeouts, but to match human timing behavior for the configured
 rating and clock context.
+
+## Move-Time Coherence
+
+Timing metrics should also check whether sampled actions and sampled move times
+make sense together. Independent timing metrics can miss cases where the move
+head chooses one kind of action while the time head emits a delay that fits a
+different kind of action.
+
+The primary guardrail should be the conditional timing likelihood on held-out
+human triples:
+
+```text
+-log p(human_time | context, human_action)
+```
+
+This should be reported by rating band, clock context, phase, and simple move
+categories. It tests the supervised target the data actually provides.
+
+Generated-game audits should log action-time pairs without waiting in wall
+clock time:
+
+```text
+context
+sampled_action
+action_probability_or_rank
+sampled_time
+clock_state
+```
+
+Useful coherence diagnostics include:
+
+- generated move-time distribution by rating, clock context, and phase;
+- very low-probability actions paired with extremely short sampled times;
+- obvious simple actions paired with extremely long sampled times;
+- repeated instant actions in positions that the model otherwise treats as
+  uncertain;
+- generated timeout rate and remaining-clock distribution.
+
+"Obvious" and "difficult" should not become hand-authored product concepts.
+The model is responsible for learning timing from human data. Evaluation should
+use cheap, explicit proxies to catch glaring incoherence rather than invent a
+manual move-difficulty model.
+
+Useful first proxies include:
+
+- model action probability or rank;
+- timing percentile for the generated action compared with similar held-out
+  human examples;
+- simple deterministic move categories such as only legal move, recapture,
+  capture, check, promotion, castling, and opening-book move;
+- rating band, clock pressure, phase, and legal-move-count slices.
+
+Engine-derived labels can be useful later as diagnostic slices, not as a core
+coherence score. Examples include positions with one acceptable move, positions
+with many acceptable moves, large evaluation swings, tactical positions, or
+candidate moves with high engine rank. These labels should not be collapsed
+into a weighted "move difficulty" score unless a later implementation proves
+that such a score is stable and useful.
+
+The evaluation should avoid assuming that longer time always means a better
+engine move. Strong moves can be automatic, weaker moves can be slow, and the
+relationship between move difficulty and time depends heavily on rating and
+clock context.
 
 ## Human-Likeness
 

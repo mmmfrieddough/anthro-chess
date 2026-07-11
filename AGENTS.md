@@ -62,5 +62,6 @@ The preferred direction is a hybrid symbolic-neural system:
 - deterministic chess logic computes board state and legal moves;
 - a learned board encoder embeds the exact current board;
 - a causal transformer models the game trajectory one ply at a time;
-- output heads predict a valid action policy and, when timing is enabled, a
-  move-time distribution.
+- the action head predicts a valid action policy and, when timing is enabled,
+  the time head predicts a move-time distribution conditioned on the selected
+  action.
