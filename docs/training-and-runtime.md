@@ -8,11 +8,16 @@ reconstruction and legal-output filtering.
 
 ## Training Data
 
+See `docs/data.md` for the data philosophy, source survey, normalized schema,
+storage format, scale estimates, and sampling strategy. This section focuses on
+how that data becomes training examples.
+
 Useful game records should include:
 
 - moves;
 - game termination information, including resignation when available;
-- player ratings;
+- normalized player ratings when available on the project rating scale;
+- source ratings for provenance and possible later normalization;
 - player identity when intentionally modeling individual or famous-player style;
 - starting clock time and increment when timing is available;
 - clock states or move times when timing is available;
@@ -77,6 +82,13 @@ The core losses are:
 - action cross-entropy over the fixed action vocabulary;
 - sampling cross-entropy for the sampleable move-time distribution when timing
   is enabled.
+
+Each target should have an explicit loss mask. Missing metadata should not be
+turned into fake training targets. For example, games without clock data can
+still train the action head, but they should contribute no time-loss term. Games
+with clock data should feed that clock context into the shared model and action
+head as well as the time head, because available time can affect human move
+choice.
 
 Illegal move masking is required at inference. Training may also use legal-move
 awareness depending on the final implementation.

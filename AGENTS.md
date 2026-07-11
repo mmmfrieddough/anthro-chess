@@ -9,10 +9,11 @@ Before making substantive changes, read:
 2. `docs/design-principles.md`
 3. `docs/architecture.md`
 4. `docs/engine-behavior.md`
-5. `docs/training-and-runtime.md`
-6. `docs/interfaces.md`
-7. `docs/evaluation.md`
-8. Any relevant records in `docs/decisions/`
+5. `docs/data.md`
+6. `docs/training-and-runtime.md`
+7. `docs/interfaces.md`
+8. `docs/evaluation.md`
+9. Any relevant records in `docs/decisions/`
 
 For preference-control work, also read `docs/preference-controls.md`.
 
@@ -48,6 +49,8 @@ project's end state.
 - Keep temperature independent from rating and time settings.
 - Keep UCI and other outside protocols as runtime interfaces, not model-native
   representations.
+- Keep normalized data source-agnostic, compact, and reproducible from pipeline
+  scripts.
 - Add tests for chess-rule changes, model-facing encodings, data preprocessing,
   and runtime behavior.
 - Document major architectural choices in `docs/decisions/`.

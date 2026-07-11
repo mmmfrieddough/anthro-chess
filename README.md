@@ -25,6 +25,7 @@ The main docs describe the intended end state of the project:
 - [Design principles](docs/design-principles.md)
 - [Architecture](docs/architecture.md)
 - [Engine behavior](docs/engine-behavior.md)
+- [Data](docs/data.md)
 - [Training and runtime](docs/training-and-runtime.md)
 - [Interfaces](docs/interfaces.md)
 - [Evaluation](docs/evaluation.md)

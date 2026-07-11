@@ -96,6 +96,7 @@ These can be slower and should run on promising checkpoints.
 Useful post-training benchmarks include:
 
 - self-play rating ladders;
+- fixed engine-anchor matches;
 - rollout distribution tests;
 - full simulated clock-survival tests;
 - human-likeness benchmarks;
@@ -201,6 +202,19 @@ Useful rating metrics:
 - fitted-rating slope versus configured rating;
 - score consistency across the rating spectrum;
 - rating preservation when temperature or preference controls change.
+
+Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
+of Anthro target ratings against one or more fixed external engine
+configurations, such as Stockfish `Skill Level` or `UCI_Elo` settings, and
+check whether higher Anthro ratings score better in a stable, mostly monotonic
+way.
+
+Engine-anchor ratings should be treated as relative measuring sticks, not as
+ground truth for the Anthro rating scale. Stockfish `UCI_Elo`, CCRL ratings,
+and other engine-list ratings are calibrated in engine testing pools and
+conditions. They are useful for consistency, stress testing, and checkpoint
+comparison, but they should not define whether a target rating is calibrated to
+Lichess-like human play.
 
 Engine-analysis metrics such as centipawn loss or engine-best agreement may be
 useful supporting diagnostics. They should not be treated as the definition of

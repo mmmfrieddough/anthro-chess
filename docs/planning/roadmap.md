@@ -9,6 +9,7 @@ The main project docs describe the intended end state:
 - `docs/design-principles.md`
 - `docs/architecture.md`
 - `docs/engine-behavior.md`
+- `docs/data.md`
 - `docs/training-and-runtime.md`
 - `docs/interfaces.md`
 - `docs/evaluation.md`
@@ -37,6 +38,10 @@ and core chess/data representations.
 Build the deterministic chess-state layer and the pipeline for turning human
 games into model-ready examples.
 
+Start with a small reproducible Lichess ingestion path, then scale to larger
+normalized shards once parsing, validation, and sampling recipes are stable.
+Keep filtering, weighting, and storage choices aligned with `docs/data.md`.
+
 Begin the test and evaluation foundation here: chess-rule tests, encoding
 tests, preprocessing checks, and legal-mask evaluation on held-out positions.
 
@@ -53,6 +58,11 @@ Connect the model to a runtime that can maintain game state, choose legal moves,
 and optionally play with clocks. Add simulated rollout benchmarks for generated
 games, timing behavior, and early rating calibration once the runtime can play
 coherent games.
+
+Once UCI interaction is stable, add fixed engine-anchor matches as secondary
+rating diagnostics. These should compare Anthro rating settings against fixed
+engine configurations for monotonicity and regression tracking, not as absolute
+human-rating calibration.
 
 Add a direct UCI executable around the runtime for local chess GUI
 compatibility. It should run as a normal engine process, load the model itself,

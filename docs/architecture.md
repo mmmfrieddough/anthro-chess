@@ -101,7 +101,7 @@ are trained in parallel while each timestep only attends to prior timesteps.
 
 Static game settings include:
 
-- target rating;
+- target rating on the project's internal rating scale;
 - starting clock time when timing is enabled;
 - increment when timing is enabled;
 - bot color;
@@ -116,7 +116,7 @@ Dynamic features include:
 - opponent remaining clock time when timing is enabled;
 - previous move times when available;
 - move number or game phase;
-- any explicit marker needed to indicate untimed play.
+- explicit markers for untimed play or missing dynamic fields.
 
 Dynamic metadata must be represented per ply because it changes throughout the
 game.
