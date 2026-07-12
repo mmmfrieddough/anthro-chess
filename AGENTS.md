@@ -5,20 +5,33 @@ optional timing, and controllable soft preferences in chess games.
 
 Before making substantive changes, read:
 
-1. `docs/vision.md`
-2. `docs/design-principles.md`
-3. `docs/architecture.md`
-4. `docs/engine-behavior.md`
-5. `docs/data.md`
-6. `docs/training-and-runtime.md`
-7. `docs/interfaces.md`
-8. `docs/evaluation.md`
-9. Any relevant records in `docs/decisions/`
+1. `docs/documentation.md`
+2. `docs/vision.md`
+3. `docs/design-principles.md`
+4. `docs/architecture.md`
+5. `docs/engine-behavior.md`
+6. `docs/data.md`
+7. `docs/training-and-runtime.md`
+8. `docs/interfaces.md`
+9. `docs/evaluation.md`
+10. Any relevant records in `docs/decisions/`
 
 For preference-control work, also read `docs/preference-controls.md`.
 
 For data, training, evaluation, or preference-control work, read
 `docs/research.md` when related outside work or source links are relevant.
+
+When starting implementation work, infer the relevant docs from the requested
+area instead of requiring the user to repeat boilerplate. Inspect the repo,
+read the matching topic docs and decision records, choose a scoped first slice
+when the request is broad, and keep the user informed about the approach.
+
+Use GitHub issues as the default implementation task tracker when available.
+The user should be able to provide an issue link, ask for the next appropriate
+issue, or ask to refine the issue roadmap without repeating process details.
+When working from an issue, inspect linked docs and decisions, keep the issue
+updated with relevant findings or completion status, and keep roadmap changes
+under `docs/planning/`.
 
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project
@@ -27,6 +40,10 @@ direction, update the affected docs in the same change.
 Roadmaps and staged build plans belong under `docs/planning/`. Planning docs
 should describe implementation order and tradeoffs without redefining the
 project's end state.
+
+Docs should explain project shape, rationale, and where source-of-truth details
+live. Do not duplicate exact names, thresholds, defaults, schema fields, or
+config values in prose when code, schemas, or config files should own them.
 
 ## Project Priorities
 
@@ -53,7 +70,8 @@ project's end state.
   scripts.
 - Add tests for chess-rule changes, model-facing encodings, data preprocessing,
   and runtime behavior.
-- Document major architectural choices in `docs/decisions/`.
+- Document major architectural choices in `docs/decisions/` when the rationale
+  has lasting value.
 
 ## Current Design Posture
 

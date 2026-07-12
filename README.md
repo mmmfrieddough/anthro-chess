@@ -21,6 +21,7 @@ play rules, or misrepresent bot-generated moves as unaided human play.
 
 The main docs describe the intended end state of the project:
 
+- [Documentation guide](docs/documentation.md)
 - [Vision](docs/vision.md)
 - [Design principles](docs/design-principles.md)
 - [Architecture](docs/architecture.md)
@@ -33,6 +34,7 @@ The main docs describe the intended end state of the project:
 
 Supporting background:
 
+- [Decision records](docs/decisions/)
 - [Related research](docs/research.md)
 
 Implementation planning lives separately:

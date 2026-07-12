@@ -22,8 +22,7 @@ explicitly decide to update them.
 
 - Keep roadmap stages broad enough to survive implementation changes.
 - Use the roadmap to organize work, not to define product requirements.
-- Move detailed task lists into issues, pull requests, or separate planning
-  notes when they become actionable.
+- Move detailed task lists into GitHub issues when they become actionable.
 - Update the roadmap when the rough order changes.
 
 ## Broad Stages
@@ -50,7 +49,8 @@ tests, preprocessing checks, and legal-mask evaluation on held-out positions.
 Train models that predict both move choice and move timing from human-game
 data. Track training-time and validation metrics early, including move loss,
 optional timing loss, illegal-move mask penalty, and rating-sliced validation
-metrics.
+metrics. Add practical checkpoint/resume support early enough that long runs can
+be interrupted and resumed without losing epoch-sized work.
 
 ### 4. Playable Runtime
 

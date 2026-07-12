@@ -125,6 +125,47 @@ It should not be part of the initial core loss.
 Optional preference-control mechanisms should be learned or derived from data,
 not implemented as hardcoded post-processing rules over move logits.
 
+## Checkpointing And Resume
+
+Training should be designed for practical fine-grained resume. Long runs should
+not depend on reaching an epoch boundary before useful state is saved.
+
+The goal is bounded lost work, usually measured in minutes or a small number of
+optimizer steps, not perfect bit-exact replay in every circumstance. Exact
+replay is useful where it comes naturally, but the project should not distort
+the data pipeline or training architecture just to reproduce every random
+choice after interruption.
+
+Checkpoints should be keyed by optimizer step rather than epoch. A complete
+training checkpoint should include, where applicable:
+
+- model weights;
+- optimizer state;
+- scheduler state;
+- mixed-precision scaler state;
+- global step;
+- consumed example, token, or ply counts when useful;
+- training config and code/data version metadata;
+- random number generator state where practical;
+- dataloader or sampler position where practical.
+
+Checkpoint cadence should support both step-based and time-based policies, such
+as every fixed number of optimizer steps or every fixed number of minutes. The
+latest checkpoint should be enough to resume normal training without waiting
+for epoch-sized units of work.
+
+The dataloader should prefer restartable sampling designs. Avoid relying on one
+large opaque shuffle whose exact internal state is hard to recover. Better
+patterns include deterministic shard ordering from a seed and pass id,
+deterministic within-shard shuffle, explicit shard and offset cursors, or
+sampling recipes that can be reconstructed from global step, worker id, and
+seed.
+
+Resume should restore training behavior well enough that validation curves,
+learning-rate schedules, and data coverage remain meaningful. If exact sample
+order cannot be restored without significant complexity, resuming from a recent
+checkpoint and continuing with an equivalent sampling recipe is acceptable.
+
 ## Training Evaluation
 
 Training should report a compact default set of validation metrics and preserve

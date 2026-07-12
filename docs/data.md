@@ -376,6 +376,12 @@ Some records should still be filtered or separated early:
 Training runs should log both the intended recipe and the effective sample
 distribution they actually saw.
 
+Sampling recipes should be compatible with fine-grained training resume. Prefer
+shard orders, within-shard shuffles, and sample cursors that can be
+reconstructed from saved training state. Avoid making exact recovery depend on
+large opaque random queues or dataloader internals when a simpler deterministic
+recipe would give nearly equivalent coverage.
+
 ## Sequence Length And Phase Bias
 
 Chess data naturally overrepresents early positions because every game starts
