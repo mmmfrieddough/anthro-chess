@@ -25,61 +25,103 @@ explicitly decide to update them.
 - Move detailed task lists into GitHub issues when they become actionable.
 - Update the roadmap when the rough order changes.
 
-## Broad Stages
+## Milestone Shape
 
-### 1. Foundations
+The roadmap should be organized around proofs of progress. Each milestone
+should leave the project in a state that is more usable or more measurable than
+before.
 
-Establish the repository structure, development tooling, project conventions,
-and core chess/data representations.
+### 0. Project Setup
 
-### 2. Data And Chess Logic
+Make the repository ready for implementation work.
 
-Build the deterministic chess-state layer and the pipeline for turning human
-games into model-ready examples.
+This stage should establish the package structure, entry points, test runner,
+development tooling, configuration conventions, and issue-tracking workflow. It
+should also keep the docs and decisions easy for future agents to follow.
 
-Start with a small reproducible Lichess ingestion path, then scale to larger
-normalized shards once parsing, validation, and sampling recipes are stable.
-Keep filtering, weighting, and storage choices aligned with `docs/data.md`.
+Detailed setup tasks should move into GitHub issues once they are actionable.
 
-Begin the test and evaluation foundation here: chess-rule tests, encoding
-tests, preprocessing checks, and legal-mask evaluation on held-out positions.
+### 1. Minimal Training Loop
 
-### 3. Model Training
+Prove that the project can train a model correctly from real chess data.
 
-Train models that predict both move choice and move timing from human-game
-data. Track training-time and validation metrics early, including move loss,
-optional timing loss, illegal-move mask penalty, and rating-sliced validation
-metrics. Add practical checkpoint/resume support early enough that long runs can
-be interrupted and resumed without losing epoch-sized work.
+This stage should include a small reproducible data path, deterministic
+board-state reconstruction, model-facing encodings, dataloading, a basic model,
+move-prediction loss, training configuration, validation metrics, and practical
+checkpoint/resume support.
 
-### 4. Playable Runtime
+Start with the simplest training target that proves the loop works. Timing data
+should be preserved in the data pipeline where available, but the first
+training loop may leave the timing head disabled if that keeps the first proof
+cleaner.
 
-Connect the model to a runtime that can maintain game state, choose legal moves,
-and optionally play with clocks. Add simulated rollout benchmarks for generated
-games, timing behavior, and early rating calibration once the runtime can play
-coherent games.
+The output of this milestone does not need to be a good chess opponent. It needs
+to make the data, model, loss, validation, and resume machinery real.
 
-Once UCI interaction is stable, add fixed engine-anchor matches as secondary
-rating diagnostics. These should compare Anthro rating settings against fixed
-engine configurations for monotonicity and regression tracking, not as absolute
-human-rating calibration.
+### 2. Playable Proof
 
-Add a direct UCI executable around the runtime for local chess GUI
-compatibility. It should run as a normal engine process, load the model itself,
-advertise supported options, keep UCI stdout clean, and rely on config defaults
-plus `setoption` overrides.
+Connect model output to an actual playable chess game.
 
-### 5. Iteration
+This stage should build the basic inference runtime: exact game-state updates,
+legal move generation, illegal-move masking, action sampling, configuration,
+and local runtime APIs. It should also connect the runtime to a real chessboard
+experience.
 
-Tune controls, improve data and model quality, tune optional timing behavior,
-expand benchmark coverage, and keep the end-state docs aligned with what the
-project becomes.
+UCI is the preferred compatibility path for local chess GUIs. The first UCI
+implementation only needs enough polish to play games reliably, keep stdout
+reserved for protocol messages, and expose the core options that already exist.
 
-Learned preference controls for openings, style, and other human-play concepts
-belong late in the process, after a model and runtime are clearly working. This
-work should not block the basic bot.
+The goal is a proof that the model can choose legal moves in a real game loop
+and begin to play somewhat sensible chess. It is acceptable for the model to be
+weak at this stage.
 
-Possible late-stage work includes:
+### 3. Evaluation Harness
+
+Turn evaluation into a first-class project system early.
+
+Basic validation metrics should exist during the minimal training loop, but
+this stage should make evaluation coherent enough to compare model versions
+without relying on subjective playtesting.
+
+The initial harness should emphasize reusable benchmarks that can run against
+future models:
+
+- held-out move prediction metrics;
+- rating-sliced validation metrics;
+- illegal-move probability and legal-mask diagnostics;
+- generated-game rollout checks once the runtime can play;
+- fixed engine-anchor matches for relative rating monotonicity;
+- timing diagnostics once timing is enabled.
+
+Human-likeness evaluation beyond simple distribution metrics belongs later in
+the process. A compact human-vs-engine classifier can be useful once the model
+can generate coherent games, but it should not block the basic bot or become a
+separate anti-cheat project.
+
+### 4. Scale And Improve
+
+Use the working loop and evaluation harness to improve the bot.
+
+This stage should expand data scale, tune sampling and weighting, improve model
+capacity, calibrate rating behavior, strengthen checkpointing and reproducible
+runs, improve runtime reliability, and add optional timing behavior when the
+move-only path is already useful.
+
+Evaluation should guide this work. New data, model changes, and runtime changes
+should be judged by the same benchmark surfaces whenever possible, with deeper
+diagnostics available when a regression or surprising result appears.
+
+### 5. Late Controllability
+
+Add learned preference controls after the model, runtime, and evaluation stack
+are clearly working.
+
+Preference controls for openings, style, timing style, player-inspired
+tendencies, and other human-play concepts are important to the end state, but
+they should not block the basic bot. This work should start once there is a
+model whose behavior can be measured and played.
+
+Possible late-stage preference-control work includes:
 
 - deriving multi-label position metadata for opening families, structures,
   aggression, sacrifices, development, and other concepts;
@@ -93,12 +135,7 @@ Possible late-stage work includes:
 - calibrating preference sliders so rating, legality, and position coherence
   remain intact.
 
-Human-likeness evaluation beyond simple distribution metrics belongs later in
-the process. A compact human-vs-engine classifier can be useful once the model
-can generate coherent games, but it should not block the basic bot or become a
-separate anti-cheat project.
-
-Suggested late-stage order:
+Suggested order for the first learned preference controls:
 
 1. Define a small opening-family taxonomy.
 2. Build known-opening position matching and backward lookup.
