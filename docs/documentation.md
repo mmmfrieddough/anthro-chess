@@ -78,15 +78,68 @@ when the repo has GitHub access available. The roadmap should stay broad;
 issues hold the concrete task queue, discussion, links to pull requests, and
 per-task status.
 
+Use GitHub's built-in planning structure instead of encoding workflow state in
+issue titles. Roadmap milestones should map to real GitHub milestones. Tracker
+issues should group work for a milestone or workstream. Child implementation
+issues should be attached as sub-issues when GitHub supports it for the repo.
+Use issue dependencies for true blockers and sequencing constraints. Use labels
+for filtering and routing.
+
 The user's recurring manual actions should stay small:
 
 1. Ask an agent to refine the task roadmap.
-2. Ask an agent to implement a specific issue or choose the next appropriate
+2. Ask an agent to create or update issues for a roadmap milestone.
+3. Ask an agent to implement a specific issue or choose the next appropriate
    issue.
 
-The user should be able to do either with a short natural-language request. The
-agent is responsible for reading the repo context, finding relevant docs,
-checking issue state, and turning the request into a scoped plan.
+The user should be able to do any of these with a short natural-language
+request. The agent is responsible for reading the repo context, finding
+relevant docs, checking issue state, and turning the request into a scoped
+plan.
+
+### Issue Organization
+
+Use this structure for milestone work:
+
+- a real GitHub milestone named for the roadmap milestone, such as
+  `0. Project Setup`;
+- one tracker issue for the milestone, labeled `type: tracker`;
+- focused actionable child issues, labeled `type: task`;
+- real GitHub sub-issue relationships from the tracker to the child issues when
+  available;
+- real GitHub issue dependencies for child issues that must happen before other
+  child issues can be started or finished;
+- milestone assignment on both the tracker and its child issues.
+
+Do not put milestone names in ordinary issue titles when the issue is already
+assigned to a GitHub milestone. Tracker issues may include the milestone name
+because their purpose is to be a visible front door for that milestone.
+
+Use a small label taxonomy:
+
+- `area: setup`
+- `area: docs`
+- `area: chess-logic`
+- `area: data`
+- `area: training`
+- `area: runtime`
+- `area: interfaces`
+- `area: evaluation`
+- `type: task`
+- `type: tracker`
+- `type: decision`
+- `status: blocked`
+
+Add new labels only when they solve a recurring filtering or routing problem.
+Prefer assigning one primary area plus any genuinely relevant secondary area.
+Use `status: blocked` only when the issue cannot progress without another
+issue, decision, or external input.
+
+Use dependencies to express actual order constraints, not every preferred
+implementation sequence. A useful dependency is one where starting or finishing
+one issue would be confusing, wasteful, or impossible before another issue is
+done. For softer ordering, write the suggested order in the tracker issue
+instead of creating blocker relationships.
 
 ### Refining The Task Roadmap
 
@@ -94,8 +147,14 @@ When asked to build or refine the task roadmap, an agent should:
 
 - read `AGENTS.md`, this guide, `docs/planning/roadmap.md`, and relevant design
   docs;
-- inspect existing open issues before creating new ones;
-- create or update issues for near-term actionable work;
+- inspect existing open issues, milestones, tracker issues, labels, and
+  sub-issue relationships before creating new ones;
+- create or update the real GitHub milestone when needed;
+- create or update a tracker issue for the milestone when needed;
+- create or update near-term actionable child issues and attach them as
+  sub-issues of the tracker when GitHub supports it;
+- add GitHub issue dependencies for true blockers between child issues;
+- apply the repo's `area:`, `type:`, and `status:` labels consistently;
 - keep issue bodies focused on intent, acceptance criteria, relevant docs, and
   likely test/doc updates;
 - avoid creating a detailed issue tree for the entire project before evidence
@@ -108,19 +167,36 @@ When asked to build or refine the task roadmap, an agent should:
 
 When asked to implement an issue, an agent should:
 
-- read the issue and any linked docs or decisions;
+- read the issue, its parent tracker, sub-issues if any, labels, milestone, and
+  any linked docs or decisions;
 - inspect the current repo state before editing;
 - clarify only if the issue cannot be scoped safely from existing context;
 - implement one cohesive slice;
 - add or update tests appropriate to the change;
 - update docs only when durable intent, behavior, interfaces, data shape,
   evaluation, or source-of-truth ownership changes;
-- comment on or update the issue with important findings, follow-ups, and
-  completion status when GitHub tooling is available.
+- keep issue metadata current when GitHub tooling is available, including
+  labels, milestone, dependencies, blockers, and sub-issue state;
+- comment on the issue with important findings, verification results,
+  follow-ups, and completion status;
+- close the issue only after the implementation is merged or otherwise clearly
+  completed in the repo state the user wants tracked.
 
 If the user asks an agent to choose the next issue, the agent should prefer
-ready, unblocked work that matches the current project stage and avoids
-uncoordinated edits to shared foundations.
+ready, unblocked work in the current milestone that matches the current project
+stage and avoids uncoordinated edits to shared foundations. Check tracker
+issues, sub-issue progress, dependencies, labels, and recent issue activity
+before choosing.
+
+When finishing issue work, leave GitHub in a useful state for the next agent:
+
+- link or mention the pull request or commit when applicable;
+- summarize what changed and what verification ran;
+- record follow-up issues instead of hiding unfinished work in a closing
+  comment;
+- update the tracker issue if milestone progress or ordering changed;
+- close completed child issues, and close the tracker only when its milestone
+  work is complete.
 
 Parallel sessions are useful once boundaries are clear. Prefer parallel work
 across separate areas such as chess logic, data ingestion, evaluation, and UCI.

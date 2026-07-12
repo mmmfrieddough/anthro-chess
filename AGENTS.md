@@ -28,10 +28,14 @@ when the request is broad, and keep the user informed about the approach.
 
 Use GitHub issues as the default implementation task tracker when available.
 The user should be able to provide an issue link, ask for the next appropriate
-issue, or ask to refine the issue roadmap without repeating process details.
-When working from an issue, inspect linked docs and decisions, keep the issue
-updated with relevant findings or completion status, and keep roadmap changes
-under `docs/planning/`.
+issue, or ask to create or refine issues for a milestone without repeating
+process details. When setting up milestone work, use real GitHub milestones,
+tracker issues, sub-issues, issue dependencies for true blockers, and the
+repo's `area:`, `type:`, and `status:` labels as described in
+`docs/documentation.md`. When working from an issue, inspect linked docs,
+decisions, parent/sub-issues, dependency state, labels, and milestone context;
+keep the issue updated with relevant findings, follow-ups, and completion
+status; and keep roadmap changes under `docs/planning/`.
 
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project
