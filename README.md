@@ -29,6 +29,17 @@ uv sync --locked
 Use an unlocked `uv` dependency command only when intentionally changing
 `pyproject.toml` and `uv.lock`.
 
+The installed `anthro` command currently provides a lightweight smoke check
+that needs no model checkpoint, dataset, GPU, or network access:
+
+```console
+uv run anthro smoke
+```
+
+Run `uv run anthro --help` for the implemented command surface. Data, training,
+evaluation, play, and UCI commands will appear there as those capabilities are
+built.
+
 Run the default verification suite:
 
 ```console
