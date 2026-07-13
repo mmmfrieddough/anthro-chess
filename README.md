@@ -17,6 +17,33 @@ It is not intended to provide assistance in games against other people where
 outside chess help is disallowed. Do not use Anthro Chess to cheat, evade fair
 play rules, or misrepresent bot-generated moves as unaided human play.
 
+## Development
+
+Install [uv](https://docs.astral.sh/uv/) and create the locked development
+environment:
+
+```console
+uv sync
+```
+
+Run the default verification suite:
+
+```console
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
+```
+
+Coverage is available on demand with `uv run pytest --cov`. The default test
+run excludes no tests yet; future slow, GPU, network, and integration tests
+must use the markers configured in `pyproject.toml` so callers can select or
+exclude those tiers explicitly.
+
+Install the lightweight commit hooks with `uv run pre-commit install`, or run
+them across the repository with `uv run pre-commit run --all-files`. Tests stay
+outside the normal commit hook and remain part of the verification suite.
+
 ## Design Docs
 
 The main docs describe the intended end state of the project:

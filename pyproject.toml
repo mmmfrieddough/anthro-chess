@@ -28,6 +28,15 @@ classifiers = [
 ]
 dependencies = []
 
+[dependency-groups]
+dev = [
+  "mypy>=1.15",
+  "pre-commit>=4.2",
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "ruff>=0.11",
+]
+
 [project.urls]
 Repository = "https://github.com/mmmfrieddough/anthro-chess"
 Issues = "https://github.com/mmmfrieddough/anthro-chess/issues"
@@ -37,3 +46,40 @@ packages = ["src/anthro_chess"]
 
 [tool.hatch.version]
 path = "src/anthro_chess/__init__.py"
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+markers = [
+  "slow: tests that are too slow for the default local suite",
+  "gpu: tests that require a supported GPU",
+  "network: tests that require network access",
+  "integration: tests that exercise multiple system boundaries",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["anthro_chess"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
