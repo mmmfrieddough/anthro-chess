@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anthro-chess"
+dynamic = ["version"]
+description = "A controllable chess model intended to mimic human play."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Anthro Chess contributors" },
+]
+keywords = ["chess", "machine-learning", "pytorch"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Games/Entertainment :: Board Games",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/mmmfrieddough/anthro-chess"
+Issues = "https://github.com/mmmfrieddough/anthro-chess/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anthro_chess"]
+
+[tool.hatch.version]
+path = "src/anthro_chess/__init__.py"
