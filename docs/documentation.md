@@ -316,18 +316,14 @@ listing clutter. Remove them during occasional housekeeping only after
 confirming that their pull requests merged and their worktrees contain no
 uncommitted changes.
 
-Do not make routine post-merge cleanup or tracker commentary part of the user's
-workflow or require the user to return to an implementation session after
-merging its pull request.
+The user should not need to return to an implementation session after merging
+its pull request for routine post-merge cleanup or tracker commentary.
 
-Milestone reconciliation is not owned by the agent that finishes the last
-child issue. Whenever an agent encounters milestone context while starting an
-issue, choosing the next task, refining the roadmap, reviewing milestone work,
-or preparing the next milestone, it should inspect the milestone, tracker,
-child issues, linked pull requests, and completion criteria. If all milestone
-work is complete, the agent should correct stale metadata, close the tracker,
-and then close the GitHub milestone. If work remains, it should leave both open
-and make any actionable remainder discoverable. Formal dependencies remain the
+Keep milestone state aligned with the work it represents. When the milestone's
+completion criteria are satisfied and all included work is complete or
+explicitly tracked elsewhere, correct stale metadata, close the tracker, and
+then close the GitHub milestone. Otherwise, leave the tracker and milestone
+open and make the remaining work discoverable. Formal dependencies remain the
 source of truth, so there is no duplicate blocked-status label to clear after a
 merge.
 
