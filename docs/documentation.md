@@ -71,6 +71,19 @@ that goal into a repo-aware work plan by reading the local context.
 If an explicit current-work file, issue, or roadmap item exists, use it as
 planning context. Do not require one to begin a well-scoped task.
 
+## Configuration Conventions
+
+Configuration schemas, validation, and defaults are owned by command-specific
+Pydantic models. Shared loading and provenance mechanics live under
+`anthro_chess.config`. Checked-in TOML files under `configs/` are reproducible
+selections for implemented commands; they do not define or duplicate schemas.
+
+Commands should use code-owned defaults or an explicit configuration path and
+must not depend on discovery from a repository working directory. Unknown
+fields and invalid values should fail through the shared strict loader. Runs
+and artifacts should retain the resolved configuration record together with
+the relevant code, model, encoding, and data-provenance versions.
+
 ## GitHub Issue Workflow
 
 Use GitHub issues as the default tracker for actionable implementation work
@@ -210,6 +223,13 @@ user changes and do not stage them into the issue commit.
 
 During implementation, the agent should:
 
+- ensure required machine-level bootstrap tools are available, installing a
+  missing tool or reporting a genuine installation blocker;
+- initialize the current issue worktree with `uv sync --locked` before ordinary
+  implementation work, using an unlocked dependency command only when the task
+  intentionally changes dependency metadata;
+- run development and final verification commands through the current
+  worktree's project environment, never another worktree's virtual environment;
 - implement one cohesive slice;
 - add or update tests appropriate to the change;
 - update docs only when durable intent, behavior, interfaces, data shape,
