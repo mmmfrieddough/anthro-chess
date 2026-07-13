@@ -223,6 +223,13 @@ user changes and do not stage them into the issue commit.
 
 During implementation, the agent should:
 
+- ensure required machine-level bootstrap tools are available, installing a
+  missing tool or reporting a genuine installation blocker;
+- initialize the current issue worktree with `uv sync --locked` before ordinary
+  implementation work, using an unlocked dependency command only when the task
+  intentionally changes dependency metadata;
+- run development and final verification commands through the current
+  worktree's project environment, never another worktree's virtual environment;
 - implement one cohesive slice;
 - add or update tests appropriate to the change;
 - update docs only when durable intent, behavior, interfaces, data shape,

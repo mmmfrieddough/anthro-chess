@@ -23,8 +23,11 @@ Install [uv](https://docs.astral.sh/uv/) and create the locked development
 environment:
 
 ```console
-uv sync
+uv sync --locked
 ```
+
+Use an unlocked `uv` dependency command only when intentionally changing
+`pyproject.toml` and `uv.lock`.
 
 Run the default verification suite:
 

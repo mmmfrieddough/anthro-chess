@@ -46,6 +46,12 @@ could be using it, do not merge the pull request, and do not require the user to
 return for routine post-merge cleanup. The full mechanics and exceptions are in
 `docs/documentation.md`.
 
+Before implementation, ensure required machine-level bootstrap tools are
+available; install a missing tool or report a genuine installation blocker.
+Initialize and use the project environment in the current issue worktree. Do
+not run development or final verification commands through another worktree's
+virtual environment.
+
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project
 direction, update the affected docs in the same change.
