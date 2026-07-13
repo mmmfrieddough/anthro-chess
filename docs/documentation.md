@@ -71,6 +71,19 @@ that goal into a repo-aware work plan by reading the local context.
 If an explicit current-work file, issue, or roadmap item exists, use it as
 planning context. Do not require one to begin a well-scoped task.
 
+## Configuration Conventions
+
+Configuration schemas, validation, and defaults are owned by Python code under
+`anthro_chess.config` and the package responsible for each command. Checked-in
+TOML files under `configs/` are reproducible selections for implemented
+commands; they do not define or duplicate schemas.
+
+Commands should use code-owned defaults or an explicit configuration path and
+must not depend on discovery from a repository working directory. Unknown
+fields and invalid values should fail through the shared strict loader. Runs
+and artifacts should retain the resolved configuration record together with
+the relevant code, model, encoding, and data-provenance versions.
+
 ## GitHub Issue Workflow
 
 Use GitHub issues as the default tracker for actionable implementation work
