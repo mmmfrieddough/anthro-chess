@@ -31,11 +31,20 @@ The user should be able to provide an issue link, ask for the next appropriate
 issue, or ask to create or refine issues for a milestone without repeating
 process details. When setting up milestone work, use real GitHub milestones,
 tracker issues, sub-issues, issue dependencies for true blockers, and the
-repo's `area:`, `type:`, and `status:` labels as described in
+repo's `area:` and `type:` labels as described in
 `docs/documentation.md`. When working from an issue, inspect linked docs,
 decisions, parent/sub-issues, dependency state, labels, and milestone context;
 keep the issue updated with relevant findings, follow-ups, and completion
 status; and keep roadmap changes under `docs/planning/`.
+
+Treat a request to work on or implement an issue as authorization to complete
+the normal pre-merge workflow: start from current `origin/main`, create or reuse
+an isolated issue branch and worktree, implement and verify the change, commit
+and push it, and open a ready-for-review pull request that closes the issue on
+merge. Do not work directly in the shared main checkout when another session
+could be using it, do not merge the pull request, and do not require the user to
+return for routine post-merge cleanup. The full mechanics and exceptions are in
+`docs/documentation.md`.
 
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project

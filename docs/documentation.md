@@ -83,7 +83,7 @@ issue titles. Roadmap milestones should map to real GitHub milestones. Tracker
 issues should group work for a milestone or workstream. Child implementation
 issues should be attached as sub-issues when GitHub supports it for the repo.
 Use issue dependencies for true blockers and sequencing constraints. Use labels
-for filtering and routing.
+for stable filtering and routing, not to duplicate dependency state.
 
 The user's recurring manual actions should stay small:
 
@@ -128,18 +128,21 @@ Use a small label taxonomy:
 - `type: task`
 - `type: tracker`
 - `type: decision`
-- `status: blocked`
 
 Add new labels only when they solve a recurring filtering or routing problem.
 Prefer assigning one primary area plus any genuinely relevant secondary area.
-Use `status: blocked` only when the issue cannot progress without another
-issue, decision, or external input.
 
 Use dependencies to express actual order constraints, not every preferred
 implementation sequence. A useful dependency is one where starting or finishing
 one issue would be confusing, wasteful, or impossible before another issue is
 done. For softer ordering, write the suggested order in the tracker issue
 instead of creating blocker relationships.
+
+Do not add a status label such as `status: blocked` to repeat dependency state.
+Parallel status metadata can become stale when a blocker closes. GitHub issue
+dependencies are the source of truth for whether another issue blocks the work.
+Represent an external blocker with a focused issue or decision when practical;
+otherwise describe it clearly in the affected issue.
 
 ### Refining The Task Roadmap
 
@@ -154,7 +157,7 @@ When asked to build or refine the task roadmap, an agent should:
 - create or update near-term actionable child issues and attach them as
   sub-issues of the tracker when GitHub supports it;
 - add GitHub issue dependencies for true blockers between child issues;
-- apply the repo's `area:`, `type:`, and `status:` labels consistently;
+- apply the repo's `area:` and `type:` labels consistently;
 - keep issue bodies focused on intent, acceptance criteria, relevant docs, and
   likely test/doc updates;
 - avoid creating a detailed issue tree for the entire project before evidence
@@ -165,22 +168,60 @@ When asked to build or refine the task roadmap, an agent should:
 
 ### Implementing An Issue
 
-When asked to implement an issue, an agent should:
+Treat a request to work on or implement an issue as authorization to carry the
+work through the complete pre-merge workflow. The agent may create a branch and
+worktree, edit files, run checks, commit, push, update in-scope issue metadata,
+and open a pull request without asking separately at each step. This does not
+authorize merging the pull request or making unrelated repository changes.
+
+Before starting, the agent should:
 
 - read the issue, its parent tracker, sub-issues if any, labels, milestone, and
   any linked docs or decisions;
-- inspect the current repo state before editing;
+- inspect the current repo and GitHub state before editing;
+- confirm that formal dependencies do not block the issue;
 - clarify only if the issue cannot be scoped safely from existing context;
+- choose one cohesive, reviewable slice when the issue is broad;
+- identify likely shared files or foundations before deciding whether the work
+  can safely run in parallel with other sessions.
+
+#### Branches And Worktrees
+
+Use one dedicated branch and one isolated Git worktree per issue. A normal
+branch name is `issue-<number>-<short-slug>`. If the session already runs in an
+appropriate isolated worktree, reuse it instead of nesting another worktree.
+
+Create new issue work from current `origin/main`. The base checkout open in an
+editor does not need to remain perfectly current, and a session should not
+switch branches or update files in that shared checkout merely to start its
+work. Fetch the remote state and create the issue branch and worktree directly
+from `origin/main`.
+
+Never run multiple implementation sessions in the same worktree. Uncommitted
+files are shared by every process using that directory even when branches are
+different. Separate worktrees provide each session with its own branch and
+filesystem while sharing the repository's Git object database, so separate
+full clones are not normally needed.
+
+Before editing, inspect the worktree for existing changes. Preserve unrelated
+user changes and do not stage them into the issue commit.
+
+#### Implementation And Verification
+
+During implementation, the agent should:
+
 - implement one cohesive slice;
 - add or update tests appropriate to the change;
 - update docs only when durable intent, behavior, interfaces, data shape,
   evaluation, or source-of-truth ownership changes;
 - keep issue metadata current when GitHub tooling is available, including
-  labels, milestone, dependencies, blockers, and sub-issue state;
-- comment on the issue with important findings, verification results,
-  follow-ups, and completion status;
-- close the issue only after the implementation is merged or otherwise clearly
-  completed in the repo state the user wants tracked.
+  labels, milestone, dependencies, and sub-issue state;
+- run focused checks while iterating and all reasonable final verification
+  before publishing;
+- inspect the final diff for scope, accidental files, generated-file drift,
+  secrets, and missing tests or documentation;
+- sync with current `origin/main` before publishing and resolve conflicts in the
+  issue worktree.
 
 If the user asks an agent to choose the next issue, the agent should prefer
 ready, unblocked work in the current milestone that matches the current project
@@ -188,21 +229,78 @@ stage and avoids uncoordinated edits to shared foundations. Check tracker
 issues, sub-issue progress, dependencies, labels, and recent issue activity
 before choosing.
 
-When finishing issue work, leave GitHub in a useful state for the next agent:
+#### Publishing For Review
 
-- link or mention the pull request or commit when applicable;
-- summarize what changed and what verification ran;
+Commit only the issue's scoped files, push the issue branch, and open a pull
+request when the implementation and verification are complete. Open it ready
+for review by default. Use a draft pull request only when the user asks to see
+work in progress, the work is intentionally being handed off incomplete, or an
+external condition prevents it from being reviewable.
+
+The pull request should:
+
+- have a concise title describing the change;
+- explain what changed and why;
+- list the verification that ran and its result;
+- identify material limitations, decisions, or reviewer attention points;
+- link any genuine follow-up issues instead of hiding unfinished work in prose;
+- include `Closes #<issue-number>` so merging into the default branch closes
+  the implementation issue automatically.
+
+The pull request is the normal human approval boundary. The agent must not
+merge it or enable auto-merge unless the user explicitly asks. The user reviews
+the diff and merges it when satisfied; a separate formal approval is not
+required when repository rules allow the pull-request author to merge their
+own work.
+
+Use the configured Git and GitHub identities for commits and publication. Do
+not invent a bot identity or add AI-attribution trailers or footers unless the
+user requests them or the repository adopts an explicit attribution policy.
+
+Before ending the session, leave GitHub in a useful review state:
+
+- ensure the pull request links the issue and contains the implementation and
+  verification summary;
 - record follow-up issues instead of hiding unfinished work in a closing
   comment;
-- update the tracker issue if milestone progress or ordering changed;
-- close completed child issues, and close the tracker only when its milestone
-  work is complete.
+- update the tracker before publishing if the work changed milestone scope or
+  ordering;
+- add an issue comment only when an important finding needs to remain visible
+  independently of the pull request.
+
+Do not close the implementation issue merely because the pull request is ready.
+The merge should close it. Close a tracker only when all of its milestone work
+is actually complete.
+
+#### After Publication And Merge
+
+A complete, verified, ready-for-review pull request is the normal terminal
+deliverable for an implementation session. The user should be able to review
+and merge it, then call the task finished without returning to that session.
+
+Configure GitHub to delete remote issue branches after merge. Local issue
+branches and worktrees may remain; they are harmless apart from disk use and
+listing clutter. Remove them during occasional housekeeping only after
+confirming that their pull requests merged and their worktrees contain no
+uncommitted changes.
+
+Do not make routine post-merge cleanup or tracker commentary part of the user's
+workflow. A later session should fetch current `origin/main` before starting
+new work and should correct any relevant tracker, milestone, dependency, or
+issue state it discovers during normal startup. Formal dependencies remain the
+source of truth, so there is no duplicate blocked-status label to clear after a
+merge.
+
+#### Parallel Sessions
 
 Parallel sessions are useful once boundaries are clear. Prefer parallel work
 across separate areas such as chess logic, data ingestion, evaluation, and UCI.
 Avoid running multiple sessions that modify the same shared architecture,
 schema, package layout, or decision record unless the user explicitly
-coordinates that work.
+coordinates that work. Every parallel session must have its own issue branch
+and worktree. When overlap becomes apparent, stop one slice or establish an
+explicit dependency instead of letting two agents independently rewrite the
+same foundation.
 
 ## Updating Docs During Implementation
 
