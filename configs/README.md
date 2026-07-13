@@ -1,9 +1,10 @@
 # Checked-In Configurations
 
 This directory holds reproducible configuration selections for commands that
-have become real. Schema fields, validation, and defaults live in Python under
-`anthro_chess.config` and the command-specific package; TOML files here select
-values but do not define the schema.
+have become real. Command-specific Pydantic models own schema fields,
+validation, and defaults; the shared loading boundary lives under
+`anthro_chess.config`. TOML files here select values but do not define the
+schema.
 
 Add focused `training/`, `evaluation/`, or `runtime/` subdirectories when the
 corresponding command exists. Do not add speculative example files for commands

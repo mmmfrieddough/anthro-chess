@@ -1,22 +1,20 @@
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from pydantic import StrictBool
 
-from anthro_chess.config import ConfigError, load_config
+from anthro_chess.config import ConfigError, ConfigModel, load_config
 
 
-@dataclass(frozen=True)
-class RuntimeSettings:
+class RuntimeSettings(ConfigModel):
     temperature: float = 1.0
-    enabled: bool = False
+    enabled: StrictBool = False
 
 
-@dataclass(frozen=True)
-class ExampleConfig:
+class ExampleConfig(ConfigModel):
     name: str = "default"
     output: Path | None = None
-    runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
+    runtime: RuntimeSettings = RuntimeSettings()
 
 
 def test_loads_code_owned_defaults_without_a_file() -> None:
@@ -60,9 +58,9 @@ def test_loads_toml_and_applies_strict_dotted_overrides(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("contents", "message"),
     [
-        ("unknown = 1\n", "config.unknown"),
-        ('[runtime]\nextra = "no"\n', "config.runtime.extra"),
-        ('[runtime]\nenabled = "yes"\n', "config.runtime.enabled must be bool"),
+        ("unknown = 1\n", "Extra inputs are not permitted"),
+        ('[runtime]\nextra = "no"\n', "Extra inputs are not permitted"),
+        ('[runtime]\nenabled = "yes"\n', "Input should be a valid boolean"),
     ],
 )
 def test_rejects_unknown_or_invalid_values(

@@ -73,10 +73,10 @@ planning context. Do not require one to begin a well-scoped task.
 
 ## Configuration Conventions
 
-Configuration schemas, validation, and defaults are owned by Python code under
-`anthro_chess.config` and the package responsible for each command. Checked-in
-TOML files under `configs/` are reproducible selections for implemented
-commands; they do not define or duplicate schemas.
+Configuration schemas, validation, and defaults are owned by command-specific
+Pydantic models. Shared loading and provenance mechanics live under
+`anthro_chess.config`. Checked-in TOML files under `configs/` are reproducible
+selections for implemented commands; they do not define or duplicate schemas.
 
 Commands should use code-owned defaults or an explicit configuration path and
 must not depend on discovery from a repository working directory. Unknown
