@@ -1,0 +1,59 @@
+name: Continuous integration
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required-ci:
+    name: Required CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Sync locked environment
+        run: uv sync --locked
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy src tests
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Create clean smoke environment
+        run: uv venv --python 3.11 .venv-smoke
+
+      - name: Install built wheel
+        run: uv pip install --python .venv-smoke/bin/python dist/*.whl
+
+      - name: Smoke test installed package
+        run: .venv-smoke/bin/anthro smoke

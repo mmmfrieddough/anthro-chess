@@ -249,6 +249,12 @@ During implementation, the agent should:
 - sync with current `origin/main` before publishing and resolve conflicts in the
   issue worktree.
 
+Pull requests and pushes to `main` run the canonical CPU-only verification and
+built-package smoke test through `.github/workflows/ci.yml`. The workflow's
+`Required CI` job is the stable required merge check. If that job is renamed,
+update the repository merge rule in the same change so the protected branch
+does not point at a stale check name.
+
 If the user asks an agent to choose the next issue, the agent should prefer
 ready, unblocked work in the current milestone that matches the current project
 stage and avoids uncoordinated edits to shared foundations. Check tracker
