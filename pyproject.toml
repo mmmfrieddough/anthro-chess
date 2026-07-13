@@ -30,6 +30,9 @@ dependencies = [
     "pydantic>=2,<3",
 ]
 
+[project.scripts]
+anthro = "anthro_chess.interfaces.cli:main"
+
 [dependency-groups]
 dev = [
   "mypy>=1.15",
