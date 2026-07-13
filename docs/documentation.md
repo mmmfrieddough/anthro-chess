@@ -124,6 +124,12 @@ Use this structure for milestone work:
   child issues can be started or finished;
 - milestone assignment on both the tracker and its child issues.
 
+Keep tracker bodies focused on the milestone's goal, intended outcome, scope
+boundaries, completion criteria, and relevant documentation or decisions. Do
+not copy child-issue lists, checklists, status summaries, dependency maps,
+labels, or other GitHub metadata into the body. Native milestone, sub-issue,
+and dependency metadata is the source of truth.
+
 Do not put milestone names in ordinary issue titles when the issue is already
 assigned to a GitHub milestone. Tracker issues may include the milestone name
 because their purpose is to be a visible front door for that milestone.
@@ -305,9 +311,17 @@ confirming that their pull requests merged and their worktrees contain no
 uncommitted changes.
 
 Do not make routine post-merge cleanup or tracker commentary part of the user's
-workflow. A later session should fetch current `origin/main` before starting
-new work and should correct any relevant tracker, milestone, dependency, or
-issue state it discovers during normal startup. Formal dependencies remain the
+workflow or require the user to return to an implementation session after
+merging its pull request.
+
+Milestone reconciliation is not owned by the agent that finishes the last
+child issue. Whenever an agent encounters milestone context while starting an
+issue, choosing the next task, refining the roadmap, reviewing milestone work,
+or preparing the next milestone, it should inspect the milestone, tracker,
+child issues, linked pull requests, and completion criteria. If all milestone
+work is complete, the agent should correct stale metadata, close the tracker,
+and then close the GitHub milestone. If work remains, it should leave both open
+and make any actionable remainder discoverable. Formal dependencies remain the
 source of truth, so there is no duplicate blocked-status label to clear after a
 merge.
 
