@@ -27,6 +27,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "chess>=1.11,<2",
     "pydantic>=2,<3",
 ]
 
