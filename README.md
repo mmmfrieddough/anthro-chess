@@ -1,12 +1,21 @@
 # anthro-chess
 
-Anthro Chess is an early-stage project for building a controllable,
-human-like chess model.
+[![Continuous integration](https://github.com/mmmfrieddough/anthro-chess/actions/workflows/ci.yml/badge.svg)](https://github.com/mmmfrieddough/anthro-chess/actions/workflows/ci.yml)
 
-The intended product is a chess bot that can play competent games while
-exposing dials for target rating, optional time behavior, randomness, and
-optional soft preferences. The goal is not top engine strength. The goal is a
-usable opponent that feels plausibly human at adjustable levels.
+Anthro Chess is an early-stage project for building a controllable chess bot
+that plays like a human opponent. The goal is not top engine strength. The goal
+is a usable opponent with adjustable rating, optional human-like timing,
+independent sampling temperature, and optional soft preferences.
+
+## Project Status
+
+The repository currently provides an installable Python package, a lightweight
+`anthro` command, strict configuration foundations, automated tests, and a
+locked development environment. The implemented command is an installation
+smoke check; data ingestion, training, evaluation, playable runtime, UCI, model
+checkpoints, and packaged releases remain planned work.
+
+No trained Anthro Chess model is available yet, including through Hugging Face.
 
 ## Intended Use
 
@@ -17,50 +26,56 @@ It is not intended to provide assistance in games against other people where
 outside chess help is disallowed. Do not use Anthro Chess to cheat, evade fair
 play rules, or misrepresent bot-generated moves as unaided human play.
 
-## Development
+## Quick Start
 
-Install [uv](https://docs.astral.sh/uv/) and create the locked development
-environment:
+[Install uv](https://docs.astral.sh/uv/getting-started/installation/), clone the
+repository, and create the locked environment:
 
 ```console
+git clone https://github.com/mmmfrieddough/anthro-chess.git
+cd anthro-chess
 uv sync --locked
-```
-
-Use an unlocked `uv` dependency command only when intentionally changing
-`pyproject.toml` and `uv.lock`.
-
-The installed `anthro` command currently provides a lightweight smoke check
-that needs no model checkpoint, dataset, GPU, or network access:
-
-```console
 uv run anthro smoke
 ```
 
-Run `uv run anthro --help` for the implemented command surface. Data, training,
-evaluation, play, and UCI commands will appear there as those capabilities are
-built.
+The smoke command needs no model checkpoint, dataset, GPU, or network access.
+A successful run confirms that the package and command-line entry point are
+installed correctly.
 
-Run the default verification suite:
+## Commands
+
+The current command surface is intentionally small:
 
 ```console
+uv run anthro --help
+uv run anthro --version
+uv run anthro smoke
+```
+
+Only implemented commands appear in `--help`. Data, training, evaluation,
+play, and UCI commands will be added as those capabilities become real.
+
+## Development
+
+Use an unlocked `uv` dependency command only when intentionally changing
+`pyproject.toml` and `uv.lock`. Run the canonical local checks with:
+
+```console
+uv lock --check
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src tests
 uv run pytest
 ```
 
-Coverage is available on demand with `uv run pytest --cov`. The default test
-run excludes no tests yet; future slow, GPU, network, and integration tests
-must use the markers configured in `pyproject.toml` so callers can select or
-exclude those tiers explicitly.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for environment setup, test tiers,
+pre-commit hooks, issue routing, and pull request expectations. Continuous
+integration also builds the package and smoke-tests the installed wheel.
 
-Install the lightweight commit hooks with `uv run pre-commit install`, or run
-them across the repository with `uv run pre-commit run --all-files`. Tests stay
-outside the normal commit hook and remain part of the verification suite.
+## Documentation
 
-## Design Docs
-
-The main docs describe the intended end state of the project:
+The main docs describe the intended end state rather than claiming every
+capability is implemented:
 
 - [Documentation guide](docs/documentation.md)
 - [Vision](docs/vision.md)
@@ -73,13 +88,13 @@ The main docs describe the intended end state of the project:
 - [Evaluation](docs/evaluation.md)
 - [Preference controls](docs/preference-controls.md)
 
-Supporting background:
+Supporting context lives in the [decision records](docs/decisions/) and
+[research notes](docs/research.md). Implementation order lives separately in
+the [roadmap](docs/planning/roadmap.md), while actionable work is tracked in
+[GitHub issues](https://github.com/mmmfrieddough/anthro-chess/issues).
 
-- [Decision records](docs/decisions/)
-- [Related research](docs/research.md)
+Agents working in this repository should read [AGENTS.md](AGENTS.md) first.
 
-Implementation planning lives separately:
+## License
 
-- [Roadmap](docs/planning/roadmap.md)
-
-Agents working in this repo should read [AGENTS.md](AGENTS.md) first.
+Anthro Chess is available under the [MIT License](LICENSE).
