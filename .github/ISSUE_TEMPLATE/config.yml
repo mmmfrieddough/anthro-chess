@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project documentation
+    url: https://github.com/mmmfrieddough/anthro-chess#readme
+    about: Review the project goals and documentation before opening an issue.

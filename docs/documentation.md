@@ -112,6 +112,30 @@ plan.
 
 ### Issue Organization
 
+#### Implementation Queue And Public Intake
+
+An issue is eligible for automatic selection as the next implementation task
+only when all of the following are true in live GitHub metadata:
+
+- it has the `type: task` label;
+- it belongs to the active milestone;
+- it is attached as a sub-issue of that milestone's tracker; and
+- it has no open blockers.
+
+The active milestone is the current roadmap stage represented by the live
+milestone and tracker state. Among eligible issues, prefer work that matches the
+current project stage and avoids conflicts with other active work.
+
+Public issue forms are intake, not an implementation queue. They must not
+automatically assign `type: task`, a milestone, a tracker relationship, or a
+dependency relationship. An issue missing any eligibility metadata remains
+intake awaiting maintainer triage. A maintainer promotes it into the queue only
+by deliberately assigning all required metadata and any genuine blockers.
+
+Contributor blank issues are disabled so public intake uses the focused forms.
+Repository maintainers can still open a blank issue when GitHub permissions
+allow it.
+
 Use this structure for milestone work:
 
 - a real GitHub milestone named for the roadmap milestone, such as
@@ -256,10 +280,10 @@ update the repository merge rule in the same change so the protected branch
 does not point at a stale check name.
 
 If the user asks an agent to choose the next issue, the agent should prefer
-ready, unblocked work in the current milestone that matches the current project
-stage and avoids uncoordinated edits to shared foundations. Check tracker
+eligible work from the active milestone's implementation queue. Check tracker
 issues, sub-issue progress, dependencies, labels, and recent issue activity
-before choosing.
+before choosing, and treat issues outside the queue as intake awaiting
+maintainer triage.
 
 #### Publishing For Review
 

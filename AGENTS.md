@@ -37,6 +37,10 @@ decisions, parent/sub-issues, dependency state, labels, and milestone context;
 keep the issue updated with relevant findings, follow-ups, and completion
 status; and keep roadmap changes under `docs/planning/`.
 
+When choosing the next issue, select only a `type: task` issue in the active
+milestone that is attached to its tracker and has no open blockers. Treat any
+issue missing that metadata as intake awaiting maintainer triage.
+
 Treat a request to work on or implement an issue as authorization to complete
 the normal pre-merge workflow: start from current `origin/main`, create or reuse
 an isolated issue branch and worktree, implement and verify the change, commit

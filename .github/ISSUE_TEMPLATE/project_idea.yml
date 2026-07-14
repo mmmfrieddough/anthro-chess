@@ -1,0 +1,25 @@
+name: Project idea
+description: Suggest a feature or improvement for Anthro Chess.
+title: ""
+labels: []
+assignees: []
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Problem or use case
+      description: What need would this address, and who would benefit?
+    validations:
+      required: true
+  - type: textarea
+    id: direction
+    attributes:
+      label: Suggested direction
+      description: Describe the outcome you would like without assuming a specific implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add relevant examples, alternatives, or links if useful.
