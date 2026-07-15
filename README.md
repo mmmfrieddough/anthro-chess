@@ -98,4 +98,7 @@ Agents working in this repository should read [AGENTS.md](AGENTS.md) first.
 
 ## License
 
-Anthro Chess is available under the [MIT License](LICENSE).
+Copyright (C) 2026 Patrizio Spagnardi III.
+
+Anthro Chess is free software available under the
+[GNU General Public License v3.0 or later](LICENSE).

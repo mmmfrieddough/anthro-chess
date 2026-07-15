@@ -44,5 +44,6 @@ The first codec is deliberately standard-chess-only. A future variant or
 Chess960 codec must have a different versioned identity rather than silently
 changing this vocabulary.
 
-`python-chess` is distributed under GPL-3.0-or-later. Packaging and
-redistribution must continue to preserve the dependency's license obligations.
+`python-chess` is distributed under GPL-3.0-or-later. Anthro Chess uses the
+same GPL-3.0-or-later terms so its source distribution and package metadata
+state the combined program's licensing clearly.
