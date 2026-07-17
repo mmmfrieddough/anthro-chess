@@ -120,7 +120,8 @@ only when all of the following are true in live GitHub metadata:
 - it has the `type: task` label;
 - it belongs to the active milestone;
 - it is attached as a sub-issue of that milestone's tracker; and
-- it has no open blockers.
+- it has no open blockers; and
+- it is not already claimed by another active implementation session.
 
 The active milestone is the current roadmap stage represented by the live
 milestone and tracker state. Among eligible issues, prefer work that matches the
@@ -249,6 +250,43 @@ full clones are not normally needed.
 Before editing, inspect the worktree for existing changes. Preserve unrelated
 user changes and do not stage them into the issue commit.
 
+#### Claiming Active Work
+
+After the isolated issue worktree is ready and before substantive editing,
+claim the issue in GitHub so another agent does not select the same task. Assign
+the issue to the configured GitHub identity and add one concise comment that
+identifies the agent and its stable session identifier:
+
+```text
+Claimed for implementation by <agent-name>.
+
+Session: `<session-id>`
+```
+
+Use the actual agent or execution-surface name and the stable session identifier
+provided by its environment. GitHub already records the comment author and
+timestamp.
+
+Do not include a hostname, absolute worktree path, local username or directory
+layout, or a restatement of the issue scope in the public claim comment. Do not
+include the local branch unless it communicates something that cannot be
+recovered from the eventual pull request.
+
+An assignment with a session claim, or an active pull request linked to the
+issue, means the issue is already in progress and must be excluded when another
+agent chooses work. Do not silently take over a claim that might be stale.
+
+The claim comment is the only routine progress comment needed before
+publication. Add further issue comments only for material findings, blockers,
+coordination, scope changes, or handoff information that should remain visible
+independently of the pull request.
+
+If work is abandoned before a pull request is opened, remove the assignee and
+add a brief comment that the claim was released. Include handoff information
+only when unfinished work or a material finding remains useful. Once a linked
+pull request exists, it becomes the primary status signal; leave the issue
+assigned and let the merge close it normally.
+
 #### Implementation And Verification
 
 During implementation, the agent should:
@@ -281,8 +319,9 @@ does not point at a stale check name.
 
 If the user asks an agent to choose the next issue, the agent should prefer
 eligible work from the active milestone's implementation queue. Check tracker
-issues, sub-issue progress, dependencies, labels, and recent issue activity
-before choosing, and treat issues outside the queue as intake awaiting
+issues, sub-issue progress, dependencies, labels, assignments, claim comments,
+linked pull requests, and recent issue activity before choosing. Treat claimed
+issues as active work and issues outside the queue as intake awaiting
 maintainer triage.
 
 #### Publishing For Review
