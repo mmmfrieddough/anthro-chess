@@ -129,9 +129,9 @@ directly.
 ## Native Interfaces
 
 The native `anthro` CLI currently provides the package's lightweight command
-surface and installation smoke check. Its handlers should remain thin and call
-importable package APIs as data, training, evaluation, play, and runtime
-capabilities are implemented.
+surface, installation smoke check, and PGN sample-data preparation route. Its
+handlers remain thin and call importable package APIs as training, evaluation,
+play, and runtime capabilities are implemented.
 
 A future native web UI may talk directly to the Anthro runtime API. Native
 interfaces can expose richer controls, show current runtime state, and

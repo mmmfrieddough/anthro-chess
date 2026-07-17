@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from anthro_chess import __version__
@@ -22,5 +25,26 @@ def test_help_only_advertises_implemented_commands(
     assert exit_info.value.code == 0
     help_text = capsys.readouterr().out
     assert "smoke" in help_text
-    for planned_command in ("data", "train", "evaluate", "play", "uci"):
-        assert planned_command not in help_text
+    assert "data" in help_text
+    for planned_command in ("train", "evaluate", "play", "uci"):
+        assert f"  {planned_command} " not in help_text
+
+
+def test_data_prepare_command_routes_to_importable_pipeline(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    config = repository_root / "configs/data/lichess-sample.toml"
+    output = tmp_path / "artifacts"
+
+    assert (
+        main(["data", "prepare", str(sample), str(output), "--config", str(config)])
+        == 0
+    )
+
+    assert pq.read_table(output / "normalized/games.parquet").num_rows == 1
+    command_output = capsys.readouterr().out
+    assert "Prepared 1 game(s); rejected 0." in command_output
+    assert "manifests/manifest.json" in command_output

@@ -49,6 +49,20 @@ Training shards may be generated from normalized data when performance requires
 them. They can be less self-describing than normalized shards as long as their
 manifests fully specify schema versions, offsets, checksums, and source inputs.
 
+### Current Sample Path
+
+The current implementation provides an importable PGN preparation API and the
+thin `anthro data prepare` command. It validates standard games through
+`python-chess`, converts moves with the shared action codec, writes one
+source-agnostic Parquet row per game, and records source, input, output,
+configuration, action-vocabulary, filtering, and deterministic split
+provenance in a separate manifest.
+
+The checked-in Lichess sample and its source selection provide an offline
+reproduction path. Exact schema fields, versions, defaults, and filters are
+owned by the data package and checked-in configuration rather than duplicated
+here.
+
 ## Primary Source
 
 The main initial source should be the Lichess open database:

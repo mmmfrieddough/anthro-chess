@@ -1,0 +1,17 @@
+[source]
+id = "lichess"
+version = "standard-export-sample-2017-04"
+url = "https://database.lichess.org/"
+license = "CC0-1.0"
+rating_namespace = "lichess_bullet"
+rating_system = "glicko2"
+ratings_are_normalized = true
+
+[split]
+seed = "anthro-lichess-sample-v1"
+validation_fraction = 0.2
+
+[filters]
+minimum_plies = 1
+require_rated = true
+exclude_bots = true

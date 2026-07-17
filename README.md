@@ -11,10 +11,10 @@ independent sampling temperature, and optional soft preferences.
 
 The repository currently provides an installable Python package, a lightweight
 `anthro` command, strict configuration foundations, `python-chess` integration,
-stable model action ids, automated tests, and a locked development environment.
-The implemented command is an installation smoke check; data ingestion,
-training, evaluation, playable runtime, UCI, model
-checkpoints, and packaged releases remain planned work.
+stable model action ids, a reproducible PGN sample-data path, automated tests,
+and a locked development environment. Broader data ingestion, training,
+evaluation, playable runtime, UCI, model checkpoints, and packaged releases
+remain planned work.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -51,10 +51,27 @@ The current command surface is intentionally small:
 uv run anthro --help
 uv run anthro --version
 uv run anthro smoke
+uv run anthro data prepare --help
 ```
 
-Only implemented commands appear in `--help`. Data, training, evaluation,
-play, and UCI commands will be added as those capabilities become real.
+Only implemented commands appear in `--help`. Training, evaluation, play, and
+UCI commands will be added as those capabilities become real.
+
+## Sample Data Path
+
+The checked-in Lichess sample can be normalized without network access:
+
+```console
+uv run anthro data prepare \
+  samples/lichess/standard-export-sample.pgn \
+  artifacts/lichess-sample \
+  --config configs/data/lichess-sample.toml
+```
+
+This writes compact Parquet game records under `normalized/` and a separate
+provenance manifest under `manifests/`. The command requires the data
+dependencies, which the locked development environment includes; installed
+packages can add them with the `data` extra.
 
 ## Development
 
