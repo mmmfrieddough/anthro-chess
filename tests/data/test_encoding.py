@@ -9,13 +9,11 @@ from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EncodingError,
     GameEncodingInput,
-    OptionalInteger,
     encode_game,
     encoding_identity,
 )
 
-PRESENT_60_SECONDS = OptionalInteger(60_000, "present")
-UNAVAILABLE = OptionalInteger(None, "unavailable")
+PRESENT_60_SECONDS = 60_000
 
 
 def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
@@ -50,49 +48,45 @@ def test_aligns_ratings_color_and_pre_move_clocks_without_fake_values() -> None:
         ruleset="standard",
         initial_position=chess.STARTING_FEN,
         action_ids=_action_ids(("e2e4", "e7e5", "g1f3")),
-        white_normalized_rating=OptionalInteger(1350, "present"),
-        black_normalized_rating=OptionalInteger(None, "rejected"),
+        white_normalized_rating=1350,
+        black_normalized_rating=None,
         time_initial_ms=PRESENT_60_SECONDS,
-        time_increment_ms=OptionalInteger(0, "present"),
-        clock_remaining_ms=(
-            OptionalInteger(58_000, "present"),
-            OptionalInteger(None, "rejected"),
-            OptionalInteger(55_000, "present"),
-        ),
+        time_increment_ms=0,
+        clock_remaining_ms=(58_000, None, 55_000),
     )
 
     first, second, third = encode_game(game)
 
-    assert first.player_rating == OptionalInteger(1350, "present")
-    assert first.opponent_rating == OptionalInteger(None, "rejected")
+    assert first.player_rating == 1350
+    assert first.opponent_rating is None
     assert first.player_clock_ms == PRESENT_60_SECONDS
-    assert first.target_clock_after_move_ms == OptionalInteger(58_000, "present")
+    assert first.target_clock_after_move_ms == 58_000
 
-    assert second.player_rating == OptionalInteger(None, "rejected")
-    assert second.opponent_rating == OptionalInteger(1350, "present")
+    assert second.player_rating is None
+    assert second.opponent_rating == 1350
     assert second.player_clock_ms == PRESENT_60_SECONDS
-    assert second.opponent_clock_ms == OptionalInteger(58_000, "present")
+    assert second.opponent_clock_ms == 58_000
 
-    assert third.player_clock_ms == OptionalInteger(58_000, "present")
-    assert third.opponent_clock_ms == OptionalInteger(None, "rejected")
-    assert third.time_increment_ms == OptionalInteger(0, "present")
+    assert third.player_clock_ms == 58_000
+    assert third.opponent_clock_ms is None
+    assert third.time_increment_ms == 0
 
 
 def test_untimed_game_keeps_timing_explicitly_unavailable() -> None:
     plies = encode_game(
         _game(
             ("e2e4", "e7e5"),
-            time_initial=UNAVAILABLE,
-            clocks=(UNAVAILABLE, UNAVAILABLE),
+            time_initial=None,
+            clocks=(None, None),
         )
     )
 
     for ply in plies:
-        assert ply.time_initial_ms == UNAVAILABLE
-        assert ply.time_increment_ms == UNAVAILABLE
-        assert ply.player_clock_ms == UNAVAILABLE
-        assert ply.opponent_clock_ms == UNAVAILABLE
-        assert ply.target_clock_after_move_ms == UNAVAILABLE
+        assert ply.time_initial_ms is None
+        assert ply.time_increment_ms is None
+        assert ply.player_clock_ms is None
+        assert ply.opponent_clock_ms is None
+        assert ply.target_clock_after_move_ms is None
 
 
 def test_identity_and_records_are_stable_and_json_serializable() -> None:
@@ -103,7 +97,7 @@ def test_identity_and_records_are_stable_and_json_serializable() -> None:
         "name": "anthro-per-ply",
         "version": 1,
         "schema_sha256": (
-            "3a0f9de9dde89886fb6b394ddaea8e82a98b53990935433139428b41cedd1d08"
+            "9162c9bfa19ed03a69b287fb9cbd2329f7d3faceb13315040d1841285331a40a"
         ),
         "board_square_count": 64,
         "action_vocabulary": {
@@ -118,37 +112,16 @@ def test_identity_and_records_are_stable_and_json_serializable() -> None:
     assert json.loads(json.dumps(records)) == records
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        OptionalInteger(None, "unavailable"),
-        OptionalInteger(None, "rejected"),
-        OptionalInteger(0, "present"),
-    ],
-)
-def test_optional_integer_accepts_explicit_valid_states(value: OptionalInteger) -> None:
-    assert value.as_record()["status"] in {"present", "unavailable", "rejected"}
-
-
-@pytest.mark.parametrize(
-    ("value", "status"),
-    [
-        (None, "present"),
-        (-1, "present"),
-        (0, "unavailable"),
-        (0, "rejected"),
-    ],
-)
-def test_optional_integer_rejects_fake_or_misaligned_values(
-    value: int | None, status: str
-) -> None:
-    with pytest.raises(ValueError):
-        OptionalInteger(value, status)  # type: ignore[arg-type]
-
-
-def test_optional_integer_rejects_an_unknown_status() -> None:
-    with pytest.raises(ValueError, match="unknown field status"):
-        OptionalInteger(None, "unknown")  # type: ignore[arg-type]
+def test_rejects_invalid_optional_values() -> None:
+    game = _game(("e2e4",))
+    with pytest.raises(ValueError, match="white_normalized_rating must be"):
+        replace(game, white_normalized_rating=-1)
+    with pytest.raises(ValueError, match="black_normalized_rating must be"):
+        replace(game, black_normalized_rating=True)
+    with pytest.raises(ValueError, match="time_initial_ms must be"):
+        replace(game, time_initial_ms=-1)
+    with pytest.raises(ValueError, match="time_increment_ms must be"):
+        replace(game, time_increment_ms=True)
 
 
 def test_rejects_illegal_or_misaligned_game_sequences() -> None:
@@ -162,10 +135,10 @@ def test_rejects_illegal_or_misaligned_game_sequences() -> None:
             ruleset="standard",
             initial_position=chess.STARTING_FEN,
             action_ids=_action_ids(("e2e4",)),
-            white_normalized_rating=UNAVAILABLE,
-            black_normalized_rating=UNAVAILABLE,
-            time_initial_ms=UNAVAILABLE,
-            time_increment_ms=UNAVAILABLE,
+            white_normalized_rating=None,
+            black_normalized_rating=None,
+            time_initial_ms=None,
+            time_increment_ms=None,
             clock_remaining_ms=(),
         )
 
@@ -190,27 +163,29 @@ def test_game_input_rejects_unsupported_or_empty_sequences() -> None:
         replace(_game(("e2e4",)), action_ids=(), clock_remaining_ms=())
 
 
+def test_game_input_rejects_invalid_clock_values() -> None:
+    with pytest.raises(ValueError, match=r"clock_remaining_ms\[0\] must be"):
+        replace(_game(("e2e4",)), clock_remaining_ms=(-1,))
+
+
 def _game(
     moves: tuple[str, ...],
     *,
-    time_initial: OptionalInteger = PRESENT_60_SECONDS,
-    clocks: tuple[OptionalInteger, ...] | None = None,
+    time_initial: int | None = PRESENT_60_SECONDS,
+    clocks: tuple[int | None, ...] | None = None,
 ) -> GameEncodingInput:
     return GameEncodingInput(
         game_id=7,
         ruleset="standard",
         initial_position=chess.STARTING_FEN,
         action_ids=_action_ids(moves),
-        white_normalized_rating=UNAVAILABLE,
-        black_normalized_rating=UNAVAILABLE,
+        white_normalized_rating=None,
+        black_normalized_rating=None,
         time_initial_ms=time_initial,
-        time_increment_ms=(
-            OptionalInteger(1_000, "present")
-            if time_initial.status == "present"
-            else UNAVAILABLE
+        time_increment_ms=1_000 if time_initial is not None else None,
+        clock_remaining_ms=(
+            clocks if clocks is not None else tuple(59_000 for _ in moves)
         ),
-        clock_remaining_ms=clocks
-        or tuple(OptionalInteger(59_000, "present") for _ in moves),
     )
 
 

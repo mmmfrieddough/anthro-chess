@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Literal
 
 import chess
 
@@ -18,9 +17,6 @@ from anthro_chess.chess import (
 ENCODING_NAME = "anthro-per-ply"
 ENCODING_VERSION = 1
 BOARD_SQUARE_COUNT = 64
-
-FieldStatus = Literal["present", "unavailable", "rejected"]
-_VALID_STATUSES = frozenset[FieldStatus]({"present", "unavailable", "rejected"})
 
 _ENCODING_SCHEMA = {
     "identity": {
@@ -47,10 +43,7 @@ _ENCODING_SCHEMA = {
         "legal_action_ids": "sorted action ids before the target move",
     },
     "context": {
-        "optional_integer": (
-            "object with nonnegative integer value when status is present; "
-            "null value when status is unavailable or rejected"
-        ),
+        "nullable_integer": "nonnegative integer when present, otherwise null",
         "player_rating": "optional normalized rating for side to move",
         "opponent_rating": "optional normalized rating for opposing side",
         "time_initial_ms": "optional static time control",
@@ -72,28 +65,6 @@ class EncodingError(ValueError):
 
 
 @dataclass(frozen=True)
-class OptionalInteger:
-    """An optional integer whose missingness is explicit."""
-
-    value: int | None
-    status: FieldStatus
-
-    def __post_init__(self) -> None:
-        if self.status not in _VALID_STATUSES:
-            raise ValueError(f"unknown field status: {self.status}")
-        if self.status == "present":
-            if type(self.value) is not int or self.value < 0:
-                raise ValueError("present optional integers must be nonnegative")
-        elif self.value is not None:
-            raise ValueError("unavailable or rejected optional integers need no value")
-
-    def as_record(self) -> dict[str, object]:
-        """Return a JSON-serializable value and missingness record."""
-
-        return {"value": self.value, "status": self.status}
-
-
-@dataclass(frozen=True)
 class GameEncodingInput:
     """Source-agnostic normalized game fields needed for per-ply encoding."""
 
@@ -101,11 +72,11 @@ class GameEncodingInput:
     ruleset: str
     initial_position: str
     action_ids: tuple[int, ...]
-    white_normalized_rating: OptionalInteger
-    black_normalized_rating: OptionalInteger
-    time_initial_ms: OptionalInteger
-    time_increment_ms: OptionalInteger
-    clock_remaining_ms: tuple[OptionalInteger, ...]
+    white_normalized_rating: int | None
+    black_normalized_rating: int | None
+    time_initial_ms: int | None
+    time_increment_ms: int | None
+    clock_remaining_ms: tuple[int | None, ...]
 
     def __post_init__(self) -> None:
         if type(self.game_id) is not int or self.game_id < 0:
@@ -116,6 +87,18 @@ class GameEncodingInput:
             raise ValueError("a game encoding input needs at least one action")
         if len(self.clock_remaining_ms) != len(self.action_ids):
             raise ValueError("clock observations must align one-to-one with actions")
+        optional_values = {
+            "white_normalized_rating": self.white_normalized_rating,
+            "black_normalized_rating": self.black_normalized_rating,
+            "time_initial_ms": self.time_initial_ms,
+            "time_increment_ms": self.time_increment_ms,
+        }
+        for name, value in optional_values.items():
+            _validate_optional_nonnegative_integer(name, value)
+        for ply_index, value in enumerate(self.clock_remaining_ms):
+            _validate_optional_nonnegative_integer(
+                f"clock_remaining_ms[{ply_index}]", value
+            )
 
 
 @dataclass(frozen=True)
@@ -152,13 +135,13 @@ class PlyEncoding:
     previous_action_id: int | None
     target_action_id: int
     legal_action_ids: tuple[int, ...]
-    player_rating: OptionalInteger
-    opponent_rating: OptionalInteger
-    time_initial_ms: OptionalInteger
-    time_increment_ms: OptionalInteger
-    player_clock_ms: OptionalInteger
-    opponent_clock_ms: OptionalInteger
-    target_clock_after_move_ms: OptionalInteger
+    player_rating: int | None
+    opponent_rating: int | None
+    time_initial_ms: int | None
+    time_increment_ms: int | None
+    player_clock_ms: int | None
+    opponent_clock_ms: int | None
+    target_clock_after_move_ms: int | None
 
     def as_record(self) -> dict[str, object]:
         """Return the stable JSON-serializable representation."""
@@ -170,13 +153,13 @@ class PlyEncoding:
             "previous_action_id": self.previous_action_id,
             "target_action_id": self.target_action_id,
             "legal_action_ids": list(self.legal_action_ids),
-            "player_rating": self.player_rating.as_record(),
-            "opponent_rating": self.opponent_rating.as_record(),
-            "time_initial_ms": self.time_initial_ms.as_record(),
-            "time_increment_ms": self.time_increment_ms.as_record(),
-            "player_clock_ms": self.player_clock_ms.as_record(),
-            "opponent_clock_ms": self.opponent_clock_ms.as_record(),
-            "target_clock_after_move_ms": (self.target_clock_after_move_ms.as_record()),
+            "player_rating": self.player_rating,
+            "opponent_rating": self.opponent_rating,
+            "time_initial_ms": self.time_initial_ms,
+            "time_increment_ms": self.time_increment_ms,
+            "player_clock_ms": self.player_clock_ms,
+            "opponent_clock_ms": self.opponent_clock_ms,
+            "target_clock_after_move_ms": self.target_clock_after_move_ms,
         }
 
 
@@ -277,7 +260,12 @@ def _piece_id(piece: chess.Piece | None) -> int:
 
 def _ratings_for_color(
     game: GameEncodingInput, color: chess.Color
-) -> tuple[OptionalInteger, OptionalInteger]:
+) -> tuple[int | None, int | None]:
     if color == chess.WHITE:
         return game.white_normalized_rating, game.black_normalized_rating
     return game.black_normalized_rating, game.white_normalized_rating
+
+
+def _validate_optional_nonnegative_integer(name: str, value: int | None) -> None:
+    if value is not None and (type(value) is not int or value < 0):
+        raise ValueError(f"{name} must be a nonnegative integer or None")
