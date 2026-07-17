@@ -1,4 +1,6 @@
-"""Strict configuration for normalized PGN preparation."""
+"""Strict configuration for data preparation and sequence loading."""
+
+from typing import Literal
 
 from pydantic import Field, StrictBool
 
@@ -38,3 +40,14 @@ class PrepareConfig(ConfigModel):
     source: SourceConfig
     split: SplitConfig = SplitConfig()
     filters: FilterConfig = FilterConfig()
+
+
+class SequenceLoaderConfig(ConfigModel):
+    """Deterministic batching choices for normalized game sequences."""
+
+    split: Literal["train", "validation"] = "train"
+    batch_size: int = Field(default=8, ge=1)
+    chunk_length: int | None = Field(default=None, ge=1)
+    shuffle: StrictBool = True
+    seed: str = Field(default="anthro-sequence-loader-v1", min_length=1)
+    drop_last: StrictBool = False

@@ -49,8 +49,10 @@ The initial typed per-ply encoding contract implements this boundary for
 standard chess and exposes a stable serialized identity for downstream
 compatibility checks. It preserves exact pre-move state, prior and target
 actions, legal-action alignment, rating context, and timing missingness without
-making PGN or UCI text model inputs. Tensor packing and batching remain owned by
-the dataloading layer.
+making PGN or UCI text model inputs. The dataloading layer packs these values
+into framework-neutral numeric sequence batches so model code can make the
+final tensor/device conversion without reopening normalized data or
+reconstructing alignment.
 
 Optional preference labels should be allowed to be multi-label. A single ply may
 belong to several useful concepts, such as an opening family, a pawn structure,
@@ -75,6 +77,12 @@ Training should use full game sequences, or fixed-length chunks of game
 sequences, whenever practical. The transformer should receive one timestep per
 ply and use a causal attention mask so every ply prediction can be trained in a
 single parallel forward pass while still preventing access to future moves.
+
+The initial loader supports full games and contiguous chunks, pads only within
+the current batch, and emits separate padding, action-loss, nullable-context,
+and causal-attention masks. Deterministic ordering is derived from an explicit
+seed and epoch. A serializable dataset identity plus next-example cursor permits
+exact continuation at a batch boundary without preserving opaque worker state.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input

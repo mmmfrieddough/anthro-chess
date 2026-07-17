@@ -12,9 +12,10 @@ independent sampling temperature, and optional soft preferences.
 The repository currently provides an installable Python package, a lightweight
 `anthro` command, strict configuration foundations, `python-chess` integration,
 stable model action ids, a reproducible PGN sample-data path, automated tests,
-versioned per-ply model-facing encodings, and a locked development environment.
-Broader data ingestion, training, evaluation, playable runtime, UCI, model
-checkpoints, and packaged releases remain planned work.
+versioned per-ply model-facing encodings, deterministic sequence batching, and
+a locked development environment. Broader data ingestion, model training,
+evaluation, playable runtime, UCI, model checkpoints, and packaged releases
+remain planned work.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 

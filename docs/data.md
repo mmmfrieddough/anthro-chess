@@ -333,6 +333,13 @@ compatibility source of truth for future manifests, run records, and
 checkpoints; exact field names and token mappings live with the implementation
 rather than being duplicated here.
 
+The initial sequence loader reads those normalized games into either full-game
+sequences or contiguous fixed-length chunks. It packs framework-neutral numeric
+batches, keeps nullable context behind explicit presence masks, reconstructs
+legal actions per ply, and pads variable lengths behind attention and loss
+masks. Its deterministic epoch order and explicit next-example cursor are the
+restart boundary for training checkpoints.
+
 ## Approximate Scale
 
 The project should reason about data in plies as well as games. A rough
