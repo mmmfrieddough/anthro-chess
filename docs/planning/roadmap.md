@@ -45,18 +45,23 @@ Detailed setup tasks should move into GitHub issues once they are actionable.
 
 Prove that the project can train a model correctly from real chess data.
 
-This stage should include a small reproducible data path, deterministic
-board-state reconstruction, model-facing encodings, dataloading, a basic model,
-move-prediction loss, training configuration, validation metrics, and practical
-checkpoint/resume support.
+This stage should include small checked-in fixtures, a bounded reproducible
+many-game Lichess corpus, deterministic board-state reconstruction,
+model-facing encodings, dataloading, a basic model, move-prediction loss,
+training configuration, validation metrics, and practical checkpoint/resume
+support.
 
 Start with the simplest training target that proves the loop works. Timing data
 should be preserved in the data pipeline where available, but the first
 training loop may leave the timing head disabled if that keeps the first proof
 cleaner.
 
-The output of this milestone does not need to be a good chess opponent. It needs
-to make the data, model, loss, validation, and resume machinery real.
+The output of this milestone does not need to be a strong chess opponent or
+provide the final playable interface. It does need to demonstrate learned move
+structure beyond randomness made legal by masking, including held-out
+performance above appropriate simple move-selection baselines. That checkpoint
+should be credible input to the playable proof rather than only evidence that
+the training command runs.
 
 ### 2. Playable Proof
 
