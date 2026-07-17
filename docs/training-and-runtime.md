@@ -45,6 +45,13 @@ For each game:
 Board generation should use exact chess rules. The neural model should not need
 to infer the current board from raw notation.
 
+The initial typed per-ply encoding contract implements this boundary for
+standard chess and exposes a stable serialized identity for downstream
+compatibility checks. It preserves exact pre-move state, prior and target
+actions, legal-action alignment, rating context, and timing missingness without
+making PGN or UCI text model inputs. Tensor packing and batching remain owned by
+the dataloading layer.
+
 Optional preference labels should be allowed to be multi-label. A single ply may
 belong to several useful concepts, such as an opening family, a pawn structure,
 an attacking pattern, or a material-sacrifice pattern. These labels should be
