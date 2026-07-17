@@ -1,58 +1,55 @@
+import chess
 import pytest
 
 from anthro_chess.chess import (
-    RESIGN,
-    STANDARD_ACTION_CODEC,
-    InvalidActionError,
-    Move,
-    Position,
-    Promotion,
+    ACTION_VOCABULARY_SIZE,
+    MOVE_ACTION_COUNT,
+    RESIGNATION_ACTION_ID,
+    action_vocabulary_identity,
+    decode_move,
+    encode_move,
+    legal_action_ids,
 )
 
 
 @pytest.mark.parametrize(
     "move",
     [
-        Move.from_uci("e2e4"),
-        Move.from_uci("e1g1"),
-        Move.from_uci("e5d6"),
-        Move(48, 56, Promotion.QUEEN),
-        Move(48, 57, Promotion.KNIGHT),
+        chess.Move.from_uci("e2e4"),
+        chess.Move.from_uci("e1g1"),
+        chess.Move.from_uci("e5d6"),
+        chess.Move.from_uci("a7a8q"),
+        chess.Move.from_uci("a7b8n"),
     ],
 )
-def test_move_actions_round_trip(move: Move) -> None:
-    action_id = STANDARD_ACTION_CODEC.encode(move)
+def test_move_actions_round_trip(move: chess.Move) -> None:
+    action_id = encode_move(move)
 
-    assert STANDARD_ACTION_CODEC.decode(action_id) == move
+    assert decode_move(action_id) == move
     assert 0 <= action_id < 65536
 
 
-def test_resignation_is_explicit_and_not_a_board_move() -> None:
-    assert STANDARD_ACTION_CODEC.decode(STANDARD_ACTION_CODEC.resignation_id) is RESIGN
-    assert (
-        STANDARD_ACTION_CODEC.resignation_id
-        >= STANDARD_ACTION_CODEC.move_vocabulary_size
-    )
+def test_resignation_has_an_explicit_non_move_id() -> None:
+    assert RESIGNATION_ACTION_ID == MOVE_ACTION_COUNT
+    assert ACTION_VOCABULARY_SIZE == MOVE_ACTION_COUNT + 1
+    with pytest.raises(ValueError):
+        decode_move(RESIGNATION_ACTION_ID)
 
 
-def test_legal_ids_share_the_same_codec_and_gate_resignation() -> None:
-    position = Position.initial()
-    move_ids = STANDARD_ACTION_CODEC.legal_action_ids(position)
-    action_ids = STANDARD_ACTION_CODEC.legal_action_ids(
-        position, include_resignation=True
-    )
+def test_legal_ids_come_directly_from_python_chess() -> None:
+    board = chess.Board()
+    move_ids = legal_action_ids(board)
 
     assert len(move_ids) == 20
-    assert tuple(STANDARD_ACTION_CODEC.decode(value) for value in move_ids) == tuple(
-        sorted(
-            position.legal_moves, key=lambda move: STANDARD_ACTION_CODEC.encode(move)
-        )
+    assert {decode_move(action_id) for action_id in move_ids} == set(board.legal_moves)
+    assert legal_action_ids(board, include_resignation=True) == (
+        *move_ids,
+        RESIGNATION_ACTION_ID,
     )
-    assert action_ids == (*move_ids, STANDARD_ACTION_CODEC.resignation_id)
 
 
 def test_vocabulary_identity_is_stable_and_serializable() -> None:
-    assert STANDARD_ACTION_CODEC.identity.as_record() == {
+    assert action_vocabulary_identity() == {
         "name": "anthro-standard-actions",
         "version": 1,
         "size": 1969,
@@ -60,7 +57,12 @@ def test_vocabulary_identity_is_stable_and_serializable() -> None:
     }
 
 
-@pytest.mark.parametrize("action_id", [-1, True, 65536])
-def test_rejects_invalid_action_ids(action_id: int) -> None:
-    with pytest.raises(InvalidActionError):
-        STANDARD_ACTION_CODEC.decode(action_id)
+@pytest.mark.parametrize("action_id", [-1, True, RESIGNATION_ACTION_ID, 65536])
+def test_rejects_invalid_move_action_ids(action_id: int) -> None:
+    with pytest.raises(ValueError):
+        decode_move(action_id)
+
+
+def test_rejects_move_outside_the_standard_vocabulary() -> None:
+    with pytest.raises(ValueError):
+        encode_move(chess.Move.null())

@@ -10,10 +10,10 @@ independent sampling temperature, and optional soft preferences.
 ## Project Status
 
 The repository currently provides an installable Python package, a lightweight
-`anthro` command, strict configuration foundations, deterministic standard
-chess reconstruction and action encoding, automated tests, and a locked
-development environment. The implemented command is an installation smoke
-check; data ingestion, training, evaluation, playable runtime, UCI, model
+`anthro` command, strict configuration foundations, `python-chess` integration,
+stable model action ids, automated tests, and a locked development environment.
+The implemented command is an installation smoke check; data ingestion,
+training, evaluation, playable runtime, UCI, model
 checkpoints, and packaged releases remain planned work.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.

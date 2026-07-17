@@ -10,9 +10,9 @@ Accepted for the initial standard-chess implementation.
 
 Board reconstruction, legal move generation, and special-rule bookkeeping are
 correctness-critical infrastructure shared by data preparation, training,
-evaluation, and runtime. Reimplementing those rules would create a second chess
-engine to maintain. At the same time, third-party objects and notation formats
-should not become the project's model-facing compatibility contract.
+evaluation, and runtime. Reimplementing those rules, or wrapping the library's
+domain model in parallel Anthro-owned types, would add code without improving
+the model-facing contract.
 
 The initial move model also needs one fixed action vocabulary. That vocabulary
 must represent every standard board move, promotions, and resignation while
@@ -20,25 +20,31 @@ remaining stable across data manifests, checkpoints, evaluation, and runtime.
 
 ## Decision
 
-Use `python-chess` for standard-chess rules and notation parsing. Keep it behind
-the typed adapters in `anthro_chess.chess`, which own immutable positions,
-moves, replay errors, and the public boundary used by the rest of the project.
+Use `python-chess` directly for standard-chess boards, moves, rule bookkeeping,
+notation parsing, and errors. Training, evaluation, data, and runtime code may
+work with `chess.Board` and `chess.Move` rather than translating them into
+parallel project types.
 
-Use one generated, versioned standard-chess action vocabulary. Board moves are
-identified by their from-square, to-square, and optional promotion. Its ordered
-tokens include every geometrically possible queen-like or knight-like square
-pair, all standard promotion variants, and a distinct resignation action.
-Castling uses the standard king move. The exact size and digest are exposed by
-the codec identity and protected by tests.
+Anthro Chess owns one generated, versioned standard-chess action vocabulary.
+Board moves are identified by their `python-chess` move value: from-square,
+to-square, and optional promotion. The ordered vocabulary includes every
+geometrically possible queen-like or knight-like square pair, all standard
+promotion variants, and a distinct resignation id. Castling uses the standard
+king move. The exact size and digest are exposed by the codec identity and
+protected by tests.
 
-The action ids, not UCI strings, are the model-facing and normalized-data
-contract. Coordinate and SAN parsing remain boundary and debugging tools.
+The action ids, not Python objects or UCI strings, are the persisted
+model-facing and normalized-data contract. UCI strings are used only to define
+and hash the deterministic vocabulary order; coordinate and SAN parsing remain
+interface and debugging tools.
 
 ## Consequences
 
-Anthro-owned code stays focused on stable adapters and compatibility rather
-than chess-rule implementation. Consumers share the same move validation,
-legal action ids, and vocabulary identity.
+Anthro-owned chess code stays limited to the compatibility boundary the model
+actually needs: move/action-id conversion, legal action ids, the separate
+resignation id, and vocabulary identity. Consumers use the mature rules
+library directly instead of maintaining duplicate representations and
+translations.
 
 The first codec is deliberately standard-chess-only. A future variant or
 Chess960 codec must have a different versioned identity rather than silently
