@@ -141,6 +141,58 @@ It should not be part of the initial core loss.
 Optional preference-control mechanisms should be learned or derived from data,
 not implemented as hardcoded post-processing rules over move logits.
 
+## Training Correctness Protocol
+
+Neural training can continue without an obvious failure even when examples,
+targets, masks, dependencies, or optimization are wired incorrectly. Establish
+the first training path in stages so each layer has a trusted result before
+more complexity is introduced.
+
+The initial model and training runner should support one small deterministic
+correctness path through the same package APIs used for ordinary training. This
+is a debug selection of the real pipeline, not a parallel model or training
+implementation.
+
+Use this progression when establishing the first training loop:
+
+1. Decode and inspect a fixed batch at the model boundary. Confirm that boards,
+   target actions, previous actions, legal actions, nullable context, padding,
+   and loss masks describe the intended positions.
+2. Use a fixed seed and the simplest supported optimization setup. Keep timing,
+   auxiliary losses, regularization, dropout, learning-rate schedules,
+   mixed-precision behavior, and concurrent loading disabled unless the item is
+   the subject of the check.
+3. Check structural invariants before relying on optimization. Initial losses
+   should be finite and plausible for the output space, padding should
+   contribute no loss, and perturbing future timesteps should not affect
+   earlier predictions.
+4. Overfit a fixed tiny sample. Begin with single-timestep examples when useful
+   for isolation, then repeat with short causal sequences so the attention and
+   sequence-loss path is exercised.
+5. Evaluate on frozen held-out examples against uniform-over-legal and other
+   appropriate simple move-selection baselines. Memorizing a tiny sample is
+   necessary evidence that the optimization path works, but it is not evidence
+   that the inputs contain transferable chess signal.
+6. Introduce additional context or training features in coherent steps. Compare
+   each candidate with the last trusted configuration. Confirm its intended
+   effect, and retain complexity only when its behavior is understood and its
+   product value or measured benefit justifies its cost.
+
+Exact board reconstruction, the shared action codec, legal-action alignment,
+and explicit masks remain enabled throughout this progression. They are
+correctness boundaries, not optional model features.
+
+Record enough information to reproduce each result, including the resolved
+configuration, seed, data and encoding identities, and relevant metrics. Exact
+debug values belong in code, tests, or checked-in configuration rather than in
+this document.
+
+The complete progression is a gate for the first training implementation and
+for later changes to foundational data, encoding, alignment, model, or loss
+contracts. Routine model changes should run the relevant deterministic checks
+and compare frozen validation metrics. Changes outside the training path do not
+need to repeat the full progression.
+
 ## Checkpointing And Resume
 
 Training should be designed for practical fine-grained resume. Long runs should

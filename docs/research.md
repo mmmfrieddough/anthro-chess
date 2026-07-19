@@ -6,6 +6,89 @@ reference list, not a roadmap and not a list of product requirements.
 Each entry notes what part of Anthro Chess it applies to and how it differs
 from this project.
 
+## Machine-Learning Development Practice
+
+### A Recipe For Training Neural Networks
+
+Link: <https://karpathy.github.io/2019/04/25/recipe/>
+
+Key information:
+
+- Explains why neural-network failures often reduce quality without causing an
+  obvious runtime error.
+- Recommends inspecting the exact data presented to the model, simplifying the
+  initial setup, overfitting a small sample, and adding complexity one step at
+  a time.
+- Uses dependency and gradient checks to detect accidental information flow in
+  vectorized and autoregressive models.
+
+Applies to Anthro Chess:
+
+- Fixed-batch inspection across board, action, sequence, legal-action, and mask
+  boundaries.
+- Tiny-overfit and causal-dependency checks before baseline training.
+- Incremental introduction of rating, timing, preference, and optimization
+  features.
+
+Different from Anthro Chess:
+
+- The source is general practical guidance rather than a chess-specific
+  specification.
+- Anthro Chess keeps exact chess reconstruction and legal-action handling
+  enabled because they are deterministic correctness boundaries, not model
+  complexity to remove.
+
+### CS231n Neural Network Training Guidance
+
+Link: <https://cs231n.github.io/neural-networks-3/>
+
+Key information:
+
+- Recommends checking whether initial loss has the expected scale before
+  expensive optimization.
+- Recommends disabling regularization for a tiny-data overfit check.
+- Warns that successful memorization does not prove that inputs are meaningful
+  or that the model will generalize.
+
+Applies to Anthro Chess:
+
+- Initial action-loss, masking, and finite-value sanity checks.
+- A deterministic tiny-sample capacity test followed by separate held-out
+  validation.
+- Clear separation between optimization correctness and learned chess signal.
+
+Different from Anthro Chess:
+
+- The examples are oriented toward image classification and generic neural
+  networks.
+- Anthro Chess also needs causal-sequence, legal-action, nullable-context, and
+  chess-state alignment checks.
+
+### Deep Learning Tuning Playbook
+
+Link: <https://github.com/google-research/tuning_playbook>
+
+Key information:
+
+- Recommends beginning with a simple, fast, low-resource configuration.
+- Builds performance incrementally from a trusted baseline and adopts added
+  complexity only when evidence supports it.
+- Separates the work of understanding a change from later broad optimization.
+
+Applies to Anthro Chess:
+
+- A small CPU-friendly initial configuration and frozen comparison inputs.
+- One coherent model, context, data, or optimization change per comparison
+  where practical.
+- Removing changes that do not justify their implementation and tuning cost.
+
+Different from Anthro Chess:
+
+- The playbook focuses mainly on tuning an already running supervised-learning
+  pipeline.
+- Anthro Chess first needs correctness gates for its data, chess-state,
+  action-alignment, and causal-training boundaries before systematic tuning.
+
 ## Interfaces And Engine Protocols
 
 ### Universal Chess Interface

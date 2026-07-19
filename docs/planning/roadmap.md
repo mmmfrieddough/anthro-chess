@@ -56,6 +56,13 @@ should be preserved in the data pipeline where available, but the first
 training loop may leave the timing head disabled if that keeps the first proof
 cleaner.
 
+Before scaling the first run, establish the staged training-correctness
+protocol in `docs/training-and-runtime.md`: inspect fixed model inputs, prove a
+stripped-down deterministic path can overfit a tiny sample, exercise causal
+sequence behavior, and then demonstrate held-out signal above simple
+baselines. Add context and optimization features from that trusted baseline
+rather than introducing several unverified changes at once.
+
 Prefer full-game, length-bucketed batches for the first proof so training
 matches full-history inference while limiting padding waste. Tune
 bucket-specific batch sizes, gradient accumulation, and GPU headroom from
