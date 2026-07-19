@@ -6,11 +6,15 @@ import json
 import re
 from collections import Counter
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
+from io import TextIOWrapper
 from pathlib import Path
 from typing import Literal, TextIO
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import chess
 import chess.pgn
@@ -34,6 +38,11 @@ _CLOCK_CENTISECONDS_RE = re.compile(r"\[%clkc\s+([^\]\s]+)\]")
 _CLOCK_SHAPED_RE = re.compile(r"\[%clk(?:c)?\b")
 _TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")
 _SOURCE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_EVENT_SPEED_RE = re.compile(
+    r"\b(bullet|blitz|rapid|classical|correspondence)\b",
+    re.IGNORECASE,
+)
+_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 class DataPreparationError(ValueError):
@@ -41,14 +50,29 @@ class DataPreparationError(ValueError):
 
 
 @dataclass(frozen=True)
+class AcquisitionResult:
+    """Verified local archive produced by one acquisition run."""
+
+    archive_path: Path
+    sha256: str
+    size_bytes: int
+    reused: bool
+
+
+@dataclass(frozen=True)
 class PreparationResult:
     """Paths and counts produced by one preparation run."""
 
-    normalized_path: Path
+    normalized_paths: tuple[Path, ...]
     manifest_path: Path
     accepted_games: int
     rejected_games: int
     split_counts: dict[str, int]
+
+    @property
+    def normalized_path(self) -> Path:
+        """Return the first shard for compatibility with single-shard callers."""
+        return self.normalized_paths[0]
 
 
 @dataclass(frozen=True)
@@ -70,6 +94,63 @@ class _ParsedGame:
     rejection: str | None
 
 
+def acquire_archive(
+    output_directory: str | Path,
+    resolved_config: ResolvedConfig[PrepareConfig],
+) -> AcquisitionResult:
+    """Download a pinned source archive and verify its configured digest."""
+    archive = resolved_config.value.archive
+    if archive is None:
+        raise DataPreparationError(
+            "configuration has no archive selection for data acquisition"
+        )
+
+    raw_directory = Path(output_directory) / "raw"
+    raw_directory.mkdir(parents=True, exist_ok=True)
+    archive_path = raw_directory / archive.file_name
+    if archive_path.is_file():
+        observed_sha256 = _file_sha256(archive_path)
+        if observed_sha256 == archive.sha256:
+            return AcquisitionResult(
+                archive_path=archive_path,
+                sha256=observed_sha256,
+                size_bytes=archive_path.stat().st_size,
+                reused=True,
+            )
+
+    partial_path = raw_directory / f"{archive.file_name}.part"
+    request = Request(
+        archive.url,
+        headers={"User-Agent": "anthro-chess-data-acquisition/1"},
+    )
+    try:
+        with (
+            urlopen(request, timeout=60) as response,  # noqa: S310
+            partial_path.open("wb") as output_file,
+        ):
+            for chunk in iter(lambda: response.read(_DOWNLOAD_CHUNK_SIZE), b""):
+                output_file.write(chunk)
+    except (HTTPError, URLError, OSError) as error:
+        raise DataPreparationError(
+            f"cannot acquire source archive {archive.url}: {error}"
+        ) from error
+
+    observed_sha256 = _file_sha256(partial_path)
+    if observed_sha256 != archive.sha256:
+        partial_path.unlink(missing_ok=True)
+        raise DataPreparationError(
+            f"downloaded archive checksum mismatch: expected {archive.sha256}, "
+            f"observed {observed_sha256}"
+        )
+    partial_path.replace(archive_path)
+    return AcquisitionResult(
+        archive_path=archive_path,
+        sha256=observed_sha256,
+        size_bytes=archive_path.stat().st_size,
+        reused=False,
+    )
+
+
 def prepare_pgn(
     input_path: str | Path,
     output_directory: str | Path,
@@ -82,12 +163,36 @@ def prepare_pgn(
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
     input_sha256 = _file_sha256(source_path)
+    configured_archive = resolved_config.value.archive
+    if configured_archive is not None and input_sha256 != configured_archive.sha256:
+        raise DataPreparationError(
+            f"input archive checksum mismatch: expected {configured_archive.sha256}, "
+            f"observed {input_sha256}"
+        )
     records: list[dict[str, object]] = []
     rejections: Counter[str] = Counter()
     seen_game_ids: set[int] = set()
+    split_counts: Counter[str] = Counter()
+    clock_status_counts: Counter[str] = Counter()
+    clock_precision_counts: Counter[int] = Counter()
+    time_initial_status_counts: Counter[str] = Counter()
+    time_increment_status_counts: Counter[str] = Counter()
+    time_initial_values: list[int] = []
+    time_increment_values: list[int] = []
+    rating_values: list[int] = []
+    total_plies = 0
+    minimum_plies: int | None = None
+    maximum_plies: int | None = None
+    normalized_paths: list[Path] = []
+    output_shards: list[dict[str, object]] = []
+    accepted_games = 0
+    stopped_at_limit = False
+
+    normalized_directory = output_path / "normalized"
+    manifest_directory = output_path / "manifests"
 
     try:
-        with source_path.open("r", encoding="utf-8") as pgn_file:
+        with _open_pgn_text(source_path) as pgn_file:
             for game in _read_games(pgn_file):
                 parsed = _parse_game(game, resolved_config.value)
                 if parsed.record is None:
@@ -100,12 +205,78 @@ def prepare_pgn(
                         continue
                     seen_game_ids.add(game_id)
                     records.append(parsed.record)
+                    accepted_games += 1
+                    split_counts[str(parsed.record[NormalizedColumn.SPLIT])] += 1
+                    ply_count_value = parsed.record[NormalizedColumn.PLY_COUNT]
+                    if not isinstance(ply_count_value, int):
+                        raise TypeError("normalized ply count must be an integer")
+                    ply_count = ply_count_value
+                    total_plies += ply_count
+                    minimum_plies = (
+                        ply_count
+                        if minimum_plies is None
+                        else min(minimum_plies, ply_count)
+                    )
+                    maximum_plies = (
+                        ply_count
+                        if maximum_plies is None
+                        else max(maximum_plies, ply_count)
+                    )
+                    clock_statuses = parsed.record[NormalizedColumn.CLOCK_STATUS]
+                    if not isinstance(clock_statuses, list):
+                        raise TypeError("normalized clock statuses must be a list")
+                    clock_status_counts.update(str(status) for status in clock_statuses)
+                    clock_precisions = parsed.record[
+                        NormalizedColumn.CLOCK_PRECISION_MS
+                    ]
+                    if not isinstance(clock_precisions, list):
+                        raise TypeError("normalized clock precisions must be a list")
+                    clock_precision_counts.update(
+                        precision
+                        for precision in clock_precisions
+                        if isinstance(precision, int)
+                    )
+                    time_initial_status_counts[
+                        str(parsed.record[NormalizedColumn.TIME_INITIAL_STATUS])
+                    ] += 1
+                    time_increment_status_counts[
+                        str(parsed.record[NormalizedColumn.TIME_INCREMENT_STATUS])
+                    ] += 1
+                    time_initial = parsed.record[NormalizedColumn.TIME_INITIAL_MS]
+                    if isinstance(time_initial, int):
+                        time_initial_values.append(time_initial)
+                    time_increment = parsed.record[NormalizedColumn.TIME_INCREMENT_MS]
+                    if isinstance(time_increment, int):
+                        time_increment_values.append(time_increment)
+                    for rating_column in (
+                        NormalizedColumn.WHITE_SOURCE_RATING,
+                        NormalizedColumn.BLACK_SOURCE_RATING,
+                    ):
+                        rating = parsed.record[rating_column]
+                        if isinstance(rating, int):
+                            rating_values.append(rating)
+
+                    games_per_shard = resolved_config.value.output.games_per_shard
+                    if games_per_shard is not None and len(records) >= games_per_shard:
+                        _flush_records(
+                            records,
+                            output_path=output_path,
+                            normalized_directory=normalized_directory,
+                            normalized_paths=normalized_paths,
+                            output_shards=output_shards,
+                            sharded=True,
+                        )
+
+                    game_limit = resolved_config.value.filters.maximum_games
+                    if game_limit is not None and accepted_games >= game_limit:
+                        stopped_at_limit = True
+                        break
     except (OSError, UnicodeError) as error:
         raise DataPreparationError(
             f"cannot read input PGN {source_path}: {error}"
         ) from error
 
-    if not records:
+    if accepted_games == 0:
         detail = ", ".join(
             f"{reason}={count}" for reason, count in sorted(rejections.items())
         )
@@ -113,21 +284,41 @@ def prepare_pgn(
             "no games passed preparation filters" + (f" ({detail})" if detail else "")
         )
 
-    records.sort(key=_record_game_id)
-    normalized_directory = output_path / "normalized"
-    manifest_directory = output_path / "manifests"
-    normalized_directory.mkdir(parents=True, exist_ok=True)
+    _flush_records(
+        records,
+        output_path=output_path,
+        normalized_directory=normalized_directory,
+        normalized_paths=normalized_paths,
+        output_shards=output_shards,
+        sharded=resolved_config.value.output.games_per_shard is not None,
+    )
     manifest_directory.mkdir(parents=True, exist_ok=True)
-    normalized_path = normalized_directory / "games.parquet"
     manifest_path = manifest_directory / "manifest.json"
 
-    _write_parquet(records, normalized_path)
-    normalized_sha256 = _file_sha256(normalized_path)
-    observed_splits = Counter(str(record[NormalizedColumn.SPLIT]) for record in records)
-    split_counts = {
-        split_name: observed_splits[split_name]
-        for split_name in ("train", "validation")
+    observed_split_counts = {
+        split_name: split_counts[split_name] for split_name in ("train", "validation")
     }
+    if resolved_config.value.split.require_nonempty and any(
+        count == 0 for count in observed_split_counts.values()
+    ):
+        raise DataPreparationError(
+            "prepared corpus did not produce nonempty train and validation splits"
+        )
+
+    selected_paths = set(normalized_paths)
+    for stale_path in normalized_directory.glob("games*.parquet"):
+        if stale_path not in selected_paths:
+            stale_path.unlink()
+
+    output_record: dict[str, object] = {
+        "format": "parquet",
+        "compression": "zstd",
+        "shards": output_shards,
+    }
+    if len(output_shards) == 1:
+        output_record["path"] = output_shards[0]["path"]
+        output_record["sha256"] = output_shards[0]["sha256"]
+
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "preprocessing_version": PREPROCESSING_VERSION,
@@ -136,23 +327,51 @@ def prepare_pgn(
             "file_name": source_path.name,
             "sha256": input_sha256,
         },
-        "output": {
-            "path": "normalized/games.parquet",
-            "sha256": normalized_sha256,
-            "format": "parquet",
-            "compression": "zstd",
-        },
+        "output": output_record,
         "action_vocabulary": action_vocabulary_identity(),
+        "selection": {
+            "algorithm": "source-order-first-accepted-v1",
+            "maximum_games": resolved_config.value.filters.maximum_games,
+            "limit_reached": stopped_at_limit,
+        },
         "split": {
             "algorithm": "sha256-threshold-v1",
             "seed": resolved_config.value.split.seed,
             "validation_fraction": resolved_config.value.split.validation_fraction,
-            "counts": split_counts,
+            "counts": observed_split_counts,
         },
         "games": {
-            "accepted": len(records),
+            "accepted": accepted_games,
             "rejected": sum(rejections.values()),
+            "scanned": accepted_games + sum(rejections.values()),
             "rejection_reasons": dict(sorted(rejections.items())),
+            "plies": {
+                "total": total_plies,
+                "minimum_per_game": minimum_plies,
+                "maximum_per_game": maximum_plies,
+            },
+        },
+        "coverage": {
+            "clock": {
+                "status_plies": dict(sorted(clock_status_counts.items())),
+                "precision_ms_plies": {
+                    str(precision): count
+                    for precision, count in sorted(clock_precision_counts.items())
+                },
+            },
+            "time_initial_ms": _integer_coverage(
+                time_initial_values,
+                time_initial_status_counts,
+            ),
+            "time_increment_ms": _integer_coverage(
+                time_increment_values,
+                time_increment_status_counts,
+            ),
+            "source_rating": {
+                "values_present": len(rating_values),
+                "minimum": min(rating_values) if rating_values else None,
+                "maximum": max(rating_values) if rating_values else None,
+            },
         },
         "resolved_config": resolved_config.as_record(),
     }
@@ -161,12 +380,40 @@ def prepare_pgn(
         encoding="utf-8",
     )
     return PreparationResult(
-        normalized_path=normalized_path,
+        normalized_paths=tuple(normalized_paths),
         manifest_path=manifest_path,
-        accepted_games=len(records),
+        accepted_games=accepted_games,
         rejected_games=sum(rejections.values()),
-        split_counts=split_counts,
+        split_counts=observed_split_counts,
     )
+
+
+@contextmanager
+def _open_pgn_text(source_path: Path) -> Iterator[TextIO]:
+    if source_path.suffix != ".zst":
+        with source_path.open("r", encoding="utf-8") as pgn_file:
+            yield pgn_file
+        return
+
+    try:
+        import zstandard
+    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
+        raise DataPreparationError(
+            "Zstandard support is unavailable; install anthro-chess[data]"
+        ) from error
+
+    with source_path.open("rb") as compressed_file:
+        decompressor = zstandard.ZstdDecompressor()
+        try:
+            with (
+                decompressor.stream_reader(compressed_file) as reader,
+                TextIOWrapper(reader, encoding="utf-8") as pgn_file,
+            ):
+                yield pgn_file
+        except zstandard.ZstdError as error:
+            raise DataPreparationError(
+                f"cannot decompress input PGN {source_path}: {error}"
+            ) from error
 
 
 def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
@@ -188,6 +435,11 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
     if config.filters.exclude_bots and _has_bot_player(game):
         return _ParsedGame(None, "bot_game")
     if (
+        config.filters.event_speed is not None
+        and _event_speed(game.headers.get("Event")) != config.filters.event_speed
+    ):
+        return _ParsedGame(None, "rating_namespace_mismatch")
+    if (
         config.filters.require_rated
         and "rated" not in game.headers.get("Event", "").casefold()
     ):
@@ -199,6 +451,10 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
 
     white_rating = _parse_nonnegative_integer(game.headers.get("WhiteElo"))
     black_rating = _parse_nonnegative_integer(game.headers.get("BlackElo"))
+    if config.filters.require_ratings and (
+        white_rating.status != _STATUS_PRESENT or black_rating.status != _STATUS_PRESENT
+    ):
+        return _ParsedGame(None, "missing_or_invalid_rating")
     time_initial, time_increment = _parse_time_control(game.headers.get("TimeControl"))
     actions: list[int] = []
     clock_values: list[int | None] = []
@@ -287,6 +543,13 @@ def _has_bot_player(game: chess.pgn.Game) -> bool:
         game.headers.get(header, "").casefold() == "bot"
         for header in ("WhiteTitle", "BlackTitle")
     )
+
+
+def _event_speed(event: str | None) -> str | None:
+    if event is None:
+        return None
+    match = _EVENT_SPEED_RE.search(event)
+    return match.group(1).casefold() if match is not None else None
 
 
 def _source_game_key(site: str | None) -> str | None:
@@ -415,11 +678,56 @@ def _write_parquet(records: list[dict[str, object]], path: Path) -> None:
     )
 
 
+def _flush_records(
+    records: list[dict[str, object]],
+    *,
+    output_path: Path,
+    normalized_directory: Path,
+    normalized_paths: list[Path],
+    output_shards: list[dict[str, object]],
+    sharded: bool,
+) -> None:
+    if not records:
+        return
+    records.sort(key=_record_game_id)
+    normalized_directory.mkdir(parents=True, exist_ok=True)
+    file_name = (
+        f"games-{len(normalized_paths):05d}.parquet" if sharded else "games.parquet"
+    )
+    normalized_path = normalized_directory / file_name
+    _write_parquet(records, normalized_path)
+    split_counts = Counter(str(record[NormalizedColumn.SPLIT]) for record in records)
+    normalized_paths.append(normalized_path)
+    output_shards.append(
+        {
+            "path": normalized_path.relative_to(output_path).as_posix(),
+            "sha256": _file_sha256(normalized_path),
+            "games": len(records),
+            "split_counts": {
+                split_name: split_counts[split_name]
+                for split_name in ("train", "validation")
+            },
+        }
+    )
+    records.clear()
+
+
 def _record_game_id(record: dict[str, object]) -> int:
     game_id = record[NormalizedColumn.GAME_ID]
     if not isinstance(game_id, int):  # pragma: no cover - internal invariant
         raise TypeError("normalized game id must be an integer")
     return game_id
+
+
+def _integer_coverage(
+    values: list[int],
+    statuses: Counter[str],
+) -> dict[str, object]:
+    return {
+        "status_games": dict(sorted(statuses.items())),
+        "minimum": min(values) if values else None,
+        "maximum": max(values) if values else None,
+    }
 
 
 def _file_sha256(path: Path) -> str:

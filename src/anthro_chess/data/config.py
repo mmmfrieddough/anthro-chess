@@ -1,4 +1,4 @@
-"""Strict configuration for data preparation and sequence loading."""
+"""Strict configuration for data acquisition, preparation, and sequence loading."""
 
 from typing import Literal
 
@@ -19,11 +19,24 @@ class SourceConfig(ConfigModel):
     ratings_are_normalized: StrictBool = False
 
 
+class ArchiveConfig(ConfigModel):
+    """Pinned downloadable archive used by a reproducible source selection."""
+
+    url: str = Field(min_length=1, pattern=r"^https?://")
+    file_name: str = Field(
+        min_length=1,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    compression: Literal["zstd"] = "zstd"
+
+
 class SplitConfig(ConfigModel):
     """Deterministic game-level train/validation split selection."""
 
     seed: str = Field(default="anthro-sample-v1", min_length=1)
     validation_fraction: float = Field(default=0.2, ge=0.0, lt=1.0)
+    require_nonempty: StrictBool = False
 
 
 class FilterConfig(ConfigModel):
@@ -31,15 +44,35 @@ class FilterConfig(ConfigModel):
 
     minimum_plies: int = Field(default=1, ge=1)
     require_rated: StrictBool = True
+    require_ratings: StrictBool = False
     exclude_bots: StrictBool = True
+    event_speed: (
+        Literal[
+            "bullet",
+            "blitz",
+            "rapid",
+            "classical",
+            "correspondence",
+        ]
+        | None
+    ) = None
+    maximum_games: int | None = Field(default=None, ge=1)
+
+
+class OutputConfig(ConfigModel):
+    """Normalized shard sizing for bounded-memory preparation."""
+
+    games_per_shard: int | None = Field(default=None, ge=1)
 
 
 class PrepareConfig(ConfigModel):
     """Code-owned schema for ``anthro data prepare``."""
 
     source: SourceConfig
+    archive: ArchiveConfig | None = None
     split: SplitConfig = SplitConfig()
     filters: FilterConfig = FilterConfig()
+    output: OutputConfig = OutputConfig()
 
 
 class SequenceLoaderConfig(ConfigModel):

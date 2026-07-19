@@ -1,0 +1,32 @@
+[source]
+id = "lichess"
+version = "standard-rated-2017-04"
+url = "https://database.lichess.org/"
+license = "CC0-1.0"
+rating_namespace = "lichess_blitz"
+rating_system = "glicko2"
+ratings_are_normalized = true
+
+[archive]
+url = "https://database.lichess.org/standard/lichess_db_standard_rated_2017-04.pgn.zst"
+file_name = "lichess_db_standard_rated_2017-04.pgn.zst"
+sha256 = "559222b0e933bc02281643724fbd9bd46690074b10d784c4f264e0bff6c5992c"
+compression = "zstd"
+
+[split]
+seed = "anthro-lichess-blitz-baseline-v1"
+validation_fraction = 0.05
+require_nonempty = true
+
+[filters]
+minimum_plies = 8
+require_rated = true
+require_ratings = true
+exclude_bots = true
+event_speed = "blitz"
+# Bound the first real training proof while retaining enough games for learned signal.
+maximum_games = 1000000
+
+[output]
+# Keep normalization memory bounded and make partial artifacts easy to inspect.
+games_per_shard = 50000

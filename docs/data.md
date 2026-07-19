@@ -63,6 +63,36 @@ reproduction path. Exact schema fields, versions, defaults, and filters are
 owned by the data package and checked-in configuration rather than duplicated
 here.
 
+### Current Baseline Corpus Path
+
+The current implementation also provides the thin `anthro data acquire`
+command and a checked-in bounded Lichess selection under `configs/data/`.
+Acquisition downloads the exact configured monthly archive into the ignored
+artifact root, verifies it against Lichess's published SHA-256 digest, and
+reuses it only while that identity still matches.
+
+Preparation reads Zstandard-compressed PGN directly, so it does not need a
+second uncompressed copy. The baseline selection accepts one explicit Lichess
+speed and rating namespace, rejects missing or invalid source ratings and bot
+games, stops at a deterministic accepted-game bound, and writes bounded
+Parquet shards through the existing shared PGN parser and action codec.
+Game-id hashing keeps train and validation assignments stable and ensures a
+duplicate source game cannot cross the split boundary.
+
+The initial recipe takes accepted games in source order until that bound. The
+source is already limited to one month, so this trades some within-month
+temporal coverage for a much shorter first preparation run while retaining
+broad player, rating, position, game-length, and time-control variation. If
+held-out results show that the selection is too small or narrow, the bound or
+sampling recipe can change in configuration without creating another ingestion
+path.
+
+The manifest records every output shard and checksum, filter rejections, split
+counts, ply ranges, and rating, time-control, and clock coverage. Exact release,
+digest, selection size, filters, split recipe, and shard sizing remain owned by
+the checked-in configuration. Raw archives and generated outputs remain
+outside Git, and ordinary tests continue to use local fixtures.
+
 ## Primary Source
 
 The main initial source should be the Lichess open database:
@@ -70,6 +100,13 @@ The main initial source should be the Lichess open database:
 - main database: <https://database.lichess.org/>
 - universal centisecond-clock exports: <https://database.lichess.org/db-univ/>
 - universal export counts: <https://database.lichess.org/db-univ/counts.txt>
+
+The first bounded baseline uses a standard rated monthly export rather than the
+much larger universal archive. It selects the first month in which the standard
+exports include clock comments, then isolates one speed namespace. This keeps
+the acquisition practical enough for the first training proof while preserving
+a direct path to a larger or higher-precision selection through configuration
+once downstream evidence justifies it.
 
 The Lichess universal export currently provides the strongest fit for the core
 timed model because it has very large game volume and centisecond clock comments
