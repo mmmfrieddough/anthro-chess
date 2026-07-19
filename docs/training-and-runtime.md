@@ -93,6 +93,13 @@ Milestone 1 model boundary and objective. The shared masked action objective
 lives in `anthro_chess.training`; deterministic structural and tiny-overfit
 checks exercise those same model and loss APIs.
 
+The current CPU training runner also lives in `anthro_chess.training` and uses
+those ordinary loader, model, loss, and validation boundaries. Its strict
+command configuration composes the data and model schemas, and each run writes
+the resolved selection, data manifests and identities, code and model
+compatibility metadata, optimizer-update evidence, and structured metrics.
+Checkpoint and resume orchestration remains separate follow-up work.
+
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input
 embedding. It is also compatible with teacher forcing: previous moves are known

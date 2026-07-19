@@ -107,7 +107,11 @@ class MoveModelBatch:
             attention_mask=boolean(batch.attention_mask),
             causal_attention_mask=boolean(batch.causal_attention_mask),
             legal_action_ids=batch.legal_action_ids,
-            game_ids=required(batch.game_ids),
+            game_ids=torch.as_tensor(
+                batch.game_ids,
+                dtype=torch.uint64,
+                device=tensor_device,
+            ),
             ply_indices=required(batch.ply_indices),
             chunk_start_plies=batch.chunk_start_plies,
         )

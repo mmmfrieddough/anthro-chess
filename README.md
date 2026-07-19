@@ -14,9 +14,10 @@ The repository currently provides an installable Python package, a lightweight
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
-Lichess baseline-corpus path, and a locked development environment. The
-runnable model-training loop, evaluation, playable runtime, UCI, model
-checkpoints, and packaged releases remain planned work.
+Lichess baseline-corpus path, a deterministic CPU training command, and a
+locked development environment. Playable runtime, UCI, model checkpoints, and
+packaged releases remain planned work; validation metrics exist within the
+training path but the broader evaluation harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -55,10 +56,11 @@ uv run anthro --version
 uv run anthro smoke
 uv run anthro data acquire --help
 uv run anthro data prepare --help
+uv run anthro train --help
 ```
 
-Only implemented commands appear in `--help`. Training, evaluation, play, and
-UCI commands will be added as those capabilities become real.
+Only implemented commands appear in `--help`. Evaluation, play, and UCI
+commands will be added as those capabilities become real.
 
 ## Sample Data Path
 
@@ -75,6 +77,19 @@ This writes compact Parquet game records under `normalized/` and a separate
 provenance manifest under `manifests/`. The command requires the data
 dependencies, which the locked development environment includes; installed
 packages can add them with the `data` extra.
+
+The checked-in deterministic training selection consumes that prepared sample:
+
+```console
+uv run anthro train --config configs/training/sample-smoke.toml
+```
+
+It performs a bounded real optimizer run on CPU and writes step metrics plus a
+run record under the ignored artifact root. The run record preserves the
+resolved configuration, data manifest and identities, model compatibility
+metadata, seed, code revision when available, and optimizer-update evidence.
+The sample selection is a correctness smoke path, not a trained checkpoint or
+evidence of useful chess strength.
 
 ## Baseline Training Corpus
 

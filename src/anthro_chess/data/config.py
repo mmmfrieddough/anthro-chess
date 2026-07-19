@@ -1,5 +1,6 @@
 """Strict configuration for data acquisition, preparation, and sequence loading."""
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, StrictBool
@@ -85,3 +86,11 @@ class SequenceLoaderConfig(ConfigModel):
     shuffle: StrictBool = True
     seed: str = Field(default="anthro-sequence-loader-v1", min_length=1)
     drop_last: StrictBool = False
+
+
+class SequenceDataConfig(ConfigModel):
+    """One explicit normalized-data and loader selection."""
+
+    normalized: Path
+    manifest: Path
+    loader: SequenceLoaderConfig
