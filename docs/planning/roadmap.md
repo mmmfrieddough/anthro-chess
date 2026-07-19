@@ -56,6 +56,14 @@ should be preserved in the data pipeline where available, but the first
 training loop may leave the timing head disabled if that keeps the first proof
 cleaner.
 
+Prefer full-game, length-bucketed batches for the first proof so training
+matches full-history inference while limiting padding waste. Tune
+bucket-specific batch sizes, gradient accumulation, and GPU headroom from
+measured model memory and throughput rather than hardcoding a speculative
+device budget in the data layer. Treat independent midgame chunks as a
+scalability option that must be compared with full-history training before it
+becomes a default.
+
 The output of this milestone does not need to be a strong chess opponent or
 provide the final playable interface. It does need to demonstrate learned move
 structure beyond randomness made legal by masking, including held-out

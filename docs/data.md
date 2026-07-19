@@ -333,6 +333,22 @@ compatibility source of truth for future manifests, run records, and
 checkpoints; exact field names and token mappings live with the implementation
 rather than being duplicated here.
 
+The canonical normalized-artifact schema lives in `anthro_chess.data.schema`.
+Preparation writes that schema, while loaders and other consumers select the
+explicit projection they need from the same column contract. A normalized field
+does not need to be a model input, but it should serve reconstruction, targets,
+filtering, evaluation, provenance, compatibility, or debugging rather than be
+retained without a concrete downstream purpose.
+
+The initial sequence loader reads those normalized games into either full-game
+sequences or contiguous fixed-length chunks. It packs framework-neutral numeric
+batches, keeps nullable context behind explicit presence masks, reconstructs
+legal actions per ply, and pads variable lengths behind attention and loss
+masks. Length buckets keep similarly sized sequences together before completed
+batches are shuffled, reducing padding without changing the examples. Its
+deterministic epoch plan and explicit next-batch cursor are the restart boundary
+for training checkpoints.
+
 ## Approximate Scale
 
 The project should reason about data in plies as well as games. A rough
