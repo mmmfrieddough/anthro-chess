@@ -66,6 +66,15 @@ The active milestone is the current roadmap stage represented by the live
 milestone and tracker state. Among eligible issues, prefer work that matches the
 current project stage and avoids conflicts with other active work.
 
+Selection is also constrained by the execution capabilities declared for the
+session. A session without the GPU environment specified by an issue must
+exclude issues labeled `execution: gpu-required`. Issues labeled
+`verification: gpu-required` remain eligible because their implementation can
+be completed without a GPU. The dispatcher or execution environment should
+declare the session's surface and hardware capabilities explicitly; the
+implementation session should treat that declaration as authoritative rather
+than inferring capabilities from incidental host details.
+
 Public issue forms are intake, not an implementation queue. They must not
 automatically assign `type: task`, a milestone, a tracker relationship, or a
 dependency relationship. An issue missing any eligibility metadata remains
@@ -111,9 +120,40 @@ Use a small label taxonomy:
 - `type: task`
 - `type: tracker`
 - `type: decision`
+- `execution: gpu-required`
+- `verification: gpu-required`
 
 Add new labels only when they solve a recurring filtering or routing problem.
 Prefer assigning one primary area plus any genuinely relevant secondary area.
+
+The GPU labels have different routing meanings:
+
+- `execution: gpu-required` means meaningful implementation, measurement, or
+  iteration requires the GPU environment specified in the issue. Sessions
+  without that environment must not select the issue.
+- `verification: gpu-required` means the implementation can be completed and
+  reviewed without a GPU, but a required acceptance check still needs the GPU
+  environment specified in the issue. This label does not remove the issue
+  from a CPU-only or cloud implementation queue.
+
+Use `execution: gpu-required` when work without the GPU cannot produce a
+coherent, independently reviewable implementation that materially satisfies
+the issue. Examples include finding a maximum multi-GPU batch size, debugging
+an NCCL hang, comparing GPU-kernel throughput, or training several variants to
+select a checkpoint.
+
+Use `verification: gpu-required` only when the remaining GPU work is a bounded
+acceptance check rather than substantial implementation or experimental
+iteration. Do not add it for optional confidence-building. When a useful
+non-GPU slice can stand alone but substantial GPU work remains, prefer separate
+issues with a dependency between the cloud-suitable preparation and the
+GPU-required task instead of planning an incomplete implementation handoff.
+
+The issue body should state the required environment precisely enough to act
+on, such as Apple Silicon MPS, one CUDA GPU with a minimum memory capacity, or
+two specified CUDA GPUs with relevant distributed-runtime constraints. The
+label expresses routing; the issue body owns the exact hardware, software,
+commands, expected evidence, and acceptance criteria.
 
 Use dependencies to express actual order constraints, not every preferred
 implementation sequence. A useful dependency is one where starting or finishing
@@ -140,7 +180,10 @@ When asked to build or refine the task roadmap, an agent should:
 - create or update near-term actionable child issues and attach them as
   sub-issues of the tracker when GitHub supports it;
 - add GitHub issue dependencies for true blockers between child issues;
-- apply the repo's `area:` and `type:` labels consistently;
+- apply the repo's `area:`, `type:`, `execution:`, and `verification:` labels
+  consistently;
+- classify concrete GPU requirements using the routing test above and record
+  the exact required environment and acceptance evidence in the issue body;
 - keep issue bodies focused on intent, acceptance criteria, relevant docs, and
   likely test/doc updates;
 - avoid creating a detailed issue tree for the entire project before evidence
@@ -163,6 +206,8 @@ Before starting, the agent should:
   any linked docs or decisions;
 - inspect the current repo and GitHub state before editing;
 - confirm that formal dependencies do not block the issue;
+- confirm that the declared execution capabilities are compatible with any
+  `execution:` requirement;
 - clarify only if the issue cannot be scoped safely from existing context;
 - choose one cohesive, reviewable slice when the issue is broad;
 - identify likely shared files or foundations before deciding whether the work
@@ -194,17 +239,19 @@ user changes and do not stage them into the issue commit.
 After the isolated issue worktree is ready and before substantive editing,
 claim the issue in GitHub so another agent does not select the same task. Assign
 the issue to the configured GitHub identity and add one concise comment that
-identifies the agent and its stable session identifier:
+identifies the agent and, when available, its stable session link or identifier:
 
 ```text
 Claimed for implementation by <agent-name>.
 
-Session: `<session-id>`
+Session: <session-link-or-id>
 ```
 
 Use the actual agent or execution-surface name and the stable session identifier
-provided by its environment. GitHub already records the comment author and
-timestamp.
+provided by its environment. Prefer a direct session link when the execution
+surface exposes one. If it exposes neither a link nor a stable identifier, omit
+the `Session` line rather than delaying the claim or inventing a value. GitHub
+already records the comment author and timestamp.
 
 Do not include a hostname, absolute worktree path, local username or directory
 layout, or a restatement of the issue scope in the public claim comment. Do not
@@ -219,6 +266,11 @@ The claim comment is the only routine progress comment needed before
 publication. Add further issue comments only for material findings, blockers,
 coordination, scope changes, or handoff information that should remain visible
 independently of the pull request.
+
+The implementation session owns issue and pull-request updates after dispatch.
+The dispatcher does not need to claim the issue, publish progress, or perform
+handoff bookkeeping. Before claiming, the session should recheck eligibility
+and stop if another active claim or pull request appeared after dispatch.
 
 If work is abandoned before a pull request is opened, remove the assignee and
 add a brief comment that the claim was released. Include handoff information
@@ -242,7 +294,8 @@ During implementation, the agent should:
 - update docs only when durable intent, behavior, interfaces, data shape,
   evaluation, or source-of-truth ownership changes;
 - keep issue metadata current when GitHub tooling is available, including
-  labels, milestone, dependencies, and sub-issue state;
+  labels, milestone, dependencies, sub-issue state, and newly discovered
+  execution or verification requirements;
 - run focused checks while iterating and all reasonable final verification
   before publishing;
 - inspect the final diff for scope, accidental files, generated-file drift,
@@ -255,6 +308,13 @@ built-package smoke test through `.github/workflows/ci.yml`. The workflow's
 `Required CI` job is the stable required merge check. If that job is renamed,
 update the repository merge rule in the same change so the protected branch
 does not point at a stale check name.
+
+If a session discovers that meaningful progress actually requires an
+unavailable GPU environment, correct the issue metadata before stopping. Apply
+`execution: gpu-required`, record the exact requirement and evidence needed,
+release the claim if no pull request will remain active, and leave one concise
+finding or handoff comment. Do not publish a token partial change merely to
+avoid releasing the issue.
 
 If the user asks an agent to choose the next issue, the agent should prefer
 eligible work from the active milestone's implementation queue. Check tracker
@@ -270,6 +330,14 @@ request when the implementation and verification are complete. Open it ready
 for review by default. Use a draft pull request only when the user asks to see
 work in progress, the work is intentionally being handed off incomplete, or an
 external condition prevents it from being reviewable.
+
+For an issue labeled `verification: gpu-required`, a session without the
+specified GPU may still open a ready-for-review pull request after the
+implementation and all available checks are complete. The pull request must
+prominently identify the pending GPU verification, including the required
+environment, exact command or procedure, expected evidence, and any artifacts
+to preserve. The pending check becomes part of local review, and the issue
+label remains as the durable routing signal.
 
 The pull request should:
 
@@ -305,6 +373,32 @@ Before ending the session, leave GitHub in a useful review state:
 Do not close the implementation issue merely because the pull request is ready.
 The merge should close it. Close a tracker only when all of its milestone work
 is actually complete.
+
+### Local Handoff And Ownership
+
+When substantial local or GPU implementation remains, publish a draft pull
+request instead of leaving only a pushed branch. The draft provides a durable
+diff, CI results, discussion surface, and ownership boundary. Include a
+`Local handoff` section covering:
+
+- the precise required environment;
+- completed work and verification;
+- remaining implementation or investigation;
+- exact commands or procedures to run;
+- expected evidence and artifacts;
+- the prior session link or identifier when available.
+
+Do not use a draft handoff for work that should have been split into an
+independently reviewable cloud task and a separate GPU-required issue. Prefer
+that issue split during planning whenever the boundary is known in advance.
+
+A new local session taking over an issue and pull request becomes the sole
+owner of the task from that point forward. It should read the issue, pull
+request, diff, CI, and handoff; add one concise takeover comment; continue on
+the existing pull-request branch in its own worktree; complete the required
+local work and final verification; update the issue and pull request; and mark
+the draft ready for review when complete. The user should not need to return to
+the prior cloud session.
 
 ### After Publication And Merge
 
