@@ -18,10 +18,14 @@ import chess.pgn
 from anthro_chess.chess import action_vocabulary_identity, encode_move
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data.config import PrepareConfig
+from anthro_chess.data.schema import (
+    PREPROCESSING_VERSION,
+    SCHEMA_VERSION,
+    FieldStatus,
+    NormalizedColumn,
+    normalized_parquet_schema,
+)
 
-SCHEMA_VERSION = 1
-PREPROCESSING_VERSION = 1
-FieldStatus = Literal["present", "unavailable", "rejected"]
 _STATUS_PRESENT: FieldStatus = "present"
 _STATUS_UNAVAILABLE: FieldStatus = "unavailable"
 _STATUS_REJECTED: FieldStatus = "rejected"
@@ -119,7 +123,7 @@ def prepare_pgn(
 
     _write_parquet(records, normalized_path)
     normalized_sha256 = _file_sha256(normalized_path)
-    observed_splits = Counter(str(record["split"]) for record in records)
+    observed_splits = Counter(str(record[NormalizedColumn.SPLIT]) for record in records)
     split_counts = {
         split_name: observed_splits[split_name]
         for split_name in ("train", "validation")
@@ -244,35 +248,35 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
     )
     return _ParsedGame(
         {
-            "schema_version": SCHEMA_VERSION,
-            "game_id": game_id,
-            "source_id": config.source.id,
-            "source_game_key": source_game_key,
-            "ruleset": "standard",
-            "initial_position": chess.STARTING_FEN,
-            "result": result,
-            "termination": termination,
-            "termination_status": termination_status,
-            "ply_count": len(actions),
-            "action_ids": actions,
-            "white_source_rating": white_rating.value,
-            "white_source_rating_status": white_rating.status,
-            "black_source_rating": black_rating.value,
-            "black_source_rating_status": black_rating.status,
-            "source_rating_namespace": config.source.rating_namespace,
-            "source_rating_system": config.source.rating_system,
-            "white_normalized_rating": normalized_white,
-            "white_normalized_rating_status": normalized_white_status,
-            "black_normalized_rating": normalized_black,
-            "black_normalized_rating_status": normalized_black_status,
-            "time_initial_ms": time_initial.value,
-            "time_initial_status": time_initial.status,
-            "time_increment_ms": time_increment.value,
-            "time_increment_status": time_increment.status,
-            "clock_remaining_ms": clock_values,
-            "clock_status": clock_statuses,
-            "clock_precision_ms": clock_precisions,
-            "split": split,
+            NormalizedColumn.SCHEMA_VERSION: SCHEMA_VERSION,
+            NormalizedColumn.GAME_ID: game_id,
+            NormalizedColumn.SOURCE_ID: config.source.id,
+            NormalizedColumn.SOURCE_GAME_KEY: source_game_key,
+            NormalizedColumn.RULESET: "standard",
+            NormalizedColumn.INITIAL_POSITION: chess.STARTING_FEN,
+            NormalizedColumn.RESULT: result,
+            NormalizedColumn.TERMINATION: termination,
+            NormalizedColumn.TERMINATION_STATUS: termination_status,
+            NormalizedColumn.PLY_COUNT: len(actions),
+            NormalizedColumn.ACTION_IDS: actions,
+            NormalizedColumn.WHITE_SOURCE_RATING: white_rating.value,
+            NormalizedColumn.WHITE_SOURCE_RATING_STATUS: white_rating.status,
+            NormalizedColumn.BLACK_SOURCE_RATING: black_rating.value,
+            NormalizedColumn.BLACK_SOURCE_RATING_STATUS: black_rating.status,
+            NormalizedColumn.SOURCE_RATING_NAMESPACE: config.source.rating_namespace,
+            NormalizedColumn.SOURCE_RATING_SYSTEM: config.source.rating_system,
+            NormalizedColumn.WHITE_NORMALIZED_RATING: normalized_white,
+            NormalizedColumn.WHITE_NORMALIZED_RATING_STATUS: (normalized_white_status),
+            NormalizedColumn.BLACK_NORMALIZED_RATING: normalized_black,
+            NormalizedColumn.BLACK_NORMALIZED_RATING_STATUS: (normalized_black_status),
+            NormalizedColumn.TIME_INITIAL_MS: time_initial.value,
+            NormalizedColumn.TIME_INITIAL_STATUS: time_initial.status,
+            NormalizedColumn.TIME_INCREMENT_MS: time_increment.value,
+            NormalizedColumn.TIME_INCREMENT_STATUS: time_increment.status,
+            NormalizedColumn.CLOCK_REMAINING_MS: clock_values,
+            NormalizedColumn.CLOCK_STATUS: clock_statuses,
+            NormalizedColumn.CLOCK_PRECISION_MS: clock_precisions,
+            NormalizedColumn.SPLIT: split,
         },
         None,
     )
@@ -400,43 +404,7 @@ def _write_parquet(records: list[dict[str, object]], path: Path) -> None:
             "Parquet support is unavailable; install anthro-chess[data]"
         ) from error
 
-    schema = pa.schema(
-        [
-            pa.field("schema_version", pa.int16(), nullable=False),
-            pa.field("game_id", pa.uint64(), nullable=False),
-            pa.field("source_id", pa.string(), nullable=False),
-            pa.field("source_game_key", pa.string(), nullable=False),
-            pa.field("ruleset", pa.string(), nullable=False),
-            pa.field("initial_position", pa.string(), nullable=False),
-            pa.field("result", pa.string(), nullable=False),
-            pa.field("termination", pa.string()),
-            pa.field("termination_status", pa.string(), nullable=False),
-            pa.field("ply_count", pa.int32(), nullable=False),
-            pa.field("action_ids", pa.list_(pa.uint16()), nullable=False),
-            pa.field("white_source_rating", pa.int32()),
-            pa.field("white_source_rating_status", pa.string(), nullable=False),
-            pa.field("black_source_rating", pa.int32()),
-            pa.field("black_source_rating_status", pa.string(), nullable=False),
-            pa.field("source_rating_namespace", pa.string()),
-            pa.field("source_rating_system", pa.string()),
-            pa.field("white_normalized_rating", pa.int32()),
-            pa.field("white_normalized_rating_status", pa.string(), nullable=False),
-            pa.field("black_normalized_rating", pa.int32()),
-            pa.field("black_normalized_rating_status", pa.string(), nullable=False),
-            pa.field("time_initial_ms", pa.int32()),
-            pa.field("time_initial_status", pa.string(), nullable=False),
-            pa.field("time_increment_ms", pa.int32()),
-            pa.field("time_increment_status", pa.string(), nullable=False),
-            pa.field("clock_remaining_ms", pa.list_(pa.int32()), nullable=False),
-            pa.field("clock_status", pa.list_(pa.string()), nullable=False),
-            pa.field("clock_precision_ms", pa.list_(pa.int32()), nullable=False),
-            pa.field("split", pa.string(), nullable=False),
-        ],
-        metadata={
-            b"anthro_schema_version": str(SCHEMA_VERSION).encode(),
-            b"anthro_preprocessing_version": str(PREPROCESSING_VERSION).encode(),
-        },
-    )
+    schema = normalized_parquet_schema()
     table = pa.Table.from_pylist(records, schema=schema)
     pq.write_table(
         table,
@@ -448,7 +416,7 @@ def _write_parquet(records: list[dict[str, object]], path: Path) -> None:
 
 
 def _record_game_id(record: dict[str, object]) -> int:
-    game_id = record["game_id"]
+    game_id = record[NormalizedColumn.GAME_ID]
     if not isinstance(game_id, int):  # pragma: no cover - internal invariant
         raise TypeError("normalized game id must be an integer")
     return game_id

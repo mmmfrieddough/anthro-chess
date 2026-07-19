@@ -8,12 +8,35 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from anthro_chess.chess import encode_move
+from anthro_chess.config import load_config
 from anthro_chess.data import (
     DataLoadingError,
+    PrepareConfig,
     SequenceDataLoader,
     SequenceDataset,
     SequenceLoaderConfig,
+    prepare_pgn,
 )
+
+REPOSITORY_ROOT = Path(__file__).parents[2]
+SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
+SAMPLE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
+
+
+def test_loads_artifact_written_with_canonical_normalized_schema(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "artifacts",
+        load_config(PrepareConfig, path=SAMPLE_CONFIG),
+    )
+    split = next(name for name, count in prepared.split_counts.items() if count > 0)
+
+    dataset = SequenceDataset.from_parquet(prepared.normalized_path, split=split)
+
+    assert len(dataset) == 1
+    assert dataset[0].plies[0].player_rating == 2100
 
 
 def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(

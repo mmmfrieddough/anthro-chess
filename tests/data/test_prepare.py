@@ -14,6 +14,7 @@ from anthro_chess.data import (
     PrepareConfig,
     prepare_pgn,
 )
+from anthro_chess.data.schema import NORMALIZED_COLUMNS
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -28,6 +29,7 @@ def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
     result = prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
 
     rows = pq.read_table(result.normalized_path).to_pylist()
+    assert tuple(pq.read_schema(result.normalized_path).names) == NORMALIZED_COLUMNS
     assert result.accepted_games == 1
     assert result.rejected_games == 0
     assert len(rows) == 1

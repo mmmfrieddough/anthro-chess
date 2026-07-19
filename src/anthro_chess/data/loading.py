@@ -16,21 +16,21 @@ from anthro_chess.data.encoding import (
     PlyEncoding,
     encode_game,
 )
-from anthro_chess.data.prepare import SCHEMA_VERSION
+from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
 LOADER_STATE_VERSION = 1
-_NORMALIZED_COLUMNS = (
-    "schema_version",
-    "game_id",
-    "ruleset",
-    "initial_position",
-    "action_ids",
-    "white_normalized_rating",
-    "black_normalized_rating",
-    "time_initial_ms",
-    "time_increment_ms",
-    "clock_remaining_ms",
-    "split",
+_LOADER_COLUMNS = (
+    NormalizedColumn.SCHEMA_VERSION,
+    NormalizedColumn.GAME_ID,
+    NormalizedColumn.RULESET,
+    NormalizedColumn.INITIAL_POSITION,
+    NormalizedColumn.ACTION_IDS,
+    NormalizedColumn.WHITE_NORMALIZED_RATING,
+    NormalizedColumn.BLACK_NORMALIZED_RATING,
+    NormalizedColumn.TIME_INITIAL_MS,
+    NormalizedColumn.TIME_INCREMENT_MS,
+    NormalizedColumn.CLOCK_REMAINING_MS,
+    NormalizedColumn.SPLIT,
 )
 
 IntMatrix: TypeAlias = tuple[tuple[int, ...], ...]
@@ -205,7 +205,7 @@ class SequenceDataset(Sequence[SequenceExample]):
         identity_records: list[dict[str, object]] = []
         for shard_index, path in enumerate(normalized_paths):
             for row in _read_normalized_rows(path):
-                if row["split"] != split:
+                if row[NormalizedColumn.SPLIT] != split:
                     continue
                 game = _game_from_row(row, path)
                 plies = encode_game(game)
@@ -441,7 +441,7 @@ def _read_normalized_rows(path: Path) -> list[dict[str, Any]]:
             "Parquet support is unavailable; install anthro-chess[data]"
         ) from error
     try:
-        table = pq.read_table(path, columns=list(_NORMALIZED_COLUMNS))
+        table = pq.read_table(path, columns=list(_LOADER_COLUMNS))
     except (OSError, ValueError) as error:
         raise DataLoadingError(
             f"cannot read normalized data {path}: {error}"
@@ -450,23 +450,24 @@ def _read_normalized_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
-    if row["schema_version"] != SCHEMA_VERSION:
+    if row[NormalizedColumn.SCHEMA_VERSION] != SCHEMA_VERSION:
         raise DataLoadingError(
-            f"{path} uses normalized schema version {row['schema_version']}; "
+            f"{path} uses normalized schema version "
+            f"{row[NormalizedColumn.SCHEMA_VERSION]}; "
             f"expected {SCHEMA_VERSION}"
         )
     try:
-        action_ids = tuple(row["action_ids"])
-        clocks = tuple(row["clock_remaining_ms"])
+        action_ids = tuple(row[NormalizedColumn.ACTION_IDS])
+        clocks = tuple(row[NormalizedColumn.CLOCK_REMAINING_MS])
         return GameEncodingInput(
-            game_id=row["game_id"],
-            ruleset=row["ruleset"],
-            initial_position=row["initial_position"],
+            game_id=row[NormalizedColumn.GAME_ID],
+            ruleset=row[NormalizedColumn.RULESET],
+            initial_position=row[NormalizedColumn.INITIAL_POSITION],
             action_ids=action_ids,
-            white_normalized_rating=row["white_normalized_rating"],
-            black_normalized_rating=row["black_normalized_rating"],
-            time_initial_ms=row["time_initial_ms"],
-            time_increment_ms=row["time_increment_ms"],
+            white_normalized_rating=row[NormalizedColumn.WHITE_NORMALIZED_RATING],
+            black_normalized_rating=row[NormalizedColumn.BLACK_NORMALIZED_RATING],
+            time_initial_ms=row[NormalizedColumn.TIME_INITIAL_MS],
+            time_increment_ms=row[NormalizedColumn.TIME_INCREMENT_MS],
             clock_remaining_ms=clocks,
         )
     except (KeyError, TypeError, ValueError) as error:
@@ -488,7 +489,7 @@ def _chunk_plies(
 
 
 def _normalized_game_sha256(row: Mapping[str, Any]) -> str:
-    content = {column: row[column] for column in _NORMALIZED_COLUMNS}
+    content = {column: row[column] for column in _LOADER_COLUMNS}
     return sha256(
         json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
