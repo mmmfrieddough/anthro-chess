@@ -121,14 +121,3 @@ Chess it applies to, and how this project differs.
 
 Do not let research notes turn the project into research for its own sake. The
 project goal remains a usable human-like chess opponent.
-
-## Documentation Checklist
-
-When changing documentation:
-
-1. Put end-state design in the relevant topic doc.
-2. Keep implementation order in `docs/planning/`.
-3. Keep actionable task status in GitHub.
-4. Point to code, schemas, and config rather than duplicating owned values.
-5. Update affected navigation links.
-6. Add a decision record only when the rationale has lasting value.

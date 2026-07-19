@@ -24,6 +24,31 @@ request. The agent is responsible for reading the repo context, finding
 relevant docs, checking issue state, and turning the request into a scoped
 plan.
 
+## Starting Implementation Work
+
+The user should not need to paste a long boilerplate prompt at the start of each
+implementation session. `AGENTS.md`, `docs/documentation.md`, topic docs, and
+decision records are the durable handoff.
+
+When given an implementation request, agents should:
+
+1. Start from `AGENTS.md`.
+2. Use the request to identify the relevant topic docs.
+3. Read the relevant decision records.
+4. Inspect the current repo before choosing edits.
+5. If the request is broad, choose or propose a cohesive first slice.
+6. Implement within that scope.
+7. Add or update tests appropriate to the change.
+8. Update docs only when the implementation changes durable intent, behavior,
+   interfaces, data shape, evaluation, or source-of-truth ownership.
+
+The user may still start a session with a short goal, such as "start the data
+pipeline" or "implement the UCI wrapper." The agent is responsible for turning
+that goal into a repo-aware work plan by reading the local context.
+
+If an explicit current-work file, issue, or roadmap item exists, use it as
+planning context. Do not require one to begin a well-scoped task.
+
 ## Issue Organization
 
 ### Implementation Queue And Public Intake
@@ -314,3 +339,15 @@ coordinates that work. Every parallel session must have its own issue branch
 and worktree. When overlap becomes apparent, stop one slice or establish an
 explicit dependency instead of letting two agents independently rewrite the
 same foundation.
+
+## Agent Checklist
+
+Before substantive changes:
+
+1. Read `AGENTS.md`.
+2. Read `docs/documentation.md`.
+3. Read the relevant topic docs.
+4. Check relevant decision records.
+5. Keep roadmap/build-order edits in `docs/planning/`.
+6. Update affected docs when the change alters durable intent.
+7. Add a decision record only when the rationale has lasting value.
