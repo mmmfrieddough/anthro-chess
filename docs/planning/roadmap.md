@@ -52,9 +52,9 @@ training configuration, validation metrics, and practical checkpoint/resume
 support.
 
 Start with the simplest training target that proves the loop works. Timing data
-should be preserved in the data pipeline where available, but the first
-training loop may leave the timing head disabled if that keeps the first proof
-cleaner.
+should be preserved in the data pipeline where available, but Milestone 1 keeps
+timing inputs and outputs out of the model and training objective. Timing
+behavior is added after the move-only path is useful and measurable.
 
 Before scaling the first run, establish the staged training-correctness
 protocol in `docs/training-and-runtime.md`: inspect fixed model inputs, prove a

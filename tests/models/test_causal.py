@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 import chess
 import pytest
@@ -11,6 +12,7 @@ from anthro_chess.chess import (
     action_vocabulary_identity,
     decode_move,
     encode_move,
+    legal_action_ids,
 )
 from anthro_chess.data import (
     GameEncodingInput,
@@ -31,33 +33,55 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     loader_batch = _sequence_batch(
         ("e2e4", "e7e5", "g1f3"),
         ("d2d4",),
+        white_rating=1500,
     )
 
     batch = MoveModelBatch.from_sequence_batch(loader_batch)
+    initial_board = chess.Board()
+    first_action = encode_move(chess.Move.from_uci("e2e4"))
+    second_action = encode_move(chess.Move.from_uci("e7e5"))
 
     assert batch.inputs.piece_ids.shape == (2, 3, 64)
     assert batch.inputs.piece_ids.dtype == torch.long
     assert batch.inputs.piece_ids[0, 0].tolist() == list(
         loader_batch.inputs.piece_ids[0][0]
     )
-    assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
-    assert batch.action_targets[0, 0].item() in batch.legal_action_ids[0][0]
+    assert batch.inputs.side_to_move[0].tolist() == [0, 1, 0]
+    assert batch.inputs.castling_rights[0].tolist() == [15, 15, 15]
+    assert batch.inputs.en_passant_square.present[0].tolist() == [
+        False,
+        True,
+        True,
+    ]
+    assert batch.inputs.en_passant_square.values[0].tolist() == [
+        0,
+        chess.E3,
+        chess.E6,
+    ]
+    assert batch.inputs.halfmove_clock[0].tolist() == [0, 0, 0]
+    assert batch.inputs.fullmove_number[0].tolist() == [1, 1, 2]
     assert batch.inputs.previous_action_id.present[0].tolist() == [
         False,
         True,
         True,
     ]
+    assert batch.inputs.previous_action_id.values[0].tolist() == [
+        0,
+        first_action,
+        second_action,
+    ]
     assert batch.inputs.player_rating.present[0].tolist() == [True, False, True]
+    assert batch.inputs.player_rating.values[0].tolist() == [1500, 0, 1500]
     assert batch.inputs.opponent_rating.present[0].tolist() == [
         False,
         True,
         False,
     ]
-    assert batch.inputs.time_initial_ms.present[0].tolist() == [
-        True,
-        True,
-        True,
-    ]
+    assert batch.inputs.opponent_rating.values[0].tolist() == [0, 1500, 0]
+    assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
+    assert tuple(batch.legal_action_ids[0][0]) == legal_action_ids(initial_board)
+    assert batch.game_ids[0].tolist() == [100, 100, 100]
+    assert batch.ply_indices[0].tolist() == [0, 1, 2]
     assert batch.attention_mask[1].tolist() == [True, False, False]
     assert batch.action_loss_mask.tolist() == batch.attention_mask.tolist()
 
@@ -78,6 +102,7 @@ def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() ->
     assert torch.isfinite(logits).all()
     assert torch.count_nonzero(logits[1, 1:]).item() == 0
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
+    assert model.identity()["timing_inputs"] is False
     assert model.identity()["timing_head"] is False
 
 
@@ -120,15 +145,18 @@ def test_ordinary_model_and_loss_path_overfits_a_fixed_tiny_sample(
 ) -> None:
     torch.manual_seed(11)
     batch = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    assert not torch.any(batch.inputs.player_rating.present)
+    assert not torch.any(batch.inputs.opponent_rating.present)
     model = CausalMoveModel(_tiny_config())
     optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
 
     with torch.no_grad():
-        initial_loss = masked_action_cross_entropy(
+        initial_loss_tensor = masked_action_cross_entropy(
             model(batch),
             batch.action_targets,
             batch.action_loss_mask,
-        ).item()
+        )
+        initial_loss = initial_loss_tensor.item()
 
     for _ in range(60):
         optimizer.zero_grad()
@@ -147,7 +175,9 @@ def test_ordinary_model_and_loss_path_overfits_a_fixed_tiny_sample(
             batch.action_loss_mask,
         ).item()
 
-    assert initial_loss > 1.0
+    expected_untrained_loss = math.log(ACTION_VOCABULARY_SIZE)
+    assert torch.isfinite(initial_loss_tensor)
+    assert abs(initial_loss - expected_untrained_loss) < 2.0
     assert final_loss < initial_loss * 0.2
 
 
@@ -158,7 +188,11 @@ def test_model_config_rejects_incompatible_attention_dimensions() -> None:
         MoveModelConfig(model_dim=15, attention_heads=3)
 
 
-def _sequence_batch(*move_lines: tuple[str, ...]) -> SequenceBatch:
+def _sequence_batch(
+    *move_lines: tuple[str, ...],
+    white_rating: int | None = None,
+    black_rating: int | None = None,
+) -> SequenceBatch:
     examples = []
     for game_offset, moves in enumerate(move_lines):
         board = chess.Board()
@@ -174,10 +208,10 @@ def _sequence_batch(*move_lines: tuple[str, ...]) -> SequenceBatch:
                 ruleset="standard",
                 initial_position=chess.STARTING_FEN,
                 action_ids=tuple(action_ids),
-                white_normalized_rating=1500,
-                black_normalized_rating=None,
-                time_initial_ms=60_000,
-                time_increment_ms=0,
+                white_normalized_rating=white_rating,
+                black_normalized_rating=black_rating,
+                time_initial_ms=None,
+                time_increment_ms=None,
                 clock_remaining_ms=tuple(None for _ in action_ids),
             )
         )

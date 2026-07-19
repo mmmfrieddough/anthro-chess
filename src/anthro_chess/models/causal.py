@@ -20,7 +20,7 @@ _PIECE_ID_COUNT = 13
 _SIDE_TO_MOVE_COUNT = 2
 _CASTLING_RIGHTS_COUNT = 16
 _EN_PASSANT_TOKEN_COUNT = 65
-_SCALAR_CONTEXT_COUNT = 14
+_SCALAR_CONTEXT_COUNT = 4
 
 
 class BoardEncoder(nn.Module):
@@ -161,6 +161,7 @@ class CausalMoveModel(nn.Module):
             "config": self.config.model_dump(mode="json"),
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
+            "timing_inputs": False,
             "timing_head": False,
         }
 
@@ -170,17 +171,11 @@ class CausalMoveModel(nn.Module):
         nullable = (
             inputs.player_rating,
             inputs.opponent_rating,
-            inputs.time_initial_ms,
-            inputs.time_increment_ms,
-            inputs.player_clock_ms,
-            inputs.opponent_clock_ms,
         )
         values = tuple(_nullable_log_value(item) for item in nullable)
         presence = tuple(item.present.float() for item in nullable)
         return torch.stack(
             (
-                torch.log1p(inputs.halfmove_clock.float()),
-                torch.log1p(inputs.fullmove_number.float()),
                 *values,
                 *presence,
             ),

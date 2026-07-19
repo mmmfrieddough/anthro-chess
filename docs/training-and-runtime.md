@@ -87,9 +87,11 @@ without preserving opaque worker state.
 
 The initial action-only model consumes that ordinary loader boundary through
 `anthro_chess.models`, preserving its explicit targets, legal actions,
-missingness, padding, and causal masks during tensor conversion. The shared
-masked action objective lives in `anthro_chess.training`; deterministic
-structural and tiny-overfit checks exercise those same model and loss APIs.
+rating missingness, padding, and causal masks during tensor conversion. Timing
+fields remain preserved in the loader output but are deliberately outside the
+Milestone 1 model boundary and objective. The shared masked action objective
+lives in `anthro_chess.training`; deterministic structural and tiny-overfit
+checks exercise those same model and loss APIs.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input

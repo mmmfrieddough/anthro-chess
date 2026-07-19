@@ -33,10 +33,6 @@ class MoveModelInputs:
     previous_action_id: OptionalTensor
     player_rating: OptionalTensor
     opponent_rating: OptionalTensor
-    time_initial_ms: OptionalTensor
-    time_increment_ms: OptionalTensor
-    player_clock_ms: OptionalTensor
-    opponent_clock_ms: OptionalTensor
 
 
 @dataclass(frozen=True)
@@ -105,22 +101,6 @@ class MoveModelBatch:
                     inputs.opponent_rating.values,
                     inputs.opponent_rating.present,
                 ),
-                time_initial_ms=optional(
-                    inputs.time_initial_ms.values,
-                    inputs.time_initial_ms.present,
-                ),
-                time_increment_ms=optional(
-                    inputs.time_increment_ms.values,
-                    inputs.time_increment_ms.present,
-                ),
-                player_clock_ms=optional(
-                    inputs.player_clock_ms.values,
-                    inputs.player_clock_ms.present,
-                ),
-                opponent_clock_ms=optional(
-                    inputs.opponent_clock_ms.values,
-                    inputs.opponent_clock_ms.present,
-                ),
             ),
             action_targets=required(batch.action_targets),
             action_loss_mask=boolean(batch.action_loss_mask),
@@ -159,10 +139,6 @@ class MoveModelBatch:
             self.inputs.previous_action_id,
             self.inputs.player_rating,
             self.inputs.opponent_rating,
-            self.inputs.time_initial_ms,
-            self.inputs.time_increment_ms,
-            self.inputs.player_clock_ms,
-            self.inputs.opponent_clock_ms,
         )
         if any(
             item.values.shape != expected_shape or item.present.shape != expected_shape
