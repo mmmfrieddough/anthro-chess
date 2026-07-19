@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from pyarrow import Schema  # type: ignore[import-untyped]
 
 SCHEMA_VERSION = 1
-PREPROCESSING_VERSION = 1
+PREPROCESSING_VERSION = 2
 
 FieldStatus = Literal["present", "unavailable", "rejected"]
 

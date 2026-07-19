@@ -1,7 +1,9 @@
 """Data ingestion, normalization, and training-example construction."""
 
 from anthro_chess.data.config import (
+    ArchiveConfig,
     FilterConfig,
+    OutputConfig,
     PrepareConfig,
     SequenceLoaderConfig,
     SourceConfig,
@@ -32,12 +34,16 @@ from anthro_chess.data.loading import (
     collate_sequences,
 )
 from anthro_chess.data.prepare import (
+    AcquisitionResult,
     DataPreparationError,
     PreparationResult,
+    acquire_archive,
     prepare_pgn,
 )
 
 __all__ = [
+    "AcquisitionResult",
+    "ArchiveConfig",
     "BOARD_SQUARE_COUNT",
     "ENCODING_NAME",
     "ENCODING_SCHEMA_SHA256",
@@ -50,6 +56,7 @@ __all__ = [
     "FilterConfig",
     "GameEncodingInput",
     "OptionalIntBatch",
+    "OutputConfig",
     "PlyEncoding",
     "PreparationResult",
     "PrepareConfig",
@@ -62,6 +69,7 @@ __all__ = [
     "SequenceLoaderState",
     "SourceConfig",
     "SplitConfig",
+    "acquire_archive",
     "collate_sequences",
     "encode_game",
     "encoding_identity",

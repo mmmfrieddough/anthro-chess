@@ -6,10 +6,12 @@ validation, and defaults; the shared loading boundary lives under
 `anthro_chess.config`. TOML files here select values but do not define the
 schema.
 
-`data/` contains the first real selection for the implemented PGN sample path.
-Add focused `training/`, `evaluation/`, or `runtime/` subdirectories when the
-corresponding command exists. Do not add speculative example files for commands
-that have not been implemented.
+`data/` contains the offline sample selection and the pinned, bounded Lichess
+baseline-corpus selection. The latter owns the archive identity, published
+checksum, rating namespace, deterministic selection bound, and normalized shard
+size. Add focused `training/`, `evaluation/`, or `runtime/` subdirectories when
+the corresponding command exists. Do not add speculative example files for
+commands that have not been implemented.
 
 Commands should use their code-owned defaults unless an explicit configuration
 path is supplied. They must not search the current working directory or infer a

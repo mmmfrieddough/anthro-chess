@@ -13,10 +13,10 @@ The repository currently provides an installable Python package, a lightweight
 `anthro` command, strict configuration foundations, `python-chess` integration,
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
-a minimal causal action model with masked move loss, plus a locked development
-environment. Broader data ingestion, the runnable model-training loop,
-evaluation, playable runtime, UCI, model checkpoints, and packaged releases
-remain planned work.
+a minimal causal action model with masked move loss, a reproducible bounded
+Lichess baseline-corpus path, and a locked development environment. The
+runnable model-training loop, evaluation, playable runtime, UCI, model
+checkpoints, and packaged releases remain planned work.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -53,6 +53,7 @@ The current command surface is intentionally small:
 uv run anthro --help
 uv run anthro --version
 uv run anthro smoke
+uv run anthro data acquire --help
 uv run anthro data prepare --help
 ```
 
@@ -74,6 +75,34 @@ This writes compact Parquet game records under `normalized/` and a separate
 provenance manifest under `manifests/`. The command requires the data
 dependencies, which the locked development environment includes; installed
 packages can add them with the `data` extra.
+
+## Baseline Training Corpus
+
+The first many-game selection is pinned in
+`configs/data/lichess-blitz-2017-04.toml`. Acquisition is an explicit network
+operation that downloads the configured Lichess archive under the ignored
+artifact root and verifies its published SHA-256 digest:
+
+```console
+uv run anthro data acquire \
+  artifacts/lichess-blitz-baseline \
+  --config configs/data/lichess-blitz-2017-04.toml
+```
+
+Preparation then streams the compressed PGN directly into bounded normalized
+shards:
+
+```console
+uv run anthro data prepare \
+  artifacts/lichess-blitz-baseline/raw/lichess_db_standard_rated_2017-04.pgn.zst \
+  artifacts/lichess-blitz-baseline \
+  --config configs/data/lichess-blitz-2017-04.toml
+```
+
+The checked-in selection owns the exact release, checksum, one Lichess rating
+namespace, deterministic size bound, split recipe, and shard sizing. Raw and
+normalized corpus files remain outside Git. Once acquisition finishes,
+preparation and later training work need no network access.
 
 ## Development
 
