@@ -18,7 +18,7 @@ from anthro_chess.data.encoding import (
 )
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
-LOADER_STATE_VERSION = 1
+LOADER_STATE_VERSION = 2
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
     NormalizedColumn.GAME_ID,
@@ -121,7 +121,7 @@ class SequenceBatch:
 
 @dataclass(frozen=True)
 class SequenceLoaderState:
-    """Serializable exact cursor for one deterministic loader epoch."""
+    """Serializable exact next-batch cursor for one deterministic loader epoch."""
 
     version: int
     dataset_sha256: str
@@ -271,24 +271,20 @@ class SequenceDataLoader(Iterator[SequenceBatch]):
         ).hexdigest()
         self._epoch = 0
         self._position = 0
-        self._order = self._order_for_epoch(self._epoch)
+        self._batches = self._batches_for_epoch(self._epoch)
 
     def __iter__(self) -> SequenceDataLoader:
         return self
 
     def __next__(self) -> SequenceBatch:
-        if self._position >= len(self._order):
+        if self._position >= len(self._batches):
             raise StopIteration
-        end = min(self._position + self.config.batch_size, len(self._order))
-        if self.config.drop_last and end - self._position < self.config.batch_size:
-            self._position = len(self._order)
-            raise StopIteration
-        indices = self._order[self._position : end]
-        self._position = end
+        indices = self._batches[self._position]
+        self._position += 1
         return collate_sequences(tuple(self.dataset[index] for index in indices))
 
     def state(self) -> SequenceLoaderState:
-        """Return the exact next-example cursor for checkpointing."""
+        """Return the exact next-batch cursor for checkpointing."""
 
         return SequenceLoaderState(
             version=LOADER_STATE_VERSION,
@@ -314,12 +310,12 @@ class SequenceDataLoader(Iterator[SequenceBatch]):
             raise DataLoadingError("loader state belongs to different sequence data")
         if parsed.configuration_sha256 != self.configuration_sha256:
             raise DataLoadingError("loader state uses different loader configuration")
-        order = self._order_for_epoch(parsed.epoch)
-        if not 0 <= parsed.position <= len(order):
-            raise DataLoadingError("loader state position is outside the dataset")
+        batches = self._batches_for_epoch(parsed.epoch)
+        if not 0 <= parsed.position <= len(batches):
+            raise DataLoadingError("loader state position is outside the epoch plan")
         self._epoch = parsed.epoch
         self._position = parsed.position
-        self._order = order
+        self._batches = batches
 
     @classmethod
     def from_parquet(
@@ -345,22 +341,40 @@ class SequenceDataLoader(Iterator[SequenceBatch]):
             raise ValueError("epoch must be a nonnegative integer")
         self._epoch = epoch
         self._position = 0
-        self._order = self._order_for_epoch(epoch)
+        self._batches = self._batches_for_epoch(epoch)
 
-    def _order_for_epoch(self, epoch: int) -> tuple[int, ...]:
-        indices = tuple(range(len(self.dataset)))
-        if not self.config.shuffle:
-            return indices
-        return tuple(
-            sorted(
-                indices,
-                key=lambda index: _shuffle_key(
+    def _batches_for_epoch(self, epoch: int) -> tuple[tuple[int, ...], ...]:
+        buckets: dict[int, list[int]] = {}
+        for index, example in enumerate(self.dataset):
+            bucket = _length_bucket(len(example.plies), self.config.length_bucket_width)
+            buckets.setdefault(bucket, []).append(index)
+
+        batches: list[tuple[int, ...]] = []
+        for bucket in sorted(buckets):
+            indices = buckets[bucket]
+            if self.config.shuffle:
+                indices.sort(
+                    key=lambda index: _shuffle_key(
+                        self.config.seed,
+                        epoch,
+                        self.dataset[index],
+                    )
+                )
+            for start in range(0, len(indices), self.config.batch_size):
+                batch = tuple(indices[start : start + self.config.batch_size])
+                if self.config.drop_last and len(batch) < self.config.batch_size:
+                    continue
+                batches.append(batch)
+
+        if self.config.shuffle:
+            batches.sort(
+                key=lambda batch: _batch_shuffle_key(
                     self.config.seed,
                     epoch,
-                    self.dataset[index],
-                ),
+                    batch,
+                )
             )
-        )
+        return tuple(batches)
 
 
 def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
@@ -529,6 +543,17 @@ def _shuffle_key(seed: str, epoch: int, example: SequenceExample) -> bytes:
             f"{example.game_id}\0{example.start_ply}"
         ).encode()
     ).digest()
+
+
+def _batch_shuffle_key(seed: str, epoch: int, batch: tuple[int, ...]) -> bytes:
+    indices = ",".join(str(index) for index in batch)
+    return sha256(f"{seed}\0{epoch}\0batch\0{indices}".encode()).digest()
+
+
+def _length_bucket(sequence_length: int, bucket_width: int | None) -> int:
+    if bucket_width is None:
+        return 0
+    return (sequence_length - 1) // bucket_width
 
 
 def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:

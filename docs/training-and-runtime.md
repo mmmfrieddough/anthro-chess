@@ -78,11 +78,12 @@ sequences, whenever practical. The transformer should receive one timestep per
 ply and use a causal attention mask so every ply prediction can be trained in a
 single parallel forward pass while still preventing access to future moves.
 
-The initial loader supports full games and contiguous chunks, pads only within
-the current batch, and emits separate padding, action-loss, nullable-context,
-and causal-attention masks. Deterministic ordering is derived from an explicit
-seed and epoch. A serializable dataset identity plus next-example cursor permits
-exact continuation at a batch boundary without preserving opaque worker state.
+The initial loader supports full games and contiguous chunks, groups sequences
+into configurable length buckets, pads only within the current batch, and emits
+separate padding, action-loss, nullable-context, and causal-attention masks.
+Deterministic ordering is derived from an explicit seed and epoch. A
+serializable dataset identity plus next-batch cursor permits exact continuation
+without preserving opaque worker state.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input

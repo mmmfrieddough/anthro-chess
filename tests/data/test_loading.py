@@ -98,6 +98,46 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
     assert batch.inputs.previous_action_id.present[1][0] is True
 
 
+def test_length_buckets_keep_similarly_sized_full_games_together(
+    tmp_path: Path,
+) -> None:
+    moves = (
+        "e2e4",
+        "e7e5",
+        "g1f3",
+        "b8c6",
+        "f1b5",
+        "a7a6",
+        "b5a4",
+        "g8f6",
+    )
+    path = _write_games(
+        tmp_path,
+        [
+            _row(1, moves[:1]),
+            _row(2, moves[:2]),
+            _row(3, moves[:7]),
+            _row(4, moves[:8]),
+        ],
+    )
+    loader = SequenceDataLoader.from_parquet(
+        path,
+        SequenceLoaderConfig(
+            batch_size=2,
+            length_bucket_width=4,
+            shuffle=False,
+        ),
+    )
+
+    short_batch = next(loader)
+    long_batch = next(loader)
+
+    assert tuple(sum(mask) for mask in short_batch.attention_mask) == (1, 2)
+    assert tuple(sum(mask) for mask in long_batch.attention_mask) == (7, 8)
+    assert short_batch.sequence_length == 2
+    assert long_batch.sequence_length == 8
+
+
 def test_causal_mask_prevents_future_target_attention() -> None:
     dataset = _encoded_dataset()
     loader = SequenceDataLoader(

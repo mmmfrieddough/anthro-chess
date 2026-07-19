@@ -344,8 +344,10 @@ The initial sequence loader reads those normalized games into either full-game
 sequences or contiguous fixed-length chunks. It packs framework-neutral numeric
 batches, keeps nullable context behind explicit presence masks, reconstructs
 legal actions per ply, and pads variable lengths behind attention and loss
-masks. Its deterministic epoch order and explicit next-example cursor are the
-restart boundary for training checkpoints.
+masks. Length buckets keep similarly sized sequences together before completed
+batches are shuffled, reducing padding without changing the examples. Its
+deterministic epoch plan and explicit next-batch cursor are the restart boundary
+for training checkpoints.
 
 ## Approximate Scale
 

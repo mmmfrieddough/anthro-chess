@@ -47,6 +47,7 @@ class SequenceLoaderConfig(ConfigModel):
 
     split: Literal["train", "validation"] = "train"
     batch_size: int = Field(default=8, ge=1)
+    length_bucket_width: int | None = Field(default=32, ge=1)
     chunk_length: int | None = Field(default=None, ge=1)
     shuffle: StrictBool = True
     seed: str = Field(default="anthro-sequence-loader-v1", min_length=1)
