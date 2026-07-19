@@ -3,18 +3,18 @@
 This project is `anthro-chess`: a chess model intended to mimic human play,
 optional timing, and controllable soft preferences in chess games.
 
-Before making substantive changes, read:
+Before making substantive changes, read `docs/documentation.md`, the topic docs
+relevant to the requested area, and any relevant records in `docs/decisions/`.
+The topic docs are:
 
-1. `docs/documentation.md`
-2. `docs/vision.md`
-3. `docs/design-principles.md`
-4. `docs/architecture.md`
-5. `docs/engine-behavior.md`
-6. `docs/data.md`
-7. `docs/training-and-runtime.md`
-8. `docs/interfaces.md`
-9. `docs/evaluation.md`
-10. Any relevant records in `docs/decisions/`
+- `docs/vision.md`
+- `docs/design-principles.md`
+- `docs/architecture.md`
+- `docs/engine-behavior.md`
+- `docs/data.md`
+- `docs/training-and-runtime.md`
+- `docs/interfaces.md`
+- `docs/evaluation.md`
 
 For preference-control work, also read `docs/preference-controls.md`.
 
@@ -32,7 +32,7 @@ issue, or ask to create or refine issues for a milestone without repeating
 process details. When setting up milestone work, use real GitHub milestones,
 tracker issues, sub-issues, issue dependencies for true blockers, and the
 repo's `area:` and `type:` labels as described in
-`docs/documentation.md`. When working from an issue, inspect linked docs,
+`docs/issue-workflow.md`. When working from an issue, inspect linked docs,
 decisions, parent/sub-issues, dependency state, labels, and milestone context;
 keep the issue updated with relevant findings, follow-ups, and completion
 status; and keep roadmap changes under `docs/planning/`.
@@ -48,7 +48,7 @@ and push it, and open a ready-for-review pull request that closes the issue on
 merge. Do not work directly in the shared main checkout when another session
 could be using it, do not merge the pull request, and do not require the user to
 return for routine post-merge cleanup. The full mechanics and exceptions are in
-`docs/documentation.md`.
+`docs/issue-workflow.md`.
 
 Before implementation, ensure required machine-level bootstrap tools are
 available; install a missing tool or report a genuine installation blocker.

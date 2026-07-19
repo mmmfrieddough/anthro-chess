@@ -63,7 +63,8 @@ sub-issues, and dependencies. If you want to implement an existing task, check
 that it is unblocked and leave a short comment before investing in a large
 change. Broader implementation order belongs in
 [`docs/planning/roadmap.md`](docs/planning/roadmap.md); detailed task status
-belongs in GitHub.
+belongs in GitHub. The maintainer and agent mechanics are documented in the
+[`issue workflow`](docs/issue-workflow.md).
 
 ## Pull Requests
 

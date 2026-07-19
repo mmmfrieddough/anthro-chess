@@ -110,7 +110,8 @@ capability is implemented:
 Supporting context lives in the [decision records](docs/decisions/) and
 [research notes](docs/research.md). Implementation order lives separately in
 the [roadmap](docs/planning/roadmap.md), while actionable work is tracked in
-[GitHub issues](https://github.com/mmmfrieddough/anthro-chess/issues).
+[GitHub issues](https://github.com/mmmfrieddough/anthro-chess/issues) using the
+repository's [issue workflow](docs/issue-workflow.md).
 
 Agents working in this repository should read [AGENTS.md](AGENTS.md) first.
 
