@@ -77,6 +77,13 @@ Default metrics should include:
 - rating-sliced move loss;
 - timing-sliced loss when timing is enabled.
 
+The initial move-validation implementation lives in
+`anthro_chess.evaluation`. It consumes ordinary loader batches, evaluates raw
+action logits with the explicit action-loss and rating-presence masks, and uses
+the aligned legal actions from the exact chess layer. Its versioned structured
+result is the source of truth for exact metric fields and rating-band
+boundaries.
+
 ### Periodic Benchmarks
 
 These should run less often than normal validation.
