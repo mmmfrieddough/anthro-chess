@@ -31,15 +31,19 @@ The user should be able to provide an issue link, ask for the next appropriate
 issue, or ask to create or refine issues for a milestone without repeating
 process details. When setting up milestone work, use real GitHub milestones,
 tracker issues, sub-issues, issue dependencies for true blockers, and the
-repo's `area:` and `type:` labels as described in
-`docs/issue-workflow.md`. When working from an issue, inspect linked docs,
+repo's `area:`, `type:`, `execution:`, and `verification:` labels as described
+in `docs/issue-workflow.md`. When working from an issue, inspect linked docs,
 decisions, parent/sub-issues, dependency state, labels, and milestone context;
 keep the issue updated with relevant findings, follow-ups, and completion
 status; and keep roadmap changes under `docs/planning/`.
 
 When choosing the next issue, select only a `type: task` issue in the active
 milestone that is attached to its tracker and has no open blockers. Treat any
-issue missing that metadata as intake awaiting maintainer triage.
+issue missing that metadata as intake awaiting maintainer triage. Also respect
+the execution capabilities declared for the session: a session without the
+specified GPU environment must exclude `execution: gpu-required` issues, while
+`verification: gpu-required` issues remain eligible for implementation and use
+the documented handoff when GPU verification remains.
 
 Treat a request to work on or implement an issue as authorization to complete
 the normal pre-merge workflow: start from current `origin/main`, create or reuse
@@ -49,6 +53,12 @@ merge. Do not work directly in the shared main checkout when another session
 could be using it, do not merge the pull request, and do not require the user to
 return for routine post-merge cleanup. The full mechanics and exceptions are in
 `docs/issue-workflow.md`.
+
+Once dispatched, the implementation session owns the issue updates, claim,
+publication, and any handoff. Treat an explicit execution-surface or hardware
+capability declaration supplied by the dispatcher or environment as
+authoritative instead of guessing from the operating system or available
+commands.
 
 Before implementation, ensure required machine-level bootstrap tools are
 available; install a missing tool or report a genuine installation blocker.
