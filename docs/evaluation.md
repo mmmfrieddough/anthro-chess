@@ -105,6 +105,25 @@ Useful post-training benchmarks include:
 - preference-control benchmark suites;
 - regression comparisons against previously accepted checkpoints.
 
+### Correctness Gates And Benchmarks
+
+Training sanity checks and model benchmarks answer different questions and
+should remain complementary. Input inspection, dependency tests, and tiny
+overfitting establish that the pipeline is capable of learning the intended
+targets. Frozen held-out metrics and later rollout benchmarks establish whether
+that learning transfers to behavior the project values.
+
+A tiny sample can be memorized even when inputs are corrupted or meaningless.
+A benchmark can also report stable numbers for a consistently miswired
+pipeline. The first training implementation should therefore pass the staged
+correctness protocol in `docs/training-and-runtime.md` before its benchmark
+results become the accepted baseline.
+
+After that baseline exists, routine model changes should use focused structural
+checks plus comparisons on frozen evaluation inputs. Repeat the full staged
+protocol when a change alters a foundational data, encoding, alignment, model,
+or loss contract, rather than for unrelated software changes.
+
 ## Held-Out Prediction
 
 Held-out human games should be the core offline evaluation source.
