@@ -35,6 +35,10 @@ dependencies = [
 data = [
     "pyarrow>=21,<22",
 ]
+model = [
+    "numpy>=2,<3",
+    "torch>=2.7,<3",
+]
 
 [project.scripts]
 anthro = "anthro_chess.interfaces.cli:main"
@@ -42,11 +46,13 @@ anthro = "anthro_chess.interfaces.cli:main"
 [dependency-groups]
 dev = [
   "mypy>=1.15",
+  "numpy>=2,<3",
   "pre-commit>=4.2",
   "pytest>=8.3",
   "pytest-cov>=6.0",
   "pyarrow>=21,<22",
   "ruff>=0.11",
+  "torch>=2.7,<3",
 ]
 
 [project.urls]

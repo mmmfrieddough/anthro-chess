@@ -13,7 +13,8 @@ The repository currently provides an installable Python package, a lightweight
 `anthro` command, strict configuration foundations, `python-chess` integration,
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
-a locked development environment. Broader data ingestion, model training,
+a minimal causal action model with masked move loss, plus a locked development
+environment. Broader data ingestion, the runnable model-training loop,
 evaluation, playable runtime, UCI, model checkpoints, and packaged releases
 remain planned work.
 

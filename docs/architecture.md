@@ -112,6 +112,12 @@ Training should make full use of the causal attention mask. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions
 are trained in parallel while each timestep only attends to prior timesteps.
 
+The current initial implementation follows this shape with a learned compact
+board encoder, a per-ply context combiner, an action-only causal transformer,
+and a head over the shared action vocabulary. Its tensor boundary,
+hyperparameter schema, compatibility identity, and model definition live in
+`anthro_chess.models`.
+
 ## Static And Dynamic Metadata
 
 Static game settings include:
