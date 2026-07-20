@@ -52,10 +52,12 @@ manifests fully specify schema versions, offsets, checksums, and source inputs.
 ### Shared Machine-Local Data
 
 Large corpora that should be reused across worktrees may live in a shared
-machine-local directory outside every repository checkout. When
-`ANTHRO_CHESS_DATA_ROOT` is set, treat it as the parent directory for those
-corpora and check there before downloading another copy. Keep the variable's
-machine-specific value in local environment configuration rather than Git.
+machine-local directory outside every repository checkout. Before acquiring
+data, first check whether `ANTHRO_CHESS_DATA_ROOT` is already set. When it is,
+inspect the intended corpus directory beneath that root and reuse available
+verified archives, normalized shards, and manifests instead of downloading or
+preparing another copy. When configuring a new machine, keep the variable's
+value in local environment configuration rather than Git.
 
 Data commands continue to receive explicit input and output paths; they do not
 read the environment variable implicitly. Pass a corpus directory beneath the
