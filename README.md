@@ -15,9 +15,10 @@ stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
 Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
-determinism selection, and a locked development environment. Playable runtime,
-UCI, and packaged releases remain planned work; validation metrics exist within the
-training path but the broader evaluation harness is not yet implemented.
+determinism selection, an end-to-end minimal training proof, and a locked
+development environment. Playable runtime, UCI, and packaged releases remain
+planned work; validation metrics exist within the training path but the broader
+evaluation harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -62,6 +63,16 @@ uv run anthro train --help
 Only implemented commands appear in `--help`. Evaluation, play, and UCI
 commands will be added as those capabilities become real.
 
+Generated datasets and runs can be shared across worktrees by setting:
+
+```console
+export ANTHRO_CHESS_DATA_ROOT="$HOME/.local/share/anthro-chess/datasets"
+export ANTHRO_CHESS_RUN_ROOT="$HOME/.local/share/anthro-chess/runs"
+```
+
+The commands below then read and write those directories directly. Explicit
+command path arguments and path overrides still take precedence.
+
 ## Sample Data Path
 
 The checked-in Lichess sample can be normalized without network access:
@@ -69,7 +80,6 @@ The checked-in Lichess sample can be normalized without network access:
 ```console
 uv run anthro data prepare \
   samples/lichess/standard-export-sample.pgn \
-  artifacts/lichess-sample \
   --config configs/data/lichess-sample.toml
 ```
 
@@ -84,12 +94,12 @@ The checked-in deterministic training selection consumes that prepared sample:
 uv run anthro train --config configs/training/sample-smoke.toml
 ```
 
-It performs a bounded real optimizer run on CPU and writes step metrics plus a
-run record and optimizer-step checkpoints under the ignored artifact root. The
-artifacts preserve the resolved configuration, data manifest and identities,
-model compatibility metadata, seed, code revision when available, optimizer
-state, exact loader cursor, and optimizer-update evidence. A run can continue
-from its latest checkpoint with strict command overrides:
+It performs a bounded real optimizer run and validation on CPU and writes step
+metrics plus a run record and optimizer-step checkpoints under the configured
+run root. The artifacts preserve the resolved configuration, data manifest
+and identities, model compatibility metadata, seed, code revision when
+available, optimizer state, exact loader cursor, and optimizer-update evidence.
+A run can continue from its latest checkpoint with strict command overrides:
 
 ```console
 uv run anthro train \
@@ -134,20 +144,15 @@ adds diagnostic overhead and should be disabled for ordinary throughput runs.
 
 The first many-game selection is pinned in
 `configs/data/lichess-blitz-2017-04.toml`. Acquisition is an explicit network
-operation that downloads the configured Lichess archive under the ignored
-artifact root and verifies its published SHA-256 digest:
+operation that downloads the configured Lichess archive under the data root and
+verifies its published SHA-256 digest:
 
-On a machine that may share corpora across worktrees, first check whether
-`ANTHRO_CHESS_DATA_ROOT` is already set and whether the intended corpus is
-available beneath it. Reuse those verified artifacts instead of downloading
-another copy. When configuring a new machine, keep the variable's value in
-local environment configuration. The CLI still receives the expanded path
-explicitly; it does not read the environment variable itself. See
-`docs/data.md` for the shared-data convention.
+Data commands use `ANTHRO_CHESS_DATA_ROOT` when their artifact directory is
+omitted. They read and write the configured artifact directory directly, so
+the same verified corpus can be reused across worktrees.
 
 ```console
 uv run anthro data acquire \
-  artifacts/lichess-blitz-baseline \
   --config configs/data/lichess-blitz-2017-04.toml
 ```
 
@@ -156,8 +161,6 @@ shards:
 
 ```console
 uv run anthro data prepare \
-  artifacts/lichess-blitz-baseline/raw/lichess_db_standard_rated_2017-04.pgn.zst \
-  artifacts/lichess-blitz-baseline \
   --config configs/data/lichess-blitz-2017-04.toml
 ```
 
@@ -165,6 +168,26 @@ The checked-in selection owns the exact release, checksum, one Lichess rating
 namespace, deterministic size bound, split recipe, and shard sizing. Raw and
 normalized corpus files remain outside Git. Once acquisition finishes,
 preparation and later training work need no network access.
+
+## Minimal Training Proof
+
+The first complete proof combines the CPU correctness gate with a measured
+many-game Apple-silicon MPS run. The baseline command reports both raw move loss
+and legally masked held-out move loss; the latter is compared directly with
+uniform selection over exact legal actions.
+
+See
+[the minimal training proof](docs/planning/minimal-training-proof.md)
+for the reproducible corpus slice, baseline configuration, resume command,
+acceptance comparison, and measured evidence. The resulting checkpoint is a
+development artifact, not a published model release.
+
+When `ANTHRO_CHESS_RUN_ROOT` is set, checked-in training commands write their
+complete run directories there. Keep the run record, metrics, and checkpoint
+directory together so a later session can resume or select a compatible
+checkpoint without copying it. See
+[`docs/training-and-runtime.md`](docs/training-and-runtime.md) for the artifact
+layout and boundary with future public model hosting.
 
 ## Development
 

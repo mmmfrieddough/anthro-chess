@@ -80,9 +80,11 @@ Default metrics should include:
 The initial move-validation implementation lives in
 `anthro_chess.evaluation`. It consumes ordinary loader batches, evaluates raw
 action logits with the explicit action-loss and rating-presence masks, and uses
-the aligned legal actions from the exact chess layer. Its versioned structured
-result is the source of truth for exact metric fields and rating-band
-boundaries.
+the aligned legal actions from the exact chess layer. It reports both raw move
+loss and move loss after exact legal masking, allowing a direct comparison with
+uniform-over-legal selection while preserving the raw-logit legality
+diagnostics. Its versioned structured result is the source of truth for exact
+metric fields and rating-band boundaries.
 
 ### Periodic Benchmarks
 

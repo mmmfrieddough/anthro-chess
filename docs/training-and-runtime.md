@@ -208,6 +208,9 @@ configuration, seed, data and encoding identities, and relevant metrics. Exact
 debug values belong in code, tests, or checked-in configuration rather than in
 this document.
 
+The first completed progression, its reproducible commands, and measured
+evidence are recorded in `docs/planning/minimal-training-proof.md`.
+
 The complete progression is a gate for the first training implementation and
 for later changes to foundational data, encoding, alignment, model, or loss
 contracts. Routine model changes should run the relevant deterministic checks
@@ -277,6 +280,51 @@ across different backends is not promised to be bit-identical.
 The checkpoint configuration schema and artifact version in
 `anthro_chess.training` are the source of truth for exact fields and selection
 syntax.
+
+### Shared Machine-Local Runs
+
+Before a checkpoint is ready for public model hosting, complete training runs
+may live in a shared machine-local directory outside repository worktrees.
+Use `ANTHRO_CHESS_RUN_ROOT` for that location. The CLI maps configured relative
+run paths beneath this root and maps configured relative dataset paths beneath
+`ANTHRO_CHESS_DATA_ROOT`. An explicit absolute path or command-line path
+override takes precedence. Resolved paths are retained in the run artifact.
+A typical layout keeps datasets and runs as siblings:
+
+```text
+~/.local/share/anthro-chess/
+  datasets/
+  runs/
+```
+
+For example:
+
+```console
+export ANTHRO_CHESS_DATA_ROOT="$HOME/.local/share/anthro-chess/datasets"
+export ANTHRO_CHESS_RUN_ROOT="$HOME/.local/share/anthro-chess/runs"
+```
+
+Retain the complete run directory as one artifact:
+
+```text
+<run-name>/
+  run.json
+  metrics.jsonl
+  checkpoints/
+    latest.json
+    step-........pt
+```
+
+Do not preserve only a copied weight file. The run record, metrics, interval
+checkpoints, compatibility identities, and latest pointer are needed for
+comparison, resume, provenance, and later runtime selection. A model runner can
+accept an explicit compatible checkpoint path beneath this root without copying
+it or requiring an external model registry.
+
+Machine-local retention is not a release. Publishing selected inference
+artifacts through Hugging Face or another registry remains a later decision
+once checkpoint quality, packaging, and public compatibility expectations are
+stable.
 
 ## Training Evaluation
 

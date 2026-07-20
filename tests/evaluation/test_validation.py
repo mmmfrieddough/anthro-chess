@@ -63,15 +63,28 @@ def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
         .squeeze(1)
     )
     expected_legal_masses = []
+    expected_legal_losses = []
     for offset, (batch_index, sequence_index) in enumerate(active_indices.tolist()):
         legal_actions = batch.legal_action_ids[batch_index][sequence_index]
         probabilities = torch.softmax(active_logits[offset], dim=-1)
         expected_legal_masses.append(
             float(probabilities[list(legal_actions)].sum().item())
         )
+        target = int(active_targets[offset].item())
+        expected_legal_losses.append(
+            float(
+                (
+                    torch.logsumexp(active_logits[offset, list(legal_actions)], dim=0)
+                    - active_logits[offset, target]
+                ).item()
+            )
+        )
 
     assert metrics.position_count == 3
     assert metrics.move_loss == pytest.approx(expected_losses.mean().item())
+    assert metrics.legal_move_loss == pytest.approx(
+        sum(expected_legal_losses) / len(expected_legal_losses)
+    )
     assert metrics.legal_mass == pytest.approx(
         sum(expected_legal_masses) / len(expected_legal_masses)
     )
@@ -129,6 +142,7 @@ def test_simple_baselines_are_stable_across_batch_aggregation() -> None:
 
     assert metrics.position_count == 3
     assert metrics.move_loss == pytest.approx(math.log(ACTION_VOCABULARY_SIZE))
+    assert metrics.legal_move_loss == pytest.approx(expected_uniform_legal)
     assert metrics.uniform_over_legal_move_loss == pytest.approx(expected_uniform_legal)
     assert metrics.uniform_over_vocabulary_move_loss == pytest.approx(
         math.log(ACTION_VOCABULARY_SIZE)
@@ -164,6 +178,46 @@ def test_evaluate_move_model_uses_loader_path_and_restores_training_mode() -> No
     assert first.as_record() == second.as_record()
     assert first.rated_position_count == 2
     assert first.missing_rating_position_count == 1
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(),
+    reason="requires an available PyTorch MPS backend",
+)
+def test_mps_metrics_match_cpu_without_casting_logits_on_device() -> None:
+    sequence_batch = _sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+    cpu_batch = MoveModelBatch.from_sequence_batch(sequence_batch)
+    mps_batch = MoveModelBatch.from_sequence_batch(sequence_batch, device="mps")
+    cpu_logits = torch.linspace(
+        -2.0,
+        2.0,
+        steps=cpu_batch.action_targets.numel() * ACTION_VOCABULARY_SIZE,
+        dtype=torch.float32,
+    ).reshape(*cpu_batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
+    mps_logits = cpu_logits.to("mps")
+
+    cpu = MoveValidationAccumulator()
+    cpu.update(cpu_logits, cpu_batch)
+    mps = MoveValidationAccumulator()
+    mps.update(mps_logits, mps_batch)
+
+    cpu_metrics = cpu.compute()
+    mps_metrics = mps.compute()
+    assert mps_metrics.position_count == cpu_metrics.position_count
+    assert mps_metrics.move_loss == pytest.approx(cpu_metrics.move_loss, rel=1e-6)
+    assert mps_metrics.legal_move_loss == pytest.approx(
+        cpu_metrics.legal_move_loss,
+        rel=1e-6,
+    )
+    assert mps_metrics.mask_penalty == pytest.approx(
+        cpu_metrics.mask_penalty,
+        rel=1e-6,
+    )
+    assert mps_metrics.legal_mass == pytest.approx(
+        cpu_metrics.legal_mass,
+        rel=1e-6,
+    )
 
 
 class _ConstantMoveModel(nn.Module):

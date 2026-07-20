@@ -52,19 +52,20 @@ manifests fully specify schema versions, offsets, checksums, and source inputs.
 ### Shared Machine-Local Data
 
 Large corpora that should be reused across worktrees may live in a shared
-machine-local directory outside every repository checkout. Before acquiring
-data, first check whether `ANTHRO_CHESS_DATA_ROOT` is already set. When it is,
-inspect the intended corpus directory beneath that root and reuse available
-verified archives, normalized shards, and manifests instead of downloading or
-preparing another copy. When configuring a new machine, keep the variable's
-value in local environment configuration rather than Git.
+machine-local directory outside every repository checkout. Set
+`ANTHRO_CHESS_DATA_ROOT` to that directory. When a data command omits its
+artifact directory, the CLI uses
+`$ANTHRO_CHESS_DATA_ROOT/<configured-artifact-name>`. Acquisition writes the
+verified archive under the archive selection's `raw/` directory. Preparation
+reads that archive by default and writes `normalized/` plus `manifests/` under
+the configured prepared-artifact directory. This lets multiple prepared
+selections reuse one verified archive. Explicit input and output paths still
+take precedence.
 
-Data commands continue to receive explicit input and output paths; they do not
-read the environment variable implicitly. Pass a corpus directory beneath the
-shared root to acquisition, preparation, training, and evaluation commands.
-Worktrees can read the same verified archive, normalized shards, and manifests
-directly without copying or checking them into Git. Avoid running concurrent
-writers against the same corpus directory.
+Worktrees should read and write the same verified archives, normalized shards,
+and manifests directly beneath the shared root rather than copying them into
+each checkout. Avoid running concurrent writers against the same corpus
+directory.
 
 ### Current Sample Path
 
@@ -402,6 +403,12 @@ masks. Length buckets keep similarly sized sequences together before completed
 batches are shuffled, reducing padding without changing the examples. Its
 deterministic epoch plan and explicit next-batch cursor are the restart boundary
 for training checkpoints.
+
+The current loader eagerly reconstructs and retains every selected per-ply
+encoding. That is appropriate for checked-in fixtures and bounded laptop proof
+slices, but it is not the corpus-scale path for the prepared million-game
+selection. Corpus-scale training therefore requires bounded-memory shard-backed
+loading that preserves deterministic ordering and resume state.
 
 ## Approximate Scale
 

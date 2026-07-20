@@ -1,3 +1,5 @@
+artifact_name = "lichess-sample"
+
 [source]
 id = "lichess"
 version = "standard-export-sample-2017-04"

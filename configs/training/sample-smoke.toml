@@ -28,3 +28,15 @@ length_bucket_width = 32
 shuffle = false
 seed = "anthro-training-smoke-v1"
 drop_last = false
+
+[validation]
+normalized = "artifacts/lichess-sample/normalized"
+manifest = "artifacts/lichess-sample/manifests/manifest.json"
+
+[validation.loader]
+split = "train"
+batch_size = 1
+length_bucket_width = 32
+shuffle = false
+seed = "anthro-validation-smoke-v1"
+drop_last = false
