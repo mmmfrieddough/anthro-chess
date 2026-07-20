@@ -49,6 +49,23 @@ Training shards may be generated from normalized data when performance requires
 them. They can be less self-describing than normalized shards as long as their
 manifests fully specify schema versions, offsets, checksums, and source inputs.
 
+### Shared Machine-Local Data
+
+Large corpora that should be reused across worktrees may live in a shared
+machine-local directory outside every repository checkout. Before acquiring
+data, first check whether `ANTHRO_CHESS_DATA_ROOT` is already set. When it is,
+inspect the intended corpus directory beneath that root and reuse available
+verified archives, normalized shards, and manifests instead of downloading or
+preparing another copy. When configuring a new machine, keep the variable's
+value in local environment configuration rather than Git.
+
+Data commands continue to receive explicit input and output paths; they do not
+read the environment variable implicitly. Pass a corpus directory beneath the
+shared root to acquisition, preparation, training, and evaluation commands.
+Worktrees can read the same verified archive, normalized shards, and manifests
+directly without copying or checking them into Git. Avoid running concurrent
+writers against the same corpus directory.
+
 ### Current Sample Path
 
 The current implementation provides an importable PGN preparation API and the

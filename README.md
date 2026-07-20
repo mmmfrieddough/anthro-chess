@@ -137,6 +137,14 @@ The first many-game selection is pinned in
 operation that downloads the configured Lichess archive under the ignored
 artifact root and verifies its published SHA-256 digest:
 
+On a machine that may share corpora across worktrees, first check whether
+`ANTHRO_CHESS_DATA_ROOT` is already set and whether the intended corpus is
+available beneath it. Reuse those verified artifacts instead of downloading
+another copy. When configuring a new machine, keep the variable's value in
+local environment configuration. The CLI still receives the expanded path
+explicitly; it does not read the environment variable itself. See
+`docs/data.md` for the shared-data convention.
+
 ```console
 uv run anthro data acquire \
   artifacts/lichess-blitz-baseline \
