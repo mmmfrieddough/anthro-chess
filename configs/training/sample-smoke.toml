@@ -1,0 +1,27 @@
+output_directory = "artifacts/training-smoke"
+seed = 17
+steps = 3
+learning_rate = 0.003
+log_every_steps = 1
+device = "cpu"
+
+[model]
+piece_embedding_dim = 2
+action_embedding_dim = 4
+model_dim = 16
+attention_heads = 2
+transformer_layers = 1
+feedforward_dim = 24
+dropout = 0.0
+
+[train]
+normalized = "artifacts/lichess-sample/normalized"
+manifest = "artifacts/lichess-sample/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+batch_size = 1
+length_bucket_width = 32
+shuffle = false
+seed = "anthro-training-smoke-v1"
+drop_last = false

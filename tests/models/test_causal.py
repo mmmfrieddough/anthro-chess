@@ -86,6 +86,17 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     assert batch.action_loss_mask.tolist() == batch.attention_mask.tolist()
 
 
+def test_tensor_boundary_preserves_unsigned_normalized_game_ids() -> None:
+    game_id = 2**63 + 7
+
+    batch = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4",), game_id_base=game_id)
+    )
+
+    assert batch.game_ids.dtype == torch.uint64
+    assert int(batch.game_ids[0, 0].item()) == game_id
+
+
 def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() -> None:
     batch = MoveModelBatch.from_sequence_batch(
         _sequence_batch(
@@ -192,6 +203,7 @@ def _sequence_batch(
     *move_lines: tuple[str, ...],
     white_rating: int | None = None,
     black_rating: int | None = None,
+    game_id_base: int = 100,
 ) -> SequenceBatch:
     examples = []
     for game_offset, moves in enumerate(move_lines):
@@ -204,7 +216,7 @@ def _sequence_batch(
             board.push(move)
         plies = encode_game(
             GameEncodingInput(
-                game_id=100 + game_offset,
+                game_id=game_id_base + game_offset,
                 ruleset="standard",
                 initial_position=chess.STARTING_FEN,
                 action_ids=tuple(action_ids),
@@ -218,7 +230,7 @@ def _sequence_batch(
         examples.append(
             SequenceExample(
                 shard_index=0,
-                game_id=100 + game_offset,
+                game_id=game_id_base + game_offset,
                 start_ply=0,
                 plies=plies,
             )

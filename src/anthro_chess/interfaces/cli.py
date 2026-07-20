@@ -80,6 +80,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Strict dotted TOML override; may be repeated.",
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
+
+    train_parser = subcommands.add_parser(
+        "train",
+        help="Run bounded CPU move-model training from explicit configuration.",
+    )
+    train_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML training, model, and data selection.",
+    )
+    train_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    train_parser.set_defaults(handler=_run_train)
     return parser
 
 
@@ -146,6 +165,27 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             f"{result.normalized_paths[0].parent}"
         )
     print(f"Manifest: {result.manifest_path}")
+    return 0
+
+
+def _run_train(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.training import TrainingConfig, TrainingError, run_training
+
+    try:
+        resolved = load_config(
+            TrainingConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        result = run_training(resolved)
+    except (ConfigError, TrainingError) as error:
+        print(f"anthro train: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Completed {result.steps} optimizer step(s).")
+    print(f"Run: {result.run_path}")
+    print(f"Metrics: {result.metrics_path}")
     return 0
 
 

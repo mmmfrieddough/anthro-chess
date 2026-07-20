@@ -9,9 +9,11 @@ schema.
 `data/` contains the offline sample selection and the pinned, bounded Lichess
 baseline-corpus selection. The latter owns the archive identity, published
 checksum, rating namespace, deterministic selection bound, and normalized shard
-size. Add focused `training/`, `evaluation/`, or `runtime/` subdirectories when
-the corresponding command exists. Do not add speculative example files for
-commands that have not been implemented.
+size. `training/` contains the small deterministic selection that exercises the
+ordinary CPU runner against the prepared sample artifact. Add focused
+`evaluation/` or `runtime/` subdirectories when the corresponding command
+exists. Do not add speculative example files for commands that have not been
+implemented.
 
 Commands should use their code-owned defaults unless an explicit configuration
 path is supplied. They must not search the current working directory or infer a

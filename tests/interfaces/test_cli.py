@@ -4,8 +4,10 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from anthro_chess import __version__
+from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import AcquisitionResult
 from anthro_chess.interfaces.cli import main
+from anthro_chess.training import TrainingConfig, TrainingResult
 
 
 def test_smoke_command_needs_no_external_resources(
@@ -27,7 +29,8 @@ def test_help_only_advertises_implemented_commands(
     help_text = capsys.readouterr().out
     assert "smoke" in help_text
     assert "data" in help_text
-    for planned_command in ("train", "evaluate", "play", "uci"):
+    assert "train" in help_text
+    for planned_command in ("evaluate", "play", "uci"):
         assert f"  {planned_command} " not in help_text
 
 
@@ -74,3 +77,44 @@ def test_data_acquire_command_routes_to_importable_pipeline(
     command_output = capsys.readouterr().out
     assert f"Acquired verified archive: {archive_path}" in command_output
     assert f"SHA-256: {'a' * 64}" in command_output
+
+
+def test_train_command_routes_to_importable_runner(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "training.toml"
+    config.write_text(
+        """
+[train]
+normalized = "normalized"
+manifest = "manifest.json"
+
+[train.loader]
+split = "train"
+""",
+        encoding="utf-8",
+    )
+    run_path = tmp_path / "run.json"
+    metrics_path = tmp_path / "metrics.jsonl"
+
+    def fake_run(resolved: ResolvedConfig[TrainingConfig]) -> TrainingResult:
+        assert resolved.value.steps == 2
+        return TrainingResult(
+            run_path=run_path,
+            metrics_path=metrics_path,
+            steps=2,
+            initial_parameter_sha256="a",
+            final_parameter_sha256="b",
+            validation=None,
+        )
+
+    monkeypatch.setattr("anthro_chess.training.run_training", fake_run)
+
+    assert main(["train", "--config", str(config), "--set", "steps=2"]) == 0
+
+    command_output = capsys.readouterr().out
+    assert "Completed 2 optimizer step(s)." in command_output
+    assert f"Run: {run_path}" in command_output
+    assert f"Metrics: {metrics_path}" in command_output
