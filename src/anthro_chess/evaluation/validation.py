@@ -133,20 +133,38 @@ class MoveValidationAccumulator:
         batch.validate()
         _validate_logits(logits, batch)
 
-        active_indices = torch.nonzero(
-            batch.action_loss_mask,
-            as_tuple=False,
+        active_indices = (
+            torch.nonzero(
+                batch.action_loss_mask,
+                as_tuple=False,
+            )
+            .detach()
+            .cpu()
         )
-        active_logits = logits[batch.action_loss_mask].to(dtype=torch.float64)
-        active_targets = batch.action_targets[batch.action_loss_mask]
+        active_logits = (
+            logits[batch.action_loss_mask]
+            .detach()
+            .to(device="cpu", dtype=torch.float64)
+        )
+        active_targets = (
+            batch.action_targets[batch.action_loss_mask].detach().to(device="cpu")
+        )
         log_probabilities = torch.log_softmax(active_logits, dim=-1)
         move_losses = -log_probabilities.gather(
             1,
             active_targets.unsqueeze(1),
         ).squeeze(1)
 
-        rating_values = batch.inputs.player_rating.values[batch.action_loss_mask]
-        rating_present = batch.inputs.player_rating.present[batch.action_loss_mask]
+        rating_values = (
+            batch.inputs.player_rating.values[batch.action_loss_mask]
+            .detach()
+            .to(device="cpu")
+        )
+        rating_present = (
+            batch.inputs.player_rating.present[batch.action_loss_mask]
+            .detach()
+            .to(device="cpu")
+        )
         _validate_ratings(rating_values, rating_present)
 
         active_targets_list = active_targets.detach().cpu().tolist()

@@ -14,10 +14,10 @@ The repository currently provides an installable Python package, a lightweight
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
-Lichess baseline-corpus path, a deterministic CPU training command, and a
-locked development environment. Playable runtime, UCI, model checkpoints, and
-packaged releases remain planned work; validation metrics exist within the
-training path but the broader evaluation harness is not yet implemented.
+Lichess baseline-corpus path, a CPU/MPS training command, and a
+locked development environment. Playable runtime, UCI, and packaged releases
+remain planned work; validation metrics exist within the training path but the
+broader evaluation harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -85,11 +85,37 @@ uv run anthro train --config configs/training/sample-smoke.toml
 ```
 
 It performs a bounded real optimizer run on CPU and writes step metrics plus a
-run record under the ignored artifact root. The run record preserves the
-resolved configuration, data manifest and identities, model compatibility
-metadata, seed, code revision when available, and optimizer-update evidence.
-The sample selection is a correctness smoke path, not a trained checkpoint or
-evidence of useful chess strength.
+run record and optimizer-step checkpoints under the ignored artifact root. The
+artifacts preserve the resolved configuration, data manifest and identities,
+model compatibility metadata, seed, code revision when available, optimizer
+state, exact loader cursor, and optimizer-update evidence. A run can continue
+from its latest checkpoint with strict command overrides:
+
+```console
+uv run anthro train \
+  --config configs/training/sample-smoke.toml \
+  --set 'resume_from="latest"' \
+  --set steps=6
+```
+
+An explicit checkpoint path may be selected in configuration for a new output
+directory. Resume rejects incompatible training, data, model, action, or
+encoding identities before loading state. The sample selection is a correctness
+smoke path, not evidence of useful chess strength.
+
+On Apple silicon, the same full-precision path can run and resume on MPS:
+
+```console
+uv run anthro train \
+  --config configs/training/sample-smoke.toml \
+  --set 'device="mps"' \
+  --set 'determinism="relaxed"'
+```
+
+The current MPS Transformer backward path requires relaxed determinism because
+the locked Torch build does not provide a deterministic implementation for one
+of its gradient operations. The selected backend, precision, and determinism
+mode are retained in run and checkpoint metadata.
 
 ## Baseline Training Corpus
 
