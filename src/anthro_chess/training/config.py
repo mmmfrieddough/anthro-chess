@@ -20,6 +20,8 @@ class TrainingConfig(ConfigModel):
     steps: int = Field(default=10, ge=1)
     learning_rate: float = Field(default=1e-3, gt=0.0)
     log_every_steps: int = Field(default=1, ge=1)
+    checkpoint_every_steps: int = Field(default=100, ge=1)
+    resume_from: Literal["latest"] | Path | None = None
     device: Literal["cpu"] = "cpu"
     model: MoveModelConfig = MoveModelConfig()
     train: SequenceDataConfig

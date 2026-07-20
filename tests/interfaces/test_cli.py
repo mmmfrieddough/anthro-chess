@@ -98,12 +98,14 @@ split = "train"
     )
     run_path = tmp_path / "run.json"
     metrics_path = tmp_path / "metrics.jsonl"
+    checkpoint_path = tmp_path / "checkpoints/step-00000002.pt"
 
     def fake_run(resolved: ResolvedConfig[TrainingConfig]) -> TrainingResult:
         assert resolved.value.steps == 2
         return TrainingResult(
             run_path=run_path,
             metrics_path=metrics_path,
+            checkpoint_path=checkpoint_path,
             steps=2,
             initial_parameter_sha256="a",
             final_parameter_sha256="b",
@@ -118,3 +120,4 @@ split = "train"
     assert "Completed 2 optimizer step(s)." in command_output
     assert f"Run: {run_path}" in command_output
     assert f"Metrics: {metrics_path}" in command_output
+    assert f"Checkpoint: {checkpoint_path}" in command_output

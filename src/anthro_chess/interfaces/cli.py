@@ -186,6 +186,7 @@ def _run_train(arguments: argparse.Namespace) -> int:
     print(f"Completed {result.steps} optimizer step(s).")
     print(f"Run: {result.run_path}")
     print(f"Metrics: {result.metrics_path}")
+    print(f"Checkpoint: {result.checkpoint_path}")
     return 0
 
 

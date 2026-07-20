@@ -98,7 +98,8 @@ those ordinary loader, model, loss, and validation boundaries. Its strict
 command configuration composes the data and model schemas, and each run writes
 the resolved selection, data manifests and identities, code and model
 compatibility metadata, optimizer-update evidence, and structured metrics.
-Checkpoint and resume orchestration remains separate follow-up work.
+The same runner writes atomic optimizer-step checkpoints and can continue from
+the latest checkpoint in a run or an explicitly selected checkpoint.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input
@@ -248,6 +249,15 @@ Resume should restore training behavior well enough that validation curves,
 learning-rate schedules, and data coverage remain meaningful. If exact sample
 order cannot be restored without significant complexity, resuming from a recent
 checkpoint and continuing with an equivalent sampling recipe is acceptable.
+
+The current action-only runner restores model and optimizer state, global
+progress counters, Python and Torch random-number-generator state, and the
+loader's exact deterministic next-batch cursor. Each checkpoint retains the
+resolved configuration and code, data, model, action-vocabulary, and encoding
+provenance. Resume compares code-owned compatibility identities before loading
+state and rejects unsafe changes clearly. The checkpoint configuration schema
+and artifact version in `anthro_chess.training` are the source of truth for
+exact fields and selection syntax.
 
 ## Training Evaluation
 

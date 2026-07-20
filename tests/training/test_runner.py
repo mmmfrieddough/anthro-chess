@@ -8,8 +8,10 @@ import pytest
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
 from anthro_chess.training import (
+    CHECKPOINT_VERSION,
     TrainingConfig,
     TrainingError,
+    load_training_checkpoint,
     run_training,
 )
 
@@ -40,6 +42,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
 
     assert result.steps == 2
     assert result.initial_parameter_sha256 != result.final_parameter_sha256
+    assert result.checkpoint_path.name == "step-00000002.pt"
     assert result.validation is not None
     assert result.validation.position_count == 26
     metric_records = [
@@ -62,8 +65,146 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     assert run_record["action_vocabulary"] == run_record["model"]["action_vocabulary"]
     assert run_record["encoding"] == run_record["model"]["encoding"]
     assert run_record["optimization"]["completed_steps"] == 2
+    assert run_record["optimization"]["starting_step"] == 0
+    assert run_record["optimization"]["checkpoint"] == str(
+        result.checkpoint_path.resolve()
+    )
     assert run_record["validation"]["position_count"] == 26
     assert "step=1 move_loss=" in capsys.readouterr().out
+
+
+def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    uninterrupted_config = _write_training_config(
+        tmp_path / "uninterrupted-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "uninterrupted",
+        validation=False,
+        steps=4,
+        checkpoint_every_steps=2,
+    )
+    uninterrupted = run_training(load_config(TrainingConfig, path=uninterrupted_config))
+
+    resumable_config_directory = tmp_path / "resumable-config"
+    initial_config = _write_training_config(
+        resumable_config_directory,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "resumable",
+        validation=False,
+        steps=2,
+        checkpoint_every_steps=2,
+    )
+    initial = run_training(load_config(TrainingConfig, path=initial_config))
+    resumed_config = _write_training_config(
+        resumable_config_directory,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "resumable",
+        validation=False,
+        steps=4,
+        checkpoint_every_steps=2,
+        resume_from="latest",
+    )
+    resumed = run_training(load_config(TrainingConfig, path=resumed_config))
+
+    assert initial.checkpoint_path.name == "step-00000002.pt"
+    assert resumed.checkpoint_path.name == "step-00000004.pt"
+    assert resumed.final_parameter_sha256 == uninterrupted.final_parameter_sha256
+    assert resumed.initial_parameter_sha256 == initial.final_parameter_sha256
+    records = [
+        json.loads(line)
+        for line in resumed.metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["global_step"] for record in records] == [1, 2, 3, 4]
+
+    checkpoint = load_training_checkpoint(resumed.checkpoint_path)
+    assert checkpoint["version"] == CHECKPOINT_VERSION
+    assert checkpoint["global_step"] == 4
+    assert checkpoint["counters"]["processed_positions"] == 104
+    assert checkpoint["optimizer_state"]["state"]
+    assert checkpoint["scheduler_state"] is None
+    assert checkpoint["scaler_state"] is None
+    assert set(checkpoint["rng_state"]) == {"python", "torch_cpu"}
+    assert checkpoint["loader_state"]["epoch"] == 3
+    assert checkpoint["metadata"]["resolved_config"]["config"]["steps"] == 4
+    assert checkpoint["metadata"]["code"]["git_revision"]
+    assert checkpoint["metadata"]["data"]["train"]["manifest_sha256"]
+    assert checkpoint["metadata"]["action_vocabulary"]["sha256"]
+    assert checkpoint["metadata"]["encoding"]["schema_sha256"]
+
+    run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
+    assert run_record["version"] == 2
+    assert run_record["optimization"]["starting_step"] == 2
+    assert run_record["optimization"]["processed_positions"] == 104
+    assert run_record["optimization"]["resumed_from"] == str(
+        initial.checkpoint_path.resolve()
+    )
+
+
+def test_explicit_resume_rejects_incompatible_state_identities(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    initial_config = _write_training_config(
+        tmp_path / "initial-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "initial",
+        validation=False,
+    )
+    initial = run_training(load_config(TrainingConfig, path=initial_config))
+    incompatible_config = _write_training_config(
+        tmp_path / "incompatible-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "incompatible",
+        validation=False,
+        steps=3,
+        learning_rate=0.004,
+        resume_from=initial.checkpoint_path,
+    )
+
+    with pytest.raises(
+        TrainingError,
+        match="checkpoint training configuration is incompatible",
+    ):
+        run_training(load_config(TrainingConfig, path=incompatible_config))
+
+    incompatible_model_config = _write_training_config(
+        tmp_path / "incompatible-model-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "incompatible-model",
+        validation=False,
+        steps=3,
+        model_dim=18,
+        resume_from=initial.checkpoint_path,
+    )
+    with pytest.raises(TrainingError, match="checkpoint model is incompatible"):
+        run_training(load_config(TrainingConfig, path=incompatible_model_config))
+
+    incompatible_data_config = _write_training_config(
+        tmp_path / "incompatible-data-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "incompatible-data",
+        validation=False,
+        steps=3,
+        shuffle=True,
+        resume_from=initial.checkpoint_path,
+    )
+    with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
+        run_training(load_config(TrainingConfig, path=incompatible_data_config))
 
 
 def test_runner_rejects_manifest_and_normalized_data_mismatch(
@@ -95,8 +236,20 @@ def _write_training_config(
     manifest: Path,
     output: Path,
     validation: bool,
+    steps: int = 2,
+    learning_rate: float = 0.003,
+    checkpoint_every_steps: int = 100,
+    resume_from: str | Path | None = None,
+    model_dim: int = 16,
+    shuffle: bool = False,
 ) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "training.toml"
+    resume_selection = (
+        f"resume_from = {json.dumps(str(resume_from))}\n"
+        if resume_from is not None
+        else ""
+    )
     validation_selection = ""
     if validation:
         validation_selection = f"""
@@ -113,14 +266,16 @@ shuffle = false
         f"""
 output_directory = {json.dumps(str(output))}
 seed = 23
-steps = 2
-learning_rate = 0.003
+steps = {steps}
+learning_rate = {learning_rate}
 log_every_steps = 1
+checkpoint_every_steps = {checkpoint_every_steps}
+{resume_selection}
 
 [model]
 piece_embedding_dim = 2
 action_embedding_dim = 4
-model_dim = 16
+model_dim = {model_dim}
 attention_heads = 2
 transformer_layers = 1
 feedforward_dim = 24
@@ -133,7 +288,7 @@ manifest = {json.dumps(str(manifest))}
 [train.loader]
 split = "train"
 batch_size = 1
-shuffle = false
+shuffle = {str(shuffle).lower()}
 {validation_selection}
 """,
         encoding="utf-8",

@@ -85,11 +85,23 @@ uv run anthro train --config configs/training/sample-smoke.toml
 ```
 
 It performs a bounded real optimizer run on CPU and writes step metrics plus a
-run record under the ignored artifact root. The run record preserves the
-resolved configuration, data manifest and identities, model compatibility
-metadata, seed, code revision when available, and optimizer-update evidence.
-The sample selection is a correctness smoke path, not a trained checkpoint or
-evidence of useful chess strength.
+run record and optimizer-step checkpoints under the ignored artifact root. The
+artifacts preserve the resolved configuration, data manifest and identities,
+model compatibility metadata, seed, code revision when available, optimizer
+state, exact loader cursor, and optimizer-update evidence. A run can continue
+from its latest checkpoint with strict command overrides:
+
+```console
+uv run anthro train \
+  --config configs/training/sample-smoke.toml \
+  --set 'resume_from="latest"' \
+  --set steps=6
+```
+
+An explicit checkpoint path may be selected in configuration for a new output
+directory. Resume rejects incompatible training, data, model, action, or
+encoding identities before loading state. The sample selection is a correctness
+smoke path, not evidence of useful chess strength.
 
 ## Baseline Training Corpus
 

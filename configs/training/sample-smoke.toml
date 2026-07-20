@@ -3,6 +3,7 @@ seed = 17
 steps = 3
 learning_rate = 0.003
 log_every_steps = 1
+checkpoint_every_steps = 2
 device = "cpu"
 
 [model]

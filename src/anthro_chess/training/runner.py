@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import subprocess
 import time
 from collections.abc import Mapping
@@ -25,10 +26,19 @@ from anthro_chess.data import (
 from anthro_chess.data.schema import PREPROCESSING_VERSION, SCHEMA_VERSION
 from anthro_chess.evaluation import MoveValidationMetrics, evaluate_move_model
 from anthro_chess.models import CausalMoveModel, MoveModelBatch
+from anthro_chess.training.checkpoints import (
+    CheckpointError,
+    checkpoint_path,
+    clear_latest_checkpoint,
+    latest_checkpoint_path,
+    load_training_checkpoint,
+    restore_rng_state,
+    save_training_checkpoint,
+)
 from anthro_chess.training.config import TrainingConfig
 from anthro_chess.training.losses import masked_action_cross_entropy
 
-RUN_ARTIFACT_VERSION = 1
+RUN_ARTIFACT_VERSION = 2
 
 
 class TrainingError(ValueError):
@@ -41,6 +51,7 @@ class TrainingResult:
 
     run_path: Path
     metrics_path: Path
+    checkpoint_path: Path
     steps: int
     initial_parameter_sha256: str
     final_parameter_sha256: str
@@ -51,6 +62,12 @@ class TrainingResult:
 class _DataSelection:
     loader: SequenceDataLoader
     provenance: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _OptimizationResult:
+    processed_positions: int
+    checkpoint_path: Path
 
 
 def run_training(
@@ -79,6 +96,7 @@ def run_training(
     metrics_path = output_directory / "metrics.jsonl"
     run_path = output_directory / "run.json"
 
+    random.seed(config.seed)
     torch.manual_seed(config.seed)
     previous_deterministic = torch.are_deterministic_algorithms_enabled()
     torch.use_deterministic_algorithms(True)
@@ -88,15 +106,79 @@ def run_training(
             model.parameters(),
             lr=config.learning_rate,
         )
+        code_record = {
+            "package_version": __version__,
+            "git_revision": _git_revision(),
+        }
+        data_record = {
+            "train": train.provenance,
+            "validation": validation.provenance if validation is not None else None,
+        }
+        model_identity = model.identity()
+        compatibility = _compatibility_record(
+            config,
+            data=data_record,
+            model=model_identity,
+        )
+        checkpoint_metadata = {
+            "resolved_config": resolved_config.as_record(),
+            "code": code_record,
+            "data": data_record,
+            "model": model_identity,
+            "action_vocabulary": action_vocabulary_identity(),
+            "encoding": encoding_identity(),
+        }
+        resumed_from: Path | None = None
+        starting_step = 0
+        processed_positions = 0
+        if config.resume_from is not None:
+            resumed_from = (
+                latest_checkpoint_path(output_directory)
+                if config.resume_from == "latest"
+                else config.resume_from
+            )
+            checkpoint = load_training_checkpoint(resumed_from)
+            _validate_checkpoint_compatibility(
+                checkpoint["compatibility"],
+                compatibility,
+            )
+            starting_step = checkpoint["global_step"]
+            if starting_step >= config.steps:
+                raise TrainingError(
+                    f"checkpoint global step {starting_step} must be below "
+                    f"configured target steps {config.steps}"
+                )
+            model.load_state_dict(checkpoint["model_state"])
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            train.loader.load_state(checkpoint["loader_state"])
+            counters = checkpoint["counters"]
+            if set(counters) != {"processed_positions"}:
+                raise CheckpointError("checkpoint counters are incomplete or unknown")
+            processed_positions = counters["processed_positions"]
+            if type(processed_positions) is not int or processed_positions < 0:
+                raise CheckpointError(
+                    "checkpoint processed_positions must be nonnegative"
+                )
+            restore_rng_state(checkpoint["rng_state"])
+
         initial_parameter_sha256 = _parameter_sha256(model)
-        _optimize(
+        if resumed_from is None:
+            clear_latest_checkpoint(output_directory)
+        _prepare_metrics(metrics_path, through_step=starting_step)
+        optimization = _optimize(
             model,
             optimizer,
             train.loader,
             steps=config.steps,
+            starting_step=starting_step,
+            processed_positions=processed_positions,
             log_every_steps=config.log_every_steps,
+            checkpoint_every_steps=config.checkpoint_every_steps,
             device=config.device,
             metrics_path=metrics_path,
+            output_directory=output_directory,
+            compatibility=compatibility,
+            checkpoint_metadata=checkpoint_metadata,
         )
         final_parameter_sha256 = _parameter_sha256(model)
         if final_parameter_sha256 == initial_parameter_sha256:
@@ -115,22 +197,20 @@ def run_training(
             "version": RUN_ARTIFACT_VERSION,
             "resolved_config": resolved_config.as_record(),
             "seed": config.seed,
-            "code": {
-                "package_version": __version__,
-                "git_revision": _git_revision(),
-            },
-            "data": {
-                "train": train.provenance,
-                "validation": (
-                    validation.provenance if validation is not None else None
-                ),
-            },
-            "model": model.identity(),
+            "code": code_record,
+            "data": data_record,
+            "model": model_identity,
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
             "optimization": {
                 "optimizer": "Adam",
+                "starting_step": starting_step,
                 "completed_steps": config.steps,
+                "processed_positions": optimization.processed_positions,
+                "resumed_from": (
+                    str(resumed_from.resolve()) if resumed_from is not None else None
+                ),
+                "checkpoint": str(optimization.checkpoint_path.resolve()),
                 "initial_parameter_sha256": initial_parameter_sha256,
                 "final_parameter_sha256": final_parameter_sha256,
             },
@@ -144,7 +224,13 @@ def run_training(
             json.dumps(run_record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    except (OSError, RuntimeError, ValueError) as error:
+    except (
+        CheckpointError,
+        DataLoadingError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as error:
         if isinstance(error, TrainingError):
             raise
         raise TrainingError(f"training failed: {error}") from error
@@ -154,6 +240,7 @@ def run_training(
     return TrainingResult(
         run_path=run_path,
         metrics_path=metrics_path,
+        checkpoint_path=optimization.checkpoint_path,
         steps=config.steps,
         initial_parameter_sha256=initial_parameter_sha256,
         final_parameter_sha256=final_parameter_sha256,
@@ -167,21 +254,25 @@ def _optimize(
     loader: SequenceDataLoader,
     *,
     steps: int,
+    starting_step: int,
+    processed_positions: int,
     log_every_steps: int,
+    checkpoint_every_steps: int,
     device: str,
     metrics_path: Path,
-) -> None:
-    epoch = 0
+    output_directory: Path,
+    compatibility: Mapping[str, object],
+    checkpoint_metadata: Mapping[str, object],
+) -> _OptimizationResult:
     model.train()
     start_time = time.perf_counter()
-    processed_positions = 0
-    with metrics_path.open("w", encoding="utf-8") as metrics_file:
-        for global_step in range(1, steps + 1):
+    saved_checkpoint: Path | None = None
+    with metrics_path.open("a", encoding="utf-8") as metrics_file:
+        for global_step in range(starting_step + 1, steps + 1):
             try:
                 sequence_batch = next(loader)
             except StopIteration:
-                epoch += 1
-                loader.start_epoch(epoch)
+                loader.start_epoch(loader.state().epoch + 1)
                 try:
                     sequence_batch = next(loader)
                 except StopIteration as error:
@@ -208,6 +299,7 @@ def _optimize(
             optimizer.step()
             positions = int(batch.action_loss_mask.sum().item())
             processed_positions += positions
+            epoch = loader.state().epoch
 
             if global_step % log_every_steps == 0 or global_step == steps:
                 elapsed = max(time.perf_counter() - start_time, 1e-12)
@@ -229,6 +321,124 @@ def _optimize(
                     "lr={learning_rate:.6g} positions={processed_positions} "
                     "positions_per_second={positions_per_second:.2f}".format(**record)
                 )
+            if global_step % checkpoint_every_steps == 0 or global_step == steps:
+                saved_checkpoint = checkpoint_path(output_directory, global_step)
+                save_training_checkpoint(
+                    saved_checkpoint,
+                    global_step=global_step,
+                    counters={"processed_positions": processed_positions},
+                    model_state=model.state_dict(),
+                    optimizer_state=optimizer.state_dict(),
+                    loader_state=loader.state().as_record(),
+                    compatibility=compatibility,
+                    metadata=checkpoint_metadata,
+                )
+    if saved_checkpoint is None:
+        raise TrainingError("training completed without saving a checkpoint")
+    return _OptimizationResult(
+        processed_positions=processed_positions,
+        checkpoint_path=saved_checkpoint,
+    )
+
+
+def _prepare_metrics(path: Path, *, through_step: int) -> None:
+    """Keep only records committed by the selected restart boundary."""
+
+    records: list[str] = []
+    if through_step > 0 and path.is_file():
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise TrainingError(
+                    f"metrics record {line_number} is not valid JSON"
+                ) from error
+            global_step = record.get("global_step")
+            if type(global_step) is not int:
+                raise TrainingError(
+                    f"metrics record {line_number} has no integer global_step"
+                )
+            if global_step <= through_step:
+                records.append(json.dumps(record, sort_keys=True, allow_nan=False))
+    path.write_text(
+        "".join(f"{record}\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _compatibility_record(
+    config: TrainingConfig,
+    *,
+    data: Mapping[str, object],
+    model: Mapping[str, object],
+) -> dict[str, object]:
+    training_config = config.model_dump(
+        mode="json",
+        exclude={
+            "checkpoint_every_steps",
+            "log_every_steps",
+            "model",
+            "output_directory",
+            "resume_from",
+            "steps",
+            "train",
+            "validation",
+        },
+    )
+    return {
+        "training_config": training_config,
+        "data": {
+            "train": _data_compatibility(data["train"]),
+            "validation": (
+                _data_compatibility(data["validation"])
+                if data["validation"] is not None
+                else None
+            ),
+        },
+        "model": dict(model),
+        "action_vocabulary": action_vocabulary_identity(),
+        "encoding": encoding_identity(),
+    }
+
+
+def _data_compatibility(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TrainingError("data provenance is not a mapping")
+    keys = (
+        "manifest_sha256",
+        "dataset_sha256",
+        "loader_configuration_sha256",
+    )
+    if any(key not in value for key in keys):
+        raise TrainingError("data provenance is missing compatibility identities")
+    return {key: value[key] for key in keys}
+
+
+def _validate_checkpoint_compatibility(
+    saved: object,
+    current: Mapping[str, object],
+) -> None:
+    if not isinstance(saved, Mapping):
+        raise CheckpointError("checkpoint compatibility metadata is not a mapping")
+    if set(saved) != set(current):
+        raise CheckpointError(
+            "checkpoint compatibility metadata is incomplete or unknown"
+        )
+    labels = {
+        "training_config": "training configuration",
+        "data": "data",
+        "model": "model",
+        "action_vocabulary": "action vocabulary",
+        "encoding": "model-facing encoding",
+    }
+    for key, label in labels.items():
+        if saved[key] != current[key]:
+            raise CheckpointError(
+                f"checkpoint {label} is incompatible with the current run"
+            )
 
 
 def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
