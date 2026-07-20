@@ -15,6 +15,8 @@ from anthro_chess.training import (
     load_training_checkpoint,
     run_training,
 )
+from anthro_chess.training.devices import DeviceCapabilities
+from anthro_chess.training.runner import _training_device
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -70,6 +72,15 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     assert run_record["optimization"]["checkpoint"] == str(
         result.checkpoint_path.resolve()
     )
+    assert run_record["execution"] == {
+        "backend": "cpu",
+        "device": "cpu",
+        "precision": "float32",
+        "parameter_dtype": "float32",
+        "determinism": "strict",
+        "gradient_accumulation_steps": 1,
+        "phase_profiling": False,
+    }
     assert run_record["validation"]["position_count"] == 26
     assert "step=1 move_loss=" in capsys.readouterr().out
 
@@ -142,12 +153,14 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         "backend": "cpu",
         "determinism": "strict",
         "device": "cpu",
+        "gradient_accumulation_steps": 1,
         "parameter_dtype": "float32",
+        "phase_profiling": False,
         "precision": "float32",
     }
 
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
-    assert run_record["version"] == 2
+    assert run_record["version"] == 3
     assert run_record["optimization"]["starting_step"] == 2
     assert run_record["optimization"]["processed_positions"] == 104
     assert run_record["optimization"]["resumed_from"] == str(
@@ -215,9 +228,8 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         run_training(load_config(TrainingConfig, path=incompatible_data_config))
 
 
-def test_runner_rejects_unavailable_mps_clearly(
+def test_training_device_rejects_unavailable_or_strict_mps(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = _write_training_config(
         tmp_path,
@@ -227,20 +239,31 @@ def test_runner_rejects_unavailable_mps_clearly(
         validation=False,
         device="mps",
     )
-    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    config = load_config(TrainingConfig, path=config_path).value
 
     with pytest.raises(
         TrainingError,
         match="training device mps was requested but",
     ):
-        run_training(load_config(TrainingConfig, path=config_path))
+        _training_device(
+            config,
+            capabilities=DeviceCapabilities(
+                mps_built=True,
+                mps_available=False,
+            ),
+        )
 
-    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
     with pytest.raises(
         TrainingError,
         match="strict determinism is not supported",
     ):
-        run_training(load_config(TrainingConfig, path=config_path))
+        _training_device(
+            config,
+            capabilities=DeviceCapabilities(
+                mps_built=True,
+                mps_available=True,
+            ),
+        )
 
 
 @pytest.mark.gpu
@@ -297,7 +320,9 @@ def test_mps_checkpoint_cross_backend_and_original_device_resume(
         "backend": "mps",
         "determinism": "relaxed",
         "device": "mps",
+        "gradient_accumulation_steps": 1,
         "parameter_dtype": "float32",
+        "phase_profiling": False,
         "precision": "float32",
     }
     assert set(mps_checkpoint["rng_state"]) == {
@@ -374,6 +399,75 @@ def test_runner_rejects_manifest_and_normalized_data_mismatch(
         run_training(load_config(TrainingConfig, path=config_path))
 
 
+def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=False,
+        extra="gradient_accumulation_steps = 2\nprofile_phases = true\n",
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    records = [
+        json.loads(line)
+        for line in result.metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["processed_positions"] for record in records] == [52, 104]
+    assert all(record["batch_positions"] == 52 for record in records)
+    assert all(record["data_seconds"] >= 0.0 for record in records)
+    assert all(record["transfer_seconds"] >= 0.0 for record in records)
+    assert all(record["compute_seconds"] >= 0.0 for record in records)
+    assert all(
+        record["peak_sampled_allocated_memory_bytes"] is None for record in records
+    )
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(),
+    reason="requires an available PyTorch MPS backend",
+)
+def test_real_mps_forward_backward_update_and_validation(tmp_path: Path) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=True,
+        device="mps",
+        determinism="relaxed",
+        extra="profile_phases = true\n",
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
+    assert result.initial_parameter_sha256 != result.final_parameter_sha256
+    assert result.checkpoint_path.is_file()
+    assert result.validation is not None
+    assert run_record["execution"]["backend"] == "mps"
+    metric = json.loads(
+        result.metrics_path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert metric["peak_sampled_allocated_memory_bytes"] > 0
+    assert metric["peak_sampled_driver_memory_bytes"] > 0
+
+
 def _write_training_config(
     tmp_path: Path,
     *,
@@ -390,6 +484,7 @@ def _write_training_config(
     device: str = "cpu",
     precision: str = "float32",
     determinism: str = "strict",
+    extra: str = "",
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "training.toml"
@@ -422,6 +517,7 @@ checkpoint_every_steps = {checkpoint_every_steps}
 device = {json.dumps(device)}
 precision = {json.dumps(precision)}
 determinism = {json.dumps(determinism)}
+{extra}
 
 [model]
 piece_embedding_dim = 2

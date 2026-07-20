@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_parser = subcommands.add_parser(
         "train",
-        help="Run bounded CPU move-model training from explicit configuration.",
+        help="Run bounded move-model training from explicit configuration.",
     )
     train_parser.add_argument(
         "--config",

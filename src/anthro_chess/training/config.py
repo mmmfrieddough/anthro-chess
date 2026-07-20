@@ -5,11 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import SequenceDataConfig
 from anthro_chess.models import MoveModelConfig
+from anthro_chess.training.devices import DeviceSelection
 
 
 class TrainingConfig(ConfigModel):
@@ -22,9 +23,11 @@ class TrainingConfig(ConfigModel):
     log_every_steps: int = Field(default=1, ge=1)
     checkpoint_every_steps: int = Field(default=100, ge=1)
     resume_from: Literal["latest"] | Path | None = None
-    device: Literal["cpu", "mps"] = "cpu"
+    gradient_accumulation_steps: int = Field(default=1, ge=1)
+    device: DeviceSelection = "auto"
     precision: Literal["float32"] = "float32"
-    determinism: Literal["strict", "relaxed"] = "strict"
+    determinism: Literal["strict", "relaxed"] = "relaxed"
+    profile_phases: StrictBool = False
     model: MoveModelConfig = MoveModelConfig()
     train: SequenceDataConfig
     validation: SequenceDataConfig | None = None
