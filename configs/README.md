@@ -10,8 +10,9 @@ schema.
 baseline-corpus selection. The latter owns the archive identity, published
 checksum, rating namespace, deterministic selection bound, and normalized shard
 size. `training/` contains the small deterministic selection that exercises the
-ordinary CPU runner, step-keyed checkpointing, and resume boundary against the
-prepared sample artifact. Add focused
+ordinary training runner, step-keyed checkpointing, and resume boundary against
+the prepared sample artifact. The same model and checkpoint path supports an
+explicit MPS override on compatible Apple-silicon hosts. Add focused
 `evaluation/` or `runtime/` subdirectories when the corresponding command
 exists. Do not add speculative example files for commands that have not been
 implemented.

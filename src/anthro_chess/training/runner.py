@@ -73,9 +73,10 @@ class _OptimizationResult:
 def run_training(
     resolved_config: ResolvedConfig[TrainingConfig],
 ) -> TrainingResult:
-    """Run a bounded deterministic CPU optimization and write its provenance."""
+    """Run bounded CPU or MPS optimization and write its provenance."""
 
     config = resolved_config.value
+    device = _training_device(config)
     try:
         train = _load_data_selection(config.train)
         validation = (
@@ -98,10 +99,15 @@ def run_training(
 
     random.seed(config.seed)
     torch.manual_seed(config.seed)
+    if device.type == "mps":
+        torch.mps.manual_seed(config.seed)
     previous_deterministic = torch.are_deterministic_algorithms_enabled()
-    torch.use_deterministic_algorithms(True)
+    torch.use_deterministic_algorithms(config.determinism == "strict")
     try:
-        model = CausalMoveModel(config.model).to(config.device)
+        model = CausalMoveModel(config.model).to(
+            device=device,
+            dtype=_training_dtype(config),
+        )
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=config.learning_rate,
@@ -115,6 +121,7 @@ def run_training(
             "validation": validation.provenance if validation is not None else None,
         }
         model_identity = model.identity()
+        execution_record = _execution_record(config, device)
         compatibility = _compatibility_record(
             config,
             data=data_record,
@@ -127,6 +134,7 @@ def run_training(
             "model": model_identity,
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
+            "execution": execution_record,
         }
         resumed_from: Path | None = None
         starting_step = 0
@@ -142,14 +150,40 @@ def run_training(
                 checkpoint["compatibility"],
                 compatibility,
             )
+            _validate_checkpoint_execution(
+                checkpoint["metadata"],
+                execution_record,
+            )
             starting_step = checkpoint["global_step"]
             if starting_step >= config.steps:
                 raise TrainingError(
                     f"checkpoint global step {starting_step} must be below "
                     f"configured target steps {config.steps}"
                 )
-            model.load_state_dict(checkpoint["model_state"])
-            optimizer.load_state_dict(checkpoint["optimizer_state"])
+            try:
+                model.load_state_dict(checkpoint["model_state"])
+            except RuntimeError as error:
+                raise CheckpointError(
+                    f"checkpoint model state cannot be restored on "
+                    f"{device.type}: {error}"
+                ) from error
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state"])
+            except (RuntimeError, ValueError) as error:
+                raise CheckpointError(
+                    f"checkpoint optimizer state cannot be restored on "
+                    f"{device.type}: {error}"
+                ) from error
+            if checkpoint["scheduler_state"] is not None:
+                raise CheckpointError(
+                    "checkpoint contains scheduler state but the current "
+                    "training configuration has no scheduler"
+                )
+            if checkpoint["scaler_state"] is not None:
+                raise CheckpointError(
+                    "checkpoint contains scaler state but float32 training "
+                    "does not use a gradient scaler"
+                )
             train.loader.load_state(checkpoint["loader_state"])
             counters = checkpoint["counters"]
             if set(counters) != {"processed_positions"}:
@@ -159,7 +193,11 @@ def run_training(
                 raise CheckpointError(
                     "checkpoint processed_positions must be nonnegative"
                 )
-            restore_rng_state(checkpoint["rng_state"])
+            restore_rng_state(
+                checkpoint["rng_state"],
+                device=device,
+                fallback_seed=config.seed,
+            )
 
         initial_parameter_sha256 = _parameter_sha256(model)
         if resumed_from is None:
@@ -174,7 +212,7 @@ def run_training(
             processed_positions=processed_positions,
             log_every_steps=config.log_every_steps,
             checkpoint_every_steps=config.checkpoint_every_steps,
-            device=config.device,
+            device=device,
             metrics_path=metrics_path,
             output_directory=output_directory,
             compatibility=compatibility,
@@ -188,7 +226,7 @@ def run_training(
             evaluate_move_model(
                 model,
                 validation.loader,
-                device=config.device,
+                device=device,
             )
             if validation is not None
             else None
@@ -202,6 +240,7 @@ def run_training(
             "model": model_identity,
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
+            "execution": execution_record,
             "optimization": {
                 "optimizer": "Adam",
                 "starting_step": starting_step,
@@ -258,7 +297,7 @@ def _optimize(
     processed_positions: int,
     log_every_steps: int,
     checkpoint_every_steps: int,
-    device: str,
+    device: torch.device,
     metrics_path: Path,
     output_directory: Path,
     compatibility: Mapping[str, object],
@@ -329,9 +368,12 @@ def _optimize(
                     counters={"processed_positions": processed_positions},
                     model_state=model.state_dict(),
                     optimizer_state=optimizer.state_dict(),
+                    scheduler_state=None,
+                    scaler_state=None,
                     loader_state=loader.state().as_record(),
                     compatibility=compatibility,
                     metadata=checkpoint_metadata,
+                    device=device,
                 )
     if saved_checkpoint is None:
         raise TrainingError("training completed without saving a checkpoint")
@@ -379,6 +421,7 @@ def _compatibility_record(
         mode="json",
         exclude={
             "checkpoint_every_steps",
+            "device",
             "log_every_steps",
             "model",
             "output_directory",
@@ -402,6 +445,71 @@ def _compatibility_record(
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
     }
+
+
+def _training_device(config: TrainingConfig) -> torch.device:
+    device = torch.device(config.device)
+    if device.type == "mps" and not torch.backends.mps.is_available():
+        availability = (
+            "the installed Torch build has no MPS support"
+            if not torch.backends.mps.is_built()
+            else "MPS is not available on this host"
+        )
+        raise TrainingError(f"training device mps was requested but {availability}")
+    if device.type == "mps" and config.determinism == "strict":
+        raise TrainingError(
+            "strict determinism is not supported for the current MPS "
+            "training path; select determinism='relaxed'"
+        )
+    return device
+
+
+def _training_dtype(config: TrainingConfig) -> torch.dtype:
+    if config.precision == "float32":
+        return torch.float32
+    raise TrainingError(f"unsupported training precision: {config.precision}")
+
+
+def _execution_record(
+    config: TrainingConfig,
+    device: torch.device,
+) -> dict[str, object]:
+    return {
+        "device": str(device),
+        "backend": device.type,
+        "precision": config.precision,
+        "parameter_dtype": str(_training_dtype(config)).removeprefix("torch."),
+        "determinism": config.determinism,
+    }
+
+
+def _validate_checkpoint_execution(
+    metadata: object,
+    current: Mapping[str, object],
+) -> None:
+    if not isinstance(metadata, Mapping):
+        raise CheckpointError("checkpoint metadata is not a mapping")
+    execution = metadata.get("execution")
+    if not isinstance(execution, Mapping):
+        raise CheckpointError("checkpoint has no execution metadata")
+    required = {
+        "device",
+        "backend",
+        "precision",
+        "parameter_dtype",
+        "determinism",
+    }
+    if set(execution) != required:
+        raise CheckpointError("checkpoint execution metadata is incomplete or unknown")
+    if execution["backend"] not in {"cpu", "mps"}:
+        raise CheckpointError(
+            f"checkpoint execution backend is unsupported: {execution['backend']}"
+        )
+    for key in ("precision", "parameter_dtype", "determinism"):
+        if execution[key] != current[key]:
+            raise CheckpointError(
+                f"checkpoint execution {key} is incompatible with the current run"
+            )
 
 
 def _data_compatibility(value: object) -> dict[str, object]:

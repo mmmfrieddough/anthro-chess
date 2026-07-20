@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import torch
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 _CHECKPOINT_DIRECTORY = "checkpoints"
 _CHECKPOINT_PATTERN = re.compile(r"^step-(\d{8})\.pt$")
 _LATEST_RECORD = "latest.json"
@@ -92,11 +92,14 @@ def save_training_checkpoint(
     counters: Mapping[str, int],
     model_state: Mapping[str, Any],
     optimizer_state: Mapping[str, Any],
+    scheduler_state: Mapping[str, Any] | None,
+    scaler_state: Mapping[str, Any] | None,
     loader_state: Mapping[str, object],
     compatibility: Mapping[str, object],
     metadata: Mapping[str, object],
+    device: torch.device | str,
 ) -> None:
-    """Atomically save all state needed by the current CPU training path."""
+    """Atomically save portable state needed by the current training path."""
 
     if type(global_step) is not int or global_step < 1:
         raise CheckpointError("checkpoint global step must be a positive integer")
@@ -106,13 +109,12 @@ def save_training_checkpoint(
         "counters": dict(counters),
         "model_state": dict(model_state),
         "optimizer_state": dict(optimizer_state),
-        "scheduler_state": None,
-        "scaler_state": None,
+        "scheduler_state": (
+            dict(scheduler_state) if scheduler_state is not None else None
+        ),
+        "scaler_state": dict(scaler_state) if scaler_state is not None else None,
         "loader_state": dict(loader_state),
-        "rng_state": {
-            "python": random.getstate(),
-            "torch_cpu": torch.get_rng_state(),
-        },
+        "rng_state": capture_rng_state(device),
         "compatibility": dict(compatibility),
         "metadata": dict(metadata),
     }
@@ -173,21 +175,39 @@ def load_training_checkpoint(path: Path) -> dict[str, Any]:
     ):
         if not isinstance(payload[key], Mapping):
             raise CheckpointError(f"checkpoint {key} must be a mapping")
-    if payload["scheduler_state"] is not None:
-        raise CheckpointError(
-            "checkpoint scheduler state is unsupported by this training runner"
-        )
-    if payload["scaler_state"] is not None:
-        raise CheckpointError(
-            "checkpoint scaler state is unsupported by this training runner"
-        )
+    for key in ("scheduler_state", "scaler_state"):
+        if payload[key] is not None and not isinstance(payload[key], Mapping):
+            raise CheckpointError(f"checkpoint {key} must be a mapping or null")
     return payload
 
 
-def restore_rng_state(state: Mapping[str, object]) -> None:
-    """Restore the Python and CPU Torch random-number-generator states."""
+def capture_rng_state(device: torch.device | str) -> dict[str, object]:
+    """Capture host RNG state plus the selected accelerator state when available."""
 
-    if set(state) != {"python", "torch_cpu"}:
+    selected = torch.device(device)
+    state: dict[str, object] = {
+        "python": random.getstate(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    if selected.type == "mps":
+        if not torch.backends.mps.is_available():
+            raise CheckpointError("cannot capture MPS RNG state: MPS is unavailable")
+        state["torch_mps"] = torch.mps.get_rng_state()
+    return state
+
+
+def restore_rng_state(
+    state: Mapping[str, object],
+    *,
+    device: torch.device | str,
+    fallback_seed: int,
+) -> None:
+    """Restore RNG state for the host and selected execution backend."""
+
+    if set(state) not in (
+        {"python", "torch_cpu"},
+        {"python", "torch_cpu", "torch_mps"},
+    ):
         raise CheckpointError("checkpoint RNG state is incomplete or unknown")
     python_state = state["python"]
     torch_state = state["torch_cpu"]
@@ -195,8 +215,20 @@ def restore_rng_state(state: Mapping[str, object]) -> None:
         raise CheckpointError("checkpoint Python RNG state is invalid")
     if not isinstance(torch_state, torch.Tensor):
         raise CheckpointError("checkpoint Torch RNG state is invalid")
+    mps_state = state.get("torch_mps")
+    if mps_state is not None and not isinstance(mps_state, torch.Tensor):
+        raise CheckpointError("checkpoint MPS RNG state is invalid")
     try:
         random.setstate(python_state)
         torch.set_rng_state(torch_state)
+        if torch.device(device).type == "mps":
+            if not torch.backends.mps.is_available():
+                raise CheckpointError(
+                    "cannot restore MPS RNG state: MPS is unavailable"
+                )
+            if isinstance(mps_state, torch.Tensor):
+                torch.mps.set_rng_state(mps_state)
+            else:
+                torch.mps.manual_seed(fallback_seed)
     except (TypeError, ValueError, RuntimeError) as error:
         raise CheckpointError(f"checkpoint RNG state is invalid: {error}") from error

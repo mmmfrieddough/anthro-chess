@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
@@ -137,6 +138,13 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     assert checkpoint["metadata"]["data"]["train"]["manifest_sha256"]
     assert checkpoint["metadata"]["action_vocabulary"]["sha256"]
     assert checkpoint["metadata"]["encoding"]["schema_sha256"]
+    assert checkpoint["metadata"]["execution"] == {
+        "backend": "cpu",
+        "determinism": "strict",
+        "device": "cpu",
+        "parameter_dtype": "float32",
+        "precision": "float32",
+    }
 
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
     assert run_record["version"] == 2
@@ -207,6 +215,143 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         run_training(load_config(TrainingConfig, path=incompatible_data_config))
 
 
+def test_runner_rejects_unavailable_mps_clearly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=tmp_path / "missing.parquet",
+        manifest=tmp_path / "missing-manifest.json",
+        output=tmp_path / "run",
+        validation=False,
+        device="mps",
+    )
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+
+    with pytest.raises(
+        TrainingError,
+        match="training device mps was requested but",
+    ):
+        run_training(load_config(TrainingConfig, path=config_path))
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    with pytest.raises(
+        TrainingError,
+        match="strict determinism is not supported",
+    ):
+        run_training(load_config(TrainingConfig, path=config_path))
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(),
+    reason="MPS smoke verification requires Apple silicon",
+)
+def test_mps_checkpoint_cross_backend_and_original_device_resume(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    cpu_config = _write_training_config(
+        tmp_path / "cpu-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "cpu",
+        validation=True,
+        steps=1,
+        device="cpu",
+        determinism="relaxed",
+    )
+    cpu_result = run_training(load_config(TrainingConfig, path=cpu_config))
+
+    mps_config_directory = tmp_path / "mps-config"
+    cross_backend_config = _write_training_config(
+        mps_config_directory,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "mps",
+        validation=True,
+        steps=2,
+        resume_from=cpu_result.checkpoint_path,
+        device="mps",
+        determinism="relaxed",
+    )
+    cross_backend = run_training(load_config(TrainingConfig, path=cross_backend_config))
+
+    assert cross_backend.initial_parameter_sha256 == (cpu_result.final_parameter_sha256)
+    assert cross_backend.initial_parameter_sha256 != (
+        cross_backend.final_parameter_sha256
+    )
+    assert cross_backend.validation is not None
+    mps_checkpoint = load_training_checkpoint(cross_backend.checkpoint_path)
+    assert all(
+        value.device.type == "cpu"
+        for value in mps_checkpoint["model_state"].values()
+        if isinstance(value, torch.Tensor)
+    )
+    assert mps_checkpoint["metadata"]["execution"] == {
+        "backend": "mps",
+        "determinism": "relaxed",
+        "device": "mps",
+        "parameter_dtype": "float32",
+        "precision": "float32",
+    }
+    assert set(mps_checkpoint["rng_state"]) == {
+        "python",
+        "torch_cpu",
+        "torch_mps",
+    }
+
+    original_device_config = _write_training_config(
+        mps_config_directory,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "mps",
+        validation=True,
+        steps=3,
+        resume_from="latest",
+        device="mps",
+        determinism="relaxed",
+    )
+    original_device = run_training(
+        load_config(TrainingConfig, path=original_device_config)
+    )
+
+    assert original_device.initial_parameter_sha256 == (
+        cross_backend.final_parameter_sha256
+    )
+    assert original_device.initial_parameter_sha256 != (
+        original_device.final_parameter_sha256
+    )
+    assert original_device.validation is not None
+    assert original_device.checkpoint_path.name == "step-00000003.pt"
+
+    return_to_cpu_config = _write_training_config(
+        tmp_path / "return-to-cpu-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "return-to-cpu",
+        validation=True,
+        steps=4,
+        resume_from=original_device.checkpoint_path,
+        device="cpu",
+        determinism="relaxed",
+    )
+    return_to_cpu = run_training(load_config(TrainingConfig, path=return_to_cpu_config))
+
+    assert return_to_cpu.initial_parameter_sha256 == (
+        original_device.final_parameter_sha256
+    )
+    assert return_to_cpu.initial_parameter_sha256 != (
+        return_to_cpu.final_parameter_sha256
+    )
+    assert return_to_cpu.validation is not None
+
+
 def test_runner_rejects_manifest_and_normalized_data_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -242,6 +387,9 @@ def _write_training_config(
     resume_from: str | Path | None = None,
     model_dim: int = 16,
     shuffle: bool = False,
+    device: str = "cpu",
+    precision: str = "float32",
+    determinism: str = "strict",
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "training.toml"
@@ -271,6 +419,9 @@ learning_rate = {learning_rate}
 log_every_steps = 1
 checkpoint_every_steps = {checkpoint_every_steps}
 {resume_selection}
+device = {json.dumps(device)}
+precision = {json.dumps(precision)}
+determinism = {json.dumps(determinism)}
 
 [model]
 piece_embedding_dim = 2

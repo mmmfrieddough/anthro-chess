@@ -93,13 +93,15 @@ Milestone 1 model boundary and objective. The shared masked action objective
 lives in `anthro_chess.training`; deterministic structural and tiny-overfit
 checks exercise those same model and loss APIs.
 
-The current CPU training runner also lives in `anthro_chess.training` and uses
-those ordinary loader, model, loss, and validation boundaries. Its strict
-command configuration composes the data and model schemas, and each run writes
-the resolved selection, data manifests and identities, code and model
-compatibility metadata, optimizer-update evidence, and structured metrics.
-The same runner writes atomic optimizer-step checkpoints and can continue from
-the latest checkpoint in a run or an explicitly selected checkpoint.
+The current CPU and Apple-silicon MPS training runner also lives in
+`anthro_chess.training` and uses those ordinary loader, model, loss, and
+validation boundaries. Its strict command configuration composes the data and
+model schemas, and each run writes the resolved selection, data manifests and
+identities, code and model compatibility metadata, selected execution backend,
+precision and determinism mode, optimizer-update evidence, and structured
+metrics. The same runner writes atomic optimizer-step checkpoints and can
+continue from the latest checkpoint in a run or an explicitly selected
+checkpoint.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input
@@ -253,11 +255,25 @@ checkpoint and continuing with an equivalent sampling recipe is acceptable.
 The current action-only runner restores model and optimizer state, global
 progress counters, Python and Torch random-number-generator state, and the
 loader's exact deterministic next-batch cursor. Each checkpoint retains the
-resolved configuration and code, data, model, action-vocabulary, and encoding
-provenance. Resume compares code-owned compatibility identities before loading
-state and rejects unsafe changes clearly. The checkpoint configuration schema
-and artifact version in `anthro_chess.training` are the source of truth for
-exact fields and selection syntax.
+resolved configuration and code, data, model, action-vocabulary, encoding, and
+execution provenance. Tensor state is loaded through CPU storage before the
+model and optimizer restore it onto the selected CPU or MPS backend. Resume
+compares code-owned compatibility identities before loading state and rejects
+unsafe changes clearly.
+
+The initial runner uses full precision. CPU supports strict or relaxed
+determinism. The current MPS Transformer backward path requires relaxed
+determinism because the locked Torch build lacks a deterministic implementation
+for one required gradient operation; selecting strict MPS training fails before
+optimization with a clear error. An MPS checkpoint preserves MPS RNG state.
+When a CPU checkpoint starts an MPS continuation, the target-backend RNG is
+initialized reproducibly from the run seed because the source checkpoint has no
+MPS RNG state. Loader continuation remains exact, but stochastic model behavior
+across different backends is not promised to be bit-identical.
+
+The checkpoint configuration schema and artifact version in
+`anthro_chess.training` are the source of truth for exact fields and selection
+syntax.
 
 ## Training Evaluation
 
