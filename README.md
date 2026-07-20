@@ -14,10 +14,10 @@ The repository currently provides an installable Python package, a lightweight
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
-Lichess baseline-corpus path, a CPU/MPS training command, and a
-locked development environment. Playable runtime, UCI, and packaged releases
-remain planned work; validation metrics exist within the training path but the
-broader evaluation harness is not yet implemented.
+Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
+determinism selection, and a locked development environment. Playable runtime,
+UCI, and packaged releases remain planned work; validation metrics exist within the
+training path but the broader evaluation harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -116,6 +116,19 @@ The current MPS Transformer backward path requires relaxed determinism because
 the locked Torch build does not provide a deterministic implementation for one
 of its gradient operations. The selected backend, precision, and determinism
 mode are retained in run and checkpoint metadata.
+
+On Apple silicon with an MPS-enabled PyTorch build, the same runner can exercise
+the real accelerator path:
+
+```console
+uv run anthro train --config configs/training/mps-smoke.toml
+```
+
+Explicit `mps` selection fails if the backend is unavailable; `auto` selects MPS
+when available and otherwise CPU. Run artifacts record requested and resolved
+devices, precision, determinism, accumulation, phase timings, throughput, and
+sampled MPS memory. The synchronized phase profiling used by the smoke selection
+adds diagnostic overhead and should be disabled for ordinary throughput runs.
 
 ## Baseline Training Corpus
 

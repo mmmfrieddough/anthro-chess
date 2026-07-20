@@ -1,4 +1,4 @@
-"""Executable CPU training over the ordinary data, model, and loss boundaries."""
+"""Executable device-aware training over the ordinary package boundaries."""
 
 from __future__ import annotations
 
@@ -36,9 +36,14 @@ from anthro_chess.training.checkpoints import (
     save_training_checkpoint,
 )
 from anthro_chess.training.config import TrainingConfig
+from anthro_chess.training.devices import (
+    DeviceCapabilities,
+    DeviceError,
+    resolve_training_device,
+)
 from anthro_chess.training.losses import masked_action_cross_entropy
 
-RUN_ARTIFACT_VERSION = 2
+RUN_ARTIFACT_VERSION = 3
 
 
 class TrainingError(ValueError):
@@ -73,7 +78,7 @@ class _OptimizationResult:
 def run_training(
     resolved_config: ResolvedConfig[TrainingConfig],
 ) -> TrainingResult:
-    """Run bounded CPU or MPS optimization and write its provenance."""
+    """Run a bounded optimization on the resolved device and write provenance."""
 
     config = resolved_config.value
     device = _training_device(config)
@@ -212,12 +217,15 @@ def run_training(
             processed_positions=processed_positions,
             log_every_steps=config.log_every_steps,
             checkpoint_every_steps=config.checkpoint_every_steps,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
             device=device,
+            profile_phases=config.profile_phases,
             metrics_path=metrics_path,
             output_directory=output_directory,
             compatibility=compatibility,
             checkpoint_metadata=checkpoint_metadata,
         )
+        _synchronize_device(device)
         final_parameter_sha256 = _parameter_sha256(model)
         if final_parameter_sha256 == initial_parameter_sha256:
             raise TrainingError("optimizer completed without changing model parameters")
@@ -297,7 +305,9 @@ def _optimize(
     processed_positions: int,
     log_every_steps: int,
     checkpoint_every_steps: int,
+    gradient_accumulation_steps: int,
     device: torch.device,
+    profile_phases: bool,
     metrics_path: Path,
     output_directory: Path,
     compatibility: Mapping[str, object],
@@ -306,59 +316,111 @@ def _optimize(
     model.train()
     start_time = time.perf_counter()
     saved_checkpoint: Path | None = None
+    measured_positions = 0
+    data_seconds = 0.0
+    transfer_seconds = 0.0
+    compute_seconds = 0.0
+    peak_sampled_allocated_memory_bytes = _allocated_memory_bytes(device)
+    peak_sampled_driver_memory_bytes = _driver_allocated_memory_bytes(device)
     with metrics_path.open("a", encoding="utf-8") as metrics_file:
         for global_step in range(starting_step + 1, steps + 1):
-            try:
-                sequence_batch = next(loader)
-            except StopIteration:
-                loader.start_epoch(loader.state().epoch + 1)
+            optimizer.zero_grad(set_to_none=True)
+            accumulated_loss = 0.0
+            step_positions = 0
+            for _ in range(gradient_accumulation_steps):
+                data_started = time.perf_counter()
                 try:
                     sequence_batch = next(loader)
-                except StopIteration as error:
-                    raise TrainingError(
-                        "training data produced no batches; "
-                        "check drop_last and batch size"
-                    ) from error
+                except StopIteration:
+                    loader.start_epoch(loader.state().epoch + 1)
+                    try:
+                        sequence_batch = next(loader)
+                    except StopIteration as error:
+                        raise TrainingError(
+                            "training data produced no batches; "
+                            "check drop_last and batch size"
+                        ) from error
+                data_seconds += time.perf_counter() - data_started
 
-            batch = MoveModelBatch.from_sequence_batch(
-                sequence_batch,
-                device=device,
-            )
-            optimizer.zero_grad(set_to_none=True)
-            loss = masked_action_cross_entropy(
-                model(batch),
-                batch.action_targets,
-                batch.action_loss_mask,
-            )
-            if not torch.isfinite(loss):
-                raise TrainingError(
-                    f"move loss is not finite at global step {global_step}"
+                if profile_phases:
+                    _synchronize_device(device)
+                transfer_started = time.perf_counter()
+                batch = MoveModelBatch.from_sequence_batch(
+                    sequence_batch,
+                    device=device,
                 )
-            loss.backward()
+                if profile_phases:
+                    _synchronize_device(device)
+                transfer_seconds += time.perf_counter() - transfer_started
+
+                compute_started = time.perf_counter()
+                loss = masked_action_cross_entropy(
+                    model(batch),
+                    batch.action_targets,
+                    batch.action_loss_mask,
+                )
+                if not torch.isfinite(loss):
+                    raise TrainingError(
+                        f"move loss is not finite at global step {global_step}"
+                    )
+                (loss / gradient_accumulation_steps).backward()
+                if profile_phases:
+                    _synchronize_device(device)
+                compute_seconds += time.perf_counter() - compute_started
+                positions = int(batch.action_loss_mask.sum().item())
+                step_positions += positions
+                accumulated_loss += float(loss.detach().item())
+
+            compute_started = time.perf_counter()
             optimizer.step()
-            positions = int(batch.action_loss_mask.sum().item())
-            processed_positions += positions
+            if profile_phases:
+                _synchronize_device(device)
+            compute_seconds += time.perf_counter() - compute_started
+            processed_positions += step_positions
+            measured_positions += step_positions
+            peak_sampled_allocated_memory_bytes = _maximum_optional(
+                peak_sampled_allocated_memory_bytes,
+                _allocated_memory_bytes(device),
+            )
+            peak_sampled_driver_memory_bytes = _maximum_optional(
+                peak_sampled_driver_memory_bytes,
+                _driver_allocated_memory_bytes(device),
+            )
             epoch = loader.state().epoch
 
             if global_step % log_every_steps == 0 or global_step == steps:
+                _synchronize_device(device)
                 elapsed = max(time.perf_counter() - start_time, 1e-12)
+                average_loss = accumulated_loss / gradient_accumulation_steps
+                learning_rate = float(optimizer.param_groups[0]["lr"])
+                positions_per_second = measured_positions / elapsed
                 record = {
                     "global_step": global_step,
                     "epoch": epoch,
-                    "move_loss": float(loss.detach().item()),
-                    "learning_rate": float(optimizer.param_groups[0]["lr"]),
-                    "batch_positions": positions,
+                    "move_loss": average_loss,
+                    "learning_rate": learning_rate,
+                    "batch_positions": step_positions,
                     "processed_positions": processed_positions,
-                    "positions_per_second": processed_positions / elapsed,
+                    "positions_per_second": positions_per_second,
+                    "elapsed_seconds": elapsed,
+                    "data_seconds": data_seconds if profile_phases else None,
+                    "transfer_seconds": (transfer_seconds if profile_phases else None),
+                    "compute_seconds": compute_seconds if profile_phases else None,
+                    "peak_sampled_allocated_memory_bytes": (
+                        peak_sampled_allocated_memory_bytes
+                    ),
+                    "peak_sampled_driver_memory_bytes": (
+                        peak_sampled_driver_memory_bytes
+                    ),
                 }
                 metrics_file.write(
                     json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
                 )
                 metrics_file.flush()
                 print(
-                    "step={global_step} move_loss={move_loss:.6f} "
-                    "lr={learning_rate:.6g} positions={processed_positions} "
-                    "positions_per_second={positions_per_second:.2f}".format(**record)
+                    f"step={global_step} move_loss={average_loss:.6f} "
+                    f"lr={learning_rate:.6g} positions={processed_positions} "
+                    f"positions_per_second={positions_per_second:.2f}"
                 )
             if global_step % checkpoint_every_steps == 0 or global_step == steps:
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
@@ -381,6 +443,31 @@ def _optimize(
         processed_positions=processed_positions,
         checkpoint_path=saved_checkpoint,
     )
+
+
+def _synchronize_device(device: torch.device) -> None:
+    if device.type == "mps":
+        torch.mps.synchronize()
+
+
+def _allocated_memory_bytes(device: torch.device) -> int | None:
+    if device.type == "mps":
+        return int(torch.mps.current_allocated_memory())
+    return None
+
+
+def _driver_allocated_memory_bytes(device: torch.device) -> int | None:
+    if device.type == "mps":
+        return int(torch.mps.driver_allocated_memory())
+    return None
+
+
+def _maximum_optional(current: int | None, observed: int | None) -> int | None:
+    if current is None:
+        return observed
+    if observed is None:
+        return current
+    return max(current, observed)
 
 
 def _prepare_metrics(path: Path, *, through_step: int) -> None:
@@ -425,6 +512,7 @@ def _compatibility_record(
             "log_every_steps",
             "model",
             "output_directory",
+            "profile_phases",
             "resume_from",
             "steps",
             "train",
@@ -447,15 +535,18 @@ def _compatibility_record(
     }
 
 
-def _training_device(config: TrainingConfig) -> torch.device:
-    device = torch.device(config.device)
-    if device.type == "mps" and not torch.backends.mps.is_available():
-        availability = (
-            "the installed Torch build has no MPS support"
-            if not torch.backends.mps.is_built()
-            else "MPS is not available on this host"
+def _training_device(
+    config: TrainingConfig,
+    *,
+    capabilities: DeviceCapabilities | None = None,
+) -> torch.device:
+    try:
+        device = resolve_training_device(
+            config.device,
+            capabilities=capabilities,
         )
-        raise TrainingError(f"training device mps was requested but {availability}")
+    except DeviceError as error:
+        raise TrainingError(str(error)) from error
     if device.type == "mps" and config.determinism == "strict":
         raise TrainingError(
             "strict determinism is not supported for the current MPS "
@@ -475,11 +566,13 @@ def _execution_record(
     device: torch.device,
 ) -> dict[str, object]:
     return {
-        "device": str(device),
+        "device": config.device,
         "backend": device.type,
         "precision": config.precision,
         "parameter_dtype": str(_training_dtype(config)).removeprefix("torch."),
         "determinism": config.determinism,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "phase_profiling": config.profile_phases,
     }
 
 
@@ -498,6 +591,8 @@ def _validate_checkpoint_execution(
         "precision",
         "parameter_dtype",
         "determinism",
+        "gradient_accumulation_steps",
+        "phase_profiling",
     }
     if set(execution) != required:
         raise CheckpointError("checkpoint execution metadata is incomplete or unknown")

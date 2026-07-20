@@ -93,15 +93,18 @@ Milestone 1 model boundary and objective. The shared masked action objective
 lives in `anthro_chess.training`; deterministic structural and tiny-overfit
 checks exercise those same model and loss APIs.
 
-The current CPU and Apple-silicon MPS training runner also lives in
-`anthro_chess.training` and uses those ordinary loader, model, loss, and
-validation boundaries. Its strict command configuration composes the data and
-model schemas, and each run writes the resolved selection, data manifests and
-identities, code and model compatibility metadata, selected execution backend,
-precision and determinism mode, optimizer-update evidence, and structured
-metrics. The same runner writes atomic optimizer-step checkpoints and can
+The shared training runner also lives in `anthro_chess.training` and uses those
+ordinary loader, model, loss, and validation boundaries. It resolves explicit
+`cpu`, `mps`, or `auto` device selection at one boundary and moves the model,
+batches, loss, validation, and optimizer state through that resolved device.
+Explicit MPS selection never silently falls back. Strict determinism remains
+available for the stripped-down CPU correctness path, while ordinary
+accelerator work can select the performance-oriented mode. Run artifacts own
+the exact device, precision, determinism, accumulation, throughput, phase
+timing, and available memory measurements rather than duplicating those values
+in prose. The same runner writes atomic optimizer-step checkpoints and can
 continue from the latest checkpoint in a run or an explicitly selected
-checkpoint.
+checkpoint across supported backends.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input

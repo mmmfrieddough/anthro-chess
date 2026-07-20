@@ -9,10 +9,11 @@ schema.
 `data/` contains the offline sample selection and the pinned, bounded Lichess
 baseline-corpus selection. The latter owns the archive identity, published
 checksum, rating namespace, deterministic selection bound, and normalized shard
-size. `training/` contains the small deterministic selection that exercises the
-ordinary training runner, step-keyed checkpointing, and resume boundary against
-the prepared sample artifact. The same model and checkpoint path supports an
-explicit MPS override on compatible Apple-silicon hosts. Add focused
+size. `training/` contains strict CPU and explicitly selected MPS smoke paths
+against the prepared sample artifact, including step-keyed checkpoint and
+resume coverage. The MPS selection enables synchronized phase profiling for
+bounded device verification; larger-corpus batch and accumulation choices
+belong in resolved run configuration and measured artifacts. Add focused
 `evaluation/` or `runtime/` subdirectories when the corresponding command
 exists. Do not add speculative example files for commands that have not been
 implemented.
