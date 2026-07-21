@@ -13,7 +13,7 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import SequenceBatch
 from anthro_chess.models import MoveModelBatch
 
-VALIDATION_METRICS_VERSION = 1
+VALIDATION_METRICS_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ class MoveValidationMetrics:
 
     position_count: int
     move_loss: float
+    legal_move_loss: float
     mask_penalty: float
     legal_mass: float
     top1_illegal_rate: float
@@ -87,6 +88,7 @@ class MoveValidationMetrics:
             "version": VALIDATION_METRICS_VERSION,
             "position_count": self.position_count,
             "move_loss": self.move_loss,
+            "legal_move_loss": self.legal_move_loss,
             "legality": {
                 "mask_penalty": self.mask_penalty,
                 "legal_mass": self.legal_mass,
@@ -117,6 +119,7 @@ class MoveValidationAccumulator:
         self._rating_bands = _validate_rating_bands(rating_bands)
         self._position_count = 0
         self._move_loss_sum = 0.0
+        self._legal_move_loss_sum = 0.0
         self._mask_penalty_sum = 0.0
         self._legal_mass_sum = 0.0
         self._top1_illegal_count = 0
@@ -142,9 +145,7 @@ class MoveValidationAccumulator:
             .cpu()
         )
         active_logits = (
-            logits[batch.action_loss_mask]
-            .detach()
-            .to(device="cpu", dtype=torch.float64)
+            logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
         )
         active_targets = (
             batch.action_targets[batch.action_loss_mask].detach().to(device="cpu")
@@ -198,6 +199,7 @@ class MoveValidationAccumulator:
         active_count = len(legal_rows)
         self._position_count += active_count
         self._move_loss_sum += float(move_losses.sum().item())
+        self._legal_move_loss_sum += float((move_losses + log_legal_mass).sum().item())
         self._mask_penalty_sum += float((-log_legal_mass).sum().item())
         self._legal_mass_sum += float(legal_mass.sum().item())
         self._top1_illegal_count += int(top1_illegal.sum().item())
@@ -242,6 +244,7 @@ class MoveValidationAccumulator:
         return MoveValidationMetrics(
             position_count=self._position_count,
             move_loss=self._move_loss_sum / self._position_count,
+            legal_move_loss=self._legal_move_loss_sum / self._position_count,
             mask_penalty=self._mask_penalty_sum / self._position_count,
             legal_mass=self._legal_mass_sum / self._position_count,
             top1_illegal_rate=(self._top1_illegal_count / self._position_count),

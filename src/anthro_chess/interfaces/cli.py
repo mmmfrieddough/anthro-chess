@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from anthro_chess import __version__
+from anthro_chess.config import ResolvedConfig
+
+if TYPE_CHECKING:
+    from anthro_chess.data import SequenceDataConfig
+    from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
 
@@ -41,7 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download and verify a configured source archive.",
     )
     acquire_parser.add_argument(
-        "output", type=Path, help="Artifact root where raw/ will be written."
+        "output",
+        type=Path,
+        nargs="?",
+        help=(
+            "Artifact root where raw/ will be written. Defaults beneath "
+            "ANTHRO_CHESS_DATA_ROOT."
+        ),
     )
     acquire_parser.add_argument(
         "--config",
@@ -62,9 +75,20 @@ def build_parser() -> argparse.ArgumentParser:
         "prepare",
         help="Normalize a PGN file into Parquet and manifest artifacts.",
     )
-    prepare_parser.add_argument("input", type=Path, help="Raw source PGN file.")
     prepare_parser.add_argument(
-        "output", type=Path, help="Artifact root for normalized/ and manifests/."
+        "input",
+        type=Path,
+        nargs="?",
+        help="Raw source PGN file. Defaults to the configured acquired archive.",
+    )
+    prepare_parser.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help=(
+            "Artifact root for normalized/ and manifests/. Defaults beneath "
+            "ANTHRO_CHESS_DATA_ROOT."
+        ),
     )
     prepare_parser.add_argument(
         "--config",
@@ -128,7 +152,14 @@ def _run_data_acquire(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        result = acquire_archive(arguments.output, resolved)
+        archive = resolved.value.archive
+        artifact_name = (
+            archive.artifact_name
+            if archive is not None and archive.artifact_name is not None
+            else resolved.value.artifact_name
+        )
+        output = _data_output_path(arguments.output, artifact_name)
+        result = acquire_archive(output, resolved)
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data acquire: {error}", file=sys.stderr)
         return 2
@@ -149,7 +180,20 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        result = prepare_pgn(arguments.input, arguments.output, resolved)
+        output = _data_output_path(arguments.output, resolved.value.artifact_name)
+        input_path = arguments.input
+        if input_path is None:
+            if resolved.value.archive is None:
+                raise ConfigError(
+                    "input path is required because the selected data "
+                    "configuration has no archive"
+                )
+            archive_root = _data_output_path(
+                arguments.output,
+                resolved.value.archive.artifact_name or resolved.value.artifact_name,
+            )
+            input_path = archive_root / "raw" / resolved.value.archive.file_name
+        result = prepare_pgn(input_path, output, resolved)
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
         return 2
@@ -178,6 +222,7 @@ def _run_train(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
+        resolved = _resolve_training_roots(resolved, arguments.set)
         result = run_training(resolved)
     except (ConfigError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
@@ -187,7 +232,88 @@ def _run_train(arguments: argparse.Namespace) -> int:
     print(f"Run: {result.run_path}")
     print(f"Metrics: {result.metrics_path}")
     print(f"Checkpoint: {result.checkpoint_path}")
+    if result.validation is not None:
+        print(
+            "Validation: "
+            f"raw_move_loss={result.validation.move_loss:.6f} "
+            f"legal_move_loss={result.validation.legal_move_loss:.6f} "
+            "uniform_over_legal="
+            f"{result.validation.uniform_over_legal_move_loss:.6f}"
+        )
     return 0
+
+
+def _data_output_path(output: Path | None, artifact_name: str) -> Path:
+    if output is not None:
+        return output
+    root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
+    return root / artifact_name
+
+
+def _environment_root(name: str) -> Path:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        from anthro_chess.config import ConfigError
+
+        raise ConfigError(
+            f"a directory must be provided explicitly or {name} must be set"
+        )
+    return Path(value).expanduser().resolve()
+
+
+def _resolve_training_roots(
+    resolved: ResolvedConfig[TrainingConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[TrainingConfig]:
+    """Resolve checked-in artifact paths beneath configured machine roots."""
+    config = resolved.value
+    update: dict[str, object] = {}
+    override_keys = {item.partition("=")[0] for item in overrides}
+
+    output_directory = config.output_directory
+    if (
+        not output_directory.is_absolute()
+        and "output_directory" not in override_keys
+        and os.environ.get("ANTHRO_CHESS_RUN_ROOT", "").strip()
+    ):
+        update["output_directory"] = _rooted_artifact_path(
+            _environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            output_directory,
+        )
+
+    data_root_available = bool(os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip())
+    selections: tuple[tuple[str, SequenceDataConfig | None], ...] = (
+        ("train", config.train),
+        ("validation", config.validation),
+    )
+    for selection_name, selection in selections:
+        if selection is None or not data_root_available:
+            continue
+        selection_update: dict[str, Path] = {}
+        for field_name in ("normalized", "manifest"):
+            path = getattr(selection, field_name)
+            dotted_key = f"{selection_name}.{field_name}"
+            if not path.is_absolute() and dotted_key not in override_keys:
+                selection_update[field_name] = _rooted_artifact_path(
+                    _environment_root("ANTHRO_CHESS_DATA_ROOT"),
+                    path,
+                )
+        if selection_update:
+            update[selection_name] = selection.model_copy(update=selection_update)
+
+    if not update:
+        return resolved
+    return ResolvedConfig(
+        value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
+
+
+def _rooted_artifact_path(root: Path, configured_path: Path) -> Path:
+    parts = configured_path.parts
+    if parts and parts[0] == "artifacts":
+        parts = parts[1:]
+    return root.joinpath(*parts)
 
 
 if __name__ == "__main__":  # pragma: no cover - console scripts call main directly

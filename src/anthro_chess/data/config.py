@@ -23,6 +23,11 @@ class SourceConfig(ConfigModel):
 class ArchiveConfig(ConfigModel):
     """Pinned downloadable archive used by a reproducible source selection."""
 
+    artifact_name: str | None = Field(
+        default=None,
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
     url: str = Field(min_length=1, pattern=r"^https?://")
     file_name: str = Field(
         min_length=1,
@@ -69,6 +74,10 @@ class OutputConfig(ConfigModel):
 class PrepareConfig(ConfigModel):
     """Code-owned schema for ``anthro data prepare``."""
 
+    artifact_name: str = Field(
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
     source: SourceConfig
     archive: ArchiveConfig | None = None
     split: SplitConfig = SplitConfig()

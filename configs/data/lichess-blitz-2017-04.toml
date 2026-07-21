@@ -1,3 +1,5 @@
+artifact_name = "lichess-blitz-2017-04"
+
 [source]
 id = "lichess"
 version = "standard-rated-2017-04"
@@ -8,6 +10,7 @@ rating_system = "glicko2"
 ratings_are_normalized = true
 
 [archive]
+artifact_name = "lichess-blitz-2017-04"
 url = "https://database.lichess.org/standard/lichess_db_standard_rated_2017-04.pgn.zst"
 file_name = "lichess_db_standard_rated_2017-04.pgn.zst"
 sha256 = "559222b0e933bc02281643724fbd9bd46690074b10d784c4f264e0bff6c5992c"

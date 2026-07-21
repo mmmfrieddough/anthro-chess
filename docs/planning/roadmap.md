@@ -109,6 +109,10 @@ future models:
 - held-out move prediction metrics;
 - rating-sliced validation metrics;
 - illegal-move probability and legal-mask diagnostics;
+- controlled training-efficiency comparisons using active positions per second,
+  memory, and quality versus processed positions and wall-clock time;
+- batch-one end-to-end move latency and declared-batch inference throughput,
+  with cold-start time reported separately;
 - generated-game rollout checks once the runtime can play;
 - fixed engine-anchor matches for relative rating monotonicity;
 - timing diagnostics once timing is enabled.
@@ -126,6 +130,10 @@ This stage should expand data scale, tune sampling and weighting, improve model
 capacity, calibrate rating behavior, strengthen checkpointing and reproducible
 runs, improve runtime reliability, and add optional timing behavior when the
 move-only path is already useful.
+
+Corpus-scale training should replace fixture-oriented eager per-ply
+materialization with bounded-memory shard-backed loading before attempting full
+passes over the prepared million-game selection.
 
 Evaluation should guide this work. New data, model changes, and runtime changes
 should be judged by the same benchmark surfaces whenever possible, with deeper
