@@ -32,27 +32,32 @@ should be treated as training metadata rather than fixed product requirements.
 
 ## Preprocessing
 
-For each game:
+For each game and deterministic controlled-player view:
 
 1. Parse the move list.
 2. Reconstruct exact board state before each ply.
 3. Generate legal moves for each position.
 4. Encode the previous move.
-5. Encode static game settings.
+5. Encode the controlled color and that player's optional target rating as
+   static game settings.
 6. Encode dynamic clock features when available, plus phase features.
 7. Build one training timestep per ply.
 
 Board generation should use exact chess rules. The neural model should not need
 to infer the current board from raw notation.
 
-The initial typed per-ply encoding contract implements this boundary for
+The typed per-ply encoding contract implements this boundary for
 standard chess and exposes a stable serialized identity for downstream
 compatibility checks. It preserves exact pre-move state, prior and target
-actions, legal-action alignment, rating context, and timing missingness without
-making PGN or UCI text model inputs. The dataloading layer packs these values
-into framework-neutral numeric sequence batches so model code can make the
-final tensor/device conversion without reopening normalized data or
-reconstructing alignment.
+actions, legal-action alignment, controlled-player context, and timing
+missingness without making PGN or UCI text model inputs. Normalized data keeps
+both source-player ratings, while model inputs contain only the controlled
+player's optional target rating and color. The dataloading layer creates
+deterministic white and black views, retains both players' moves in each full
+history, and enables action loss only where the selected player is to move. It
+then packs these values into framework-neutral numeric sequence batches so
+model code can make the final tensor/device conversion without reopening
+normalized data or reconstructing alignment.
 
 Optional preference labels should be allowed to be multi-label. A single ply may
 belong to several useful concepts, such as an opening family, a pawn structure,
@@ -343,12 +348,14 @@ preference-control evaluation.
 When it is the bot's turn:
 
 1. Update exact game state from all moves so far.
-2. Build current timestep features:
+2. Build target-free full-history features through the shared model-facing
+   context builder, ending with the current timestep:
    - board before the bot move;
    - previous move;
    - current clocks and previous move times when timing is enabled;
-   - static game settings.
-3. Run the model with the causal KV cache.
+   - the controlled player's static target rating and color.
+3. Run the model over full history. Add a causal KV cache later only if measured
+   runtime performance requires it.
 4. Mask illegal moves while preserving enabled non-move actions such as
    resignation.
 5. Sample a valid action using temperature.

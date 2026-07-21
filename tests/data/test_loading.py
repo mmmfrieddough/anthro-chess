@@ -35,8 +35,9 @@ def test_loads_artifact_written_with_canonical_normalized_schema(
 
     dataset = SequenceDataset.from_parquet(prepared.normalized_path, split=split)
 
-    assert len(dataset) == 1
-    assert dataset[0].plies[0].player_rating == 2100
+    assert len(dataset) == 2
+    assert dataset[0].plies[0].target_rating == 2100
+    assert dataset[1].plies[0].target_rating == 2000
 
 
 def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
@@ -51,25 +52,35 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
     )
     loader = SequenceDataLoader.from_parquet(
         path,
-        SequenceLoaderConfig(batch_size=2, shuffle=False),
+        SequenceLoaderConfig(batch_size=3, shuffle=False),
     )
 
     batch = next(loader)
 
-    assert batch.batch_size == 2
+    assert batch.batch_size == 3
     assert batch.sequence_length == 3
-    assert batch.attention_mask == ((True, True, True), (True, False, False))
-    assert batch.action_loss_mask == batch.attention_mask
+    assert batch.attention_mask == (
+        (True, True, True),
+        (True, True, True),
+        (True, False, False),
+    )
+    assert batch.action_loss_mask == (
+        (True, False, True),
+        (False, True, False),
+        (True, False, False),
+    )
     assert batch.action_targets[0] == _action_ids(("e2e4", "e7e5", "g1f3"))
-    assert batch.action_targets[1] == (_action_ids(("d2d4",))[0], 0, 0)
-    assert batch.legal_action_ids[1][0]
-    assert batch.legal_action_ids[1][1:] == ((), ())
-    assert batch.inputs.piece_ids[1][1] == (0,) * 64
+    assert batch.action_targets[2] == (_action_ids(("d2d4",))[0], 0, 0)
+    assert batch.legal_action_ids[2][0]
+    assert batch.legal_action_ids[2][1:] == ((), ())
+    assert batch.inputs.piece_ids[2][1] == (0,) * 64
     assert batch.inputs.previous_action_id.present[0] == (False, True, True)
-    assert batch.inputs.player_rating.present[0] == (True, True, True)
-    assert batch.inputs.opponent_rating.values[0] == (1401, 1400, 1401)
-    assert batch.game_ids == ((1, 1, 1), (2, 0, 0))
-    assert batch.ply_indices == ((0, 1, 2), (0, 0, 0))
+    assert batch.inputs.target_rating.values[0] == (1400, 1400, 1400)
+    assert batch.inputs.target_rating.values[1] == (1401, 1401, 1401)
+    assert batch.inputs.controlled_color[0] == (0, 0, 0)
+    assert batch.inputs.controlled_color[1] == (1, 1, 1)
+    assert batch.game_ids == ((1, 1, 1), (1, 1, 1), (2, 0, 0))
+    assert batch.ply_indices == ((0, 1, 2), (0, 1, 2), (0, 0, 0))
 
 
 def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
@@ -86,14 +97,13 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
     )
     loader = SequenceDataLoader(
         dataset,
-        SequenceLoaderConfig(batch_size=3, chunk_length=2, shuffle=False),
+        SequenceLoaderConfig(batch_size=5, chunk_length=2, shuffle=False),
     )
 
     batch = next(loader)
 
-    assert batch.chunk_start_plies == (0, 2, 4)
-    assert batch.ply_indices == ((0, 1), (2, 3), (4, 0))
-    assert batch.attention_mask == ((True, True), (True, True), (True, False))
+    assert batch.chunk_start_plies == (0, 2, 4, 0, 2)
+    assert batch.ply_indices == ((0, 1), (2, 3), (4, 0), (0, 1), (2, 3))
     assert batch.inputs.previous_action_id.values[1][0] == _action_ids(("e7e5",))[0]
     assert batch.inputs.previous_action_id.present[1][0] is True
 
@@ -129,13 +139,11 @@ def test_length_buckets_keep_similarly_sized_full_games_together(
         ),
     )
 
-    short_batch = next(loader)
-    long_batch = next(loader)
-
-    assert tuple(sum(mask) for mask in short_batch.attention_mask) == (1, 2)
-    assert tuple(sum(mask) for mask in long_batch.attention_mask) == (7, 8)
-    assert short_batch.sequence_length == 2
-    assert long_batch.sequence_length == 8
+    batches = tuple(loader)
+    lengths = [tuple(sum(mask) for mask in batch.attention_mask) for batch in batches]
+    assert all(max(items) - min(items) < 4 for items in lengths)
+    assert min(min(items) for items in lengths) == 1
+    assert max(max(items) for items in lengths) == 8
 
 
 def test_causal_mask_prevents_future_target_attention() -> None:
@@ -256,9 +264,9 @@ def _encoded_dataset() -> SequenceDataset:
         time_increment_ms=None,
         clock_remaining_ms=(None, None, None),
     )
-    plies = encode_game(game)
+    plies = encode_game(game, controlled_color=chess.WHITE)
     return SequenceDataset(
-        [SequenceExample(0, game.game_id, 0, plies)],
+        [SequenceExample(0, game.game_id, 0, 0, plies)],
         identity_sha256="test",
     )
 

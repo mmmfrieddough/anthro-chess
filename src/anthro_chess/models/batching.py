@@ -31,8 +31,8 @@ class MoveModelInputs:
     halfmove_clock: Tensor
     fullmove_number: Tensor
     previous_action_id: OptionalTensor
-    player_rating: OptionalTensor
-    opponent_rating: OptionalTensor
+    target_rating: OptionalTensor
+    controlled_color: Tensor
 
 
 @dataclass(frozen=True)
@@ -93,14 +93,11 @@ class MoveModelBatch:
                     inputs.previous_action_id.values,
                     inputs.previous_action_id.present,
                 ),
-                player_rating=optional(
-                    inputs.player_rating.values,
-                    inputs.player_rating.present,
+                target_rating=optional(
+                    inputs.target_rating.values,
+                    inputs.target_rating.present,
                 ),
-                opponent_rating=optional(
-                    inputs.opponent_rating.values,
-                    inputs.opponent_rating.present,
-                ),
+                controlled_color=required(inputs.controlled_color),
             ),
             action_targets=required(batch.action_targets),
             action_loss_mask=boolean(batch.action_loss_mask),
@@ -135,14 +132,14 @@ class MoveModelBatch:
             self.inputs.castling_rights,
             self.inputs.halfmove_clock,
             self.inputs.fullmove_number,
+            self.inputs.controlled_color,
         )
         if any(value.shape != expected_shape for value in aligned):
             raise ValueError("model inputs, targets, and masks must align")
         optional_inputs = (
             self.inputs.en_passant_square,
             self.inputs.previous_action_id,
-            self.inputs.player_rating,
-            self.inputs.opponent_rating,
+            self.inputs.target_rating,
         )
         if any(
             item.values.shape != expected_shape or item.present.shape != expected_shape
@@ -167,6 +164,15 @@ class MoveModelBatch:
             self.inputs.side_to_move >= 2
         ):
             raise ValueError("side-to-move ids are outside the board encoding")
+        if torch.any(self.inputs.controlled_color < 0) or torch.any(
+            self.inputs.controlled_color >= 2
+        ):
+            raise ValueError("controlled-color ids are outside the color encoding")
+        controlled_turns = (
+            self.inputs.side_to_move == self.inputs.controlled_color
+        ) & self.attention_mask
+        if torch.any(self.action_loss_mask != controlled_turns):
+            raise ValueError("action loss must select only controlled-player turns")
         if torch.any(self.inputs.castling_rights < 0) or torch.any(
             self.inputs.castling_rights >= 16
         ):

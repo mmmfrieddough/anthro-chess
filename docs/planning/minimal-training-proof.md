@@ -157,3 +157,39 @@ its leading moves were `e4` at 58.48%, `d4` at 21.31%, `Nf3` at 6.70%, and
 This confirms recognizable opening preference, but it is not a generated-game
 benchmark. Complete-game coherence, sampling behavior, and rating control
 remain Milestone 2 runtime and rollout questions.
+
+## Controlled-Player Context Replacement
+
+The foundational context change for the playable proof was repeated on the
+same 10,000-game corpus and frozen 491-game validation set. The replacement
+encoding creates deterministic white and black trajectory views, keeps both
+players' observed moves in each view, broadcasts only the controlled player's
+rating and color, and applies action loss only on that player's turns. The
+model and encoding compatibility versions changed, so the earlier checkpoints
+remain retained evidence but cannot be loaded as though they used the new
+contract.
+
+The MPS replacement run used the baseline model and optimizer settings with a
+larger sequence batch to keep its active-position budget comparable after
+splitting each game into controlled-player views. It stopped at step 1,800 and
+then resumed from `latest` to step 2,000, preserving the loader cursor,
+optimizer, random state, and cumulative processed-position count. The complete
+run directory is retained as `controlled-player-proof-v2` beneath the shared
+run root; its artifacts own the exact resolved paths, configuration,
+compatibility identities, and execution provenance.
+
+| Measurement | Result |
+| --- | ---: |
+| Processed controlled-player positions | 2,188,528 |
+| Raw held-out move loss | 4.31526 |
+| Legally masked held-out move loss | 3.10874 |
+| Uniform-over-legal move loss | 3.22612 |
+| Raw-logit mask penalty | 1.20653 |
+| Raw top-1 illegal rate | 33.60% |
+| Peak measured throughput | 1,302.85 positions/second |
+| Peak sampled MPS allocated memory | 21.62 MiB |
+| Peak sampled MPS driver memory | 1.21 GiB |
+
+The legally masked loss is lower than uniform-over-legal by 0.11738. This
+clears the replacement learned-move gate while preserving one target rating for
+the controlled player and requiring no opponent rating at live inference.

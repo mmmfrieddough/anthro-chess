@@ -15,7 +15,8 @@ exact board before move_t = ChessRules(moves_0 ... moves_t-1)
 board_embedding_t         = BoardEncoder(exact board before move_t)
 previous_move_embedding   = MoveEmbedding(move_t-1)
 dynamic_embedding_t       = Phase features, plus clock features when available
-static_game_embedding     = Rating/preference settings, plus clock settings when enabled
+static_game_embedding     = Controlled-player rating/color and preferences,
+                            plus clock settings when enabled
 
 x_t = combine(
   board_embedding_t,
@@ -105,8 +106,9 @@ The transformer sees:
 - static game metadata;
 - historical context through causal attention.
 
-Live inference should use a key-value cache so only the newest timestep needs to
-be processed after each move.
+The first playable runtime should establish correctness with full-history
+recomputation. A key-value cache can later avoid recomputing prior timesteps if
+measurement shows it is needed.
 
 Training should make full use of the causal attention mask. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions
@@ -122,14 +124,18 @@ hyperparameter schema, compatibility identity, and model definition live in
 
 Static game settings include:
 
-- target rating on the project's internal rating scale;
+- target rating on the project's internal rating scale for the player Anthro
+  controls;
 - starting clock time when timing is enabled;
 - increment when timing is enabled;
-- bot color;
+- controlled color;
 - optional preference settings.
 
-The current preference is to broadcast a small `static_game_embedding` at every
-timestep. This is cheap and more reliable than depending only on a prefix token.
+The current implementation broadcasts the controlled player's optional target
+rating and controlled color at every timestep. Both remain static across the
+full trajectory, including observed opponent moves. Source data can retain both
+players' ratings for provenance and evaluation, but opponent rating is not a
+behavioral model input.
 
 Dynamic features include:
 

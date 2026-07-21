@@ -381,9 +381,12 @@ shows the dataloader is the bottleneck. They should not become the default
 source of truth.
 
 The current model-facing encoding API reconstructs normalized standard games
-into one typed example per ply. Each example carries the compact exact pre-move
-state, trajectory alignment, normalized rating context, explicit timing
-missingness, and legal action ids. Its versioned serialized identity is the
+into controlled-player trajectory views. Each view carries the compact exact
+pre-move state, both players' observed actions, the controlled player's static
+optional target rating and color, explicit timing missingness, and legal action
+ids. Loss is enabled only on the controlled player's turns. The same position
+feature construction builds target-free live contexts without inventing an
+action target or opponent rating. Its versioned serialized identity is the
 compatibility source of truth for future manifests, run records, and
 checkpoints; exact field names and token mappings live with the implementation
 rather than being duplicated here.

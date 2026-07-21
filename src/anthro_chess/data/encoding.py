@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 
@@ -11,11 +12,12 @@ import chess
 from anthro_chess.chess import (
     action_vocabulary_identity,
     decode_move,
+    encode_move,
     legal_action_ids,
 )
 
 ENCODING_NAME = "anthro-per-ply"
-ENCODING_VERSION = 1
+ENCODING_VERSION = 2
 BOARD_SQUARE_COUNT = 64
 
 _ENCODING_SCHEMA = {
@@ -44,8 +46,8 @@ _ENCODING_SCHEMA = {
     },
     "context": {
         "nullable_integer": "nonnegative integer when present, otherwise null",
-        "player_rating": "optional normalized rating for side to move",
-        "opponent_rating": "optional normalized rating for opposing side",
+        "target_rating": "optional normalized rating for the controlled player",
+        "controlled_color": "0 white, 1 black; static across the trajectory",
         "time_initial_ms": "optional static time control",
         "time_increment_ms": "optional static increment",
         "player_clock_ms": "optional pre-move clock for side to move",
@@ -126,22 +128,58 @@ class BoardEncoding:
 
 
 @dataclass(frozen=True)
-class PlyEncoding:
-    """One aligned model timestep and its supervised action target."""
+class PlyContext:
+    """One target-free model-input timestep."""
 
-    game_id: int
     ply_index: int
     board: BoardEncoding
     previous_action_id: int | None
-    target_action_id: int
-    legal_action_ids: tuple[int, ...]
-    player_rating: int | None
-    opponent_rating: int | None
+    target_rating: int | None
+    controlled_color: int
     time_initial_ms: int | None
     time_increment_ms: int | None
     player_clock_ms: int | None
     opponent_clock_ms: int | None
+
+    def as_record(self) -> dict[str, object]:
+        """Return the stable JSON-serializable input representation."""
+
+        return {
+            "ply_index": self.ply_index,
+            "board": self.board.as_record(),
+            "previous_action_id": self.previous_action_id,
+            "target_rating": self.target_rating,
+            "controlled_color": self.controlled_color,
+            "time_initial_ms": self.time_initial_ms,
+            "time_increment_ms": self.time_increment_ms,
+            "player_clock_ms": self.player_clock_ms,
+            "opponent_clock_ms": self.opponent_clock_ms,
+        }
+
+
+@dataclass(frozen=True)
+class PlyEncoding(PlyContext):
+    """One aligned model-input timestep and its supervised action target."""
+
+    game_id: int
+    target_action_id: int
+    legal_action_ids: tuple[int, ...]
     target_clock_after_move_ms: int | None
+
+    def context(self) -> PlyContext:
+        """Return the target-free input fields for train/inference comparison."""
+
+        return PlyContext(
+            ply_index=self.ply_index,
+            board=self.board,
+            previous_action_id=self.previous_action_id,
+            target_rating=self.target_rating,
+            controlled_color=self.controlled_color,
+            time_initial_ms=self.time_initial_ms,
+            time_increment_ms=self.time_increment_ms,
+            player_clock_ms=self.player_clock_ms,
+            opponent_clock_ms=self.opponent_clock_ms,
+        )
 
     def as_record(self) -> dict[str, object]:
         """Return the stable JSON-serializable representation."""
@@ -153,14 +191,31 @@ class PlyEncoding:
             "previous_action_id": self.previous_action_id,
             "target_action_id": self.target_action_id,
             "legal_action_ids": list(self.legal_action_ids),
-            "player_rating": self.player_rating,
-            "opponent_rating": self.opponent_rating,
+            "target_rating": self.target_rating,
+            "controlled_color": self.controlled_color,
             "time_initial_ms": self.time_initial_ms,
             "time_increment_ms": self.time_increment_ms,
             "player_clock_ms": self.player_clock_ms,
             "opponent_clock_ms": self.opponent_clock_ms,
             "target_clock_after_move_ms": self.target_clock_after_move_ms,
         }
+
+
+@dataclass(frozen=True)
+class DecisionContext:
+    """A complete target-free trajectory ending at the current decision."""
+
+    controlled_color: int
+    target_rating: int | None
+    plies: tuple[PlyContext, ...]
+
+    def __post_init__(self) -> None:
+        if not self.plies:
+            raise ValueError("a decision context needs at least one timestep")
+        if any(ply.controlled_color != self.controlled_color for ply in self.plies):
+            raise ValueError("decision context controlled color must be static")
+        if any(ply.target_rating != self.target_rating for ply in self.plies):
+            raise ValueError("decision context target rating must be static")
 
 
 def encoding_identity() -> dict[str, object]:
@@ -175,8 +230,14 @@ def encoding_identity() -> dict[str, object]:
     }
 
 
-def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
+def encode_game(
+    game: GameEncodingInput,
+    *,
+    controlled_color: chess.Color,
+) -> tuple[PlyEncoding, ...]:
     """Convert one normalized game into exact, aligned per-ply examples."""
+
+    _validate_controlled_color(controlled_color)
 
     try:
         board = chess.Board(game.initial_position)
@@ -205,22 +266,32 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
             )
 
         player_color = board.turn
-        player_rating, opponent_rating = _ratings_for_color(game, player_color)
         target_clock = game.clock_remaining_ms[ply_index]
+        context = _context_for_position(
+            ply_index=ply_index,
+            board=board,
+            previous_action_id=previous_action_id,
+            controlled_color=controlled_color,
+            target_rating=_rating_for_color(game, controlled_color),
+            time_initial_ms=game.time_initial_ms,
+            time_increment_ms=game.time_increment_ms,
+            player_clock_ms=clocks_by_color[player_color],
+            opponent_clock_ms=clocks_by_color[not player_color],
+        )
         encodings.append(
             PlyEncoding(
                 game_id=game.game_id,
-                ply_index=ply_index,
-                board=_encode_board(board),
-                previous_action_id=previous_action_id,
+                ply_index=context.ply_index,
+                board=context.board,
+                previous_action_id=context.previous_action_id,
+                target_rating=context.target_rating,
+                controlled_color=context.controlled_color,
+                time_initial_ms=context.time_initial_ms,
+                time_increment_ms=context.time_increment_ms,
+                player_clock_ms=context.player_clock_ms,
+                opponent_clock_ms=context.opponent_clock_ms,
                 target_action_id=target_action_id,
                 legal_action_ids=legal_ids,
-                player_rating=player_rating,
-                opponent_rating=opponent_rating,
-                time_initial_ms=game.time_initial_ms,
-                time_increment_ms=game.time_increment_ms,
-                player_clock_ms=clocks_by_color[player_color],
-                opponent_clock_ms=clocks_by_color[not player_color],
                 target_clock_after_move_ms=target_clock,
             )
         )
@@ -229,6 +300,77 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
         previous_action_id = target_action_id
 
     return tuple(encodings)
+
+
+def build_decision_context(
+    board: chess.Board,
+    move_history: Sequence[chess.Move],
+    *,
+    controlled_color: chess.Color,
+    target_rating: int | None,
+) -> DecisionContext:
+    """Build full target-free model context from one exact canonical board."""
+
+    _validate_controlled_color(controlled_color)
+    _validate_optional_nonnegative_integer("target_rating", target_rating)
+    history = tuple(move_history)
+    if tuple(board.move_stack) != history:
+        raise EncodingError("move history does not match the canonical board stack")
+
+    replay = board.root()
+    plies: list[PlyContext] = []
+    previous_action_id: int | None = None
+    for ply_index in range(len(history) + 1):
+        plies.append(
+            _context_for_position(
+                ply_index=ply_index,
+                board=replay,
+                previous_action_id=previous_action_id,
+                controlled_color=controlled_color,
+                target_rating=target_rating,
+                time_initial_ms=None,
+                time_increment_ms=None,
+                player_clock_ms=None,
+                opponent_clock_ms=None,
+            )
+        )
+        if ply_index == len(history):
+            break
+        move = history[ply_index]
+        if move not in replay.legal_moves:
+            raise EncodingError(f"move history is illegal at ply {ply_index}")
+        previous_action_id = _encode_observed_move(move, ply_index)
+        replay.push(move)
+
+    if replay.fen() != board.fen():
+        raise EncodingError("move history does not reconstruct the canonical board")
+    color_token = _color_token(controlled_color)
+    return DecisionContext(color_token, target_rating, tuple(plies))
+
+
+def _context_for_position(
+    *,
+    ply_index: int,
+    board: chess.Board,
+    previous_action_id: int | None,
+    controlled_color: chess.Color,
+    target_rating: int | None,
+    time_initial_ms: int | None,
+    time_increment_ms: int | None,
+    player_clock_ms: int | None,
+    opponent_clock_ms: int | None,
+) -> PlyContext:
+    return PlyContext(
+        ply_index=ply_index,
+        board=_encode_board(board),
+        previous_action_id=previous_action_id,
+        target_rating=target_rating,
+        controlled_color=_color_token(controlled_color),
+        time_initial_ms=time_initial_ms,
+        time_increment_ms=time_increment_ms,
+        player_clock_ms=player_clock_ms,
+        opponent_clock_ms=opponent_clock_ms,
+    )
 
 
 def _encode_board(board: chess.Board) -> BoardEncoding:
@@ -258,12 +400,30 @@ def _piece_id(piece: chess.Piece | None) -> int:
     return piece.piece_type + (0 if piece.color == chess.WHITE else 6)
 
 
-def _ratings_for_color(
-    game: GameEncodingInput, color: chess.Color
-) -> tuple[int | None, int | None]:
-    if color == chess.WHITE:
-        return game.white_normalized_rating, game.black_normalized_rating
-    return game.black_normalized_rating, game.white_normalized_rating
+def _rating_for_color(game: GameEncodingInput, color: chess.Color) -> int | None:
+    return (
+        game.white_normalized_rating
+        if color == chess.WHITE
+        else game.black_normalized_rating
+    )
+
+
+def _color_token(color: chess.Color) -> int:
+    return 0 if color == chess.WHITE else 1
+
+
+def _validate_controlled_color(color: chess.Color) -> None:
+    if type(color) is not bool:
+        raise ValueError("controlled_color must be chess.WHITE or chess.BLACK")
+
+
+def _encode_observed_move(move: chess.Move, ply_index: int) -> int:
+    try:
+        return encode_move(move)
+    except ValueError as error:
+        raise EncodingError(
+            f"move history at ply {ply_index} is outside the action vocabulary"
+        ) from error
 
 
 def _validate_optional_nonnegative_integer(name: str, value: int | None) -> None:

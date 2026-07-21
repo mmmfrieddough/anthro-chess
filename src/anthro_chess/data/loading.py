@@ -9,6 +9,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, TypeAlias, cast, overload
 
+import chess
+
 from anthro_chess.data.config import SequenceLoaderConfig
 from anthro_chess.data.encoding import (
     BOARD_SQUARE_COUNT,
@@ -18,7 +20,7 @@ from anthro_chess.data.encoding import (
 )
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
-LOADER_STATE_VERSION = 2
+LOADER_STATE_VERSION = 3
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
     NormalizedColumn.GAME_ID,
@@ -49,6 +51,7 @@ class SequenceExample:
 
     shard_index: int
     game_id: int
+    controlled_color: int
     start_ply: int
     plies: tuple[PlyEncoding, ...]
 
@@ -59,6 +62,12 @@ class SequenceExample:
             raise ValueError("sequence game_id must match its encoded plies")
         if self.plies[0].ply_index != self.start_ply:
             raise ValueError("sequence start_ply must match its first encoded ply")
+        if any(ply.controlled_color != self.controlled_color for ply in self.plies):
+            raise ValueError("sequence controlled_color must match its encoded plies")
+        if not any(
+            ply.board.side_to_move == self.controlled_color for ply in self.plies
+        ):
+            raise ValueError("sequence needs a controlled-player action target")
 
 
 @dataclass(frozen=True)
@@ -80,8 +89,8 @@ class SequenceInputs:
     halfmove_clock: IntMatrix
     fullmove_number: IntMatrix
     previous_action_id: OptionalIntBatch
-    player_rating: OptionalIntBatch
-    opponent_rating: OptionalIntBatch
+    target_rating: OptionalIntBatch
+    controlled_color: IntMatrix
     time_initial_ms: OptionalIntBatch
     time_increment_ms: OptionalIntBatch
     player_clock_ms: OptionalIntBatch
@@ -208,27 +217,42 @@ class SequenceDataset(Sequence[SequenceExample]):
                 if row[NormalizedColumn.SPLIT] != split:
                     continue
                 game = _game_from_row(row, path)
-                plies = encode_game(game)
-                chunks = _chunk_plies(plies, chunk_length)
-                for chunk in chunks:
-                    examples.append(
-                        SequenceExample(
-                            shard_index=shard_index,
-                            game_id=game.game_id,
-                            start_ply=chunk[0].ply_index,
-                            plies=chunk,
+                for controlled_color in (chess.WHITE, chess.BLACK):
+                    color_token = 0 if controlled_color == chess.WHITE else 1
+                    plies = encode_game(game, controlled_color=controlled_color)
+                    chunks = _chunk_plies(plies, chunk_length)
+                    for chunk in chunks:
+                        if not any(
+                            ply.board.side_to_move == color_token for ply in chunk
+                        ):
+                            continue
+                        examples.append(
+                            SequenceExample(
+                                shard_index=shard_index,
+                                game_id=game.game_id,
+                                controlled_color=color_token,
+                                start_ply=chunk[0].ply_index,
+                                plies=chunk,
+                            )
                         )
+                    identity_records.append(
+                        {
+                            "shard": shard_index,
+                            "game_id": game.game_id,
+                            "controlled_color": color_token,
+                            "ply_count": len(plies),
+                            "content_sha256": _normalized_game_sha256(row),
+                        }
                     )
-                identity_records.append(
-                    {
-                        "shard": shard_index,
-                        "game_id": game.game_id,
-                        "ply_count": len(plies),
-                        "content_sha256": _normalized_game_sha256(row),
-                    }
-                )
 
-        examples.sort(key=lambda item: (item.shard_index, item.game_id, item.start_ply))
+        examples.sort(
+            key=lambda item: (
+                item.shard_index,
+                item.game_id,
+                item.controlled_color,
+                item.start_ply,
+            )
+        )
         identity = {
             "version": LOADER_STATE_VERSION,
             "split": split,
@@ -405,8 +429,8 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         halfmove_clock=_pack_required(padded, lambda ply: ply.board.halfmove_clock),
         fullmove_number=_pack_required(padded, lambda ply: ply.board.fullmove_number),
         previous_action_id=_pack_optional(padded, lambda ply: ply.previous_action_id),
-        player_rating=_pack_optional(padded, lambda ply: ply.player_rating),
-        opponent_rating=_pack_optional(padded, lambda ply: ply.opponent_rating),
+        target_rating=_pack_optional(padded, lambda ply: ply.target_rating),
+        controlled_color=_pack_required(padded, lambda ply: ply.controlled_color),
         time_initial_ms=_pack_optional(padded, lambda ply: ply.time_initial_ms),
         time_increment_ms=_pack_optional(padded, lambda ply: ply.time_increment_ms),
         player_clock_ms=_pack_optional(padded, lambda ply: ply.player_clock_ms),
@@ -415,7 +439,13 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     return SequenceBatch(
         inputs=inputs,
         action_targets=_pack_required(padded, lambda ply: ply.target_action_id),
-        action_loss_mask=attention_mask,
+        action_loss_mask=tuple(
+            tuple(
+                ply is not None and ply.board.side_to_move == ply.controlled_color
+                for ply in row
+            )
+            for row in padded
+        ),
         attention_mask=attention_mask,
         causal_attention_mask=tuple(
             tuple(key_index <= query_index for key_index in range(sequence_length))
@@ -540,7 +570,7 @@ def _shuffle_key(seed: str, epoch: int, example: SequenceExample) -> bytes:
     return sha256(
         (
             f"{seed}\0{epoch}\0{example.shard_index}\0"
-            f"{example.game_id}\0{example.start_ply}"
+            f"{example.game_id}\0{example.controlled_color}\0{example.start_ply}"
         ).encode()
     ).digest()
 

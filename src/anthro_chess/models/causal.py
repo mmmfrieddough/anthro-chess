@@ -157,7 +157,7 @@ class CausalMoveModel(nn.Module):
 
         return {
             "name": "anthro-causal-move-model",
-            "version": 1,
+            "version": 2,
             "config": self.config.model_dump(mode="json"),
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
@@ -168,16 +168,14 @@ class CausalMoveModel(nn.Module):
     @staticmethod
     def _scalar_context(batch: MoveModelBatch) -> Tensor:
         inputs = batch.inputs
-        nullable = (
-            inputs.player_rating,
-            inputs.opponent_rating,
-        )
-        values = tuple(_nullable_log_value(item) for item in nullable)
-        presence = tuple(item.present.float() for item in nullable)
+        target_rating = inputs.target_rating
+        controlled_color = inputs.controlled_color
         return torch.stack(
             (
-                *values,
-                *presence,
+                _nullable_log_value(target_rating),
+                target_rating.present.float(),
+                (controlled_color == 0).float(),
+                (controlled_color == 1).float(),
             ),
             dim=-1,
         )

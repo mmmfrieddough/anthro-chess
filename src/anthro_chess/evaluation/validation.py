@@ -157,12 +157,12 @@ class MoveValidationAccumulator:
         ).squeeze(1)
 
         rating_values = (
-            batch.inputs.player_rating.values[batch.action_loss_mask]
+            batch.inputs.target_rating.values[batch.action_loss_mask]
             .detach()
             .to(device="cpu")
         )
         rating_present = (
-            batch.inputs.player_rating.present[batch.action_loss_mask]
+            batch.inputs.target_rating.present[batch.action_loss_mask]
             .detach()
             .to(device="cpu")
         )
