@@ -15,18 +15,19 @@ exact board before move_t = ChessRules(moves_0 ... moves_t-1)
 board_embedding_t         = BoardEncoder(exact board before move_t)
 previous_move_embedding   = MoveEmbedding(move_t-1)
 dynamic_embedding_t       = Phase features, plus clock features when available
-static_game_embedding     = Rating/preference settings, plus clock settings when enabled
+trajectory_settings       = Preferences and clock settings when enabled
 
 x_t = combine(
   board_embedding_t,
   previous_move_embedding,
   dynamic_embedding_t,
-  static_game_embedding
+  trajectory_settings
 )
 
 CausalTransformer(x_0 ... x_t) -> h_t
-action_head(h_t) -> action_t
-time_head(h_t, action_embedding_t) -> optional move_time_t
+decision_conditioner(h_t, target_rating_t) -> d_t
+action_head(d_t) -> action_t
+time_head(d_t, action_embedding_t) -> optional move_time_t
 ```
 
 The board state is not learned from the move sequence. It is computed exactly
@@ -102,11 +103,19 @@ The transformer sees:
 - compact board embeddings;
 - previous move embeddings;
 - current clock and phase features when timing is enabled;
-- static game metadata;
+- trajectory metadata that genuinely helps interpret the history;
 - historical context through causal attention.
 
-Live inference should use a key-value cache so only the newest timestep needs to
-be processed after each move.
+The current action model deliberately keeps target rating outside that causal
+history encoder. After the transformer has produced a rating-neutral feature
+for each position, a small nonlinear feature-modulation network combines that
+feature with the rating of the player choosing that move. The action head still
+has learned computation after rating enters; rating is not merely added to the
+final probabilities.
+
+The first playable runtime should establish correctness with full-history
+recomputation. A key-value cache can later avoid recomputing prior timesteps if
+measurement shows it is needed.
 
 Training should make full use of the causal attention mask. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions
@@ -118,18 +127,38 @@ and a head over the shared action vocabulary. Its tensor boundary,
 hyperparameter schema, compatibility identity, and model definition live in
 `anthro_chess.models`.
 
-## Static And Dynamic Metadata
+## Decision, Static, And Dynamic Metadata
 
-Static game settings include:
+Decision controls include:
 
-- target rating on the project's internal rating scale;
+- target rating on the project's internal rating scale for the player choosing
+  the current action;
+- temperature, which remains a runtime sampling control rather than a learned
+  history feature.
+
+Static game settings may include:
+
 - starting clock time when timing is enabled;
 - increment when timing is enabled;
-- bot color;
 - optional preference settings.
 
-The current preference is to broadcast a small `static_game_embedding` at every
-timestep. This is cheap and more reliable than depending only on a prefix token.
+The current implementation applies the optional target rating only at the
+decision layer for the corresponding supervised ply. It does not place either
+player's rating in historical timestep features and does not need a controlled
+color input: the exact board already identifies whose turn it is. Training can
+therefore encode each game once and learn from every valid ply, selecting the
+mover's rating for that ply when it is available. At runtime the caller supplies
+only Anthro's chosen target rating when Anthro is making a decision; no opponent
+rating is required.
+
+The rationale and accepted tradeoffs are recorded in
+`docs/decisions/0009-decision-only-rating-conditioning.md`.
+
+This placement is intentionally specific to rating. Other sequence-wide values
+should not be moved mechanically. Clock settings can change how every observed
+time should be interpreted, and a future preference control may describe the
+whole requested trajectory, so their placement should follow their semantics.
+Missing values must remain explicit wherever a feature is placed.
 
 Dynamic features include:
 
@@ -141,6 +170,21 @@ Dynamic features include:
 
 Dynamic metadata must be represented per ply because it changes throughout the
 game.
+
+### Possible Rating-Aware History Reader
+
+Late decision conditioning means the causal transformer analyzes the position
+and history without knowing the requested strength. That is the simplest
+contract and preserves a single rating-neutral history pass, but it may prove
+too shallow if rating needs to change which historical patterns receive
+attention rather than only how the completed representation is used.
+
+If evaluation shows that limitation, test a small rating-conditioned query or
+cross-attention reader over the rating-neutral causal states before the action
+head. This would add rating-aware learned processing without putting ratings on
+past moves, exposing an opponent rating, or duplicating the transformer pass.
+It is an experiment to measure during performance tuning, not part of the
+current architecture.
 
 ## Action Output
 

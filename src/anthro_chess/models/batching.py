@@ -31,8 +31,7 @@ class MoveModelInputs:
     halfmove_clock: Tensor
     fullmove_number: Tensor
     previous_action_id: OptionalTensor
-    player_rating: OptionalTensor
-    opponent_rating: OptionalTensor
+    target_rating: OptionalTensor
 
 
 @dataclass(frozen=True)
@@ -93,13 +92,9 @@ class MoveModelBatch:
                     inputs.previous_action_id.values,
                     inputs.previous_action_id.present,
                 ),
-                player_rating=optional(
-                    inputs.player_rating.values,
-                    inputs.player_rating.present,
-                ),
-                opponent_rating=optional(
-                    inputs.opponent_rating.values,
-                    inputs.opponent_rating.present,
+                target_rating=optional(
+                    inputs.target_rating.values,
+                    inputs.target_rating.present,
                 ),
             ),
             action_targets=required(batch.action_targets),
@@ -141,8 +136,7 @@ class MoveModelBatch:
         optional_inputs = (
             self.inputs.en_passant_square,
             self.inputs.previous_action_id,
-            self.inputs.player_rating,
-            self.inputs.opponent_rating,
+            self.inputs.target_rating,
         )
         if any(
             item.values.shape != expected_shape or item.present.shape != expected_shape

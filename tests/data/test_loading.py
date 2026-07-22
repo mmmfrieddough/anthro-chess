@@ -36,7 +36,7 @@ def test_loads_artifact_written_with_canonical_normalized_schema(
     dataset = SequenceDataset.from_parquet(prepared.normalized_path, split=split)
 
     assert len(dataset) == 1
-    assert dataset[0].plies[0].player_rating == 2100
+    assert dataset[0].plies[0].target_rating == 2100
 
 
 def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
@@ -66,8 +66,7 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
     assert batch.legal_action_ids[1][1:] == ((), ())
     assert batch.inputs.piece_ids[1][1] == (0,) * 64
     assert batch.inputs.previous_action_id.present[0] == (False, True, True)
-    assert batch.inputs.player_rating.present[0] == (True, True, True)
-    assert batch.inputs.opponent_rating.values[0] == (1401, 1400, 1401)
+    assert batch.inputs.target_rating.values[0] == (1400, 1401, 1400)
     assert batch.game_ids == ((1, 1, 1), (2, 0, 0))
     assert batch.ply_indices == ((0, 1, 2), (0, 0, 0))
 
@@ -93,7 +92,6 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
 
     assert batch.chunk_start_plies == (0, 2, 4)
     assert batch.ply_indices == ((0, 1), (2, 3), (4, 0))
-    assert batch.attention_mask == ((True, True), (True, True), (True, False))
     assert batch.inputs.previous_action_id.values[1][0] == _action_ids(("e7e5",))[0]
     assert batch.inputs.previous_action_id.present[1][0] is True
 

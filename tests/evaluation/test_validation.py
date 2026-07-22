@@ -34,6 +34,7 @@ def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
         batch,
         action_loss_mask=torch.tensor(
             [[True, True, False], [True, False, False]],
+            dtype=torch.bool,
         ),
     )
     logits = torch.zeros(

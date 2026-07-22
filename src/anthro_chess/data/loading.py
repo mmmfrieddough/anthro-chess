@@ -18,7 +18,7 @@ from anthro_chess.data.encoding import (
 )
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
-LOADER_STATE_VERSION = 2
+LOADER_STATE_VERSION = 4
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
     NormalizedColumn.GAME_ID,
@@ -80,8 +80,7 @@ class SequenceInputs:
     halfmove_clock: IntMatrix
     fullmove_number: IntMatrix
     previous_action_id: OptionalIntBatch
-    player_rating: OptionalIntBatch
-    opponent_rating: OptionalIntBatch
+    target_rating: OptionalIntBatch
     time_initial_ms: OptionalIntBatch
     time_increment_ms: OptionalIntBatch
     player_clock_ms: OptionalIntBatch
@@ -405,8 +404,7 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         halfmove_clock=_pack_required(padded, lambda ply: ply.board.halfmove_clock),
         fullmove_number=_pack_required(padded, lambda ply: ply.board.fullmove_number),
         previous_action_id=_pack_optional(padded, lambda ply: ply.previous_action_id),
-        player_rating=_pack_optional(padded, lambda ply: ply.player_rating),
-        opponent_rating=_pack_optional(padded, lambda ply: ply.opponent_rating),
+        target_rating=_pack_optional(padded, lambda ply: ply.target_rating),
         time_initial_ms=_pack_optional(padded, lambda ply: ply.time_initial_ms),
         time_increment_ms=_pack_optional(padded, lambda ply: ply.time_increment_ms),
         player_clock_ms=_pack_optional(padded, lambda ply: ply.player_clock_ms),

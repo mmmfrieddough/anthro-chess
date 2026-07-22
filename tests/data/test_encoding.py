@@ -9,6 +9,7 @@ from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EncodingError,
     GameEncodingInput,
+    build_decision_context,
     encode_game,
     encoding_identity,
 )
@@ -42,7 +43,7 @@ def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
     assert third.board.piece_ids[chess.E5] == chess.PAWN + 6
 
 
-def test_aligns_ratings_color_and_pre_move_clocks_without_fake_values() -> None:
+def test_aligns_decision_ratings_and_pre_move_clocks_without_fake_values() -> None:
     game = GameEncodingInput(
         game_id=42,
         ruleset="standard",
@@ -57,13 +58,12 @@ def test_aligns_ratings_color_and_pre_move_clocks_without_fake_values() -> None:
 
     first, second, third = encode_game(game)
 
-    assert first.player_rating == 1350
-    assert first.opponent_rating is None
+    assert first.target_rating == 1350
+    assert second.target_rating is None
+    assert third.target_rating == 1350
     assert first.player_clock_ms == PRESENT_60_SECONDS
     assert first.target_clock_after_move_ms == 58_000
 
-    assert second.player_rating is None
-    assert second.opponent_rating == 1350
     assert second.player_clock_ms == PRESENT_60_SECONDS
     assert second.opponent_clock_ms == 58_000
 
@@ -95,9 +95,9 @@ def test_identity_and_records_are_stable_and_json_serializable() -> None:
 
     assert identity == {
         "name": "anthro-per-ply",
-        "version": 1,
+        "version": 3,
         "schema_sha256": (
-            "9162c9bfa19ed03a69b287fb9cbd2329f7d3faceb13315040d1841285331a40a"
+            "a8170a23da62322ba50886c1b2d32b7a5a2c0e4d6dee2629641a823f59cc033e"
         ),
         "board_square_count": 64,
         "action_vocabulary": {
@@ -166,6 +166,51 @@ def test_game_input_rejects_unsupported_or_empty_sequences() -> None:
 def test_game_input_rejects_invalid_clock_values() -> None:
     with pytest.raises(ValueError, match=r"clock_remaining_ms\[0\] must be"):
         replace(_game(("e2e4",)), clock_remaining_ms=(-1,))
+
+
+def test_target_free_decision_context_matches_training_history() -> None:
+    moves = tuple(chess.Move.from_uci(text) for text in ("e2e4", "e7e5", "g1f3"))
+    board = chess.Board()
+    for move in moves:
+        board.push(move)
+
+    decision = build_decision_context(
+        board,
+        moves,
+        target_rating=1725,
+    )
+    training = encode_game(_game(("e2e4", "e7e5", "g1f3")))
+
+    assert len(decision.plies) == len(training) + 1
+    for expected, actual in zip(training, decision.plies, strict=False):
+        context = expected.context()
+        assert actual.board == context.board
+        assert actual.ply_index == context.ply_index
+        assert actual.previous_action_id == context.previous_action_id
+    assert decision.plies[-1].board.side_to_move == 1
+    assert decision.plies[-1].previous_action_id == training[-1].target_action_id
+    assert decision.target_rating == 1725
+    assert all("target_rating" not in ply.as_record() for ply in decision.plies)
+
+
+def test_target_free_context_preserves_missing_rating_and_rejects_mismatch() -> None:
+    board = chess.Board()
+    move = chess.Move.from_uci("e2e4")
+    board.push(move)
+
+    context = build_decision_context(
+        board,
+        (move,),
+        target_rating=None,
+    )
+    assert context.target_rating is None
+
+    with pytest.raises(EncodingError, match="does not match"):
+        build_decision_context(
+            board,
+            (),
+            target_rating=None,
+        )
 
 
 def _game(

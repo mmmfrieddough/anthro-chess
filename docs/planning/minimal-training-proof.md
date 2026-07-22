@@ -157,3 +157,38 @@ its leading moves were `e4` at 58.48%, `d4` at 21.31%, `Nf3` at 6.70%, and
 This confirms recognizable opening preference, but it is not a generated-game
 benchmark. Complete-game coherence, sampling behavior, and rating control
 remain Milestone 2 runtime and rollout questions.
+
+## Decision-Only Rating Context Replacement
+
+The foundational rating-context change was repeated on the same 10,000-game
+corpus and frozen 491-game validation set. The selected replacement encodes
+each game once, trains every valid ply, and supplies only the mover's rating to
+a nonlinear decision conditioner after the rating-neutral causal transformer.
+Historical timestep features contain no rating, and the model no longer needs
+a controlled-color or opponent-rating input. This supersedes the earlier
+paired-view proof rather than treating its incompatible checkpoint as current.
+
+The MPS replacement run used the baseline model, loader batch, and optimizer
+settings. It stopped at step 1,800 and then resumed from `latest` to step 2,000,
+preserving the loader cursor, optimizer, random state, and cumulative
+processed-position count. The complete run directory is retained as
+`decision-conditioned-rating-proof-v3` beneath the shared run root; its
+artifacts own the exact resolved paths, configuration, compatibility identities,
+and execution provenance.
+
+| Measurement | Result |
+| --- | ---: |
+| Processed decision positions | 2,198,264 |
+| Raw held-out move loss | 4.35907 |
+| Legally masked held-out move loss | 3.14189 |
+| Uniform-over-legal move loss | 3.22612 |
+| Raw-logit mask penalty | 1.21717 |
+| Raw top-1 illegal rate | 33.75% |
+| Peak measured throughput | 1,320.03 positions/second |
+| Peak sampled MPS allocated memory | 20.02 MiB |
+| Peak sampled MPS driver memory | 1.25 GiB |
+
+The legally masked loss is lower than uniform-over-legal by 0.08423. This
+clears the replacement learned-move gate while recovering supervision from
+both sides in one transformer pass and requiring only Anthro's one target
+rating at live inference.
