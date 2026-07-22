@@ -32,14 +32,14 @@ should be treated as training metadata rather than fixed product requirements.
 
 ## Preprocessing
 
-For each game and deterministic controlled-player view:
+For each game:
 
 1. Parse the move list.
 2. Reconstruct exact board state before each ply.
 3. Generate legal moves for each position.
 4. Encode the previous move.
-5. Encode the controlled color and that player's optional target rating as
-   static game settings.
+5. Select the side-to-move player's optional normalized rating as the decision
+   target rating for that ply, without adding it to historical timestep inputs.
 6. Encode dynamic clock features when available, plus phase features.
 7. Build one training timestep per ply.
 
@@ -49,15 +49,15 @@ to infer the current board from raw notation.
 The typed per-ply encoding contract implements this boundary for
 standard chess and exposes a stable serialized identity for downstream
 compatibility checks. It preserves exact pre-move state, prior and target
-actions, legal-action alignment, controlled-player context, and timing
+actions, legal-action alignment, per-decision target rating, and timing
 missingness without making PGN or UCI text model inputs. Normalized data keeps
-both source-player ratings, while model inputs contain only the controlled
-player's optional target rating and color. The dataloading layer creates
-deterministic white and black views, retains both players' moves in each full
-history, and enables action loss only where the selected player is to move. It
-then packs these values into framework-neutral numeric sequence batches so
-model code can make the final tensor/device conversion without reopening
-normalized data or reconstructing alignment.
+both source-player ratings for provenance and selects only the mover's rating
+at each supervised ply. Historical timestep inputs contain neither player's
+rating. The dataloading layer encodes each game once, retains both players'
+moves, and enables action loss on every valid ply. It then packs these values
+into framework-neutral numeric sequence batches so model code can make the
+final tensor/device conversion without reopening normalized data or
+reconstructing alignment.
 
 Optional preference labels should be allowed to be multi-label. A single ply may
 belong to several useful concepts, such as an opening family, a pawn structure,
@@ -352,10 +352,10 @@ When it is the bot's turn:
    context builder, ending with the current timestep:
    - board before the bot move;
    - previous move;
-   - current clocks and previous move times when timing is enabled;
-   - the controlled player's static target rating and color.
-3. Run the model over full history. Add a causal KV cache later only if measured
-   runtime performance requires it.
+   - current clocks and previous move times when timing is enabled.
+3. Run the rating-neutral causal history encoder, then condition the current
+   decision feature on Anthro's one configured target rating. Add a causal KV
+   cache later only if measured runtime performance requires it.
 4. Mask illegal moves while preserving enabled non-move actions such as
    resignation.
 5. Sample a valid action using temperature.

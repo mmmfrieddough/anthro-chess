@@ -20,7 +20,7 @@ _PIECE_ID_COUNT = 13
 _SIDE_TO_MOVE_COUNT = 2
 _CASTLING_RIGHTS_COUNT = 16
 _EN_PASSANT_TOKEN_COUNT = 65
-_SCALAR_CONTEXT_COUNT = 4
+_RATING_CONTEXT_COUNT = 2
 
 
 class BoardEncoder(nn.Module):
@@ -73,6 +73,35 @@ class BoardEncoder(nn.Module):
         return cast(Tensor, self.projection(features))
 
 
+class RatingConditioner(nn.Module):
+    """Modulate completed history features for one decision-maker rating."""
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.modulation = nn.Sequential(
+            nn.Linear(_RATING_CONTEXT_COUNT, config.model_dim),
+            nn.GELU(),
+            nn.Linear(config.model_dim, config.model_dim * 2),
+        )
+        self.normalization = nn.LayerNorm(config.model_dim)
+
+    def forward(self, hidden: Tensor, rating: OptionalTensor) -> Tensor:
+        """Apply nonlinear, position-dependent rating feature modulation."""
+
+        rating_features = torch.stack(
+            (
+                _nullable_log_value(rating),
+                rating.present.float(),
+            ),
+            dim=-1,
+        )
+        scale, shift = self.modulation(rating_features).chunk(2, dim=-1)
+        return cast(
+            Tensor,
+            self.normalization(hidden * (1.0 + torch.tanh(scale)) + shift),
+        )
+
+
 class CausalMoveModel(nn.Module):
     """Predict human action logits from exact state and causal trajectory."""
 
@@ -84,11 +113,7 @@ class CausalMoveModel(nn.Module):
             ACTION_VOCABULARY_SIZE + 1,
             self.config.action_embedding_dim,
         )
-        context_input_dim = (
-            self.config.model_dim
-            + self.config.action_embedding_dim
-            + _SCALAR_CONTEXT_COUNT
-        )
+        context_input_dim = self.config.model_dim + self.config.action_embedding_dim
         self.context_combiner = nn.Sequential(
             nn.Linear(context_input_dim, self.config.model_dim),
             nn.GELU(),
@@ -109,6 +134,7 @@ class CausalMoveModel(nn.Module):
             norm=nn.LayerNorm(self.config.model_dim),
             enable_nested_tensor=False,
         )
+        self.rating_conditioner = RatingConditioner(self.config)
         self.action_head = nn.Linear(
             self.config.model_dim,
             ACTION_VOCABULARY_SIZE,
@@ -116,6 +142,18 @@ class CausalMoveModel(nn.Module):
 
     def forward(self, batch: MoveModelBatch) -> Tensor:
         """Return raw action logits shaped batch by sequence by vocabulary."""
+
+        batch.validate()
+        hidden = self.encode_history(batch)
+        conditioned = self.rating_conditioner(hidden, batch.inputs.target_rating)
+        logits = self.action_head(conditioned)
+        return cast(
+            Tensor,
+            logits.masked_fill(~batch.attention_mask.unsqueeze(-1), 0.0),
+        )
+
+    def encode_history(self, batch: MoveModelBatch) -> Tensor:
+        """Encode rating-neutral exact state and causal move history."""
 
         batch.validate()
         inputs = batch.inputs
@@ -131,7 +169,6 @@ class CausalMoveModel(nn.Module):
             (
                 self.board_encoder(batch),
                 self.previous_action_embedding(previous_action_tokens),
-                self._scalar_context(batch),
             ),
             dim=-1,
         )
@@ -146,39 +183,21 @@ class CausalMoveModel(nn.Module):
             mask=~batch.causal_attention_mask,
             src_key_padding_mask=~batch.attention_mask,
         )
-        logits = self.action_head(hidden)
-        return cast(
-            Tensor,
-            logits.masked_fill(~batch.attention_mask.unsqueeze(-1), 0.0),
-        )
+        return cast(Tensor, hidden)
 
     def identity(self) -> dict[str, object]:
         """Return compatibility metadata for future runs and checkpoints."""
 
         return {
             "name": "anthro-causal-move-model",
-            "version": 2,
+            "version": 3,
             "config": self.config.model_dump(mode="json"),
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
+            "rating_conditioning": "post-transformer-feature-modulation",
             "timing_inputs": False,
             "timing_head": False,
         }
-
-    @staticmethod
-    def _scalar_context(batch: MoveModelBatch) -> Tensor:
-        inputs = batch.inputs
-        target_rating = inputs.target_rating
-        controlled_color = inputs.controlled_color
-        return torch.stack(
-            (
-                _nullable_log_value(target_rating),
-                target_rating.present.float(),
-                (controlled_color == 0).float(),
-                (controlled_color == 1).float(),
-            ),
-            dim=-1,
-        )
 
 
 def _nullable_log_value(value: OptionalTensor) -> Tensor:

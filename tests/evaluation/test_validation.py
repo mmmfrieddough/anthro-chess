@@ -26,10 +26,17 @@ from anthro_chess.models import MoveModelBatch
 
 def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
     sequence_batch = _sequence_batch(
-        (("e2e4", "e7e5", "g1f3"), None, 1500),
+        (("e2e4", "e7e5", "g1f3"), 1500, None),
         (("d2d4",), 2100, 2200),
     )
     batch = MoveModelBatch.from_sequence_batch(sequence_batch)
+    batch = replace(
+        batch,
+        action_loss_mask=torch.tensor(
+            [[True, True, False], [True, False, False]],
+            dtype=torch.bool,
+        ),
+    )
     logits = torch.zeros(
         (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE),
     )
@@ -38,8 +45,8 @@ def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
         target = int(batch.action_targets[batch_index, sequence_index].item())
         logits[batch_index, sequence_index, target] = float(offset + 1)
 
-    illegal_action = _first_illegal_action(batch.legal_action_ids[0][2])
-    logits[0, 2, illegal_action] = 4.0
+    illegal_action = _first_illegal_action(batch.legal_action_ids[0][1])
+    logits[0, 1, illegal_action] = 4.0
     logits[~batch.action_loss_mask] = torch.nan
 
     accumulator = MoveValidationAccumulator()
@@ -87,17 +94,15 @@ def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
         / len(expected_legal_masses)
     )
     assert metrics.top1_illegal_rate == pytest.approx(1 / 3)
-    assert metrics.rated_position_count == 1
-    assert metrics.missing_rating_position_count == 2
-    assert metrics.missing_rating_move_loss == pytest.approx(
-        expected_losses[:2].mean().item()
-    )
+    assert metrics.rated_position_count == 2
+    assert metrics.missing_rating_position_count == 1
+    assert metrics.missing_rating_move_loss == pytest.approx(expected_losses[1].item())
 
     slices = {item.band.name: item for item in metrics.rating_slices}
     assert slices["under_1200"].position_count == 0
     assert slices["under_1200"].move_loss is None
-    assert slices["1200_to_1599"].position_count == 0
-    assert slices["1200_to_1599"].move_loss is None
+    assert slices["1200_to_1599"].position_count == 1
+    assert slices["1200_to_1599"].move_loss == pytest.approx(expected_losses[0].item())
     assert slices["1600_to_1999"].position_count == 0
     assert slices["2000_plus"].position_count == 1
     assert slices["2000_plus"].move_loss == pytest.approx(expected_losses[2].item())
@@ -136,7 +141,7 @@ def test_simple_baselines_are_stable_across_batch_aggregation() -> None:
         legal_counts
     )
 
-    assert metrics.position_count == 2
+    assert metrics.position_count == 3
     assert metrics.move_loss == pytest.approx(math.log(ACTION_VOCABULARY_SIZE))
     assert metrics.legal_move_loss == pytest.approx(expected_uniform_legal)
     assert metrics.uniform_over_legal_move_loss == pytest.approx(expected_uniform_legal)
@@ -170,9 +175,9 @@ def test_evaluate_move_model_uses_loader_path_and_restores_training_mode() -> No
     second = evaluate_move_model(model, batches)
 
     assert model.training
-    assert first.position_count == 2
+    assert first.position_count == 3
     assert first.as_record() == second.as_record()
-    assert first.rated_position_count == 1
+    assert first.rated_position_count == 2
     assert first.missing_rating_position_count == 1
 
 
@@ -247,14 +252,12 @@ def _sequence_batch(
                 time_initial_ms=None,
                 time_increment_ms=None,
                 clock_remaining_ms=tuple(None for _ in action_ids),
-            ),
-            controlled_color=chess.WHITE,
+            )
         )
         examples.append(
             SequenceExample(
                 shard_index=0,
                 game_id=100 + game_offset,
-                controlled_color=0,
                 start_ply=0,
                 plies=plies,
             )

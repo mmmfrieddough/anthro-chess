@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import math
 
 import chess
@@ -71,16 +70,15 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
         first_action,
         second_action,
     ]
-    assert batch.inputs.target_rating.present[0].tolist() == [True, True, True]
-    assert batch.inputs.target_rating.values[0].tolist() == [1500, 1500, 1500]
-    assert batch.inputs.controlled_color[0].tolist() == [0, 0, 0]
+    assert batch.inputs.target_rating.present[0].tolist() == [True, False, True]
+    assert batch.inputs.target_rating.values[0].tolist() == [1500, 0, 1500]
     assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
     assert tuple(batch.legal_action_ids[0][0]) == legal_action_ids(initial_board)
     assert batch.game_ids[0].tolist() == [100, 100, 100]
     assert batch.ply_indices[0].tolist() == [0, 1, 2]
     assert batch.attention_mask[1].tolist() == [True, False, False]
     assert batch.action_loss_mask.tolist() == [
-        [True, False, True],
+        [True, True, True],
         [True, False, False],
     ]
 
@@ -111,9 +109,12 @@ def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() ->
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
     assert torch.count_nonzero(logits[1, 1:]).item() == 0
-    assert model.identity()["version"] == 2
+    assert model.identity()["version"] == 3
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
+    assert (
+        model.identity()["rating_conditioning"] == "post-transformer-feature-modulation"
+    )
     assert model.identity()["timing_inputs"] is False
     assert model.identity()["timing_head"] is False
 
@@ -123,12 +124,10 @@ def test_future_context_does_not_change_earlier_predictions() -> None:
     original = MoveModelBatch.from_sequence_batch(
         _sequence_batch(("e2e4", "e7e5", "g1f3"))
     )
-    changed = copy.deepcopy(original)
-    changed.inputs.piece_ids[0, 2].zero_()
-    changed.inputs.previous_action_id.values[0, 2] = encode_move(
-        chess.Move.from_uci("d2d4")
+    changed = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4", "e7e5", "d2d4"))
     )
-    changed.inputs.target_rating.values[0, 2] = 9999
+    changed.inputs.piece_ids[0, 2].zero_()
     model = CausalMoveModel(_tiny_config()).eval()
 
     with torch.no_grad():
@@ -142,6 +141,30 @@ def test_future_context_does_not_change_earlier_predictions() -> None:
         atol=1e-6,
     )
     assert not torch.equal(original_logits[:, 2], changed_logits[:, 2])
+
+
+def test_rating_changes_decision_without_changing_encoded_history() -> None:
+    torch.manual_seed(7)
+    unrated = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4", "e7e5", "g1f3"))
+    )
+    rated = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(
+            ("e2e4", "e7e5", "g1f3"),
+            white_rating=2000,
+            black_rating=1800,
+        )
+    )
+    model = CausalMoveModel(_tiny_config()).eval()
+
+    with torch.no_grad():
+        unrated_history = model.encode_history(unrated)
+        rated_history = model.encode_history(rated)
+        unrated_logits = model(unrated)
+        rated_logits = model(rated)
+
+    torch.testing.assert_close(unrated_history, rated_history, rtol=0.0, atol=0.0)
+    assert not torch.equal(unrated_logits, rated_logits)
 
 
 @pytest.mark.parametrize(
@@ -225,14 +248,12 @@ def _sequence_batch(
                 time_initial_ms=None,
                 time_increment_ms=None,
                 clock_remaining_ms=tuple(None for _ in action_ids),
-            ),
-            controlled_color=chess.WHITE,
+            )
         )
         examples.append(
             SequenceExample(
                 shard_index=0,
                 game_id=game_id_base + game_offset,
-                controlled_color=0,
                 start_ply=0,
                 plies=plies,
             )

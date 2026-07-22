@@ -57,7 +57,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     assert all(
         record["learning_rate"] == pytest.approx(0.003) for record in metric_records
     )
-    assert all(record["batch_positions"] == 13 for record in metric_records)
+    assert all(record["batch_positions"] == 26 for record in metric_records)
 
     run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
     assert run_record["resolved_config"] == resolved.as_record()
@@ -138,12 +138,12 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     checkpoint = load_training_checkpoint(resumed.checkpoint_path)
     assert checkpoint["version"] == CHECKPOINT_VERSION
     assert checkpoint["global_step"] == 4
-    assert checkpoint["counters"]["processed_positions"] == 52
+    assert checkpoint["counters"]["processed_positions"] == 104
     assert checkpoint["optimizer_state"]["state"]
     assert checkpoint["scheduler_state"] is None
     assert checkpoint["scaler_state"] is None
     assert set(checkpoint["rng_state"]) == {"python", "torch_cpu"}
-    assert checkpoint["loader_state"]["epoch"] == 1
+    assert checkpoint["loader_state"]["epoch"] == 3
     assert checkpoint["metadata"]["resolved_config"]["config"]["steps"] == 4
     assert checkpoint["metadata"]["code"]["git_revision"]
     assert checkpoint["metadata"]["data"]["train"]["manifest_sha256"]
@@ -162,7 +162,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
     assert run_record["version"] == 3
     assert run_record["optimization"]["starting_step"] == 2
-    assert run_record["optimization"]["processed_positions"] == 52
+    assert run_record["optimization"]["processed_positions"] == 104
     assert run_record["optimization"]["resumed_from"] == str(
         initial.checkpoint_path.resolve()
     )
@@ -422,8 +422,8 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
         json.loads(line)
         for line in result.metrics_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert [record["processed_positions"] for record in records] == [26, 52]
-    assert all(record["batch_positions"] == 26 for record in records)
+    assert [record["processed_positions"] for record in records] == [52, 104]
+    assert all(record["batch_positions"] == 52 for record in records)
     assert all(record["data_seconds"] >= 0.0 for record in records)
     assert all(record["transfer_seconds"] >= 0.0 for record in records)
     assert all(record["compute_seconds"] >= 0.0 for record in records)
