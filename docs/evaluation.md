@@ -133,6 +133,37 @@ checks plus comparisons on frozen evaluation inputs. Repeat the full staged
 protocol when a change alters a foundational data, encoding, alignment, model,
 or loss contract, rather than for unrelated software changes.
 
+### Dependency Tests
+
+A dependency test checks that a conditioning input actually changes model
+behavior in the intended direction. Ordinary metrics cannot do this. Loss
+sliced by a context value measures how hard those examples are to predict, not
+whether the model reads the input, and it looks unremarkable on a model that
+ignores the input entirely.
+
+The basic form evaluates frozen held-out examples under the true conditioning
+value and again under corrupted conditioning, such as a shuffled value, a fixed
+constant, or explicit absence. A conditioning input that the model uses should
+show clearly worse held-out prediction when corrupted.
+
+Direction matters as well as magnitude. Evaluating each context slice under
+each conditioning value produces a cross-conditioning comparison whose best
+result should fall on the matching pair. This distinguishes a model that merely
+reacts to the input from one that has learned its intended meaning.
+
+Dependency tests belong to the correctness family rather than the quality
+family. They should run on frozen inputs whenever a conditioning contract
+changes, and their results should be interpreted against training maturity: an
+undertrained checkpoint can show weak dependency because it has not yet learned
+the conditioning, not because the input is miswired.
+
+Rating conditioning also supports a within-game form. Held-out prefixes at one
+rating can be split by how strong the play so far has been, then compared to see
+whether the predicted distribution shifts to compensate. Human games contain
+this pattern, so a model that treats rating as a static prior and one that
+tracks it across a trajectory should be distinguishable. Both outcomes are
+useful to know.
+
 ## Held-Out Prediction
 
 Held-out human games should be the core offline evaluation source.
@@ -217,7 +248,15 @@ the expected order.
 
 A useful rollout benchmark is a self-play rating ladder. Run games across a grid
 of configured ratings, then fit empirical ratings from the results using a
-standard logistic rating model or Bradley-Terry model.
+standard logistic rating model or Bradley-Terry model. This needs only the
+runtime, so it becomes available as soon as there is a checkpoint that plays
+coherently, well before the late post-training benchmarks.
+
+A self-play ladder establishes ordering but is internally consistent by
+construction: every configured rating can be uniformly too weak while the
+ordering stays perfect. Anchoring that scale requires an external reference,
+which is what engine-anchor matches provide. The two are complementary and
+neither substitutes for the other.
 
 Expected score between two ratings can be compared with:
 
@@ -232,6 +271,37 @@ Useful rating metrics:
 - fitted-rating slope versus configured rating;
 - score consistency across the rating spectrum;
 - rating preservation when temperature or preference controls change.
+
+Rating calibration work should be measurement before correction. The primary
+deliverable is the transfer function from configured rating to fitted empirical
+rating, reported with enough shape to be actionable: ordering, slope, and where
+the relationship degrades. A slope below one usually points at uneven rating
+coverage in the training data rather than at anything to hand-tune, and the
+expected response is better data, weighting, or capacity. Applying an explicit
+mapping at the configuration boundary should require evidence that training
+improvements have stopped moving the measurement.
+
+Calibration should also be reported against a declared reference temperature so
+the number means one thing. Rating and temperature are deliberately independent
+controls: temperature must never be used to reach a rating target, and rating
+must never adjust temperature internally. That is a design constraint, not a
+claim that temperature leaves strength untouched.
+
+Whether it does is a measured quantity. Raising temperature is expected to cost
+strength, because sampling a weak move loses more than sampling a strong one
+gains, and because a lost position cannot be recovered by later play at the same
+rating ceiling. A rating-conditioned model may resist part of that drift if it
+has learned to compensate within a game. The size of that effect should be
+measured rather than assumed, by comparing the temperature response of the
+conditioned model against the same measurement with rating conditioning
+ablated. Reporting the difference as an attenuation keeps this an observation
+about the model instead of a property the project has to promise.
+
+Temperature also changes the shape of mistakes, not only their frequency.
+Errors introduced by sampling are spread across the policy rather than
+concentrated where a human of that rating would err, so matching average
+strength at an unusual temperature is not the same as playing at that rating.
+Strength and error-profile metrics should be read together.
 
 Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
 of Anthro target ratings against one or more fixed external engine

@@ -72,6 +72,13 @@ Rating should affect the kind of human play being imitated:
 - risk appetite;
 - familiarity with common patterns.
 
+Rating and temperature stay independent as controls. Temperature is never a
+mechanism for reaching a target rating, and rating never adjusts temperature
+internally. Sampling at the reference temperature draws from the learned human
+distribution for the configured rating; other values deliberately distort that
+distribution, and the strength they produce is a measured property rather than a
+guarantee. See `docs/decisions/0008-rating-temperature-independence.md`.
+
 Optional preference settings should express taste rather than skill. Examples
 may include broad opening-family preferences, aggression, solidity, or other
 human-play concepts. When timing is enabled, preferences may also include

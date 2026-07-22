@@ -108,28 +108,44 @@ future models:
 
 - held-out move prediction metrics;
 - rating-sliced validation metrics;
+- dependency tests showing whether conditioning inputs change behavior in the
+  intended direction;
 - illegal-move probability and legal-mask diagnostics;
 - controlled training-efficiency comparisons using active positions per second,
   memory, and quality versus processed positions and wall-clock time;
 - batch-one end-to-end move latency and declared-batch inference throughput,
   with cold-start time reported separately;
-- generated-game rollout checks once the runtime can play;
-- fixed engine-anchor matches for relative rating monotonicity;
-- timing diagnostics once timing is enabled.
+- generated-game rollout checks once the runtime can play.
+
+This stage should establish whether the model uses its conditioning inputs and
+whether behavior shifts across settings. Measuring the strength those settings
+produce belongs with the scaling work, because it needs a checkpoint that
+already plays coherently.
 
 Human-likeness evaluation beyond simple distribution metrics belongs later in
 the process. A compact human-vs-engine classifier can be useful once the model
 can generate coherent games, but it should not block the basic bot or become a
 separate anti-cheat project.
 
+Timing diagnostics arrive with timing itself, in the stage that adds it.
+
 ### 4. Scale And Improve
 
 Use the working loop and evaluation harness to improve the bot.
 
-This stage should expand data scale, tune sampling and weighting, improve model
-capacity, calibrate rating behavior, strengthen checkpointing and reproducible
-runs, improve runtime reliability, and add optional timing behavior when the
-move-only path is already useful.
+The first work in this stage is the move-only model itself: expand data scale,
+tune sampling and weighting, improve model capacity, strengthen checkpointing
+and reproducible runs, and improve runtime reliability. Iterating here is the
+point of having built the harness first, and it should continue until the
+benchmark surfaces stop moving.
+
+Once that model plays coherently, measure what the target rating actually
+produces: the transfer function from configured rating to played strength, its
+temperature response, and an external engine anchor for the scale. This work
+needs a model worth measuring, which is why it follows rather than leads.
+
+Optional timing behavior comes last in this stage, after the move-only path is
+useful on its own. Timing diagnostics arrive with it.
 
 Corpus-scale training should replace fixture-oriented eager per-ply
 materialization with bounded-memory shard-backed loading before attempting full
