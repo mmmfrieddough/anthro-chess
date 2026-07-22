@@ -158,38 +158,37 @@ This confirms recognizable opening preference, but it is not a generated-game
 benchmark. Complete-game coherence, sampling behavior, and rating control
 remain Milestone 2 runtime and rollout questions.
 
-## Controlled-Player Context Replacement
+## Decision-Only Rating Context Replacement
 
-The foundational context change for the playable proof was repeated on the
-same 10,000-game corpus and frozen 491-game validation set. The replacement
-encoding creates deterministic white and black trajectory views, keeps both
-players' observed moves in each view, broadcasts only the controlled player's
-rating and color, and applies action loss only on that player's turns. The
-model and encoding compatibility versions changed, so the earlier checkpoints
-remain retained evidence but cannot be loaded as though they used the new
-contract.
+The foundational rating-context change was repeated on the same 10,000-game
+corpus and frozen 491-game validation set. The selected replacement encodes
+each game once, trains every valid ply, and supplies only the mover's rating to
+a nonlinear decision conditioner after the rating-neutral causal transformer.
+Historical timestep features contain no rating, and the model no longer needs
+a controlled-color or opponent-rating input. This supersedes the earlier
+paired-view proof rather than treating its incompatible checkpoint as current.
 
-The MPS replacement run used the baseline model and optimizer settings with a
-larger sequence batch to keep its active-position budget comparable after
-splitting each game into controlled-player views. It stopped at step 1,800 and
-then resumed from `latest` to step 2,000, preserving the loader cursor,
-optimizer, random state, and cumulative processed-position count. The complete
-run directory is retained as `controlled-player-proof-v2` beneath the shared
-run root; its artifacts own the exact resolved paths, configuration,
-compatibility identities, and execution provenance.
+The MPS replacement run used the baseline model, loader batch, and optimizer
+settings. It stopped at step 1,800 and then resumed from `latest` to step 2,000,
+preserving the loader cursor, optimizer, random state, and cumulative
+processed-position count. The complete run directory is retained as
+`decision-conditioned-rating-proof-v3` beneath the shared run root; its
+artifacts own the exact resolved paths, configuration, compatibility identities,
+and execution provenance.
 
 | Measurement | Result |
 | --- | ---: |
-| Processed controlled-player positions | 2,188,528 |
-| Raw held-out move loss | 4.31526 |
-| Legally masked held-out move loss | 3.10874 |
+| Processed decision positions | 2,198,264 |
+| Raw held-out move loss | 4.35907 |
+| Legally masked held-out move loss | 3.14189 |
 | Uniform-over-legal move loss | 3.22612 |
-| Raw-logit mask penalty | 1.20653 |
-| Raw top-1 illegal rate | 33.60% |
-| Peak measured throughput | 1,302.85 positions/second |
-| Peak sampled MPS allocated memory | 21.62 MiB |
-| Peak sampled MPS driver memory | 1.21 GiB |
+| Raw-logit mask penalty | 1.21717 |
+| Raw top-1 illegal rate | 33.75% |
+| Peak measured throughput | 1,320.03 positions/second |
+| Peak sampled MPS allocated memory | 20.02 MiB |
+| Peak sampled MPS driver memory | 1.25 GiB |
 
-The legally masked loss is lower than uniform-over-legal by 0.11738. This
-clears the replacement learned-move gate while preserving one target rating for
-the controlled player and requiring no opponent rating at live inference.
+The legally masked loss is lower than uniform-over-legal by 0.08423. This
+clears the replacement learned-move gate while recovering supervision from
+both sides in one transformer pass and requiring only Anthro's one target
+rating at live inference.

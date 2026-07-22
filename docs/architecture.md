@@ -151,6 +151,9 @@ mover's rating for that ply when it is available. At runtime the caller supplies
 only Anthro's chosen target rating when Anthro is making a decision; no opponent
 rating is required.
 
+The rationale and accepted tradeoffs are recorded in
+`docs/decisions/0009-decision-only-rating-conditioning.md`.
+
 This placement is intentionally specific to rating. Other sequence-wide values
 should not be moved mechanically. Clock settings can change how every observed
 time should be interpreted, and a future preference control may describe the
