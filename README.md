@@ -15,10 +15,11 @@ stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
 Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
-determinism selection, an end-to-end minimal training proof, and a locked
-development environment. Playable runtime, UCI, and packaged releases remain
-planned work; validation metrics exist within the training path but the broader
-evaluation harness is not yet implemented.
+determinism selection, an end-to-end minimal training proof, compatible
+checkpoint-backed full-history inference, and a locked development environment.
+The game-session runtime, UCI, and packaged releases remain planned work;
+validation metrics exist within the training path but the broader evaluation
+harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -184,8 +185,8 @@ development artifact, not a published model release.
 
 When `ANTHRO_CHESS_RUN_ROOT` is set, checked-in training commands write their
 complete run directories there. Keep the run record, metrics, and checkpoint
-directory together so a later session can resume or select a compatible
-checkpoint without copying it. See
+directory together so training can resume and the model runner can validate and
+select a compatible checkpoint without copying it. See
 [`docs/training-and-runtime.md`](docs/training-and-runtime.md) for the artifact
 layout and boundary with future public model hosting.
 

@@ -117,6 +117,13 @@ The first playable runtime should establish correctness with full-history
 recomputation. A key-value cache can later avoid recomputing prior timesteps if
 measurement shows it is needed.
 
+The current checkpoint-backed model runner implements that correctness
+baseline. It converts one typed target-free decision trajectory into the shared
+model tensor boundary, applies the controlled player's rating only to the final
+decision, recomputes the complete causal history, and returns detached raw
+action logits to the decision runtime. Legal masking and sampling remain above
+this boundary.
+
 Training should make full use of the causal attention mask. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions
 are trained in parallel while each timestep only attends to prior timesteps.
