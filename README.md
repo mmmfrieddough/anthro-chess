@@ -16,10 +16,10 @@ versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
 Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
 determinism selection, an end-to-end minimal training proof, compatible
-checkpoint-backed full-history inference, and a locked development environment.
-The game-session runtime, UCI, and packaged releases remain planned work;
-validation metrics exist within the training path but the broader evaluation
-harness is not yet implemented.
+checkpoint-backed full-history inference, an untimed game-session runtime with
+exact legal action selection, and a locked development environment. UCI and
+packaged releases remain planned work; validation metrics exist within the
+training path but the broader evaluation harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
