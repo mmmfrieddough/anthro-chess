@@ -43,6 +43,7 @@ model = [
 
 [project.scripts]
 anthro = "anthro_chess.interfaces.cli:main"
+anthro-uci = "anthro_chess.interfaces.uci:main"
 
 [dependency-groups]
 dev = [
