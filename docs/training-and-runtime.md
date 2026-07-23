@@ -326,6 +326,22 @@ comparison, resume, provenance, and later runtime selection. A model runner can
 accept an explicit compatible checkpoint path beneath this root without copying
 it or requiring an external model registry.
 
+The current model runner resolves either an authoritative explicit checkpoint,
+an explicit retained run plus checkpoint selector, or an intentionally
+maintained default selection beneath the run root. Resolution never guesses from
+file names or modification times. The strict configuration and selection-record
+schemas in `anthro_chess.inference` own the exact names and precedence. Every
+selection retains and reports the absolute run record and checkpoint paths.
+
+Loading validates the run and checkpoint model configuration, action
+vocabulary, model-facing encoding, decision-only rating contract, and supported
+timing shape before restoring weights. The runner loads checkpoints through CPU
+storage, places the model on the resolved CPU or MPS device, recomputes the full
+target-free history for each request, and exposes only the current decision's
+detached CPU action logits. It does not import training-loop orchestration,
+invent an opponent rating, add a cache, mask actions, sample moves, or expose a
+timing output.
+
 Machine-local retention is not a release. Publishing selected inference
 artifacts through Hugging Face or another registry remains a later decision
 once checkpoint quality, packaging, and public compatibility expectations are

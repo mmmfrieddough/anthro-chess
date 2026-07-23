@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
-from anthro_chess.data import SequenceBatch
+from anthro_chess.data import DecisionContext, SequenceBatch
 from anthro_chess.data.loading import LegalActionTensor
 
 
@@ -113,6 +113,99 @@ class MoveModelBatch:
         result.validate()
         return result
 
+    @classmethod
+    def from_decision_context(
+        cls,
+        context: DecisionContext,
+        *,
+        device: torch.device | str | None = None,
+    ) -> MoveModelBatch:
+        """Tensorize one target-free full history for its current decision."""
+
+        tensor_device = torch.device(device) if device is not None else None
+        plies = context.plies
+        length = len(plies)
+        if tuple(ply.ply_index for ply in plies) != tuple(range(length)):
+            raise ValueError(
+                "decision context plies must be a complete zero-based history"
+            )
+        if plies[0].previous_action_id is not None or any(
+            ply.previous_action_id is None for ply in plies[1:]
+        ):
+            raise ValueError(
+                "decision context previous actions must align with history"
+            )
+        if any(
+            value is not None
+            for ply in plies
+            for value in (
+                ply.time_initial_ms,
+                ply.time_increment_ms,
+                ply.player_clock_ms,
+                ply.opponent_clock_ms,
+            )
+        ):
+            raise ValueError("the current move model does not support timing inputs")
+
+        def required(values: object) -> Tensor:
+            return torch.as_tensor(
+                (values,),
+                dtype=torch.long,
+                device=tensor_device,
+            )
+
+        def optional(values: tuple[int | None, ...]) -> OptionalTensor:
+            return OptionalTensor(
+                required(tuple(value if value is not None else 0 for value in values)),
+                torch.as_tensor(
+                    (tuple(value is not None for value in values),),
+                    dtype=torch.bool,
+                    device=tensor_device,
+                ),
+            )
+
+        ratings = (None,) * (length - 1) + (context.target_rating,)
+        result = cls(
+            inputs=MoveModelInputs(
+                piece_ids=required(tuple(ply.board.piece_ids for ply in plies)),
+                side_to_move=required(tuple(ply.board.side_to_move for ply in plies)),
+                castling_rights=required(
+                    tuple(ply.board.castling_rights for ply in plies)
+                ),
+                en_passant_square=optional(
+                    tuple(ply.board.en_passant_square for ply in plies)
+                ),
+                halfmove_clock=required(
+                    tuple(ply.board.halfmove_clock for ply in plies)
+                ),
+                fullmove_number=required(
+                    tuple(ply.board.fullmove_number for ply in plies)
+                ),
+                previous_action_id=optional(
+                    tuple(ply.previous_action_id for ply in plies)
+                ),
+                target_rating=optional(ratings),
+            ),
+            action_targets=torch.zeros(
+                (1, length), dtype=torch.long, device=tensor_device
+            ),
+            action_loss_mask=torch.zeros(
+                (1, length), dtype=torch.bool, device=tensor_device
+            ),
+            attention_mask=torch.ones(
+                (1, length), dtype=torch.bool, device=tensor_device
+            ),
+            causal_attention_mask=torch.tril(
+                torch.ones((length, length), dtype=torch.bool, device=tensor_device)
+            ),
+            legal_action_ids=(((),) * length,),
+            game_ids=torch.zeros((1, length), dtype=torch.long, device=tensor_device),
+            ply_indices=required(tuple(ply.ply_index for ply in plies)),
+            chunk_start_plies=(plies[0].ply_index,),
+        )
+        result.validate()
+        return result
+
     def validate(self) -> None:
         """Reject shapes or values that would corrupt model alignment."""
 
@@ -178,12 +271,13 @@ class MoveModelBatch:
         ):
             raise ValueError("previous action is outside the action vocabulary")
         active_targets = self.action_targets[self.action_loss_mask]
-        if active_targets.numel() == 0:
-            raise ValueError("model batch must contain at least one action target")
         if torch.any(active_targets < 0) or torch.any(
             active_targets >= ACTION_VOCABULARY_SIZE
         ):
             raise ValueError("active action target is outside the action vocabulary")
+        ratings = self.inputs.target_rating
+        if torch.any(ratings.values[ratings.present] < 0):
+            raise ValueError("target ratings must be nonnegative")
         if len(self.legal_action_ids) != expected_shape[0] or any(
             len(row) != expected_shape[1] for row in self.legal_action_ids
         ):
