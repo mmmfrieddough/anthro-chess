@@ -113,16 +113,19 @@ feature with the rating of the player choosing that move. The action head still
 has learned computation after rating enters; rating is not merely added to the
 final probabilities.
 
-The first playable runtime should establish correctness with full-history
-recomputation. A key-value cache can later avoid recomputing prior timesteps if
-measurement shows it is needed.
-
 The current checkpoint-backed model runner implements that correctness
 baseline. It converts one typed target-free decision trajectory into the shared
 model tensor boundary, applies the controlled player's rating only to the final
 decision, recomputes the complete causal history, and returns detached raw
-action logits to the decision runtime. Legal masking and sampling remain above
-this boundary.
+action logits to the decision runtime.
+
+The current game-session runtime owns the canonical board and complete observed
+move history, builds that shared context, masks actions against exact legal
+moves, and applies the selected move. Its strict settings keep target rating
+and temperature independent, define greedy and seeded stochastic selection,
+and leave resignation disabled unless a caller deliberately enables it. A
+key-value cache can later avoid recomputing prior timesteps if measurement shows
+it is needed.
 
 Training should make full use of the causal attention mask. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions

@@ -394,6 +394,15 @@ The runtime must:
 - expose configuration for target rating, temperature, optional preferences, and
   optional clock settings.
 
+The current `anthro_chess.runtime` implementation provides the untimed core of
+this boundary. A game session owns exact board state and full move history,
+accepts observed legal moves from either player, applies Anthro's target rating
+only to its current decision context, masks and samples model-runner logits,
+and updates the game with the selected valid action. Strict code-owned settings
+define rating, temperature, random seed, and whether resignation is enabled.
+Timing and preference settings remain future additions rather than placeholder
+inputs or fabricated clock values.
+
 ## Runtime Interfaces
 
 The Anthro runtime should have a direct internal API that can be used by several

@@ -11,6 +11,12 @@ sampled move time.
 Outside interfaces should translate between their protocol and that runtime
 API.
 
+The current `anthro_chess.runtime.GameSession` is the implemented untimed
+boundary. It accepts typed chess moves and model-runner outputs, not protocol
+text, and returns typed move or resignation actions after updating its owned
+game state. UCI and other frontends remain responsible for parsing their own
+inputs and translating those actions.
+
 ## UCI
 
 Universal Chess Interface, or UCI, should be the default compatibility
