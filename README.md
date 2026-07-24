@@ -17,9 +17,10 @@ a minimal causal action model with masked move loss, a reproducible bounded
 Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
 determinism selection, an end-to-end minimal training proof, compatible
 checkpoint-backed full-history inference, an untimed game-session runtime with
-exact legal action selection, and a locked development environment. UCI and
-packaged releases remain planned work; validation metrics exist within the
-training path but the broader evaluation harness is not yet implemented.
+exact legal action selection, a directly invoked minimal UCI process, and a
+locked development environment. Packaged releases remain planned work;
+validation metrics exist within the training path but the broader evaluation
+harness is not yet implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -59,10 +60,12 @@ uv run anthro smoke
 uv run anthro data acquire --help
 uv run anthro data prepare --help
 uv run anthro train --help
+uv run anthro-uci --help
 ```
 
-Only implemented commands appear in `--help`. Evaluation, play, and UCI
-commands will be added as those capabilities become real.
+Only implemented commands appear in `--help`. Evaluation and native play
+commands will be added as those capabilities become real. UCI is a separate
+installed console script because chess GUIs launch engines directly.
 
 Generated datasets and runs can be shared across worktrees by setting:
 
@@ -73,6 +76,31 @@ export ANTHRO_CHESS_RUN_ROOT="$HOME/.local/share/anthro-chess/runs"
 
 The commands below then read and write those directories directly. Explicit
 command path arguments and path overrides still take precedence.
+
+## Minimal UCI Process
+
+The locked environment installs `anthro-uci` alongside `anthro`. It serves UCI
+over standard input and output, then loads one compatible retained checkpoint
+in the same process when the GUI first synchronizes with `isready`:
+
+```console
+uv run anthro-uci \
+  --set 'model.checkpoint_path="/absolute/run/checkpoints/step-00000001.pt"' \
+  --set 'model.device="cpu"'
+```
+
+A persistent setup can put model and runtime selections in a strict TOML file
+and launch `anthro-uci --config /absolute/path/to/uci.toml`. Relative retained
+run selections and the intentional default model selection resolve beneath
+`ANTHRO_CHESS_RUN_ROOT`; an explicit checkpoint path does not depend on the
+process working directory. A GUI should point at the environment's installed
+`anthro-uci` executable, not at a repository-relative Python module.
+
+The current UCI path supports ordinary untimed play, position replacement and
+new-game reset, target-rating and temperature options, and terminal
+`bestmove 0000`. It deliberately does not provide analysis search, pondering,
+clock-aware timing, or portable resignation. See
+[`docs/interfaces.md`](docs/interfaces.md) for the exact initial boundary.
 
 ## Sample Data Path
 

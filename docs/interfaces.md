@@ -14,8 +14,8 @@ API.
 The current `anthro_chess.runtime.GameSession` is the implemented untimed
 boundary. It accepts typed chess moves and model-runner outputs, not protocol
 text, and returns typed move or resignation actions after updating its owned
-game state. UCI and other frontends remain responsible for parsing their own
-inputs and translating those actions.
+game state. The installed `anthro-uci` process is the first implemented
+frontend over that boundary.
 
 ## UCI
 
@@ -35,6 +35,36 @@ load the Anthro runtime and model in the same process.
 Standard output in UCI mode must be reserved for UCI protocol messages. Normal
 application logs, model-loading messages, progress output, and diagnostics
 should go to files or standard error.
+
+The current package installs `anthro-uci` as a dedicated console script. It
+loads strict UCI configuration at process startup, completes the `uci`
+handshake without loading model weights, and initializes the compatible
+retained checkpoint when the GUI first synchronizes with `isready`. Model
+selection may be explicit or resolve beneath `ANTHRO_CHESS_RUN_ROOT`, so the
+process does not depend on a repository working directory. This is an
+installed Python entry point, not a frozen standalone binary.
+
+The initial implementation supports `uci`, `debug`, `isready`, `setoption`,
+`ucinewgame`, `position`, synchronous `go`, `stop`, and `quit`. Position
+replacement accepts `startpos` or a complete FEN plus move history and commits
+only after the complete history validates. It exposes `UCI_LimitStrength`,
+`UCI_Elo`, and `Anthro Temperature`; their exact bounds and scaling live in the
+UCI configuration module. Disabling `UCI_LimitStrength` selects the code-owned
+maximum conditioning rating, not a claim of calibrated playing strength, and
+is the protocol-default state. Unknown commands and tokens are ignored where
+the remaining command can be parsed safely.
+
+Terminal positions return `bestmove 0000`, the UCI null-move representation.
+An internal model or inference failure does not masquerade as a terminal
+position: the process emits a protocol-safe critical-error diagnostic, records
+the detailed failure on standard error, and exits nonzero without claiming a
+best move.
+
+This first path is untimed and move-only. It accepts `stop` safely for the
+short synchronous inference path and ignores unsupported `go` fields rather
+than treating them as model inputs. Analysis search, `searchmoves`, pondering,
+clock fields, `movetime`, `infinite`, depth/node/mate limits, asynchronous
+cancellation, and portable resignation remain outside the implemented scope.
 
 ## UCI Scope
 
