@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
@@ -18,6 +19,8 @@ from anthro_chess.chess import (
 )
 from anthro_chess.data import DecisionContext, EncodingError, build_decision_context
 from anthro_chess.runtime.config import RuntimeConfig
+
+logger = logging.getLogger(__name__)
 
 
 class DecisionRuntimeError(ValueError):
@@ -132,6 +135,11 @@ class GameSession:
         self._board = board
         self._resigned_by = None
         self._generator.manual_seed(self.config.seed)
+        logger.debug(
+            "Reset game session for controlled color %s with %s observed plies",
+            "white" if self.controlled_color == chess.WHITE else "black",
+            len(board.move_stack),
+        )
 
     def apply_move(self, move: chess.Move) -> None:
         """Apply one observed legal move from either player."""
@@ -176,6 +184,7 @@ class GameSession:
 
         if action_id == RESIGNATION_ACTION_ID:
             self._resigned_by = self.controlled_color
+            logger.debug("Selected resignation action")
             return ResignationAction()
 
         move = decode_move(action_id)
@@ -184,6 +193,7 @@ class GameSession:
                 "selected move is not legal in the current position"
             )
         self._board.push(move)
+        logger.debug("Selected and applied move action %s", action_id)
         return MoveAction(action_id=action_id, move=move)
 
     @staticmethod

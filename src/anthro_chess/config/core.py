@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigModel(BaseModel):
@@ -85,6 +88,12 @@ def load_config(
     provenance = ConfigProvenance(
         source=str(source.resolve()) if source is not None else None,
         overrides=override_items,
+    )
+    logger.debug(
+        "Loaded %s configuration from %s with %s override(s)",
+        schema.__name__,
+        provenance.source or "defaults",
+        len(override_items),
     )
     return ResolvedConfig(value=value, provenance=provenance)
 

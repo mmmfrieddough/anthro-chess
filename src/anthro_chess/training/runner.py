@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import subprocess
 import time
@@ -44,6 +45,7 @@ from anthro_chess.training.devices import (
 from anthro_chess.training.losses import masked_action_cross_entropy
 
 RUN_ARTIFACT_VERSION = 3
+logger = logging.getLogger(__name__)
 
 
 class TrainingError(ValueError):
@@ -82,6 +84,11 @@ def run_training(
 
     config = resolved_config.value
     device = _training_device(config)
+    logger.info(
+        "Starting training on %s for %s optimizer step(s)",
+        device.type,
+        config.steps,
+    )
     try:
         train = _load_data_selection(config.train)
         validation = (
@@ -151,6 +158,7 @@ def run_training(
                 else config.resume_from
             )
             checkpoint = load_training_checkpoint(resumed_from)
+            logger.info("Resuming training from %s", resumed_from)
             _validate_checkpoint_compatibility(
                 checkpoint["compatibility"],
                 compatibility,
@@ -230,15 +238,15 @@ def run_training(
         if final_parameter_sha256 == initial_parameter_sha256:
             raise TrainingError("optimizer completed without changing model parameters")
 
-        validation_metrics = (
-            evaluate_move_model(
+        if validation is not None:
+            logger.info("Running validation")
+            validation_metrics = evaluate_move_model(
                 model,
                 validation.loader,
                 device=device,
             )
-            if validation is not None
-            else None
-        )
+        else:
+            validation_metrics = None
         run_record = {
             "version": RUN_ARTIFACT_VERSION,
             "resolved_config": resolved_config.as_record(),
@@ -284,6 +292,7 @@ def run_training(
     finally:
         torch.use_deterministic_algorithms(previous_deterministic)
 
+    logger.info("Completed training and wrote run, metrics, and checkpoint artifacts")
     return TrainingResult(
         run_path=run_path,
         metrics_path=metrics_path,
@@ -417,7 +426,7 @@ def _optimize(
                     json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
                 )
                 metrics_file.flush()
-                print(
+                logger.info(
                     f"step={global_step} move_loss={average_loss:.6f} "
                     f"lr={learning_rate:.6g} positions={processed_positions} "
                     f"positions_per_second={positions_per_second:.2f}"
@@ -437,6 +446,7 @@ def _optimize(
                     metadata=checkpoint_metadata,
                     device=device,
                 )
+                logger.info("Saved checkpoint at optimizer step %s", global_step)
     if saved_checkpoint is None:
         raise TrainingError("training completed without saving a checkpoint")
     return _OptimizationResult(

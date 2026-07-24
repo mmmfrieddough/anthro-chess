@@ -359,6 +359,26 @@ See `docs/evaluation.md` for the full evaluation design, including legality,
 rating calibration, timing rollouts, human-likeness metrics, and
 preference-control evaluation.
 
+## Operational Logging
+
+Process entry points configure Python's standard logging once, and package
+modules use module-named loggers for lifecycle and failure context. Native
+commands send operational logs to standard error while preserving requested
+command results on standard output. Their global `--log-level` option controls
+verbosity.
+
+Training progress now uses logging, but metrics, run records, checkpoints,
+manifests, evaluation results, and future complete generated-game traces remain
+versioned artifacts rather than log records. Default logging records aggregate
+counts, selected paths, device and lifecycle state; it excludes raw corpus
+records, player identities, complete move histories, full model distributions,
+and secrets.
+
+UCI uses bounded rotating file logs with a standard-error fallback. Its
+destination and verbosity controls are described in `docs/interfaces.md`; the
+logging module remains the source of truth for exact destination and rotation
+defaults.
+
 ## Inference Loop
 
 When it is the bot's turn:
@@ -411,8 +431,8 @@ GUIs and engine tools, but UCI should remain an interface layer over the runtime
 rather than a model input format.
 
 In UCI mode, the engine process should load the runtime and model directly.
-Keep standard output reserved for UCI messages and send ordinary logs to files
-or standard error.
+Keep standard output reserved for UCI messages and send ordinary logs to the
+bounded application-log destination or its standard-error fallback.
 
 See `docs/interfaces.md` for the UCI and native-interface design.
 

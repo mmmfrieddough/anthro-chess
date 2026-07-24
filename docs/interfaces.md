@@ -32,9 +32,12 @@ such as `uciok`, `readyok`, and `bestmove`.
 Anthro Chess should support UCI by direct invocation: the UCI executable should
 load the Anthro runtime and model in the same process.
 
-Standard output in UCI mode must be reserved for UCI protocol messages. Normal
-application logs, model-loading messages, progress output, and diagnostics
-should go to files or standard error.
+Standard output in UCI mode is reserved for UCI protocol messages. The current
+entry point writes timestamped application diagnostics to a bounded rotating
+local file. `--log-file` selects an explicit destination, while
+`ANTHRO_CHESS_LOG_ROOT` can relocate the default application-log directory.
+If the file cannot be initialized, logging falls back to standard error without
+writing non-protocol text to standard output.
 
 The current package installs `anthro-uci` as a dedicated console script. It
 loads strict UCI configuration at process startup, completes the `uci`
@@ -57,8 +60,14 @@ the remaining command can be parsed safely.
 Terminal positions return `bestmove 0000`, the UCI null-move representation.
 An internal model or inference failure does not masquerade as a terminal
 position: the process emits a protocol-safe critical-error diagnostic, records
-the detailed failure on standard error, and exits nonzero without claiming a
-best move.
+the detailed failure in the configured log destination, and exits nonzero
+without claiming a best move.
+
+The entry point accepts standard application log levels. UCI `debug on|off`
+temporarily enables deeper module and command-boundary diagnostics in the same
+protocol-safe destination. Logs identify lifecycle events and command names,
+but do not copy raw commands, complete game histories, model distributions, or
+other high-volume or sensitive values.
 
 This first path is untimed and move-only. It accepts `stop` safely for the
 short synchronous inference path and ignores unsupported `go` fields rather
@@ -89,8 +98,8 @@ direct learned policy:
 
 - `uci`: enter UCI mode, identify the engine, advertise options, and send
   `uciok`;
-- `debug on|off`: toggle extra protocol-safe diagnostics, using `info string`
-  or file logs rather than arbitrary stdout output;
+- `debug on|off`: toggle extra diagnostics in the application log without
+  adding arbitrary stdout output;
 - `isready`: finish required initialization and respond `readyok`;
 - `setoption`: update process-local configuration;
 - `ucinewgame`: clear game-local runtime state;

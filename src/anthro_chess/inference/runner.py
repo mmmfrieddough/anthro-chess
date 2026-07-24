@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ from anthro_chess.inference.selection import (
 )
 from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
 from anthro_chess.training.checkpoints import CheckpointError, load_training_checkpoint
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRunnerError(ValueError):
@@ -62,6 +65,10 @@ class CheckpointModelRunner:
 
         try:
             selection = resolve_model_selection(config, run_root=run_root)
+            logger.info(
+                "Loading selected model checkpoint %s",
+                selection.checkpoint_path,
+            )
             checkpoint = load_training_checkpoint(selection.checkpoint_path)
             run_record = _load_run_record(selection.run_record_path)
             model_config = _validate_artifact_contract(checkpoint, run_record)
@@ -81,6 +88,7 @@ class CheckpointModelRunner:
             if isinstance(error, ModelRunnerError):
                 raise
             raise ModelRunnerError(f"cannot load model runner: {error}") from error
+        logger.info("Loaded model runner on %s", device.type)
         return cls(model, selection=selection, device=device)
 
     def predict(self, context: DecisionContext) -> Tensor:

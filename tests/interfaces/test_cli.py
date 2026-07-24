@@ -20,6 +20,17 @@ def test_smoke_command_needs_no_external_resources(
     )
 
 
+def test_command_results_stay_on_stdout_while_logs_use_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--log-level", "DEBUG", "smoke"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == f"Anthro Chess {__version__} is installed and ready.\n"
+    assert "Starting command smoke" in captured.err
+    assert "Completed command smoke" in captured.err
+
+
 def test_help_only_advertises_implemented_commands(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

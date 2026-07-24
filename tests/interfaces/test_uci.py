@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -13,6 +14,11 @@ import pytest
 import torch
 from pydantic import ValidationError
 
+from anthro_chess.application_logging import (
+    LOG_LEVEL_NAMES,
+    configure_application_logging,
+    parse_log_level,
+)
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
     action_vocabulary_identity,
@@ -37,6 +43,33 @@ class StubRunner:
 class FailingRunner:
     def predict(self, _context: DecisionContext) -> torch.Tensor:
         raise RuntimeError("inference exploded")
+
+
+@pytest.mark.parametrize("level", LOG_LEVEL_NAMES)
+def test_stdout_contains_only_protocol_traffic_at_every_log_level(level: str) -> None:
+    output = io.StringIO()
+    diagnostics = io.StringIO()
+    configure_application_logging(level=level, stream=diagnostics)
+    engine = UciEngine(
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        UciConfig(),
+        normal_log_level=parse_log_level(level),
+    )
+
+    assert (
+        engine.run(
+            io.StringIO("uci\ndebug on\ndebug off\nquit\n"),
+            output,
+            diagnostics,
+        )
+        == 0
+    )
+
+    assert output.getvalue().endswith("uciok\n")
+    assert all(
+        line.startswith(("id ", "option ", "uciok"))
+        for line in output.getvalue().splitlines()
+    )
 
 
 def test_protocol_transcript_orders_handshake_and_returns_legal_move() -> None:
@@ -172,7 +205,7 @@ def test_model_initialization_is_deferred_to_isready_and_stdout_is_redirected() 
     assert ready_error == "model loader diagnostic\n"
 
 
-def test_unknown_tokens_are_ignored_and_recognized_commands_still_run() -> None:
+def test_debug_diagnostics_stay_off_protocol_stdout() -> None:
     logits = torch.zeros(ACTION_VOCABULARY_SIZE)
     logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
     engine = UciEngine(
@@ -194,7 +227,10 @@ def test_unknown_tokens_are_ignored_and_recognized_commands_still_run() -> None:
     )
 
     assert output == "readyok\nbestmove g1f3\n"
-    assert error == ""
+    assert "Received UCI command" in error
+    assert all(
+        line.startswith(("readyok", "bestmove ")) for line in output.splitlines()
+    )
 
 
 def test_malformed_commands_do_not_crash_or_mutate_valid_state() -> None:
@@ -230,6 +266,7 @@ def test_inference_failure_reports_critical_error_and_exits_without_bestmove() -
     engine = UciEngine(lambda: FailingRunner(), UciConfig())
     output = io.StringIO()
     error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
 
     return_code = engine.run(
         io.StringIO("isready\nposition startpos\ngo\nisready\nquit\n"),
@@ -276,6 +313,8 @@ def test_installed_console_script_loads_checkpoint_and_keeps_stdout_clean(
         encoding="utf-8",
     )
     executable = Path(sys.executable).with_name("anthro-uci")
+    environment = os.environ.copy()
+    environment["ANTHRO_CHESS_LOG_ROOT"] = str(tmp_path / "logs")
 
     completed = subprocess.run(
         [str(executable), "--config", str(config)],
@@ -295,10 +334,12 @@ def test_installed_console_script_loads_checkpoint_and_keeps_stdout_clean(
         capture_output=True,
         text=True,
         cwd=tmp_path,
+        env=environment,
     )
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stderr == ""
+    assert (tmp_path / "logs/uci.log").is_file()
     lines = completed.stdout.splitlines()
     assert lines[0].startswith("id name Anthro Chess ")
     assert "uciok" in lines
@@ -315,11 +356,16 @@ def test_installed_console_script_loads_checkpoint_and_keeps_stdout_clean(
     )
 
 
-def test_console_script_reports_loading_failure_only_on_stderr(tmp_path: Path) -> None:
+def test_console_script_reports_loading_failure_only_in_log_file(
+    tmp_path: Path,
+) -> None:
     executable = Path(sys.executable).with_name("anthro-uci")
+    log_path = tmp_path / "logs/uci.log"
     completed = subprocess.run(
         [
             str(executable),
+            "--log-file",
+            str(log_path),
             "--set",
             f'model.checkpoint_path="{tmp_path / "missing/checkpoints/model.pt"}"',
         ],
@@ -336,12 +382,70 @@ def test_console_script_reports_loading_failure_only_on_stderr(tmp_path: Path) -
         line.startswith(("id ", "option ", "uciok"))
         for line in completed.stdout.splitlines()
     )
-    assert "anthro-uci:" in completed.stderr
+    assert completed.stderr == ""
+    assert "model initialization failed" in log_path.read_text(encoding="utf-8")
+
+
+def test_console_script_falls_back_to_stderr_without_contaminating_stdout(
+    tmp_path: Path,
+) -> None:
+    executable = Path(sys.executable).with_name("anthro-uci")
+    blocking_file = tmp_path / "not-a-directory"
+    blocking_file.write_text("occupied", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            str(executable),
+            "--log-file",
+            str(blocking_file / "uci.log"),
+        ],
+        input="uci\nquit\n",
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.endswith("uciok\n")
+    assert "using standard error" in completed.stderr
+    assert all(
+        line.startswith(("id ", "option ", "uciok"))
+        for line in completed.stdout.splitlines()
+    )
+
+
+def test_debug_logs_exclude_raw_commands_and_complete_game_history() -> None:
+    engine = UciEngine(
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        UciConfig(),
+    )
+    sensitive = "private-user-secret-corpus-record"
+
+    output, error = _run(
+        engine,
+        "\n".join(
+            (
+                "debug on",
+                sensitive,
+                "setoption name Private Token value private-user-secret",
+                "position startpos moves e2e4 e7e5 g1f3",
+                "quit",
+            )
+        ),
+    )
+
+    assert output == ""
+    assert "Received UCI command" in error
+    assert sensitive not in error
+    assert "private-user-secret" not in error
+    assert "e2e4 e7e5 g1f3" not in error
 
 
 def _run(engine: UciEngine, transcript: str) -> tuple[str, str]:
     output = io.StringIO()
     error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
     assert engine.run(io.StringIO(transcript), output, error) == 0
     return output.getvalue(), error.getvalue()
 
