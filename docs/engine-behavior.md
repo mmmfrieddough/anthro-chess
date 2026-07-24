@@ -99,3 +99,27 @@ not a hidden way to set the bot to that player's strength.
 Temperature should remain a separate knob. A low-rating model setting with low
 temperature and a high-rating model setting with high temperature should be
 possible because they represent different user intents.
+
+## Randomness And Reproducibility
+
+Temperature zero selects the highest-logit legal action and is deterministic
+for a fixed checkpoint, position history, and controls. Replaying an identical
+temperature-zero matchup may therefore reproduce an identical game; this is
+useful for debugging but does not provide behavioral diversity.
+
+At nonzero temperature, ordinary interactive play should use a persistent
+random stream for the game and fresh randomness for each new game by default.
+Synchronizing, replacing, or replaying exact board state must not accidentally
+reseed that stream on every move. Users, tests, and benchmarks should also be
+able to select an explicit seed when exact reproduction is wanted.
+
+Seed, temperature, and rating are independent controls:
+
+- seed determines which reproducible draws are made from a policy;
+- temperature determines the shape of that sampling distribution;
+- rating changes the learned policy being sampled.
+
+Different seeds should create rollout diversity without being treated as
+different model configurations. Temperature-zero behavior must not depend on
+the seed. The runtime-state rationale is recorded in
+[`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).

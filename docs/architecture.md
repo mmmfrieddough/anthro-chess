@@ -122,10 +122,26 @@ action logits to the decision runtime.
 The current game-session runtime owns the canonical board and complete observed
 move history, builds that shared context, masks actions against exact legal
 moves, and applies the selected move. Its strict settings keep target rating
-and temperature independent, define greedy and seeded stochastic selection,
-and leave resignation disabled unless a caller deliberately enables it. A
-key-value cache can later avoid recomputing prior timesteps if measurement shows
-it is needed.
+and temperature independent and leave resignation disabled unless a caller
+deliberately enables it.
+
+Runtime state has several different lifetimes. Checkpoint loading, device
+placement, and other expensive model-runner initialization should survive for
+the process lifetime. Exact board and move history should advance
+incrementally when a caller supplies an extension of the known game, while an
+unrelated position, takeback, or divergent history should invalidate only what
+can no longer be reused and fall back to atomic exact replacement. Encoded
+history and future transformer key-value caches should follow the same
+common-prefix boundary. Caching is not allowed to weaken support for arbitrary
+valid positions and should be implemented only where its correctness and
+measured value justify the complexity.
+
+The sampling generator has a game lifetime and must not be reset as a side
+effect of synchronizing a position. Greedy temperature-zero selection is
+deterministic. Nonzero-temperature interactive play uses fresh game randomness
+by default, while an explicit seed makes games and benchmarks reproducible.
+See
+[`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
 
 Training should make full use of the causal attention mask. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions

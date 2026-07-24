@@ -84,6 +84,15 @@ After the GUI completes the UCI handshake, it can set:
 - `UCI_Elo` to choose the target rating while strength limiting is enabled;
 - `Anthro Temperature` to control sampling independently, scaled by 100.
 
+The current proof uses a fixed configured seed. Its position-replacement path
+also resets that seed whenever the GUI synchronizes the game, so even
+nonzero-temperature play is reproducible for the same position and settings.
+This is a known proof-stage limitation rather than the intended interactive
+behavior. The intended runtime keeps randomness alive across position updates,
+uses fresh per-game randomness for ordinary play, and exposes an explicit seed
+for reproducible games and benchmarks. See
+[`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
+
 For final Playable Proof acceptance:
 
 1. Start an untimed standard-chess game and confirm Anthro returns legal moves.
@@ -106,6 +115,13 @@ ignored rather than used as model inputs.
 of the engine's playing strength. Disabling `UCI_LimitStrength` selects the
 maximum supported conditioning rating and does not turn Anthro into a
 conventional strongest-line engine.
+
+The selected proof checkpoint can produce plausible local play while still
+showing weak separation across configured ratings and frequent deterministic
+repetition in generated games. Those are model-quality and rollout-evaluation
+findings, not claims established by the UCI integration test. Generated-game
+benchmarks should measure them across seeds, colors, temperatures, and frozen
+human prefixes rather than drawing conclusions from one GUI game.
 
 Detailed application diagnostics are written to a bounded rotating log. See
 [`interfaces.md`](interfaces.md) for the protocol boundary and logging

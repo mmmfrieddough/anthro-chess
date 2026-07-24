@@ -58,12 +58,22 @@ They should cover:
 
 - chess-rule behavior;
 - board reconstruction;
+- incremental position synchronization, replacement, and takeback behavior;
 - legal move generation;
 - model-facing encodings;
 - data parsing and preprocessing;
 - sequence construction and causal-mask behavior;
 - clock-state simulation;
-- runtime legal masking.
+- runtime legal masking;
+- random-stream lifecycle and explicit-seed reproducibility;
+- preservation and correct invalidation of process, game, and history caches.
+
+Sampling tests should not assert that two uncontrolled random runs happen to
+differ. Inject the entropy source or use explicit seeds. Required relationships
+include temperature-zero seed independence, identical fixed-seed reproduction,
+different controlled seeds exercising distinct samples on a fixture
+distribution, `position` updates preserving the active stream, and
+`ucinewgame` following the configured fresh-or-fixed game-seed policy.
 
 ### Training-Time Metrics
 
@@ -490,6 +500,39 @@ lines, and drift away from human-like play.
 
 Human prefixes are especially useful early, when the model may not yet be good
 at creating coherent full games from the start position.
+
+Rollout suites should vary more than one axis at a time only when that
+interaction is the measurement target. The reusable core should cover:
+
+- multiple explicit seeds with exact reproducibility;
+- both color assignments;
+- the standard starting position and frozen human opening prefixes;
+- rating and temperature grids as independent controls;
+- enough games per configuration to distinguish one deterministic trajectory
+  from a stable behavioral pattern.
+
+Repetition needs both correctness tests and quality benchmarks. Correctness
+tests should use constructed move sequences with known non-repeating,
+claimable-threefold, and automatic-draw outcomes so result detection and
+aggregation are exact. Generated-game artifacts should then report repetition
+and cycle diagnostics, including termination frequency, when recurrence first
+appears, and the extent to which later play remains in a repeated cycle.
+
+For model quality, reconstruct the same diagnostics on frozen held-out human
+games and compare matched distributions by rating, game phase, time control
+when available, and opening-prefix family where practical. Human data is the
+reference for whether repetition and draw patterns look human, not a hardcoded
+zero-repetition target. Uniform-over-legal and other simple rollout baselines
+remain useful sanity checks for learned structure, but they are not substitutes
+for the human comparison: a random policy can avoid cycles while still playing
+nothing like a person.
+
+Rating-response rollout diagnostics should include action agreement across
+configured ratings on the same frozen prefixes, distributional divergence,
+result and termination shifts, and color-swapped matchup summaries. These
+diagnostics complement held-out dependency tests. They show whether a rating
+change survives discrete action selection and compounds into different games;
+they do not by themselves prove calibrated playing strength.
 
 ## Preference-Control Evaluation
 
