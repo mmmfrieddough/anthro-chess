@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import chess
+import chess.engine
 import pytest
 import torch
 from pydantic import ValidationError
@@ -354,6 +355,75 @@ def test_installed_console_script_loads_checkpoint_and_keeps_stdout_clean(
         line.startswith(("id ", "option ", "uciok", "readyok", "bestmove "))
         for line in lines
     )
+
+
+@pytest.mark.integration
+def test_python_chess_client_plays_terminal_position_and_starts_new_game(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_run(tmp_path / "run")
+    executable = Path(sys.executable).with_name("anthro-uci")
+    environment = os.environ.copy()
+    environment["ANTHRO_CHESS_LOG_ROOT"] = str(tmp_path / "logs")
+    engine = chess.engine.SimpleEngine.popen_uci(
+        [
+            str(executable),
+            "--set",
+            f'model.checkpoint_path="{checkpoint}"',
+            "--set",
+            'model.device="cpu"',
+        ],
+        timeout=30.0,
+        cwd=tmp_path,
+        env=environment,
+    )
+
+    try:
+        engine.configure(
+            {
+                "UCI_LimitStrength": True,
+                "UCI_Elo": 1300,
+                "Anthro Temperature": 0,
+            }
+        )
+        first_game = object()
+        board = chess.Board()
+        for _ in range(4):
+            result = engine.play(
+                board,
+                chess.engine.Limit(depth=1),
+                game=first_game,
+            )
+            assert result.move is not None
+            assert result.move in board.legal_moves
+            board.push(result.move)
+            assert not board.is_game_over()
+            opponent_move = min(board.legal_moves, key=lambda move: move.uci())
+            board.push(opponent_move)
+
+        terminal = chess.Board()
+        for move in ("f2f3", "e7e5", "g2g4", "d8h4"):
+            terminal.push_uci(move)
+        assert terminal.is_checkmate()
+        terminal_result = engine.play(
+            terminal,
+            chess.engine.Limit(depth=1),
+            game=first_game,
+        )
+        assert terminal_result.move == chess.Move.null()
+
+        fresh_board = chess.Board()
+        fresh_result = engine.play(
+            fresh_board,
+            chess.engine.Limit(depth=1),
+            game=object(),
+        )
+        assert fresh_result.move is not None
+        assert fresh_result.move in fresh_board.legal_moves
+    finally:
+        engine.quit()
+
+    assert (tmp_path / "logs/uci.log").is_file()
 
 
 def test_console_script_reports_loading_failure_only_in_log_file(

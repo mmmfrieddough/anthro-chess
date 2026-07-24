@@ -17,10 +17,11 @@ a minimal causal action model with masked move loss, a reproducible bounded
 Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
 determinism selection, an end-to-end minimal training proof, compatible
 checkpoint-backed full-history inference, an untimed game-session runtime with
-exact legal action selection, a directly invoked minimal UCI process, and a
-locked development environment. Packaged releases remain planned work;
-validation metrics exist within the training path but the broader evaluation
-harness is not yet implemented.
+exact legal action selection, a directly invoked minimal UCI process, an
+independent-client playable UCI integration proof, and a locked development
+environment. Packaged releases remain planned work; validation metrics exist
+within the training path but the broader evaluation harness is not yet
+implemented.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
@@ -99,8 +100,10 @@ process working directory. A GUI should point at the environment's installed
 The current UCI path supports ordinary untimed play, position replacement and
 new-game reset, target-rating and temperature options, and terminal
 `bestmove 0000`. It deliberately does not provide analysis search, pondering,
-clock-aware timing, or portable resignation. See
-[`docs/interfaces.md`](docs/interfaces.md) for the exact initial boundary.
+clock-aware timing, or portable resignation. See the
+[UCI playing guide](docs/playable-uci.md) for the real-checkpoint CPU smoke,
+GUI setup, final acceptance procedure, and current limitations. The detailed
+protocol boundary lives in [`docs/interfaces.md`](docs/interfaces.md).
 
 ## Sample Data Path
 

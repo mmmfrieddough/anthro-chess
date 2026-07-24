@@ -47,6 +47,10 @@ selection may be explicit or resolve beneath `ANTHRO_CHESS_RUN_ROOT`, so the
 process does not depend on a repository working directory. This is an
 installed Python entry point, not a frozen standalone binary.
 
+The operator-facing CPU smoke, persistent configuration, GUI setup, acceptance
+procedure, and current product limitations are documented in
+[`playable-uci.md`](playable-uci.md).
+
 The initial implementation supports `uci`, `debug`, `isready`, `setoption`,
 `ucinewgame`, `position`, synchronous `go`, `stop`, and `quit`. Position
 replacement accepts `startpos` or a complete FEN plus move history and commits
