@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 
 import pytest
 import torch
 
+from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
 from anthro_chess.training import (
@@ -41,6 +43,8 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     )
 
     resolved = load_config(TrainingConfig, path=config_path)
+    log_output = StringIO()
+    configure_application_logging(level="INFO", stream=log_output)
     result = run_training(resolved)
 
     assert result.steps == 2
@@ -82,7 +86,8 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         "phase_profiling": False,
     }
     assert run_record["validation"]["position_count"] == 26
-    assert "step=1 move_loss=" in capsys.readouterr().out
+    assert "step=1 move_loss=" in log_output.getvalue()
+    assert "step=1 move_loss=" not in capsys.readouterr().out
 
 
 def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -10,6 +11,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from anthro_chess import __version__
+from anthro_chess.application_logging import (
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_NAMES,
+    configure_application_logging,
+)
 from anthro_chess.config import ResolvedConfig
 
 if TYPE_CHECKING:
@@ -17,6 +23,7 @@ if TYPE_CHECKING:
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str.upper,
+        choices=LOG_LEVEL_NAMES,
+        default=DEFAULT_LOG_LEVEL,
+        help="Operational log verbosity on standard error (default: %(default)s).",
     )
 
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -129,8 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Anthro Chess command-line interface."""
     arguments = build_parser().parse_args(argv)
+    configure_application_logging(level=arguments.log_level, stream=sys.stderr)
     handler: CommandHandler = arguments.handler
-    return handler(arguments)
+    logger.debug("Starting command %s", arguments.command)
+    return_code = handler(arguments)
+    logger.debug("Completed command %s with status %s", arguments.command, return_code)
+    return return_code
 
 
 def _run_smoke(_arguments: argparse.Namespace) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -19,6 +20,7 @@ from anthro_chess.data.encoding import (
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
 LOADER_STATE_VERSION = 4
+logger = logging.getLogger(__name__)
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
     NormalizedColumn.GAME_ID,
@@ -200,6 +202,11 @@ class SequenceDataset(Sequence[SequenceExample]):
         """Load, validate, encode, and optionally chunk normalized games."""
 
         normalized_paths = _normalize_paths(paths)
+        logger.info(
+            "Loading normalized %s split from %s shard(s)",
+            split,
+            len(normalized_paths),
+        )
         examples: list[SequenceExample] = []
         identity_records: list[dict[str, object]] = []
         for shard_index, path in enumerate(normalized_paths):
@@ -237,6 +244,11 @@ class SequenceDataset(Sequence[SequenceExample]):
         identity_sha256 = sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        logger.info(
+            "Loaded %s sequence example(s) for the %s split",
+            len(examples),
+            split,
+        )
         return cls(
             examples,
             identity_sha256=identity_sha256,

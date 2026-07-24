@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from collections.abc import Iterator
@@ -43,6 +44,7 @@ _EVENT_SPEED_RE = re.compile(
     re.IGNORECASE,
 )
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+logger = logging.getLogger(__name__)
 
 
 class DataPreparationError(ValueError):
@@ -108,9 +110,11 @@ def acquire_archive(
     raw_directory = Path(output_directory) / "raw"
     raw_directory.mkdir(parents=True, exist_ok=True)
     archive_path = raw_directory / archive.file_name
+    logger.info("Acquiring configured archive %s", archive.file_name)
     if archive_path.is_file():
         observed_sha256 = _file_sha256(archive_path)
         if observed_sha256 == archive.sha256:
+            logger.info("Reusing verified archive %s", archive_path)
             return AcquisitionResult(
                 archive_path=archive_path,
                 sha256=observed_sha256,
@@ -143,6 +147,11 @@ def acquire_archive(
             f"observed {observed_sha256}"
         )
     partial_path.replace(archive_path)
+    logger.info(
+        "Acquired and verified archive %s (%s bytes)",
+        archive_path,
+        archive_path.stat().st_size,
+    )
     return AcquisitionResult(
         archive_path=archive_path,
         sha256=observed_sha256,
@@ -159,6 +168,7 @@ def prepare_pgn(
     """Prepare a PGN stream and write normalized and manifest artifacts."""
     source_path = Path(input_path)
     output_path = Path(output_directory)
+    logger.info("Preparing normalized data from %s", source_path)
     if not source_path.is_file():
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
@@ -378,6 +388,12 @@ def prepare_pgn(
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+    logger.info(
+        "Prepared %s game(s), rejected %s, and wrote %s shard(s)",
+        accepted_games,
+        sum(rejections.values()),
+        len(normalized_paths),
     )
     return PreparationResult(
         normalized_paths=tuple(normalized_paths),

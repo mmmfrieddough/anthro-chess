@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import logging
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -14,6 +15,13 @@ import chess
 from pydantic import ValidationError
 
 from anthro_chess import __version__
+from anthro_chess.application_logging import (
+    APPLICATION_LOGGER_NAME,
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVEL_NAMES,
+    configure_application_logging,
+    default_uci_log_path,
+)
 from anthro_chess.config import ConfigError, load_config
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.config import (
@@ -49,6 +57,7 @@ _COMMANDS = frozenset(
     }
 )
 RunnerLoader = Callable[[], ActionModelRunner]
+logger = logging.getLogger(__name__)
 
 
 class UciProtocolError(ValueError):
@@ -66,7 +75,13 @@ class UciInferenceError(RuntimeError):
 class UciEngine:
     """Translate one line-oriented UCI process into runtime calls."""
 
-    def __init__(self, load_runner: RunnerLoader, config: UciConfig) -> None:
+    def __init__(
+        self,
+        load_runner: RunnerLoader,
+        config: UciConfig,
+        *,
+        normal_log_level: int = logging.INFO,
+    ) -> None:
         self._load_runner = load_runner
         self._uci_elo = config.runtime.target_rating
         assert self._uci_elo is not None
@@ -77,6 +92,7 @@ class UciEngine:
             ).model_dump()
         )
         self._debug = False
+        self._normal_log_level = normal_log_level
         self._initial_fen = chess.STARTING_FEN
         self._moves: tuple[chess.Move, ...] = ()
         self._board = chess.Board()
@@ -100,6 +116,7 @@ class UciEngine:
     ) -> int:
         """Serve commands until EOF or ``quit``."""
 
+        logger.info("UCI command loop started")
         for raw_line in input_stream:
             line = raw_line.strip()
             if not line:
@@ -107,9 +124,10 @@ class UciEngine:
             parsed = _find_command(line)
             if parsed is None:
                 if self._debug:
-                    self._send(output_stream, "info string ignored unknown command")
+                    logger.debug("Ignored unrecognized UCI input")
                 continue
             command, arguments = parsed
+            logger.debug("Received UCI command %s", command.lower())
             try:
                 should_quit = self._handle(
                     command.lower(),
@@ -118,22 +136,30 @@ class UciEngine:
                     error_stream,
                 )
             except UciInitializationError as error:
-                print(f"anthro-uci: {error}", file=error_stream, flush=True)
+                logger.error(
+                    "%s",
+                    error,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
                 return 2
             except UciInferenceError as error:
                 self._send(
                     output_stream,
                     "info string CRITICAL ERROR: move generation failed",
                 )
-                print(f"anthro-uci: {error}", file=error_stream, flush=True)
+                logger.error(
+                    "%s",
+                    error,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
                 return 1
             except (UciProtocolError, DecisionRuntimeError, ValidationError) as error:
-                print(f"anthro-uci: {error}", file=error_stream, flush=True)
-                if self._debug:
-                    self._send(output_stream, f"info string error: {error}")
+                logger.warning("%s", error)
                 continue
             if should_quit:
+                logger.info("UCI command loop stopped")
                 return 0
+        logger.info("UCI command loop reached end of input")
         return 0
 
     def _handle(
@@ -193,6 +219,11 @@ class UciEngine:
         if normalized not in {"on", "off"}:
             raise UciProtocolError("debug expects 'on' or 'off'")
         self._debug = normalized == "on"
+        application_logger = logging.getLogger(APPLICATION_LOGGER_NAME)
+        application_logger.setLevel(
+            logging.DEBUG if self._debug else self._normal_log_level
+        )
+        logger.debug("UCI debug logging enabled")
 
     def _set_option(self, arguments: str) -> None:
         name, value = _parse_option(arguments)
@@ -257,6 +288,7 @@ class UciEngine:
         self._moves = moves
         self._board = board
         self._session = replacement
+        logger.debug("Replaced UCI position with %s observed plies", len(moves))
 
     def _build_session(
         self,
@@ -291,6 +323,7 @@ class UciEngine:
             ) from error
         self._runner = runner
         self._session = session
+        logger.info("Model runtime initialized")
         return session
 
     def _go(self, output: TextIO, error_stream: TextIO) -> None:
@@ -332,6 +365,18 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="Strict dotted TOML override; may be repeated.",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str.upper,
+        choices=LOG_LEVEL_NAMES,
+        default=DEFAULT_LOG_LEVEL,
+        help="UCI file log verbosity (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        help="Rotating UCI log file (default: platform-local application logs).",
+    )
     return parser
 
 
@@ -339,6 +384,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Load strict configuration and serve UCI on standard streams."""
 
     arguments = build_parser().parse_args(argv)
+    logging_configuration = configure_application_logging(
+        level=arguments.log_level,
+        file_path=arguments.log_file or default_uci_log_path(),
+        stream=sys.stderr,
+    )
+    if logging_configuration.file_path is not None:
+        logger.info("UCI logs initialized at %s", logging_configuration.file_path)
     try:
         resolved = load_config(
             UciConfig,
@@ -350,7 +402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(run_root_value).expanduser().resolve() if run_root_value else None
         )
     except ConfigError as error:
-        print(f"anthro-uci: {error}", file=sys.stderr)
+        logger.error("Configuration failed: %s", error)
         return 2
 
     def load_runner() -> ActionModelRunner:
@@ -359,7 +411,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_root=run_root,
         )
 
-    return UciEngine(load_runner, resolved.value).run(
+    return UciEngine(
+        load_runner,
+        resolved.value,
+        normal_log_level=logging_configuration.level,
+    ).run(
         sys.stdin,
         sys.stdout,
         sys.stderr,
