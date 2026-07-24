@@ -54,12 +54,17 @@ maximum conditioning rating, not a claim of calibrated playing strength, and
 is the protocol-default state. Unknown commands and tokens are ignored where
 the remaining command can be parsed safely.
 
+Terminal positions return `bestmove 0000`, the UCI null-move representation.
+An internal model or inference failure does not masquerade as a terminal
+position: the process emits a protocol-safe critical-error diagnostic, records
+the detailed failure on standard error, and exits nonzero without claiming a
+best move.
+
 This first path is untimed and move-only. It accepts `stop` safely for the
 short synchronous inference path and ignores unsupported `go` fields rather
 than treating them as model inputs. Analysis search, `searchmoves`, pondering,
 clock fields, `movetime`, `infinite`, depth/node/mate limits, asynchronous
 cancellation, and portable resignation remain outside the implemented scope.
-Terminal positions return the standard null move representation.
 
 ## UCI Scope
 

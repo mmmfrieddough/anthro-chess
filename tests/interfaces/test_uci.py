@@ -226,13 +226,23 @@ def test_malformed_commands_do_not_crash_or_mutate_valid_state() -> None:
     assert engine.board == expected
 
 
-def test_inference_failure_returns_null_move_and_process_stays_responsive() -> None:
+def test_inference_failure_reports_critical_error_and_exits_without_bestmove() -> None:
     engine = UciEngine(lambda: FailingRunner(), UciConfig())
+    output = io.StringIO()
+    error = io.StringIO()
 
-    output, error = _run(engine, "isready\nposition startpos\ngo\nisready\nquit\n")
+    return_code = engine.run(
+        io.StringIO("isready\nposition startpos\ngo\nisready\nquit\n"),
+        output,
+        error,
+    )
 
-    assert output == "readyok\nbestmove 0000\nreadyok\n"
-    assert "move generation failed: inference exploded" in error
+    assert return_code == 1
+    assert output.getvalue() == (
+        "readyok\ninfo string CRITICAL ERROR: move generation failed\n"
+    )
+    assert "bestmove" not in output.getvalue()
+    assert "move generation failed: inference exploded" in error.getvalue()
 
 
 def test_uci_config_rejects_unrepresentable_or_resigning_runtime() -> None:

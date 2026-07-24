@@ -59,6 +59,10 @@ class UciInitializationError(RuntimeError):
     """Raised when the UCI process cannot initialize its model runtime."""
 
 
+class UciInferenceError(RuntimeError):
+    """Raised when an initialized model cannot produce a move."""
+
+
 class UciEngine:
     """Translate one line-oriented UCI process into runtime calls."""
 
@@ -116,6 +120,13 @@ class UciEngine:
             except UciInitializationError as error:
                 print(f"anthro-uci: {error}", file=error_stream, flush=True)
                 return 2
+            except UciInferenceError as error:
+                self._send(
+                    output_stream,
+                    "info string CRITICAL ERROR: move generation failed",
+                )
+                print(f"anthro-uci: {error}", file=error_stream, flush=True)
+                return 1
             except (UciProtocolError, DecisionRuntimeError, ValidationError) as error:
                 print(f"anthro-uci: {error}", file=error_stream, flush=True)
                 if self._debug:
@@ -290,13 +301,7 @@ class UciEngine:
         try:
             action = session.choose_action()
         except Exception as error:
-            print(
-                f"anthro-uci: move generation failed: {error}",
-                file=error_stream,
-                flush=True,
-            )
-            self._send(output, f"bestmove {NULL_BESTMOVE}")
-            return
+            raise UciInferenceError(f"move generation failed: {error}") from error
         if not isinstance(action, MoveAction):
             raise UciProtocolError("portable UCI mode cannot represent resignation")
         self._moves += (action.move,)
