@@ -34,11 +34,16 @@ class StubRunner:
         return self.logits.clone()
 
 
+class FailingRunner:
+    def predict(self, _context: DecisionContext) -> torch.Tensor:
+        raise RuntimeError("inference exploded")
+
+
 def test_protocol_transcript_orders_handshake_and_returns_legal_move() -> None:
     logits = torch.zeros(ACTION_VOCABULARY_SIZE)
     logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
     engine = UciEngine(
-        StubRunner(logits),
+        lambda: StubRunner(logits),
         UciConfig(runtime=RuntimeConfig(temperature=0.0)),
     )
 
@@ -60,7 +65,7 @@ def test_protocol_transcript_orders_handshake_and_returns_legal_move() -> None:
     assert lines[0].startswith("id name Anthro Chess ")
     assert lines[1] == "id author Anthro Chess contributors"
     assert lines[2:5] == [
-        "option name UCI_LimitStrength type check default true",
+        "option name UCI_LimitStrength type check default false",
         "option name UCI_Elo type spin default 1500 min 400 max 2500",
         "option name Anthro Temperature type spin default 0 min 0 max 300",
     ]
@@ -70,34 +75,34 @@ def test_protocol_transcript_orders_handshake_and_returns_legal_move() -> None:
 
 def test_option_changes_keep_rating_and_temperature_independent() -> None:
     engine = UciEngine(
-        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
         UciConfig(),
     )
 
     _run(engine, "setoption name Anthro Temperature value 25\n")
     assert engine.runtime_config == RuntimeConfig(
-        target_rating=1500,
+        target_rating=UCI_MAX_RATING,
         temperature=0.25,
     )
 
     _run(engine, "setoption name UCI_Elo value 1800\n")
-    assert engine.runtime_config.target_rating == 1800
+    assert engine.runtime_config.target_rating == UCI_MAX_RATING
     assert engine.runtime_config.temperature == 0.25
+
+    _run(engine, "setoption name UCI_LimitStrength value true\n")
+    assert engine.runtime_config.target_rating == 1800
+
+    _run(engine, "setoption name UCI_Elo value 1200\n")
+    assert engine.runtime_config.target_rating == 1200
 
     _run(engine, "setoption name UCI_LimitStrength value false\n")
     assert engine.runtime_config.target_rating == UCI_MAX_RATING
-
-    _run(engine, "setoption name UCI_Elo value 1200\n")
-    assert engine.runtime_config.target_rating == UCI_MAX_RATING
-
-    _run(engine, "setoption name UCI_LimitStrength value true\n")
-    assert engine.runtime_config.target_rating == 1200
     assert engine.runtime_config.temperature == 0.25
 
 
 def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
     engine = UciEngine(
-        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
         UciConfig(),
     )
     _run(engine, "position startpos moves e2e4 e7e5\n")
@@ -118,12 +123,12 @@ def test_invalid_position_and_options_do_not_mutate_current_state() -> None:
     assert "illegal position move at ply 0" in error
     assert "UCI_Elo must be between 400 and 2500" in error
     assert engine.board == expected
-    assert engine.runtime_config.target_rating == 1500
+    assert engine.runtime_config.target_rating == UCI_MAX_RATING
 
 
 def test_new_game_reset_fen_terminal_and_clean_exit() -> None:
     engine = UciEngine(
-        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
         UciConfig(),
     )
 
@@ -143,6 +148,91 @@ def test_new_game_reset_fen_terminal_and_clean_exit() -> None:
     assert output == "bestmove 0000\n"
     assert error == ""
     assert engine.board.is_stalemate()
+
+
+def test_model_initialization_is_deferred_to_isready_and_stdout_is_redirected() -> None:
+    calls = 0
+
+    def load_runner() -> StubRunner:
+        nonlocal calls
+        calls += 1
+        print("model loader diagnostic")
+        return StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE))
+
+    engine = UciEngine(load_runner, UciConfig())
+
+    handshake, handshake_error = _run(engine, "uci\n")
+    assert calls == 0
+    assert handshake.endswith("uciok\n")
+    assert handshake_error == ""
+
+    ready, ready_error = _run(engine, "isready\nisready\n")
+    assert calls == 1
+    assert ready == "readyok\nreadyok\n"
+    assert ready_error == "model loader diagnostic\n"
+
+
+def test_unknown_tokens_are_ignored_and_recognized_commands_still_run() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+
+    output, error = _run(
+        engine,
+        "\n".join(
+            (
+                "unknown-prefix debug on",
+                "ignored-token isready",
+                "position startpos ignored moves e2e4 nonsense e7e5",
+                "go unsupported-field 12",
+                "quit",
+            )
+        ),
+    )
+
+    assert output == "readyok\nbestmove g1f3\n"
+    assert error == ""
+
+
+def test_malformed_commands_do_not_crash_or_mutate_valid_state() -> None:
+    engine = UciEngine(
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        UciConfig(),
+    )
+    _run(engine, "position startpos moves e2e4 e7e5\n")
+    expected = engine.board
+
+    output, error = _run(
+        engine,
+        "\n".join(
+            (
+                "setoption value 100",
+                "position fen malformed",
+                "debug perhaps",
+                "completely unknown input",
+                "isready",
+                "quit",
+            )
+        ),
+    )
+
+    assert output == "readyok\n"
+    assert "setoption requires 'name'" in error
+    assert "position fen requires all six FEN fields" in error
+    assert "debug expects 'on' or 'off'" in error
+    assert engine.board == expected
+
+
+def test_inference_failure_returns_null_move_and_process_stays_responsive() -> None:
+    engine = UciEngine(lambda: FailingRunner(), UciConfig())
+
+    output, error = _run(engine, "isready\nposition startpos\ngo\nisready\nquit\n")
+
+    assert output == "readyok\nbestmove 0000\nreadyok\n"
+    assert "move generation failed: inference exploded" in error
 
 
 def test_uci_config_rejects_unrepresentable_or_resigning_runtime() -> None:
@@ -223,7 +313,7 @@ def test_console_script_reports_loading_failure_only_on_stderr(tmp_path: Path) -
             "--set",
             f'model.checkpoint_path="{tmp_path / "missing/checkpoints/model.pt"}"',
         ],
-        input="uci\n",
+        input="uci\nisready\n",
         check=False,
         capture_output=True,
         text=True,
@@ -231,7 +321,11 @@ def test_console_script_reports_loading_failure_only_on_stderr(tmp_path: Path) -
     )
 
     assert completed.returncode == 2
-    assert completed.stdout == ""
+    assert completed.stdout.endswith("uciok\n")
+    assert all(
+        line.startswith(("id ", "option ", "uciok"))
+        for line in completed.stdout.splitlines()
+    )
     assert "anthro-uci:" in completed.stderr
 
 

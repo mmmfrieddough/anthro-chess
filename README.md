@@ -79,9 +79,9 @@ command path arguments and path overrides still take precedence.
 
 ## Minimal UCI Process
 
-The locked environment installs `anthro-uci` alongside `anthro`. It loads one
-compatible retained checkpoint and serves UCI over standard input and output in
-the same process:
+The locked environment installs `anthro-uci` alongside `anthro`. It serves UCI
+over standard input and output, then loads one compatible retained checkpoint
+in the same process when the GUI first synchronizes with `isready`:
 
 ```console
 uv run anthro-uci \
