@@ -47,6 +47,10 @@ selection may be explicit or resolve beneath `ANTHRO_CHESS_RUN_ROOT`, so the
 process does not depend on a repository working directory. This is an
 installed Python entry point, not a frozen standalone binary.
 
+The operator-facing CPU smoke, persistent configuration, GUI setup, acceptance
+procedure, and current product limitations are documented in
+[`playable-uci.md`](playable-uci.md).
+
 The initial implementation supports `uci`, `debug`, `isready`, `setoption`,
 `ucinewgame`, `position`, synchronous `go`, `stop`, and `quit`. Position
 replacement accepts `startpos` or a complete FEN plus move history and commits
@@ -90,6 +94,14 @@ The UCI layer should:
 
 The UCI layer should not be the model's native representation. The model should
 not learn UCI commands or raw protocol text.
+
+UCI callers may send a complete `position` before every `go`. The interface
+should validate the supplied state exactly while reusing the current canonical
+prefix when it is an append-only update. A new FEN, takeback, or divergent move
+list must still work through an atomic replacement path. Position
+synchronization must preserve the loaded model and other process-lifetime
+resources, invalidate only incompatible cached history, and must not reset the
+sampling generator.
 
 ## UCI Command Handling
 
@@ -142,6 +154,8 @@ Useful UCI options include:
 - `UCI_LimitStrength`, mapped to whether target rating control is active;
 - `UCI_Elo`, mapped internally to target rating;
 - custom temperature options;
+- a custom seed option that supports fresh per-game randomness by default and
+  explicit reproducible sampling when selected;
 - custom timing toggles or timing-style options;
 - custom soft preference controls.
 
@@ -186,3 +200,10 @@ UCI.
 Native interfaces should share the same config schema as UCI mode where
 possible, but UCI GUI settings should not be expected to stay synchronized with
 settings changed elsewhere after the engine process has started.
+
+Seed behavior must be consistent across interfaces. Temperature zero is
+deterministic regardless of seed. At nonzero temperature, interactive
+interfaces use fresh game randomness by default, while an explicit seed
+reproduces a run. A position synchronization is not a new sampling run and must
+not reseed it. See
+[`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
