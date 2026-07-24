@@ -26,8 +26,10 @@ from anthro_chess.config import ConfigError, load_config
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.config import (
     UCI_MAX_RATING,
+    UCI_MAX_SEED,
     UCI_MAX_TEMPERATURE,
     UCI_MIN_RATING,
+    UCI_RANDOM_SEED,
     UCI_TEMPERATURE_SCALE,
     UciConfig,
 )
@@ -96,7 +98,6 @@ class UciEngine:
         self._initial_fen = chess.STARTING_FEN
         self._moves: tuple[chess.Move, ...] = ()
         self._board = chess.Board()
-        self._runner: ActionModelRunner | None = None
         self._session: GameSession | None = None
 
     @property
@@ -179,10 +180,10 @@ class UciEngine:
         elif command == "setoption":
             self._set_option(arguments)
         elif command == "ucinewgame":
-            self._replace_position(chess.STARTING_FEN, ())
+            self._new_game()
         elif command == "position":
             initial_fen, moves = _parse_position(arguments)
-            self._replace_position(initial_fen, moves)
+            self._sync_position(initial_fen, moves)
         elif command == "go":
             self._go(output, error)
         elif command in {"stop", "ponderhit"}:
@@ -211,6 +212,14 @@ class UciEngine:
             "option name Anthro Temperature type spin "
             f"default {temperature} "
             f"min 0 max {UCI_MAX_TEMPERATURE}",
+        )
+        seed = self._runtime_config.seed
+        seed_default = UCI_RANDOM_SEED if seed is None else seed
+        self._send(
+            output,
+            "option name Anthro Seed type spin "
+            f"default {seed_default} "
+            f"min {UCI_RANDOM_SEED} max {UCI_MAX_SEED}",
         )
         self._send(output, "uciok")
 
@@ -253,42 +262,52 @@ class UciEngine:
             self._replace_runtime(
                 temperature=temperature / UCI_TEMPERATURE_SCALE,
             )
+        elif normalized == "anthro seed":
+            seed = _parse_spin(
+                value,
+                name=name,
+                minimum=UCI_RANDOM_SEED,
+                maximum=UCI_MAX_SEED,
+            )
+            self._set_seed(None if seed == UCI_RANDOM_SEED else seed)
         else:
             return
 
-    def _replace_runtime(
-        self,
-        *,
-        target_rating: int | None = None,
-        temperature: float | None = None,
-    ) -> None:
-        update: dict[str, object] = {}
-        if target_rating is not None:
-            update["target_rating"] = target_rating
-        if temperature is not None:
-            update["temperature"] = temperature
+    def _replace_runtime(self, **update: object) -> None:
         replacement = self._runtime_config.model_copy(update=update)
         replacement = RuntimeConfig.model_validate(replacement.model_dump())
         self._runtime_config = replacement
         if self._session is not None:
             self._session.config = replacement
 
-    def _replace_position(
+    def _set_seed(self, seed: int | None) -> None:
+        self._replace_runtime(seed=seed)
+        if self._session is not None:
+            self._session.reseed()
+        logger.debug("Applied seed policy: %s", "random" if seed is None else seed)
+
+    def _new_game(self) -> None:
+        self._initial_fen = chess.STARTING_FEN
+        self._moves = ()
+        self._board = chess.Board()
+        if self._session is not None:
+            self._session.reset()
+        logger.debug("Started a new game")
+
+    def _sync_position(
         self,
         initial_fen: str,
         moves: tuple[chess.Move, ...],
     ) -> None:
-        board = _validated_board(initial_fen, moves)
-        replacement = (
-            self._build_session(self._runner, initial_fen, moves, board.turn)
-            if self._runner is not None
-            else None
-        )
+        if self._session is not None:
+            self._session.sync_position(initial_fen=initial_fen, moves=moves)
+            board = self._session.board
+        else:
+            board = _validated_board(initial_fen, moves)
         self._initial_fen = initial_fen
         self._moves = moves
         self._board = board
-        self._session = replacement
-        logger.debug("Replaced UCI position with %s observed plies", len(moves))
+        logger.debug("Synced UCI position with %s observed plies", len(moves))
 
     def _build_session(
         self,
@@ -297,13 +316,13 @@ class UciEngine:
         moves: tuple[chess.Move, ...],
         controlled_color: chess.Color,
     ) -> GameSession:
-        session = GameSession(
+        return GameSession(
             runner,
             controlled_color=controlled_color,
             config=self._runtime_config,
+            initial_fen=initial_fen,
+            moves=moves,
         )
-        session.reset(initial_fen=initial_fen, moves=moves)
-        return session
 
     def _ensure_initialized(self, error_stream: TextIO) -> GameSession:
         if self._session is not None:
@@ -321,7 +340,6 @@ class UciEngine:
             raise UciInitializationError(
                 f"model initialization failed: {error}"
             ) from error
-        self._runner = runner
         self._session = session
         logger.info("Model runtime initialized")
         return session

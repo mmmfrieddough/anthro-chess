@@ -18,5 +18,8 @@ class RuntimeConfig(ConfigModel):
 
     target_rating: TargetRating | None = 1500
     temperature: Temperature = 1.0
-    seed: RandomSeed = 0
+    # ``None`` draws a fresh per-game stream from operating-system entropy so
+    # ordinary interactive play varies; an explicit non-negative seed makes a
+    # game reproducible for debugging and benchmarks.
+    seed: RandomSeed | None = None
     resignation_enabled: StrictBool = False

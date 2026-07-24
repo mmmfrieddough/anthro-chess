@@ -40,9 +40,11 @@ device = "cpu"
 [runtime]
 target_rating = 1500
 temperature = 0.0
-seed = 0
 resignation_enabled = false
 ```
+
+Omitting `seed` uses fresh per-game randomness; set an explicit non-negative
+`seed` only to reproduce a game.
 
 An absolute `model.checkpoint_path` makes GUI startup independent of inherited
 environment variables while still requiring the complete retained run around
@@ -82,15 +84,17 @@ After the GUI completes the UCI handshake, it can set:
 
 - `UCI_LimitStrength` to enable or disable the selected target rating;
 - `UCI_Elo` to choose the target rating while strength limiting is enabled;
-- `Anthro Temperature` to control sampling independently, scaled by 100.
+- `Anthro Temperature` to control sampling independently, scaled by 100;
+- `Anthro Seed` to select fresh per-game randomness or a reproducible game.
 
-The current proof uses a fixed configured seed. Its position-replacement path
-also resets that seed whenever the GUI synchronizes the game, so even
-nonzero-temperature play is reproducible for the same position and settings.
-This is a known proof-stage limitation rather than the intended interactive
-behavior. The intended runtime keeps randomness alive across position updates,
-uses fresh per-game randomness for ordinary play, and exposes an explicit seed
-for reproducible games and benchmarks. See
+Position synchronization keeps the loaded model and the active random stream
+alive, so at nonzero temperature ordinary interactive games vary by default and
+a repeated position no longer collapses to the same continuation. `Anthro Seed`
+selects a reproducible game when set to an explicit value and returns to fresh
+per-game randomness at its sentinel; temperature zero stays deterministic
+regardless of seed. `ucinewgame` starts a fresh game and stream without
+reloading the model. The exact seed range and sentinel are owned by the UCI
+configuration module. See
 [`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
 
 For final Playable Proof acceptance:
