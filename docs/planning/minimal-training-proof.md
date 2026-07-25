@@ -133,7 +133,11 @@ accepted games. It processed 8,716,512 positions over 8,000 optimizer steps in
 about 71.8 cumulative optimizer minutes across the initial and resumed
 segments.
 
-Held-out loss improved consistently through step 7,000:
+Held-out loss improved consistently through step 7,000. The runner validates
+once, when a run exits, so this curve was assembled from separate stop-and-
+resume segments rather than produced by periodic in-loop validation. Retained
+checkpoints make the same curve available after the fact at whatever resolution
+`checkpoint_every_steps` provides.
 
 | Step | Raw move loss | Legally masked move loss |
 | ---: | ---: | ---: |
@@ -200,3 +204,57 @@ The legally masked loss is lower than uniform-over-legal by 0.08423. This
 clears the replacement learned-move gate while recovering supervision from
 both sides in one transformer pass and requiring only Anthro's one target
 rating at live inference.
+
+## Held-Out Test Partition Baseline
+
+Adding the `test` partition bumped the preprocessing version, so every corpus
+prepared before it is incompatible with the current pipeline. The three-way
+split assigns `test` the hash range the two-way split gave `validation`, which
+means the earlier proofs validated on exactly the games the frozen evaluation
+pool now holds, and their replacement validation sets were previously training
+data. Both facts require a regenerated corpus and a retrained baseline before
+any number can be reported against the pool.
+
+The regenerated selection uses the same checked-in configuration and the same
+bounded 30,000-game override as the earlier extension. Split assignment stays a
+pure function of the split seed and game id, so the bounded training selection
+and the full corpus agree about which games are held out; a build-time overlap
+check confirms the pool shares no game with the corpus train split.
+
+The retrained baseline keeps the checked-in model, optimizer, and batch
+settings and runs 8,000 optimizer steps on an Apple-silicon MPS device.
+Configuration, data identities, and provenance live in the generated run
+artifacts.
+
+| Measurement | Result |
+| --- | ---: |
+| Raw held-out move loss | 3.58922 |
+| Legally masked held-out move loss | 2.83796 |
+| Uniform-over-legal move loss | 3.21184 |
+| Raw-logit mask penalty | 0.75126 |
+| Raw top-1 illegal rate | 22.58% |
+
+The legally masked loss is below uniform-over-legal by 0.37388. That margin is
+the comparable quantity across runs, because each is measured against its own
+validation set's baseline; the raw losses are not comparable to the earlier
+proofs, which used a different held-out set.
+
+Retained checkpoints supply the training curve after the fact:
+
+| Step | Raw | Legally masked | Margin below uniform | Mask penalty |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 4.88411 | 3.25141 | -0.03958 | 1.63270 |
+| 2,000 | 4.35074 | 3.12945 | 0.08238 | 1.22128 |
+| 4,000 | 3.88407 | 2.96320 | 0.24864 | 0.92087 |
+| 6,000 | 3.68970 | 2.88130 | 0.33054 | 0.80840 |
+| 8,000 | 3.58922 | 2.83796 | 0.37388 | 0.75126 |
+
+Two properties of that curve matter more than the endpoint. The step-1,000
+checkpoint is worse than uniform-over-legal, so the retained series spans from
+below a trivial baseline to clearly above it and can test whether a benchmark
+ranks checkpoints at all. And every metric was still improving at step 8,000,
+so this recipe was stopped by the step bound rather than by convergence.
+
+The step-2,000 checkpoint scores within noise of the earlier decision-
+conditioned proof despite training on roughly three times the games, which
+suggests the model is step-limited rather than data-limited at that point.
