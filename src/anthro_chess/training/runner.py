@@ -24,7 +24,11 @@ from anthro_chess.data import (
     SequenceDataLoader,
     encoding_identity,
 )
-from anthro_chess.data.schema import PREPROCESSING_VERSION, SCHEMA_VERSION
+from anthro_chess.data.artifacts import (
+    normalized_shard_paths,
+    validate_manifest_compatibility,
+    validate_manifest_outputs,
+)
 from anthro_chess.evaluation import MoveValidationMetrics, evaluate_move_model
 from anthro_chess.models import CausalMoveModel, MoveModelBatch
 from anthro_chess.training.checkpoints import (
@@ -655,7 +659,7 @@ def _validate_checkpoint_compatibility(
 
 
 def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
-    paths = _normalized_paths(config.normalized)
+    paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
     if not manifest_path.is_file():
         raise DataLoadingError(f"data manifest does not exist: {manifest_path}")
@@ -678,74 +682,13 @@ def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
     )
 
 
-def _normalized_paths(path: Path) -> tuple[Path, ...]:
-    if path.is_file():
-        return (path,)
-    if path.is_dir():
-        paths = tuple(sorted(path.glob("games*.parquet")))
-        if paths:
-            return paths
-        raise DataLoadingError(
-            f"normalized data directory has no games*.parquet files: {path}"
-        )
-    raise DataLoadingError(f"normalized data path does not exist: {path}")
-
-
 def _validate_manifest(
     manifest: dict[str, Any],
     manifest_path: Path,
     paths: tuple[Path, ...],
 ) -> None:
-    if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise DataLoadingError(
-            f"{manifest_path} uses normalized schema version "
-            f"{manifest.get('schema_version')}; expected {SCHEMA_VERSION}"
-        )
-    if manifest.get("preprocessing_version") != PREPROCESSING_VERSION:
-        raise DataLoadingError(
-            f"{manifest_path} uses preprocessing version "
-            f"{manifest.get('preprocessing_version')}; "
-            f"expected {PREPROCESSING_VERSION}"
-        )
-    if manifest.get("action_vocabulary") != action_vocabulary_identity():
-        raise DataLoadingError(
-            f"{manifest_path} uses an incompatible action vocabulary"
-        )
-
-    output = manifest.get("output")
-    if not isinstance(output, Mapping):
-        raise DataLoadingError(f"{manifest_path} has no output record")
-    shards = output.get("shards")
-    if not isinstance(shards, list):
-        raise DataLoadingError(f"{manifest_path} has no output shard records")
-    expected: dict[Path, str] = {}
-    artifact_root = manifest_path.parent.parent
-    for shard in shards:
-        if not isinstance(shard, Mapping):
-            raise DataLoadingError(f"{manifest_path} has an invalid output shard")
-        relative_path = shard.get("path")
-        digest = shard.get("sha256")
-        if not isinstance(relative_path, str) or not isinstance(digest, str):
-            raise DataLoadingError(f"{manifest_path} has an invalid output shard")
-        expected[(artifact_root / relative_path).resolve()] = digest
-
-    configured = {path.resolve() for path in paths}
-    if configured != set(expected):
-        raise DataLoadingError(
-            "configured normalized paths do not match the data manifest outputs"
-        )
-    for path in paths:
-        observed = _file_sha256(path)
-        if observed != expected[path.resolve()]:
-            raise DataLoadingError(f"normalized data checksum mismatch: {path}")
-
-
-def _file_sha256(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as input_file:
-        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    validate_manifest_compatibility(manifest, manifest_path)
+    validate_manifest_outputs(manifest, manifest_path, paths)
 
 
 def _parameter_sha256(model: CausalMoveModel) -> str:

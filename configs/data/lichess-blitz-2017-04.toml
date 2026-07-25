@@ -17,8 +17,13 @@ sha256 = "559222b0e933bc02281643724fbd9bd46690074b10d784c4f264e0bff6c5992c"
 compression = "zstd"
 
 [split]
+# Freeze this seed once a benchmark pool exists. Assignment is a pure function
+# of the seed and game id, so a new seed reassigns every game and can move a
+# held-out test game into training.
 seed = "anthro-lichess-blitz-baseline-v1"
 validation_fraction = 0.05
+# Never consumed by training; the frozen evaluation pool is built from it.
+test_fraction = 0.05
 require_nonempty = true
 
 [filters]

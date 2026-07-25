@@ -8,8 +8,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypeAlias, cast, overload
+from typing import Any, TypeAlias, overload
 
+from anthro_chess.data.artifacts import (
+    DataLoadingError,
+    read_normalized_rows,
+)
 from anthro_chess.data.config import SequenceLoaderConfig
 from anthro_chess.data.encoding import (
     BOARD_SQUARE_COUNT,
@@ -39,10 +43,6 @@ IntMatrix: TypeAlias = tuple[tuple[int, ...], ...]
 BoolMatrix: TypeAlias = tuple[tuple[bool, ...], ...]
 PieceTensor: TypeAlias = tuple[tuple[tuple[int, ...], ...], ...]
 LegalActionTensor: TypeAlias = tuple[tuple[tuple[int, ...], ...], ...]
-
-
-class DataLoadingError(ValueError):
-    """Raised when normalized data or saved loader state is incompatible."""
 
 
 @dataclass(frozen=True)
@@ -210,7 +210,7 @@ class SequenceDataset(Sequence[SequenceExample]):
         examples: list[SequenceExample] = []
         identity_records: list[dict[str, object]] = []
         for shard_index, path in enumerate(normalized_paths):
-            for row in _read_normalized_rows(path):
+            for row in read_normalized_rows(path, _LOADER_COLUMNS):
                 if row[NormalizedColumn.SPLIT] != split:
                     continue
                 game = _game_from_row(row, path)
@@ -455,22 +455,6 @@ def _normalize_paths(
     if missing:
         raise DataLoadingError(f"normalized Parquet file does not exist: {missing[0]}")
     return tuple(sorted(normalized, key=lambda path: str(path.resolve())))
-
-
-def _read_normalized_rows(path: Path) -> list[dict[str, Any]]:
-    try:
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise DataLoadingError(
-            "Parquet support is unavailable; install anthro-chess[data]"
-        ) from error
-    try:
-        table = pq.read_table(path, columns=list(_LOADER_COLUMNS))
-    except (OSError, ValueError) as error:
-        raise DataLoadingError(
-            f"cannot read normalized data {path}: {error}"
-        ) from error
-    return cast(list[dict[str, Any]], table.to_pylist())
 
 
 def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:

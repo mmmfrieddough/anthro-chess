@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, StrictBool
+from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import SequenceDataConfig
@@ -31,3 +31,20 @@ class TrainingConfig(ConfigModel):
     model: MoveModelConfig = MoveModelConfig()
     train: SequenceDataConfig
     validation: SequenceDataConfig | None = None
+
+    @model_validator(mode="after")
+    def _reject_test_split(self) -> TrainingConfig:
+        """Keep the held-out benchmark partition out of every training run.
+
+        The test split exists so checkpoint comparisons are not reported on
+        data the training loop selected against. Consuming it here, even for
+        validation metrics, would quietly destroy that guarantee.
+        """
+
+        selections = (("train", self.train), ("validation", self.validation))
+        for name, selection in selections:
+            if selection is not None and selection.loader.split == "test":
+                raise ValueError(
+                    f"{name} selection must not use the held-out test split"
+                )
+        return self
