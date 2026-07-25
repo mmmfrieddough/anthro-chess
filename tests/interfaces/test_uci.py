@@ -647,6 +647,74 @@ def test_console_script_reproduces_seeded_games_and_varies_fresh_streams(
     assert len(set(seeds)) >= 2
 
 
+# Real GUIs differ in when they complete the handshake, whether they announce a
+# new game, when they apply options, and how they express the position. Every
+# ordering below must reach exactly one legal move, for either color, on one
+# loaded runner. The color latch fixed here was invisible to a single ordering.
+_HANDSHAKE_ORDERINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ready-before-position", ("uci", "isready", "ucinewgame", "{position}", "go")),
+    ("ready-after-position", ("uci", "ucinewgame", "{position}", "isready", "go")),
+    ("no-ucinewgame", ("uci", "isready", "{position}", "go")),
+    ("no-isready", ("uci", "ucinewgame", "{position}", "go")),
+    (
+        "options-before-ready",
+        (
+            "uci",
+            "setoption name UCI_LimitStrength value true",
+            "setoption name UCI_Elo value 1200",
+            "isready",
+            "ucinewgame",
+            "{position}",
+            "go",
+        ),
+    ),
+    (
+        "options-after-position",
+        (
+            "uci",
+            "isready",
+            "ucinewgame",
+            "{position}",
+            "setoption name Anthro Temperature value 50",
+            "go",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "ordering", _HANDSHAKE_ORDERINGS, ids=[name for name, _ in _HANDSHAKE_ORDERINGS]
+)
+@pytest.mark.parametrize("color", (chess.WHITE, chess.BLACK), ids=("white", "black"))
+@pytest.mark.parametrize("position_form", ("startpos", "fen"), ids=("startpos", "fen"))
+def test_gui_handshake_orderings_all_reach_one_legal_move(
+    ordering: tuple[str, tuple[str, ...]],
+    color: chess.Color,
+    position_form: str,
+) -> None:
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+    engine, loads = _counting_engine(_sampling_logits(), seed=7)
+
+    board = chess.Board()
+    if color == chess.BLACK:
+        board.push_uci("e2e4")
+    if position_form == "startpos":
+        moves = " ".join(move.uci() for move in board.move_stack)
+        position = "position startpos" + (f" moves {moves}" if moves else "")
+    else:
+        position = f"position fen {board.fen()}"
+
+    _, commands = ordering
+    transcript = "\n".join(command.format(position=position) for command in commands)
+    output = _drive(engine, transcript + "\n", error)
+
+    bestmoves = _bestmoves(output)
+    assert len(bestmoves) == 1
+    assert chess.Move.from_uci(bestmoves[0]) in board.legal_moves
+    assert loads() == 1
+
+
 def test_engine_moves_as_black_after_a_fully_completed_handshake() -> None:
     logits = torch.zeros(ACTION_VOCABULARY_SIZE)
     logits[encode_move(chess.Move.from_uci("e7e5"))] = 10.0
