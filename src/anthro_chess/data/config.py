@@ -1,11 +1,14 @@
 """Strict configuration for data acquisition, preparation, and sequence loading."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, StrictBool
+from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
+from anthro_chess.data.schema import SplitName
 
 
 class SourceConfig(ConfigModel):
@@ -38,11 +41,27 @@ class ArchiveConfig(ConfigModel):
 
 
 class SplitConfig(ConfigModel):
-    """Deterministic game-level train/validation split selection."""
+    """Deterministic game-level train/validation/test split selection.
+
+    Assignment is a pure function of ``seed`` and the internal game id, so
+    growing or refiltering a corpus never moves an existing game between
+    splits. Changing ``seed`` breaks that guarantee and can place a previously
+    held-out test game into training; treat it as frozen once a benchmark
+    pool has been built from a selection.
+    """
 
     seed: str = Field(default="anthro-sample-v1", min_length=1)
     validation_fraction: float = Field(default=0.2, ge=0.0, lt=1.0)
+    test_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
     require_nonempty: StrictBool = False
+
+    @model_validator(mode="after")
+    def _validate_fractions(self) -> SplitConfig:
+        if self.validation_fraction + self.test_fraction >= 1.0:
+            raise ValueError(
+                "validation and test fractions must leave a nonempty train split"
+            )
+        return self
 
 
 class FilterConfig(ConfigModel):
@@ -88,7 +107,7 @@ class PrepareConfig(ConfigModel):
 class SequenceLoaderConfig(ConfigModel):
     """Deterministic batching choices for normalized game sequences."""
 
-    split: Literal["train", "validation"] = "train"
+    split: SplitName = "train"
     batch_size: int = Field(default=8, ge=1)
     length_bucket_width: int | None = Field(default=32, ge=1)
     chunk_length: int | None = Field(default=None, ge=1)

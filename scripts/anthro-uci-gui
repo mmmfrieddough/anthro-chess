@@ -1,0 +1,56 @@
+#!/bin/sh
+# Stable UCI engine entry point for a local chess GUI.
+#
+# Configure the GUI with the absolute path to this script once. Which checkout
+# actually serves the protocol is decided by the target pointer, so an
+# implementation session can aim the GUI at its own worktree without the GUI
+# being reconfigured. See docs/playable-uci.md.
+#
+# Standard output belongs to the engine alone: every diagnostic here goes to
+# standard error so the launcher can never corrupt the protocol stream.
+
+set -eu
+
+script_path=$0
+case $script_path in
+  */*) script_directory=${script_path%/*} ;;
+  *) script_directory=. ;;
+esac
+script_directory=$(cd -- "$script_directory" && pwd)
+default_checkout=$(cd -- "$script_directory/.." && pwd)
+
+state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+state_root=${ANTHRO_CHESS_GUI_ROOT:-$state_home/anthro-chess}
+pointer_path=${ANTHRO_CHESS_GUI_TARGET:-$state_root/gui-target}
+config_path=${ANTHRO_CHESS_GUI_CONFIG:-$state_root/gui.toml}
+log_level=${ANTHRO_CHESS_GUI_LOG_LEVEL:-DEBUG}
+
+fail() {
+  echo "anthro-uci-gui: $1" >&2
+  exit 1
+}
+
+if [ -f "$pointer_path" ]; then
+  target=$(cat -- "$pointer_path")
+  target=${target%"${target##*[![:space:]]}"}
+  origin="target pointer $pointer_path"
+else
+  target=$default_checkout
+  origin="default checkout (no pointer at $pointer_path)"
+fi
+
+[ -n "$target" ] || fail "the target pointer $pointer_path is empty; set one with scripts/anthro-gui-target or delete the file"
+[ -d "$target" ] || fail "the pointed-at checkout no longer exists: $target
+It was probably a worktree that has since been removed.
+Run scripts/anthro-gui-target --clear to fall back to $default_checkout."
+
+engine=$target/.venv/bin/anthro-uci
+[ -x "$engine" ] || fail "no runnable engine at $engine
+Initialize that checkout's environment with 'uv sync' before pointing the GUI at it."
+
+[ -f "$config_path" ] || fail "no engine configuration at $config_path
+Create it, or set ANTHRO_CHESS_GUI_CONFIG. See docs/playable-uci.md."
+
+echo "anthro-uci-gui: serving from $target via $origin" >&2
+
+exec "$engine" --config "$config_path" --log-level "$log_level" "$@"

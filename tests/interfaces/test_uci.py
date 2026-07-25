@@ -267,6 +267,87 @@ def test_malformed_commands_do_not_crash_or_mutate_valid_state() -> None:
     assert engine.board == expected
 
 
+def test_malformed_position_move_is_rejected_without_shifting_history() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+    _run(engine, "position startpos moves e2e4 e7e5\n")
+    expected = engine.board
+
+    # Dropping the bad token would leave a history of e2e4 e7e5 and answer from
+    # a position the GUI never asked about.
+    output, error = _run(engine, "position startpos moves e2e4 not-a-move e7e5\n")
+
+    assert output == ""
+    assert "malformed position move at ply 1: not-a-move" in error
+    assert engine.board == expected
+
+    answered, _ = _run(engine, "isready\ngo\nquit\n")
+    assert _bestmoves(answered) == ["g1f3"]
+
+
+def test_go_infinite_withholds_bestmove_until_stop() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+
+    output, _ = _run(engine, "isready\nposition startpos\ngo infinite\n")
+    assert _bestmoves(output) == []
+
+    output, _ = _run(engine, "stop\nquit\n")
+    assert _bestmoves(output) == ["e2e4"]
+
+
+def test_stop_without_an_infinite_search_stays_silent() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+
+    # An ordinary go already answered, and a second bestmove would be unpaired.
+    output, _ = _run(engine, "isready\nposition startpos\ngo\nstop\nstop\nquit\n")
+
+    assert _bestmoves(output) == ["e2e4"]
+
+
+def test_new_game_discards_an_unstopped_infinite_response() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+
+    output, _ = _run(
+        engine,
+        "isready\nposition startpos\ngo infinite\nucinewgame\nstop\nquit\n",
+    )
+
+    assert _bestmoves(output) == []
+
+
+def test_terminal_position_under_infinite_search_also_waits_for_stop() -> None:
+    engine = UciEngine(
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+    checkmate = "position fen 7k/5Q2/7K/8/8/8/8/8 b - - 0 1"
+
+    output, _ = _run(engine, f"isready\n{checkmate}\ngo infinite\n")
+    assert _bestmoves(output) == []
+
+    output, _ = _run(engine, "stop\nquit\n")
+    assert _bestmoves(output) == ["0000"]
+
+
 def test_inference_failure_reports_critical_error_and_exits_without_bestmove() -> None:
     engine = UciEngine(lambda: FailingRunner(), UciConfig())
     output = io.StringIO()
@@ -522,7 +603,6 @@ def test_debug_logs_exclude_raw_commands_and_complete_game_history() -> None:
             (
                 "debug on",
                 sensitive,
-                "setoption name Private Token value private-user-secret",
                 "position startpos moves e2e4 e7e5 g1f3",
                 "quit",
             )
@@ -532,8 +612,36 @@ def test_debug_logs_exclude_raw_commands_and_complete_game_history() -> None:
     assert output == ""
     assert "Received UCI command" in error
     assert sensitive not in error
-    assert "private-user-secret" not in error
     assert "e2e4 e7e5 g1f3" not in error
+
+
+def test_debug_logs_record_option_names_and_values() -> None:
+    engine = UciEngine(
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        UciConfig(),
+    )
+
+    # A reported session is only reproducible if the settings that produced it
+    # are recoverable, so every applied option is recorded by name and value.
+    _, error = _run(
+        engine,
+        "\n".join(
+            (
+                "debug on",
+                "setoption name UCI_LimitStrength value true",
+                "setoption name UCI_Elo value 1234",
+                "setoption name Anthro Temperature value 75",
+                "setoption name Unsupported Option value 9",
+                "quit",
+            )
+        ),
+    )
+
+    assert "UCI_LimitStrength with value true" in error
+    assert "UCI_Elo with value 1234" in error
+    assert "Anthro Temperature with value 75" in error
+    # Options the engine does not implement are recorded rather than hidden.
+    assert "Unsupported Option with value 9" in error
 
 
 def test_position_updates_reuse_the_runner_and_reproduce_a_seeded_game() -> None:

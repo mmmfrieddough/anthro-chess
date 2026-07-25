@@ -30,18 +30,31 @@ The run directory must contain its `run.json`, checkpoint directory, and
 compatibility metadata. Do not copy out only the weight file.
 
 For a persistent setup, save a strict configuration file outside the
-repository:
+repository. The GUI launcher reads it from `gui.toml` in the state directory
+described under [Connect A Chess GUI](#connect-a-chess-gui); any other location
+works for direct invocation:
 
 ```toml
 [model]
 checkpoint_path = "/absolute/run/checkpoints/step-00002000.pt"
 device = "cpu"
-
-[runtime]
-target_rating = 1500
-temperature = 0.0
-resignation_enabled = false
 ```
+
+Set only what the machine cannot infer. Every `[runtime]` setting has a
+code-owned default, and each one a GUI can reach is an advertised UCI option
+that overrides the file for the running process. Restating a default in the
+file gains nothing and invites the belief that the file is what the engine is
+actually using, so prefer the GUI option and leave the file alone.
+
+Restating `runtime.temperature` is the trap worth naming: it sets the
+advertised `Anthro Temperature` default, so a file pinning it to zero makes
+every game from a position identical until the GUI raises the option. That is
+sampling behavior, not a model property, and it is easy to mistake for one.
+
+`runtime.target_rating` is the one setting that does not take effect on its
+own. It seeds the advertised `UCI_Elo` default, but following UCI convention
+strength limiting is off until the GUI enables `UCI_LimitStrength`, and until
+then the engine conditions on the code-owned maximum rating.
 
 Omitting `seed` uses fresh per-game randomness; set an explicit non-negative
 `seed` only to reproduce a game.
@@ -71,14 +84,48 @@ checkpoint compatibility; it does not assert playing strength.
 
 ## Connect A Chess GUI
 
-Configure the GUI's UCI engine command with:
+Configure the GUI's UCI engine command with the absolute path to
+`scripts/anthro-uci-gui` in the main checkout, and no arguments. The exact
+fields vary by GUI, but the GUI must launch that script directly and
+communicate through its standard input and output. Do not point it at
+`src/anthro_chess/interfaces/uci.py`, at a path inside `.venv`, or at a
+worktree.
 
-- executable: the absolute path in `ANTHRO_UCI_EXECUTABLE`;
-- arguments: `--config /absolute/path/to/anthro-uci.toml`.
+The launcher is a committed shell entry point, so it survives `uv sync`, branch
+switches, and worktree removal. It decides at launch which checkout serves the
+protocol, reports that decision and any failure on standard error, and leaves
+standard output to the engine alone.
 
-The exact fields vary by GUI, but the GUI must launch that executable directly
-and communicate through its standard input and output. Do not point it at
-`src/anthro_chess/interfaces/uci.py`.
+Its shared engine configuration lives outside every checkout, next to the
+target pointer, and is the file described under
+[Select The Engine And Checkpoint](#select-the-engine-and-checkpoint). Override
+its location with `ANTHRO_CHESS_GUI_CONFIG`, the state directory with
+`ANTHRO_CHESS_GUI_ROOT`, and log verbosity with `ANTHRO_CHESS_GUI_LOG_LEVEL`.
+Those variables are for manual runs from a terminal: a GUI started from a
+desktop launcher does not inherit a login shell environment, which is why the
+target is a file rather than an environment variable.
+
+## Point The GUI At A Branch
+
+The GUI is configured once. Which checkout it serves is a separate, switchable
+decision, so a change can be tried in a real GUI without touching GUI settings.
+
+```console
+scripts/anthro-gui-target            # print the current target
+scripts/anthro-gui-target .          # serve this checkout
+scripts/anthro-gui-target --clear    # fall back to the launcher's checkout
+```
+
+Run it from the checkout to be served, after that checkout's environment is
+initialized with `uv sync`. Restart the engine in the GUI to pick up the change;
+most GUIs reload it when a new game starts.
+
+With no pointer, the launcher serves the checkout it lives in, so the default is
+the main checkout and no configuration is needed for ordinary play.
+
+If a pointed-at worktree is removed, the launcher fails with a readable message
+naming the missing path instead of starting a stale or partial engine. Run
+`scripts/anthro-gui-target --clear` to recover.
 
 After the GUI completes the UCI handshake, it can set:
 
