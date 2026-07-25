@@ -99,6 +99,9 @@ class UciEngine:
         self._moves: tuple[chess.Move, ...] = ()
         self._board = chess.Board()
         self._session: GameSession | None = None
+        # ``go infinite`` must not answer until ``stop``, so the synchronously
+        # computed response waits here instead of being sent immediately.
+        self._pending_bestmove: str | None = None
 
     @property
     def board(self) -> chess.Board:
@@ -185,8 +188,10 @@ class UciEngine:
             initial_fen, moves = _parse_position(arguments)
             self._sync_position(initial_fen, moves)
         elif command == "go":
-            self._go(output, error)
-        elif command in {"stop", "ponderhit"}:
+            self._go(arguments, output, error)
+        elif command == "stop":
+            self._stop(output)
+        elif command == "ponderhit":
             pass
         elif command == "quit":
             return True
@@ -236,6 +241,10 @@ class UciEngine:
 
     def _set_option(self, arguments: str) -> None:
         name, value = _parse_option(arguments)
+        # Engine options are bounded scalars a GUI chose deliberately, and the
+        # resolved seed is already logged in full. Recording what a GUI asked
+        # for is what makes a reported session reproducible.
+        logger.debug("Received UCI option %s with value %s", name, value)
         normalized = name.casefold()
         if normalized == "uci_limitstrength":
             limit_strength = _parse_check(value, name=name)
@@ -287,6 +296,7 @@ class UciEngine:
         logger.debug("Applied seed policy: %s", "random" if seed is None else seed)
 
     def _new_game(self) -> None:
+        self._discard_pending()
         self._initial_fen = chess.STARTING_FEN
         self._moves = ()
         self._board = chess.Board()
@@ -344,10 +354,11 @@ class UciEngine:
         logger.info("Model runtime initialized")
         return session
 
-    def _go(self, output: TextIO, error_stream: TextIO) -> None:
+    def _go(self, arguments: str, output: TextIO, error_stream: TextIO) -> None:
         session = self._ensure_initialized(error_stream)
+        infinite = "infinite" in {token.lower() for token in arguments.split()}
         if session.is_terminal:
-            self._send(output, f"bestmove {NULL_BESTMOVE}")
+            self._respond(NULL_BESTMOVE, output, infinite=infinite)
             return
         try:
             action = session.choose_action()
@@ -357,7 +368,28 @@ class UciEngine:
             raise UciProtocolError("portable UCI mode cannot represent resignation")
         self._moves += (action.move,)
         self._board = session.board
-        self._send(output, f"bestmove {action.move.uci()}")
+        self._respond(action.move.uci(), output, infinite=infinite)
+
+    def _respond(self, bestmove: str, output: TextIO, *, infinite: bool) -> None:
+        if infinite:
+            # Search is synchronous, so the answer already exists; the protocol
+            # just forbids sending it before the GUI asks to stop.
+            self._pending_bestmove = bestmove
+            logger.debug("Holding an infinite-search response until stop")
+            return
+        self._send(output, f"bestmove {bestmove}")
+
+    def _stop(self, output: TextIO) -> None:
+        pending, self._pending_bestmove = self._pending_bestmove, None
+        if pending is None:
+            # An unpaired bestmove is a worse violation than ignoring stop.
+            return
+        self._send(output, f"bestmove {pending}")
+
+    def _discard_pending(self) -> None:
+        if self._pending_bestmove is not None:
+            self._pending_bestmove = None
+            logger.debug("Discarded an unstopped infinite-search response")
 
     @staticmethod
     def _send(output: TextIO, message: str) -> None:
@@ -471,11 +503,16 @@ def _parse_position(arguments: str) -> tuple[str, tuple[chess.Move, ...]]:
     )
     move_tokens = remainder[move_marker + 1 :] if move_marker is not None else []
     moves: list[chess.Move] = []
-    for token in move_tokens:
+    for ply_index, token in enumerate(move_tokens):
         try:
             moves.append(chess.Move.from_uci(token))
-        except ValueError:
-            continue
+        except ValueError as error:
+            # Skipping the token would shift every later move one ply earlier
+            # and silently desynchronize the engine from the GUI, so reject the
+            # whole command and keep the previously synchronized position.
+            raise UciProtocolError(
+                f"malformed position move at ply {ply_index}: {token}"
+            ) from error
     return initial_fen, tuple(moves)
 
 

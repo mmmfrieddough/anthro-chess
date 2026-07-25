@@ -70,15 +70,33 @@ without claiming a best move.
 
 The entry point accepts standard application log levels. UCI `debug on|off`
 temporarily enables deeper module and command-boundary diagnostics in the same
-protocol-safe destination. Logs identify lifecycle events and command names,
-but do not copy raw commands, complete game histories, model distributions, or
-other high-volume or sensitive values.
+protocol-safe destination. Logs identify lifecycle events, command names, and
+the name and value of every option a GUI sets. They do not copy raw command
+lines, complete game histories, model distributions, or other high-volume or
+sensitive values.
 
-This first path is untimed and move-only. It accepts `stop` safely for the
-short synchronous inference path and ignores unsupported `go` fields rather
-than treating them as model inputs. Analysis search, `searchmoves`, pondering,
-clock fields, `movetime`, `infinite`, depth/node/mate limits, asynchronous
-cancellation, and portable resignation remain outside the implemented scope.
+Option values are logged because they are what makes a reported session
+reproducible: the engine's options are bounded scalars a GUI chose
+deliberately, and the resolved sampling seed is already recorded in full.
+Withholding the settings that produced a game while recording the seed that
+replays it is not a coherent boundary. A future option carrying free-form text
+would change that judgment and should be excluded when it is introduced.
+
+This first path is untimed and move-only. It ignores unsupported `go` fields
+rather than treating them as model inputs. `searchmoves`, pondering, clock
+fields, `movetime`, depth/node/mate limits, asynchronous cancellation, and
+portable resignation remain outside the implemented scope.
+
+`go infinite` is honored to the extent the protocol requires: the move is still
+chosen synchronously, but the response is withheld until `stop` rather than
+sent immediately. There is no deeper search behind the wait. A `stop` with no
+held response stays a no-op, because an unpaired `bestmove` would be a worse
+protocol violation than ignoring the command, and a held response is discarded
+by `ucinewgame`.
+
+A malformed move token in `position` rejects the whole command and preserves
+the previously synchronized position. Skipping the token would shift every
+later move one ply earlier and silently desynchronize the engine from the GUI.
 
 ## UCI Scope
 
@@ -163,7 +181,7 @@ Useful UCI options include:
 Examples:
 
 ```text
-option name UCI_LimitStrength type check default true
+option name UCI_LimitStrength type check default false
 option name UCI_Elo type spin default 1500 min 400 max 2500
 option name Anthro Temperature type spin default 100 min 0 max 300
 option name Anthro Seed type spin default -1 min -1 max 2147483647
