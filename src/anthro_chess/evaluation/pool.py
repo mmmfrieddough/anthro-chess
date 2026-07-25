@@ -10,40 +10,63 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ParamSpec, TypeVar
 
 from pydantic import Field
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import (
+from anthro_chess.data import encoding_identity
+from anthro_chess.data.artifacts import (
     DataLoadingError,
-    GameEncodingInput,
-    encode_game,
-    encoding_identity,
+    file_sha256,
+    normalized_shard_paths,
+    read_normalized_rows,
+    validate_manifest_compatibility,
+    write_normalized_rows,
 )
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
     NormalizedColumn,
     SplitName,
-    normalized_parquet_schema,
 )
-from anthro_chess.evaluation.slices import position_slices
+from anthro_chess.evaluation.coverage import pool_coverage
 
 BENCHMARK_VERSION = 1
 POOL_GAMES_FILE_NAME = "games.parquet"
 POOL_MANIFEST_FILE_NAME = "manifest.json"
 logger = logging.getLogger(__name__)
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
 
 class EvaluationPoolError(ValueError):
     """Raised when a pool cannot be built from or loaded for a selection."""
+
+
+def _as_pool_error(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Present shared normalized-artifact failures under this module's error.
+
+    The artifact helpers are shared with preparation and training, so they
+    raise the data package's error. Callers of a pool operation should only
+    have to handle one exception type.
+    """
+
+    @wraps(function)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        try:
+            return function(*args, **kwargs)
+        except DataLoadingError as error:
+            raise EvaluationPoolError(str(error)) from error
+
+    return wrapper
 
 
 def game_ids_sha256(game_ids: Sequence[int]) -> str:
@@ -105,6 +128,7 @@ class PoolResult:
     game_ids_sha256: str
 
 
+@_as_pool_error
 def freeze_pool(
     resolved_config: ResolvedConfig[PoolConfig],
     output_directory: str | Path,
@@ -113,7 +137,7 @@ def freeze_pool(
 
     config = resolved_config.value
     output_path = Path(output_directory)
-    source_paths = _normalized_paths(config.normalized)
+    source_paths = normalized_shard_paths(config.normalized)
     manifest_path = Path(config.manifest)
     if not manifest_path.is_file():
         raise EvaluationPoolError(f"source manifest does not exist: {manifest_path}")
@@ -121,7 +145,7 @@ def freeze_pool(
     source_manifest = json.loads(manifest_bytes)
     if not isinstance(source_manifest, dict):
         raise EvaluationPoolError("source manifest must contain a JSON object")
-    _validate_source_manifest(source_manifest, manifest_path)
+    validate_manifest_compatibility(source_manifest, manifest_path)
 
     logger.info(
         "Freezing the %s split of %s shard(s) into an evaluation pool",
@@ -131,7 +155,7 @@ def freeze_pool(
     selected: list[dict[str, Any]] = []
     train_game_ids: set[int] = set()
     for path in source_paths:
-        for row in _read_rows(path):
+        for row in read_normalized_rows(path):
             split = row[NormalizedColumn.SPLIT]
             if split == config.split:
                 selected.append(row)
@@ -165,9 +189,9 @@ def freeze_pool(
 
     output_path.mkdir(parents=True, exist_ok=True)
     games_path = output_path / POOL_GAMES_FILE_NAME
-    _write_parquet(selected, games_path)
+    write_normalized_rows(selected, games_path)
 
-    coverage = _coverage(selected)
+    coverage = pool_coverage(selected)
     pool_manifest = {
         "benchmark_version": BENCHMARK_VERSION,
         "pool": {
@@ -191,7 +215,7 @@ def freeze_pool(
             "format": "parquet",
             "compression": "zstd",
             "path": games_path.name,
-            "sha256": _file_sha256(games_path),
+            "sha256": file_sha256(games_path),
             "games": len(games),
         },
         "identity": {
@@ -232,6 +256,7 @@ def freeze_pool(
     )
 
 
+@_as_pool_error
 def load_pool(directory: str | Path) -> FrozenPool:
     """Load a frozen pool and verify it against its recorded identity."""
 
@@ -263,11 +288,11 @@ def load_pool(directory: str | Path) -> FrozenPool:
     output = manifest.get("output")
     if not isinstance(output, Mapping) or not isinstance(output.get("sha256"), str):
         raise EvaluationPoolError(f"{manifest_path} has no output checksum")
-    observed = _file_sha256(games_path)
+    observed = file_sha256(games_path)
     if observed != output["sha256"]:
         raise EvaluationPoolError(f"evaluation pool checksum mismatch: {games_path}")
 
-    games = tuple(_pool_game(row) for row in _read_rows(games_path))
+    games = tuple(_pool_game(row) for row in read_normalized_rows(games_path))
     recorded = manifest.get("identity")
     if not isinstance(recorded, Mapping):
         raise EvaluationPoolError(f"{manifest_path} has no identity record")
@@ -277,70 +302,6 @@ def load_pool(directory: str | Path) -> FrozenPool:
             f"evaluation pool contents do not match the recorded identity: {games_path}"
         )
     return FrozenPool(games_path=games_path, manifest=manifest, games=games)
-
-
-def _normalized_paths(path: Path) -> tuple[Path, ...]:
-    if path.is_file():
-        return (path,)
-    if path.is_dir():
-        paths = tuple(sorted(path.glob("games*.parquet")))
-        if paths:
-            return paths
-        raise EvaluationPoolError(
-            f"normalized data directory has no games*.parquet files: {path}"
-        )
-    raise EvaluationPoolError(f"normalized data path does not exist: {path}")
-
-
-def _validate_source_manifest(manifest: Mapping[str, Any], path: Path) -> None:
-    if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise EvaluationPoolError(
-            f"{path} uses normalized schema version "
-            f"{manifest.get('schema_version')}; expected {SCHEMA_VERSION}"
-        )
-    if manifest.get("preprocessing_version") != PREPROCESSING_VERSION:
-        raise EvaluationPoolError(
-            f"{path} uses preprocessing version "
-            f"{manifest.get('preprocessing_version')}; "
-            f"expected {PREPROCESSING_VERSION}"
-        )
-    if manifest.get("action_vocabulary") != action_vocabulary_identity():
-        raise EvaluationPoolError(f"{path} uses an incompatible action vocabulary")
-
-
-def _read_rows(path: Path) -> list[dict[str, Any]]:
-    try:
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise EvaluationPoolError(
-            "Parquet support is unavailable; install anthro-chess[data]"
-        ) from error
-    try:
-        table = pq.read_table(path)
-    except (OSError, ValueError) as error:
-        raise EvaluationPoolError(
-            f"cannot read normalized data {path}: {error}"
-        ) from error
-    return cast(list[dict[str, Any]], table.to_pylist())
-
-
-def _write_parquet(rows: list[dict[str, Any]], path: Path) -> None:
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise EvaluationPoolError(
-            "Parquet support is unavailable; install anthro-chess[data]"
-        ) from error
-
-    table = pa.Table.from_pylist(rows, schema=normalized_parquet_schema())
-    pq.write_table(
-        table,
-        path,
-        compression="zstd",
-        use_dictionary=True,
-        write_statistics=True,
-    )
 
 
 def _pool_game(row: Mapping[str, Any]) -> PoolGame:
@@ -356,83 +317,6 @@ def _pool_game(row: Mapping[str, Any]) -> PoolGame:
         ),
         content_sha256=_row_sha256(row),
     )
-
-
-def _coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Summarize the pool so thin slices are visible before a benchmark runs."""
-
-    phases: Counter[str] = Counter()
-    colors: Counter[str] = Counter()
-    legal_buckets: Counter[str] = Counter()
-    rating_bands: Counter[str] = Counter()
-    results: Counter[str] = Counter()
-    clock_presence: Counter[str] = Counter()
-    total_plies = 0
-    minimum_plies: int | None = None
-    maximum_plies: int | None = None
-    unrated_positions = 0
-
-    for row in rows:
-        results[str(row[NormalizedColumn.RESULT])] += 1
-        clock_statuses = row[NormalizedColumn.CLOCK_STATUS]
-        clock_presence[
-            "present"
-            if any(status == "present" for status in clock_statuses)
-            else "absent"
-        ] += 1
-        ply_count = int(row[NormalizedColumn.PLY_COUNT])
-        total_plies += ply_count
-        minimum_plies = (
-            ply_count if minimum_plies is None else min(minimum_plies, ply_count)
-        )
-        maximum_plies = (
-            ply_count if maximum_plies is None else max(maximum_plies, ply_count)
-        )
-
-        for ply in encode_game(_encoding_input(row)):
-            slices = position_slices(ply)
-            phases[str(slices.phase)] += 1
-            colors[str(slices.color)] += 1
-            legal_buckets[slices.legal_move_count_bucket] += 1
-            if slices.rating_band is None:
-                unrated_positions += 1
-            else:
-                rating_bands[slices.rating_band] += 1
-
-    return {
-        "games": len(rows),
-        "plies": {
-            "total": total_plies,
-            "minimum_per_game": minimum_plies,
-            "maximum_per_game": maximum_plies,
-        },
-        "results": dict(sorted(results.items())),
-        "clock_presence_games": dict(sorted(clock_presence.items())),
-        "phase_positions": dict(sorted(phases.items())),
-        "color_positions": dict(sorted(colors.items())),
-        "legal_move_count_positions": dict(sorted(legal_buckets.items())),
-        "rating_band_positions": dict(sorted(rating_bands.items())),
-        "positions_without_rating": unrated_positions,
-    }
-
-
-def _encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
-    try:
-        return GameEncodingInput(
-            game_id=int(row[NormalizedColumn.GAME_ID]),
-            ruleset=row[NormalizedColumn.RULESET],
-            initial_position=row[NormalizedColumn.INITIAL_POSITION],
-            action_ids=tuple(row[NormalizedColumn.ACTION_IDS]),
-            white_normalized_rating=row[NormalizedColumn.WHITE_NORMALIZED_RATING],
-            black_normalized_rating=row[NormalizedColumn.BLACK_NORMALIZED_RATING],
-            time_initial_ms=row[NormalizedColumn.TIME_INITIAL_MS],
-            time_increment_ms=row[NormalizedColumn.TIME_INCREMENT_MS],
-            clock_remaining_ms=tuple(row[NormalizedColumn.CLOCK_REMAINING_MS]),
-        )
-    except (DataLoadingError, KeyError, TypeError, ValueError) as error:
-        raise EvaluationPoolError(
-            f"invalid normalized game in pool: {error}"
-        ) from error
 
 
 def _row_sha256(row: Mapping[str, Any]) -> str:
@@ -452,11 +336,3 @@ def _row_sha256(row: Mapping[str, Any]) -> str:
     return sha256(
         json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-
-
-def _file_sha256(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as input_file:
-        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

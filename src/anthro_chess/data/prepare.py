@@ -22,6 +22,11 @@ import chess.pgn
 
 from anthro_chess.chess import action_vocabulary_identity, encode_move
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.data.artifacts import (
+    DataLoadingError,
+    file_sha256,
+    write_normalized_rows,
+)
 from anthro_chess.data.config import PrepareConfig, SplitConfig
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
@@ -30,7 +35,6 @@ from anthro_chess.data.schema import (
     FieldStatus,
     NormalizedColumn,
     SplitName,
-    normalized_parquet_schema,
 )
 
 _STATUS_PRESENT: FieldStatus = "present"
@@ -114,7 +118,7 @@ def acquire_archive(
     archive_path = raw_directory / archive.file_name
     logger.info("Acquiring configured archive %s", archive.file_name)
     if archive_path.is_file():
-        observed_sha256 = _file_sha256(archive_path)
+        observed_sha256 = file_sha256(archive_path)
         if observed_sha256 == archive.sha256:
             logger.info("Reusing verified archive %s", archive_path)
             return AcquisitionResult(
@@ -141,7 +145,7 @@ def acquire_archive(
             f"cannot acquire source archive {archive.url}: {error}"
         ) from error
 
-    observed_sha256 = _file_sha256(partial_path)
+    observed_sha256 = file_sha256(partial_path)
     if observed_sha256 != archive.sha256:
         partial_path.unlink(missing_ok=True)
         raise DataPreparationError(
@@ -174,7 +178,7 @@ def prepare_pgn(
     if not source_path.is_file():
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
-    input_sha256 = _file_sha256(source_path)
+    input_sha256 = file_sha256(source_path)
     configured_archive = resolved_config.value.archive
     if configured_archive is not None and input_sha256 != configured_archive.sha256:
         raise DataPreparationError(
@@ -716,22 +720,9 @@ def _split_name(
 
 def _write_parquet(records: list[dict[str, object]], path: Path) -> None:
     try:
-        import pyarrow as pa  # type: ignore[import-untyped]
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise DataPreparationError(
-            "Parquet support is unavailable; install anthro-chess[data]"
-        ) from error
-
-    schema = normalized_parquet_schema()
-    table = pa.Table.from_pylist(records, schema=schema)
-    pq.write_table(
-        table,
-        path,
-        compression="zstd",
-        use_dictionary=True,
-        write_statistics=True,
-    )
+        write_normalized_rows(records, path)
+    except DataLoadingError as error:
+        raise DataPreparationError(str(error)) from error
 
 
 def _flush_records(
@@ -757,7 +748,7 @@ def _flush_records(
     output_shards.append(
         {
             "path": normalized_path.relative_to(output_path).as_posix(),
-            "sha256": _file_sha256(normalized_path),
+            "sha256": file_sha256(normalized_path),
             "games": len(records),
             "split_counts": {
                 split_name: split_counts[split_name] for split_name in SPLIT_NAMES
@@ -783,11 +774,3 @@ def _integer_coverage(
         "minimum": min(values) if values else None,
         "maximum": max(values) if values else None,
     }
-
-
-def _file_sha256(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as input_file:
-        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
