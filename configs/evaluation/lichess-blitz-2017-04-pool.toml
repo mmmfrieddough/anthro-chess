@@ -5,8 +5,7 @@ manifest = "artifacts/lichess-blitz-2017-04/manifests/manifest.json"
 # Never consumed by training. See the split section of the source data config.
 split = "test"
 
-# Record the identity printed by the first successful build so a rebuild on
-# another machine is verified rather than merely plausible. Leave it unset
-# until that pool exists; a mismatch afterwards means the corpus, filters, or
-# split seed moved and the benchmark needs a new pool version.
-# expected_game_ids_sha256 = ""
+# Recorded from the first successful build so a rebuild on another machine is
+# verified rather than merely plausible. A mismatch means the corpus, filters,
+# or split seed moved and the benchmark needs a new pool version.
+expected_game_ids_sha256 = "b0a26d0e56609a4f971651f18f5804f1ee414e38bf01644d2d80db46eff18f50"
