@@ -64,13 +64,18 @@ the remaining command can be parsed safely.
 
 UCI has no engine-side color. Every `go` asks for a move by whichever player
 is to move in the synchronized position, so one process serves both sides and
-can change sides between or within games. The protocol-independent runtime
-still owns a single controlled player, because rating conditioning is defined
-only for the player Anthro decides for; the UCI adapter points that controlled
-player at the current side to move for each decision. Doing so is pure
-bookkeeping: exact board state, observed history, the reusable encoded prefix,
-and the active random stream are all color-independent, so changing sides never
-reloads the model, restarts a game, or draws a new sampling stream.
+can change sides between or within games.
+
+The protocol-independent runtime has no controlled color either. A session owns
+exact game state and decides for the player to move, because exact board state
+already identifies that player and the target rating conditions the decision
+rather than a player, as recorded in
+[`0009-decision-only-rating-conditioning.md`](decisions/0009-decision-only-rating-conditioning.md).
+A caller that assigns colors, such as a game loop alternating with a human,
+owns that mapping and decides when to ask for a move; the runtime does not
+duplicate it. Board state, observed history, the reusable encoded prefix, and
+the active random stream are all color-independent, so serving the other side
+never reloads the model, restarts a game, or draws a new sampling stream.
 
 Terminal positions return `bestmove 0000`, the UCI null-move representation.
 An internal model or inference failure does not masquerade as a terminal

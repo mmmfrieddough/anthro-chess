@@ -87,21 +87,24 @@ class PositionSync:
 
 
 class GameSession:
-    """Own exact game state and choose actions for one controlled color."""
+    """Own exact game state and choose an action for the player to move.
+
+    A session has no controlled color. Exact board state already identifies the
+    side to move, and the target rating conditions that decision rather than a
+    player, so one session serves either side of a game. Callers that assign
+    colors, such as a game loop that alternates with a human, own that mapping
+    and decide when to ask for a move.
+    """
 
     def __init__(
         self,
         runner: ActionModelRunner,
         *,
-        controlled_color: chess.Color,
         config: RuntimeConfig | None = None,
         initial_fen: str = chess.STARTING_FEN,
         moves: Sequence[chess.Move] = (),
     ) -> None:
-        if type(controlled_color) is not bool:
-            raise TypeError("controlled_color must be chess.WHITE or chess.BLACK")
         self._runner = runner
-        self.controlled_color = controlled_color
         self.config = config or RuntimeConfig()
         self._generator = torch.Generator(device="cpu")
         self._board = chess.Board()
@@ -168,8 +171,7 @@ class GameSession:
         self._reusable_prefix_plies = 0
         self._begin_random_stream()
         logger.debug(
-            "Reset game session for controlled color %s with %s observed plies",
-            "white" if self.controlled_color == chess.WHITE else "black",
+            "Reset game session with %s observed plies",
             len(board.move_stack),
         )
 
@@ -221,27 +223,6 @@ class GameSession:
         """Establish the next random stream from the current seed policy."""
 
         self._begin_random_stream()
-
-    def set_controlled_color(self, color: chess.Color) -> None:
-        """Point the session at a different controlled player.
-
-        Exact board state, observed history, the reusable encoded prefix, and
-        the active random stream are all independent of which player Anthro is
-        deciding for, so this only moves the guard used by
-        :meth:`choose_action`. Protocols such as UCI, which ask the engine to
-        move for whichever side is to move, use this instead of rebuilding a
-        session per color.
-        """
-
-        if type(color) is not bool:
-            raise TypeError("color must be chess.WHITE or chess.BLACK")
-        if color == self.controlled_color:
-            return
-        self.controlled_color = color
-        logger.debug(
-            "Controlled color is now %s",
-            "white" if color == chess.WHITE else "black",
-        )
 
     def _reconstruct_and_validate(
         self,
@@ -297,15 +278,10 @@ class GameSession:
         self._board.push(move)
 
     def choose_action(self) -> GameAction:
-        """Select, apply, and return one valid action for the controlled color."""
+        """Select, apply, and return one valid action for the player to move."""
 
         if self.is_terminal:
             raise SessionStateError("cannot choose an action in a terminal game")
-        if self._board.turn != self.controlled_color:
-            color = "white" if self.controlled_color == chess.WHITE else "black"
-            raise SessionStateError(
-                f"cannot choose an action when it is not {color}'s turn"
-            )
 
         try:
             context = build_decision_context(
@@ -325,7 +301,7 @@ class GameSession:
         action_id = self._sample_action(logits, enabled_ids)
 
         if action_id == RESIGNATION_ACTION_ID:
-            self._resigned_by = self.controlled_color
+            self._resigned_by = self._board.turn
             logger.debug("Selected resignation action")
             return ResignationAction()
 

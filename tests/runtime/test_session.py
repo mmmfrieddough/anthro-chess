@@ -40,7 +40,6 @@ def test_white_session_builds_full_context_and_applies_only_a_legal_move() -> No
     runner = StubRunner(_ranked_logits("e2e4", illegal="e2e5"))
     session = GameSession(
         runner,
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(target_rating=1725, temperature=0.0),
     )
 
@@ -59,7 +58,6 @@ def test_black_session_observes_both_players_without_an_opponent_rating() -> Non
     runner = StubRunner(_ranked_logits("c7c5"))
     session = GameSession(
         runner,
-        controlled_color=chess.BLACK,
         config=RuntimeConfig(target_rating=1400, temperature=0.0),
     )
     white_move = chess.Move.from_uci("e2e4")
@@ -83,7 +81,6 @@ def test_greedy_mask_excludes_illegal_moves_and_disabled_resignation() -> None:
     logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
     session = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=0.0),
     )
 
@@ -99,7 +96,6 @@ def test_enabled_resignation_is_preserved_and_ends_the_session() -> None:
     logits[RESIGNATION_ACTION_ID] = 10.0
     session = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=0.0, resignation_enabled=True),
     )
 
@@ -117,12 +113,10 @@ def test_seeded_sampling_is_repeatable_and_reset_restarts_the_stream() -> None:
     logits = torch.zeros(ACTION_VOCABULARY_SIZE)
     first = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=91),
     )
     second = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=91),
     )
 
@@ -138,12 +132,10 @@ def test_position_sync_preserves_the_active_random_stream() -> None:
     logits = torch.zeros(ACTION_VOCABULARY_SIZE)
     baseline = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=31),
     )
     synced = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=31),
     )
 
@@ -169,7 +161,6 @@ def test_temperature_zero_is_greedy_for_every_seed_mode() -> None:
     for seed in (None, 0, 4242):
         session = GameSession(
             StubRunner(logits),
-            controlled_color=chess.WHITE,
             config=RuntimeConfig(temperature=0.0, seed=seed),
         )
         assert _chosen_move(session) == chess.Move.from_uci("g1f3")
@@ -182,7 +173,6 @@ def test_fixed_seed_reproduces_while_distinct_seeds_diverge() -> None:
     def first_move(seed: int) -> chess.Move:
         session = GameSession(
             StubRunner(logits),
-            controlled_color=chess.WHITE,
             config=RuntimeConfig(temperature=1.0, seed=seed),
         )
         return _chosen_move(session)
@@ -198,7 +188,6 @@ def test_fresh_default_draws_a_new_stream_each_new_game(
     monkeypatch.setattr(session_module, "_draw_fresh_seed", lambda: next(drawn))
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=None),
     )
 
@@ -218,7 +207,6 @@ def test_explicit_seed_never_consumes_fresh_entropy(
     monkeypatch.setattr(session_module, "_draw_fresh_seed", unexpected)
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=77),
     )
 
@@ -230,7 +218,6 @@ def test_explicit_seed_never_consumes_fresh_entropy(
 def test_sync_position_appends_reuses_prefix_and_replaces_on_divergence() -> None:
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=0.0, seed=5),
     )
     e2e4 = chess.Move.from_uci("e2e4")
@@ -270,7 +257,6 @@ def test_sync_position_appends_reuses_prefix_and_replaces_on_divergence() -> Non
 def test_sync_position_rejects_illegal_history_without_mutation() -> None:
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=1.0, seed=8),
     )
     session.sync_position(moves=(chess.Move.from_uci("e2e4"),))
@@ -283,28 +269,22 @@ def test_sync_position_rejects_illegal_history_without_mutation() -> None:
     assert session.resolved_seed == stream
 
 
-def test_set_controlled_color_switches_sides_without_disturbing_state() -> None:
+def test_one_session_decides_for_whichever_side_is_to_move() -> None:
     session = GameSession(
         StubRunner(_ranked_logits("e7e5")),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=0.0, seed=11),
     )
     e2e4 = chess.Move.from_uci("e2e4")
     session.sync_position(moves=(e2e4,))
     stream = session.resolved_seed
 
-    session.set_controlled_color(chess.BLACK)
-
-    assert session.controlled_color == chess.BLACK
-    # Board, history, prefix accounting, and the random stream are all
-    # independent of which player the session decides for.
-    assert session.move_history == (e2e4,)
-    assert session.reusable_prefix_plies == 0
-    assert session.resolved_seed == stream
-
+    # The same session that owns White's history decides for Black.
     action = session.choose_action()
+
     assert isinstance(action, MoveAction)
     assert action.move == chess.Move.from_uci("e7e5")
+    assert session.move_history == (e2e4, action.move)
+    assert session.resolved_seed == stream
 
     append = session.sync_position(moves=(e2e4, action.move))
     assert append.replaced is False
@@ -312,25 +292,9 @@ def test_set_controlled_color_switches_sides_without_disturbing_state() -> None:
     assert session.resolved_seed == stream
 
 
-def test_set_controlled_color_is_idempotent_and_rejects_invalid_colors() -> None:
-    session = GameSession(
-        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
-        controlled_color=chess.WHITE,
-        config=RuntimeConfig(temperature=0.0, seed=3),
-    )
-
-    session.set_controlled_color(chess.WHITE)
-    assert session.controlled_color == chess.WHITE
-
-    with pytest.raises(TypeError, match="chess.WHITE or chess.BLACK"):
-        session.set_controlled_color(1)  # type: ignore[arg-type]
-    assert session.controlled_color == chess.WHITE
-
-
 def test_reset_validates_history_and_defensively_owns_board_state() -> None:
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
-        controlled_color=chess.BLACK,
     )
     move = chess.Move.from_uci("d2d4")
     session.reset(moves=(move,))
@@ -342,15 +306,13 @@ def test_reset_validates_history_and_defensively_owns_board_state() -> None:
         session.reset(moves=(chess.Move.from_uci("e2e5"),))
 
 
-def test_turn_terminal_and_observed_move_failures_are_deliberate() -> None:
+def test_terminal_and_observed_move_failures_are_deliberate() -> None:
     runner = StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE))
-    black = GameSession(runner, controlled_color=chess.BLACK)
-    with pytest.raises(SessionStateError, match="not black's turn"):
-        black.choose_action()
+    session = GameSession(runner)
     with pytest.raises(SessionStateError, match="illegal move"):
-        black.apply_move(chess.Move.from_uci("e2e5"))
+        session.apply_move(chess.Move.from_uci("e2e5"))
 
-    terminal = GameSession(runner, controlled_color=chess.BLACK)
+    terminal = GameSession(runner)
     terminal.reset(
         moves=tuple(
             chess.Move.from_uci(move) for move in ("f2f3", "e7e5", "g2g4", "d8h4")
@@ -376,7 +338,6 @@ def test_turn_terminal_and_observed_move_failures_are_deliberate() -> None:
 def test_malformed_model_outputs_fail(logits: torch.Tensor, message: str) -> None:
     session = GameSession(
         StubRunner(logits),
-        controlled_color=chess.WHITE,
         config=RuntimeConfig(temperature=0.0),
     )
 
