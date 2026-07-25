@@ -46,6 +46,12 @@ resignation_enabled = false
 Omitting `seed` uses fresh per-game randomness; set an explicit non-negative
 `seed` only to reproduce a game.
 
+`runtime.target_rating` seeds the advertised `UCI_Elo` default rather than the
+rating the engine starts out conditioned on. Following UCI convention, strength
+limiting is off until the GUI enables `UCI_LimitStrength`, and until then the
+engine conditions on the code-owned maximum rating. A configured
+`target_rating` therefore has no effect on play until that option is turned on.
+
 An absolute `model.checkpoint_path` makes GUI startup independent of inherited
 environment variables while still requiring the complete retained run around
 the checkpoint. Relative `model.run_path` selections are also supported and
