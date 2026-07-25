@@ -9,9 +9,16 @@ if TYPE_CHECKING:
     from pyarrow import Schema  # type: ignore[import-untyped]
 
 SCHEMA_VERSION = 1
-PREPROCESSING_VERSION = 2
+PREPROCESSING_VERSION = 3
 
 FieldStatus = Literal["present", "unavailable", "rejected"]
+
+SplitName = Literal["train", "validation", "test"]
+
+#: Canonical split order. ``test`` is held back from training entirely so
+#: benchmark comparisons are not reported on data the training loop selects
+#: against; ``validation`` remains the in-training split.
+SPLIT_NAMES: tuple[SplitName, ...] = ("train", "validation", "test")
 
 
 class NormalizedColumn(StrEnum):

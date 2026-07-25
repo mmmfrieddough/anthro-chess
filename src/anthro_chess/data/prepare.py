@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import TextIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -22,13 +22,19 @@ import chess.pgn
 
 from anthro_chess.chess import action_vocabulary_identity, encode_move
 from anthro_chess.config import ResolvedConfig
-from anthro_chess.data.config import PrepareConfig
+from anthro_chess.data.artifacts import (
+    DataLoadingError,
+    file_sha256,
+    write_normalized_rows,
+)
+from anthro_chess.data.config import PrepareConfig, SplitConfig
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    SPLIT_NAMES,
     FieldStatus,
     NormalizedColumn,
-    normalized_parquet_schema,
+    SplitName,
 )
 
 _STATUS_PRESENT: FieldStatus = "present"
@@ -112,7 +118,7 @@ def acquire_archive(
     archive_path = raw_directory / archive.file_name
     logger.info("Acquiring configured archive %s", archive.file_name)
     if archive_path.is_file():
-        observed_sha256 = _file_sha256(archive_path)
+        observed_sha256 = file_sha256(archive_path)
         if observed_sha256 == archive.sha256:
             logger.info("Reusing verified archive %s", archive_path)
             return AcquisitionResult(
@@ -139,7 +145,7 @@ def acquire_archive(
             f"cannot acquire source archive {archive.url}: {error}"
         ) from error
 
-    observed_sha256 = _file_sha256(partial_path)
+    observed_sha256 = file_sha256(partial_path)
     if observed_sha256 != archive.sha256:
         partial_path.unlink(missing_ok=True)
         raise DataPreparationError(
@@ -172,7 +178,7 @@ def prepare_pgn(
     if not source_path.is_file():
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
-    input_sha256 = _file_sha256(source_path)
+    input_sha256 = file_sha256(source_path)
     configured_archive = resolved_config.value.archive
     if configured_archive is not None and input_sha256 != configured_archive.sha256:
         raise DataPreparationError(
@@ -305,15 +311,20 @@ def prepare_pgn(
     manifest_directory.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_directory / "manifest.json"
 
-    observed_split_counts = {
-        split_name: split_counts[split_name] for split_name in ("train", "validation")
+    observed_split_counts: dict[str, int] = {
+        split_name: split_counts[split_name] for split_name in SPLIT_NAMES
     }
-    if resolved_config.value.split.require_nonempty and any(
-        count == 0 for count in observed_split_counts.values()
-    ):
-        raise DataPreparationError(
-            "prepared corpus did not produce nonempty train and validation splits"
+    if resolved_config.value.split.require_nonempty:
+        empty_splits = tuple(
+            split_name
+            for split_name in _requested_splits(resolved_config.value.split)
+            if observed_split_counts[split_name] == 0
         )
+        if empty_splits:
+            raise DataPreparationError(
+                "prepared corpus did not produce nonempty "
+                f"{', '.join(empty_splits)} split(s)"
+            )
 
     selected_paths = set(normalized_paths)
     for stale_path in normalized_directory.glob("games*.parquet"):
@@ -345,9 +356,10 @@ def prepare_pgn(
             "limit_reached": stopped_at_limit,
         },
         "split": {
-            "algorithm": "sha256-threshold-v1",
+            "algorithm": "sha256-threshold-v2",
             "seed": resolved_config.value.split.seed,
             "validation_fraction": resolved_config.value.split.validation_fraction,
+            "test_fraction": resolved_config.value.split.test_fraction,
             "counts": observed_split_counts,
         },
         "games": {
@@ -501,6 +513,7 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
         game_id,
         seed=config.split.seed,
         validation_fraction=config.split.validation_fraction,
+        test_fraction=config.split.test_fraction,
     )
     normalized_white = (
         white_rating.value if config.source.ratings_are_normalized else None
@@ -666,32 +679,50 @@ def _game_id(source_id: str, source_game_key: str) -> int:
     return int.from_bytes(digest[:8], "big", signed=False)
 
 
+def _requested_splits(split: SplitConfig) -> tuple[SplitName, ...]:
+    """Return the splits a selection actually asked for, ignoring zero shares."""
+
+    fractions: dict[SplitName, float] = {
+        "train": 1.0 - split.validation_fraction - split.test_fraction,
+        "validation": split.validation_fraction,
+        "test": split.test_fraction,
+    }
+    return tuple(name for name in SPLIT_NAMES if fractions[name] > 0.0)
+
+
 def _split_name(
-    game_id: int, *, seed: str, validation_fraction: float
-) -> Literal["train", "validation"]:
+    game_id: int,
+    *,
+    seed: str,
+    validation_fraction: float,
+    test_fraction: float,
+) -> SplitName:
+    """Assign one game to a split as a pure function of the seed and game id.
+
+    Holding the seed fixed keeps every game's assignment stable as a corpus
+    grows or its filters change, so a frozen test pool can never leak into a
+    later training selection.
+
+    ``test`` claims the lowest hash range so its membership also survives a
+    later change to ``validation_fraction``. That ordering costs a one-time
+    reassignment of games relative to the previous two-way split, which the
+    preprocessing version bump already forces.
+    """
+
     digest = sha256(f"{seed}\0{game_id}".encode()).digest()
     fraction = int.from_bytes(digest[:8], "big") / 2**64
-    return "validation" if fraction < validation_fraction else "train"
+    if fraction < test_fraction:
+        return "test"
+    if fraction < test_fraction + validation_fraction:
+        return "validation"
+    return "train"
 
 
 def _write_parquet(records: list[dict[str, object]], path: Path) -> None:
     try:
-        import pyarrow as pa  # type: ignore[import-untyped]
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise DataPreparationError(
-            "Parquet support is unavailable; install anthro-chess[data]"
-        ) from error
-
-    schema = normalized_parquet_schema()
-    table = pa.Table.from_pylist(records, schema=schema)
-    pq.write_table(
-        table,
-        path,
-        compression="zstd",
-        use_dictionary=True,
-        write_statistics=True,
-    )
+        write_normalized_rows(records, path)
+    except DataLoadingError as error:
+        raise DataPreparationError(str(error)) from error
 
 
 def _flush_records(
@@ -717,11 +748,10 @@ def _flush_records(
     output_shards.append(
         {
             "path": normalized_path.relative_to(output_path).as_posix(),
-            "sha256": _file_sha256(normalized_path),
+            "sha256": file_sha256(normalized_path),
             "games": len(records),
             "split_counts": {
-                split_name: split_counts[split_name]
-                for split_name in ("train", "validation")
+                split_name: split_counts[split_name] for split_name in SPLIT_NAMES
             },
         }
     )
@@ -744,11 +774,3 @@ def _integer_coverage(
         "minimum": min(values) if values else None,
         "maximum": max(values) if values else None,
     }
-
-
-def _file_sha256(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as input_file:
-        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

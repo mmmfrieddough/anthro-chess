@@ -60,6 +60,13 @@ capability declaration supplied by the dispatcher or environment as
 authoritative instead of guessing from the operating system or available
 commands.
 
+When a change alters what a chess GUI observes, offer a real GUI check without
+being asked: point the maintainer's GUI at the issue worktree with
+`scripts/anthro-gui-target .` and say the engine is ready to test, what to look
+at, and what a good result looks like. The GUI itself is configured once and is
+never reconfigured per issue. See `docs/issue-workflow.md` for when this applies
+and `docs/playable-uci.md` for the mechanism.
+
 Before implementation, ensure required machine-level bootstrap tools are
 available; install a missing tool or report a genuine installation blocker.
 Initialize and use the project environment in the current issue worktree. Do

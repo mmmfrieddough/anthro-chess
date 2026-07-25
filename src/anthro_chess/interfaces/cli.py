@@ -20,6 +20,7 @@ from anthro_chess.config import ResolvedConfig
 
 if TYPE_CHECKING:
     from anthro_chess.data import SequenceDataConfig
+    from anthro_chess.evaluation import PoolConfig
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -118,6 +119,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Strict dotted TOML override; may be repeated.",
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
+
+    eval_parser = subcommands.add_parser(
+        "eval",
+        help="Build and inspect frozen evaluation inputs.",
+    )
+    eval_commands = eval_parser.add_subparsers(dest="eval_command", required=True)
+    freeze_parser = eval_commands.add_parser(
+        "freeze",
+        help="Freeze the held-out test split into a checksummed evaluation pool.",
+    )
+    freeze_parser.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help=(
+            "Directory for the pool artifact. Defaults beneath ANTHRO_CHESS_DATA_ROOT."
+        ),
+    )
+    freeze_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML evaluation-pool selection.",
+    )
+    freeze_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    freeze_parser.set_defaults(handler=_run_eval_freeze)
 
     train_parser = subcommands.add_parser(
         "train",
@@ -230,6 +263,30 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_freeze(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import EvaluationPoolError, PoolConfig, freeze_pool
+
+    try:
+        resolved = load_config(
+            PoolConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        resolved = _resolve_pool_roots(resolved, arguments.set)
+        output = _data_output_path(arguments.output, resolved.value.pool_id)
+        result = freeze_pool(resolved, output)
+    except (ConfigError, EvaluationPoolError) as error:
+        print(f"anthro eval freeze: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Froze {result.games} game(s) and {result.plies} ply/plies.")
+    print(f"Pool: {result.games_path}")
+    print(f"Manifest: {result.manifest_path}")
+    print(f"Identity: {result.game_ids_sha256}")
+    return 0
+
+
 def _run_train(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.training import TrainingConfig, TrainingError, run_training
@@ -259,6 +316,32 @@ def _run_train(arguments: argparse.Namespace) -> int:
             f"{result.validation.uniform_over_legal_move_loss:.6f}"
         )
     return 0
+
+
+def _resolve_pool_roots(
+    resolved: ResolvedConfig[PoolConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[PoolConfig]:
+    """Resolve checked-in relative source paths beneath the shared data root."""
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+
+    config = resolved.value
+    override_keys = {item.partition("=")[0] for item in overrides}
+    update: dict[str, object] = {}
+    for field_name in ("normalized", "manifest"):
+        path = getattr(config, field_name)
+        if not path.is_absolute() and field_name not in override_keys:
+            update[field_name] = _rooted_artifact_path(
+                _environment_root("ANTHRO_CHESS_DATA_ROOT"),
+                path,
+            )
+    if not update:
+        return resolved
+    return ResolvedConfig(
+        value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
 
 
 def _data_output_path(output: Path | None, artifact_name: str) -> Path:

@@ -1,0 +1,12 @@
+pool_id = "lichess-blitz-2017-04-test"
+pool_version = 1
+normalized = "artifacts/lichess-blitz-2017-04/normalized"
+manifest = "artifacts/lichess-blitz-2017-04/manifests/manifest.json"
+# Never consumed by training. See the split section of the source data config.
+split = "test"
+
+# Record the identity printed by the first successful build so a rebuild on
+# another machine is verified rather than merely plausible. Leave it unset
+# until that pool exists; a mismatch afterwards means the corpus, filters, or
+# split seed moved and the benchmark needs a new pool version.
+# expected_game_ids_sha256 = ""
