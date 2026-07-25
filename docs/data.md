@@ -94,8 +94,8 @@ second uncompressed copy. The baseline selection accepts one explicit Lichess
 speed and rating namespace, rejects missing or invalid source ratings and bot
 games, stops at a deterministic accepted-game bound, and writes bounded
 Parquet shards through the existing shared PGN parser and action codec.
-Game-id hashing keeps train and validation assignments stable and ensures a
-duplicate source game cannot cross the split boundary.
+Game-id hashing keeps split assignments stable and ensures a duplicate source
+game cannot cross the split boundary.
 
 The initial recipe takes accepted games in source order until that bound. The
 source is already limited to one month, so this trades some within-month
@@ -110,6 +110,28 @@ counts, ply ranges, and rating, time-control, and clock coverage. Exact release,
 digest, selection size, filters, split recipe, and shard sizing remain owned by
 the checked-in configuration. Raw archives and generated outputs remain
 outside Git, and ordinary tests continue to use local fixtures.
+
+## Splits
+
+Normalized games are partitioned three ways. `train` and `validation` behave as
+usual: validation is consumed during training for validation loss and
+checkpoint selection. `test` is held back from training entirely and is the
+source of the frozen evaluation pool, so benchmark comparisons are not reported
+on data the training loop has been selecting against. The training
+configuration rejects a `test` selection outright.
+
+Assignment is a pure function of the split seed and the internal game id.
+Growing a corpus, changing its filters, or raising its game bound therefore
+never moves an existing game between splits, which is what lets a frozen
+benchmark stay safe as the corpus widens.
+
+That guarantee depends entirely on the split seed. Changing it reassigns every
+game and can move a previously held-out test game into training. Treat the seed
+as frozen once a benchmark pool has been built from a selection, and prefer a
+new pool version over a new seed. Exact fractions, seeds, and the assignment
+algorithm live in the data configuration and `anthro_chess.data`.
+
+See `docs/decisions/0011-held-out-test-partition.md`.
 
 ## Primary Source
 

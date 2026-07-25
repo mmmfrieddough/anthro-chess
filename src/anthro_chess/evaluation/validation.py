@@ -11,37 +11,15 @@ from torch import Tensor, nn
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import SequenceBatch
+from anthro_chess.evaluation.slices import (
+    DEFAULT_RATING_BANDS,
+    RatingBand,
+    _rating_band_index,
+    _validate_rating_bands,
+)
 from anthro_chess.models import MoveModelBatch
 
 VALIDATION_METRICS_VERSION = 2
-
-
-@dataclass(frozen=True)
-class RatingBand:
-    """One half-open normalized-rating interval used for validation slices."""
-
-    name: str
-    minimum_rating: int
-    maximum_rating: int | None
-
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("rating band name must not be empty")
-        if type(self.minimum_rating) is not int or self.minimum_rating < 0:
-            raise ValueError("rating band minimum must be a nonnegative integer")
-        if self.maximum_rating is not None and (
-            type(self.maximum_rating) is not int
-            or self.maximum_rating <= self.minimum_rating
-        ):
-            raise ValueError("rating band maximum must be greater than its minimum")
-
-
-DEFAULT_RATING_BANDS = (
-    RatingBand("under_1200", 0, 1200),
-    RatingBand("1200_to_1599", 1200, 1600),
-    RatingBand("1600_to_1999", 1600, 2000),
-    RatingBand("2000_plus", 2000, None),
-)
 
 
 @dataclass(frozen=True)
@@ -291,24 +269,6 @@ def evaluate_move_model(
     return accumulator.compute()
 
 
-def _validate_rating_bands(
-    rating_bands: Sequence[RatingBand],
-) -> tuple[RatingBand, ...]:
-    bands = tuple(rating_bands)
-    if not bands:
-        raise ValueError("validation requires at least one rating band")
-    if len({band.name for band in bands}) != len(bands):
-        raise ValueError("rating band names must be unique")
-    if bands[0].minimum_rating != 0:
-        raise ValueError("rating bands must start at zero")
-    for previous, current in zip(bands, bands[1:], strict=False):
-        if previous.maximum_rating != current.minimum_rating:
-            raise ValueError("rating bands must be contiguous and non-overlapping")
-    if bands[-1].maximum_rating is not None:
-        raise ValueError("the final rating band must have no upper bound")
-    return bands
-
-
 def _validate_logits(logits: Tensor, batch: MoveModelBatch) -> None:
     expected_shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
     if logits.shape != expected_shape:
@@ -338,15 +298,3 @@ def _validate_legal_actions(
 def _validate_ratings(ratings: Tensor, present: Tensor) -> None:
     if torch.any(ratings[present] < 0):
         raise ValueError("present player ratings must be nonnegative")
-
-
-def _rating_band_index(
-    rating: int,
-    rating_bands: tuple[RatingBand, ...],
-) -> int:
-    for index, band in enumerate(rating_bands):
-        if rating >= band.minimum_rating and (
-            band.maximum_rating is None or rating < band.maximum_rating
-        ):
-            return index
-    raise ValueError(f"player rating is outside configured bands: {rating}")

@@ -46,6 +46,50 @@ The values and scales are examples. The important idea is that model comparison
 should stay compact by default while preserving enough detail to explain why a
 model changed.
 
+## Benchmark Data Layers
+
+Benchmark inputs are layered as partition, pool, and views. Keeping them
+separate is what lets many benchmarks with different needs share one set of
+evaluation inputs instead of accumulating a tailored dataset each.
+
+The **partition** decides what a game may be used for. `test` is held back from
+training entirely; `docs/data.md` owns the split contract.
+
+The **pool** is the `test` partition materialized as one versioned, checksummed
+artifact with its own manifest and coverage statistics. It carries no
+per-benchmark tailoring, and it is a regenerable pipeline output rather than
+committed data. Its manifest records source, split recipe, schema,
+preprocessing, action, encoding, and benchmark versions, the selected game ids
+and their content hashes, and a build-time overlap check against the train
+split. Coverage statistics report ply counts, results, clock presence, and
+position counts by phase, color, legal-move-count bucket, and rating band, so a
+thin slice is visible before a benchmark reports a number computed from it.
+
+**Views** are per-benchmark deterministic selections over the pool: filtering by
+ply count, clock presence, or rating presence; projecting to prefixes;
+subsampling by hash rank. Each benchmark records its resolved view spec,
+including the digest of the selected game ids, in its own artifact. Views are
+derivations, never new stored data. A benchmark needing something the view layer
+cannot derive is a signal that the field belongs in the normalized schema.
+
+Benchmarks that must run quickly subsample in their own view rather than forcing
+a smaller pool, so evaluation cost does not grow as the corpus does.
+
+Representativeness and frozenness belong to different things. The pool recipe is
+uniform and unstratified, so its composition tracks corpus composition
+automatically. Frozenness is a property of a benchmark version: when corpus
+composition changes materially, regenerate, cut a new pool version, and
+re-baseline. Comparisons are valid within a version, and a report should refuse
+to compare across versions rather than present the difference as a checkpoint
+regression.
+
+Comparing checkpoints on the pool applies mild selection pressure to it over
+time. That is accepted rather than designed away, and is why the pool is drawn
+from a partition the training loop never consumes.
+
+See `docs/decisions/0011-held-out-test-partition.md` and
+`docs/decisions/0012-derived-evaluation-views.md`.
+
 ## Evaluation Layers
 
 Different checks belong at different points in development and training.
@@ -105,8 +149,7 @@ Useful periodic benchmarks include:
 - held-out move distribution checks;
 - timing distribution checks;
 - move-time coherence checks;
-- legality diagnostics on tricky rule positions;
-- fixed position suites;
+- legality diagnostics on rule-sensitive position slices;
 - early rating-calibration checks;
 - preference-control checks when preference controls exist.
 
@@ -229,10 +272,27 @@ uniform_legal_mass = num_legal_moves / move_vocab_size
 legality_lift = logit(legal_mass) - logit(uniform_legal_mass)
 ```
 
-Normal validation should use held-out human positions. A separate tricky-rule
-suite should stress positions involving check, pins, castling rights, en
-passant, promotions, stalemate-adjacent states, only-move situations, crowded
-tactical positions, and positions with very few legal moves.
+Validation should use held-out human positions throughout, including for
+rule-sensitive cases. Averaging legality over a whole pool hides them: a model
+systematically confused about en passant would barely move an aggregate mask
+penalty, because so few positions offer the capture.
+
+The fix is to slice rather than to hand-author. The slice layer derives
+rule-sensitive characteristics from exact chess logic, covering check, pins,
+castling rights and castling availability, en passant, promotions, only-move
+situations, and terminal states, so legality metrics can be reported per case
+against real games at their true distribution.
+
+A hand-authored fixed suite was considered and rejected. It would supply one
+picked example per rule where a slice supplies thousands of real ones, it adds a
+labeling contract that can itself be wrong, and the correctness question it
+appeared to answer, whether legal move generation handles these rules, is
+already covered by the chess-logic tests. Rule-case slices carry no such
+duplication.
+
+Deriving these characteristics is more expensive than phase or color, so it
+belongs to the positions a benchmark actually scores rather than to pool-wide
+coverage statistics.
 
 Legal-move lists or masks may be computed during evaluation. If that becomes
 too slow, preprocessing can store them for validation examples.
@@ -497,6 +557,15 @@ Two useful rollout forms:
 Generated games should be classified afterward for distribution features,
 timing behavior when timing is enabled, game length, result patterns, repeated
 lines, and drift away from human-like play.
+
+Opening distributions should group games by a classified family computed from
+our own versioned book rather than by literal move prefix. Prefix grouping
+fragments broad openings across many buckets while narrow ones keep their mass
+in one, and it splits transpositions that reach the same position by different
+move orders, so it cannot support a statement like "this checkpoint plays too
+few Sicilians." Source ECO and opening headers are deliberately not used: their
+granularity is fixed, their assignment is not standardized across databases, and
+their name strings differ per source.
 
 Human prefixes are especially useful early, when the model may not yet be good
 at creating coherent full games from the start position.
