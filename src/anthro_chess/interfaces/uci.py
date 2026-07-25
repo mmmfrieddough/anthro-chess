@@ -241,6 +241,10 @@ class UciEngine:
 
     def _set_option(self, arguments: str) -> None:
         name, value = _parse_option(arguments)
+        # Engine options are bounded scalars a GUI chose deliberately, and the
+        # resolved seed is already logged in full. Recording what a GUI asked
+        # for is what makes a reported session reproducible.
+        logger.debug("Received UCI option %s with value %s", name, value)
         normalized = name.casefold()
         if normalized == "uci_limitstrength":
             limit_strength = _parse_check(value, name=name)

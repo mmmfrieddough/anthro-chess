@@ -70,9 +70,17 @@ without claiming a best move.
 
 The entry point accepts standard application log levels. UCI `debug on|off`
 temporarily enables deeper module and command-boundary diagnostics in the same
-protocol-safe destination. Logs identify lifecycle events and command names,
-but do not copy raw commands, complete game histories, model distributions, or
-other high-volume or sensitive values.
+protocol-safe destination. Logs identify lifecycle events, command names, and
+the name and value of every option a GUI sets. They do not copy raw command
+lines, complete game histories, model distributions, or other high-volume or
+sensitive values.
+
+Option values are logged because they are what makes a reported session
+reproducible: the engine's options are bounded scalars a GUI chose
+deliberately, and the resolved sampling seed is already recorded in full.
+Withholding the settings that produced a game while recording the seed that
+replays it is not a coherent boundary. A future option carrying free-form text
+would change that judgment and should be excluded when it is introduced.
 
 This first path is untimed and move-only. It ignores unsupported `go` fields
 rather than treating them as model inputs. `searchmoves`, pondering, clock

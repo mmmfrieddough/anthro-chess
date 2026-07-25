@@ -36,21 +36,26 @@ repository:
 [model]
 checkpoint_path = "/absolute/run/checkpoints/step-00002000.pt"
 device = "cpu"
-
-[runtime]
-target_rating = 1500
-temperature = 0.0
-resignation_enabled = false
 ```
+
+Set only what the machine cannot infer. Every `[runtime]` setting has a
+code-owned default, and each one a GUI can reach is an advertised UCI option
+that overrides the file for the running process. Restating a default in the
+file gains nothing and invites the belief that the file is what the engine is
+actually using, so prefer the GUI option and leave the file alone.
+
+Restating `runtime.temperature` is the trap worth naming: it sets the
+advertised `Anthro Temperature` default, so a file pinning it to zero makes
+every game from a position identical until the GUI raises the option. That is
+sampling behavior, not a model property, and it is easy to mistake for one.
+
+`runtime.target_rating` is the one setting that does not take effect on its
+own. It seeds the advertised `UCI_Elo` default, but following UCI convention
+strength limiting is off until the GUI enables `UCI_LimitStrength`, and until
+then the engine conditions on the code-owned maximum rating.
 
 Omitting `seed` uses fresh per-game randomness; set an explicit non-negative
 `seed` only to reproduce a game.
-
-`runtime.target_rating` seeds the advertised `UCI_Elo` default rather than the
-rating the engine starts out conditioned on. Following UCI convention, strength
-limiting is off until the GUI enables `UCI_LimitStrength`, and until then the
-engine conditions on the code-owned maximum rating. A configured
-`target_rating` therefore has no effect on play until that option is turned on.
 
 An absolute `model.checkpoint_path` makes GUI startup independent of inherited
 environment variables while still requiring the complete retained run around
