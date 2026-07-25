@@ -103,6 +103,13 @@ Basic validation metrics should exist during the minimal training loop, but
 this stage should make evaluation coherent enough to compare model versions
 without relying on subjective playtesting.
 
+This stage also establishes the evaluation-data contract the later benchmarks
+share: a `test` partition training never consumes, one frozen pool drawn from
+it, and derived views each benchmark selects through. Game-level opening
+classification from an owned versioned book lands here too, because rollout
+distribution comparison needs family aggregation; the per-ply multi-label form
+for preference conditioning stays in stage 5.
+
 The initial harness should emphasize reusable benchmarks that can run against
 future models:
 

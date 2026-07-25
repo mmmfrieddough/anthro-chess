@@ -42,7 +42,8 @@ def test_help_only_advertises_implemented_commands(
     assert "smoke" in help_text
     assert "data" in help_text
     assert "train" in help_text
-    for planned_command in ("evaluate", "play", "uci"):
+    assert "eval" in help_text
+    for planned_command in ("play", "uci"):
         assert f"  {planned_command} " not in help_text
 
 
@@ -64,6 +65,109 @@ def test_data_prepare_command_routes_to_importable_pipeline(
     command_output = capsys.readouterr().out
     assert "Prepared 1 game(s); rejected 0." in command_output
     assert "manifests/manifest.json" in command_output
+
+
+def test_eval_freeze_command_routes_to_importable_pool_builder(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    data_config = repository_root / "configs/data/lichess-sample.toml"
+    corpus = tmp_path / "corpus"
+    assert (
+        main(
+            [
+                "data",
+                "prepare",
+                str(sample),
+                str(corpus),
+                "--config",
+                str(data_config),
+                "--set",
+                "split.validation_fraction=0.1",
+                "--set",
+                "split.test_fraction=0.85",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    pool_config = tmp_path / "pool.toml"
+    pool_config.write_text(
+        'pool_id = "cli-fixture"\n'
+        f'normalized = "{corpus / "normalized"}"\n'
+        f'manifest = "{corpus / "manifests/manifest.json"}"\n'
+        'split = "test"\n'
+    )
+    output = tmp_path / "pool"
+
+    assert main(["eval", "freeze", str(output), "--config", str(pool_config)]) == 0
+
+    assert pq.read_table(output / "games.parquet").num_rows == 1
+    command_output = capsys.readouterr().out
+    assert "Froze 1 game(s)" in command_output
+    assert "Identity:" in command_output
+
+
+def test_eval_freeze_reports_a_configuration_error_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pool_config = tmp_path / "pool.toml"
+    pool_config.write_text(
+        'pool_id = "missing"\n'
+        f'normalized = "{tmp_path / "absent"}"\n'
+        f'manifest = "{tmp_path / "absent.json"}"\n'
+    )
+
+    assert (
+        main(["eval", "freeze", str(tmp_path / "pool"), "--config", str(pool_config)])
+        == 2
+    )
+
+    assert "anthro eval freeze:" in capsys.readouterr().err
+
+
+def test_eval_freeze_uses_data_root_for_checked_in_artifact_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    data_config = repository_root / "configs/data/lichess-sample.toml"
+    data_root = tmp_path / "datasets"
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    assert (
+        main(
+            [
+                "data",
+                "prepare",
+                str(sample),
+                "--config",
+                str(data_config),
+                "--set",
+                "split.validation_fraction=0.1",
+                "--set",
+                "split.test_fraction=0.85",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    pool_config = tmp_path / "pool.toml"
+    pool_config.write_text(
+        'pool_id = "rooted-fixture"\n'
+        'normalized = "artifacts/lichess-sample/normalized"\n'
+        'manifest = "artifacts/lichess-sample/manifests/manifest.json"\n'
+    )
+
+    assert main(["eval", "freeze", "--config", str(pool_config)]) == 0
+
+    assert pq.read_table(data_root / "rooted-fixture/games.parquet").num_rows == 1
 
 
 def test_data_prepare_uses_data_root_when_output_is_omitted(

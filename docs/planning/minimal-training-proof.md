@@ -5,6 +5,14 @@ components work together. It is an implementation proof, not a claim that the
 selected checkpoint is strong enough for release or that its configuration is
 the final production model.
 
+The recorded evidence below was produced under preprocessing version 2, whose
+two-way split predates the held-out `test` partition. Reproducing these exact
+numbers requires that preprocessing version. Under the current three-way split
+the same commands still run, but split assignment differs, so the measured
+values are expected to move and are not a regression. The commands, structure,
+and interpretation remain accurate; only the specific numbers are pinned to the
+older artifact.
+
 ## CPU Correctness Gate
 
 The bounded CPU integration test drives the public command surface through

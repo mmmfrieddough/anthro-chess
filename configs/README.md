@@ -16,9 +16,17 @@ selection; `docs/planning/minimal-training-proof.md` owns the reproducible
 corpus slice, evidence, and interpretation. The MPS smoke selection enables
 synchronized phase profiling for bounded device verification; larger-corpus
 batch and accumulation choices belong in resolved run configuration and
-measured artifacts. Add focused `evaluation/` or `runtime/` subdirectories when
-the corresponding command exists. Do not add speculative example files for
-commands that have not been implemented.
+measured artifacts.
+
+`evaluation/` contains frozen evaluation-pool selections for `anthro eval
+freeze`. A pool selection names the normalized corpus it draws from and the
+split it freezes, and it should record the identity digest printed by the first
+successful build so a rebuild elsewhere is verified rather than assumed. A
+mismatch afterwards means the corpus, its filters, or its split seed moved, and
+the benchmark needs a new pool version rather than a quietly different pool.
+
+Add a focused `runtime/` subdirectory when the corresponding command exists. Do
+not add speculative example files for commands that have not been implemented.
 
 Commands should use their code-owned defaults unless an explicit configuration
 path is supplied. They must not search the current working directory or infer a

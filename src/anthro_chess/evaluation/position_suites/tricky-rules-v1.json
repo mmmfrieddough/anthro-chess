@@ -1,0 +1,79 @@
+{
+  "suite_id": "tricky-rules",
+  "version": 1,
+  "description": "Rule-sensitive positions for legality diagnostics. Declared characteristics are verified against exact chess logic at load, so a mislabeled position fails instead of silently weakening the suite. Positions may hold properties they do not declare; declaring one that is absent is the error.",
+  "positions": [
+    {
+      "id": "check-single-escape",
+      "fen": "R5k1/5p1p/6p1/8/8/8/8/6K1 b - - 0 1",
+      "characteristics": ["check", "only_move"],
+      "notes": "Back-rank check with exactly one legal reply, so masking cannot hide a wrong distribution."
+    },
+    {
+      "id": "checkmate-back-rank",
+      "fen": "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1",
+      "characteristics": ["check", "checkmate", "terminal"],
+      "notes": "The same pattern with the escape square blocked by its own pawn."
+    },
+    {
+      "id": "stalemate-king-and-queen",
+      "fen": "7k/8/6Q1/8/8/8/8/7K b - - 0 1",
+      "characteristics": ["terminal", "stalemate"],
+      "notes": "Not in check and no legal move, so terminal handling cannot rely on check alone."
+    },
+    {
+      "id": "absolute-pin-knight",
+      "fen": "r1bqkbnr/ppp2ppp/2np4/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 4",
+      "characteristics": ["pin"],
+      "notes": "Ruy Lopez with the d-pawn advanced, so the c6 knight is absolutely pinned against the king."
+    },
+    {
+      "id": "castling-rights-with-legal-castle",
+      "fen": "r3k2r/pppq1ppp/2npbn2/2b1p3/2B1P3/2NPBN2/PPPQ1PPP/R3K2R w KQkq - 6 9",
+      "characteristics": ["castling_rights", "castling_available"],
+      "notes": "Both sides retain full rights and White can castle on either wing immediately."
+    },
+    {
+      "id": "castling-rights-without-legal-castle",
+      "fen": "r3k2r/pppq1ppp/2npbn2/2b1p3/4P3/3PBN2/PPPQ1PPP/RN2KB1R w KQkq - 6 9",
+      "characteristics": ["castling_rights"],
+      "notes": "Rights are present on both wings but own pieces block every castle, separating rights from availability."
+    },
+    {
+      "id": "en-passant-available",
+      "fen": "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+      "characteristics": ["en_passant"],
+      "notes": "White may capture en passant on f6."
+    },
+    {
+      "id": "en-passant-square-without-legal-capture",
+      "fen": "rnbqkbnr/ppp2ppp/8/3pp3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq g3 0 3",
+      "characteristics": [],
+      "notes": "The FEN advertises an en passant target square that no pawn can actually capture on."
+    },
+    {
+      "id": "promotion-by-advance",
+      "fen": "8/4P3/8/8/8/8/8/K6k w - - 0 1",
+      "characteristics": ["promotion"],
+      "notes": "A single pawn promotes, so every promotion piece must be a distinct action."
+    },
+    {
+      "id": "promotion-by-capture",
+      "fen": "3r4/4P3/8/8/8/8/8/K6k w - - 0 1",
+      "characteristics": ["promotion"],
+      "notes": "Promotion is available by advance and by capture, doubling the promotion actions."
+    },
+    {
+      "id": "few-legal-moves-pawn-endgame",
+      "fen": "8/8/4k3/8/4P3/4K3/8/8 w - - 0 1",
+      "characteristics": [],
+      "notes": "A sparse king-and-pawn endgame in the smallest legal-move-count bucket."
+    },
+    {
+      "id": "many-legal-moves-open-center",
+      "fen": "3q1rk1/pb1nbppp/1p2pn2/2p5/2PP4/1PN1PN2/PB2BPPP/2RQ1RK1 w - - 0 12",
+      "characteristics": [],
+      "notes": "An open middlegame with a wide branching factor in the largest bucket."
+    }
+  ]
+}

@@ -294,7 +294,8 @@ def test_streams_zstandard_input_into_bounded_shards_and_one_namespace(
             "filters.require_ratings=true",
             "filters.maximum_games=5",
             "output.games_per_shard=2",
-            "split.validation_fraction=0.5",
+            "split.validation_fraction=0.4",
+            "split.test_fraction=0.4",
             "split.require_nonempty=true",
         ),
     )
