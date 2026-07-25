@@ -419,9 +419,18 @@ this boundary. A game session owns exact board state and full move history,
 accepts observed legal moves from either player, applies Anthro's target rating
 only to its current decision context, masks and samples model-runner logits,
 and updates the game with the selected valid action. Strict code-owned settings
-define rating, temperature, random seed, and whether resignation is enabled.
-Timing and preference settings remain future additions rather than placeholder
-inputs or fabricated clock values.
+define rating, temperature, the random-seed policy, and whether resignation is
+enabled. Timing and preference settings remain future additions rather than
+placeholder inputs or fabricated clock values.
+
+A session separates advancing the game from establishing randomness. Only a new
+game — session construction, `reset`, or a `ucinewgame` boundary — begins a new
+random stream from the seed policy; synchronizing to a new position never
+reseeds or rewinds the active stream. An unset seed draws fresh operating-system
+entropy per game, so ordinary nonzero-temperature play varies and independent
+processes stay independent, while an explicit non-negative seed reproduces a game
+for debugging and benchmarks. Temperature zero stays greedy and
+seed-independent. See `docs/decisions/0010-separate-position-sync-from-randomness.md`.
 
 ## Runtime Interfaces
 

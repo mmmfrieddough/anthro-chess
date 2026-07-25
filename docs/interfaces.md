@@ -53,10 +53,11 @@ procedure, and current product limitations are documented in
 
 The initial implementation supports `uci`, `debug`, `isready`, `setoption`,
 `ucinewgame`, `position`, synchronous `go`, `stop`, and `quit`. Position
-replacement accepts `startpos` or a complete FEN plus move history and commits
-only after the complete history validates. It exposes `UCI_LimitStrength`,
-`UCI_Elo`, and `Anthro Temperature`; their exact bounds and scaling live in the
-UCI configuration module. Disabling `UCI_LimitStrength` selects the code-owned
+synchronization accepts `startpos` or a complete FEN plus move history and
+commits only after the complete history validates. It exposes
+`UCI_LimitStrength`, `UCI_Elo`, `Anthro Temperature`, and `Anthro Seed`; their
+exact bounds, scaling, and the random-seed sentinel live in the UCI
+configuration module. Disabling `UCI_LimitStrength` selects the code-owned
 maximum conditioning rating, not a claim of calibrated playing strength, and
 is the protocol-default state. Unknown commands and tokens are ignored where
 the remaining command can be parsed safely.
@@ -165,6 +166,7 @@ Examples:
 option name UCI_LimitStrength type check default true
 option name UCI_Elo type spin default 1500 min 400 max 2500
 option name Anthro Temperature type spin default 100 min 0 max 300
+option name Anthro Seed type spin default -1 min -1 max 2147483647
 option name Anthro Aggression type spin default 0 min -100 max 100
 option name Anthro Sicilian type spin default 0 min -100 max 100
 option name Anthro Time Conservation type spin default 0 min -100 max 100

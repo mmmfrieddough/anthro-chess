@@ -13,6 +13,7 @@ from anthro_chess.runtime.session import (
     GameAction,
     GameSession,
     MoveAction,
+    PositionSync,
     ResignationAction,
     SessionStateError,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "GameAction",
     "GameSession",
     "MoveAction",
+    "PositionSync",
     "RandomSeed",
     "ResignationAction",
     "RuntimeConfig",

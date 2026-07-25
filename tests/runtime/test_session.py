@@ -23,6 +23,7 @@ from anthro_chess.runtime import (
     RuntimeConfig,
     SessionStateError,
 )
+from anthro_chess.runtime import session as session_module
 
 
 @dataclass
@@ -133,6 +134,155 @@ def test_seeded_sampling_is_repeatable_and_reset_restarts_the_stream() -> None:
     assert first_action == second_action == repeated_action
 
 
+def test_position_sync_preserves_the_active_random_stream() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    baseline = GameSession(
+        StubRunner(logits),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=1.0, seed=31),
+    )
+    synced = GameSession(
+        StubRunner(logits),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=1.0, seed=31),
+    )
+
+    baseline_first = _chosen_move(baseline)
+    reply = next(iter(baseline.board.legal_moves))
+    baseline.apply_move(reply)
+    baseline_second = _chosen_move(baseline)
+
+    synced_first = _chosen_move(synced)
+    # Advancing the position through synchronization must not reseed or rewind
+    # the stream, so the continued draw matches the uninterrupted baseline.
+    outcome = synced.sync_position(moves=(synced_first, reply))
+    synced_second = _chosen_move(synced)
+
+    assert synced_first == baseline_first
+    assert outcome.reused_prefix_plies == 1
+    assert outcome.replaced is False
+    assert synced_second == baseline_second
+
+
+def test_temperature_zero_is_greedy_for_every_seed_mode() -> None:
+    logits = _ranked_logits("g1f3", illegal="e2e5")
+    for seed in (None, 0, 4242):
+        session = GameSession(
+            StubRunner(logits),
+            controlled_color=chess.WHITE,
+            config=RuntimeConfig(temperature=0.0, seed=seed),
+        )
+        assert _chosen_move(session) == chess.Move.from_uci("g1f3")
+
+
+def test_fixed_seed_reproduces_while_distinct_seeds_diverge() -> None:
+    logits = torch.arange(ACTION_VOCABULARY_SIZE, dtype=torch.float32)
+    logits = logits / logits.max()
+
+    def first_move(seed: int) -> chess.Move:
+        session = GameSession(
+            StubRunner(logits),
+            controlled_color=chess.WHITE,
+            config=RuntimeConfig(temperature=1.0, seed=seed),
+        )
+        return _chosen_move(session)
+
+    assert first_move(11) == first_move(11)
+    assert len({first_move(seed).uci() for seed in range(12)}) > 1
+
+
+def test_fresh_default_draws_a_new_stream_each_new_game(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drawn = iter([101, 202, 303])
+    monkeypatch.setattr(session_module, "_draw_fresh_seed", lambda: next(drawn))
+    session = GameSession(
+        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=1.0, seed=None),
+    )
+
+    assert session.resolved_seed == 101
+    session.reset()
+    assert session.resolved_seed == 202
+    session.reseed()
+    assert session.resolved_seed == 303
+
+
+def test_explicit_seed_never_consumes_fresh_entropy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected() -> int:
+        raise AssertionError("explicit seeds must not draw fresh entropy")
+
+    monkeypatch.setattr(session_module, "_draw_fresh_seed", unexpected)
+    session = GameSession(
+        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=1.0, seed=77),
+    )
+
+    assert session.resolved_seed == 77
+    session.reset()
+    assert session.resolved_seed == 77
+
+
+def test_sync_position_appends_reuses_prefix_and_replaces_on_divergence() -> None:
+    session = GameSession(
+        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=0.0, seed=5),
+    )
+    e2e4 = chess.Move.from_uci("e2e4")
+    e7e5 = chess.Move.from_uci("e7e5")
+    d2d4 = chess.Move.from_uci("d2d4")
+    stream = session.resolved_seed
+
+    opening = session.sync_position(moves=(e2e4,))
+    assert opening.replaced is False
+    assert opening.reused_prefix_plies == 0
+    assert opening.appended_plies == 1
+
+    append = session.sync_position(moves=(e2e4, e7e5))
+    assert append.replaced is False
+    assert append.reused_prefix_plies == 1
+    assert session.move_history == (e2e4, e7e5)
+
+    takeback = session.sync_position(moves=(e2e4,))
+    assert takeback.replaced is True
+    assert takeback.reused_prefix_plies == 1
+    assert session.move_history == (e2e4,)
+
+    divergent = session.sync_position(moves=(d2d4,))
+    assert divergent.replaced is True
+    assert divergent.reused_prefix_plies == 0
+    assert session.move_history == (d2d4,)
+
+    fen = "7k/5Q2/7K/8/8/8/8/8 b - - 0 1"
+    replaced = session.sync_position(initial_fen=fen, moves=())
+    assert replaced.replaced is True
+    assert replaced.reused_prefix_plies == 0
+    assert session.initial_fen == fen
+    # None of the synchronization paths disturbed the seeded stream.
+    assert session.resolved_seed == stream
+
+
+def test_sync_position_rejects_illegal_history_without_mutation() -> None:
+    session = GameSession(
+        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=1.0, seed=8),
+    )
+    session.sync_position(moves=(chess.Move.from_uci("e2e4"),))
+    stream = session.resolved_seed
+
+    with pytest.raises(SessionStateError, match="illegal at ply 0"):
+        session.sync_position(moves=(chess.Move.from_uci("e2e5"),))
+
+    assert session.move_history == (chess.Move.from_uci("e2e4"),)
+    assert session.resolved_seed == stream
+
+
 def test_reset_validates_history_and_defensively_owns_board_state() -> None:
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
@@ -208,12 +358,20 @@ def test_runtime_config_uses_shared_loading_and_enforces_control_bounds(
         seed=17,
     )
     assert resolved.provenance.source == str(path.resolve())
+    # The default seed is unset so ordinary play is not pinned to one stream.
+    assert RuntimeConfig().seed is None
     with pytest.raises(ValidationError):
         RuntimeConfig(temperature=-0.01)
     with pytest.raises(ValidationError):
         RuntimeConfig(temperature=float("inf"))
     with pytest.raises(ValidationError):
         RuntimeConfig(seed=-1)
+
+
+def _chosen_move(session: GameSession) -> chess.Move:
+    action = session.choose_action()
+    assert isinstance(action, MoveAction)
+    return action.move
 
 
 def _ranked_logits(best: str, *, illegal: str | None = None) -> torch.Tensor:

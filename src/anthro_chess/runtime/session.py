@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias
@@ -59,6 +60,31 @@ class ResignationAction:
 
 GameAction: TypeAlias = MoveAction | ResignationAction
 
+# Fresh streams draw a positive seed that fits a signed 64-bit integer so it is
+# safe to log, reproduce, and pass to ``torch.Generator.manual_seed``.
+_FRESH_SEED_BITS = 63
+
+
+def _draw_fresh_seed() -> int:
+    """Draw one fresh per-game seed from operating-system entropy."""
+
+    return secrets.randbits(_FRESH_SEED_BITS)
+
+
+@dataclass(frozen=True)
+class PositionSync:
+    """How one position synchronization resolved against prior game state."""
+
+    total_plies: int
+    reused_prefix_plies: int
+    replaced: bool
+
+    @property
+    def appended_plies(self) -> int:
+        """Return plies past the reusable prefix that need fresh encoding."""
+
+        return self.total_plies - self.reused_prefix_plies
+
 
 class GameSession:
     """Own exact game state and choose actions for one controlled color."""
@@ -69,6 +95,8 @@ class GameSession:
         *,
         controlled_color: chess.Color,
         config: RuntimeConfig | None = None,
+        initial_fen: str = chess.STARTING_FEN,
+        moves: Sequence[chess.Move] = (),
     ) -> None:
         if type(controlled_color) is not bool:
             raise TypeError("controlled_color must be chess.WHITE or chess.BLACK")
@@ -77,8 +105,11 @@ class GameSession:
         self.config = config or RuntimeConfig()
         self._generator = torch.Generator(device="cpu")
         self._board = chess.Board()
+        self._initial_fen = chess.STARTING_FEN
         self._resigned_by: chess.Color | None = None
-        self.reset()
+        self._reusable_prefix_plies = 0
+        self._resolved_seed = 0
+        self.reset(initial_fen=initial_fen, moves=moves)
 
     @property
     def board(self) -> chess.Board:
@@ -87,10 +118,28 @@ class GameSession:
         return self._board.copy(stack=True)
 
     @property
+    def initial_fen(self) -> str:
+        """Return the FEN the current game history is rooted at."""
+
+        return self._initial_fen
+
+    @property
     def move_history(self) -> tuple[chess.Move, ...]:
         """Return every observed move from both players."""
 
         return tuple(self._board.move_stack)
+
+    @property
+    def reusable_prefix_plies(self) -> int:
+        """Return plies whose encoded history survived the last sync."""
+
+        return self._reusable_prefix_plies
+
+    @property
+    def resolved_seed(self) -> int:
+        """Return the seed that established the active random stream."""
+
+        return self._resolved_seed
 
     @property
     def resigned_by(self) -> chess.Color | None:
@@ -110,13 +159,79 @@ class GameSession:
         initial_fen: str = chess.STARTING_FEN,
         moves: Sequence[chess.Move] = (),
     ) -> None:
-        """Replace game-local state after validating the complete move history."""
+        """Start a new game and a new random stream after validating history."""
 
+        board = self._reconstruct_and_validate(initial_fen, tuple(moves))
+        self._board = board
+        self._initial_fen = initial_fen
+        self._resigned_by = None
+        self._reusable_prefix_plies = 0
+        self._begin_random_stream()
+        logger.debug(
+            "Reset game session for controlled color %s with %s observed plies",
+            "white" if self.controlled_color == chess.WHITE else "black",
+            len(board.move_stack),
+        )
+
+    def sync_position(
+        self,
+        *,
+        initial_fen: str = chess.STARTING_FEN,
+        moves: Sequence[chess.Move] = (),
+    ) -> PositionSync:
+        """Advance to a target position without disturbing the random stream.
+
+        An append-only history extends the live board and preserves the encoded
+        prefix. A new root, takeback, or divergent history atomically replaces
+        the board and invalidates the cached prefix past the divergence point.
+        The active random stream is never reseeded or rewound here; only a new
+        game through :meth:`reset` or :meth:`reseed` establishes a new stream.
+        """
+
+        moves = tuple(moves)
+        target = self._reconstruct_and_validate(initial_fen, moves)
+        current = tuple(self._board.move_stack)
+        same_root = initial_fen == self._initial_fen
+        prefix = _common_prefix_length(current, moves) if same_root else 0
+
+        self._resigned_by = None
+        if same_root and prefix == len(current) and len(moves) >= len(current):
+            for move in moves[len(current) :]:
+                self._board.push(move)
+            self._reusable_prefix_plies = len(current)
+            replaced = False
+        else:
+            self._board = target
+            self._initial_fen = initial_fen
+            self._reusable_prefix_plies = prefix
+            replaced = True
+        logger.debug(
+            "Synced position: %s, reused %s of %s plies",
+            "replaced" if replaced else "append-only",
+            self._reusable_prefix_plies,
+            len(moves),
+        )
+        return PositionSync(
+            total_plies=len(moves),
+            reused_prefix_plies=self._reusable_prefix_plies,
+            replaced=replaced,
+        )
+
+    def reseed(self) -> None:
+        """Establish the next random stream from the current seed policy."""
+
+        self._begin_random_stream()
+
+    def _reconstruct_and_validate(
+        self,
+        initial_fen: str,
+        moves: tuple[chess.Move, ...],
+    ) -> chess.Board:
         try:
             board = chess.Board(initial_fen)
         except ValueError as error:
             raise SessionStateError(f"invalid initial position: {error}") from error
-        for ply_index, move in enumerate(tuple(moves)):
+        for ply_index, move in enumerate(moves):
             if not isinstance(move, chess.Move):
                 raise TypeError(f"move at ply {ply_index} must be a chess.Move")
             if move not in board.legal_moves:
@@ -132,13 +247,19 @@ class GameSession:
             )
         except EncodingError as error:
             raise SessionStateError(f"invalid move history: {error}") from error
-        self._board = board
-        self._resigned_by = None
-        self._generator.manual_seed(self.config.seed)
+        return board
+
+    def _begin_random_stream(self) -> None:
+        seed = self.config.seed
+        explicit = seed is not None
+        if seed is None:
+            seed = _draw_fresh_seed()
+        self._resolved_seed = seed
+        self._generator.manual_seed(seed)
         logger.debug(
-            "Reset game session for controlled color %s with %s observed plies",
-            "white" if self.controlled_color == chess.WHITE else "black",
-            len(board.move_stack),
+            "Began %s random stream with resolved seed %s",
+            "explicit" if explicit else "fresh",
+            seed,
         )
 
     def apply_move(self, move: chess.Move) -> None:
@@ -236,3 +357,15 @@ class GameSession:
                 ).item()
             )
         return enabled_ids[candidate_index]
+
+
+def _common_prefix_length(
+    current: tuple[chess.Move, ...],
+    target: tuple[chess.Move, ...],
+) -> int:
+    length = 0
+    for existing, incoming in zip(current, target, strict=False):
+        if existing != incoming:
+            break
+        length += 1
+    return length

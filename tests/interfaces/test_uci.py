@@ -4,8 +4,10 @@ import copy
 import io
 import json
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from anthro_chess.interfaces.config import UCI_MAX_RATING, UciConfig
 from anthro_chess.interfaces.uci import UciEngine
 from anthro_chess.models import CausalMoveModel, MoveModelConfig
 from anthro_chess.runtime import RuntimeConfig
+from anthro_chess.runtime import session as session_module
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
 
@@ -98,12 +101,13 @@ def test_protocol_transcript_orders_handshake_and_returns_legal_move() -> None:
     lines = output.splitlines()
     assert lines[0].startswith("id name Anthro Chess ")
     assert lines[1] == "id author Anthro Chess contributors"
-    assert lines[2:5] == [
+    assert lines[2:6] == [
         "option name UCI_LimitStrength type check default false",
         "option name UCI_Elo type spin default 1500 min 400 max 2500",
         "option name Anthro Temperature type spin default 0 min 0 max 300",
+        "option name Anthro Seed type spin default -1 min -1 max 2147483647",
     ]
-    assert lines[5:] == ["uciok", "readyok", "bestmove g1f3"]
+    assert lines[6:] == ["uciok", "readyok", "bestmove g1f3"]
     assert error == ""
 
 
@@ -290,6 +294,9 @@ def test_uci_config_rejects_unrepresentable_or_resigning_runtime() -> None:
         UciConfig(runtime=RuntimeConfig(temperature=0.755))
     with pytest.raises(ValidationError, match="does not support resignation"):
         UciConfig(runtime=RuntimeConfig(resignation_enabled=True))
+    with pytest.raises(ValidationError, match="UCI seed must be between"):
+        UciConfig(runtime=RuntimeConfig(seed=2**31))
+    assert UciConfig(runtime=RuntimeConfig(seed=None)).runtime.seed is None
 
 
 def test_installed_console_script_loads_checkpoint_and_keeps_stdout_clean(
@@ -512,12 +519,204 @@ def test_debug_logs_exclude_raw_commands_and_complete_game_history() -> None:
     assert "e2e4 e7e5 g1f3" not in error
 
 
+def test_position_updates_reuse_the_runner_and_reproduce_a_seeded_game() -> None:
+    logits = _sampling_logits()
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+
+    first_engine, first_loads = _counting_engine(logits, seed=321)
+    first = _play_engine_game(first_engine, error, plies=4)
+    second_engine, second_loads = _counting_engine(logits, seed=321)
+    second = _play_engine_game(second_engine, error, plies=4)
+
+    assert len(first) == 4
+    assert first == second
+    # Many position updates and go calls reuse one loaded runner per process.
+    assert first_loads() == 1
+    assert second_loads() == 1
+
+
+def test_new_game_draws_a_fresh_stream_without_reloading_the_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logits = _sampling_logits()
+    monkeypatch.setattr(session_module, "_draw_fresh_seed", iter([900, 901]).__next__)
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+
+    fresh, loads = _counting_engine(logits, seed=None)
+    game_one = _play_engine_game(fresh, error, plies=1)
+    _drive(fresh, "ucinewgame\n", error)
+    game_two = _play_engine_game(fresh, error, plies=1)
+
+    # A fresh game establishes a new stream but never reloads the model.
+    assert loads() == 1
+    reference_one, _ = _counting_engine(logits, seed=900)
+    reference_two, _ = _counting_engine(logits, seed=901)
+    assert game_one == _play_engine_game(reference_one, error, plies=1)
+    assert game_two == _play_engine_game(reference_two, error, plies=1)
+
+
+def test_seed_option_selects_reproducible_then_fresh_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logits = _sampling_logits()
+    monkeypatch.setattr(session_module, "_draw_fresh_seed", iter([555]).__next__)
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+
+    engine, _ = _counting_engine(logits, seed=None)
+    _drive(engine, "setoption name Anthro Seed value 42\nisready\n", error)
+    explicit = _play_engine_game(engine, error, plies=1)
+
+    reference_42, _ = _counting_engine(logits, seed=42)
+    assert explicit == _play_engine_game(reference_42, error, plies=1)
+
+    _drive(engine, "ucinewgame\nsetoption name Anthro Seed value -1\n", error)
+    fresh = _play_engine_game(engine, error, plies=1)
+
+    reference_555, _ = _counting_engine(logits, seed=555)
+    assert fresh == _play_engine_game(reference_555, error, plies=1)
+
+
+def test_console_script_reproduces_seeded_games_and_varies_fresh_streams(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_run(tmp_path / "run")
+    executable = Path(sys.executable).with_name("anthro-uci")
+    transcript = "\n".join(
+        (
+            "uci",
+            "isready",
+            "position startpos",
+            "go",
+            "position startpos moves e2e4 e7e5",
+            "go",
+            "ucinewgame",
+            "position startpos",
+            "go",
+            "quit",
+            "",
+        )
+    )
+
+    def run(config_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["ANTHRO_CHESS_LOG_ROOT"] = str(tmp_path / "logs")
+        return subprocess.run(
+            [str(executable), "--config", str(config_path), *extra],
+            input=transcript,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=environment,
+        )
+
+    fixed = _uci_config(tmp_path / "fixed.toml", checkpoint, seed="seed = 1234")
+    first = run(fixed)
+    second = run(fixed)
+    assert first.returncode == 0, first.stderr
+    assert _bestmoves(first.stdout) == _bestmoves(second.stdout)
+    assert len(_bestmoves(first.stdout)) == 3
+    assert chess.Move.from_uci(_bestmoves(first.stdout)[0]) in chess.Board().legal_moves
+
+    fresh = _uci_config(tmp_path / "fresh.toml", checkpoint, seed="")
+    log_path = tmp_path / "fresh.log"
+    third = run(fresh, "--log-level", "DEBUG", "--log-file", str(log_path))
+    assert third.returncode == 0, third.stderr
+    seeds = re.findall(r"resolved seed (\d+)", log_path.read_text(encoding="utf-8"))
+    # Each new game establishes an independent fresh stream.
+    assert len(set(seeds)) >= 2
+
+
 def _run(engine: UciEngine, transcript: str) -> tuple[str, str]:
     output = io.StringIO()
     error = io.StringIO()
     configure_application_logging(level="WARNING", stream=error)
     assert engine.run(io.StringIO(transcript), output, error) == 0
     return output.getvalue(), error.getvalue()
+
+
+def _sampling_logits() -> torch.Tensor:
+    logits = torch.arange(ACTION_VOCABULARY_SIZE, dtype=torch.float32)
+    return logits / logits.max()
+
+
+def _counting_engine(
+    logits: torch.Tensor, *, seed: int | None
+) -> tuple[UciEngine, Callable[[], int]]:
+    calls = 0
+
+    def load_runner() -> StubRunner:
+        nonlocal calls
+        calls += 1
+        return StubRunner(logits)
+
+    engine = UciEngine(
+        load_runner,
+        UciConfig(runtime=RuntimeConfig(temperature=1.0, seed=seed)),
+    )
+    return engine, lambda: calls
+
+
+def _drive(engine: UciEngine, transcript: str, error: io.StringIO) -> str:
+    output = io.StringIO()
+    assert engine.run(io.StringIO(transcript), output, error) == 0
+    return output.getvalue()
+
+
+def _play_engine_game(
+    engine: UciEngine, error: io.StringIO, *, plies: int
+) -> list[str]:
+    board = chess.Board()
+    moves: list[chess.Move] = []
+    bestmoves: list[str] = []
+    for _ in range(plies):
+        command = "position startpos"
+        if moves:
+            command += " moves " + " ".join(move.uci() for move in moves)
+        output = _drive(engine, command + "\ngo\n", error)
+        best = output.splitlines()[-1].removeprefix("bestmove ")
+        bestmoves.append(best)
+        if best == "0000":
+            break
+        engine_move = chess.Move.from_uci(best)
+        board.push(engine_move)
+        moves.append(engine_move)
+        if board.is_game_over():
+            break
+        reply = min(board.legal_moves, key=lambda move: move.uci())
+        board.push(reply)
+        moves.append(reply)
+        if board.is_game_over():
+            break
+    return bestmoves
+
+
+def _bestmoves(stdout: str) -> list[str]:
+    return [
+        line.removeprefix("bestmove ")
+        for line in stdout.splitlines()
+        if line.startswith("bestmove ")
+    ]
+
+
+def _uci_config(path: Path, checkpoint: Path, *, seed: str) -> Path:
+    lines = [
+        "[model]",
+        f'checkpoint_path = "{checkpoint}"',
+        'device = "cpu"',
+        "",
+        "[runtime]",
+        "target_rating = 1500",
+        "temperature = 1.0",
+    ]
+    if seed:
+        lines.append(seed)
+    lines.append("resignation_enabled = false")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def _write_run(path: Path) -> Path:

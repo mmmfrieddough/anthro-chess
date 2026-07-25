@@ -14,6 +14,10 @@ UCI_MIN_RATING = 400
 UCI_MAX_RATING = 2500
 UCI_TEMPERATURE_SCALE = 100
 UCI_MAX_TEMPERATURE = 300
+# The seed spin exposes ``-1`` as the fresh-per-game sentinel and otherwise an
+# explicit non-negative seed bounded to a value common GUIs store safely.
+UCI_RANDOM_SEED = -1
+UCI_MAX_SEED = 2**31 - 1
 
 
 class UciConfig(ConfigModel):
@@ -42,4 +46,7 @@ class UciConfig(ConfigModel):
             raise ValueError("UCI temperature must use increments of 0.01")
         if self.runtime.resignation_enabled:
             raise ValueError("portable UCI mode does not support resignation")
+        seed = self.runtime.seed
+        if seed is not None and not 0 <= seed <= UCI_MAX_SEED:
+            raise ValueError(f"UCI seed must be between 0 and {UCI_MAX_SEED}")
         return self
