@@ -1,0 +1,62 @@
+#!/bin/sh
+# Choose which checkout scripts/anthro-uci-gui serves to the chess GUI.
+#
+#   scripts/anthro-gui-target            print the current target
+#   scripts/anthro-gui-target .          serve this checkout
+#   scripts/anthro-gui-target <path>     serve <path>
+#   scripts/anthro-gui-target --clear    fall back to the launcher's checkout
+#
+# The pointer lives outside every checkout, so switching targets never modifies
+# a tracked file and removing a worktree cannot corrupt it.
+
+set -eu
+
+script_path=$0
+case $script_path in
+  */*) script_directory=${script_path%/*} ;;
+  *) script_directory=. ;;
+esac
+script_directory=$(cd -- "$script_directory" && pwd)
+default_checkout=$(cd -- "$script_directory/.." && pwd)
+
+state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+state_root=${ANTHRO_CHESS_GUI_ROOT:-$state_home/anthro-chess}
+pointer_path=${ANTHRO_CHESS_GUI_TARGET:-$state_root/gui-target}
+
+fail() {
+  echo "anthro-gui-target: $1" >&2
+  exit 1
+}
+
+case ${1-} in
+  "")
+    if [ -f "$pointer_path" ]; then
+      cat -- "$pointer_path"
+    else
+      echo "$default_checkout (default; no pointer at $pointer_path)"
+    fi
+    exit 0
+    ;;
+  --clear)
+    rm -f -- "$pointer_path"
+    echo "anthro-gui-target: cleared; the GUI now serves $default_checkout" >&2
+    exit 0
+    ;;
+  -h | --help)
+    sed -n '2,10p' -- "$0" | cut -c 3-
+    exit 0
+    ;;
+  -*)
+    fail "unknown option: $1"
+    ;;
+esac
+
+[ -d "$1" ] || fail "not a directory: $1"
+target=$(cd -- "$1" && pwd)
+
+[ -x "$target/.venv/bin/anthro-uci" ] || fail "no runnable engine at $target/.venv/bin/anthro-uci
+Initialize that checkout's environment with 'uv sync' first."
+
+mkdir -p -- "${pointer_path%/*}"
+printf '%s\n' "$target" > "$pointer_path"
+echo "anthro-gui-target: the GUI now serves $target" >&2

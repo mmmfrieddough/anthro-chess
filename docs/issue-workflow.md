@@ -323,6 +323,33 @@ linked pull requests, and recent issue activity before choosing. Treat claimed
 issues as active work and issues outside the queue as intake awaiting
 maintainer triage.
 
+### Offering A Real GUI Check
+
+Some changes are only convincing in a real chess GUI. Automated coverage proves
+protocol behavior, but command ordering, option presentation, and how a game
+actually feels belong to the maintainer.
+
+Offer a GUI check without being asked when a change alters what a GUI observes:
+move selection, sampling or seeding, rating or temperature controls, position
+synchronization, advertised options, protocol command handling, or engine
+lifecycle. Skip it for changes a GUI cannot see, such as data pipeline,
+training, evaluation, or documentation work.
+
+To offer one, initialize the worktree environment, point the GUI at the
+worktree with `scripts/anthro-gui-target .`, and tell the maintainer the engine
+is ready to test, which behavior to look at, and what a good result looks like.
+Do not reconfigure the GUI itself and do not edit anything under `.venv`. The
+mechanism is documented in `playable-uci.md`.
+
+Leave the pointer aimed at the worktree while the pull request is open. Clear it
+with `scripts/anthro-gui-target --clear` when abandoning the branch, and note in
+the issue that the maintainer should clear it after merge if the worktree is
+removed. A removed target fails loudly rather than silently serving stale code.
+
+Maintainer GUI observations belong in the issue as findings. Treat a GUI session
+as acceptance evidence, not as a substitute for automated coverage: whenever a
+GUI check finds a defect, add the regression test that would have caught it.
+
 ### Publishing For Review
 
 Commit only the issue's scoped files, push the issue branch, and open a pull
@@ -445,3 +472,4 @@ Before substantive changes:
 5. Keep roadmap/build-order edits in `docs/planning/`.
 6. Update affected docs when the change alters durable intent.
 7. Add a decision record only when the rationale has lasting value.
+8. Offer a real GUI check when the change alters what a GUI observes.
