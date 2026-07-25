@@ -149,8 +149,7 @@ Useful periodic benchmarks include:
 - held-out move distribution checks;
 - timing distribution checks;
 - move-time coherence checks;
-- legality diagnostics on tricky rule positions;
-- fixed position suites;
+- legality diagnostics on rule-sensitive position slices;
 - early rating-calibration checks;
 - preference-control checks when preference controls exist.
 
@@ -273,19 +272,27 @@ uniform_legal_mass = num_legal_moves / move_vocab_size
 legality_lift = logit(legal_mass) - logit(uniform_legal_mass)
 ```
 
-Normal validation should use held-out human positions. A separate tricky-rule
-suite should stress positions involving check, pins, castling rights, en
-passant, promotions, stalemate-adjacent states, only-move situations, crowded
-tactical positions, and positions with very few legal moves.
+Validation should use held-out human positions throughout, including for
+rule-sensitive cases. Averaging legality over a whole pool hides them: a model
+systematically confused about en passant would barely move an aggregate mask
+penalty, because so few positions offer the capture.
 
-That suite is hand-authored rather than sampled, and it answers whether the code
-is correct rather than whether the model is good. Its positions are checked into
-the package with declared characteristics that are verified against exact chess
-logic when the suite loads, so a mislabeled position fails loudly instead of
-quietly weakening the suite. Terminal positions belong in it because runtime code
-must handle them, but they have no action to predict and are excluded from
-scoring. Exact positions, labels, and coverage live with the suite rather than
-being duplicated here.
+The fix is to slice rather than to hand-author. The slice layer derives
+rule-sensitive characteristics from exact chess logic, covering check, pins,
+castling rights and castling availability, en passant, promotions, only-move
+situations, and terminal states, so legality metrics can be reported per case
+against real games at their true distribution.
+
+A hand-authored fixed suite was considered and rejected. It would supply one
+picked example per rule where a slice supplies thousands of real ones, it adds a
+labeling contract that can itself be wrong, and the correctness question it
+appeared to answer, whether legal move generation handles these rules, is
+already covered by the chess-logic tests. Rule-case slices carry no such
+duplication.
+
+Deriving these characteristics is more expensive than phase or color, so it
+belongs to the positions a benchmark actually scores rather than to pool-wide
+coverage statistics.
 
 Legal-move lists or masks may be computed during evaluation. If that becomes
 too slow, preprocessing can store them for validation examples.

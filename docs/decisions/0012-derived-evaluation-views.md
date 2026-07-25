@@ -68,8 +68,15 @@ means a book or granularity change never regenerates the corpus, which is why
 capturing source ECO and opening headers into the schema was rejected.
 
 Slice definitions become a shared contract. Phase boundaries, legal-move-count
-buckets, and rating bands live in one place, so a change moves every benchmark
-together instead of leaving each with its own drifted definition.
+buckets, rating bands, and rule-sensitive characteristics live in one place, so
+a change moves every benchmark together instead of leaving each with its own
+drifted definition.
+
+Deriving rule cases also removed the need for a hand-authored tricky-rule
+position suite. Slicing real games by check, pin, en passant, promotion, and
+terminal state measures the same rare cases against thousands of true instances
+instead of one picked example each, without a labeling contract that can itself
+be wrong.
 
 The cost is indirection: reading a benchmark result requires reading its view
 spec to know what was measured. Recording the spec and the selected game-id

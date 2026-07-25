@@ -62,6 +62,26 @@ class PlayerColor(StrEnum):
     BLACK = "black"
 
 
+class PositionCharacteristic(StrEnum):
+    """Rule-sensitive properties a position can hold.
+
+    These isolate cases that are rare enough to vanish from an average over
+    held-out positions. Slicing real games by them keeps the measurement on
+    the true distribution instead of on hand-picked examples.
+    """
+
+    CHECK = "check"
+    PIN = "pin"
+    CASTLING_RIGHTS = "castling_rights"
+    CASTLING_AVAILABLE = "castling_available"
+    EN_PASSANT = "en_passant"
+    PROMOTION = "promotion"
+    ONLY_MOVE = "only_move"
+    TERMINAL = "terminal"
+    CHECKMATE = "checkmate"
+    STALEMATE = "stalemate"
+
+
 #: Half-open legal-move-count intervals. Legality metrics vary strongly with
 #: how many moves are available, so they are reported per bucket.
 LEGAL_MOVE_COUNT_BUCKETS: tuple[tuple[str, int, int | None], ...] = (
@@ -183,6 +203,78 @@ def rating_band_name(
         ):
             return band.name
     raise ValueError(f"player rating is outside configured bands: {rating}")
+
+
+def board_from_encoding(board: BoardEncoding) -> chess.Board:
+    """Rebuild an exact board from a compact per-ply encoding."""
+
+    if len(board.piece_ids) != BOARD_SQUARE_COUNT:
+        raise ValueError("piece ids must cover every board square")
+
+    exact = chess.Board(None)
+    for square, piece_id in zip(chess.SQUARES, board.piece_ids, strict=True):
+        if piece_id == 0:
+            continue
+        if not 1 <= piece_id <= 12:
+            raise ValueError(f"piece id is outside the encoding contract: {piece_id}")
+        color = chess.WHITE if piece_id <= 6 else chess.BLACK
+        piece_type = piece_id if piece_id <= 6 else piece_id - 6
+        exact.set_piece_at(square, chess.Piece(piece_type, color))
+
+    exact.turn = chess.WHITE if board.side_to_move == 0 else chess.BLACK
+    rights = ""
+    for bit, symbol in ((1, "K"), (2, "Q"), (4, "k"), (8, "q")):
+        if board.castling_rights & bit:
+            rights += symbol
+    exact.set_castling_fen(rights or "-")
+    exact.ep_square = board.en_passant_square
+    exact.halfmove_clock = board.halfmove_clock
+    exact.fullmove_number = board.fullmove_number
+    return exact
+
+
+def board_characteristics(
+    board: chess.Board,
+) -> frozenset[PositionCharacteristic]:
+    """Return the rule-sensitive properties exact chess logic finds.
+
+    This is the expensive slice, so it is applied to the positions a benchmark
+    actually scores rather than computed for every ply of a pool.
+    """
+
+    legal_moves = list(board.legal_moves)
+    observed: set[PositionCharacteristic] = set()
+    if board.is_check():
+        observed.add(PositionCharacteristic.CHECK)
+    if len(legal_moves) == 1:
+        observed.add(PositionCharacteristic.ONLY_MOVE)
+    if not legal_moves:
+        observed.add(PositionCharacteristic.TERMINAL)
+    if board.is_checkmate():
+        observed.add(PositionCharacteristic.CHECKMATE)
+    if board.is_stalemate():
+        observed.add(PositionCharacteristic.STALEMATE)
+    if board.has_castling_rights(chess.WHITE) or board.has_castling_rights(chess.BLACK):
+        observed.add(PositionCharacteristic.CASTLING_RIGHTS)
+    if any(board.is_castling(move) for move in legal_moves):
+        observed.add(PositionCharacteristic.CASTLING_AVAILABLE)
+    if any(board.is_en_passant(move) for move in legal_moves):
+        observed.add(PositionCharacteristic.EN_PASSANT)
+    if any(move.promotion is not None for move in legal_moves):
+        observed.add(PositionCharacteristic.PROMOTION)
+    if any(
+        board.is_pinned(board.turn, square)
+        for square in chess.SQUARES
+        if (piece := board.piece_at(square)) is not None and piece.color == board.turn
+    ):
+        observed.add(PositionCharacteristic.PIN)
+    return frozenset(observed)
+
+
+def ply_characteristics(ply: PlyEncoding) -> frozenset[PositionCharacteristic]:
+    """Return the rule-sensitive properties of one encoded ply."""
+
+    return board_characteristics(board_from_encoding(ply.board))
 
 
 def board_color(board: BoardEncoding) -> PlayerColor:
