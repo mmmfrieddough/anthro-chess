@@ -326,6 +326,19 @@ comparison, resume, provenance, and later runtime selection. A model runner can
 accept an explicit compatible checkpoint path beneath this root without copying
 it or requiring an external model registry.
 
+Some checkpoints are **anchors**: the ones a long-running comparison starts from,
+and the ones re-scored when a new evaluation pool generation is cut. Anchors are
+retained rather than cleaned up, because losing one removes the left edge of
+every chart that begins there. Anchors are a handful per milestone rather than
+every interval checkpoint, and they stay where runs already live; retention is a
+policy, not a separate storage system. See
+`docs/decisions/0014-evaluation-result-storage.md`.
+
+Retention is affordable partly because a lost checkpoint costs a re-run rather
+than an unreconstructable result. That holds only while runs remain reproducible
+from configuration, seed, and a corpus regenerable from its pinned source digest,
+which makes run reproducibility a property worth actively protecting.
+
 The current model runner resolves either an authoritative explicit checkpoint,
 an explicit retained run plus checkpoint selector, or an intentionally
 maintained default selection beneath the run root. Resolution never guesses from
@@ -354,6 +367,31 @@ deeper diagnostics for regressions.
 
 Default validation metrics should include move loss, timing loss when timing is
 enabled, rating-sliced validation metrics, and illegal-move mask penalty.
+
+Evaluation is not only a post-training step. Measurements run at declared
+cadences during a run so a bad run is visible early: cheap health signals every
+optimizer step, held-out previews at validation intervals, fuller diagnostics
+less often, and the canonical suite at the end. In-training previews use the
+`validation` split, never the held-out test pool, so early readings cannot
+influence checkpoint selection. `docs/evaluation.md` owns the cadence model and
+the rules that keep previews interpretable against the canonical reading.
+
+### Training Observability
+
+Every training run emits TensorBoard output by default. Following a run should
+require nothing beyond opening TensorBoard against the run root: no flag to
+enable, no separate configuration step, and no need to ask for it when
+dispatching work. Because runs already live in per-run directories, pointing
+TensorBoard at the root overlays a running experiment against previous runs at
+the same step, which is the main thing it is there for.
+
+Event files are a derived view rather than a source of truth. The metrics stream
+and the evaluation results store stay authoritative, and event files remain
+regenerable and safe to delete. Training curves and in-training evaluation
+readings belong there; cross-version project history does not, because
+TensorBoard has no notion of which results are comparable and would happily
+overlay series that are not. See
+`docs/decisions/0014-evaluation-result-storage.md`.
 
 See `docs/evaluation.md` for the full evaluation design, including legality,
 rating calibration, timing rollouts, human-likeness metrics, and

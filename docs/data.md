@@ -133,6 +133,54 @@ algorithm live in the data configuration and `anthro_chess.data`.
 
 See `docs/decisions/0011-held-out-test-partition.md`.
 
+## Corpus Expansion
+
+Corpus growth is the main expected source of change to evaluation inputs, so how
+it is sequenced matters to more than data volume.
+
+Expansion happens in two passes, breadth before depth. The **breadth** pass
+widens the corpus across the axes the project intends to keep measuring, such as
+time control, rating range, timing-data presence, and temporal or source spread.
+The **depth** pass scales volume within those axes. Breadth comes first because
+it is the irreversible one: a frozen evaluation reference can never measure an
+axis it contains no games for, while adding volume to an axis already present
+stays possible at any time.
+
+Breadth is sized by evaluation power rather than by training needs. Each axis
+needs enough held-out games to resolve the effects the project will want to
+detect on it, which is a computable quantity given measured sampling noise, and
+which is a much smaller number than training volume. Game-level benchmarks bind
+here well before position-level ones do, since their unit is a game.
+
+Expansion must preserve containment. The baseline recipe accepts games in source
+order until a configured bound, so relaxing a filter without also raising that
+bound can push previously accepted games past the cutoff and drop them.
+Evaluation comparability depends on each pool generation being a superset of the
+last, so an expansion should be configured to retain everything previously
+accepted and the generation cut should verify containment rather than assume it.
+
+## Selecting Within A Corpus
+
+Training selection should be able to filter within one broad corpus rather than
+relying on preparation-time filters to produce a narrower one.
+
+This is what makes the value of data measurable. Comparing a model trained on one
+speed against a model trained on several requires both to be scored against one
+evaluation reference containing both. Preparing two narrower corpora instead
+produces two different references, so the comparison is not valid and the
+fingerprints will not match. With selection as a load-time dial, the two runs
+differ only in what they trained on, and the difference shows up sliced by axis.
+
+The same dial answers how much data is worth acquiring. Subsampling the selection
+deterministically gives a data-scaling curve against a fixed reference, which is
+more informative for planning acquisition than any single comparison.
+
+A model trained on a narrow selection will score poorly on the axes it never saw.
+That is the measurement working rather than a regression, which is why these
+comparisons need the axis slice and not only the aggregate.
+
+See `docs/decisions/0013-benchmark-result-comparability.md`.
+
 ## Primary Source
 
 The main initial source should be the Lichess open database:

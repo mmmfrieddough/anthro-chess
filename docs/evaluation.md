@@ -46,6 +46,80 @@ The values and scales are examples. The important idea is that model comparison
 should stay compact by default while preserving enough detail to explain why a
 model changed.
 
+Comparison is not only pairwise. The project should be able to see improvement
+across its whole history, not just before and after one change, so results
+accumulate as a durable history rather than as one-off artifacts compared on
+demand.
+
+## Benchmark Infrastructure
+
+Benchmarks append to a **results store**; reports, comparisons, and charts are
+views over that store. This inverts the obvious arrangement, where each
+benchmark writes an artifact and comparison is a separate operation over files,
+and it is what makes "compare against a checkpoint from a year ago" a query
+rather than a task.
+
+Results are layered like the diagnostics they contain. A small summary tier is
+committed to the repository, so history is versioned with the code, metric
+movement shows up as a reviewable diff, and agents read results with ordinary
+file tools rather than through a service. Bulk diagnostics stay machine-local.
+`docs/decisions/0014-evaluation-result-storage.md` owns that split and the
+reasoning behind not adopting an experiment-tracking platform.
+
+Every result carries a **fingerprint** identifying the series it belongs to.
+Results with matching fingerprints are comparable; results without are not, and
+a report should say so rather than present the difference as a change in model
+quality. `docs/decisions/0013-benchmark-result-comparability.md` owns the
+fingerprint contract, the rules for bridging a broken series, and how pool
+generations relate to long-running comparisons.
+
+Metric identity is a contract, not an implementation detail. Each metric has a
+stable identifier, a declared direction of improvement, a family, and a
+definition version, so a metric can be named in an issue or a report without
+consulting a schema, and no reader has to infer whether lower is better. A
+changed definition means a new identity rather than a quietly redefined series.
+
+Artifacts should record enough provenance to recompute their own fingerprint,
+and reporting should accept new artifact kinds as later benchmarks land without
+restructuring. Metrics with no data dependency, such as optimizer and parameter
+statistics, carry no data component in their fingerprint and are therefore
+immune to changes in evaluation inputs.
+
+## Noise Characterization
+
+A delta is not a finding until it is larger than the noise in the measurement.
+Reports should annotate every change with the noise floor it did or did not
+clear, and a delta inside the floor should be visible but marked rather than
+hidden, so a consistent small regression is not lost.
+
+Three sources of noise are distinct, and conflating them is the usual mistake:
+
+- **evaluation noise**: the same checkpoint re-measured on the same data.
+  Deterministic offline metrics over a frozen pool have none; rollout metrics
+  have a lot, driven by seeds.
+- **data-sampling noise**: how much the metric would move on a different draw of
+  the same size from the same population. Estimable by bootstrapping from a
+  single run, so it costs nothing, and it is what says whether a pool or a view
+  is large enough.
+- **training noise**: the same configuration trained from a different seed. This
+  is the floor that decides whether a *model change* is real, and it is the
+  expensive one, since it needs several training runs.
+
+Noise characterizations are stored in the results store under the same
+fingerprint rules as any other measurement, so they invalidate on the same
+terms rather than lingering as stale constants.
+
+Training noise should be characterized early, while runs are short. It is the
+most valuable of the three and the only one that becomes harder to obtain over
+time: once runs are long and expensive, several repeat runs stop being
+affordable, and the project loses the ability to distinguish a small improvement
+from seed luck for the rest of its life.
+
+Sampling-noise estimates are also what size the evaluation inputs. How many
+games an axis needs in order to resolve an effect of a given size is a
+computable quantity, not a guess, and it should be computed rather than assumed
+when a pool generation is planned.
+
 ## Benchmark Data Layers
 
 Benchmark inputs are layered as partition, pool, and views. Keeping them
@@ -83,16 +157,76 @@ re-baseline. Comparisons are valid within a version, and a report should refuse
 to compare across versions rather than present the difference as a checkpoint
 regression.
 
-Comparing checkpoints on the pool applies mild selection pressure to it over
-time. That is accepted rather than designed away, and is why the pool is drawn
-from a partition the training loop never consumes.
+Pool versions are **generations**, and each is a superset of the last. Split
+assignment is stable under corpus growth, so appending games preserves every
+game an earlier generation contained and an earlier measurement stays
+reproducible on the subset. Removing games, rejecting previously accepted games
+through a filter change, or changing the split seed destroys that and ends the
+affected series permanently.
 
-See `docs/decisions/0011-held-out-test-partition.md` and
-`docs/decisions/0012-derived-evaluation-views.md`.
+Once a generation is designated as the **core**, benchmarks report against both
+it and the current full pool. Core gives one continuous line for the rest of the
+project; current gives more statistical power on a line that restarts at each
+generation. Current is the number that answers how good a checkpoint is, core is
+the number that answers whether it improved over the long run, and sustained
+divergence between them for one checkpoint is the visible symptom of core
+overfitting.
+
+A small set of retained **anchor checkpoints** is re-scored whenever a generation
+is cut, so the new generation overlaps the previous one and a shift at the seam
+is attributable to the pool rather than mistaken for a model regression.
+
+Comparing checkpoints on the pool applies selection pressure to it over time.
+That is accepted rather than designed away, and is why the pool is drawn from a
+partition the training loop never consumes. Over a long project the pressure on
+a fixed core is more than mild, which is the second reason to keep the growing
+current view alongside it.
+
+See `docs/decisions/0011-held-out-test-partition.md`,
+`docs/decisions/0012-derived-evaluation-views.md`, and
+`docs/decisions/0013-benchmark-result-comparability.md`.
 
 ## Evaluation Layers
 
 Different checks belong at different points in development and training.
+
+### Cadence And Cost
+
+Getting feedback early matters. A training run that is going badly should say so
+within the hour rather than at the end, which means moving measurements earlier
+wherever they are affordable.
+
+The tempting way to organize that is a tier taxonomy, with named bundles of
+benchmarks at each level. It collapses into something simpler once two
+independent axes are separated: **which metric** is computed, and **how much
+data** it is computed over. Most of what differs between an early reading and a
+late one is the second, and the same metric at two data sizes is one question
+asked at two precisions rather than two different questions.
+
+So cadence is a schedule, not a class of benchmark. Each entry says when it
+runs, which metrics it computes, and what view it computes them over. Each
+metric declares a cost so an unaffordable pairing fails loudly. Series
+separation is automatic, because a smaller view produces a different fingerprint
+and can never be plotted on the same line as a full one.
+
+Some measurements are cheap at full precision rather than cheap because they
+were shrunk. Optimizer and parameter statistics have no data dependency at all.
+A model's exact policy at a fixed position is one forward pass, so distribution
+comparisons over early-game positions are exactly computable rather than
+estimated from rollouts. These belong at frequent cadences without any loss of
+precision. Rollout metrics are the opposite: irreducibly sampled, with view size
+as the only dial.
+
+View size should be declared explicitly rather than resolved from a compute or
+time budget. An adaptive budget would make the same cadence resolve differently
+on different machines, producing inconsistent fingerprints and noise floors for
+what is supposed to be one series.
+
+The **end-of-run suite over the test pool is canonical**, and every metric
+appears there in full form. Earlier readings are previews of it. A preview view
+may subsample and may not filter, which is what keeps it an unbiased estimate of
+the canonical quantity with wider error bars instead of a different measurement
+needing a documented conversion.
 
 ### Unit And Integration Tests
 
@@ -139,6 +273,39 @@ loss and move loss after exact legal masking, allowing a direct comparison with
 uniform-over-legal selection while preserving the raw-logit legality
 diagnostics. Its versioned structured result is the source of truth for exact
 metric fields and rating-band boundaries.
+
+In-training previews run against the `validation` split rather than the test
+pool. Running them against the test pool would let those readings influence when
+training stops and which checkpoint is kept, which is precisely the selection
+pressure the held-out partition exists to prevent. Because both splits are
+uniform hash assignments over the same corpus, a validation-split reading is an
+unbiased estimate of the same population quantity the test pool measures, so the
+early peek costs nothing in leakage.
+
+The one caveat worth stating when reading them together: validation numbers
+drift optimistic over a long run precisely because checkpoint selection presses
+on them. Previews are most trustworthy early and increasingly flattering late,
+which is the honest reason the canonical reading is on the test pool.
+
+### Per-Step Health Metrics
+
+A small set of measurements can run every optimizer step, subject to a hard
+rule: they must be derivable from tensors the training step already computed. No
+extra forward pass, no extra data loading. They should also accumulate on-device
+and synchronize only at the existing logging interval, because the cost of cheap
+telemetry is usually device synchronization rather than arithmetic.
+
+These run on training batches, so they are contaminated and are not quality
+measurements. They belong to the training-health family and answer whether
+something is going wrong right now, not how good the model is. They must never
+share a series with held-out metrics.
+
+Optimizer and parameter statistics are the strongest candidates, since gradient
+norm and update-to-weight ratio distinguish divergence, exploding gradients, and
+a dead learning rate from each other, which loss alone does not. Metrics
+computed from training-batch predictions are weaker, because cross-entropy
+against a legal target already moves when the model degrades; they add
+specificity rather than early warning.
 
 ### Periodic Benchmarks
 
