@@ -110,6 +110,20 @@ classification from an owned versioned book lands here too, because rollout
 distribution comparison needs family aggregation; the per-ply multi-label form
 for preference conditioning stays in stage 5.
 
+Alongside the data contract, this stage builds the result infrastructure the
+benchmarks share: a durable results store benchmarks append to, a metric
+registry with stable identities and declared directions, an artifact envelope
+carrying provenance, and per-series comparability fingerprints. Reports and
+charts are views over the store rather than one-off comparisons of files, which
+is what makes checkpoint history queryable rather than reconstructed. Noise
+characterization belongs here too, and training-noise characterization
+specifically should happen while runs are still short, because it only becomes
+harder to afford later. This work should land before the individual benchmarks
+so they do not each invent an incompatible result shape.
+
+Live training observability arrives in this stage as well, so a run in progress
+can be followed without waiting for it to finish.
+
 The initial harness should emphasize reusable benchmarks that can run against
 future models:
 
@@ -145,6 +159,22 @@ tune sampling and weighting, improve model capacity, strengthen checkpointing
 and reproducible runs, and improve runtime reliability. Iterating here is the
 point of having built the harness first, and it should continue until the
 benchmark surfaces stop moving.
+
+The data work has an order that later comparisons depend on. Training selection
+becomes a filterable dial over one broad corpus first, so the value of adding a
+data source can be measured against a single evaluation reference instead of
+against two incomparable ones. The corpus then widens across the axes the
+project intends to keep measuring, sized by evaluation power rather than
+training volume. Cutting the resulting pool generation is the point at which the
+long-lived evaluation core is designated and benchmarks begin reporting against
+both it and the growing current pool. Scaling volume within those axes follows,
+with the earlier baseline re-scored against the new reference so the whole arc
+stays on one comparable scale.
+
+This ordering is why the core is not frozen during stage 3. A reference
+designated against the narrow first corpus could never measure the axes added
+later, and there is almost no benchmark history to protect before this stage
+begins.
 
 Once that model plays coherently, measure what the target rating actually
 produces: the transfer function from configured rating to played strength, its
