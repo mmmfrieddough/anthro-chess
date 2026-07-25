@@ -319,32 +319,17 @@ class UciEngine:
         self._board = board
         logger.debug("Synced UCI position with %s observed plies", len(moves))
 
-    def _build_session(
-        self,
-        runner: ActionModelRunner,
-        initial_fen: str,
-        moves: tuple[chess.Move, ...],
-        controlled_color: chess.Color,
-    ) -> GameSession:
-        return GameSession(
-            runner,
-            controlled_color=controlled_color,
-            config=self._runtime_config,
-            initial_fen=initial_fen,
-            moves=moves,
-        )
-
     def _ensure_initialized(self, error_stream: TextIO) -> GameSession:
         if self._session is not None:
             return self._session
         try:
             with contextlib.redirect_stdout(error_stream):
                 runner = self._load_runner()
-            session = self._build_session(
+            session = GameSession(
                 runner,
-                self._initial_fen,
-                self._moves,
-                self._board.turn,
+                config=self._runtime_config,
+                initial_fen=self._initial_fen,
+                moves=self._moves,
             )
         except Exception as error:
             raise UciInitializationError(

@@ -62,6 +62,21 @@ maximum conditioning rating, not a claim of calibrated playing strength, and
 is the protocol-default state. Unknown commands and tokens are ignored where
 the remaining command can be parsed safely.
 
+UCI has no engine-side color. Every `go` asks for a move by whichever player
+is to move in the synchronized position, so one process serves both sides and
+can change sides between or within games.
+
+The protocol-independent runtime has no controlled color either. A session owns
+exact game state and decides for the player to move, because exact board state
+already identifies that player and the target rating conditions the decision
+rather than a player, as recorded in
+[`0009-decision-only-rating-conditioning.md`](decisions/0009-decision-only-rating-conditioning.md).
+A caller that assigns colors, such as a game loop alternating with a human,
+owns that mapping and decides when to ask for a move; the runtime does not
+duplicate it. Board state, observed history, the reusable encoded prefix, and
+the active random stream are all color-independent, so serving the other side
+never reloads the model, restarts a game, or draws a new sampling stream.
+
 Terminal positions return `bestmove 0000`, the UCI null-move representation.
 An internal model or inference failure does not masquerade as a terminal
 position: the process emits a protocol-safe critical-error diagnostic, records

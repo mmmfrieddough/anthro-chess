@@ -508,6 +508,23 @@ def test_python_chess_client_plays_terminal_position_and_starts_new_game(
         )
         assert fresh_result.move is not None
         assert fresh_result.move in fresh_board.legal_moves
+
+        # The same process must also serve the Black side of a later game.
+        black_game = object()
+        black_board = chess.Board()
+        black_board.push_uci("d2d4")
+        for _ in range(3):
+            black_result = engine.play(
+                black_board,
+                chess.engine.Limit(depth=1),
+                game=black_game,
+            )
+            assert black_result.move is not None
+            assert black_result.move in black_board.legal_moves
+            black_board.push(black_result.move)
+            assert not black_board.is_game_over()
+            reply = min(black_board.legal_moves, key=lambda move: move.uci())
+            black_board.push(reply)
     finally:
         engine.quit()
 
@@ -736,6 +753,142 @@ def test_console_script_reproduces_seeded_games_and_varies_fresh_streams(
     seeds = re.findall(r"resolved seed (\d+)", log_path.read_text(encoding="utf-8"))
     # Each new game establishes an independent fresh stream.
     assert len(set(seeds)) >= 2
+
+
+# Real GUIs differ in when they complete the handshake, whether they announce a
+# new game, when they apply options, and how they express the position. Every
+# ordering below must reach exactly one legal move, for either color, on one
+# loaded runner. The color latch fixed here was invisible to a single ordering.
+_HANDSHAKE_ORDERINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ready-before-position", ("uci", "isready", "ucinewgame", "{position}", "go")),
+    ("ready-after-position", ("uci", "ucinewgame", "{position}", "isready", "go")),
+    ("no-ucinewgame", ("uci", "isready", "{position}", "go")),
+    ("no-isready", ("uci", "ucinewgame", "{position}", "go")),
+    (
+        "options-before-ready",
+        (
+            "uci",
+            "setoption name UCI_LimitStrength value true",
+            "setoption name UCI_Elo value 1200",
+            "isready",
+            "ucinewgame",
+            "{position}",
+            "go",
+        ),
+    ),
+    (
+        "options-after-position",
+        (
+            "uci",
+            "isready",
+            "ucinewgame",
+            "{position}",
+            "setoption name Anthro Temperature value 50",
+            "go",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "ordering", _HANDSHAKE_ORDERINGS, ids=[name for name, _ in _HANDSHAKE_ORDERINGS]
+)
+@pytest.mark.parametrize("color", (chess.WHITE, chess.BLACK), ids=("white", "black"))
+@pytest.mark.parametrize("position_form", ("startpos", "fen"), ids=("startpos", "fen"))
+def test_gui_handshake_orderings_all_reach_one_legal_move(
+    ordering: tuple[str, tuple[str, ...]],
+    color: chess.Color,
+    position_form: str,
+) -> None:
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+    engine, loads = _counting_engine(_sampling_logits(), seed=7)
+
+    board = chess.Board()
+    if color == chess.BLACK:
+        board.push_uci("e2e4")
+    if position_form == "startpos":
+        moves = " ".join(move.uci() for move in board.move_stack)
+        position = "position startpos" + (f" moves {moves}" if moves else "")
+    else:
+        position = f"position fen {board.fen()}"
+
+    _, commands = ordering
+    transcript = "\n".join(command.format(position=position) for command in commands)
+    output = _drive(engine, transcript + "\n", error)
+
+    bestmoves = _bestmoves(output)
+    assert len(bestmoves) == 1
+    assert chess.Move.from_uci(bestmoves[0]) in board.legal_moves
+    assert loads() == 1
+
+
+def test_engine_moves_as_black_after_a_fully_completed_handshake() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e7e5"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+
+    # A GUI that finishes the handshake before sending any position leaves the
+    # engine holding the starting board, so the first decision is Black's.
+    output, _ = _run(
+        engine,
+        "uci\nisready\nucinewgame\nposition startpos moves e2e4\ngo\nquit\n",
+    )
+
+    assert _bestmoves(output) == ["e7e5"]
+
+
+def test_engine_switches_colors_across_games_without_reloading_or_reseeding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "_draw_fresh_seed", iter([700, 701]).__next__)
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+    engine, loads = _counting_engine(_sampling_logits(), seed=None)
+
+    white = _bestmoves(_drive(engine, "isready\nposition startpos\ngo\n", error))
+    black = _bestmoves(
+        _drive(engine, "ucinewgame\nposition startpos moves d2d4\ngo\n", error)
+    )
+
+    assert len(white) == 1
+    assert len(black) == 1
+    assert chess.Move.from_uci(white[0]) in chess.Board().legal_moves
+    replied = chess.Board()
+    replied.push_uci("d2d4")
+    assert chess.Move.from_uci(black[0]) in replied.legal_moves
+    # Switching sides reuses the loaded runner; only ucinewgame drew a stream.
+    assert loads() == 1
+
+
+def test_color_switch_within_one_game_never_draws_a_new_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exactly one fresh seed is available, so any reseed on a color switch
+    # exhausts the iterator instead of silently restarting the stream.
+    monkeypatch.setattr(session_module, "_draw_fresh_seed", iter([802]).__next__)
+    error = io.StringIO()
+    configure_application_logging(level="WARNING", stream=error)
+    engine, loads = _counting_engine(_sampling_logits(), seed=None)
+
+    board = chess.Board()
+    played: list[chess.Move] = []
+    for _ in range(4):
+        command = "position startpos"
+        if played:
+            command += " moves " + " ".join(move.uci() for move in played)
+        best = _bestmoves(_drive(engine, command + "\ngo\n", error))[-1]
+        move = chess.Move.from_uci(best)
+        assert move in board.legal_moves
+        board.push(move)
+        played.append(move)
+
+    # One process served both colors of one game on one runner and one stream.
+    assert len(played) == 4
+    assert loads() == 1
 
 
 def _run(engine: UciEngine, transcript: str) -> tuple[str, str]:
