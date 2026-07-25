@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
 from pydantic import Field
 
@@ -43,30 +42,9 @@ POOL_GAMES_FILE_NAME = "games.parquet"
 POOL_MANIFEST_FILE_NAME = "manifest.json"
 logger = logging.getLogger(__name__)
 
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
-
 
 class EvaluationPoolError(ValueError):
     """Raised when a pool cannot be built from or loaded for a selection."""
-
-
-def _as_pool_error(function: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Present shared normalized-artifact failures under this module's error.
-
-    The artifact helpers are shared with preparation and training, so they
-    raise the data package's error. Callers of a pool operation should only
-    have to handle one exception type.
-    """
-
-    @wraps(function)
-    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        try:
-            return function(*args, **kwargs)
-        except DataLoadingError as error:
-            raise EvaluationPoolError(str(error)) from error
-
-    return wrapper
 
 
 def game_ids_sha256(game_ids: Sequence[int]) -> str:
@@ -128,13 +106,27 @@ class PoolResult:
     game_ids_sha256: str
 
 
-@_as_pool_error
 def freeze_pool(
     resolved_config: ResolvedConfig[PoolConfig],
     output_directory: str | Path,
 ) -> PoolResult:
-    """Materialize the configured split as a checksummed evaluation pool."""
+    """Materialize the configured split as a checksummed evaluation pool.
 
+    The shared artifact helpers are used by preparation and training too, so
+    they raise the data package's error. Convert it here to keep one exception
+    type at this module's boundary.
+    """
+
+    try:
+        return _freeze_pool(resolved_config, output_directory)
+    except DataLoadingError as error:
+        raise EvaluationPoolError(str(error)) from error
+
+
+def _freeze_pool(
+    resolved_config: ResolvedConfig[PoolConfig],
+    output_directory: str | Path,
+) -> PoolResult:
     config = resolved_config.value
     output_path = Path(output_directory)
     source_paths = normalized_shard_paths(config.normalized)
@@ -256,10 +248,16 @@ def freeze_pool(
     )
 
 
-@_as_pool_error
 def load_pool(directory: str | Path) -> FrozenPool:
     """Load a frozen pool and verify it against its recorded identity."""
 
+    try:
+        return _load_pool(directory)
+    except DataLoadingError as error:
+        raise EvaluationPoolError(str(error)) from error
+
+
+def _load_pool(directory: str | Path) -> FrozenPool:
     pool_path = Path(directory)
     games_path = pool_path / POOL_GAMES_FILE_NAME
     manifest_path = pool_path / POOL_MANIFEST_FILE_NAME
