@@ -283,6 +283,50 @@ def test_sync_position_rejects_illegal_history_without_mutation() -> None:
     assert session.resolved_seed == stream
 
 
+def test_set_controlled_color_switches_sides_without_disturbing_state() -> None:
+    session = GameSession(
+        StubRunner(_ranked_logits("e7e5")),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=0.0, seed=11),
+    )
+    e2e4 = chess.Move.from_uci("e2e4")
+    session.sync_position(moves=(e2e4,))
+    stream = session.resolved_seed
+
+    session.set_controlled_color(chess.BLACK)
+
+    assert session.controlled_color == chess.BLACK
+    # Board, history, prefix accounting, and the random stream are all
+    # independent of which player the session decides for.
+    assert session.move_history == (e2e4,)
+    assert session.reusable_prefix_plies == 0
+    assert session.resolved_seed == stream
+
+    action = session.choose_action()
+    assert isinstance(action, MoveAction)
+    assert action.move == chess.Move.from_uci("e7e5")
+
+    append = session.sync_position(moves=(e2e4, action.move))
+    assert append.replaced is False
+    assert append.reused_prefix_plies == 2
+    assert session.resolved_seed == stream
+
+
+def test_set_controlled_color_is_idempotent_and_rejects_invalid_colors() -> None:
+    session = GameSession(
+        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        controlled_color=chess.WHITE,
+        config=RuntimeConfig(temperature=0.0, seed=3),
+    )
+
+    session.set_controlled_color(chess.WHITE)
+    assert session.controlled_color == chess.WHITE
+
+    with pytest.raises(TypeError, match="chess.WHITE or chess.BLACK"):
+        session.set_controlled_color(1)  # type: ignore[arg-type]
+    assert session.controlled_color == chess.WHITE
+
+
 def test_reset_validates_history_and_defensively_owns_board_state() -> None:
     session = GameSession(
         StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),

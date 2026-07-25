@@ -349,6 +349,9 @@ class UciEngine:
         if session.is_terminal:
             self._send(output, f"bestmove {NULL_BESTMOVE}")
             return
+        # UCI has no engine-side color: ``go`` always asks for a move by
+        # whichever player is to move in the synchronized position.
+        session.set_controlled_color(self._board.turn)
         try:
             action = session.choose_action()
         except Exception as error:

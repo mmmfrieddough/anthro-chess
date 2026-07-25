@@ -102,7 +102,7 @@ For final Playable Proof acceptance:
 1. Start an untimed standard-chess game and confirm Anthro returns legal moves.
 2. Finish or deliberately adjudicate the game.
 3. Start a new game without restarting the engine configuration and confirm
-   Anthro moves again.
+   Anthro moves again, including a game where Anthro takes the other color.
 4. Quit the GUI and confirm the engine process exits.
 5. Record the GUI name and version, operating system, completed-game outcome,
    and successful new-game reset in issue #35.

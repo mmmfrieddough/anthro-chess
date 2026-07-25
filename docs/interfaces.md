@@ -62,6 +62,16 @@ maximum conditioning rating, not a claim of calibrated playing strength, and
 is the protocol-default state. Unknown commands and tokens are ignored where
 the remaining command can be parsed safely.
 
+UCI has no engine-side color. Every `go` asks for a move by whichever player
+is to move in the synchronized position, so one process serves both sides and
+can change sides between or within games. The protocol-independent runtime
+still owns a single controlled player, because rating conditioning is defined
+only for the player Anthro decides for; the UCI adapter points that controlled
+player at the current side to move for each decision. Doing so is pure
+bookkeeping: exact board state, observed history, the reusable encoded prefix,
+and the active random stream are all color-independent, so changing sides never
+reloads the model, restarts a game, or draws a new sampling stream.
+
 Terminal positions return `bestmove 0000`, the UCI null-move representation.
 An internal model or inference failure does not masquerade as a terminal
 position: the process emits a protocol-safe critical-error diagnostic, records

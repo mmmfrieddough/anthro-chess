@@ -222,6 +222,27 @@ class GameSession:
 
         self._begin_random_stream()
 
+    def set_controlled_color(self, color: chess.Color) -> None:
+        """Point the session at a different controlled player.
+
+        Exact board state, observed history, the reusable encoded prefix, and
+        the active random stream are all independent of which player Anthro is
+        deciding for, so this only moves the guard used by
+        :meth:`choose_action`. Protocols such as UCI, which ask the engine to
+        move for whichever side is to move, use this instead of rebuilding a
+        session per color.
+        """
+
+        if type(color) is not bool:
+            raise TypeError("color must be chess.WHITE or chess.BLACK")
+        if color == self.controlled_color:
+            return
+        self.controlled_color = color
+        logger.debug(
+            "Controlled color is now %s",
+            "white" if color == chess.WHITE else "black",
+        )
+
     def _reconstruct_and_validate(
         self,
         initial_fen: str,
