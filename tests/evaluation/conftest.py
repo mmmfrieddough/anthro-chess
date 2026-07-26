@@ -12,6 +12,13 @@ import chess
 import pytest
 
 from anthro_chess.chess import action_vocabulary_identity, encode_move
+from anthro_chess.data import (
+    GameEncodingInput,
+    SequenceBatch,
+    SequenceExample,
+    collate_sequences,
+    encode_game,
+)
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
@@ -61,10 +68,16 @@ def _normalized_row(
     rating: int | None = 1500,
     clocks: bool = True,
     result: str = "1-0",
+    moves: tuple[str, ...] | None = None,
+    initial_position: str = chess.STARTING_FEN,
 ) -> dict[str, Any]:
-    """Return one canonical normalized game row."""
+    """Return one canonical normalized game row.
 
-    moves = OPENING_MOVES[:plies]
+    Explicit ``moves`` and ``initial_position`` let a fixture reach positions
+    the shared opening line never visits, such as an available promotion.
+    """
+
+    moves = OPENING_MOVES[:plies] if moves is None else moves
     status = "present"
     return {
         "schema_version": SCHEMA_VERSION,
@@ -72,7 +85,7 @@ def _normalized_row(
         "source_id": "fixture",
         "source_game_key": f"game{game_id}",
         "ruleset": "standard",
-        "initial_position": chess.STARTING_FEN,
+        "initial_position": initial_position,
         "result": result,
         "termination": "normal",
         "termination_status": status,
@@ -99,8 +112,63 @@ def _normalized_row(
     }
 
 
-def _write_corpus(directory: Path, rows: list[dict[str, Any]]) -> tuple[Path, Path]:
-    """Write a normalized shard plus a matching manifest, returning both paths."""
+def _sequence_batch(
+    *games: tuple[tuple[str, ...], int | None, int | None],
+) -> SequenceBatch:
+    """Collate encoded games into one padded batch, without inventing targets."""
+
+    examples = []
+    for game_offset, (moves, white_rating, black_rating) in enumerate(games):
+        board = chess.Board()
+        ids = []
+        for move_text in moves:
+            move = chess.Move.from_uci(move_text)
+            assert move in board.legal_moves
+            ids.append(encode_move(move))
+            board.push(move)
+        plies = encode_game(
+            GameEncodingInput(
+                game_id=100 + game_offset,
+                ruleset="standard",
+                initial_position=chess.STARTING_FEN,
+                action_ids=tuple(ids),
+                white_normalized_rating=white_rating,
+                black_normalized_rating=black_rating,
+                time_initial_ms=None,
+                time_increment_ms=None,
+                clock_remaining_ms=tuple(None for _ in ids),
+            )
+        )
+        examples.append(
+            SequenceExample(
+                shard_index=0,
+                game_id=100 + game_offset,
+                start_ply=0,
+                plies=plies,
+            )
+        )
+    return collate_sequences(examples)
+
+
+@pytest.fixture
+def sequence_batch() -> Callable[..., SequenceBatch]:
+    """Return a factory building one collated batch from explicit games."""
+
+    return _sequence_batch
+
+
+def _write_corpus(
+    directory: Path,
+    rows: list[dict[str, Any]],
+    *,
+    source_id: str = "fixture",
+) -> tuple[Path, Path]:
+    """Write a normalized shard plus a matching manifest, returning both paths.
+
+    ``source_id`` distinguishes separately prepared corpora, whose manifests
+    would otherwise be byte-identical here in a way real preparation runs are
+    not.
+    """
 
     import pyarrow as pa  # type: ignore[import-untyped]
     import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -124,7 +192,7 @@ def _write_corpus(directory: Path, rows: list[dict[str, Any]]) -> tuple[Path, Pa
                 "schema_version": SCHEMA_VERSION,
                 "preprocessing_version": PREPROCESSING_VERSION,
                 "action_vocabulary": action_vocabulary_identity(),
-                "source": {"id": "fixture", "version": "v1"},
+                "source": {"id": source_id, "version": "v1"},
                 "input": {"file_name": "fixture.pgn", "sha256": "0" * 64},
                 "split": {"algorithm": "sha256-threshold-v2", "seed": "fixture"},
                 "selection": {"algorithm": "fixture"},
@@ -152,7 +220,7 @@ def normalized_row() -> Callable[..., dict[str, Any]]:
 
 
 @pytest.fixture
-def write_corpus() -> Callable[[Path, list[dict[str, Any]]], tuple[Path, Path]]:
+def write_corpus() -> Callable[..., tuple[Path, Path]]:
     """Return a factory writing a normalized shard plus matching manifest."""
 
     return _write_corpus

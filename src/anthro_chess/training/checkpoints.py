@@ -8,6 +8,7 @@ import pickle
 import random
 import re
 from collections.abc import Mapping
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
@@ -179,6 +180,22 @@ def load_training_checkpoint(path: Path) -> dict[str, Any]:
         if payload[key] is not None and not isinstance(payload[key], Mapping):
             raise CheckpointError(f"checkpoint {key} must be a mapping or null")
     return payload
+
+
+def parameter_sha256(model: torch.nn.Module) -> str:
+    """Return the digest identifying one model's exact parameter values.
+
+    Training records this so a run can prove its optimizer changed something;
+    evaluation recomputes it so a benchmark result names the exact weights it
+    scored rather than only the file they came from.
+    """
+
+    digest = sha256()
+    for name, parameter in model.named_parameters():
+        digest.update(name.encode())
+        value = parameter.detach().cpu().contiguous()
+        digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
 
 
 def capture_rng_state(device: torch.device | str) -> dict[str, object]:

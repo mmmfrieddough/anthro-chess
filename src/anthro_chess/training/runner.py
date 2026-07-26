@@ -36,6 +36,7 @@ from anthro_chess.training.checkpoints import (
     clear_latest_checkpoint,
     latest_checkpoint_path,
     load_training_checkpoint,
+    parameter_sha256,
     restore_rng_state,
     save_training_checkpoint,
 )
@@ -212,7 +213,7 @@ def run_training(
                 fallback_seed=config.seed,
             )
 
-        initial_parameter_sha256 = _parameter_sha256(model)
+        initial_parameter_sha256 = parameter_sha256(model)
         if resumed_from is None:
             clear_latest_checkpoint(output_directory)
         _prepare_metrics(metrics_path, through_step=starting_step)
@@ -234,7 +235,7 @@ def run_training(
             checkpoint_metadata=checkpoint_metadata,
         )
         _synchronize_device(device)
-        final_parameter_sha256 = _parameter_sha256(model)
+        final_parameter_sha256 = parameter_sha256(model)
         if final_parameter_sha256 == initial_parameter_sha256:
             raise TrainingError("optimizer completed without changing model parameters")
 
@@ -685,12 +686,3 @@ def _validate_manifest(
 ) -> None:
     validate_manifest_compatibility(manifest, manifest_path)
     validate_manifest_outputs(manifest, manifest_path, paths)
-
-
-def _parameter_sha256(model: CausalMoveModel) -> str:
-    digest = sha256()
-    for name, parameter in model.named_parameters():
-        digest.update(name.encode())
-        value = parameter.detach().cpu().contiguous()
-        digest.update(value.numpy().tobytes())
-    return digest.hexdigest()

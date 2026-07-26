@@ -1,0 +1,20 @@
+# Canonical end-of-run reading over the frozen test pool.
+#
+# The model selection is deliberately absent: with no explicit checkpoint or
+# run, `anthro eval run` uses the machine-local default selection beneath
+# ANTHRO_CHESS_RUN_ROOT, the same record the playable engine reads. Override
+# it for one run with, for example:
+#
+#   anthro eval run --config <this file> --set model.run_path='"blitz-v3"'
+pool = "artifacts/lichess-blitz-2017-04-test"
+
+[view]
+# The whole pool. Preview cadences subsample in their own view rather than
+# shrinking the pool this reading is defined over.
+name = "canonical"
+
+[loader]
+batch_size = 8
+
+[dependency]
+enabled = true

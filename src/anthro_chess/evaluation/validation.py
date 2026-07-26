@@ -11,6 +11,7 @@ from torch import Tensor, nn
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import SequenceBatch
+from anthro_chess.evaluation.policy import PositionPolicy, score_positions
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
     RatingBand,
@@ -111,97 +112,30 @@ class MoveValidationAccumulator:
     def update(self, logits: Tensor, batch: MoveModelBatch) -> None:
         """Add one aligned raw-logit batch to the validation result."""
 
-        batch.validate()
-        _validate_logits(logits, batch)
+        self.add(score_positions(logits, batch))
 
-        active_indices = (
-            torch.nonzero(
-                batch.action_loss_mask,
-                as_tuple=False,
-            )
-            .detach()
-            .cpu()
-        )
-        active_logits = (
-            logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
-        )
-        active_targets = (
-            batch.action_targets[batch.action_loss_mask].detach().to(device="cpu")
-        )
-        log_probabilities = torch.log_softmax(active_logits, dim=-1)
-        move_losses = -log_probabilities.gather(
-            1,
-            active_targets.unsqueeze(1),
-        ).squeeze(1)
+    def add(self, positions: Iterable[PositionPolicy]) -> None:
+        """Add already-scored positions, so callers can score a batch once."""
 
-        rating_values = (
-            batch.inputs.target_rating.values[batch.action_loss_mask]
-            .detach()
-            .to(device="cpu")
-        )
-        rating_present = (
-            batch.inputs.target_rating.present[batch.action_loss_mask]
-            .detach()
-            .to(device="cpu")
-        )
-        _validate_ratings(rating_values, rating_present)
-
-        active_targets_list = active_targets.detach().cpu().tolist()
-        legal_rows: list[tuple[int, ...]] = []
-        for (batch_index, sequence_index), target in zip(
-            active_indices.tolist(),
-            active_targets_list,
-            strict=True,
-        ):
-            legal_actions = batch.legal_action_ids[batch_index][sequence_index]
-            _validate_legal_actions(legal_actions, target)
-            legal_rows.append(legal_actions)
-
-        legal_mask = torch.zeros_like(active_logits, dtype=torch.bool)
-        for active_offset, legal_actions in enumerate(legal_rows):
-            legal_indices = torch.tensor(
-                legal_actions,
-                dtype=torch.long,
-                device=active_logits.device,
-            )
-            legal_mask[active_offset, legal_indices] = True
-
-        log_legal_mass = torch.logsumexp(
-            active_logits.masked_fill(~legal_mask, -torch.inf),
-            dim=-1,
-        ) - torch.logsumexp(active_logits, dim=-1)
-        legal_mass = torch.exp(log_legal_mass)
-        top_actions = torch.argmax(active_logits, dim=-1, keepdim=True)
-        top1_illegal = ~legal_mask.gather(1, top_actions).squeeze(1)
-
-        active_count = len(legal_rows)
-        self._position_count += active_count
-        self._move_loss_sum += float(move_losses.sum().item())
-        self._legal_move_loss_sum += float((move_losses + log_legal_mass).sum().item())
-        self._mask_penalty_sum += float((-log_legal_mass).sum().item())
-        self._legal_mass_sum += float(legal_mass.sum().item())
-        self._top1_illegal_count += int(top1_illegal.sum().item())
-        self._uniform_legal_loss_sum += sum(
-            math.log(len(legal_actions)) for legal_actions in legal_rows
-        )
-
-        move_loss_values = move_losses.detach().cpu().tolist()
-        rating_value_list = rating_values.detach().cpu().tolist()
-        rating_present_list = rating_present.detach().cpu().tolist()
-        for move_loss, rating, present in zip(
-            move_loss_values,
-            rating_value_list,
-            rating_present_list,
-            strict=True,
-        ):
-            if present:
-                band_index = _rating_band_index(rating, self._rating_bands)
+        for position in positions:
+            self._position_count += 1
+            self._move_loss_sum += position.move_nll
+            self._legal_move_loss_sum += position.legal_move_nll
+            self._mask_penalty_sum += position.mask_penalty
+            self._legal_mass_sum += position.legal_mass
+            self._top1_illegal_count += int(position.top1_illegal)
+            self._uniform_legal_loss_sum += position.uniform_over_legal_move_nll
+            if position.conditioned_rating is None:
+                self._missing_rating_position_count += 1
+                self._missing_rating_loss_sum += position.move_nll
+            else:
+                band_index = _rating_band_index(
+                    position.conditioned_rating,
+                    self._rating_bands,
+                )
                 self._rated_position_count += 1
                 self._rating_counts[band_index] += 1
-                self._rating_loss_sums[band_index] += move_loss
-            else:
-                self._missing_rating_position_count += 1
-                self._missing_rating_loss_sum += move_loss
+                self._rating_loss_sums[band_index] += position.move_nll
 
     def compute(self) -> MoveValidationMetrics:
         """Return the aggregate result, rejecting an empty validation input."""
@@ -267,34 +201,3 @@ def evaluate_move_model(
     finally:
         model.train(was_training)
     return accumulator.compute()
-
-
-def _validate_logits(logits: Tensor, batch: MoveModelBatch) -> None:
-    expected_shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
-    if logits.shape != expected_shape:
-        raise ValueError(
-            "action logits must align with model targets and the action vocabulary"
-        )
-    if not logits.is_floating_point():
-        raise ValueError("action logits must use a floating-point dtype")
-    if not torch.all(torch.isfinite(logits[batch.action_loss_mask])):
-        raise ValueError("enabled action logits must all be finite")
-
-
-def _validate_legal_actions(
-    legal_actions: tuple[int, ...],
-    target: int,
-) -> None:
-    if not legal_actions:
-        raise ValueError("enabled validation position has no legal actions")
-    if tuple(sorted(set(legal_actions))) != legal_actions:
-        raise ValueError("legal actions must be sorted and unique")
-    if legal_actions[0] < 0 or legal_actions[-1] >= ACTION_VOCABULARY_SIZE:
-        raise ValueError("legal action is outside the action vocabulary")
-    if target not in legal_actions:
-        raise ValueError("enabled validation target is not legal")
-
-
-def _validate_ratings(ratings: Tensor, present: Tensor) -> None:
-    if torch.any(ratings[present] < 0):
-        raise ValueError("present player ratings must be nonnegative")

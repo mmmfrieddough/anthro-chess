@@ -22,7 +22,11 @@ from anthro_chess.inference.selection import (
     resolve_model_selection,
 )
 from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
-from anthro_chess.training.checkpoints import CheckpointError, load_training_checkpoint
+from anthro_chess.training.checkpoints import (
+    CheckpointError,
+    load_training_checkpoint,
+    parameter_sha256,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +52,21 @@ class CheckpointModelRunner:
         *,
         selection: ResolvedModelSelection,
         device: torch.device,
+        global_step: int,
+        metadata: Mapping[str, Any],
+        run_record: Mapping[str, Any],
     ) -> None:
         self._model = model
         self.selection = selection
         self.device = device
+        self.global_step = global_step
+        self.metadata = dict(metadata)
+        self.run_record = dict(run_record)
+
+    def parameter_sha256(self) -> str:
+        """Return the digest identifying the loaded parameters."""
+
+        return parameter_sha256(self._model)
 
     @classmethod
     def load(
@@ -89,7 +104,32 @@ class CheckpointModelRunner:
                 raise
             raise ModelRunnerError(f"cannot load model runner: {error}") from error
         logger.info("Loaded model runner on %s", device.type)
-        return cls(model, selection=selection, device=device)
+        return cls(
+            model,
+            selection=selection,
+            device=device,
+            global_step=int(checkpoint["global_step"]),
+            metadata=checkpoint["metadata"],
+            run_record=run_record,
+        )
+
+    def action_logits(self, batch: MoveModelBatch) -> Tensor:
+        """Return raw action logits for one aligned evaluation batch.
+
+        Offline benchmarks score whole batches of held-out positions rather
+        than one decision at a time, and they need the raw logits before any
+        legal masking so legality itself stays measurable.
+        """
+
+        try:
+            with torch.inference_mode():
+                logits = self._model(batch)
+        except (RuntimeError, ValueError) as error:
+            raise ModelRunnerError(f"model inference failed: {error}") from error
+        expected = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
+        if logits.shape != expected:
+            raise ModelRunnerError("model returned an invalid action-logit shape")
+        return cast(Tensor, logits.detach().to(dtype=torch.float32).clone())
 
     def predict(self, context: DecisionContext) -> Tensor:
         """Return current-decision raw action logits on CPU."""

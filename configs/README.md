@@ -25,6 +25,12 @@ successful build so a rebuild elsewhere is verified rather than assumed. A
 mismatch afterwards means the corpus, its filters, or its split seed moved, and
 the benchmark needs a new pool version rather than a quietly different pool.
 
+It also contains the checkpoint-evaluation selection for `anthro eval run`,
+which names the pool and the view to score without naming a checkpoint. Leaving
+the model selection out keeps the canonical reading defined by its inputs
+rather than by whichever checkpoint was current when the file was written; the
+machine-local default selection or an explicit override supplies the rest.
+
 Add a focused `runtime/` subdirectory when the corresponding command exists. Do
 not add speculative example files for commands that have not been implemented.
 
