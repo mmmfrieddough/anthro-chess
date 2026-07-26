@@ -137,6 +137,52 @@ changed band boundary is a different measurement rather than movement in an
 existing series, so it reports into the detail tier instead of quietly
 continuing a line.
 
+## Human-Reference Curve Comparisons
+
+Several benchmarks turn out to have one shape: measure something on generated
+games, measure the same thing on human games, and compare the two as a function
+of rating. Opening repertoire, book depth, game length, result and termination
+patterns, and repetition all fit it. Building it once avoids four near-duplicate
+implementations that drift apart.
+
+The shape is: a human reference curve estimated from the pool, a model curve
+measured across a configured-rating grid, a distance between them reduced to one
+scalar for the headline and history, and the curves themselves retained for
+drill-down.
+
+Rating is treated as continuous rather than banded. Binning is only forced when
+estimating a whole categorical distribution at a point; a single quantity as a
+function of rating needs no bins, because each game contributes one observation
+at its own rating. Curves are estimated with a nearest-neighbour smoother, whose
+span adapts to the human data's uneven density across the rating range.
+
+Two constraints keep the comparison honest.
+
+Smoothing biases a curve toward flatness in proportion to its bandwidth. The
+model side has uniform density by construction and the human side does not, so
+smoothing each at its own bandwidth would put an artifact into their difference
+near every peak. **Apply the same local bandwidth to both curves at each
+evaluation point**, taking the one the human data forces.
+
+The bandwidth is part of the measurement, not a per-run choice. Selecting it
+per run would mean two checkpoints were measured differently and their series
+would not be comparable. Choose it once from the human reference by
+cross-validation, then freeze and declare it; changing it is a benchmark version
+bump.
+
+Report the effective local sample size alongside the curve, so a difference
+where the human reference is thin is not read as the same strength of claim as
+one where it is dense.
+
+Both a rating-conditional and a rating-free reading come from the same pass,
+and they answer different questions. The pooled reading asks whether the model
+behaves like humans at all. The curve asks whether it responds to rating the
+way humans do. They dissociate in a specific and likely way: a model that
+matches the pooled human distribution with a flat curve has learned the average
+human and is ignoring its rating input. That is the behavioral form of a rating
+dependency test, and unlike the corrupted-conditioning form it survives
+discrete sampling into whole games.
+
 ## Noise Characterization
 
 A delta is not a finding until it is larger than the noise in the measurement.
@@ -840,6 +886,70 @@ updating the book changes what a label means. See
 `docs/decisions/0015-owned-opening-book.md`. Per-ply multi-label opening
 metadata for preference conditioning is separate later work described in
 `docs/preference-controls.md`.
+
+### Opening Repertoire And Book Depth
+
+Two measurements come out of one classification pass, and they answer different
+questions. **Repertoire** is which openings the model chooses, which is a
+statement about preference. **Book depth** is how far into catalogued theory it
+stays in the opening it chose, which is a statement about knowledge. A model can
+plausibly get the first right and the second wrong; the reverse would be
+surprising.
+
+Both are human-reference curve comparisons against rating, so they use the shape
+described earlier rather than a private implementation each.
+
+Repertoire is measured at family level over full game depth. A fixed ply cutoff
+cannot serve here: families become nameable at different plies, so no single
+cutoff catches them all at the moment they are determined. Cutting at four
+plies would erase the Ruy Lopez, Italian, and Scotch distinction, which is a
+repertoire choice real players make and discuss, while `1.e4 c5` is already
+decided at two. The naming hierarchy is depth-adaptive by construction, so the
+level dial does this job and a ply cutoff does not.
+
+Family granularity is uneven, since it follows naming convention rather than a
+uniform level of abstraction. The largest family holds a few hundred lines and
+the median holds a handful. Distributional distance is mass-weighted, so tiny
+families contribute proportionally little, but a per-family drill-down should
+show category mass beside the delta so a share change on a broad family is not
+read like one on a narrow line.
+
+Some book names are **waypoints** rather than destinations: positions many
+named openings pass through on the way to being chosen. A game keeps such a
+label only when it left the book before committing to anything more specific,
+which makes the label a statement about depth rather than about preference, and
+lets a depth effect leak into a distribution that is supposed to measure
+choice. Waypoints are identifiable structurally, without a curated list, by how
+many other families remain reachable from the position. Report the repertoire
+distribution over destinations, and report the rate of ending on a waypoint as
+its own scalar. That rate is a real and strongly rating-sensitive behavior; it
+is simply not a repertoire choice.
+
+Book depth is reported as three quantities, because the raw depth conflates
+choosing a well-analyzed line with knowing it. Record the deepest matched ply,
+the deepest theory available onward from that position, and the fraction of it
+consumed. A model with a human-like repertoire that abandons theory early and
+one that plays offbeat lines both show shallow raw depth, and only the
+decomposition tells them apart.
+
+Depth is a property of the pair, not of one player, since either side leaving
+book ends it. Matched-rating games control this on the human side and a
+self-play grid controls it on the model side.
+
+Divergence as a function of book depth — the same distance recomputed with the
+classification truncated at each ply — says where the model departs from human
+play rather than whether it does. It is a diagnostic and belongs in the detail
+tier: category count grows with depth, so its noise floor grows too, and it must
+never be shown without that floor. If it ever becomes the number people quote,
+that is the signal it was a mistake.
+
+The shallow end of that curve is exactly computable rather than sampled. A
+model's policy at a fixed position is one forward pass, so an opening-tree walk
+that keeps lines above a cumulative-probability threshold produces the
+repertoire distribution with no sampling noise at all and a reported bound on
+the pruned mass. Deep readings must still be sampled, which is a second reason
+repertoire and depth belong apart: they differ in computational character as
+well as in meaning.
 
 Human prefixes are especially useful early, when the model may not yet be good
 at creating coherent full games from the start position.

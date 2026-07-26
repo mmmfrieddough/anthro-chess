@@ -159,6 +159,21 @@ Evaluation comparability depends on each pool generation being a superset of the
 last, so an expansion should be configured to retain everything previously
 accepted and the generation cut should verify containment rather than assume it.
 
+Widening the corpus across an axis and training on that axis are separate steps,
+and separating them resolves what otherwise looks like a conflict. Time control
+is the case that matters first. The corpus and the pool should widen across
+speeds before the core generation is cut, because breadth is the irreversible
+half and a reference without an axis can never measure it. But training on a
+mixture of speeds before the policy conditions on time control produces a model
+that matches no speed exactly, including the one it matches today.
+
+Both are satisfiable at once: widen the corpus and the pool, keep training
+selection narrow, and slice benchmarks by speed from the start. Speed is
+derivable from the schema's time fields, so slicing is a view-layer derivation
+that needs no schema change. Training selection widens when the policy
+conditions on time control, and the staged order gives that conditioning a
+before-and-after picture to be judged against.
+
 ## Selecting Within A Corpus
 
 Training selection should be able to filter within one broad corpus rather than
@@ -213,6 +228,44 @@ casual games, variants, unknown ratings, correspondence games, AI-level games,
 tournament games, and games without usable clocks. Bot players are often
 identifiable through title metadata such as `BOT`.
 
+## Admitting A New Source
+
+A source may be mixed into the human corpus when its games are exchangeable with
+existing games conditional on what the model conditions on. Any source-linked
+variable that affects how people play and is not a conditioning input becomes a
+confound the model silently averages over, and it lands on whichever benchmark
+measures that behavior.
+
+The test is not whether a source is high quality. It is whether it differs from
+the existing corpus only along axes the model can represent.
+
+A different site usually passes. The project is not imitating the players of one
+platform, so the site itself is not a behavior axis worth preserving, and rating
+scale differences are handled by normalization.
+
+A different time control does not pass until the policy conditions on time
+control, because time control genuinely changes both opening choice and game
+length.
+
+Curated historical and master collections fail on two axes that conditioning on
+rating and time control does not reach. Opening theory moved across a century,
+so era shifts the opening distribution on its own. And curated collections keep
+notable and decisive games while online exports are exhaustive, so their result
+and length distributions differ by construction of the collection rather than
+by anything available to condition on. Their weighting risk is also conditional
+rather than marginal: such a collection can be a negligible share of the corpus
+while being most of the games in the high-rating, long-time-control region,
+which is exactly where the reference is thinnest.
+
+Admission is testable rather than assumed. Classify a candidate source's games
+and compare its rating-conditional opening distribution against the existing
+corpus. Agreement within the measured noise floor is evidence of exchangeability
+on that axis; a systematic offset is evidence against it. The same comparison
+diagnoses rating normalization, since a source whose 1600 has the repertoire of
+the existing corpus's 1400 has a mapping problem rather than unusual players.
+
+See `docs/decisions/0016-sampling-axes-versus-measured-distributions.md`.
+
 ## Other Sources
 
 Other data sources can be imported into the same normalized schema when useful.
@@ -238,6 +291,9 @@ PGN Mentor:
 - Historical and master-game PGN collections by player, opening, and event.
 - Useful for famous-player or high-level style data, but usually lacks clocks
   and online-rating context.
+- Fails the admission test above on era and curation selection, so it is not a
+  candidate for the main human corpus. Its likely value is player-specific
+  reference data for preference controls rather than bulk training data.
 
 Engine-game sources such as CCRL or TCEC may be useful for evaluation,
 pipeline testing, or future engine-vs-human classifiers. They should not be
@@ -516,22 +572,38 @@ The full normalized corpus should preserve valid data, including
 overrepresented groups. Training should use sampling recipes to decide how
 often different slices appear.
 
-Important sampling axes include:
+Not every axis may be reweighted. Resampling is safe on an axis the model is
+explicitly conditioned on, because it changes the marginal distribution of an
+input rather than the conditional behavior benchmarks read. Resampling an axis
+the model must reproduce unconditionally moves the very distribution its
+benchmark measures, so the benchmark reports the sampling recipe instead of the
+model. Weighting the loss by an axis is the same operation as resampling it.
+`docs/decisions/0016-sampling-axes-versus-measured-distributions.md` owns this
+rule and the axes currently closed under it.
 
-- rating band;
-- initial time;
-- increment;
-- game length or ply-count bucket;
+Sampling axes available for balancing:
+
+- rating band, a conditioning input;
+- initial time and increment, once the policy conditions on time control;
 - phase or ply index;
-- opening family, when labels are available;
 - source;
 - ruleset;
 - clock-data availability.
 
+Axes that must not be reweighted, because a benchmark measures the model's own
+distribution over them and the model does not condition on them:
+
+- opening family;
+- game length or ply-count bucket;
+- result, termination, and repetition pattern.
+
+Length-bucketed batching is not resampling and remains available: grouping
+similar lengths within a batch serves the efficiency goal without changing how
+often any game is seen.
+
 Balancing should avoid the full cross product becoming too sparse. For example,
 it is reasonable to balance broadly by rating and time-control buckets, but
-usually not to require every rating/time/opening/length combination to appear
-equally.
+usually not to require every rating/time/length combination to appear equally.
 
 Overrepresented buckets should generally be downsampled at training time rather
 than physically pruned from the normalized corpus. This lets long training runs
@@ -545,6 +617,20 @@ Some records should still be filtered or separated early:
 - known bots or AI games from the main human corpus;
 - malformed clocks or impossible metadata;
 - abandoned zero-move games unless a specific task needs them.
+
+Filter for validity, never for balance. Every entry above is a statement that a
+record is not a usable human game. Dropping valid games because their result,
+termination, length, or repetition pattern is an inconvenient shape is a
+different act, and it belongs in training selection rather than in preparation.
+
+The distinction matters because preparation runs before split assignment, so a
+preparation filter removes games from every split at once. It shifts the
+training data and the evaluation reference in the same direction, and a
+benchmark cannot detect a bias it shares with its own reference. Training
+selection touches only the train split, so the same distortion becomes visible
+as a mismatch against a clean reference, and it stays reversible. A preparation
+filter is therefore a definitional statement about what counts as human play
+for every later benchmark, and it should be recorded as one.
 
 Training runs should log both the intended recipe and the effective sample
 distribution they actually saw.
