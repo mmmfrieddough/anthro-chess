@@ -252,70 +252,68 @@ class _ScoringSession:
         self._inputs = inputs
         self._shuffled_ratings = _shuffled_ratings(inputs.contexts, shuffle_seed)
 
-    def score(
-        self,
-        conditioning: Conditioning,
-        *,
-        retain_policies: bool = False,
-    ) -> tuple[tuple[PositionPolicy, ...], dict[PositionKey, Tensor]]:
+    def score(self, conditioning: Conditioning) -> tuple[PositionPolicy, ...]:
         """Score every position in the view under one conditioning treatment."""
 
         positions: list[PositionPolicy] = []
-        policies: dict[PositionKey, Tensor] = {}
         for batch in self._batches():
             conditioned = self._condition(batch, conditioning)
-            logits = self._runner.action_logits(conditioned)
-            scored = score_positions(logits, conditioned)
-            positions.extend(scored)
-            if retain_policies:
-                for position, policy in zip(
-                    scored,
-                    legal_policy_log_probabilities(logits, conditioned),
-                    strict=True,
-                ):
-                    policies[(position.game_id, position.ply_index)] = policy
+            positions.extend(
+                score_positions(self._runner.action_logits(conditioned), conditioned)
+            )
         if not positions:
             raise CheckpointEvaluationError(
                 "the configured view selected no positions to score"
             )
-        return tuple(positions), policies
+        return tuple(positions)
 
     def trajectory(
         self,
         *,
         anchor_low: int,
         anchor_high: int,
-        true_policies: Mapping[PositionKey, Tensor],
     ) -> dict[PositionKey, TrajectorySignal]:
-        """Compare each position's policy at two anchor conditioning ratings."""
+        """Compare each position's policy at two anchor conditioning ratings.
+
+        All three policies a signal needs are computed for one batch at a
+        time. Retaining the true-conditioning policy from the primary pass
+        would save a forward pass and cost a distribution per position held
+        for the whole run, which is gigabytes over a full pool.
+        """
 
         signals: dict[PositionKey, TrajectorySignal] = {}
-        low = Conditioning(
-            name=f"constant-{anchor_low}",
-            kind=ConditioningKind.CONSTANT,
-            rating=anchor_low,
-        )
-        high = Conditioning(
-            name=f"constant-{anchor_high}",
-            kind=ConditioningKind.CONSTANT,
-            rating=anchor_high,
+        treatments = (
+            _TRUE_CONDITIONING,
+            Conditioning(
+                name=f"constant-{anchor_low}",
+                kind=ConditioningKind.CONSTANT,
+                rating=anchor_low,
+            ),
+            Conditioning(
+                name=f"constant-{anchor_high}",
+                kind=ConditioningKind.CONSTANT,
+                rating=anchor_high,
+            ),
         )
         for batch in self._batches():
             keys = _batch_keys(batch)
-            policies = {}
-            for conditioning in (low, high):
+            policies = []
+            for conditioning in treatments:
                 conditioned = self._condition(batch, conditioning)
-                policies[conditioning.rating] = legal_policy_log_probabilities(
-                    self._runner.action_logits(conditioned),
-                    conditioned,
+                policies.append(
+                    legal_policy_log_probabilities(
+                        self._runner.action_logits(conditioned),
+                        conditioned,
+                    )
                 )
+            true, low, high = policies
             for offset, key in enumerate(keys):
                 signals[key] = _trajectory_signal(
                     legal_actions=self._inputs.plies[key].legal_action_ids,
                     target_action_id=self._inputs.plies[key].target_action_id,
-                    low=policies[anchor_low][offset],
-                    high=policies[anchor_high][offset],
-                    true=true_policies.get(key),
+                    true=true[offset],
+                    low=low[offset],
+                    high=high[offset],
                 )
         return signals
 
@@ -429,14 +427,10 @@ def evaluate_checkpoint(
         inputs.selection.selected_games,
         inputs.selection.name,
     )
-    retain = config.dependency.enabled
-    positions, true_policies = session.score(
-        _TRUE_CONDITIONING,
-        retain_policies=retain,
-    )
+    positions = session.score(_TRUE_CONDITIONING)
     slices = _aggregate(positions, inputs)
     dependency = (
-        _run_dependency_tests(config, session, inputs, positions, true_policies, runner)
+        _run_dependency_tests(config, session, inputs, positions, runner)
         if config.dependency.enabled
         else None
     )
@@ -627,7 +621,6 @@ def _run_dependency_tests(
     session: _ScoringSession,
     inputs: _EvaluationInputs,
     positions: Sequence[PositionPolicy],
-    true_policies: Mapping[PositionKey, Tensor],
     runner: CheckpointModelRunner,
 ) -> DependencyTestResult:
     settings = config.dependency
@@ -643,27 +636,21 @@ def _run_dependency_tests(
         Conditioning(name="absent", kind=ConditioningKind.ABSENT),
     ):
         logger.info("Scoring under %s rating conditioning", conditioning.name)
-        scored, _ = session.score(conditioning)
-        corrupted[conditioning.name] = (conditioning, scored)
+        corrupted[conditioning.name] = (conditioning, session.score(conditioning))
 
     conditioned: dict[int, Sequence[PositionPolicy]] = {}
     for value in values:
         logger.info("Scoring under a fixed conditioning rating of %s", value)
-        scored, _ = session.score(
+        conditioned[value] = session.score(
             Conditioning(
                 name=f"constant-{value}",
                 kind=ConditioningKind.CONSTANT,
                 rating=value,
             )
         )
-        conditioned[value] = scored
 
     logger.info("Comparing anchor policies at ratings %s and %s", values[0], values[-1])
-    trajectory = session.trajectory(
-        anchor_low=values[0],
-        anchor_high=values[-1],
-        true_policies=true_policies,
-    )
+    trajectory = session.trajectory(anchor_low=values[0], anchor_high=values[-1])
     try:
         return build_dependency_result(
             config=settings,
@@ -1004,18 +991,14 @@ def _trajectory_signal(
     *,
     legal_actions: Sequence[int],
     target_action_id: int,
+    true: Tensor,
     low: Tensor,
     high: Tensor,
-    true: Tensor | None,
 ) -> TrajectorySignal:
     target_offset = legal_actions.index(target_action_id)
-    strength = float(-low[target_offset].item()) - float(-high[target_offset].item())
-    alignment = 0.0
-    if true is not None:
-        alignment = policy_divergence(true, low) - policy_divergence(true, high)
     return TrajectorySignal(
-        strength_signal=strength,
-        alignment=alignment,
+        strength_signal=float(high[target_offset].item() - low[target_offset].item()),
+        alignment=policy_divergence(true, low) - policy_divergence(true, high),
         anchor_divergence=policy_divergence(low, high),
         anchor_agreement=int(torch.argmax(low).item())
         == int(torch.argmax(high).item()),
