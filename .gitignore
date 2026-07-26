@@ -217,3 +217,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Anthro Chess results store
+#   Transient write artifacts inside the committed benchmark results store.
+/results/.write-lock
+/results/**/.*.tmp

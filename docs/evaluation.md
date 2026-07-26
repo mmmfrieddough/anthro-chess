@@ -19,15 +19,12 @@ Avoid a single overall Anthro Chess score. A single aggregate would hide
 important tradeoffs, such as improving move loss while hurting rating
 calibration or timing.
 
-Useful metric families:
-
-- training health;
-- legality;
-- rating calibration;
-- timing;
-- move-time coherence;
-- human-likeness;
-- preference controls.
+Families cover training health, held-out prediction, legality, rating behavior,
+timing, generated play, and later additions such as move-time coherence,
+human-likeness, and preference controls. The metric registry in
+`anthro_chess.evaluation.results` owns the exact family and metric identifiers,
+their declared directions, and their definition versions; `anthro eval metrics`
+prints them.
 
 Each family should have one to three headline metrics. Detailed slices and
 diagnostics should remain available, but they should not be required reading for
@@ -84,6 +81,29 @@ and reporting should accept new artifact kinds as later benchmarks land without
 restructuring. Metrics with no data dependency, such as optimizer and parameter
 statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
+
+### Where The Store Lives
+
+`anthro_chess.evaluation.results` implements this layer and owns the exact
+record schema, metric registry, fingerprint algorithm, and size budget.
+
+The committed summary tier is one small JSON file per result under the store
+root, beside the bridges that rejoin a broken series. One file per result is
+what keeps concurrent appends and Git merges additive; a concurrent write into
+the same store fails on an exclusive lock rather than producing a partial
+record. The store root defaults to `results/` in the repository and can be
+pointed elsewhere with `ANTHRO_CHESS_RESULTS_ROOT`.
+
+The detail tier is machine-local and holds per-position diagnostics, slice
+tables, and generated game records. A summary record references a detail
+payload by path and digest rather than embedding it, and the store refuses a
+record whose payload belongs on the other side of that boundary. The detail
+root resolves from `ANTHRO_CHESS_RESULT_DETAIL_ROOT`, or beneath
+`ANTHRO_CHESS_RUN_ROOT` when that is where runs already live.
+
+`anthro eval report` is the reading surface: a compact delta view by default,
+with slices, provenance, per-series history, and machine-readable output behind
+explicit options. `anthro eval bridge` records, lists, and revokes bridges.
 
 ## Noise Characterization
 

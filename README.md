@@ -221,6 +221,26 @@ select a compatible checkpoint without copying it. See
 [`docs/training-and-runtime.md`](docs/training-and-runtime.md) for the artifact
 layout and boundary with future public model hosting.
 
+## Benchmark Results
+
+Benchmarks append to a results store rather than writing standalone artifacts,
+so comparing a checkpoint against one recorded a year ago is a query. The
+summary tier is committed under [`results/`](results/README.md), which keeps
+metric movement visible as a diff and readable with ordinary file tools; bulk
+diagnostics stay machine-local.
+
+```console
+uv run anthro eval report
+uv run anthro eval report --history held_out.move_loss
+uv run anthro eval metrics
+```
+
+The default report is a compact delta view by family and metric, with the
+direction of improvement declared rather than inferred, and with results that
+are not on the same series reported as incomparable instead of shown as a
+quality change. See [`docs/evaluation.md`](docs/evaluation.md) for the layering
+and comparability rules.
+
 ## Development
 
 Use an unlocked `uv` dependency command only when intentionally changing

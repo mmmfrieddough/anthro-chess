@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import random
-import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,7 +14,6 @@ from typing import Any
 
 import torch
 
-from anthro_chess import __version__
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import (
@@ -31,6 +29,7 @@ from anthro_chess.data.artifacts import (
 )
 from anthro_chess.evaluation import MoveValidationMetrics, evaluate_move_model
 from anthro_chess.models import CausalMoveModel, MoveModelBatch
+from anthro_chess.provenance import code_provenance
 from anthro_chess.training.checkpoints import (
     CheckpointError,
     checkpoint_path,
@@ -128,10 +127,7 @@ def run_training(
             model.parameters(),
             lr=config.learning_rate,
         )
-        code_record = {
-            "package_version": __version__,
-            "git_revision": _git_revision(),
-        }
+        code_record = code_provenance().as_record()
         data_record = {
             "train": train.provenance,
             "validation": validation.provenance if validation is not None else None,
@@ -698,18 +694,3 @@ def _parameter_sha256(model: CausalMoveModel) -> str:
         value = parameter.detach().cpu().contiguous()
         digest.update(value.numpy().tobytes())
     return digest.hexdigest()
-
-
-def _git_revision() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    revision = result.stdout.strip()
-    return revision or None
