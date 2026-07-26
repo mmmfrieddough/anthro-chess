@@ -138,6 +138,12 @@ future models:
   with cold-start time reported separately;
 - generated-game rollout checks once the runtime can play.
 
+Several of these benchmarks share one shape: measure a quantity on generated
+games and on human games, and compare the two against rating. Opening
+repertoire, book depth, game length, results, and repetition all fit it, so the
+comparison machinery is built once rather than four times. `docs/evaluation.md`
+owns that shape and the estimation constraints it carries.
+
 This stage should establish whether the model uses its conditioning inputs and
 whether behavior shifts across settings. Measuring the strength those settings
 produce belongs with the scaling work, because it needs a checkpoint that
@@ -183,6 +189,14 @@ needs a model worth measuring, which is why it follows rather than leads.
 
 Optional timing behavior comes last in this stage, after the move-only path is
 useful on its own. Timing diagnostics arrive with it.
+
+Conditioning the policy on time control is a smaller, separable piece of that
+work, and it should land immediately before move-time prediction rather than
+earlier. It is what releases the training selection to widen across speeds, so
+staging it that way gives the change a before-and-after reading instead of
+bundling it with the timing feature. The corpus, the pool, and benchmark slicing
+widen across speeds well ahead of it; only training selection waits. See
+`docs/data.md` and `docs/design-principles.md`.
 
 Corpus-scale training should replace fixture-oriented eager per-ply
 materialization with bounded-memory shard-backed loading before attempting full
