@@ -11,6 +11,10 @@ store. Benchmarks append here; reports and comparisons are views over it.
   provably independent of the measured quantity, and revoking one is a
   reviewable diff.
 
+`anthro eval run` is what appends here: it scores one checkpoint over a
+deterministic view of the frozen pool and records the held-out prediction,
+legality, and rating-dependency results for it.
+
 Read the numbers with ordinary file tools, or with `anthro eval report` for a
 compact delta view. `anthro eval metrics` lists every metric identifier and its
 declared direction of improvement.

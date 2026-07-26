@@ -45,6 +45,18 @@ from anthro_chess.evaluation.views import (
 )
 
 if TYPE_CHECKING:
+    from anthro_chess.evaluation.checkpoint import (
+        CHECKPOINT_EVALUATION_VERSION,
+        CheckpointEvaluationConfig,
+        CheckpointEvaluationError,
+        CheckpointEvaluationResult,
+        evaluate_checkpoint,
+    )
+    from anthro_chess.evaluation.leakage import (
+        LeakageCheck,
+        LeakageError,
+        check_leakage,
+    )
     from anthro_chess.evaluation.validation import (
         VALIDATION_METRICS_VERSION,
         MoveValidationAccumulator,
@@ -53,30 +65,46 @@ if TYPE_CHECKING:
         evaluate_move_model,
     )
 
-_VALIDATION_EXPORTS = frozenset(
-    {
-        "VALIDATION_METRICS_VERSION",
-        "MoveValidationAccumulator",
-        "MoveValidationMetrics",
-        "RatingSliceMetrics",
-        "evaluate_move_model",
-    }
-)
+_LAZY_EXPORTS = {
+    "VALIDATION_METRICS_VERSION": "validation",
+    "MoveValidationAccumulator": "validation",
+    "MoveValidationMetrics": "validation",
+    "RatingSliceMetrics": "validation",
+    "evaluate_move_model": "validation",
+    "CHECKPOINT_EVALUATION_VERSION": "checkpoint",
+    "CheckpointEvaluationConfig": "checkpoint",
+    "CheckpointEvaluationError": "checkpoint",
+    "CheckpointEvaluationResult": "checkpoint",
+    "evaluate_checkpoint": "checkpoint",
+    "LeakageCheck": "leakage",
+    "LeakageError": "leakage",
+    "check_leakage": "leakage",
+}
 
 
 def __getattr__(name: str) -> Any:
     """Resolve torch-backed metric names only when they are actually used."""
 
-    if name in _VALIDATION_EXPORTS:
-        from anthro_chess.evaluation import validation
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is not None:
+        from importlib import import_module
 
-        return getattr(validation, name)
+        module = import_module(f"anthro_chess.evaluation.{module_name}")
+        return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
     "BENCHMARK_VERSION",
+    "CHECKPOINT_EVALUATION_VERSION",
+    "CheckpointEvaluationConfig",
+    "CheckpointEvaluationError",
+    "CheckpointEvaluationResult",
     "DEFAULT_RATING_BANDS",
+    "LeakageCheck",
+    "LeakageError",
+    "check_leakage",
+    "evaluate_checkpoint",
     "LEGAL_MOVE_COUNT_BUCKETS",
     "SLICE_SCHEME_VERSION",
     "VALIDATION_METRICS_VERSION",

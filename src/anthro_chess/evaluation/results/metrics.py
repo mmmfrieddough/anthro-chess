@@ -355,6 +355,19 @@ LEGALITY_FAMILY = register_family(
     )
 )
 
+CORRECTNESS_FAMILY = register_family(
+    MetricFamily(
+        identifier="correctness",
+        title="Correctness",
+        summary=(
+            "Whether the pipeline learns what it was wired to learn. Dependency "
+            "tests live here rather than with quality metrics: a weak result "
+            "can mean an undertrained checkpoint rather than a defect, so these "
+            "are read against training maturity."
+        ),
+    )
+)
+
 RATING_BEHAVIOR_FAMILY = register_family(
     MetricFamily(
         identifier="rating-behavior",
@@ -458,6 +471,271 @@ LEGALITY_TOP1_ILLEGAL_RATE = register_metric(
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
+
+HELD_OUT_TOP_K_ACCURACY: Mapping[int, MetricDefinition] = {
+    cutoff: register_metric(
+        MetricDefinition(
+            identifier=f"held_out.top{cutoff}_accuracy",
+            family=HELD_OUT_PREDICTION_FAMILY.identifier,
+            direction=MetricDirection.HIGHER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Fraction of held-out positions whose human move is in the "
+                f"legal-masked top {cutoff}."
+            ),
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for cutoff in (1, 3, 5)
+}
+
+LEGALITY_TOP_ILLEGAL_FRACTION = register_metric(
+    MetricDefinition(
+        identifier="legality.top_illegal_fraction",
+        family=LEGALITY_FAMILY.identifier,
+        direction=MetricDirection.LOWER_IS_BETTER,
+        definition_version=1,
+        summary="Mean fraction of the raw top-5 actions that are illegal.",
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+LEGALITY_LEGAL_MARGIN = register_metric(
+    MetricDefinition(
+        identifier="legality.legal_margin",
+        family=LEGALITY_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Mean gap between the best legal logit and the best illegal one. "
+            "Says how close the raw model came to preferring an illegal move."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+LEGALITY_LIFT = register_metric(
+    MetricDefinition(
+        identifier="legality.legality_lift",
+        family=LEGALITY_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Mean log-odds of legal mass above uniform probability over the "
+            "move vocabulary, which normalizes for how many moves are legal."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+
+#: Phase names are part of metric identity, so they are stated here rather
+#: than imported. A slice layer that renamed a phase would end these series,
+#: which is the intended behavior and is asserted by the tests.
+PHASE_SLICE_NAMES: tuple[str, ...] = ("opening", "middlegame", "endgame")
+
+#: The default rating bands. A run configured with different bands reports its
+#: rating slices in the detail tier only, because a band boundary change means
+#: a different measurement rather than a movement in an existing series.
+RATING_BAND_SLICE_NAMES: tuple[str, ...] = (
+    "under_1200",
+    "1200_to_1599",
+    "1600_to_1999",
+    "2000_plus",
+)
+
+#: Slice name for positions whose player rating is unavailable.
+UNRATED_SLICE_NAME = "unrated"
+
+#: Rule cases that can hold at a position with a move to predict.
+RULE_CASE_SLICE_NAMES: tuple[str, ...] = (
+    "castling_available",
+    "castling_rights",
+    "check",
+    "en_passant",
+    "only_move",
+    "pin",
+    "promotion",
+)
+
+
+HELD_OUT_MOVE_LOSS_BY_PHASE: Mapping[str, MetricDefinition] = {
+    phase: register_metric(
+        MetricDefinition(
+            identifier=f"held_out.move_loss_{phase}",
+            family=HELD_OUT_PREDICTION_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Raw-logit cross-entropy of the human move on {phase} "
+                "positions, held fixed so a shift in phase composition is not "
+                "read as a change in prediction quality."
+            ),
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for phase in PHASE_SLICE_NAMES
+}
+
+HELD_OUT_MOVE_LOSS_BY_RATING_BAND: Mapping[str, MetricDefinition] = {
+    band: register_metric(
+        MetricDefinition(
+            identifier=f"held_out.move_loss_{band}",
+            family=HELD_OUT_PREDICTION_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Raw-logit cross-entropy of the human move on {band} "
+                "positions. This measures how hard those positions are to "
+                "predict, not whether the model reads the rating input."
+            ),
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for band in (*RATING_BAND_SLICE_NAMES, UNRATED_SLICE_NAME)
+}
+
+LEGALITY_MASK_PENALTY_BY_PHASE: Mapping[str, MetricDefinition] = {
+    phase: register_metric(
+        MetricDefinition(
+            identifier=f"legality.mask_penalty_{phase}",
+            family=LEGALITY_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Negative log of raw legal mass on {phase} positions. Legality "
+                "varies severalfold across phases, so the pool-wide mean sits "
+                "between populations rather than describing any of them."
+            ),
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for phase in PHASE_SLICE_NAMES
+}
+
+LEGALITY_MASK_PENALTY_BY_RULE_CASE: Mapping[str, MetricDefinition] = {
+    case: register_metric(
+        MetricDefinition(
+            identifier=f"legality.mask_penalty_{case}",
+            family=LEGALITY_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Negative log of raw legal mass on held-out positions where "
+                f"{case.replace('_', ' ')} applies. Rare rule cases vanish from "
+                "a pool-wide average, which is what this slice prevents."
+            ),
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for case in RULE_CASE_SLICE_NAMES
+}
+
+
+DEPENDENCY_RATING_SHUFFLED_DEGRADATION = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_shuffled_degradation",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Increase in held-out move loss when each position's rating is "
+            "replaced by another position's. Near zero means the model is not "
+            "reading the input, or has not learned to yet."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_RATING_CONSTANT_DEGRADATION = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_constant_degradation",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Increase in held-out move loss when every position is scored at "
+            "one fixed rating."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_RATING_ABSENT_DEGRADATION = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_absent_degradation",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Increase in held-out move loss when the rating input is marked "
+            "absent on positions that have one."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_cross_conditioning_match_rate",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Fraction of rating slices whose best conditioning value is the "
+            "matching one. Sensitivity alone cannot establish direction; this "
+            "can."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_RATING_WITHIN_GAME_RESPONSE = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_within_game_response",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.INFORMATIONAL,
+        definition_version=1,
+        summary=(
+            "How much further the policy leans toward strong-rating play when "
+            "the prefix looked strong, at a fixed stated rating. Near zero "
+            "means rating is treated as a static prior; both outcomes are "
+            "useful to know rather than better or worse."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_anchor_policy_divergence",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Mean divergence between the legal-masked policies at the lowest "
+            "and highest conditioning ratings. Says whether the dial moves the "
+            "distribution the runtime actually samples from."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
+DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_anchor_top1_agreement",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.INFORMATIONAL,
+        definition_version=1,
+        summary=(
+            "Fraction of positions whose greedy move is unchanged between the "
+            "lowest and highest conditioning ratings. Explains how much of a "
+            "policy shift survives discrete action selection."
+        ),
+        projection=MOVE_PREDICTION_PROJECTION.name,
+    )
+)
+
 
 TRAINING_HEALTH_GRADIENT_NORM = register_metric(
     MetricDefinition(

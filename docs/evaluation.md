@@ -105,6 +105,38 @@ root resolves from `ANTHRO_CHESS_RESULT_DETAIL_ROOT`, or beneath
 with slices, provenance, per-series history, and machine-readable output behind
 explicit options. `anthro eval bridge` records, lists, and revokes bridges.
 
+### The Checkpoint Evaluation Runner
+
+`anthro eval run` scores one compatible checkpoint over a deterministic view of
+the frozen pool and appends the result. It is the canonical end-of-run reading,
+and it is a library before it is a command, so in-training evaluation at
+declared cadences calls the same entry point over a smaller view instead of
+growing a second implementation that has to be kept consistent with this one.
+
+A **leakage check runs before any scoring**, so a checkpoint that trained on
+these games fails loudly rather than producing a plausible number nobody
+re-examines. When the checkpoint trained on the same normalized corpus the pool
+was drawn from, internal game ids are comparable and the check reads two
+columns. When the corpora differ an id means nothing, so games are compared by
+what they contain. A training corpus this machine cannot read is an error with
+a configurable override, not a skipped check.
+
+Which sliced series are **committed** is a deliberate, bounded choice, because
+only a committed series can be compared over the life of the project. Overall
+prediction and legality headlines are committed; so are move loss and mask
+penalty per phase, move loss per default rating band, and mask penalty per rule
+case. Phase is committed on the evidence that held-out mask penalty varies
+severalfold between opening, middlegame, and endgame positions: a pool-wide
+average sits between those populations, and a comparison that does not hold
+phase fixed reads a shift in game-length or phase composition as a legality
+change. Everything else — color, legal-move-count buckets, cross-conditioning
+tables, per-position records — stays in the machine-local detail tier.
+
+Rating-band series are committed only when the run uses the default bands. A
+changed band boundary is a different measurement rather than movement in an
+existing series, so it reports into the detail tier instead of quietly
+continuing a line.
+
 ## Noise Characterization
 
 A delta is not a finding until it is larger than the noise in the measurement.
@@ -386,6 +418,14 @@ value and again under corrupted conditioning, such as a shuffled value, a fixed
 constant, or explicit absence. A conditioning input that the model uses should
 show clearly worse held-out prediction when corrupted.
 
+The absent treatment answers a different question from the other two when the
+training corpus never contained rating-absent positions. Removing the input
+then measures how the model handles an input distribution it never saw, not how
+much it relies on the value, and a large absent degradation beside negligible
+shuffled and constant degradations says the model reacts to rating *presence*
+far more than to rating *value*. Read the three together rather than treating
+absence as the strongest form of the same test.
+
 Direction matters as well as magnitude. Evaluating each context slice under
 each conditioning value produces a cross-conditioning comparison whose best
 result should fall on the matching pair. This distinguishes a model that merely
@@ -404,6 +444,27 @@ this pattern, so a model that treats rating as a static prior and one that
 tracks it across a trajectory should be distinguishable. Both outcomes are
 useful to know.
 
+Strength of prior play needs a proxy, since no engine is in this loop. The
+implemented one is the model's own conditioning: for each earlier decision by
+the player to move, how much better the high-rating conditioning explains the
+move actually played than the low-rating conditioning does. Positions at one
+stated rating are then split at the median of that prefix signal, and the two
+halves are compared on how far the policy at the true rating leans toward the
+high-conditioned policy rather than the low-conditioned one. A model treating
+rating as a static prior separates the halves by nothing.
+
+The proxy's limitation is worth stating plainly: it measures how the model reads
+the prior moves, not their objective quality, and the two halves can differ in
+position difficulty as well as in prefix strength. It is a signal about
+trajectory tracking rather than a strength measurement, and an engine-derived
+label would be the way to strengthen it if the question ever justifies the
+dependency.
+
+Dependency results are recorded in the correctness family with the training
+maturity they were measured at. Nothing in them returns a pass or a fail: weak
+dependency on an undertrained checkpoint means the conditioning has not been
+learned yet, which is not the same finding as a miswired input.
+
 ## Held-Out Prediction
 
 Held-out human games should be the core offline evaluation source.
@@ -420,6 +481,13 @@ include:
 These metrics do not prove that generated games are good, but they are the
 fastest way to tell whether a training run is learning the intended human move
 and timing distributions.
+
+Top-k accuracy is reported over the legal-masked policy, which is the
+distribution the runtime samples from, while legality is measured separately on
+the raw logits. Mixing the two would let a legality problem hide inside an
+accuracy number. One scoring pass computes both, along with the per-position
+quantities later benchmarks need, so decision decomposition and rollout
+comparisons share this code path instead of recomputing a policy of their own.
 
 ## Legality Metrics
 
@@ -450,6 +518,12 @@ legal_margin = max_legal_logit - max_illegal_logit
 Because positions can have very different numbers of legal moves, legality
 metrics should be averaged per position and reported by legal-move-count slices,
 such as `1-10`, `11-25`, and `26+` legal moves.
+
+They should also be reported by phase, and phase is the slice a comparison has
+to hold fixed. Measured mask penalty on held-out human positions rises by
+roughly sevenfold from opening to endgame, so a pool-wide average describes none
+of the three populations and moves whenever game length or phase composition
+does.
 
 A normalized diagnostic can compare the model against uniform probability over
 the move portion of the action vocabulary:

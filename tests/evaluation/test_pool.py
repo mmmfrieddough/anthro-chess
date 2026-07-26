@@ -38,7 +38,7 @@ def _resolved(
 @pytest.fixture
 def corpus(
     normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[[Path, list[dict[str, Any]]], tuple[Path, Path]],
+    write_corpus: Callable[..., tuple[Path, Path]],
 ) -> Callable[[Path], tuple[Path, Path]]:
     """Return a factory writing a mixed-split corpus beneath a directory."""
 
@@ -117,7 +117,7 @@ def test_build_time_overlap_check_compares_against_the_train_split(
 def test_a_game_in_both_train_and_test_fails_the_build(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[[Path, list[dict[str, Any]]], tuple[Path, Path]],
+    write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
     normalized, manifest = write_corpus(
         tmp_path / "corpus",
@@ -235,7 +235,7 @@ def test_load_pool_rejects_an_incompatible_benchmark_version(
 def test_an_empty_selection_fails_rather_than_writing_an_empty_pool(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[[Path, list[dict[str, Any]]], tuple[Path, Path]],
+    write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
     normalized, manifest = write_corpus(
         tmp_path / "corpus", [normalized_row(1, split="train")]

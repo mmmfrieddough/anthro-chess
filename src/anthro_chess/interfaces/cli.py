@@ -21,7 +21,11 @@ from anthro_chess.config import ResolvedConfig
 
 if TYPE_CHECKING:
     from anthro_chess.data import SequenceDataConfig
-    from anthro_chess.evaluation import PoolConfig
+    from anthro_chess.evaluation import (
+        CheckpointEvaluationConfig,
+        CheckpointEvaluationResult,
+        PoolConfig,
+    )
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -152,6 +156,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Strict dotted TOML override; may be repeated.",
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
+
+    run_parser = eval_commands.add_parser(
+        "run",
+        help="Evaluate a checkpoint over the frozen pool and record the result.",
+    )
+    run_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML checkpoint-evaluation selection.",
+    )
+    run_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(run_parser)
+    run_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    run_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Compute and print results without writing them to the store.",
+    )
+    run_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    run_parser.set_defaults(handler=_run_eval_run)
 
     report_parser = eval_commands.add_parser(
         "report",
@@ -385,6 +429,130 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_run(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        CheckpointEvaluationConfig,
+        CheckpointEvaluationError,
+        LeakageError,
+        evaluate_checkpoint,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = load_config(
+            CheckpointEvaluationConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        resolved = _resolve_evaluation_roots(resolved, arguments.set)
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = evaluate_checkpoint(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (
+        CheckpointEvaluationError,
+        ConfigError,
+        LeakageError,
+        ResultsStoreError,
+    ) as error:
+        print(f"anthro eval run: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_evaluation(result), end="")
+    return 0
+
+
+def _render_evaluation(result: CheckpointEvaluationResult) -> str:
+    from anthro_chess.evaluation.aggregation import PHASE_DIMENSION
+
+    overall = result.slices.overall
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        (
+            f"Pool: {result.dataset.pool_id} v{result.dataset.pool_version} "
+            f"view {result.dataset.view} "
+            f"({result.view.selected_games} game(s), "
+            f"{overall.position_count} position(s))"
+        ),
+        (
+            f"Leakage: no overlap with {result.leakage.training_games} "
+            f"{result.leakage.training_split} game(s) "
+            f"[{result.leakage.algorithm}]"
+        ),
+        "",
+        f"move_loss                 {overall.move_loss:.6f}",
+        f"legal_move_loss           {overall.legal_move_loss:.6f}",
+        f"uniform_over_legal        {overall.uniform_over_legal_move_loss:.6f}",
+        f"top1_accuracy             {overall.accuracy(1):.6f}",
+        f"top5_accuracy             {overall.accuracy(5):.6f}",
+        f"mask_penalty              {overall.mask_penalty:.6f}",
+        f"top1_illegal_rate         {overall.top1_illegal_rate:.6f}",
+        "",
+        "Legality and move loss by phase:",
+    ]
+    for name, summary in sorted(
+        result.slices.dimensions.get(PHASE_DIMENSION, {}).items()
+    ):
+        lines.append(
+            f"  {name:<12} mask_penalty={summary.mask_penalty:.6f} "
+            f"move_loss={summary.move_loss:.6f} n={summary.position_count}"
+        )
+    dependency = result.dependency
+    if dependency is not None:
+        match_rate = dependency.cross_conditioning.match_rate
+        response = dependency.within_game.response
+        lines.extend(
+            [
+                "",
+                (
+                    "Rating dependency (a degradation to interpret against "
+                    f"training maturity, at step {dependency.maturity.step}):"
+                ),
+                *(
+                    f"  {item.conditioning.name:<10} "
+                    f"degradation={item.degradation:+.6f}"
+                    for item in dependency.corruptions
+                ),
+                f"  cross-conditioning match rate: {_optional(match_rate)}",
+                f"  within-game response:          {_optional(response)}",
+                f"  anchor policy divergence:      {dependency.anchor_divergence:.6f}",
+                f"  anchor top-1 agreement:        "
+                f"{dependency.anchor_agreement_rate:.6f}",
+            ]
+        )
+    if result.recorded_paths:
+        lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
+    else:
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _optional(value: float | None) -> str:
+    return "not computed" if value is None else f"{value:.6f}"
+
+
 def _add_store_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--store",
@@ -560,6 +728,45 @@ def _run_train(arguments: argparse.Namespace) -> int:
             f"{result.validation.uniform_over_legal_move_loss:.6f}"
         )
     return 0
+
+
+def _resolve_evaluation_roots(
+    resolved: ResolvedConfig[CheckpointEvaluationConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[CheckpointEvaluationConfig]:
+    """Resolve checked-in relative pool paths beneath the shared data root."""
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+
+    config = resolved.value
+    root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
+    override_keys = {item.partition("=")[0] for item in overrides}
+    update: dict[str, object] = {}
+    if not config.pool.is_absolute() and "pool" not in override_keys:
+        update["pool"] = _rooted_artifact_path(root, config.pool)
+    training = config.leakage.training_normalized
+    if (
+        training is not None
+        and not training.is_absolute()
+        and "leakage.training_normalized" not in override_keys
+    ):
+        update["leakage"] = config.leakage.model_copy(
+            update={"training_normalized": _rooted_artifact_path(root, training)}
+        )
+    if not update:
+        return resolved
+    return ResolvedConfig(
+        value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
+
+
+def _optional_environment_root(name: str) -> Path | None:
+    """Return a configured machine root, or ``None`` when it is unset."""
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    return Path(value).expanduser().resolve()
 
 
 def _resolve_pool_roots(
