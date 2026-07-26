@@ -1,0 +1,24 @@
+{
+  "entries": 3807,
+  "license": {
+    "attribution": "Opening names aggregated by the Lichess chess-openings project and dedicated to the public domain under CC0 1.0. Move sequences were converted from SAN to UCI; no names were changed.",
+    "name": "Creative Commons Zero v1.0 Universal",
+    "spdx_id": "CC0-1.0",
+    "url": "https://github.com/lichess-org/chess-openings/blob/master/COPYING.txt"
+  },
+  "name": "anthro-openings",
+  "openings_sha256": "685b8d6acdad3a082f71f78d5c5de8171abca8ed133441dab1372918e1062044",
+  "source": {
+    "commit": "51b886249b9e418498d25b6e39b926c3de99c29a",
+    "files": [
+      "a.tsv",
+      "b.tsv",
+      "c.tsv",
+      "d.tsv",
+      "e.tsv"
+    ],
+    "repository": "https://github.com/lichess-org/chess-openings",
+    "retrieved": "2026-07-26"
+  },
+  "version": 1
+}

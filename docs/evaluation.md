@@ -828,6 +828,19 @@ few Sicilians." Source ECO and opening headers are deliberately not used: their
 granularity is fixed, their assignment is not standardized across databases, and
 their name strings differ per source.
 
+The book is vendored into the evaluation package with its own identity and
+license record, and classification is derived in the view layer rather than
+stored in normalized artifacts, so a book or granularity change never
+regenerates the corpus. A game is labeled by the deepest book position it
+reaches, so transpositions land together; one pass emits several granularity
+levels so a benchmark picks the level it needs; and a game the book does not
+name carries an explicit unclassified label rather than a nearest family. Any
+artifact carrying opening labels should record the book identity, because
+updating the book changes what a label means. See
+`docs/decisions/0015-owned-opening-book.md`. Per-ply multi-label opening
+metadata for preference conditioning is separate later work described in
+`docs/preference-controls.md`.
+
 Human prefixes are especially useful early, when the model may not yet be good
 at creating coherent full games from the start position.
 
