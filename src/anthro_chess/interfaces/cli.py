@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -152,6 +153,103 @@ def build_parser() -> argparse.ArgumentParser:
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
 
+    report_parser = eval_commands.add_parser(
+        "report",
+        help="Show the compact benchmark delta view over the results store.",
+    )
+    _add_store_argument(report_parser)
+    report_parser.add_argument(
+        "--current",
+        help="Checkpoint label to report (default: the most recently recorded).",
+    )
+    report_parser.add_argument(
+        "--baseline",
+        help="Checkpoint label to compare against (default: the previous one).",
+    )
+    report_parser.add_argument(
+        "--family",
+        action="append",
+        default=[],
+        help="Restrict the report to one metric family; may be repeated.",
+    )
+    report_parser.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        help="Restrict the report to one metric; may be repeated.",
+    )
+    report_parser.add_argument(
+        "--history",
+        metavar="METRIC",
+        help="Show one metric's full recorded history instead of a delta.",
+    )
+    report_parser.add_argument(
+        "--provenance",
+        action="store_true",
+        help="Also show how the two compared checkpoints were produced.",
+    )
+    report_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    report_parser.set_defaults(handler=_run_eval_report)
+
+    metrics_parser = eval_commands.add_parser(
+        "metrics",
+        help="List registered metric families, metrics, and their directions.",
+    )
+    metrics_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    metrics_parser.set_defaults(handler=_run_eval_metrics)
+
+    bridge_parser = eval_commands.add_parser(
+        "bridge",
+        help="Record, list, or revoke an explicit series bridge.",
+    )
+    bridge_commands = bridge_parser.add_subparsers(
+        dest="bridge_command",
+        required=True,
+    )
+    bridge_add_parser = bridge_commands.add_parser(
+        "add",
+        help="Assert that two fingerprints name the same series.",
+    )
+    _add_store_argument(bridge_add_parser)
+    bridge_add_parser.add_argument("--from", dest="from_fingerprint", required=True)
+    bridge_add_parser.add_argument("--to", dest="to_fingerprint", required=True)
+    bridge_add_parser.add_argument(
+        "--reason",
+        required=True,
+        help="Why the fingerprint moved for a reason independent of the metric.",
+    )
+    bridge_add_parser.add_argument(
+        "--author",
+        required=True,
+        help="Who is asserting the equivalence.",
+    )
+    bridge_add_parser.set_defaults(handler=_run_eval_bridge_add)
+
+    bridge_list_parser = bridge_commands.add_parser(
+        "list",
+        help="List recorded bridges.",
+    )
+    _add_store_argument(bridge_list_parser)
+    bridge_list_parser.set_defaults(handler=_run_eval_bridge_list)
+
+    bridge_revoke_parser = bridge_commands.add_parser(
+        "revoke",
+        help="Remove a recorded bridge.",
+    )
+    _add_store_argument(bridge_revoke_parser)
+    bridge_revoke_parser.add_argument("bridge_id")
+    bridge_revoke_parser.set_defaults(handler=_run_eval_bridge_revoke)
+
     train_parser = subcommands.add_parser(
         "train",
         help="Run bounded move-model training from explicit configuration.",
@@ -284,6 +382,152 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     print(f"Pool: {result.games_path}")
     print(f"Manifest: {result.manifest_path}")
     print(f"Identity: {result.game_ids_sha256}")
+    return 0
+
+
+def _add_store_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--store",
+        type=Path,
+        help=(
+            "Committed results store directory. Defaults to "
+            "ANTHRO_CHESS_RESULTS_ROOT or ./results."
+        ),
+    )
+
+
+def _run_eval_report(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        BridgeIndex,
+        ReportError,
+        ResultsStore,
+        ResultsStoreError,
+        build_delta_report,
+        build_history,
+        render_history,
+        render_provenance,
+        render_report,
+        resolve_store_root,
+    )
+
+    try:
+        store = ResultsStore(resolve_store_root(arguments.store))
+        results = store.results()
+        bridges = BridgeIndex(store.bridges())
+        if arguments.history is not None:
+            history = build_history(results, bridges, arguments.history)
+            if arguments.format == "json":
+                print(json.dumps(history.as_record(), indent=2, sort_keys=True))
+            else:
+                print(render_history(history), end="")
+            return 0
+        report = build_delta_report(
+            results,
+            bridges,
+            current=arguments.current,
+            baseline=arguments.baseline,
+            families=arguments.family or None,
+            metrics=arguments.metric or None,
+        )
+    except (ReportError, ResultsStoreError) as error:
+        print(f"anthro eval report: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(report.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(render_report(report), end="")
+    if arguments.provenance:
+        print()
+        print(render_provenance(report), end="")
+    return 0
+
+
+def _run_eval_metrics(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import iter_registry, registry_record
+
+    if arguments.format == "json":
+        print(json.dumps(registry_record(), indent=2, sort_keys=True))
+        return 0
+    for family, metrics in iter_registry():
+        print(f"{family.identifier}  {family.title}")
+        if not metrics:
+            print("  no metric is registered for this family yet")
+        for metric in metrics:
+            projection = metric.projection or "no data dependency"
+            print(
+                f"  {metric.identifier:<44} {metric.direction.value:<18} "
+                f"v{metric.definition_version}  {projection}"
+            )
+    return 0
+
+
+def _run_eval_bridge_add(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        build_bridge,
+        resolve_store_root,
+    )
+
+    try:
+        bridge = build_bridge(
+            from_fingerprint=arguments.from_fingerprint,
+            to_fingerprint=arguments.to_fingerprint,
+            reason=arguments.reason,
+            author=arguments.author,
+        )
+        path = ResultsStore(resolve_store_root(arguments.store)).append_bridge(bridge)
+    except (ResultsStoreError, ValueError) as error:
+        print(f"anthro eval bridge add: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Recorded bridge {bridge.bridge_id}")
+    print(f"Path: {path}")
+    return 0
+
+
+def _run_eval_bridge_list(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    try:
+        bridges = ResultsStore(resolve_store_root(arguments.store)).bridges()
+    except ResultsStoreError as error:
+        print(f"anthro eval bridge list: {error}", file=sys.stderr)
+        return 2
+
+    if not bridges:
+        print("No bridges are recorded.")
+        return 0
+    for bridge in bridges:
+        print(
+            f"{bridge.bridge_id}  {bridge.from_fingerprint[:12]} -> "
+            f"{bridge.to_fingerprint[:12]}  {bridge.author}: {bridge.reason}"
+        )
+    return 0
+
+
+def _run_eval_bridge_revoke(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    try:
+        path = ResultsStore(resolve_store_root(arguments.store)).revoke_bridge(
+            arguments.bridge_id
+        )
+    except ResultsStoreError as error:
+        print(f"anthro eval bridge revoke: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Revoked bridge {arguments.bridge_id}")
+    print(f"Path: {path}")
     return 0
 
 

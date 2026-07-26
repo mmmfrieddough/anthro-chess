@@ -1,0 +1,491 @@
+"""The artifact envelope every benchmark writes and every report reads.
+
+One envelope carries checkpoint, configuration, dataset, action, encoding,
+environment, and benchmark provenance, so a new benchmark kind is a new
+``kind`` string rather than a schema change. Each envelope records enough to
+recompute its own fingerprints, which is what lets a reader verify a series
+without the environment that produced it.
+
+The envelope is the summary tier and is committed to the repository. It holds
+scalar headline measurements only; bulk diagnostics live in the machine-local
+detail tier behind a reference. That boundary is enforced here rather than
+left to convention, because the natural pressure is always to commit one more
+useful diagnostic.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from hashlib import sha256
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from anthro_chess.chess import action_vocabulary_identity
+from anthro_chess.data import encoding_identity
+from anthro_chess.evaluation.results.fingerprints import (
+    DataComponent,
+    FingerprintError,
+    series_fingerprint,
+)
+from anthro_chess.evaluation.results.metrics import (
+    MetricRegistryError,
+    metric_definition,
+)
+from anthro_chess.provenance import code_provenance, environment_provenance
+
+ENVELOPE_VERSION = 1
+BRIDGE_VERSION = 1
+
+#: Cap on one committed summary record. Generous for scalar headlines and far
+#: too small for per-position diagnostics, which is the point: the tier
+#: boundary fails loudly instead of eroding.
+MAXIMUM_SUMMARY_BYTES = 64 * 1024
+
+Sha256Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+Identifier = Annotated[str, Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*$")]
+
+#: How a noise floor was characterized. Conflating these is the usual mistake,
+#: so a stored floor has to say which one it is.
+NoiseFloorKind = Literal["evaluation", "data-sampling", "training"]
+
+
+class ResultRecordError(ValueError):
+    """Raised when a result record violates the store's contract."""
+
+
+class ResultModel(BaseModel):
+    """Base for immutable, code-owned result records."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        validate_default=True,
+    )
+
+
+class BenchmarkReference(ResultModel):
+    """Which benchmark produced a result, and at which implementation version."""
+
+    name: Identifier
+    version: int = Field(ge=1)
+
+
+class CheckpointReference(ResultModel):
+    """Which model a result describes."""
+
+    label: Identifier
+    step: int | None = Field(default=None, ge=0)
+    run_id: str | None = Field(default=None, min_length=1)
+    parameter_sha256: Sha256Hex | None = None
+
+
+class ConfigurationReference(ResultModel):
+    """How a benchmark was configured.
+
+    Only a digest and the selection provenance are committed. Configuration
+    text is deliberately absent from fingerprints, so recording it in full
+    would grow the committed tier without making any series more identifiable.
+    """
+
+    sha256: Sha256Hex
+    source: str | None = None
+    overrides: tuple[str, ...] = ()
+
+
+class ProjectionDigest(ResultModel):
+    """A content digest over one projection of the games a benchmark scored."""
+
+    projection: Identifier
+    projection_version: int = Field(ge=1)
+    content_sha256: Sha256Hex
+    games: int = Field(ge=1)
+
+    def as_component(self) -> DataComponent:
+        """Return the fingerprint component this digest stands for."""
+
+        return DataComponent(
+            projection=self.projection,
+            projection_version=self.projection_version,
+            content_sha256=self.content_sha256,
+            games=self.games,
+        )
+
+    @classmethod
+    def from_component(cls, component: DataComponent) -> ProjectionDigest:
+        """Return the stored record for a computed data component."""
+
+        return cls(
+            projection=component.projection,
+            projection_version=component.projection_version,
+            content_sha256=component.content_sha256,
+            games=component.games,
+        )
+
+
+class DatasetReference(ResultModel):
+    """Which evaluation inputs a result was computed over."""
+
+    pool_id: Identifier
+    pool_version: int = Field(ge=1)
+    view: Identifier
+    selected_games: int = Field(ge=1)
+    game_ids_sha256: Sha256Hex
+    components: tuple[ProjectionDigest, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_components(self) -> DatasetReference:
+        names = [component.projection for component in self.components]
+        if len(set(names)) != len(names):
+            raise ValueError("a dataset reference may digest each projection once")
+        if names != sorted(names):
+            raise ValueError("dataset components must be ordered by projection name")
+        return self
+
+    def component(self, projection: str) -> ProjectionDigest | None:
+        """Return the digest for one projection, if this dataset carries it."""
+
+        for component in self.components:
+            if component.projection == projection:
+                return component
+        return None
+
+
+class EnvironmentRecord(ResultModel):
+    """Which build and machine produced a result."""
+
+    package_version: str = Field(min_length=1)
+    git_revision: str | None = None
+    python_version: str = Field(min_length=1)
+    platform: str = Field(min_length=1)
+    dependencies: dict[str, str | None] = Field(default_factory=dict)
+
+    @classmethod
+    def capture(cls) -> EnvironmentRecord:
+        """Capture the current code and environment provenance."""
+
+        code = code_provenance()
+        environment = environment_provenance()
+        return cls(
+            package_version=code.package_version,
+            git_revision=code.git_revision,
+            python_version=environment.python_version,
+            platform=environment.platform,
+            dependencies=dict(environment.dependencies),
+        )
+
+
+class NoiseFloor(ResultModel):
+    """How large a delta has to be before it is a finding rather than noise."""
+
+    value: float = Field(ge=0.0)
+    kind: NoiseFloorKind
+    source: str | None = Field(default=None, min_length=1)
+
+
+class Measurement(ResultModel):
+    """One metric value and the series it belongs to."""
+
+    metric: str = Field(min_length=1)
+    value: float
+    fingerprint: Sha256Hex
+    sample_size: int | None = Field(default=None, ge=1)
+    noise_floor: NoiseFloor | None = None
+
+    @model_validator(mode="after")
+    def _validate_value(self) -> Measurement:
+        if not math.isfinite(self.value):
+            raise ValueError(f"measurement {self.metric} must be a finite number")
+        return self
+
+
+class DetailReference(ResultModel):
+    """Where the machine-local bulk diagnostics for a result live."""
+
+    path: str = Field(min_length=1)
+    sha256: Sha256Hex
+    bytes: int = Field(ge=0)
+    description: str | None = Field(default=None, min_length=1)
+
+
+class ResultEnvelope(ResultModel):
+    """One benchmark result, in the shape every consumer reads."""
+
+    envelope_version: int = Field(ge=1)
+    result_id: str = Field(pattern=r"^[a-f0-9]{16}$")
+    recorded_at: datetime
+    kind: Identifier
+    benchmark: BenchmarkReference
+    checkpoint: CheckpointReference
+    configuration: ConfigurationReference | None = None
+    data: DatasetReference | None = None
+    action_vocabulary: dict[str, Any]
+    encoding: dict[str, Any]
+    environment: EnvironmentRecord
+    measurements: tuple[Measurement, ...] = Field(min_length=1)
+    detail: DetailReference | None = None
+
+    @model_validator(mode="after")
+    def _validate_measurements(self) -> ResultEnvelope:
+        metrics = [measurement.metric for measurement in self.measurements]
+        if len(set(metrics)) != len(metrics):
+            raise ValueError("a result may report each metric once")
+        if metrics != sorted(metrics):
+            raise ValueError("measurements must be ordered by metric identifier")
+        if self.recorded_at.tzinfo is None:
+            raise ValueError("recorded_at must carry a time zone")
+        return self
+
+    def verify(self, *, recording: bool = True) -> None:
+        """Recompute every fingerprint from the provenance the result carries.
+
+        A result that cannot reproduce its own series identity is unusable for
+        comparison, so this is checked rather than trusted.
+
+        Reading is deliberately more forgiving than recording. A metric that
+        has since left the registry leaves a dead series, and decision 0013
+        expects those to stay readable and honestly labeled rather than to
+        make the surrounding history unloadable. The same applies to the size
+        budget, which can only be exceeded by a record written when the budget
+        was larger.
+        """
+
+        if self.envelope_version > ENVELOPE_VERSION:
+            raise ResultRecordError(
+                f"result {self.result_id} uses envelope version "
+                f"{self.envelope_version}; this build understands "
+                f"{ENVELOPE_VERSION}"
+            )
+        for measurement in self.measurements:
+            try:
+                metric_definition(measurement.metric)
+            except MetricRegistryError as error:
+                if recording:
+                    raise ResultRecordError(str(error)) from error
+                continue
+            expected = self.expected_fingerprint(measurement.metric)
+            if expected != measurement.fingerprint:
+                raise ResultRecordError(
+                    f"result {self.result_id} records a fingerprint for "
+                    f"{measurement.metric} that its own provenance does not "
+                    "reproduce"
+                )
+        size = len(canonical_json(self.as_record()))
+        if recording and size > MAXIMUM_SUMMARY_BYTES:
+            raise ResultRecordError(
+                f"result {self.result_id} is {size} bytes; the committed "
+                f"summary tier caps a record at {MAXIMUM_SUMMARY_BYTES}. Move "
+                "bulk diagnostics to the machine-local detail tier."
+            )
+
+    def expected_fingerprint(self, metric: str) -> str:
+        """Return the fingerprint this result's own provenance implies."""
+
+        try:
+            definition = metric_definition(metric)
+        except MetricRegistryError as error:
+            raise ResultRecordError(str(error)) from error
+        component: DataComponent | None = None
+        if definition.projection is not None:
+            digest = self.data.component(definition.projection) if self.data else None
+            if digest is None:
+                raise ResultRecordError(
+                    f"result {self.result_id} reports {metric}, which consumes "
+                    f"projection {definition.projection!r}, without a matching "
+                    "content digest"
+                )
+            component = digest.as_component()
+        try:
+            return series_fingerprint(definition, component)
+        except FingerprintError as error:
+            raise ResultRecordError(str(error)) from error
+
+    def measurement(self, metric: str) -> Measurement | None:
+        """Return one measurement by metric identifier."""
+
+        for measurement in self.measurements:
+            if measurement.metric == metric:
+                return measurement
+        return None
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the JSON-compatible record written to the store."""
+
+        return self.model_dump(mode="json")
+
+
+class Bridge(ResultModel):
+    """An explicit assertion that two fingerprints name the same series.
+
+    Breaking a series is automatic; rejoining one is not. A bridge is
+    legitimate only when the fingerprint moved for a reason provably
+    independent of the measured quantity. It records who asserted that and
+    why, it is stored with the results, and revoking it is a reviewable diff.
+    """
+
+    bridge_version: int = Field(ge=1)
+    bridge_id: str = Field(pattern=r"^[a-f0-9]{16}$")
+    recorded_at: datetime
+    from_fingerprint: Sha256Hex
+    to_fingerprint: Sha256Hex
+    reason: str = Field(min_length=1)
+    author: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_endpoints(self) -> Bridge:
+        if self.from_fingerprint == self.to_fingerprint:
+            raise ValueError("a bridge must join two different fingerprints")
+        if self.recorded_at.tzinfo is None:
+            raise ValueError("recorded_at must carry a time zone")
+        return self
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the JSON-compatible record written to the store."""
+
+        return self.model_dump(mode="json")
+
+
+def canonical_json(value: Any) -> bytes:
+    """Serialize a record the one way the store and its digests agree on."""
+
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+
+
+def build_result(
+    *,
+    kind: str,
+    benchmark: BenchmarkReference,
+    checkpoint: CheckpointReference,
+    measurements: Sequence[Measurement],
+    configuration: ConfigurationReference | None = None,
+    data: DatasetReference | None = None,
+    detail: DetailReference | None = None,
+    environment: EnvironmentRecord | None = None,
+    recorded_at: datetime | None = None,
+) -> ResultEnvelope:
+    """Assemble a verified result envelope with a content-derived identity.
+
+    The identity is derived from the record itself, so recording the same
+    result twice is idempotent rather than a duplicate history entry.
+    """
+
+    ordered = tuple(sorted(measurements, key=lambda item: item.metric))
+    envelope = ResultEnvelope(
+        envelope_version=ENVELOPE_VERSION,
+        result_id="0" * 16,
+        recorded_at=recorded_at or datetime.now(tz=UTC),
+        kind=kind,
+        benchmark=benchmark,
+        checkpoint=checkpoint,
+        configuration=configuration,
+        data=data,
+        action_vocabulary=action_vocabulary_identity(),
+        encoding=encoding_identity(),
+        environment=environment or EnvironmentRecord.capture(),
+        measurements=ordered,
+        detail=detail,
+    )
+    identified = envelope.model_copy(update={"result_id": _record_id(envelope)})
+    identified.verify()
+    return identified
+
+
+def build_bridge(
+    *,
+    from_fingerprint: str,
+    to_fingerprint: str,
+    reason: str,
+    author: str,
+    recorded_at: datetime | None = None,
+) -> Bridge:
+    """Assemble a bridge with a content-derived identity."""
+
+    bridge = Bridge(
+        bridge_version=BRIDGE_VERSION,
+        bridge_id="0" * 16,
+        recorded_at=recorded_at or datetime.now(tz=UTC),
+        from_fingerprint=from_fingerprint,
+        to_fingerprint=to_fingerprint,
+        reason=reason,
+        author=author,
+    )
+    return bridge.model_copy(update={"bridge_id": _record_id(bridge)})
+
+
+def measurement(
+    metric: str,
+    value: float,
+    *,
+    data: DataComponent | None = None,
+    sample_size: int | None = None,
+    noise_floor: NoiseFloor | None = None,
+) -> Measurement:
+    """Return one measurement with its fingerprint computed from the registry."""
+
+    try:
+        definition = metric_definition(metric)
+        fingerprint = series_fingerprint(definition, data)
+    except (MetricRegistryError, FingerprintError) as error:
+        raise ResultRecordError(str(error)) from error
+    return Measurement(
+        metric=definition.identifier,
+        value=value,
+        fingerprint=fingerprint,
+        sample_size=sample_size,
+        noise_floor=noise_floor,
+    )
+
+
+def dataset_reference(
+    *,
+    pool_id: str,
+    pool_version: int,
+    view: str,
+    selected_games: int,
+    game_ids_sha256: str,
+    components: Sequence[DataComponent],
+) -> DatasetReference:
+    """Return the dataset reference for one benchmark's realized inputs."""
+
+    digests = sorted(
+        (ProjectionDigest.from_component(component) for component in components),
+        key=lambda digest: digest.projection,
+    )
+    return DatasetReference(
+        pool_id=pool_id,
+        pool_version=pool_version,
+        view=view,
+        selected_games=selected_games,
+        game_ids_sha256=game_ids_sha256,
+        components=tuple(digests),
+    )
+
+
+def configuration_reference(
+    resolved: Mapping[str, Any],
+    *,
+    source: str | None = None,
+    overrides: Sequence[str] = (),
+) -> ConfigurationReference:
+    """Digest a resolved configuration record for the summary tier."""
+
+    return ConfigurationReference(
+        sha256=sha256(canonical_json(dict(resolved))).hexdigest(),
+        source=source,
+        overrides=tuple(overrides),
+    )
+
+
+def _record_id(record: ResultModel) -> str:
+    payload = record.model_dump(mode="json")
+    payload.pop("result_id", None)
+    payload.pop("bridge_id", None)
+    return sha256(canonical_json(payload)).hexdigest()[:16]

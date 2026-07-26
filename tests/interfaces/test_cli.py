@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -447,3 +448,178 @@ split = "train"
         )
         == 0
     )
+
+
+def _record_fixture_results(store_root: Path) -> None:
+    """Record two comparable results so the report command has history."""
+
+    from datetime import UTC, datetime
+
+    from anthro_chess.evaluation.results import (
+        BenchmarkReference,
+        CheckpointReference,
+        ResultsStore,
+        build_result,
+        dataset_reference,
+        measurement,
+        projection_content_digest,
+    )
+    from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
+
+    rows = [
+        {
+            "game_id": game_id,
+            "ruleset": "standard",
+            "initial_position": "startpos",
+            "action_ids": [1, 2, 3],
+            "white_normalized_rating": 1500,
+            "black_normalized_rating": 1500,
+        }
+        for game_id in (1, 2)
+    ]
+    component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
+    store = ResultsStore(store_root)
+    for label, value, day in (("checkpoint-a", 3.5, 1), ("checkpoint-b", 3.2, 8)):
+        store.append(
+            build_result(
+                kind="held-out-prediction",
+                benchmark=BenchmarkReference(name="move-validation", version=1),
+                checkpoint=CheckpointReference(label=label),
+                data=dataset_reference(
+                    pool_id="fixture-pool",
+                    pool_version=1,
+                    view="canonical",
+                    selected_games=component.games,
+                    game_ids_sha256="a" * 64,
+                    components=[component],
+                ),
+                measurements=[measurement("held_out.move_loss", value, data=component)],
+                recorded_at=datetime(2026, 7, day, tzinfo=UTC),
+            )
+        )
+
+
+def test_eval_report_shows_the_compact_delta_view(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "results")
+
+    assert main(["eval", "report", "--store", str(tmp_path / "results")]) == 0
+
+    output = capsys.readouterr().out
+    assert "checkpoint-b" in output
+    assert "held_out.move_loss" in output
+    assert "better" in output
+
+
+def test_eval_report_emits_machine_readable_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "report",
+                "--store",
+                str(tmp_path / "results"),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["current"]["label"] == "checkpoint-b"
+    assert report["baseline"]["label"] == "checkpoint-a"
+
+
+def test_eval_report_resolves_its_store_from_the_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "results")
+    monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "results"))
+
+    assert main(["eval", "report", "--history", "held_out.move_loss"]) == 0
+
+    output = capsys.readouterr().out
+    assert "held_out.move_loss" in output
+    assert "checkpoint-a" in output
+
+
+def test_eval_report_reports_an_unknown_selection_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "report",
+                "--store",
+                str(tmp_path / "results"),
+                "--current",
+                "checkpoint-z",
+            ]
+        )
+        == 2
+    )
+    assert "anthro eval report:" in capsys.readouterr().err
+
+
+def test_eval_metrics_lists_the_registry(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["eval", "metrics", "--format", "json"]) == 0
+
+    registry = json.loads(capsys.readouterr().out)
+    families = {family["identifier"] for family in registry["families"]}
+    assert {"training-health", "legality", "rating-behavior", "generated-play"} <= (
+        families
+    )
+
+
+def test_eval_bridge_records_lists_and_revokes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = str(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "bridge",
+                "add",
+                "--store",
+                store,
+                "--from",
+                "a" * 64,
+                "--to",
+                "b" * 64,
+                "--reason",
+                "storage format change only",
+                "--author",
+                "maintainer",
+            ]
+        )
+        == 0
+    )
+    recorded = capsys.readouterr().out
+    bridge_id = recorded.splitlines()[0].removeprefix("Recorded bridge ")
+
+    assert main(["eval", "bridge", "list", "--store", store]) == 0
+    assert bridge_id in capsys.readouterr().out
+
+    assert main(["eval", "bridge", "revoke", "--store", store, bridge_id]) == 0
+    capsys.readouterr()
+    assert main(["eval", "bridge", "list", "--store", store]) == 0
+    assert "No bridges are recorded." in capsys.readouterr().out

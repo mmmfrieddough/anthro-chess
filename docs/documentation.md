@@ -32,6 +32,8 @@ the project specification.
 - `CONTRIBUTING.md`: concise human-facing development and contribution guide.
 - `AGENTS.md`: concise agent routing and durable project guardrails.
 - `configs/README.md`: checked-in configuration conventions and ownership.
+- `results/README.md`: the committed benchmark results store and the boundary
+  with machine-local diagnostics.
 - `docs/issue-workflow.md`: issue organization, task selection, worktrees,
   verification, and publication for review.
 - `docs/vision.md`: high-level product intent and boundaries.

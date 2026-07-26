@@ -326,6 +326,11 @@ comparison, resume, provenance, and later runtime selection. A model runner can
 accept an explicit compatible checkpoint path beneath this root without copying
 it or requiring an external model registry.
 
+Bulk benchmark diagnostics are machine-local for the same reason and default
+beneath this root. `ANTHRO_CHESS_RESULT_DETAIL_ROOT` overrides that location
+when detail should live elsewhere. Committed benchmark summaries are separate
+and live in the repository; see `docs/evaluation.md`.
+
 Some checkpoints are **anchors**: the ones a long-running comparison starts from,
 and the ones re-scored when a new evaluation pool generation is cut. Anchors are
 retained rather than cleaned up, because losing one removes the left edge of
