@@ -100,7 +100,7 @@ would change that judgment and should be excluded when it is introduced.
 This first path is untimed and move-only. It ignores unsupported `go` fields
 rather than treating them as model inputs. `searchmoves`, pondering, clock
 fields, `movetime`, depth/node/mate limits, asynchronous cancellation, and
-portable resignation remain outside the implemented scope.
+portable non-move game actions remain outside the implemented scope.
 
 `go infinite` is honored to the extent the protocol requires: the move is still
 chosen synchronously, but the response is withheld until `stop` rather than
@@ -210,15 +210,26 @@ types, but GUI presentation quality will vary. Some GUIs may show numeric
 fields rather than polished sliders. A native Anthro interface can provide a
 better control surface if UCI GUI options are too limited.
 
-## Resignation
+## Non-Move Game Actions
 
-The core Anthro runtime may support resignation as a learned game action.
+The core Anthro runtime may support resignation and draw claims as learned game
+actions.
 
-Standard UCI does not provide a portable engine-to-GUI resignation response.
-Every `go` command is expected to end with a `bestmove` response. UCI mode
-should therefore disable resignation by default or handle it only through a
-host-specific extension. Native Anthro interfaces may expose resignation
+Standard UCI carries neither. Every `go` command is expected to end with a
+`bestmove` response, and the protocol has no engine-to-GUI command for
+resigning, claiming, offering, or accepting a draw. This was a deliberate
+narrowing relative to the older Chess Engine Communication Protocol, which does
+give the engine `resign` and `offer draw`; UCI moved those decisions to the GUI.
+Extension proposals exist but are not portable.
+
+UCI mode should therefore disable non-move actions by default, or handle them
+only through a host-specific extension. Native Anthro interfaces may expose them
 directly.
+
+The cost of disabling differs between the two. Suppressing resignation changes
+observable behavior, because the bot plays on in positions where a human would
+have stopped. Suppressing draw claims usually costs nothing, because UCI hosts
+adjudicate repetition and the fifty-move rule themselves.
 
 ## Native Interfaces
 
