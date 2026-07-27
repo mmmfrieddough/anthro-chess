@@ -7,6 +7,7 @@ from anthro_chess.runtime.config import (
     Temperature,
 )
 from anthro_chess.runtime.session import (
+    ActionDecision,
     ActionModelRunner,
     ActionSelectionError,
     DecisionRuntimeError,
@@ -15,10 +16,12 @@ from anthro_chess.runtime.session import (
     MoveAction,
     PositionSync,
     ResignationAction,
+    SelectionPolicy,
     SessionStateError,
 )
 
 __all__ = [
+    "ActionDecision",
     "ActionModelRunner",
     "ActionSelectionError",
     "DecisionRuntimeError",
@@ -29,6 +32,7 @@ __all__ = [
     "RandomSeed",
     "ResignationAction",
     "RuntimeConfig",
+    "SelectionPolicy",
     "SessionStateError",
     "TargetRating",
     "Temperature",

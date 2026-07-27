@@ -1078,6 +1078,50 @@ Generated games should be classified afterward for distribution features,
 timing behavior when timing is enabled, game length, result patterns, repeated
 lines, and drift away from human-like play.
 
+### Shared Generation Machinery
+
+Every benchmark that needs whole games shares one record format, one harness,
+and one analysis layer, in `anthro_chess.evaluation.games`. A shared *corpus*
+of generated games is deliberately not the goal and would not work: a self-play
+game at one rating yields no pairwise comparison for a ladder, an engine anchor
+needs an external opponent, and timing games need clocks the model has no head
+for. The saving is in the machinery, not in the games.
+
+The abstraction the harness exposes is **two player configurations plus a
+position source**. Self-play puts one configuration in both seats, a rating
+ladder puts two ratings in them, an engine anchor puts an external process in
+one, and a robustness arm puts a uniform-random opponent there. None of those
+is a mode the harness knows about.
+
+Model seats decide through the ordinary game session rather than through a
+private sampling path, so a benchmark measures the policy the engine actually
+plays and inherits its legal masking, position synchronization, and seeding
+rules. The session reports the policy behind each selected action, which is
+what lets generated games and games reconstructed from live runtime logs carry
+the same per-decision quantities and be read by one analysis pass. Those
+probabilities are the model's own distribution over enabled actions rather than
+the tempered one the draw used, so they describe the model rather than the dial
+and stay meaningful at temperature zero.
+
+Reproduction is from explicit seeds throughout. A suite is identified by one
+base seed, and each game's seed and each seat's stream are derived from it, so
+one game reproduces on its own from the seed its record carries. Nothing waits
+in wall-clock time; an external engine is bounded by depth or nodes, because a
+time limit would make results depend on how loaded the machine was.
+
+Endings are recorded precisely enough to tell them apart. Rule endings come
+from the chess layer, a learned resignation and the ply limit that stops an
+unfinished game are the harness's own, and a claimed draw is marked as
+adjudicated because the seats have no draw-claim action. The harness does not
+claim draws by default: claiming on the model's behalf would report the
+harness's policy as the model's behavior, and games still end on their own
+through the fivefold and seventy-five-move rules.
+
+Analysis functions consume retained records rather than re-running games, so a
+new distribution feature is recomputed over games already on disk instead of by
+regenerating them. Records are bulk diagnostics and stay in the machine-local
+detail tier; only the metrics computed from them reach the committed tier.
+
 Opening distributions should group games by a classified family computed from
 our own versioned book rather than by literal move prefix. Prefix grouping
 fragments broad openings across many buckets while narrow ones keep their mass

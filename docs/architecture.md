@@ -125,6 +125,13 @@ moves, and applies the selected move. Its strict settings keep target rating
 and temperature independent and leave resignation disabled unless a caller
 deliberately enables it.
 
+Selection also reports what the policy said about the action it applied. This
+is the single place an action is chosen, so exposing those quantities here is
+what lets generated benchmark games and games reconstructed from live play be
+analyzed by one code path, and it keeps a rollout benchmark measuring the
+policy the engine actually plays rather than a second implementation of it.
+Interfaces that only need the move keep using the thin call.
+
 Runtime state has several different lifetimes. Checkpoint loading, device
 placement, and other expensive model-runner initialization should survive for
 the process lifetime. Exact board and move history should advance

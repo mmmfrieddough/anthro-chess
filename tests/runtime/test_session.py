@@ -373,6 +373,100 @@ def test_runtime_config_uses_shared_loading_and_enforces_control_bounds(
         RuntimeConfig(seed=-1)
 
 
+def test_a_decision_reports_the_policy_behind_the_action_it_applied() -> None:
+    session = GameSession(
+        StubRunner(_ranked_logits("e2e4")),
+        config=RuntimeConfig(temperature=0.0),
+    )
+
+    decision = session.decide()
+
+    assert isinstance(decision.action, MoveAction)
+    assert decision.action.move == chess.Move.from_uci("e2e4")
+    # Twenty legal first moves, and the ranked one is the model's preference.
+    assert decision.policy.enabled_action_count == 20
+    assert decision.policy.selected_rank == 1
+    assert decision.policy.preferred_action_id == decision.action.action_id
+    assert decision.policy.selected_probability == pytest.approx(
+        decision.policy.preferred_probability
+    )
+    assert 0.0 < decision.policy.selected_probability < 1.0
+
+
+def test_reported_probabilities_describe_the_model_not_the_temperature() -> None:
+    logits = _ranked_logits("e2e4")
+
+    greedy = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=0.0),
+    ).decide()
+    sampled = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=1.0, seed=4),
+    ).decide()
+
+    # A temperature change moves which action is drawn, never the model's own
+    # confidence in the action it prefers.
+    assert greedy.policy.preferred_probability == pytest.approx(
+        sampled.policy.preferred_probability
+    )
+    assert greedy.policy.preferred_action_id == sampled.policy.preferred_action_id
+
+
+def test_an_off_policy_draw_is_reported_with_its_rank_and_probability() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 10.0
+    logits[encode_move(chess.Move.from_uci("d2d4"))] = 9.0
+    session = GameSession(
+        StubRunner(logits),
+        # A high temperature flattens the draw without touching the ranking.
+        config=RuntimeConfig(temperature=3.0, seed=1),
+    )
+
+    decision = session.decide()
+
+    assert isinstance(decision.action, MoveAction)
+    if decision.action.move == chess.Move.from_uci("e2e4"):
+        assert decision.policy.selected_rank == 1
+    else:
+        assert decision.policy.selected_rank > 1
+        assert (
+            decision.policy.selected_probability < decision.policy.preferred_probability
+        )
+    assert decision.policy.preferred_action_id == encode_move(
+        chess.Move.from_uci("e2e4")
+    )
+
+
+def test_a_resignation_decision_still_reports_its_policy() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[RESIGNATION_ACTION_ID] = 10.0
+    session = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=0.0, resignation_enabled=True),
+    )
+
+    decision = session.decide()
+
+    assert isinstance(decision.action, ResignationAction)
+    assert decision.policy.preferred_action_id == RESIGNATION_ACTION_ID
+    # Twenty legal moves plus the enabled resignation action.
+    assert decision.policy.enabled_action_count == 21
+
+
+def test_choosing_an_action_stays_the_thin_call_interfaces_use() -> None:
+    session = GameSession(
+        StubRunner(_ranked_logits("e2e4")),
+        config=RuntimeConfig(temperature=0.0),
+    )
+
+    action = session.choose_action()
+
+    assert isinstance(action, MoveAction)
+    assert action.move == chess.Move.from_uci("e2e4")
+    assert session.move_history == (action.move,)
+
+
 def _chosen_move(session: GameSession) -> chess.Move:
     action = session.choose_action()
     assert isinstance(action, MoveAction)

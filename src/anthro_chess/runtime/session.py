@@ -60,6 +60,36 @@ class ResignationAction:
 
 GameAction: TypeAlias = MoveAction | ResignationAction
 
+
+@dataclass(frozen=True)
+class SelectionPolicy:
+    """What the policy said about one selected action.
+
+    The distribution is over the actions the position enabled, not over the
+    raw vocabulary, so these describe the decision that was actually available
+    rather than the model's unmasked preference. It is untempered; see
+    :meth:`GameSession._selection_policy` for why.
+
+    Reporting them here is what lets a benchmark rollout and a game
+    reconstructed from a live session carry the same per-decision quantities:
+    both go through this one selection path.
+    """
+
+    enabled_action_count: int
+    selected_probability: float
+    selected_rank: int
+    preferred_action_id: int
+    preferred_probability: float
+
+
+@dataclass(frozen=True)
+class ActionDecision:
+    """One selected action together with the policy that produced it."""
+
+    action: GameAction
+    policy: SelectionPolicy
+
+
 # Fresh streams draw a positive seed that fits a signed 64-bit integer so it is
 # safe to log, reproduce, and pass to ``torch.Generator.manual_seed``.
 _FRESH_SEED_BITS = 63
@@ -280,6 +310,11 @@ class GameSession:
     def choose_action(self) -> GameAction:
         """Select, apply, and return one valid action for the player to move."""
 
+        return self.decide().action
+
+    def decide(self) -> ActionDecision:
+        """Select and apply one action, reporting the policy behind it."""
+
         if self.is_terminal:
             raise SessionStateError("cannot choose an action in a terminal game")
 
@@ -298,12 +333,12 @@ class GameSession:
             self._board,
             include_resignation=self.config.resignation_enabled,
         )
-        action_id = self._sample_action(logits, enabled_ids)
+        action_id, policy = self._sample_action(logits, enabled_ids)
 
         if action_id == RESIGNATION_ACTION_ID:
             self._resigned_by = self._board.turn
             logger.debug("Selected resignation action")
-            return ResignationAction()
+            return ActionDecision(action=ResignationAction(), policy=policy)
 
         move = decode_move(action_id)
         if move not in self._board.legal_moves:
@@ -312,7 +347,10 @@ class GameSession:
             )
         self._board.push(move)
         logger.debug("Selected and applied move action %s", action_id)
-        return MoveAction(action_id=action_id, move=move)
+        return ActionDecision(
+            action=MoveAction(action_id=action_id, move=move),
+            policy=policy,
+        )
 
     @staticmethod
     def _validate_logits(logits: object) -> Tensor:
@@ -327,7 +365,11 @@ class GameSession:
             raise ActionSelectionError("model runner returned non-finite action logits")
         return observed
 
-    def _sample_action(self, logits: Tensor, enabled_ids: tuple[int, ...]) -> int:
+    def _sample_action(
+        self,
+        logits: Tensor,
+        enabled_ids: tuple[int, ...],
+    ) -> tuple[int, SelectionPolicy]:
         if not enabled_ids:
             raise ActionSelectionError("the current position has no enabled actions")
         candidate_ids = torch.tensor(enabled_ids, dtype=torch.long)
@@ -353,7 +395,39 @@ class GameSession:
                     generator=self._generator,
                 ).item()
             )
-        return enabled_ids[candidate_index]
+        return (
+            enabled_ids[candidate_index],
+            self._selection_policy(candidate_logits, enabled_ids, candidate_index),
+        )
+
+    @staticmethod
+    def _selection_policy(
+        candidate_logits: Tensor,
+        enabled_ids: tuple[int, ...],
+        candidate_index: int,
+    ) -> SelectionPolicy:
+        """Describe the selected action under the model's own policy.
+
+        The reported probabilities come from the untempered distribution over
+        enabled actions rather than from the tempered one the draw used. The
+        temperature is a dial recorded beside the decision, so reading these
+        through it would make the model's confidence move whenever the dial
+        did, and would collapse to a point mass at temperature zero exactly
+        where the model's confidence in its greedy choice is the interesting
+        quantity.
+        """
+
+        probabilities = torch.softmax(candidate_logits, dim=0)
+        preferred_index = int(torch.argmax(candidate_logits).item())
+        selected_logit = candidate_logits[candidate_index]
+        rank = int((candidate_logits > selected_logit).sum().item()) + 1
+        return SelectionPolicy(
+            enabled_action_count=len(enabled_ids),
+            selected_probability=float(probabilities[candidate_index].item()),
+            selected_rank=rank,
+            preferred_action_id=enabled_ids[preferred_index],
+            preferred_probability=float(probabilities[preferred_index].item()),
+        )
 
 
 def _common_prefix_length(
