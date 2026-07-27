@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         CheckpointEvaluationResult,
         PoolConfig,
     )
+    from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -251,6 +252,89 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     metrics_parser.set_defaults(handler=_run_eval_metrics)
+
+    noise_parser = eval_commands.add_parser(
+        "noise",
+        help="Characterize, list, and apply benchmark noise floors.",
+    )
+    noise_commands = noise_parser.add_subparsers(
+        dest="noise_command",
+        required=True,
+    )
+    noise_characterize_parser = noise_commands.add_parser(
+        "characterize",
+        help="Estimate a noise floor from recorded replicate measurements.",
+    )
+    _add_store_argument(noise_characterize_parser)
+    noise_characterize_parser.add_argument(
+        "--kind",
+        choices=("evaluation", "training"),
+        required=True,
+        help=(
+            "Which noise source the replicates vary. Data-sampling noise is "
+            "bootstrapped by the evaluation run itself and is not estimated here."
+        ),
+    )
+    noise_characterize_parser.add_argument(
+        "--checkpoint",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help="A recorded checkpoint label to use as one replicate; repeat it.",
+    )
+    noise_characterize_parser.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        help="Restrict the characterization to one metric; may be repeated.",
+    )
+    noise_characterize_parser.add_argument(
+        "--source",
+        required=True,
+        help="What the replicates are, such as which seeds produced them.",
+    )
+    noise_characterize_parser.add_argument(
+        "--coverage",
+        type=float,
+        help=(
+            "Normal coverage factor for the floor. Defaults to the two-sided "
+            "95 percent factor."
+        ),
+    )
+    noise_characterize_parser.set_defaults(handler=_run_eval_noise_characterize)
+
+    noise_list_parser = noise_commands.add_parser(
+        "list",
+        help="List recorded noise characterizations and their floors.",
+    )
+    _add_store_argument(noise_list_parser)
+    noise_list_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    noise_list_parser.set_defaults(handler=_run_eval_noise_list)
+
+    noise_plan_parser = noise_commands.add_parser(
+        "plan",
+        help="Report how many games an axis needs to resolve a given effect.",
+    )
+    _add_store_argument(noise_plan_parser)
+    noise_plan_parser.add_argument("--metric", required=True)
+    noise_plan_parser.add_argument(
+        "--effect",
+        type=float,
+        required=True,
+        help="The smallest metric difference the axis has to resolve.",
+    )
+    noise_plan_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    noise_plan_parser.set_defaults(handler=_run_eval_noise_plan)
 
     bridge_parser = eval_commands.add_parser(
         "bridge",
@@ -548,6 +632,19 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
                 f"{dependency.anchor_agreement_rate:.6f}",
             ]
         )
+    noise = result.noise
+    if noise is not None:
+        lines.extend(
+            [
+                "",
+                (
+                    f"Noise: data-sampling floors for {len(noise.floors)} metric(s) "
+                    f"from {noise.replicates} resamples of "
+                    f"{result.view.selected_games} game(s). "
+                    "See `anthro eval noise list`."
+                ),
+            ]
+        )
     if result.recorded_paths:
         lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
     else:
@@ -573,6 +670,7 @@ def _add_store_argument(parser: argparse.ArgumentParser) -> None:
 def _run_eval_report(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         BridgeIndex,
+        NoiseFloorIndex,
         ReportError,
         ResultsStore,
         ResultsStoreError,
@@ -598,6 +696,7 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
         report = build_delta_report(
             results,
             bridges,
+            floors=NoiseFloorIndex(store.characterizations(), bridges),
             current=arguments.current,
             baseline=arguments.baseline,
             families=arguments.family or None,
@@ -614,6 +713,237 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
     if arguments.provenance:
         print()
         print(render_provenance(report), end="")
+    return 0
+
+
+def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        DEFAULT_COVERAGE,
+        REPLICATE_METHOD,
+        BridgeIndex,
+        MetricRegistryError,
+        NoiseCharacterizationError,
+        ResultsStore,
+        ResultsStoreError,
+        build_characterization,
+        metric_definition,
+        replicate_floors,
+        resolve_store_root,
+    )
+
+    labels: list[str] = arguments.checkpoint
+    if len(labels) < 2:
+        print(
+            "anthro eval noise characterize: name at least two checkpoints; a "
+            "floor is the spread across replicates and one reading has none",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        store = ResultsStore(resolve_store_root(arguments.store))
+        results = store.results()
+        bridges = BridgeIndex(store.bridges())
+        wanted = [metric_definition(name).identifier for name in arguments.metric]
+        replicates, skipped = _collect_replicates(results, bridges, labels, wanted)
+        if not replicates:
+            print(
+                "anthro eval noise characterize: no metric is measured on the "
+                "same series for every named checkpoint",
+                file=sys.stderr,
+            )
+            return 2
+        characterization = build_characterization(
+            kind=arguments.kind,
+            method=REPLICATE_METHOD,
+            replicates=len(labels),
+            coverage=(
+                DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
+            ),
+            source=arguments.source,
+            floors=replicate_floors(
+                replicates,
+                coverage=(
+                    DEFAULT_COVERAGE
+                    if arguments.coverage is None
+                    else arguments.coverage
+                ),
+            ),
+        )
+        path = store.append_characterization(characterization)
+    except (
+        MetricRegistryError,
+        NoiseCharacterizationError,
+        ResultsStoreError,
+    ) as error:
+        print(f"anthro eval noise characterize: {error}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Characterized {arguments.kind} noise over {len(labels)} replicate(s) "
+        f"for {len(characterization.floors)} metric(s)."
+    )
+    for entry in characterization.floors:
+        print(f"  {entry.metric:<44} floor {entry.floor:.6g}")
+    for metric, reason in skipped:
+        print(f"  {metric:<44} skipped: {reason}")
+    print(f"Recorded: {path}")
+    return 0
+
+
+def _collect_replicates(
+    results: Sequence[ResultEnvelope],
+    bridges: BridgeIndex,
+    labels: Sequence[str],
+    metrics: Sequence[str],
+) -> tuple[dict[str, list[tuple[str, float]]], list[tuple[str, str]]]:
+    """Gather one measurement per named checkpoint for every eligible metric.
+
+    A metric is eligible only when every named checkpoint measured it on the
+    same series. Replicates drawn from different series would describe the
+    spread of two different measurements rather than the noise in one.
+    """
+
+    from anthro_chess.evaluation.results import (
+        ResultsStoreError,
+        latest_measurement,
+        registered_metrics,
+        results_for_checkpoint,
+    )
+
+    by_label = {label: results_for_checkpoint(results, label) for label in labels}
+    missing = [label for label, found in by_label.items() if not found]
+    if missing:
+        raise ResultsStoreError(
+            f"no result is recorded for checkpoint(s): {', '.join(sorted(missing))}"
+        )
+
+    candidates = (
+        list(metrics)
+        if metrics
+        else [definition.identifier for definition in registered_metrics()]
+    )
+    replicates: dict[str, list[tuple[str, float]]] = {}
+    skipped: list[tuple[str, str]] = []
+    for metric in candidates:
+        found = [latest_measurement(by_label[label], metric) for label in labels]
+        if any(item is None for item in found):
+            if metrics:
+                skipped.append((metric, "not measured for every named checkpoint"))
+            continue
+        values = [item[1] for item in found if item is not None]
+        series = {bridges.series(value.fingerprint) for value in values}
+        if len(series) > 1:
+            skipped.append((metric, "the named checkpoints are not on one series"))
+            continue
+        replicates[metric] = [(value.fingerprint, value.value) for value in values]
+    return replicates, skipped
+
+
+def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    try:
+        store = ResultsStore(resolve_store_root(arguments.store))
+        characterizations = store.characterizations()
+    except ResultsStoreError as error:
+        print(f"anthro eval noise list: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(
+            json.dumps(
+                [record.as_record() for record in characterizations],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if not characterizations:
+        print("No noise characterization is recorded.")
+        return 0
+    for record in characterizations:
+        print(
+            f"{record.recorded_at.date().isoformat()}  {record.kind}  "
+            f"{record.method}  {record.replicates} replicate(s)  {record.source}"
+        )
+        for entry in record.floors:
+            units = (
+                "" if entry.sampling_units is None else f"  n={entry.sampling_units}"
+            )
+            print(
+                f"  {entry.metric:<44} floor {entry.floor:.6g}  "
+                f"dispersion {entry.dispersion:.6g}{units}"
+            )
+    return 0
+
+
+def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        MetricRegistryError,
+        NoiseCharacterizationError,
+        ResultsStore,
+        ResultsStoreError,
+        games_to_resolve,
+        metric_definition,
+        resolve_store_root,
+    )
+
+    try:
+        metric = metric_definition(arguments.metric).identifier
+        store = ResultsStore(resolve_store_root(arguments.store))
+        # Characterizations arrive in recording order, so the last data-sampling
+        # record covering this metric is the one that still describes it.
+        newest = None
+        entry = None
+        for record in store.characterizations():
+            candidate = record.entry(metric) if record.kind == "data-sampling" else None
+            if candidate is not None:
+                newest, entry = record, candidate
+        if newest is None or entry is None:
+            print(
+                f"anthro eval noise plan: no data-sampling floor is recorded for "
+                f"{metric}",
+                file=sys.stderr,
+            )
+            return 2
+        required = games_to_resolve(entry, arguments.effect)
+    except (
+        MetricRegistryError,
+        NoiseCharacterizationError,
+        ResultsStoreError,
+    ) as error:
+        print(f"anthro eval noise plan: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(
+            json.dumps(
+                {
+                    "metric": metric,
+                    "effect": arguments.effect,
+                    "required_games": required,
+                    "measured_games": entry.sampling_units,
+                    "measured_floor": entry.floor,
+                    "source": newest.source,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    print(
+        f"{metric}: resolving an effect of {arguments.effect:.6g} needs about "
+        f"{required} game(s)."
+    )
+    print(
+        f"Measured floor {entry.floor:.6g} over {entry.sampling_units} game(s) "
+        f"({newest.source})."
+    )
     return 0
 
 

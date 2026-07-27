@@ -635,3 +635,182 @@ def test_eval_bridge_records_lists_and_revokes(
     capsys.readouterr()
     assert main(["eval", "bridge", "list", "--store", store]) == 0
     assert "No bridges are recorded." in capsys.readouterr().out
+
+
+def _record_sampling_floor(store_root: Path, *, floor: float, games: int) -> None:
+    """Record a data-sampling floor of the kind an evaluation run bootstraps."""
+
+    from datetime import UTC, datetime
+
+    from anthro_chess.evaluation.results import (
+        FloorEntry,
+        ResultsStore,
+        build_characterization,
+        projection_content_digest,
+        series_fingerprint,
+    )
+    from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
+
+    rows = [
+        {
+            "game_id": game_id,
+            "ruleset": "standard",
+            "initial_position": "startpos",
+            "action_ids": [1, 2, 3],
+            "white_normalized_rating": 1500,
+            "black_normalized_rating": 1500,
+        }
+        for game_id in (1, 2)
+    ]
+    component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
+    ResultsStore(store_root).append_characterization(
+        build_characterization(
+            kind="data-sampling",
+            method="bootstrap-over-games",
+            replicates=1_000,
+            source="the fixture pool",
+            floors=[
+                FloorEntry(
+                    metric="held_out.move_loss",
+                    fingerprint=series_fingerprint("held_out.move_loss", component),
+                    floor=floor,
+                    dispersion=floor / 2.0,
+                    sampling_units=games,
+                )
+            ],
+            recorded_at=datetime(2026, 7, 9, tzinfo=UTC),
+        )
+    )
+
+
+def test_eval_noise_characterizes_training_noise_from_replicate_runs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = str(tmp_path / "results")
+    _record_fixture_results(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                store,
+                "--kind",
+                "training",
+                "--checkpoint",
+                "checkpoint-a",
+                "--checkpoint",
+                "checkpoint-b",
+                "--metric",
+                "held_out.move_loss",
+                "--source",
+                "two smoke-scale seeds",
+            ]
+        )
+        == 0
+    )
+    assert "held_out.move_loss" in capsys.readouterr().out
+
+    assert main(["eval", "noise", "list", "--store", store]) == 0
+    listed = capsys.readouterr().out
+    assert "training" in listed
+    assert "two smoke-scale seeds" in listed
+
+    # The report now judges the delta against the floor it just characterized
+    # rather than reporting that no floor is known.
+    assert main(["eval", "report", "--store", store]) == 0
+    assert "(training)" in capsys.readouterr().out
+
+
+def test_eval_noise_characterize_needs_more_than_one_replicate(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                str(tmp_path / "results"),
+                "--kind",
+                "training",
+                "--checkpoint",
+                "checkpoint-a",
+                "--source",
+                "one run",
+            ]
+        )
+        == 2
+    )
+    assert "at least two checkpoints" in capsys.readouterr().err
+
+
+def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_sampling_floor(tmp_path / "results", floor=0.04, games=1_000)
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "plan",
+                "--store",
+                str(tmp_path / "results"),
+                "--metric",
+                "held_out.move_loss",
+                "--effect",
+                "0.01",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["required_games"] == 16_000
+    assert plan["measured_games"] == 1_000
+
+
+def test_eval_noise_plan_reports_a_missing_floor_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "plan",
+                "--store",
+                str(tmp_path / "results"),
+                "--metric",
+                "held_out.move_loss",
+                "--effect",
+                "0.01",
+            ]
+        )
+        == 2
+    )
+    assert "no data-sampling floor is recorded" in capsys.readouterr().err
+
+
+def test_eval_noise_list_says_when_nothing_is_characterized(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["eval", "noise", "list", "--store", str(tmp_path / "results")]) == 0
+
+    assert "No noise characterization is recorded." in capsys.readouterr().out

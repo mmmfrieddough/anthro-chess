@@ -10,14 +10,22 @@ store. Benchmarks append here; reports and comparisons are views over it.
   series. A bridge is legitimate only when the fingerprint moved for a reason
   provably independent of the measured quantity, and revoking one is a
   reviewable diff.
+- `floors/` holds characterized noise floors: how far apart two measurements of
+  an unchanged quantity land. A floor is keyed by the same fingerprint as the
+  measurements it qualifies, so it stops applying when the series moves rather
+  than lingering as a stale constant.
 
 `anthro eval run` is what appends here: it scores one checkpoint over a
-deterministic view of the frozen pool and records the held-out prediction,
-legality, and rating-dependency results for it.
+deterministic view of the frozen pool, records the held-out prediction,
+legality, and rating-dependency results for it, and bootstraps the
+data-sampling floors for that reading from the same pass.
 
 Read the numbers with ordinary file tools, or with `anthro eval report` for a
-compact delta view. `anthro eval metrics` lists every metric identifier and its
-declared direction of improvement.
+compact delta view, which annotates every delta with the floor it did or did
+not clear. `anthro eval metrics` lists every metric identifier and its declared
+direction of improvement. `anthro eval noise` characterizes evaluation and
+training floors from recorded replicates, lists what is characterized, and
+reports how many games an axis needs to resolve an effect of a given size.
 
 Bulk diagnostics — per-position tables, slice breakdowns, generated games — do
 not belong here. They stay in the machine-local detail tier and are referenced

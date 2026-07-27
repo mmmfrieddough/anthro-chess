@@ -36,7 +36,12 @@ from anthro_chess.evaluation.results.metrics import (
     registered_families,
     registered_metrics,
 )
-from anthro_chess.evaluation.results.records import Measurement, ResultEnvelope
+from anthro_chess.evaluation.results.noise import NoiseFloorIndex
+from anthro_chess.evaluation.results.records import (
+    Measurement,
+    NoiseFloor,
+    ResultEnvelope,
+)
 from anthro_chess.evaluation.results.store import (
     checkpoint_labels,
     results_for_checkpoint,
@@ -88,7 +93,13 @@ class MetricDelta:
     comparability: Comparability
     movement: Movement
     noise: NoiseVerdict
+    #: The binding floor: the largest of the characterized floors that apply,
+    #: because a delta has to clear every noise source to be a finding.
     noise_floor: float | None
+    noise_floor_kind: str | None
+    #: Every applicable floor, so a reader who knows which noise source their
+    #: comparison is actually exposed to can read past the binding one.
+    noise_floors: tuple[NoiseFloor, ...]
     bridges: tuple[str, ...]
     note: str | None
 
@@ -106,6 +117,10 @@ class MetricDelta:
             "movement": self.movement.value,
             "noise": self.noise.value,
             "noise_floor": self.noise_floor,
+            "noise_floor_kind": self.noise_floor_kind,
+            "noise_floors": [
+                floor.model_dump(mode="json") for floor in self.noise_floors
+            ],
             "bridges": list(self.bridges),
             "note": self.note,
         }
@@ -223,6 +238,7 @@ def build_delta_report(
     results: Sequence[ResultEnvelope],
     bridges: BridgeIndex,
     *,
+    floors: NoiseFloorIndex | None = None,
     current: str | None = None,
     baseline: str | None = None,
     families: Sequence[str] | None = None,
@@ -230,6 +246,7 @@ def build_delta_report(
 ) -> DeltaReport:
     """Build the default compact view between two recorded checkpoints."""
 
+    resolved_floors = floors if floors is not None else NoiseFloorIndex()
     labels = checkpoint_labels(results)
     if not labels:
         raise ReportError("the results store has no recorded results")
@@ -274,6 +291,7 @@ def build_delta_report(
                 current_results,
                 baseline_results,
                 bridges,
+                resolved_floors,
                 current_label,
                 baseline_label,
             )
@@ -361,7 +379,7 @@ def render_report(report: DeltaReport) -> str:
     lines.append("")
     lines.append(
         f"  {'metric':<38} {'better':<6} "
-        f"{'baseline':>12} {'current':>12} {'delta':>12}  {'change':<9} noise"
+        f"{'baseline':>11} {'current':>11} {'delta':>11}  {'change':<9} noise"
     )
 
     # Families awaiting their first metric are collapsed onto one line. They are
@@ -388,7 +406,28 @@ def render_report(report: DeltaReport) -> str:
                 subsequent_indent="  ",
             )
         )
+    lines.extend(["", *_noise_legend(report)])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _noise_legend(report: DeltaReport) -> list[str]:
+    """Explain the noise column, when any row actually carries one."""
+
+    verdicts = {
+        metric.noise
+        for family in report.families
+        for metric in family.metrics
+        if metric.noise is not NoiseVerdict.NOT_APPLICABLE
+    }
+    if not verdicts:
+        return []
+    return textwrap.wrap(
+        "noise: a delta is judged against the widest characterized floor that "
+        "applies, named in the column; 'within' means the delta is inside it "
+        "and 'unknown' means no floor is characterized for that series.",
+        width=MAXIMUM_LINE_WIDTH,
+        subsequent_indent="  ",
+    )
 
 
 def render_history(history: MetricHistory) -> str:
@@ -434,22 +473,44 @@ _DIRECTION_LABELS = {
     MetricDirection.INFORMATIONAL: "-",
 }
 
+#: Stored kind names, in the width the noise column allows. The machine-readable
+#: row carries the unabbreviated kind and the floor's value.
+_NOISE_KIND_LABELS = {
+    "evaluation": "eval",
+    "data-sampling": "sampling",
+    "training": "training",
+}
+
 
 def _render_metric(metric: MetricDelta) -> str:
     change = "-" if metric.movement is Movement.INFORMATIONAL else metric.movement.value
     row = (
         f"  {metric.metric:<38} "
         f"{_DIRECTION_LABELS[metric.direction]:<6} "
-        f"{_format(metric.baseline):>12} "
-        f"{_format(metric.current):>12} "
-        f"{_format(metric.delta, signed=True):>12}  "
+        f"{_format(metric.baseline):>11} "
+        f"{_format(metric.current):>11} "
+        f"{_format(metric.delta, signed=True):>11}  "
         f"{change:<9}"
     )
     if metric.noise is not NoiseVerdict.NOT_APPLICABLE:
-        row = f"{row} noise {metric.noise.value}"
+        row = f"{row} noise {_render_noise(metric)}"
     if metric.note is not None:
         row = f"{row.rstrip()}  ({metric.note})"
     return row.rstrip()
+
+
+def _render_noise(metric: MetricDelta) -> str:
+    """Render the verdict together with the noise source it was judged against.
+
+    A bare "within" is unreadable without naming the source that produced the
+    floor, because the three are not interchangeable and a reader has to know
+    whether their comparison is even exposed to it.
+    """
+
+    if metric.noise_floor_kind is None:
+        return metric.noise.value
+    kind = _NOISE_KIND_LABELS.get(metric.noise_floor_kind, metric.noise_floor_kind)
+    return f"{metric.noise.value} ({kind})"
 
 
 def _format(value: float | None, *, signed: bool = False) -> str:
@@ -490,6 +551,7 @@ def _family_report(
     current_results: Sequence[ResultEnvelope],
     baseline_results: Sequence[ResultEnvelope],
     bridges: BridgeIndex,
+    floors: NoiseFloorIndex,
     current_label: str,
     baseline_label: str | None,
 ) -> FamilyReport:
@@ -512,6 +574,7 @@ def _family_report(
                 baseline=None if baseline is None else baseline[1],
                 current=None if current is None else current[1],
                 bridges=bridges,
+                floors=floors,
                 current_label=current_label,
                 baseline_label=baseline_label,
             )
@@ -531,64 +594,44 @@ def _metric_delta(
     baseline: Measurement | None,
     current: Measurement | None,
     bridges: BridgeIndex,
+    floors: NoiseFloorIndex,
     current_label: str,
     baseline_label: str | None,
 ) -> MetricDelta:
     if current is None:
-        return MetricDelta(
-            metric=definition.identifier,
-            family=definition.family,
-            direction=definition.direction,
+        return _incomparable_delta(
+            definition,
             baseline=None if baseline is None else baseline.value,
             current=None,
-            delta=None,
             comparability=Comparability.INCOMPARABLE,
-            movement=Movement.UNKNOWN,
-            noise=NoiseVerdict.NOT_APPLICABLE,
-            noise_floor=None,
-            bridges=(),
             note=f"not measured for {current_label}",
         )
     if baseline is None:
-        note = (
-            "no baseline recorded"
-            if baseline_label is None
-            else f"not measured for {baseline_label}"
-        )
-        return MetricDelta(
-            metric=definition.identifier,
-            family=definition.family,
-            direction=definition.direction,
+        return _incomparable_delta(
+            definition,
             baseline=None,
             current=current.value,
-            delta=None,
             comparability=Comparability.INCOMPARABLE,
-            movement=Movement.UNKNOWN,
-            noise=NoiseVerdict.NOT_APPLICABLE,
-            noise_floor=None,
-            bridges=(),
-            note=note,
+            note=(
+                "no baseline recorded"
+                if baseline_label is None
+                else f"not measured for {baseline_label}"
+            ),
         )
 
     comparison = bridges.compare_measurements(baseline, current)
     if not comparison.is_comparable:
-        return MetricDelta(
-            metric=definition.identifier,
-            family=definition.family,
-            direction=definition.direction,
+        return _incomparable_delta(
+            definition,
             baseline=baseline.value,
             current=current.value,
-            delta=None,
             comparability=comparison.comparability,
-            movement=Movement.UNKNOWN,
-            noise=NoiseVerdict.NOT_APPLICABLE,
-            noise_floor=None,
-            bridges=(),
             note="incomparable; these results are not on the same series",
         )
 
     delta = current.value - baseline.value
-    floor = current.noise_floor or baseline.noise_floor
+    applicable = _applicable_floors(definition.identifier, baseline, current, floors)
+    binding = max(applicable, key=lambda floor: floor.value, default=None)
     return MetricDelta(
         metric=definition.identifier,
         family=definition.family,
@@ -598,8 +641,10 @@ def _metric_delta(
         delta=delta,
         comparability=comparison.comparability,
         movement=_movement(definition.direction, delta),
-        noise=_noise_verdict(delta, None if floor is None else floor.value),
-        noise_floor=None if floor is None else floor.value,
+        noise=_noise_verdict(delta, None if binding is None else binding.value),
+        noise_floor=None if binding is None else binding.value,
+        noise_floor_kind=None if binding is None else binding.kind,
+        noise_floors=applicable,
         bridges=tuple(bridge.bridge_id for bridge in comparison.bridges),
         note=(
             "bridged series seam"
@@ -607,6 +652,63 @@ def _metric_delta(
             else None
         ),
     )
+
+
+def _incomparable_delta(
+    definition: MetricDefinition,
+    *,
+    baseline: float | None,
+    current: float | None,
+    comparability: Comparability,
+    note: str,
+) -> MetricDelta:
+    """Return a row with no delta, and therefore nothing to judge against noise."""
+
+    return MetricDelta(
+        metric=definition.identifier,
+        family=definition.family,
+        direction=definition.direction,
+        baseline=baseline,
+        current=current,
+        delta=None,
+        comparability=comparability,
+        movement=Movement.UNKNOWN,
+        noise=NoiseVerdict.NOT_APPLICABLE,
+        noise_floor=None,
+        noise_floor_kind=None,
+        noise_floors=(),
+        bridges=(),
+        note=note,
+    )
+
+
+def _applicable_floors(
+    metric: str,
+    baseline: Measurement,
+    current: Measurement,
+    floors: NoiseFloorIndex,
+) -> tuple[NoiseFloor, ...]:
+    """Return one floor per noise kind that applies to this comparison.
+
+    Two sources can supply a floor. A benchmark whose floor is a function of
+    its own configuration attaches it to the measurement, which is the only
+    place it can be right; a calibration pass characterizes a floor for the
+    whole series. Where both exist for one kind, the wider one is kept, since
+    a floor that understates the noise is worse than one that overstates it.
+    """
+
+    widest: dict[str, NoiseFloor] = {}
+    candidates = [
+        floor
+        for floor in (current.noise_floor, baseline.noise_floor)
+        if floor is not None
+    ]
+    candidates.extend(floors.floors(metric, current.fingerprint))
+    for floor in candidates:
+        existing = widest.get(floor.kind)
+        if existing is None or floor.value > existing.value:
+            widest[floor.kind] = floor
+    return tuple(widest[kind] for kind in sorted(widest))
 
 
 def _movement(direction: MetricDirection, delta: float) -> Movement:
