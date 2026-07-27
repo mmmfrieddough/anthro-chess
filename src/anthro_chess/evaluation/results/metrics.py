@@ -36,6 +36,43 @@ class MetricDirection(StrEnum):
     INFORMATIONAL = "informational"
 
 
+#: Nominal passes charged for a repeated-pass metric. A dependency test scores
+#: its view once per conditioning treatment, and the exact count depends on the
+#: configured conditioning grid. Budgeting uses one nominal figure rather than
+#: resolving the grid, because the point is to reject an unaffordable pairing
+#: rather than to predict a runtime.
+NOMINAL_REPEATED_PASSES = 8
+
+
+class MetricCost(StrEnum):
+    """What one reading of a metric costs, expressed in passes over its view.
+
+    Cost is declared per metric so a schedule can reject an unaffordable
+    pairing instead of silently slowing a training run. It is deliberately
+    counted in view passes rather than seconds: the same schedule has to
+    resolve identically on every machine.
+    """
+
+    #: Derivable from tensors a caller already computed. No view at all.
+    FREE = "free"
+    #: One scoring pass over the view.
+    SINGLE_PASS = "single_pass"
+    #: Several scoring passes over the view, one per conditioning treatment.
+    REPEATED_PASS = "repeated_pass"
+    #: Needs generated games rather than a pass over stored positions.
+    GENERATED = "generated"
+
+    @property
+    def view_passes(self) -> int | None:
+        """Return the passes one reading costs, or ``None`` when unbounded.
+
+        A generated-play reading has no view to pass over, so its cost cannot
+        be compared against a per-step position budget at all.
+        """
+
+        return _VIEW_PASSES[self]
+
+
 @dataclass(frozen=True)
 class DataProjection:
     """The normalized columns one measurement actually consumes.
@@ -70,6 +107,14 @@ class MetricFamily:
     summary: str
 
 
+_VIEW_PASSES: Mapping[MetricCost, int | None] = {
+    MetricCost.FREE: 0,
+    MetricCost.SINGLE_PASS: 1,
+    MetricCost.REPEATED_PASS: NOMINAL_REPEATED_PASSES,
+    MetricCost.GENERATED: None,
+}
+
+
 @dataclass(frozen=True)
 class MetricDefinition:
     """One metric's durable identity."""
@@ -79,6 +124,7 @@ class MetricDefinition:
     direction: MetricDirection
     definition_version: int
     summary: str
+    cost: MetricCost
     #: ``None`` for a metric with no data dependency, such as an optimizer or
     #: parameter statistic. Those carry a null data component in their
     #: fingerprint rather than a synthetic empty view, so they stay immune to
@@ -152,6 +198,12 @@ def register_metric(metric: MetricDefinition) -> MetricDefinition:
         raise MetricRegistryError(
             f"metric {metric.identifier!r} must declare a definition version "
             "of 1 or more"
+        )
+    if (metric.cost is MetricCost.FREE) != (metric.projection is None):
+        raise MetricRegistryError(
+            f"metric {metric.identifier!r} declares cost {metric.cost.value!r} "
+            f"with projection {metric.projection!r}; a free metric reads no "
+            "data and a metric that reads data is never free"
         )
     existing = _METRICS.get(metric.identifier)
     if existing is not None and existing != metric:
@@ -272,6 +324,7 @@ def registry_record() -> dict[str, object]:
                         "identifier": metric.identifier,
                         "direction": metric.direction.value,
                         "definition_version": metric.definition_version,
+                        "cost": metric.cost.value,
                         "projection": metric.projection,
                         "summary": metric.summary,
                     }
@@ -440,6 +493,7 @@ HELD_OUT_MOVE_LOSS = register_metric(
         direction=MetricDirection.LOWER_IS_BETTER,
         definition_version=1,
         summary="Raw-logit cross-entropy of the human move, before legal masking.",
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -451,6 +505,7 @@ HELD_OUT_LEGAL_MOVE_LOSS = register_metric(
         direction=MetricDirection.LOWER_IS_BETTER,
         definition_version=1,
         summary="Cross-entropy of the human move after exact legal masking.",
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -466,6 +521,7 @@ HELD_OUT_UNIFORM_OVER_LEGAL_MOVE_LOSS = register_metric(
             "positions, which is the bar a model has to beat rather than a "
             "quantity to improve."
         ),
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -477,6 +533,7 @@ LEGALITY_MASK_PENALTY = register_metric(
         direction=MetricDirection.LOWER_IS_BETTER,
         definition_version=1,
         summary="Negative log of the raw probability mass on legal moves.",
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -488,6 +545,7 @@ LEGALITY_LEGAL_MASS = register_metric(
         direction=MetricDirection.HIGHER_IS_BETTER,
         definition_version=1,
         summary="Mean raw probability mass the model places on legal moves.",
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -499,6 +557,7 @@ LEGALITY_TOP1_ILLEGAL_RATE = register_metric(
         direction=MetricDirection.LOWER_IS_BETTER,
         definition_version=1,
         summary="Fraction of positions whose raw argmax action is illegal.",
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -514,6 +573,7 @@ HELD_OUT_TOP_K_ACCURACY: Mapping[int, MetricDefinition] = {
                 f"Fraction of held-out positions whose human move is in the "
                 f"legal-masked top {cutoff}."
             ),
+            cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,
         )
     )
@@ -527,6 +587,7 @@ LEGALITY_TOP_ILLEGAL_FRACTION = register_metric(
         direction=MetricDirection.LOWER_IS_BETTER,
         definition_version=1,
         summary="Mean fraction of the raw top-5 actions that are illegal.",
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -541,6 +602,7 @@ LEGALITY_LEGAL_MARGIN = register_metric(
             "Mean gap between the best legal logit and the best illegal one. "
             "Says how close the raw model came to preferring an illegal move."
         ),
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -555,6 +617,7 @@ LEGALITY_LIFT = register_metric(
             "Mean log-odds of legal mass above uniform probability over the "
             "move vocabulary, which normalizes for how many moves are legal."
         ),
+        cost=MetricCost.SINGLE_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -602,6 +665,7 @@ HELD_OUT_MOVE_LOSS_BY_PHASE: Mapping[str, MetricDefinition] = {
                 "positions, held fixed so a shift in phase composition is not "
                 "read as a change in prediction quality."
             ),
+            cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,
         )
     )
@@ -620,6 +684,7 @@ HELD_OUT_MOVE_LOSS_BY_RATING_BAND: Mapping[str, MetricDefinition] = {
                 "positions. This measures how hard those positions are to "
                 "predict, not whether the model reads the rating input."
             ),
+            cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,
         )
     )
@@ -638,6 +703,7 @@ LEGALITY_MASK_PENALTY_BY_PHASE: Mapping[str, MetricDefinition] = {
                 "varies severalfold across phases, so the pool-wide mean sits "
                 "between populations rather than describing any of them."
             ),
+            cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,
         )
     )
@@ -656,6 +722,7 @@ LEGALITY_MASK_PENALTY_BY_RULE_CASE: Mapping[str, MetricDefinition] = {
                 f"{case.replace('_', ' ')} applies. Rare rule cases vanish from "
                 "a pool-wide average, which is what this slice prevents."
             ),
+            cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,
         )
     )
@@ -674,6 +741,7 @@ DEPENDENCY_RATING_SHUFFLED_DEGRADATION = register_metric(
             "replaced by another position's. Near zero means the model is not "
             "reading the input, or has not learned to yet."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -688,6 +756,7 @@ DEPENDENCY_RATING_CONSTANT_DEGRADATION = register_metric(
             "Increase in held-out move loss when every position is scored at "
             "one fixed rating."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -702,6 +771,7 @@ DEPENDENCY_RATING_ABSENT_DEGRADATION = register_metric(
             "Increase in held-out move loss when the rating input is marked "
             "absent on positions that have one."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -717,6 +787,7 @@ DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE = register_metric(
             "matching one. Sensitivity alone cannot establish direction; this "
             "can."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -733,6 +804,7 @@ DEPENDENCY_RATING_WITHIN_GAME_RESPONSE = register_metric(
             "means rating is treated as a static prior; both outcomes are "
             "useful to know rather than better or worse."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -748,6 +820,7 @@ DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE = register_metric(
             "and highest conditioning ratings. Says whether the dial moves the "
             "distribution the runtime actually samples from."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -763,6 +836,7 @@ DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT = register_metric(
             "lowest and highest conditioning ratings. Explains how much of a "
             "policy shift survives discrete action selection."
         ),
+        cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
@@ -774,6 +848,7 @@ TRAINING_HEALTH_GRADIENT_NORM = register_metric(
         family=TRAINING_HEALTH_FAMILY.identifier,
         direction=MetricDirection.INFORMATIONAL,
         definition_version=1,
+        cost=MetricCost.FREE,
         summary=(
             "Global gradient norm at the reported step. Distinguishes "
             "divergence and exploding gradients from a dead learning rate, "
@@ -788,6 +863,7 @@ TRAINING_HEALTH_UPDATE_TO_WEIGHT_RATIO = register_metric(
         family=TRAINING_HEALTH_FAMILY.identifier,
         direction=MetricDirection.INFORMATIONAL,
         definition_version=1,
+        cost=MetricCost.FREE,
         summary=(
             "Ratio of the optimizer update norm to the parameter norm at the "
             "reported step."

@@ -18,6 +18,13 @@ synchronized phase profiling for bounded device verification; larger-corpus
 batch and accumulation choices belong in resolved run configuration and
 measured artifacts.
 
+A training selection may also declare in-training evaluation cadences: when an
+entry runs, which registered metrics it computes, and the explicitly sized
+validation subsample it computes them over. The schedule is resolved before the
+first optimizer step, so an unaffordable or impossible entry fails there rather
+than mid-run. The canonical end-of-run reading over the frozen test pool stays a
+separate command.
+
 `evaluation/` contains frozen evaluation-pool selections for `anthro eval
 freeze`. A pool selection names the normalized corpus it draws from and the
 split it freezes, and it should record the identity digest printed by the first

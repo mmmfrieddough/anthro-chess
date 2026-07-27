@@ -33,6 +33,25 @@ transformer_layers = 2
 feedforward_dim = 128
 dropout = 0.0
 
+# One in-training cadence: a subsampled validation preview plus the optimizer
+# statistics, often enough to see a bad run early and rarely enough to stay
+# affordable against the declared per-step position budget. The end-of-run
+# reading over the frozen test pool stays canonical and is a separate command.
+[[evaluation.cadences]]
+name = "preview"
+every_steps = 200
+metrics = [
+  "held_out.move_loss",
+  "held_out.top1_accuracy",
+  "legality.mask_penalty",
+  "training_health.gradient_norm",
+  "training_health.update_to_weight_ratio",
+]
+
+[evaluation.cadences.view]
+name = "preview-200"
+maximum_games = 200
+
 [train]
 normalized = "artifacts/lichess-blitz-proof-30k-v3/normalized"
 manifest = "artifacts/lichess-blitz-proof-30k-v3/manifests/manifest.json"

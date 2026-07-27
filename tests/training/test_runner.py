@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
@@ -10,6 +12,7 @@ import torch
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
+from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
     TrainingConfig,
@@ -165,7 +168,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     }
 
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
-    assert run_record["version"] == 3
+    assert run_record["version"] == 4
     assert run_record["optimization"]["starting_step"] == 2
     assert run_record["optimization"]["processed_positions"] == 104
     assert run_record["optimization"]["resumed_from"] == str(
@@ -473,6 +476,156 @@ def test_real_mps_forward_backward_update_and_validation(tmp_path: Path) -> None
     assert metric["peak_sampled_driver_memory_bytes"] > 0
 
 
+def test_declared_cadences_report_a_run_before_it_finishes(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A preview, per-step health, and their records all land mid-run."""
+
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    rows.extend(
+        normalized_row(game_id, split="validation", plies=6)
+        for game_id in range(100, 106)
+    )
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "run",
+        validation=True,
+        validation_split="validation",
+        steps=4,
+        extra="""
+[evaluation]
+position_budget_per_step = 4096
+
+[[evaluation.cadences]]
+name = "preview"
+every_steps = 2
+metrics = [
+  "held_out.move_loss",
+  "legality.mask_penalty",
+  "training_health.gradient_norm",
+  "training_health.update_to_weight_ratio",
+]
+
+[evaluation.cadences.view]
+name = "preview-small"
+maximum_games = 2
+""",
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    result = run_training(load_config(TrainingConfig, path=config_path), store=store)
+
+    assert [reading.global_step for reading in result.readings] == [2, 4]
+    records = [
+        json.loads(line)
+        for line in result.metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    steps = [record for record in records if record["record"] == "step"]
+    readings = [record for record in records if record["record"] == "evaluation"]
+    assert [record["global_step"] for record in readings] == [2, 4]
+    assert set(readings[0]["measurements"]) == {
+        "held_out.move_loss",
+        "legality.mask_penalty",
+        "training_health.gradient_norm",
+        "training_health.update_to_weight_ratio",
+    }
+    health = steps[-1]["training_health"]
+    assert health["gradient_norm"] > 0.0
+    assert health["gradient_norm_interval_maximum"] >= health["gradient_norm"]
+    assert health["update_to_weight_ratio"] > 0.0
+    assert steps[-1]["health_instrumentation_seconds"] > 0.0
+
+    recorded = store.results()
+    assert {envelope.kind for envelope in recorded} == {
+        "held-out-preview",
+        "training-health",
+    }
+    assert {envelope.checkpoint.label for envelope in recorded} == {
+        "run-step-00000002",
+        "run-step-00000004",
+    }
+    # A preview reads the validation split, so it can never score a game the
+    # training loop consumed.
+    preview = next(item for item in recorded if item.kind == "held-out-preview")
+    assert preview.data is not None
+    assert preview.data.selected_games == 2
+
+    run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
+    evaluation = run_record["evaluation"]
+    assert evaluation["cadences"][0]["name"] == "preview"
+    assert evaluation["cadences"][0]["view"]["selected_games"] == 2
+    assert evaluation["cadences"][0]["positions_per_step"] > 0.0
+    assert len(evaluation["readings"]) == 2
+    assert evaluation["instrumentation_seconds"] > 0.0
+
+
+def test_a_run_without_declared_cadences_records_nothing(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "run",
+        validation=False,
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    result = run_training(load_config(TrainingConfig, path=config_path), store=store)
+
+    assert result.readings == ()
+    assert store.results() == ()
+    assert not (tmp_path / "results" / "records").exists()
+
+
+def test_an_unaffordable_cadence_fails_before_training_starts(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    rows.extend(
+        normalized_row(game_id, split="validation", plies=6)
+        for game_id in range(100, 106)
+    )
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "run",
+        validation=True,
+        validation_split="validation",
+        extra="""
+[evaluation]
+position_budget_per_step = 2
+
+[[evaluation.cadences]]
+name = "preview"
+every_steps = 1
+metrics = ["held_out.move_loss"]
+
+[evaluation.cadences.view]
+name = "preview-small"
+maximum_games = 6
+""",
+    )
+
+    with pytest.raises(TrainingError, match="position\\(s\\) per optimizer step"):
+        run_training(load_config(TrainingConfig, path=config_path))
+
+    assert not (tmp_path / "run" / "run.json").exists()
+
+
 def _write_training_config(
     tmp_path: Path,
     *,
@@ -480,6 +633,7 @@ def _write_training_config(
     manifest: Path,
     output: Path,
     validation: bool,
+    validation_split: str = "train",
     steps: int = 2,
     learning_rate: float = 0.003,
     checkpoint_every_steps: int = 100,
@@ -506,7 +660,7 @@ normalized = {json.dumps(str(normalized))}
 manifest = {json.dumps(str(manifest))}
 
 [validation.loader]
-split = "train"
+split = {json.dumps(validation_split)}
 batch_size = 1
 shuffle = false
 """

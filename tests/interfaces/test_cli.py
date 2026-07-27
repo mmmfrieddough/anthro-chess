@@ -322,7 +322,11 @@ split = "train"
         rating_slices=(),
     )
 
-    def fake_run(resolved: ResolvedConfig[TrainingConfig]) -> TrainingResult:
+    def fake_run(
+        resolved: ResolvedConfig[TrainingConfig],
+        *,
+        store: object = None,
+    ) -> TrainingResult:
         assert resolved.value.steps == 2
         return TrainingResult(
             run_path=run_path,
@@ -372,7 +376,11 @@ split = "train"
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(run_root))
 
-    def fake_run(resolved: ResolvedConfig[TrainingConfig]) -> TrainingResult:
+    def fake_run(
+        resolved: ResolvedConfig[TrainingConfig],
+        *,
+        store: object = None,
+    ) -> TrainingResult:
         assert resolved.value.output_directory == run_root / "example-run"
         assert resolved.value.train.normalized == data_root / "example-data/normalized"
         assert (
@@ -416,7 +424,11 @@ split = "train"
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
 
-    def fake_run(resolved: ResolvedConfig[TrainingConfig]) -> TrainingResult:
+    def fake_run(
+        resolved: ResolvedConfig[TrainingConfig],
+        *,
+        store: object = None,
+    ) -> TrainingResult:
         assert resolved.value.output_directory == explicit_output
         assert resolved.value.train.normalized == explicit_normalized
         assert resolved.value.train.manifest == explicit_manifest
