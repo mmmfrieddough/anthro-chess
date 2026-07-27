@@ -582,6 +582,41 @@ Different from Anthro Chess:
   and avoid labeling entire games as one opening after the opening is no longer
   relevant.
 
+### Lichess Puzzle Database
+
+Link: <https://database.lichess.org/#puzzles>
+
+Key information:
+
+- Published under CC0, derived from real games on the platform.
+- Each puzzle carries a difficulty rating computed from human solve attempts,
+  along with rating deviation, popularity, play count, theme tags, and the
+  source game reference.
+- Puzzle ratings live in their own rating pool, scored against each player's
+  separate puzzle rating rather than their game rating.
+- Solutions are verified sequences rather than single moves.
+
+Applies to Anthro Chess:
+
+- A rating-response diagnostic: solve rate by puzzle-rating band across a
+  configured-rating grid, with the human reference curve derivable from the
+  puzzle ratings themselves.
+- The cheapest external rating instrument available, needing only forward
+  passes.
+- A benchmark input immune to evaluation pool regeneration, so its scale stays
+  fixed across the life of the project.
+
+Different from Anthro Chess:
+
+- Puzzle rating and game rating do not share an origin, and nothing in the
+  published data pairs them per player, so this anchors ordering and slope
+  rather than absolute calibration.
+- Puzzles are selected for tactical interest, so solve rate describes puzzles
+  rather than play, and it is not a strength target for a project aiming at
+  human-like rather than tactically sound play.
+- Puzzle positions come from platform games, so an overlap check against the
+  training selection belongs with any reported result.
+
 ## Preference Steering Background
 
 ### Scaling Monosemanticity

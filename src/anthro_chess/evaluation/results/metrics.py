@@ -401,6 +401,37 @@ TIMING_FAMILY = register_family(
     )
 )
 
+#: Efficiency is split from training health because the two invalidate on
+#: opposite terms. Training-health metrics carry no data component and are
+#: immune to evaluation-input changes; efficiency metrics are dominated by an
+#: environment component and are invalidated by a change of machine rather than
+#: a change of model. One family holding both would have no coherent answer to
+#: whether a series is still valid.
+TRAINING_EFFICIENCY_FAMILY = register_family(
+    MetricFamily(
+        identifier="training-efficiency",
+        title="Training efficiency",
+        summary=(
+            "How fast and how cheaply a training configuration runs. Scoped to "
+            "a run rather than a checkpoint, so it is measured during training "
+            "and is not part of the end-of-run checkpoint suite."
+        ),
+    )
+)
+
+INFERENCE_EFFICIENCY_FAMILY = register_family(
+    MetricFamily(
+        identifier="inference-efficiency",
+        title="Inference efficiency",
+        summary=(
+            "What a checkpoint costs to play with: move latency, throughput, "
+            "and cold start. Scoped to a checkpoint rather than a run, and part "
+            "of the suite, because an opponent too slow to play against is a "
+            "product failure regardless of how it scores elsewhere."
+        ),
+    )
+)
+
 
 HELD_OUT_MOVE_LOSS = register_metric(
     MetricDefinition(
