@@ -432,6 +432,13 @@ def test_the_default_text_view_stays_readable(
 
     assert "held_out.move_loss" in rendered
     assert "legality" in rendered
-    assert "absent: no metric is registered for this family yet" in rendered
+    # A family still awaiting its first metric is named rather than dropped,
+    # but collapsed onto one wrapped line so registering families ahead of
+    # their benchmarks cannot grow the default view.
+    assert "awaiting a first metric:" in rendered
+    assert "rating-behavior" in rendered
+    # An absence that is about this checkpoint rather than about the plan keeps
+    # its own line, because it is the actionable one.
+    assert "absent: no result recorded for" in rendered
     assert max(len(line) for line in rendered.splitlines()) <= 120
     assert len(rendered.splitlines()) <= 20

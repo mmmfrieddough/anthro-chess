@@ -14,6 +14,7 @@ measured".
 from __future__ import annotations
 
 import math
+import textwrap
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +41,15 @@ from anthro_chess.evaluation.results.store import (
     checkpoint_labels,
     results_for_checkpoint,
 )
+
+#: Absence reason for a family registered ahead of the benchmark that fills it.
+#: Named rather than inlined so the renderer can tell it apart from an absence
+#: that is about the checkpoint being reported.
+UNREGISTERED_FAMILY_ABSENCE = "no metric is registered for this family yet"
+
+#: The default view is read in a terminal beside other output, so it wraps
+#: rather than relying on the reader's window.
+MAXIMUM_LINE_WIDTH = 120
 
 
 class ReportError(ValueError):
@@ -354,13 +364,30 @@ def render_report(report: DeltaReport) -> str:
         f"{'baseline':>12} {'current':>12} {'delta':>12}  {'change':<9} noise"
     )
 
+    # Families awaiting their first metric are collapsed onto one line. They are
+    # a statement about the plan rather than about this checkpoint, and giving
+    # each two lines would let the default view grow with every family
+    # registered ahead of the benchmark that fills it. Absences that *are*
+    # about this checkpoint stay on their own line.
+    unregistered: list[str] = []
     for family in report.families:
+        if family.absence == UNREGISTERED_FAMILY_ABSENCE:
+            unregistered.append(family.family.identifier)
+            continue
         lines.append(family.family.identifier)
         if family.absence is not None:
             lines.append(f"  absent: {family.absence}")
             continue
         for metric in family.metrics:
             lines.append(_render_metric(metric))
+    if unregistered:
+        lines.extend(
+            textwrap.wrap(
+                f"awaiting a first metric: {', '.join(unregistered)}",
+                width=MAXIMUM_LINE_WIDTH,
+                subsequent_indent="  ",
+            )
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -470,7 +497,7 @@ def _family_report(
         return FamilyReport(
             family=family,
             metrics=(),
-            absence="no metric is registered for this family yet",
+            absence=UNREGISTERED_FAMILY_ABSENCE,
         )
 
     rows: list[MetricDelta] = []

@@ -144,10 +144,20 @@ repertoire, book depth, game length, results, and repetition all fit it, so the
 comparison machinery is built once rather than four times. `docs/evaluation.md`
 owns that shape and the estimation constraints it carries.
 
-This stage should establish whether the model uses its conditioning inputs and
-whether behavior shifts across settings. Measuring the strength those settings
-produce belongs with the scaling work, because it needs a checkpoint that
-already plays coherently.
+This stage should establish whether the model uses its conditioning inputs,
+whether behavior shifts across settings, and what strength those settings
+actually produce: the transfer function from configured rating to fitted
+empirical rating, and its temperature response.
+
+Rating measurement belongs here rather than with the scaling work. The earlier
+argument was that it needs a model worth measuring, but that is circular: this
+benchmark is the instrument that establishes whether a model is worth
+measuring, and deferring it means the first reading lands on an already-scaled
+checkpoint with no baseline to compare against. A degenerate result on a weak
+checkpoint is a reportable outcome rather than an error, and it is not a
+calibration verdict. Anchoring the resulting scale against an external engine
+stays in the next stage, since it needs an external binary and answers a
+different question.
 
 Human-likeness evaluation beyond simple distribution metrics belongs later in
 the process. A compact human-vs-engine classifier can be useful once the model
@@ -182,10 +192,11 @@ designated against the narrow first corpus could never measure the axes added
 later, and there is almost no benchmark history to protect before this stage
 begins.
 
-Once that model plays coherently, measure what the target rating actually
-produces: the transfer function from configured rating to played strength, its
-temperature response, and an external engine anchor for the scale. This work
-needs a model worth measuring, which is why it follows rather than leads.
+The transfer function from configured rating to played strength and its
+temperature response are measured in stage 3, so what remains here is anchoring
+that scale against a fixed external engine reference. It follows rather than
+leads because it needs an external binary and because an anchor is only useful
+once ordering already exists.
 
 Optional timing behavior comes last in this stage, after the move-only path is
 useful on its own. Timing diagnostics arrive with it.

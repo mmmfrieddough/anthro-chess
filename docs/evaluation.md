@@ -19,12 +19,22 @@ Avoid a single overall Anthro Chess score. A single aggregate would hide
 important tradeoffs, such as improving move loss while hurting rating
 calibration or timing.
 
-Families cover training health, held-out prediction, legality, rating behavior,
-timing, generated play, and later additions such as move-time coherence,
-human-likeness, and preference controls. The metric registry in
+Families cover training health, held-out prediction, legality, correctness,
+rating behavior, generated play, timing, training efficiency, inference
+efficiency, and later additions such as move-time coherence, human-likeness,
+and preference controls. The metric registry in
 `anthro_chess.evaluation.results` owns the exact family and metric identifiers,
 their declared directions, and their definition versions; `anthro eval metrics`
 prints them.
+
+Efficiency is deliberately separate from training health rather than folded
+into it. The two invalidate on opposite terms: training-health metrics carry no
+data component and survive any change to evaluation inputs, while efficiency
+metrics are dominated by environment and are invalidated by a change of machine
+rather than a change of model. Training efficiency is scoped to a run and is
+not part of the end-of-run checkpoint suite; inference efficiency is scoped to a
+checkpoint and is, because an opponent too slow to play against is a product
+failure regardless of its other numbers.
 
 Each family should have one to three headline metrics. Detailed slices and
 diagnostics should remain available, but they should not be required reading for
@@ -614,6 +624,132 @@ loss = move_ce + lambda * mask_penalty
 This should not be part of the initial core loss. Human move cross-entropy
 already pushes probability toward legal moves because the target move is legal.
 
+## Adjudicated Decisions
+
+Some decisions have an answer the deterministic chess layer supplies outright:
+mate available to the side to move, mate threatened against it on the reply,
+stalemate available to either side, and positions with one legal move. These are
+a tiny fraction of any pool, so a model that never converts a forced mate looks
+unremarkable in an aggregate move loss. Measuring them separately is the only
+way the failure becomes visible.
+
+The reference is **what humans at that rating actually do**, not perfect play.
+A model far below the human rate is the finding; matching a human rate that is
+itself well below one hundred percent is correct behavior. Treating these as a
+correctness gate would push toward special-case handling, which the project
+rejects.
+
+Positions where the right answer needs an evaluation function are a second,
+weaker class. Material-gain probes belong here: simple material counting will
+admit positions where the capture is unsound, so the criterion cannot claim the
+certainty the cases above have. That does not disqualify it, because **the human
+reference absorbs the criterion's noise**. If an admitted position's "winning"
+capture is actually a blunder, humans avoid it too, so the human rate for that
+position class is correspondingly low and the model-versus-human comparison
+stays valid even though the absolute rate is polluted. The requirement is that
+the criterion be deterministic and applied identically to both sides, not that
+it be sound.
+
+The consequence is a reporting rule rather than a better criterion: heuristic
+predicates are reported **only relative to a reference**, never as an absolute
+rate. Predicates should record which class they belong to, since the two carry
+different weight in a report.
+
+Deciding whether mate is available means pushing every legal move and testing
+for checkmate, which is the most expensive characteristic derived so far. It
+belongs to the positions a benchmark actually scores, never to pool-wide
+coverage statistics, and a subsampled view is appropriate if it proves slow.
+
+## Novelty
+
+The model degrades on positions unlike those it trained on. The observed form is
+specific: the same material win was found when it arose from an ordinary
+recapture and missed in a position humans never reach, while raw-logit legality
+at the second position was unremarkable. The distinguishing property was neither
+difficulty nor legality but distance from training data.
+
+Measuring this by slicing the pool with a familiarity proxy does not work, and
+the reason is worth recording so it is not attempted again. The pool is human
+games, so its positions are in distribution nearly by construction; the far tail
+is thin exactly where the question lives. Every candidate proxy also fails on
+its own terms. Exact position frequency has no resolution past the opening,
+since almost every later position is unique whether it is ordinary or bizarre.
+Distance from the opening book saturates rather than merely trending with
+ply: by the middlegame every game is out of book, so there is no variance left
+to correct for, and adjusting for the trend recovers nothing.
+Model-derived signals are circular, because conditioning a benchmark that
+measures model failure on the model's own confidence is blind to the
+confidently-wrong case being hunted, and they would move the slice boundary with
+every checkpoint. Hand-specified position features reintroduce the labeling
+contract the project rejected for rule cases.
+
+**Perturbation replaces detection.** Deriving positions by perturbing pool games
+supplies novelty at a known dose by construction, so there is nothing to detect,
+validate, or keep stable across checkpoints. The dose is the axis, an
+unperturbed control arm drawn from the same games gives it a baseline, and phase
+is held fixed throughout, since phase dominates the absolute level and an
+unsliced comparison mistakes one for the other.
+
+### What Remains Measurable
+
+Perturbation breaks human-referenced metrics rather than degrading them. Once a
+prefix is perturbed the game diverges from what the humans played, so there is
+no human move at the resulting position and the human's actual continuation may
+not even be legal. Move cross-entropy, top-k accuracy, and distribution
+comparison are undefined there, not merely noisier.
+
+**Only measurements whose ground truth comes from the chess layer survive out of
+distribution.** Legality qualifies, needing no target at all. So do the
+adjudicated decisions above. This is what makes the two sections one benchmark:
+perturbation supplies the novelty axis, and chess-derived predicates supply the
+ground truth that still exists on it.
+
+Human rates exist only on the control arm. On perturbed arms the reference
+becomes the model's own unperturbed rate, so results there are reported as
+**retention** rather than as an absolute conversion rate. Without that rule the
+perturbed arm quietly becomes the correctness gate this project rejects.
+
+### Expected Shape
+
+Predictions are worth stating in advance, because several of them run opposite
+to the naive expectation and would otherwise be misread.
+
+Against an opponent playing randomly, a competent player does better, not worse:
+free material, easy tactics, quick mates. So conversion should be near ceiling
+at most configured ratings, and it should **rise** with configured rating rather
+than staying flat. That makes this a rating-behavior instrument as well as a
+robustness one, and it gives a clean failure signature: conversion flat across
+configured ratings while matched-opponent play orders correctly says the rating
+dial controls style matching but not robustness. Monotonicity may break at the
+very bottom of the rating range, where the model cannot reliably convert even a
+won position.
+
+The dose-response curve may be non-monotonic at low dose. A small perturbation
+takes the model off book without yet giving away material, so it loses learned
+guidance and gains nothing, while a large one hands over enough material that
+conversion becomes easy. A dip at intermediate dose is therefore expected rather
+than anomalous, and it is the region where playing something odd on purpose
+would be a real tactic against the bot.
+
+This benchmark has no human reference, and that is structural rather than an
+omission: humans do not play random opponents, so no pool curve exists. Its
+validity rests on the control arm and on ordering across configured ratings.
+
+Perturbation is one-sided, applied to the opponent's moves. That matches the
+situation being measured — someone playing garbage to knock the engine out of
+distribution — where the model still chooses its own moves. Perturbing both
+sides measures a situation nobody will create. The recipe is versioned because
+results are not comparable across recipes, and random legal moves are the
+headline recipe: sampling from the model's own low-probability tail would make
+the derived positions model-dependent, which defeats the multi-checkpoint trend
+the benchmark exists to report.
+
+The offline form scores the policy at derived positions and gives the
+dose-response curve exactly. The rollout form plays whole games against a random
+opponent and is the direct product test. Both are wanted, and they should not be
+conflated: one-sided perturbation leaves the model with a large material edge,
+so conversion there partly measures whether it can finish a won position.
+
 ## Rating Calibration
 
 The selected target rating should correspond to the strength and style level
@@ -696,6 +832,54 @@ Lichess-like human play.
 Engine-analysis metrics such as centipawn loss or engine-best agreement may be
 useful supporting diagnostics. They should not be treated as the definition of
 human rating, especially at lower ratings.
+
+### Puzzle Rating Response
+
+A published puzzle set whose puzzles carry difficulty ratings supports a third
+rating diagnostic, and it is the cheapest of the three: solve rate by
+puzzle-rating band across a configured-rating grid, from forward passes alone,
+with no matches, no external engine process, and no sampling noise at
+temperature zero. The human reference curve does not need per-band solve
+statistics, because a puzzle rating is itself a difficulty calibrated from human
+attempts, so expected human solve rate follows from the same expected-score
+formula used above.
+
+What this measures is calibration, not tactical strength. The quantity of
+interest is whether solve rate tracks configured rating the way human solve rate
+tracks player rating; a model at a low configured rating should fail the puzzles
+players at that rating fail. Reading it as a strength target would import a
+goal this project does not have.
+
+**Puzzle ratings do not share an origin with game ratings.** They are computed
+in a separate pool against each player's own puzzle rating, which is a different
+number from their game rating, measuring a different latent ability in a
+different population. The relationship between the two is not a constant offset
+and is not derivable from the published data, since nothing pairs a player's
+game rating with their puzzle rating. So this anchors ordering, slope, and the
+region where the relationship degrades, in puzzle-rating units. It does not
+establish that a configured rating is calibrated in absolute terms, and it
+should never be reported as though it does.
+
+Its distinctive value is that the yardstick does not move. A self-play ladder
+measures ordering in internal units that every checkpoint redefines, while a
+published puzzle set fixes the scale externally, so checkpoints separated by a
+year were measured against the same thing. It is also the one benchmark whose
+inputs are immune to pool generation cuts, needing no re-baselining at a seam.
+
+Greedy and sampled solve rates should both be reported against a declared
+reference temperature, since the gap between them is the same quantity the
+decision decomposition measures. Multi-move puzzles distinguish first-move
+accuracy from completing the line, and those are separate metrics.
+
+The puzzle set is an external dependency with its own identity and license
+record, versioned like the opening book, because a set version change alters
+what a number means. Puzzle positions derive from real games on the same
+platform the corpus is drawn from, so a source-game-key join against the
+training selection should report the overlap rate as provenance. The measured
+risk is small, since one exposure among millions does not produce recall and
+worst-case inflation is bounded by the overlap fraction. It is worth reporting
+anyway because it grows silently as the corpus expands, and the join is cheap
+enough that there is no reason to carry the uncertainty.
 
 ## Timing Evaluation
 
