@@ -22,7 +22,6 @@ import random
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,28 +32,15 @@ from torch import Tensor
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import (
     DataLoadingError,
-    GameEncodingInput,
-    PlyEncoding,
     SequenceDataLoader,
-    SequenceDataset,
-    SequenceExample,
-    SequenceLoaderConfig,
-    encode_game,
 )
 from anthro_chess.data.artifacts import read_normalized_rows
 from anthro_chess.data.schema import (
-    SCHEMA_VERSION,
     SPLIT_NAMES,
     NormalizedColumn,
     SplitName,
 )
-from anthro_chess.evaluation.aggregation import (
-    PHASE_DIMENSION,
-    RATING_DIMENSION,
-    RULE_CASE_DIMENSION,
-    SliceAggregator,
-    SliceTable,
-)
+from anthro_chess.evaluation.aggregation import SliceTable
 from anthro_chess.evaluation.dependency import (
     Conditioning,
     ConditioningKind,
@@ -95,6 +81,7 @@ from anthro_chess.evaluation.results import (
     build_result,
     configuration_reference,
     dataset_reference,
+    default_checkpoint_label,
     measurement,
     projection_content_digest,
 )
@@ -106,31 +93,17 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE,
     DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
-    HELD_OUT_LEGAL_MOVE_LOSS,
-    HELD_OUT_MOVE_LOSS,
-    HELD_OUT_MOVE_LOSS_BY_PHASE,
-    HELD_OUT_MOVE_LOSS_BY_RATING_BAND,
-    HELD_OUT_TOP_K_ACCURACY,
-    HELD_OUT_UNIFORM_OVER_LEGAL_MOVE_LOSS,
-    LEGALITY_LEGAL_MARGIN,
-    LEGALITY_LEGAL_MASS,
-    LEGALITY_LIFT,
-    LEGALITY_MASK_PENALTY,
-    LEGALITY_MASK_PENALTY_BY_PHASE,
-    LEGALITY_MASK_PENALTY_BY_RULE_CASE,
-    LEGALITY_TOP1_ILLEGAL_RATE,
-    LEGALITY_TOP_ILLEGAL_FRACTION,
     MOVE_PREDICTION_PROJECTION,
-    MetricDefinition,
 )
-from anthro_chess.evaluation.slices import (
-    DEFAULT_RATING_BANDS,
-    SLICE_SCHEME_VERSION,
-    PositionCharacteristic,
-    PositionSlices,
-    ply_characteristics,
-    position_slices,
+from anthro_chess.evaluation.scoring import (
+    EvaluationLoaderConfig,
+    ScoringInputs,
+    aggregate_positions,
+    build_scoring_inputs,
+    rows_identity_sha256,
+    slice_measurements,
 )
+from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
 from anthro_chess.inference.runner import ModelRunnerError
@@ -150,13 +123,6 @@ _TRUE_CONDITIONING = Conditioning(name="true", kind=ConditioningKind.TRUE)
 
 class CheckpointEvaluationError(ValueError):
     """Raised when a checkpoint cannot be evaluated over a frozen pool."""
-
-
-class EvaluationLoaderConfig(ConfigModel):
-    """Batching for evaluation, which never shuffles and never drops a game."""
-
-    batch_size: int = Field(default=8, ge=1)
-    length_bucket_width: int | None = Field(default=32, ge=1)
 
 
 class LeakageConfig(ConfigModel):
@@ -229,13 +195,7 @@ class _EvaluationInputs:
 
     pool: FrozenPool
     selection: ViewSelection
-    rows: tuple[dict[str, Any], ...]
-    dataset: SequenceDataset
-    loader_config: SequenceLoaderConfig
-    plies: Mapping[PositionKey, PlyEncoding]
-    slices: Mapping[PositionKey, PositionSlices]
-    characteristics: Mapping[PositionKey, frozenset[PositionCharacteristic]]
-    contexts: Mapping[PositionKey, PositionContext]
+    scoring: ScoringInputs
 
 
 class _ScoringSession:
@@ -244,7 +204,7 @@ class _ScoringSession:
     def __init__(
         self,
         runner: CheckpointModelRunner,
-        inputs: _EvaluationInputs,
+        inputs: ScoringInputs,
         *,
         shuffle_seed: str,
     ) -> None:
@@ -419,7 +379,7 @@ def evaluate_checkpoint(
 
     session = _ScoringSession(
         runner,
-        inputs,
+        inputs.scoring,
         shuffle_seed=config.dependency.shuffle_seed,
     )
     logger.info(
@@ -428,14 +388,17 @@ def evaluate_checkpoint(
         inputs.selection.name,
     )
     positions = session.score(_TRUE_CONDITIONING)
-    slices = _aggregate(positions, inputs)
+    slices = aggregate_positions(positions, inputs.scoring)
     dependency = (
         _run_dependency_tests(config, session, inputs, positions, runner)
         if config.dependency.enabled
         else None
     )
 
-    component = projection_content_digest(inputs.rows, MOVE_PREDICTION_PROJECTION)
+    component = projection_content_digest(
+        inputs.scoring.rows,
+        MOVE_PREDICTION_PROJECTION,
+    )
     checkpoint = _checkpoint_reference(config, runner)
     data = _dataset_reference(inputs, component)
     recorded_at = datetime.now(tz=UTC)
@@ -483,7 +446,7 @@ def evaluate_checkpoint(
                 checkpoint=checkpoint,
                 configuration=configuration,
                 data=data,
-                measurements=_held_out_measurements(slices, component),
+                measurements=slice_measurements(slices, component),
                 detail=held_out_detail,
                 recorded_at=recorded_at,
             )
@@ -546,74 +509,14 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
         raise CheckpointEvaluationError(
             "the evaluation pool does not contain every selected game"
         )
-    rows.sort(key=lambda row: int(row[NormalizedColumn.GAME_ID]))
-
-    examples: list[SequenceExample] = []
-    plies: dict[PositionKey, PlyEncoding] = {}
-    slices: dict[PositionKey, PositionSlices] = {}
-    characteristics: dict[PositionKey, frozenset[PositionCharacteristic]] = {}
-    contexts: dict[PositionKey, PositionContext] = {}
-    for row in rows:
-        encoded = encode_game(_encoding_input(row))
-        examples.append(
-            SequenceExample(
-                shard_index=0,
-                game_id=int(row[NormalizedColumn.GAME_ID]),
-                start_ply=encoded[0].ply_index,
-                plies=encoded,
-            )
-        )
-        for ply in encoded:
-            key = (ply.game_id, ply.ply_index)
-            plies[key] = ply
-            derived = position_slices(ply, DEFAULT_RATING_BANDS)
-            slices[key] = derived
-            characteristics[key] = ply_characteristics(ply)
-            contexts[key] = PositionContext(
-                game_id=ply.game_id,
-                ply_index=ply.ply_index,
-                color=str(derived.color),
-                rating=ply.target_rating,
-                rating_band=derived.rating_band,
-            )
-
-    split = _pool_split(pool)
-    dataset = SequenceDataset(
-        examples,
-        identity_sha256=_view_identity(selection, rows),
-        split=split,
-        chunk_length=None,
-    )
-    loader_config = SequenceLoaderConfig(
-        split=split,
+    scoring = build_scoring_inputs(
+        rows,
+        split=_pool_split(pool),
         batch_size=config.loader.batch_size,
         length_bucket_width=config.loader.length_bucket_width,
-        chunk_length=None,
-        shuffle=False,
-        drop_last=False,
+        identity_sha256=rows_identity_sha256(rows, context=selection.as_record()),
     )
-    return _EvaluationInputs(
-        pool=pool,
-        selection=selection,
-        rows=tuple(rows),
-        dataset=dataset,
-        loader_config=loader_config,
-        plies=plies,
-        slices=slices,
-        characteristics=characteristics,
-        contexts=contexts,
-    )
-
-
-def _aggregate(
-    positions: Sequence[PositionPolicy],
-    inputs: _EvaluationInputs,
-) -> SliceTable:
-    aggregator = SliceAggregator()
-    for position in positions:
-        key = (position.game_id, position.ply_index)
-        aggregator.add(position, inputs.slices[key], inputs.characteristics[key])
-    return aggregator.compute()
+    return _EvaluationInputs(pool=pool, selection=selection, scoring=scoring)
 
 
 def _run_dependency_tests(
@@ -654,7 +557,7 @@ def _run_dependency_tests(
     try:
         return build_dependency_result(
             config=settings,
-            contexts=inputs.contexts,
+            contexts=inputs.scoring.contexts,
             true_positions=positions,
             corrupted_positions=corrupted,
             conditioned_positions=conditioned,
@@ -663,99 +566,6 @@ def _run_dependency_tests(
         )
     except DependencyError as error:
         raise CheckpointEvaluationError(str(error)) from error
-
-
-def _held_out_measurements(
-    slices: SliceTable,
-    component: DataComponent,
-) -> tuple[Measurement, ...]:
-    overall = slices.overall
-    values: list[Measurement] = [
-        measurement(
-            HELD_OUT_MOVE_LOSS.identifier,
-            overall.move_loss,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            HELD_OUT_LEGAL_MOVE_LOSS.identifier,
-            overall.legal_move_loss,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            HELD_OUT_UNIFORM_OVER_LEGAL_MOVE_LOSS.identifier,
-            overall.uniform_over_legal_move_loss,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            LEGALITY_MASK_PENALTY.identifier,
-            overall.mask_penalty,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            LEGALITY_LEGAL_MASS.identifier,
-            overall.legal_mass,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            LEGALITY_TOP1_ILLEGAL_RATE.identifier,
-            overall.top1_illegal_rate,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            LEGALITY_TOP_ILLEGAL_FRACTION.identifier,
-            overall.top_illegal_fraction,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            LEGALITY_LEGAL_MARGIN.identifier,
-            overall.legal_margin,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-        measurement(
-            LEGALITY_LIFT.identifier,
-            overall.legality_lift,
-            data=component,
-            sample_size=overall.position_count,
-        ),
-    ]
-    for cutoff, definition in HELD_OUT_TOP_K_ACCURACY.items():
-        values.append(
-            measurement(
-                definition.identifier,
-                overall.accuracy(cutoff),
-                data=component,
-                sample_size=overall.position_count,
-            )
-        )
-
-    sliced: tuple[tuple[str, Mapping[str, MetricDefinition], str], ...] = (
-        (PHASE_DIMENSION, HELD_OUT_MOVE_LOSS_BY_PHASE, "move_loss"),
-        (PHASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_PHASE, "mask_penalty"),
-        (RATING_DIMENSION, HELD_OUT_MOVE_LOSS_BY_RATING_BAND, "move_loss"),
-        (RULE_CASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_RULE_CASE, "mask_penalty"),
-    )
-    for dimension, definitions, attribute in sliced:
-        for name, definition in definitions.items():
-            summary = slices.slice_summary(dimension, name)
-            if summary is None:
-                continue
-            values.append(
-                measurement(
-                    definition.identifier,
-                    float(getattr(summary, attribute)),
-                    data=component,
-                    sample_size=summary.position_count,
-                )
-            )
-    return tuple(values)
 
 
 def _dependency_measurements(
@@ -843,24 +653,16 @@ def _checkpoint_reference(
     runner: CheckpointModelRunner,
 ) -> CheckpointReference:
     run_id = runner.selection.run_path.name
-    label = config.checkpoint_label or _default_label(run_id, runner.global_step)
+    label = config.checkpoint_label or default_checkpoint_label(
+        run_id,
+        runner.global_step,
+    )
     return CheckpointReference(
         label=label,
         step=runner.global_step,
         run_id=run_id,
         parameter_sha256=runner.parameter_sha256(),
     )
-
-
-def _default_label(run_id: str, global_step: int) -> str:
-    slug = "".join(
-        character if character.isalnum() or character in "._-" else "-"
-        for character in run_id.lower()
-    ).strip("-")
-    prefix = slug or "run"
-    if not prefix[0].isalnum():
-        prefix = f"run-{prefix}"
-    return f"{prefix}-step-{global_step:08d}"
 
 
 def _dataset_reference(
@@ -900,17 +702,6 @@ def _pool_split(pool: FrozenPool) -> SplitName:
     return cast(SplitName, split)
 
 
-def _view_identity(
-    selection: ViewSelection,
-    rows: Sequence[Mapping[str, Any]],
-) -> str:
-    digest = sha256()
-    digest.update(str(selection.as_record()).encode())
-    for row in rows:
-        digest.update(f"\n{row[NormalizedColumn.GAME_ID]}".encode())
-    return digest.hexdigest()
-
-
 def _truncate(row: Mapping[str, Any], prefix_plies: int | None) -> dict[str, Any]:
     """Project one pool game onto the prefix a view selected.
 
@@ -935,25 +726,6 @@ def _truncate(row: Mapping[str, Any], prefix_plies: int | None) -> dict[str, Any
         updated[NormalizedColumn.ACTION_IDS.value]
     )
     return updated
-
-
-def _encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
-    if row[NormalizedColumn.SCHEMA_VERSION] != SCHEMA_VERSION:
-        raise CheckpointEvaluationError(
-            f"evaluation pool uses normalized schema version "
-            f"{row[NormalizedColumn.SCHEMA_VERSION]}; expected {SCHEMA_VERSION}"
-        )
-    return GameEncodingInput(
-        game_id=int(row[NormalizedColumn.GAME_ID]),
-        ruleset=str(row[NormalizedColumn.RULESET]),
-        initial_position=str(row[NormalizedColumn.INITIAL_POSITION]),
-        action_ids=tuple(row[NormalizedColumn.ACTION_IDS]),
-        white_normalized_rating=row[NormalizedColumn.WHITE_NORMALIZED_RATING],
-        black_normalized_rating=row[NormalizedColumn.BLACK_NORMALIZED_RATING],
-        time_initial_ms=row[NormalizedColumn.TIME_INITIAL_MS],
-        time_increment_ms=row[NormalizedColumn.TIME_INCREMENT_MS],
-        clock_remaining_ms=tuple(row[NormalizedColumn.CLOCK_REMAINING_MS]),
-    )
 
 
 def _shuffled_ratings(

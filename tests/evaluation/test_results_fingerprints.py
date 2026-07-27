@@ -10,6 +10,7 @@ import pytest
 from anthro_chess.evaluation.results import (
     DataComponent,
     FingerprintError,
+    MetricCost,
     MetricDefinition,
     MetricDirection,
     metric_definition,
@@ -138,6 +139,7 @@ def test_fingerprint_separates_metrics_and_definition_versions(
             direction=MetricDirection.LOWER_IS_BETTER,
             definition_version=2,
             summary="A probe proving that a definition bump starts a new series.",
+            cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,
         )
     )
@@ -147,6 +149,7 @@ def test_fingerprint_separates_metrics_and_definition_versions(
         direction=probe.direction,
         definition_version=1,
         summary=probe.summary,
+        cost=probe.cost,
         projection=probe.projection,
     )
 

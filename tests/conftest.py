@@ -1,4 +1,9 @@
-"""Shared normalized-artifact and results-store fixtures for evaluation tests."""
+"""Fixtures shared across the suite.
+
+One module holds them all rather than one per test package, because two
+files named ``conftest`` are two modules with the same name to a type
+checker, and every fixture here is used from more than one package anyway.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ from anthro_chess.data import (
     collate_sequences,
     encode_game,
 )
+from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
@@ -112,6 +118,86 @@ def _normalized_row(
     }
 
 
+def _write_corpus(
+    directory: Path,
+    rows: list[dict[str, Any]],
+    *,
+    source_id: str = "fixture",
+) -> tuple[Path, Path]:
+    """Write a normalized shard plus a matching manifest, returning both paths.
+
+    ``source_id`` distinguishes separately prepared corpora, whose manifests
+    would otherwise be byte-identical here in a way real preparation runs are
+    not.
+    """
+
+    import pyarrow as pa  # type: ignore[import-untyped]
+    import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
+    normalized_directory = directory / "normalized"
+    manifest_directory = directory / "manifests"
+    normalized_directory.mkdir(parents=True, exist_ok=True)
+    manifest_directory.mkdir(parents=True, exist_ok=True)
+
+    games_path = normalized_directory / "games.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=normalized_parquet_schema()),
+        games_path,
+        compression="zstd",
+    )
+
+    manifest_path = manifest_directory / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "preprocessing_version": PREPROCESSING_VERSION,
+                "action_vocabulary": action_vocabulary_identity(),
+                "source": {"id": source_id, "version": "v1"},
+                "input": {"file_name": "fixture.pgn", "sha256": "0" * 64},
+                "split": {"algorithm": "sha256-threshold-v2", "seed": "fixture"},
+                "selection": {"algorithm": "fixture"},
+                "output": {
+                    "format": "parquet",
+                    "compression": "zstd",
+                    "shards": [
+                        {
+                            "path": f"normalized/{games_path.name}",
+                            "sha256": file_sha256(games_path),
+                            "games": len(rows),
+                        }
+                    ],
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return normalized_directory, manifest_path
+
+
+@pytest.fixture
+def action_ids() -> Callable[[tuple[str, ...]], tuple[int, ...]]:
+    """Return a helper converting UCI move strings into action ids."""
+
+    return _action_ids
+
+
+@pytest.fixture
+def normalized_row() -> Callable[..., dict[str, Any]]:
+    """Return a factory for canonical normalized game rows."""
+
+    return _normalized_row
+
+
+@pytest.fixture
+def write_corpus() -> Callable[..., tuple[Path, Path]]:
+    """Return a factory writing a normalized shard plus matching manifest."""
+
+    return _write_corpus
+
+
 def _sequence_batch(
     *games: tuple[tuple[str, ...], int | None, int | None],
 ) -> SequenceBatch:
@@ -155,75 +241,6 @@ def sequence_batch() -> Callable[..., SequenceBatch]:
     """Return a factory building one collated batch from explicit games."""
 
     return _sequence_batch
-
-
-def _write_corpus(
-    directory: Path,
-    rows: list[dict[str, Any]],
-    *,
-    source_id: str = "fixture",
-) -> tuple[Path, Path]:
-    """Write a normalized shard plus a matching manifest, returning both paths.
-
-    ``source_id`` distinguishes separately prepared corpora, whose manifests
-    would otherwise be byte-identical here in a way real preparation runs are
-    not.
-    """
-
-    import pyarrow as pa  # type: ignore[import-untyped]
-    import pyarrow.parquet as pq  # type: ignore[import-untyped]
-
-    normalized_directory = directory / "normalized"
-    manifest_directory = directory / "manifests"
-    normalized_directory.mkdir(parents=True, exist_ok=True)
-    manifest_directory.mkdir(parents=True, exist_ok=True)
-
-    games_path = normalized_directory / "games.parquet"
-    pq.write_table(
-        pa.Table.from_pylist(rows, schema=normalized_parquet_schema()),
-        games_path,
-        compression="zstd",
-    )
-
-    manifest_path = manifest_directory / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "preprocessing_version": PREPROCESSING_VERSION,
-                "action_vocabulary": action_vocabulary_identity(),
-                "source": {"id": source_id, "version": "v1"},
-                "input": {"file_name": "fixture.pgn", "sha256": "0" * 64},
-                "split": {"algorithm": "sha256-threshold-v2", "seed": "fixture"},
-                "selection": {"algorithm": "fixture"},
-            },
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return normalized_directory, manifest_path
-
-
-@pytest.fixture
-def action_ids() -> Callable[[tuple[str, ...]], tuple[int, ...]]:
-    """Return a helper converting UCI move strings into action ids."""
-
-    return _action_ids
-
-
-@pytest.fixture
-def normalized_row() -> Callable[..., dict[str, Any]]:
-    """Return a factory for canonical normalized game rows."""
-
-    return _normalized_row
-
-
-@pytest.fixture
-def write_corpus() -> Callable[..., tuple[Path, Path]]:
-    """Return a factory writing a normalized shard plus matching manifest."""
-
-    return _write_corpus
 
 
 FIXTURE_ENVIRONMENT = EnvironmentRecord(

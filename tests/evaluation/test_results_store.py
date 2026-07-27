@@ -17,6 +17,7 @@ from anthro_chess.evaluation.results import (
     DetailReference,
     DetailStore,
     Measurement,
+    MetricCost,
     MetricDefinition,
     MetricDirection,
     NoiseFloor,
@@ -391,6 +392,7 @@ def test_a_retired_metric_leaves_history_readable(
             direction=MetricDirection.LOWER_IS_BETTER,
             definition_version=1,
             summary="A metric that later leaves the registry.",
+            cost=MetricCost.SINGLE_PASS,
             projection="move_prediction",
         )
     )

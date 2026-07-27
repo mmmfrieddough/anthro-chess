@@ -28,8 +28,20 @@ from anthro_chess.data.artifacts import (
     validate_manifest_outputs,
 )
 from anthro_chess.evaluation import MoveValidationMetrics, evaluate_move_model
+from anthro_chess.evaluation.results import (
+    CheckpointReference,
+    ResultsStore,
+    configuration_reference,
+    default_checkpoint_label,
+)
 from anthro_chess.models import CausalMoveModel, MoveModelBatch
 from anthro_chess.provenance import code_provenance
+from anthro_chess.training.cadence import (
+    CadenceError,
+    CadenceReading,
+    CadenceSchedule,
+    prepare_schedule,
+)
 from anthro_chess.training.checkpoints import (
     CheckpointError,
     checkpoint_path,
@@ -46,9 +58,10 @@ from anthro_chess.training.devices import (
     DeviceError,
     resolve_training_device,
 )
+from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import masked_action_cross_entropy
 
-RUN_ARTIFACT_VERSION = 3
+RUN_ARTIFACT_VERSION = 4
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +80,7 @@ class TrainingResult:
     initial_parameter_sha256: str
     final_parameter_sha256: str
     validation: MoveValidationMetrics | None
+    readings: tuple[CadenceReading, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,12 +93,21 @@ class _DataSelection:
 class _OptimizationResult:
     processed_positions: int
     checkpoint_path: Path
+    readings: tuple[CadenceReading, ...]
+    instrumentation_seconds: float
 
 
 def run_training(
     resolved_config: ResolvedConfig[TrainingConfig],
+    *,
+    store: ResultsStore | None = None,
 ) -> TrainingResult:
-    """Run a bounded optimization on the resolved device and write provenance."""
+    """Run a bounded optimization on the resolved device and write provenance.
+
+    Passing no ``store`` runs any declared cadence and records nothing, which
+    is what an exploratory run wants: committed history should hold readings
+    somebody meant to keep.
+    """
 
     config = resolved_config.value
     device = _training_device(config)
@@ -213,6 +236,17 @@ def run_training(
                 fallback_seed=config.seed,
             )
 
+        schedule = prepare_schedule(
+            config.evaluation,
+            config.validation,
+            configuration=configuration_reference(
+                resolved_config.as_record(),
+                source=resolved_config.provenance.source,
+                overrides=resolved_config.provenance.overrides,
+            ),
+            store=store if config.evaluation.record else None,
+        )
+
         initial_parameter_sha256 = parameter_sha256(model)
         if resumed_from is None:
             clear_latest_checkpoint(output_directory)
@@ -233,6 +267,8 @@ def run_training(
             output_directory=output_directory,
             compatibility=compatibility,
             checkpoint_metadata=checkpoint_metadata,
+            schedule=schedule,
+            run_id=output_directory.name,
         )
         _synchronize_device(device)
         final_parameter_sha256 = parameter_sha256(model)
@@ -275,12 +311,26 @@ def run_training(
                 if validation_metrics is not None
                 else None
             ),
+            "evaluation": {
+                "cadences": schedule.as_record(),
+                "readings": [
+                    {
+                        "cadence": reading.cadence,
+                        "global_step": reading.global_step,
+                        "seconds": reading.seconds,
+                        "recorded": [str(path) for path in reading.recorded_paths],
+                    }
+                    for reading in optimization.readings
+                ],
+                "instrumentation_seconds": optimization.instrumentation_seconds,
+            },
         }
         run_path.write_text(
             json.dumps(run_record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     except (
+        CadenceError,
         CheckpointError,
         DataLoadingError,
         OSError,
@@ -302,6 +352,7 @@ def run_training(
         initial_parameter_sha256=initial_parameter_sha256,
         final_parameter_sha256=final_parameter_sha256,
         validation=validation_metrics,
+        readings=optimization.readings,
     )
 
 
@@ -322,6 +373,8 @@ def _optimize(
     output_directory: Path,
     compatibility: Mapping[str, object],
     checkpoint_metadata: Mapping[str, object],
+    schedule: CadenceSchedule,
+    run_id: str,
 ) -> _OptimizationResult:
     model.train()
     start_time = time.perf_counter()
@@ -330,6 +383,9 @@ def _optimize(
     data_seconds = 0.0
     transfer_seconds = 0.0
     compute_seconds = 0.0
+    health_monitor = StepHealthMonitor(model.parameters())
+    readings: list[CadenceReading] = []
+    evaluation_seconds = 0.0
     peak_sampled_allocated_memory_bytes = _allocated_memory_bytes(device)
     peak_sampled_driver_memory_bytes = _driver_allocated_memory_bytes(device)
     with metrics_path.open("a", encoding="utf-8") as metrics_file:
@@ -381,11 +437,20 @@ def _optimize(
                 step_positions += positions
                 accumulated_loss += float(loss.detach().item())
 
+            due = schedule.due(global_step)
+            reported = (
+                global_step % log_every_steps == 0 or global_step == steps or bool(due)
+            )
+            health_monitor.observe_gradients()
+            if reported:
+                health_monitor.snapshot_parameters()
+
             compute_started = time.perf_counter()
             optimizer.step()
             if profile_phases:
                 _synchronize_device(device)
             compute_seconds += time.perf_counter() - compute_started
+            health_monitor.observe_update()
             processed_positions += step_positions
             measured_positions += step_positions
             peak_sampled_allocated_memory_bytes = _maximum_optional(
@@ -398,13 +463,21 @@ def _optimize(
             )
             epoch = loader.state().epoch
 
-            if global_step % log_every_steps == 0 or global_step == steps:
+            health: StepHealth | None = None
+            if reported:
                 _synchronize_device(device)
+                health = health_monitor.drain(global_step)
                 elapsed = max(time.perf_counter() - start_time, 1e-12)
                 average_loss = accumulated_loss / gradient_accumulation_steps
                 learning_rate = float(optimizer.param_groups[0]["lr"])
-                positions_per_second = measured_positions / elapsed
-                record = {
+                # Throughput has to describe training, so time spent inside a
+                # cadence reading comes out of the denominator. Leaving it in
+                # would report a run as several times slower for no reason
+                # other than that it measured itself on the way past.
+                training_seconds = max(elapsed - evaluation_seconds, 1e-12)
+                positions_per_second = measured_positions / training_seconds
+                record: dict[str, object] = {
+                    "record": "step",
                     "global_step": global_step,
                     "epoch": epoch,
                     "move_loss": average_loss,
@@ -413,6 +486,7 @@ def _optimize(
                     "processed_positions": processed_positions,
                     "positions_per_second": positions_per_second,
                     "elapsed_seconds": elapsed,
+                    "evaluation_seconds": evaluation_seconds,
                     "data_seconds": data_seconds if profile_phases else None,
                     "transfer_seconds": (transfer_seconds if profile_phases else None),
                     "compute_seconds": compute_seconds if profile_phases else None,
@@ -421,6 +495,12 @@ def _optimize(
                     ),
                     "peak_sampled_driver_memory_bytes": (
                         peak_sampled_driver_memory_bytes
+                    ),
+                    "training_health": (
+                        health.as_record() if health is not None else None
+                    ),
+                    "health_instrumentation_seconds": (
+                        health_monitor.instrumentation_seconds
                     ),
                 }
                 metrics_file.write(
@@ -432,6 +512,36 @@ def _optimize(
                     f"lr={learning_rate:.6g} positions={processed_positions} "
                     f"positions_per_second={positions_per_second:.2f}"
                 )
+            if due:
+                # One reference for every entry firing here: an in-training
+                # preview and the later canonical reading of these parameters
+                # have to agree on which checkpoint they describe.
+                measured = CheckpointReference(
+                    label=default_checkpoint_label(run_id, global_step),
+                    step=global_step,
+                    run_id=run_id,
+                    parameter_sha256=parameter_sha256(model),
+                )
+                for entry in due:
+                    reading = schedule.run(
+                        entry,
+                        model,
+                        device=device,
+                        global_step=global_step,
+                        checkpoint=measured,
+                        health=health,
+                    )
+                    readings.append(reading)
+                    evaluation_seconds += reading.seconds
+                    metrics_file.write(
+                        json.dumps(
+                            reading.as_record(),
+                            sort_keys=True,
+                            allow_nan=False,
+                        )
+                        + "\n"
+                    )
+                    metrics_file.flush()
             if global_step % checkpoint_every_steps == 0 or global_step == steps:
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
                 save_training_checkpoint(
@@ -453,6 +563,8 @@ def _optimize(
     return _OptimizationResult(
         processed_positions=processed_positions,
         checkpoint_path=saved_checkpoint,
+        readings=tuple(readings),
+        instrumentation_seconds=health_monitor.instrumentation_seconds,
     )
 
 
@@ -520,6 +632,7 @@ def _compatibility_record(
         exclude={
             "checkpoint_every_steps",
             "device",
+            "evaluation",
             "log_every_steps",
             "model",
             "output_directory",

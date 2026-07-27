@@ -10,6 +10,7 @@ from pydantic import Field, StrictBool, model_validator
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import SequenceDataConfig
 from anthro_chess.models import MoveModelConfig
+from anthro_chess.training.cadence import TrainingEvaluationConfig
 from anthro_chess.training.devices import DeviceSelection
 
 
@@ -29,6 +30,7 @@ class TrainingConfig(ConfigModel):
     determinism: Literal["strict", "relaxed"] = "relaxed"
     profile_phases: StrictBool = False
     model: MoveModelConfig = MoveModelConfig()
+    evaluation: TrainingEvaluationConfig = TrainingEvaluationConfig()
     train: SequenceDataConfig
     validation: SequenceDataConfig | None = None
 

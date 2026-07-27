@@ -7,7 +7,9 @@ from typing import Any, cast
 import pytest
 
 from anthro_chess.evaluation.results import (
+    NOMINAL_REPEATED_PASSES,
     DataProjection,
+    MetricCost,
     MetricDefinition,
     MetricDirection,
     MetricFamily,
@@ -31,6 +33,7 @@ def _definition(**overrides: object) -> MetricDefinition:
         "direction": MetricDirection.LOWER_IS_BETTER,
         "definition_version": 1,
         "summary": "A probe metric.",
+        "cost": MetricCost.FREE,
         "projection": None,
     }
     fields.update(overrides)
@@ -43,6 +46,41 @@ def test_every_registered_metric_declares_a_family_and_a_direction() -> None:
         assert metric.direction in set(MetricDirection)
         assert metric.definition_version >= 1
         assert metric.summary
+
+
+def test_every_registered_metric_prices_itself_against_its_data_dependency() -> None:
+    """A schedule can only reject an unaffordable pairing if cost is declared."""
+
+    for metric in registered_metrics():
+        assert metric.cost in set(MetricCost)
+        assert (metric.cost is MetricCost.FREE) == (metric.projection is None)
+
+
+def test_a_cost_that_contradicts_the_data_dependency_is_refused() -> None:
+    with pytest.raises(MetricRegistryError, match="never free"):
+        register_metric(
+            _definition(
+                identifier="legality.mispriced",
+                cost=MetricCost.FREE,
+                projection="move_prediction",
+            )
+        )
+    with pytest.raises(MetricRegistryError, match="reads no"):
+        register_metric(
+            _definition(
+                identifier="training_health.mispriced",
+                family="training-health",
+                cost=MetricCost.SINGLE_PASS,
+                projection=None,
+            )
+        )
+
+
+def test_a_free_metric_costs_no_view_passes_and_a_generated_one_is_unbounded() -> None:
+    assert MetricCost.FREE.view_passes == 0
+    assert MetricCost.SINGLE_PASS.view_passes == 1
+    assert MetricCost.REPEATED_PASS.view_passes == NOMINAL_REPEATED_PASSES
+    assert MetricCost.GENERATED.view_passes is None
 
 
 def test_the_registry_covers_the_families_reports_read() -> None:
@@ -136,6 +174,7 @@ def test_the_registry_record_names_every_metric_and_projection() -> None:
     assert metrics["legality.mask_penalty"]["direction"] == "lower_is_better"
     assert metrics["legality.legal_mass"]["direction"] == "higher_is_better"
     assert metrics["legality.mask_penalty"]["projection"] == "move_prediction"
+    assert metrics["legality.mask_penalty"]["cost"] == "single_pass"
     projections = cast(list[dict[str, Any]], record["projections"])
     assert {projection["name"] for projection in projections} >= {
         "move_prediction",

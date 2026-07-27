@@ -336,6 +336,25 @@ may subsample and may not filter, which is what keeps it an unbiased estimate of
 the canonical quantity with wider error bars instead of a different measurement
 needing a documented conversion.
 
+The schedule is declared in a training run's own configuration and resolved
+before the first optimizer step, so an unknown metric, a missing view, or an
+unaffordable pairing fails before a run spends time rather than after. Cost is
+priced in scored positions per optimizer step, amortized over a cadence's
+interval and compared against a declared budget. Counting in positions rather
+than seconds is what keeps one schedule resolving identically on two machines.
+
+A metric a training run cannot compute is rejected by name rather than silently
+skipped. Generated-play metrics are the clearest case: they need whole games
+rather than a pass over stored positions, so they belong to a post-training
+benchmark and not to a cadence.
+
+In-training readings are written to the results store like any other benchmark
+result, with a preview and its canonical counterpart carrying the same
+checkpoint label and different fingerprints. Held-out previews and training
+health are recorded as separate results, because a training-batch statistic
+carries no evaluation inputs at all. `anthro_chess.training.cadence` owns the
+schema, the cost model, and the budget default.
+
 ### Unit And Integration Tests
 
 These should run when code changes.
@@ -414,6 +433,16 @@ a dead learning rate from each other, which loss alone does not. Metrics
 computed from training-batch predictions are weaker, because cross-entropy
 against a legal target already moves when the model degrades; they add
 specificity rather than early warning.
+
+The two implemented statistics sit on opposite sides of that rule, which is
+worth knowing when reading them. Gradient norm reads gradients the backward
+pass just wrote, so it runs every step and reports both the value at the
+reported step and the interval's maximum, which is what catches a spike between
+two logging points. The update-to-weight ratio needs the parameters from before
+the update, so measuring it every step means a permanent parameter-sized shadow
+copy; it is measured on reported steps instead, and its cost is paid only
+there. Measured instrumentation time is reported with the run rather than
+assumed to be free.
 
 ### Periodic Benchmarks
 

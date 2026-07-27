@@ -16,6 +16,7 @@ from anthro_chess.evaluation.pool import (
     PoolResult,
     freeze_pool,
     load_pool,
+    pool_game,
 )
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
@@ -136,6 +137,7 @@ __all__ = [
     "legal_move_count_bucket",
     "ply_characteristics",
     "load_pool",
+    "pool_game",
     "position_slices",
     "rating_band_name",
 ]

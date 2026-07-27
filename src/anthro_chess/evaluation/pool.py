@@ -160,7 +160,7 @@ def _freeze_pool(
         )
 
     selected.sort(key=lambda row: int(row[NormalizedColumn.GAME_ID]))
-    games = tuple(_pool_game(row) for row in selected)
+    games = tuple(pool_game(row) for row in selected)
     game_ids = tuple(game.game_id for game in games)
     identity = game_ids_sha256(game_ids)
     if (
@@ -290,7 +290,7 @@ def _load_pool(directory: str | Path) -> FrozenPool:
     if observed != output["sha256"]:
         raise EvaluationPoolError(f"evaluation pool checksum mismatch: {games_path}")
 
-    games = tuple(_pool_game(row) for row in read_normalized_rows(games_path))
+    games = tuple(pool_game(row) for row in read_normalized_rows(games_path))
     recorded = manifest.get("identity")
     if not isinstance(recorded, Mapping):
         raise EvaluationPoolError(f"{manifest_path} has no identity record")
@@ -302,7 +302,14 @@ def _load_pool(directory: str | Path) -> FrozenPool:
     return FrozenPool(games_path=games_path, manifest=manifest, games=games)
 
 
-def _pool_game(row: Mapping[str, Any]) -> PoolGame:
+def pool_game(row: Mapping[str, Any]) -> PoolGame:
+    """Return the game-level facts a view selects on, from one row.
+
+    A view ranks and subsamples games, and the validation split needs the
+    same derivation the frozen pool uses so an in-training preview selects
+    games the same way a canonical reading does.
+    """
+
     clock_statuses = row[NormalizedColumn.CLOCK_STATUS]
     return PoolGame(
         game_id=int(row[NormalizedColumn.GAME_ID]),

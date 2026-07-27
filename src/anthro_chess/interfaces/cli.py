@@ -311,6 +311,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="Strict dotted TOML override; may be repeated.",
     )
+    _add_store_argument(train_parser)
+    train_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Run declared evaluation cadences without writing to the store.",
+    )
     train_parser.set_defaults(handler=_run_train)
     return parser
 
@@ -625,7 +631,8 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
             projection = metric.projection or "no data dependency"
             print(
                 f"  {metric.identifier:<44} {metric.direction.value:<18} "
-                f"v{metric.definition_version}  {projection}"
+                f"v{metric.definition_version}  {metric.cost.value:<14} "
+                f"{projection}"
             )
     return 0
 
@@ -701,6 +708,11 @@ def _run_eval_bridge_revoke(arguments: argparse.Namespace) -> int:
 
 def _run_train(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
     from anthro_chess.training import TrainingConfig, TrainingError, run_training
 
     try:
@@ -710,8 +722,13 @@ def _run_train(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         resolved = _resolve_training_roots(resolved, arguments.set)
-        result = run_training(resolved)
-    except (ConfigError, TrainingError) as error:
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        result = run_training(resolved, store=store)
+    except (ConfigError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2
 
@@ -719,6 +736,12 @@ def _run_train(arguments: argparse.Namespace) -> int:
     print(f"Run: {result.run_path}")
     print(f"Metrics: {result.metrics_path}")
     print(f"Checkpoint: {result.checkpoint_path}")
+    if result.readings:
+        recorded = sum(len(reading.recorded_paths) for reading in result.readings)
+        print(
+            f"Cadence readings: {len(result.readings)} "
+            f"({recorded} recorded in the results store)"
+        )
     if result.validation is not None:
         print(
             "Validation: "

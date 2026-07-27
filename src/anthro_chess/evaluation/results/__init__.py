@@ -26,7 +26,9 @@ from anthro_chess.evaluation.results.fingerprints import (
     series_fingerprint,
 )
 from anthro_chess.evaluation.results.metrics import (
+    NOMINAL_REPEATED_PASSES,
     DataProjection,
+    MetricCost,
     MetricDefinition,
     MetricDirection,
     MetricFamily,
@@ -65,6 +67,7 @@ from anthro_chess.evaluation.results.records import (
     build_result,
     configuration_reference,
     dataset_reference,
+    default_checkpoint_label,
     measurement,
 )
 from anthro_chess.evaluation.results.reporting import (
@@ -99,6 +102,7 @@ __all__ = [
     "ENVELOPE_VERSION",
     "FINGERPRINT_ALGORITHM",
     "MAXIMUM_SUMMARY_BYTES",
+    "NOMINAL_REPEATED_PASSES",
     "BenchmarkReference",
     "Bridge",
     "BridgeIndex",
@@ -116,6 +120,7 @@ __all__ = [
     "FingerprintError",
     "HistoryPoint",
     "Measurement",
+    "MetricCost",
     "MetricDefinition",
     "MetricDelta",
     "MetricDirection",
@@ -142,6 +147,7 @@ __all__ = [
     "configuration_reference",
     "data_projection",
     "dataset_reference",
+    "default_checkpoint_label",
     "iter_registry",
     "latest_measurement",
     "measurement",

@@ -348,6 +348,24 @@ class Bridge(ResultModel):
         return self.model_dump(mode="json")
 
 
+def default_checkpoint_label(run_id: str, global_step: int) -> str:
+    """Return the conventional label for one checkpoint of one run.
+
+    Every reading of the same checkpoint has to agree on this, or an
+    in-training preview and the later canonical evaluation of the same
+    parameters would appear in a report as two unrelated checkpoints.
+    """
+
+    slug = "".join(
+        character if character.isalnum() or character in "._-" else "-"
+        for character in run_id.lower()
+    ).strip("-")
+    prefix = slug or "run"
+    if not prefix[0].isalnum():
+        prefix = f"run-{prefix}"
+    return f"{prefix}-step-{global_step:08d}"
+
+
 def canonical_json(value: Any) -> bytes:
     """Serialize a record the one way the store and its digests agree on."""
 

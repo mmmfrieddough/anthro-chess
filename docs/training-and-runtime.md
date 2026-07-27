@@ -326,6 +326,17 @@ comparison, resume, provenance, and later runtime selection. A model runner can
 accept an explicit compatible checkpoint path beneath this root without copying
 it or requiring an external model registry.
 
+The metrics stream carries more than one kind of record, each labelled, because
+a cadence reading and an optimizer step do not arrive on the same schedule and
+should not be forced into one row. A reader selects the kind it wants rather
+than inferring it from which fields happen to be present.
+
+Reported throughput describes training and excludes the time a cadence spent
+measuring, which is reported beside it. Wall-clock elapsed time is reported
+unchanged. Without that separation a run would appear several times slower for
+no reason other than that it evaluated itself on the way past, and the training
+efficiency work would inherit a contaminated number.
+
 Bulk benchmark diagnostics are machine-local for the same reason and default
 beneath this root. `ANTHRO_CHESS_RESULT_DETAIL_ROOT` overrides that location
 when detail should live elsewhere. Committed benchmark summaries are separate
@@ -380,6 +391,15 @@ less often, and the canonical suite at the end. In-training previews use the
 `validation` split, never the held-out test pool, so early readings cannot
 influence checkpoint selection. `docs/evaluation.md` owns the cadence model and
 the rules that keep previews interpretable against the canonical reading.
+
+A run declares its schedule in its own configuration, and the whole schedule is
+resolved before the first optimizer step so an unaffordable or impossible entry
+fails immediately. Readings go to the results store as ordinary benchmark
+results and to the metrics stream beside the training curve; the canonical
+end-of-run reading over the frozen test pool remains a separate command against
+a retained checkpoint. A cadence changes what a run reports and not what it
+trains, so it stays out of the checkpoint compatibility record and a resumed run
+may schedule differently than the run it continues.
 
 ### Training Observability
 
