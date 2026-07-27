@@ -564,6 +564,66 @@ maximum_games = 2
     assert evaluation["instrumentation_seconds"] > 0.0
 
 
+def test_reported_throughput_excludes_the_time_a_cadence_spent_measuring(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A run that measures itself must not report itself as slower for it."""
+
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    rows.extend(
+        normalized_row(game_id, split="validation", plies=6)
+        for game_id in range(100, 106)
+    )
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "run",
+        validation=True,
+        validation_split="validation",
+        steps=4,
+        extra="""
+[evaluation]
+position_budget_per_step = 4096
+
+[[evaluation.cadences]]
+name = "preview"
+every_steps = 2
+metrics = ["held_out.move_loss"]
+
+[evaluation.cadences.view]
+name = "preview-small"
+maximum_games = 6
+""",
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    records = [
+        json.loads(line)
+        for line in result.metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    steps = [record for record in records if record["record"] == "step"]
+    readings = [record for record in records if record["record"] == "evaluation"]
+    final = steps[-1]
+
+    # The first reading has already been charged by the time the last step is
+    # reported, so it is visible in the record and out of the denominator.
+    assert final["evaluation_seconds"] == pytest.approx(readings[0]["seconds"])
+    assert final["evaluation_seconds"] > 0.0
+    assert final["elapsed_seconds"] > final["evaluation_seconds"]
+    assert final["positions_per_second"] == pytest.approx(
+        final["processed_positions"]
+        / (final["elapsed_seconds"] - final["evaluation_seconds"])
+    )
+    assert final["positions_per_second"] > (
+        final["processed_positions"] / final["elapsed_seconds"]
+    )
+
+
 def test_a_run_without_declared_cadences_records_nothing(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],

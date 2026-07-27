@@ -385,6 +385,7 @@ def _optimize(
     compute_seconds = 0.0
     health_monitor = StepHealthMonitor(model.parameters())
     readings: list[CadenceReading] = []
+    evaluation_seconds = 0.0
     peak_sampled_allocated_memory_bytes = _allocated_memory_bytes(device)
     peak_sampled_driver_memory_bytes = _driver_allocated_memory_bytes(device)
     with metrics_path.open("a", encoding="utf-8") as metrics_file:
@@ -469,7 +470,12 @@ def _optimize(
                 elapsed = max(time.perf_counter() - start_time, 1e-12)
                 average_loss = accumulated_loss / gradient_accumulation_steps
                 learning_rate = float(optimizer.param_groups[0]["lr"])
-                positions_per_second = measured_positions / elapsed
+                # Throughput has to describe training, so time spent inside a
+                # cadence reading comes out of the denominator. Leaving it in
+                # would report a run as several times slower for no reason
+                # other than that it measured itself on the way past.
+                training_seconds = max(elapsed - evaluation_seconds, 1e-12)
+                positions_per_second = measured_positions / training_seconds
                 record: dict[str, object] = {
                     "record": "step",
                     "global_step": global_step,
@@ -480,6 +486,7 @@ def _optimize(
                     "processed_positions": processed_positions,
                     "positions_per_second": positions_per_second,
                     "elapsed_seconds": elapsed,
+                    "evaluation_seconds": evaluation_seconds,
                     "data_seconds": data_seconds if profile_phases else None,
                     "transfer_seconds": (transfer_seconds if profile_phases else None),
                     "compute_seconds": compute_seconds if profile_phases else None,
@@ -525,6 +532,7 @@ def _optimize(
                         health=health,
                     )
                     readings.append(reading)
+                    evaluation_seconds += reading.seconds
                     metrics_file.write(
                         json.dumps(
                             reading.as_record(),

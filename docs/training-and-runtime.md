@@ -331,6 +331,12 @@ a cadence reading and an optimizer step do not arrive on the same schedule and
 should not be forced into one row. A reader selects the kind it wants rather
 than inferring it from which fields happen to be present.
 
+Reported throughput describes training and excludes the time a cadence spent
+measuring, which is reported beside it. Wall-clock elapsed time is reported
+unchanged. Without that separation a run would appear several times slower for
+no reason other than that it evaluated itself on the way past, and the training
+efficiency work would inherit a contaminated number.
+
 Bulk benchmark diagnostics are machine-local for the same reason and default
 beneath this root. `ANTHRO_CHESS_RESULT_DETAIL_ROOT` overrides that location
 when detail should live elsewhere. Committed benchmark summaries are separate
