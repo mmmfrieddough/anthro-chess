@@ -159,8 +159,8 @@ For final Playable Proof acceptance:
 The initial UCI process is move-only and synchronous. It does not support
 analysis search, pondering, `searchmoves`, clock-aware timing, `movetime`,
 infinite analysis, depth or node search, hard cancellation of an in-flight
-model forward pass, or portable resignation. Unsupported `go` fields are
-ignored rather than used as model inputs.
+model forward pass, or portable non-move game actions. Unsupported `go` fields
+are ignored rather than used as model inputs.
 
 `UCI_Elo` selects learned rating conditioning; it is not yet calibrated proof
 of the engine's playing strength. Disabling `UCI_LimitStrength` selects the

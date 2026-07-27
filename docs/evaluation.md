@@ -1112,10 +1112,13 @@ time limit would make results depend on how loaded the machine was.
 Endings are recorded precisely enough to tell them apart. Rule endings come
 from the chess layer, a learned resignation and the ply limit that stops an
 unfinished game are the harness's own, and a claimed draw is marked as
-adjudicated because the seats have no draw-claim action. The harness does not
+adjudicated while the seats have no draw-claim action. The harness does not
 claim draws by default: claiming on the model's behalf would report the
 harness's policy as the model's behavior, and games still end on their own
-through the fivefold and seventy-five-move rules.
+through the fivefold and seventy-five-move rules. Once the action vocabulary
+carries a draw claim, claimed draws become a model ending rather than an
+adjudicated one, and the adjudication path stays only as the fallback for seats
+that cannot claim.
 
 Analysis functions consume retained records rather than re-running games, so a
 new distribution feature is recomputed over games already on disk instead of by
@@ -1243,6 +1246,46 @@ result and termination shifts, and color-swapped matchup summaries. These
 diagnostics complement held-out dependency tests. They show whether a rating
 change survives discrete action selection and compounds into different games;
 they do not by themselves prove calibrated playing strength.
+
+## Game Termination
+
+How a game ends is a behavior the model chooses, not only a property of the
+final position, and aggregate move prediction cannot surface it. A checkpoint
+that never resigns and one that resigns while winning can post the same move
+cross-entropy.
+
+The headline reading is a human-reference curve comparison over derived
+termination categories, sliced by rating and by time control. It shares the
+shape described under human-reference curve comparisons rather than defining a
+new one. Categories the model cannot produce, such as abandonment, stay visible
+as their own bucket instead of being folded into a neighbor, because hiding them
+inside a comparable category creates a permanent gap no checkpoint can close.
+
+Resignation carries a cheap held-out reading and an expensive generated one. On
+frozen human games, measure whether the policy assigns resignation mass at the
+ply where the player actually resigned, and how much mass it assigns at plies
+where the player moved instead. On generated games, measure the distribution of
+how far behind the model was when it resigned, against the human distribution
+for the same rating band.
+
+Two guardrails matter more than closeness of fit, because their failure modes
+are not symmetric. **Premature resignation**, meaning resigning from positions
+that are not lost, is the product-critical failure: it is worse than never
+resigning and it is invisible to every other benchmark. **Silent non-use** is
+the opposite failure, where an enabled terminal action is never selected. Both
+should be reported explicitly rather than inferred from a distribution distance.
+
+Judging whether a resignation was premature needs a position-quality signal.
+Material balance is the dependency-free proxy and is enough to catch the
+egregious cases; an engine-derived signal would be sharper and is subject to the
+engine-dependency decision recorded elsewhere in this document.
+
+Draw claims are rare enough in human data that a distribution comparison carries
+little information. The reading that matters is the untimed non-termination
+rate: generated untimed games that reach a claimable dead position and never
+end. That is the failure the claim action exists to prevent. Correctness gates
+should also cover constructed claimable-threefold and automatic-draw sequences,
+so claim availability and claim handling are exact rather than sampled.
 
 ## Preference-Control Evaluation
 
