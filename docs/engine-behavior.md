@@ -32,9 +32,26 @@ The model outputs a policy over a fixed action vocabulary. Runtime then:
 The sampled policy should reflect the human-game distribution represented by
 the configured rating, optional time context, and preference settings.
 
-Resignation should be learned from human game records when resignation labels
-are available. It should not be implemented as a hardcoded engine-evaluation
-rule.
+Resignation should be learned from human game records. Source data rarely labels
+it directly, but it is derivable: a decisive game that ended in ordinary play
+without checkmate ended because someone resigned. It should not be implemented
+as a hardcoded engine-evaluation rule, and endings that were not a decision,
+such as clock expiry or abandonment, should not be relabelled as resignation to
+enlarge the training signal.
+
+Claiming a draw by repetition or the fifty-move rule is a separate learned
+action, not a variant of resignation and not the same thing as offering a draw.
+Claim availability is an exact function of board and history, so it masks like
+any other action and adds no game state outside the board. Human players in fast
+games frequently decline available claims, so a model that rarely claims under a
+clock is imitating the corpus correctly. The behavior matters most in untimed
+play, which has no other terminator: a model that reaches a claimable dead
+position needs a way to end the game that is not a hardcoded move limit.
+
+Offering and accepting draws is deliberately out of scope. No source in scope
+records offers, declined offers leave no trace at all, and a pending offer would
+introduce game state that exact chess logic does not own. See
+[`0017-derived-termination-and-terminal-actions.md`](decisions/0017-derived-termination-and-terminal-actions.md).
 
 ## Optional Timing Behavior
 

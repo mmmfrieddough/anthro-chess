@@ -229,14 +229,22 @@ Before sampling, the runtime must mask all illegal moves using exact chess
 logic. If the sampled action is a move, it must always be legal in the current
 position.
 
-Resignation is not a board move and is not produced by legal move generation.
-Runtime should treat it as a valid game-ending action when enabled by the
-application or benchmark context.
+Resignation and draw claims are not board moves and are not produced by legal
+move generation. Runtime should treat them as valid game-ending actions when
+enabled by the application or benchmark context.
+
+The two are masked differently. Resignation is always available to the side to
+move, so enabling it is purely a runtime policy. A draw claim is available only
+when the repetition or fifty-move condition already holds, which exact chess
+logic computes from the board and history. Neither introduces game state outside
+the board, which is why offering and accepting draws is excluded: a pending
+offer would.
 
 Outside protocols may support only part of the action vocabulary. For example,
-standard UCI requires a `bestmove` response and does not provide a portable
-engine-to-GUI resignation response. Protocol adapters should translate the
-subset they can represent without changing the model's native action space.
+standard UCI requires a `bestmove` response and provides no portable
+engine-to-GUI response for resigning or claiming a draw. Protocol adapters
+should translate the subset they can represent without changing the model's
+native action space.
 
 ## Optional Time Output
 

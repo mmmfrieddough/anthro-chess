@@ -434,11 +434,50 @@ the king move as long as chess logic interprets it correctly.
 The action vocabulary should also support non-move or variant-specific actions:
 
 - resignation;
+- claiming a draw by repetition or the fifty-move rule;
 - drops, such as crazyhouse `P@e4`;
 - future variant-specific actions if variants become supported.
 
 PGN/SAN should remain in raw source data or debug views. The training path
 should use parsed, validated, compact action ids.
+
+The action vocabulary identity is stamped into both data and model artifacts, so
+adding an action invalidates existing artifacts and starts a new benchmark
+comparability series. Batch vocabulary additions into one deliberate change
+rather than paying that cost repeatedly.
+
+## Termination
+
+Sources report how a game ended inconsistently and usually incompletely.
+Lichess collapses resignation, agreed draw, stalemate, and checkmate into one
+termination value, and collapses clock expiry and player abandonment into
+another. Preprocessing should therefore derive a termination category rather
+than relying on source text, while keeping the raw source value for provenance.
+
+The derivation replays the game and combines the result, the source termination
+field, and exact chess logic on the final position. It is defined over what a
+PGN reports rather than over any one source's status vocabulary. Most categories
+fall out directly: a decisive game whose source termination indicates normal
+play is a resignation unless the final position is checkmate, and a drawn game
+is an automatic draw when exact chess logic already considers the final position
+terminal, a claimed draw when a claim was merely available, and a draw by
+agreement otherwise.
+
+Terminal actions belong in the action sequence when the game ended through a
+player's decision and that player was the side to move. Resignations made on the
+opponent's clock, which some platforms allow, have no decision point to attach
+to and are excluded from the action sequence while the game's moves are kept.
+The pipeline should record why a terminal action was omitted so the exclusion is
+auditable rather than silent.
+
+Abandonment and clock expiry are not resignations and must not be relabelled as
+such, even where clock traces make abandonment identifiable. Abandonment keeps
+its own derived category so evaluation can compare against a reference
+distribution that separates it from behavior the model can actually produce.
+Draw offers are not recorded by any source in scope and are out of scope
+entirely. See
+[`0017-derived-termination-and-terminal-actions.md`](decisions/0017-derived-termination-and-terminal-actions.md)
+for the measurements and the reasoning.
 
 ## Variants And Starting Positions
 

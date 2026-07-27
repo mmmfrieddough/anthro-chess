@@ -140,9 +140,17 @@ future models:
 
 Several of these benchmarks share one shape: measure a quantity on generated
 games and on human games, and compare the two against rating. Opening
-repertoire, book depth, game length, results, and repetition all fit it, so the
-comparison machinery is built once rather than four times. `docs/evaluation.md`
-owns that shape and the estimation constraints it carries.
+repertoire, book depth, game length, results, repetition, and termination all
+fit it, so the comparison machinery is built once rather than four times.
+`docs/evaluation.md` owns that shape and the estimation constraints it carries.
+
+How games end becomes measurable in this stage. Deriving termination categories
+during preprocessing turns resignation from an unreachable vocabulary slot into
+a learned action with real labels, and adds a draw-claim action so untimed games
+have a terminator that is not a hardcoded move limit. Both change the action
+vocabulary identity, so they land as one bump that regenerates the corpus and
+starts a new comparability series; the sequencing exists to pay that cost once.
+See `docs/decisions/0017-derived-termination-and-terminal-actions.md`.
 
 This stage should establish whether the model uses its conditioning inputs,
 whether behavior shifts across settings, and what strength those settings
