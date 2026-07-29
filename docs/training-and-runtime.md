@@ -315,6 +315,8 @@ Retain the complete run directory as one artifact:
 <run-name>/
   run.json
   metrics.jsonl
+  tensorboard/
+    events.out.tfevents...
   checkpoints/
     latest.json
     step-........pt
@@ -409,6 +411,17 @@ enable, no separate configuration step, and no need to ask for it when
 dispatching work. Because runs already live in per-run directories, pointing
 TensorBoard at the root overlays a running experiment against previous runs at
 the same step, which is the main thing it is there for.
+
+With `ANTHRO_CHESS_RUN_ROOT` set to the shared runs directory, launch the view
+from the project environment:
+
+```console
+uv run tensorboard --logdir "$ANTHRO_CHESS_RUN_ROOT"
+```
+
+Each run writes beneath its own `tensorboard/` directory. TensorBoard discovers
+those directories recursively, so one process follows the current run and
+overlays earlier runs by optimizer step.
 
 Event files are a derived view rather than a source of truth. The metrics stream
 and the evaluation results store stay authoritative, and event files remain

@@ -8,6 +8,9 @@ from typing import Any
 
 import pytest
 import torch
+from tensorboard.backend.event_processing.event_accumulator import (  # type: ignore[import-untyped]
+    EventAccumulator,
+)
 
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
@@ -22,6 +25,7 @@ from anthro_chess.training import (
 )
 from anthro_chess.training.devices import DeviceCapabilities
 from anthro_chess.training.runner import _training_device
+from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -142,6 +146,14 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         for line in resumed.metrics_path.read_text(encoding="utf-8").splitlines()
     ]
     assert [record["global_step"] for record in records] == [1, 2, 3, 4]
+    events = EventAccumulator(str(resumed.run_path.parent / TENSORBOARD_DIRECTORY))
+    events.Reload()
+    assert [item.step for item in events.Scalars("training/move_loss")] == [
+        1,
+        2,
+        3,
+        4,
+    ]
 
     checkpoint = load_training_checkpoint(resumed.checkpoint_path)
     assert checkpoint["version"] == CHECKPOINT_VERSION
@@ -562,6 +574,94 @@ maximum_games = 2
     assert evaluation["cadences"][0]["positions_per_step"] > 0.0
     assert len(evaluation["readings"]) == 2
     assert evaluation["instrumentation_seconds"] > 0.0
+
+
+def test_tensorboard_projects_training_health_and_evaluation_by_step(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    rows.extend(
+        normalized_row(game_id, split="validation", plies=6)
+        for game_id in range(100, 106)
+    )
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "runs" / "tensorboard-test",
+        validation=True,
+        validation_split="validation",
+        steps=2,
+        extra="""
+[evaluation]
+position_budget_per_step = 4096
+
+[[evaluation.cadences]]
+name = "preview"
+every_steps = 2
+metrics = ["held_out.move_loss"]
+
+[evaluation.cadences.view]
+name = "preview-small"
+maximum_games = 2
+""",
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    event_directory = result.run_path.parent / TENSORBOARD_DIRECTORY
+    event_files = tuple(event_directory.glob("events.out.tfevents.*"))
+    assert len(event_files) == 1
+    events = EventAccumulator(str(event_directory))
+    events.Reload()
+    assert set(events.Tags()["scalars"]) >= {
+        "training/move_loss",
+        "training/learning_rate",
+        "training_health/gradient_norm",
+        "training_health/gradient_norm_interval_maximum",
+        "training_health/update_to_weight_ratio",
+        "evaluation/held_out.move_loss",
+    }
+    assert [item.step for item in events.Scalars("training/move_loss")] == [1, 2]
+    assert [item.step for item in events.Scalars("evaluation/held_out.move_loss")] == [
+        2
+    ]
+
+
+def test_training_continues_when_tensorboard_writer_cannot_be_constructed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=False,
+    )
+
+    def reject_writer(*args: object, **kwargs: object) -> None:
+        raise OSError("read-only event directory")
+
+    monkeypatch.setattr(
+        "anthro_chess.training.tensorboard.SummaryWriter",
+        reject_writer,
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    assert result.run_path.is_file()
+    assert result.metrics_path.is_file()
+    assert "TensorBoard output is unavailable" in caplog.text
 
 
 def test_reported_throughput_excludes_the_time_a_cadence_spent_measuring(
