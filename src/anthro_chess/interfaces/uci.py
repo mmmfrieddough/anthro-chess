@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import logging
 import os
 import sys
+import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
@@ -44,6 +46,8 @@ from anthro_chess.runtime import (
 ENGINE_NAME = "Anthro Chess"
 ENGINE_AUTHOR = "Anthro Chess contributors"
 NULL_BESTMOVE = "0000"
+UCI_GAME_EVENT_SCHEMA = "anthro-uci-game-event-v1"
+_UCI_GAME_EVENT_PREFIX = "UCI game event "
 _COMMANDS = frozenset(
     {
         "debug",
@@ -95,6 +99,8 @@ class UciEngine:
         )
         self._debug = False
         self._normal_log_level = normal_log_level
+        self._log_session_id = uuid.uuid4().hex
+        self._game_index = 0
         self._initial_fen = chess.STARTING_FEN
         self._moves: tuple[chess.Move, ...] = ()
         self._board = chess.Board()
@@ -238,6 +244,7 @@ class UciEngine:
             logging.DEBUG if self._debug else self._normal_log_level
         )
         logger.debug("UCI debug logging enabled")
+        self._log_game_event("session", runtime=self._runtime_log_record())
 
     def _set_option(self, arguments: str) -> None:
         name, value = _parse_option(arguments)
@@ -297,11 +304,13 @@ class UciEngine:
 
     def _new_game(self) -> None:
         self._discard_pending()
+        self._game_index += 1
         self._initial_fen = chess.STARTING_FEN
         self._moves = ()
         self._board = chess.Board()
         if self._session is not None:
             self._session.reset()
+        self._log_game_event("new-game", runtime=self._runtime_log_record())
         logger.debug("Started a new game")
 
     def _sync_position(
@@ -309,14 +318,28 @@ class UciEngine:
         initial_fen: str,
         moves: tuple[chess.Move, ...],
     ) -> None:
+        sync = None
         if self._session is not None:
-            self._session.sync_position(initial_fen=initial_fen, moves=moves)
+            sync = self._session.sync_position(initial_fen=initial_fen, moves=moves)
             board = self._session.board
         else:
             board = _validated_board(initial_fen, moves)
         self._initial_fen = initial_fen
         self._moves = moves
         self._board = board
+        self._log_game_event(
+            "position",
+            initial_fen=initial_fen,
+            moves=[move.uci() for move in moves],
+            position_fen=board.fen(),
+            transition=(
+                "validated"
+                if sync is None
+                else "replaced"
+                if sync.replaced
+                else "append-only"
+            ),
+        )
         logger.debug("Synced UCI position with %s observed plies", len(moves))
 
     def _ensure_initialized(self, error_stream: TextIO) -> GameSession:
@@ -336,6 +359,7 @@ class UciEngine:
                 f"model initialization failed: {error}"
             ) from error
         self._session = session
+        self._log_game_event("runtime", runtime=self._runtime_log_record())
         logger.info("Model runtime initialized")
         return session
 
@@ -345,12 +369,21 @@ class UciEngine:
         if session.is_terminal:
             self._respond(NULL_BESTMOVE, output, infinite=infinite)
             return
+        position_fen = session.board.fen()
         try:
             action = session.choose_action()
         except Exception as error:
             raise UciInferenceError(f"move generation failed: {error}") from error
         if not isinstance(action, MoveAction):
             raise UciProtocolError("portable UCI mode cannot represent resignation")
+        self._log_game_event(
+            "decision",
+            action_id=action.action_id,
+            move=action.move.uci(),
+            observed_plies=len(self._moves),
+            position_fen=position_fen,
+            runtime=self._runtime_log_record(),
+        )
         self._moves += (action.move,)
         self._board = session.board
         self._respond(action.move.uci(), output, infinite=infinite)
@@ -375,6 +408,30 @@ class UciEngine:
         if self._pending_bestmove is not None:
             self._pending_bestmove = None
             logger.debug("Discarded an unstopped infinite-search response")
+
+    def _runtime_log_record(self) -> dict[str, bool | float | int | None]:
+        session = self._session
+        return {
+            "target_rating": self._runtime_config.target_rating,
+            "temperature": self._runtime_config.temperature,
+            "resignation_enabled": self._runtime_config.resignation_enabled,
+            "configured_seed": self._runtime_config.seed,
+            "resolved_seed": None if session is None else session.resolved_seed,
+        }
+
+    def _log_game_event(self, event: str, **fields: object) -> None:
+        payload = {
+            "schema": UCI_GAME_EVENT_SCHEMA,
+            "session_id": self._log_session_id,
+            "game_index": self._game_index,
+            "event": event,
+            **fields,
+        }
+        logger.debug(
+            "%s%s",
+            _UCI_GAME_EVENT_PREFIX,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
 
     @staticmethod
     def _send(output: TextIO, message: str) -> None:
