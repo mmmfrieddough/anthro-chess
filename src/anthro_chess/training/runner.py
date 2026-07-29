@@ -60,6 +60,10 @@ from anthro_chess.training.devices import (
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.tensorboard import (
+    TENSORBOARD_DIRECTORY,
+    TrainingTensorBoard,
+)
 
 RUN_ARTIFACT_VERSION = 4
 logger = logging.getLogger(__name__)
@@ -388,7 +392,14 @@ def _optimize(
     evaluation_seconds = 0.0
     peak_sampled_allocated_memory_bytes = _allocated_memory_bytes(device)
     peak_sampled_driver_memory_bytes = _driver_allocated_memory_bytes(device)
-    with metrics_path.open("a", encoding="utf-8") as metrics_file:
+    purge_step = starting_step + 1 if starting_step > 0 else None
+    with (
+        TrainingTensorBoard(
+            output_directory / TENSORBOARD_DIRECTORY,
+            purge_step=purge_step,
+        ) as tensorboard,
+        metrics_path.open("a", encoding="utf-8") as metrics_file,
+    ):
         for global_step in range(starting_step + 1, steps + 1):
             optimizer.zero_grad(set_to_none=True)
             accumulated_loss = 0.0
@@ -507,6 +518,12 @@ def _optimize(
                     json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
                 )
                 metrics_file.flush()
+                tensorboard.write_step(
+                    global_step=global_step,
+                    move_loss=average_loss,
+                    learning_rate=learning_rate,
+                    health=health,
+                )
                 logger.info(
                     f"step={global_step} move_loss={average_loss:.6f} "
                     f"lr={learning_rate:.6g} positions={processed_positions} "
@@ -542,6 +559,7 @@ def _optimize(
                         + "\n"
                     )
                     metrics_file.flush()
+                    tensorboard.write_evaluation(reading)
             if global_step % checkpoint_every_steps == 0 or global_step == steps:
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
                 save_training_checkpoint(

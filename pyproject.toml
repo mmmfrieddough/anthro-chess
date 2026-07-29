@@ -38,6 +38,7 @@ data = [
 ]
 model = [
     "numpy>=2,<3",
+    "tensorboard>=2.20,<3",
     "torch>=2.7,<3",
 ]
 
@@ -54,6 +55,7 @@ dev = [
   "pytest-cov>=6.0",
   "pyarrow>=21,<22",
   "ruff>=0.11",
+  "tensorboard>=2.20,<3",
   "torch>=2.7,<3",
   "zstandard>=0.23,<1",
 ]
