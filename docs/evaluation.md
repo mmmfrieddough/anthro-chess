@@ -98,11 +98,12 @@ immune to changes in evaluation inputs.
 record schema, metric registry, fingerprint algorithm, and size budget.
 
 The committed summary tier is one small JSON file per result under the store
-root, beside the bridges that rejoin a broken series. One file per result is
-what keeps concurrent appends and Git merges additive; a concurrent write into
-the same store fails on an exclusive lock rather than producing a partial
-record. The store root defaults to `results/` in the repository and can be
-pointed elsewhere with `ANTHRO_CHESS_RESULTS_ROOT`.
+root, beside the bridges that rejoin a broken series and the characterized
+noise floors that qualify one. One file per record is what keeps concurrent
+appends and Git merges additive; a concurrent write into the same store fails
+on an exclusive lock rather than producing a partial record. The store root
+defaults to `results/` in the repository and can be pointed elsewhere with
+`ANTHRO_CHESS_RESULTS_ROOT`.
 
 The detail tier is machine-local and holds per-position diagnostics, slice
 tables, and generated game records. A summary record references a detail
@@ -114,6 +115,8 @@ root resolves from `ANTHRO_CHESS_RESULT_DETAIL_ROOT`, or beneath
 `anthro eval report` is the reading surface: a compact delta view by default,
 with slices, provenance, per-series history, and machine-readable output behind
 explicit options. `anthro eval bridge` records, lists, and revokes bridges.
+`anthro eval noise` characterizes floors, lists them, and answers how many
+games an axis needs.
 
 ### The Checkpoint Evaluation Runner
 
@@ -213,9 +216,41 @@ Three sources of noise are distinct, and conflating them is the usual mistake:
   is the floor that decides whether a *model change* is real, and it is the
   expensive one, since it needs several training runs.
 
+All three reduce to one reportable quantity: the spread of the metric across
+independent replicates of that noise source. A **floor** is that spread
+expressed as a delta, because a delta is what a report shows and a standard
+deviation is not directly comparable to one. Two independent measurements of an
+unchanged quantity differ by more than either one varies on its own, so the
+floor is that difference at a declared confidence rather than the raw spread.
+One coverage factor is declared per characterization, and
+`anthro_chess.evaluation.results.noise` owns the arithmetic, the stored record,
+and the lookup.
+
+The estimators differ even though the reported quantity does not. Data-sampling
+noise is bootstrapped by resampling the **games** a run scored, since positions
+within one game are far from independent and resampling them would report a
+floor several times too narrow. Evaluation and training noise are read from
+repeated measurements the store already holds, which is what keeps the
+expensive kind a matter of recording several short runs rather than building a
+second harness.
+
 Noise characterizations are stored in the results store under the same
 fingerprint rules as any other measurement, so they invalidate on the same
-terms rather than lingering as stale constants.
+terms rather than lingering as stale constants. A floor characterized on a pool
+that has since been regenerated stops matching and the report says the floor is
+unknown, which is the honest answer.
+
+Because a data-sampling floor costs only a resampling of numbers a run already
+computed, the checkpoint evaluation runner produces its own and records it
+alongside the reading. A benchmark whose floor is a function of its own
+configuration rather than of a series — a distributional distance, whose floor
+grows with the category count and shrinks with the sample — attaches the floor
+to its measurement instead, because that is the only place it can be correct.
+
+A delta is judged against the widest floor that applies to it, since a finding
+has to clear every noise source, and the report names which one that was. A
+delta inside its floor is still shown with its value, so a small regression that
+repeats across checkpoints stays visible instead of being filtered away.
 
 Training noise should be characterized early, while runs are short. It is the
 most valuable of the three and the only one that becomes harder to obtain over
@@ -223,10 +258,11 @@ time: once runs are long and expensive, several repeat runs stop being
 affordable, and the project loses the ability to distinguish a small improvement
 from seed luck for the rest of its life.
 
-Sampling-noise estimates are also what size the evaluation inputs. How many
-games an axis needs in order to resolve an effect of a given size is a
-computable quantity, not a guess, and it should be computed rather than assumed
-when a pool generation is planned.
+Sampling-noise estimates are also what size the evaluation inputs. A sampling
+floor shrinks with the square root of the games behind it, so how many games an
+axis needs in order to resolve an effect of a given size is a computable
+quantity rather than a guess, and it should be computed rather than assumed when
+a pool generation is planned.
 
 ## Benchmark Data Layers
 

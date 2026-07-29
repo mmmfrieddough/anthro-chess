@@ -37,6 +37,7 @@ from anthro_chess.evaluation.aggregation import (
     SliceTable,
 )
 from anthro_chess.evaluation.dependency import PositionContext, PositionKey
+from anthro_chess.evaluation.noise import GameTotals, MetricTotal
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.results import (
     DataComponent,
@@ -180,6 +181,30 @@ def aggregate_positions(
     return aggregator.compute()
 
 
+def per_game_totals(
+    positions: Iterable[PositionPolicy],
+    inputs: ScoringInputs,
+) -> tuple[GameTotals, ...]:
+    """Return what each scored game contributes to every reported metric.
+
+    This is the input a bootstrap resamples. It reuses the same slice
+    aggregation and the same metric tables as the reported measurement, so a
+    floor can never be computed from a differently defined quantity than the
+    value it qualifies.
+    """
+
+    grouped: dict[int, list[PositionPolicy]] = {}
+    for position in positions:
+        grouped.setdefault(position.game_id, []).append(position)
+    return tuple(
+        GameTotals(
+            game_id=game_id,
+            metrics=_slice_metric_totals(aggregate_positions(group, inputs)),
+        )
+        for game_id, group in sorted(grouped.items())
+    )
+
+
 def encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
     """Return the encoder input for one normalized row."""
 
@@ -237,6 +262,38 @@ _SLICED_METRICS: tuple[tuple[str, Mapping[str, MetricDefinition], str], ...] = (
     (RATING_DIMENSION, HELD_OUT_MOVE_LOSS_BY_RATING_BAND, "move_loss"),
     (RULE_CASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_RULE_CASE, "mask_penalty"),
 )
+
+
+def _slice_metric_totals(slices: SliceTable) -> dict[str, MetricTotal]:
+    """Return every metric's summed contribution over one slice table.
+
+    A mean and the count behind it recover the sum, which is what a resample
+    has to add up. Reading them back off the same tables the measurement uses
+    keeps one definition of each metric rather than two.
+    """
+
+    totals: dict[str, MetricTotal] = {}
+    overall = slices.overall
+    for definition, attribute in _OVERALL_METRICS:
+        totals[definition.identifier] = MetricTotal(
+            total=float(getattr(overall, attribute)) * overall.position_count,
+            positions=overall.position_count,
+        )
+    for cutoff, definition in HELD_OUT_TOP_K_ACCURACY.items():
+        totals[definition.identifier] = MetricTotal(
+            total=overall.accuracy(cutoff) * overall.position_count,
+            positions=overall.position_count,
+        )
+    for dimension, definitions, attribute in _SLICED_METRICS:
+        for name, definition in definitions.items():
+            summary = slices.slice_summary(dimension, name)
+            if summary is None:
+                continue
+            totals[definition.identifier] = MetricTotal(
+                total=float(getattr(summary, attribute)) * summary.position_count,
+                positions=summary.position_count,
+            )
+    return totals
 
 
 def slice_metric_identifiers() -> frozenset[str]:
@@ -316,6 +373,7 @@ __all__ = [
     "aggregate_positions",
     "build_scoring_inputs",
     "encoding_input",
+    "per_game_totals",
     "rows_identity_sha256",
     "slice_measurements",
     "slice_metric_identifiers",
