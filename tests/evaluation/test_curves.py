@@ -18,8 +18,10 @@ from anthro_chess.evaluation.curves import (
     CurveQuantity,
     CurveSpec,
     Observation,
+    PairedRateObservation,
     RatingResponse,
     compare_curves,
+    compare_reference_rate,
     curve_overlays,
     rating_grid,
     select_neighbours,
@@ -180,6 +182,24 @@ def test_curve_spec_rejects_a_shape_that_cannot_be_measured() -> None:
             neighbours=8,
             grid=(1600.0,),
         )
+
+
+def test_point_reference_rate_keeps_game_clustered_support() -> None:
+    comparison = compare_reference_rate(
+        (
+            PairedRateObservation(1, True, False, 0.2),
+            PairedRateObservation(1, False, True, 0.8),
+            PairedRateObservation(2, True, True, 0.6),
+        )
+    )
+
+    assert comparison.games == 2
+    assert comparison.opportunities == 3
+    assert comparison.effective_sample_size == pytest.approx(9 / 5)
+    assert comparison.human_rate == pytest.approx(2 / 3)
+    assert comparison.model_rate == pytest.approx(2 / 3)
+    assert comparison.model_probability_mass == pytest.approx(1.6 / 3)
+    assert comparison.human_gap == pytest.approx(0.0)
 
 
 def test_rating_grid_is_evenly_spaced_and_rejects_an_empty_range() -> None:

@@ -761,6 +761,17 @@ for checkmate, which is the most expensive characteristic derived so far. It
 belongs to the positions a benchmark actually scores, never to pool-wide
 coverage statistics, and a subsampled view is appropriate if it proves slow.
 
+The implemented predicate registry lives in
+`anthro_chess.evaluation.slices`. It records whether a predicate is decidable or
+heuristic and owns the `only move` derivation that legality slicing also reads.
+Immediate threats use the conventional null-move question: if the side to move
+passed, could the opponent mate or create stalemate on the reply? The label is
+derived only for evaluation; null is never exposed as a model action. The
+checkpoint runner scores each realized predicate during its existing policy
+pass and writes human rate, legal-greedy model rate, raw policy mass, their
+signed gap, rating-band drill-down, and clustered sample counts through the
+shared result envelope.
+
 ## Novelty
 
 The model degrades on positions unlike those it trained on. The observed form is

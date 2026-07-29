@@ -147,6 +147,96 @@ class Observation:
 
 
 @dataclass(frozen=True)
+class PairedRateObservation:
+    """One opportunity contributing to a point human-reference comparison."""
+
+    game_id: int
+    human_success: bool
+    model_success: bool
+    model_probability_mass: float
+
+
+@dataclass(frozen=True)
+class PointReferenceComparison:
+    """A human and model rate compared at one point rather than over a curve."""
+
+    games: int
+    opportunities: int
+    effective_sample_size: float
+    human_rate: float
+    model_rate: float
+    model_probability_mass: float
+
+    @property
+    def human_gap(self) -> float:
+        """Return model selected-action rate minus the human rate."""
+
+        return self.model_rate - self.human_rate
+
+    @property
+    def selected_rate(self) -> float:
+        """Return the model's legal-greedy success rate."""
+
+        return self.model_rate
+
+    @property
+    def policy_mass(self) -> float:
+        """Return the model's mean raw mass on successful actions."""
+
+        return self.model_probability_mass
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "games": self.games,
+            "opportunities": self.opportunities,
+            "effective_sample_size": self.effective_sample_size,
+            "human_rate": self.human_rate,
+            "selected_rate": self.model_rate,
+            "policy_mass": self.model_probability_mass,
+            "human_gap": self.human_gap,
+        }
+
+
+def compare_reference_rate(
+    observations: Sequence[PairedRateObservation],
+) -> PointReferenceComparison:
+    """Compare paired human and model rates with game-clustered support.
+
+    This is the point form of the human-reference curve shape. Rare decision
+    predicates use it because each rating band contributes one rate rather
+    than a curve, while retaining the same effective-support accounting.
+    """
+
+    if not observations:
+        raise CurveComparisonError(
+            "a point human-reference comparison needs at least one opportunity"
+        )
+    counts: dict[int, int] = {}
+    for observation in observations:
+        if not 0.0 <= observation.model_probability_mass <= 1.0:
+            raise CurveComparisonError(
+                "model probability mass must be between zero and one"
+            )
+        counts[observation.game_id] = counts.get(observation.game_id, 0) + 1
+    opportunities = len(observations)
+    squared = sum(count * count for count in counts.values())
+    return PointReferenceComparison(
+        games=len(counts),
+        opportunities=opportunities,
+        effective_sample_size=(opportunities * opportunities) / squared,
+        human_rate=(
+            sum(float(item.human_success) for item in observations) / opportunities
+        ),
+        model_rate=(
+            sum(float(item.model_success) for item in observations) / opportunities
+        ),
+        model_probability_mass=(
+            sum(item.model_probability_mass for item in observations) / opportunities
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class CurveSpec:
     """The frozen, declared shape of one human-reference curve comparison.
 

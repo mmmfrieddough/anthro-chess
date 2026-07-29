@@ -40,6 +40,12 @@ from anthro_chess.data.schema import (
     NormalizedColumn,
     SplitName,
 )
+from anthro_chess.evaluation.adjudication import (
+    AdjudicationReport,
+    action_sets,
+    build_adjudication_report,
+    merge_game_totals,
+)
 from anthro_chess.evaluation.aggregation import SliceTable
 from anthro_chess.evaluation.dependency import (
     Conditioning,
@@ -57,9 +63,11 @@ from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_le
 from anthro_chess.evaluation.noise import NoiseConfig, characterize_sampling_noise
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
+    ActionSetPolicy,
     PositionPolicy,
     legal_policy_log_probabilities,
     policy_divergence,
+    score_action_sets,
     score_positions,
 )
 from anthro_chess.evaluation.pool import (
@@ -119,8 +127,10 @@ CHECKPOINT_EVALUATION_VERSION = 1
 
 HELD_OUT_KIND = "held-out-prediction"
 DEPENDENCY_KIND = "rating-dependency"
+ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
+ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +182,7 @@ class CheckpointEvaluationResult:
     view: ViewSelection
     leakage: LeakageCheck
     slices: SliceTable
+    adjudication: AdjudicationReport | None
     dependency: DependencyTestResult | None
     noise: NoiseCharacterization | None
     envelopes: tuple[ResultEnvelope, ...]
@@ -190,6 +201,9 @@ class CheckpointEvaluationResult:
             "view": self.view.as_record(),
             "leakage": self.leakage.as_record(),
             "slices": self.slices.as_record(),
+            "adjudication": (
+                self.adjudication.as_record() if self.adjudication is not None else None
+            ),
             "dependency": (
                 self.dependency.as_record() if self.dependency is not None else None
             ),
@@ -235,6 +249,24 @@ class _ScoringSession:
                 "the configured view selected no positions to score"
             )
         return tuple(positions)
+
+    def score_primary(
+        self,
+    ) -> tuple[tuple[PositionPolicy, ...], tuple[ActionSetPolicy, ...]]:
+        """Score ordinary quantities and predicate action sets in one pass."""
+
+        positions: list[PositionPolicy] = []
+        adjudicated: list[ActionSetPolicy] = []
+        subsets = action_sets(self._inputs)
+        for batch in self._batches():
+            logits = self._runner.action_logits(batch)
+            positions.extend(score_positions(logits, batch))
+            adjudicated.extend(score_action_sets(logits, batch, subsets))
+        if not positions:
+            raise CheckpointEvaluationError(
+                "the configured view selected no positions to score"
+            )
+        return tuple(positions), tuple(adjudicated)
 
     def trajectory(
         self,
@@ -396,8 +428,9 @@ def evaluate_checkpoint(
         inputs.selection.selected_games,
         inputs.selection.name,
     )
-    positions = session.score(_TRUE_CONDITIONING)
+    positions, action_set_scores = session.score_primary()
     slices = aggregate_positions(positions, inputs.scoring)
+    adjudication = build_adjudication_report(action_set_scores, inputs.scoring)
     dependency = (
         _run_dependency_tests(config, session, inputs, positions, runner)
         if config.dependency.enabled
@@ -415,6 +448,7 @@ def evaluate_checkpoint(
         config,
         inputs,
         positions,
+        adjudication,
         component,
         recorded_at=recorded_at,
     )
@@ -432,6 +466,7 @@ def evaluate_checkpoint(
         view=inputs.selection,
         leakage=leakage,
         slices=slices,
+        adjudication=adjudication,
         dependency=dependency,
         noise=noise,
         envelopes=(),
@@ -468,6 +503,31 @@ def evaluate_checkpoint(
                 recorded_at=recorded_at,
             )
         )
+        if adjudication is not None:
+            adjudication_detail = _write_detail(
+                detail,
+                kind=ADJUDICATION_KIND,
+                checkpoint=checkpoint,
+                recorded_at=recorded_at,
+                payload=adjudication.as_record(),
+                description=(
+                    "Per-predicate human and model rates with rating-band "
+                    "drill-down and opportunity counts."
+                ),
+                paths=detail_paths,
+            )
+            envelopes.append(
+                build_result(
+                    kind=ADJUDICATION_KIND,
+                    benchmark=ADJUDICATION_BENCHMARK,
+                    checkpoint=checkpoint,
+                    configuration=configuration,
+                    data=data,
+                    measurements=adjudication.measurements(component),
+                    detail=adjudication_detail,
+                    recorded_at=recorded_at,
+                )
+            )
         if dependency is not None:
             dependency_detail = _write_detail(
                 detail,
@@ -542,6 +602,7 @@ def _characterize_noise(
     config: CheckpointEvaluationConfig,
     inputs: _EvaluationInputs,
     positions: Sequence[PositionPolicy],
+    adjudication: AdjudicationReport | None,
     component: DataComponent,
     *,
     recorded_at: datetime,
@@ -556,8 +617,14 @@ def _characterize_noise(
     if not config.noise.enabled:
         return None
     try:
+        adjudication_totals = (
+            () if adjudication is None else adjudication.per_game_totals()
+        )
         return characterize_sampling_noise(
-            per_game_totals(positions, inputs.scoring),
+            merge_game_totals(
+                per_game_totals(positions, inputs.scoring),
+                adjudication_totals,
+            ),
             component=component,
             config=config.noise,
             source=(

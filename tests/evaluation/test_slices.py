@@ -8,19 +8,24 @@ import pytest
 from anthro_chess.chess import decode_move
 from anthro_chess.data import GameEncodingInput, encode_game
 from anthro_chess.evaluation import (
+    PREDICATE_REGISTRY,
     GamePhase,
     PlayerColor,
     PositionCharacteristic,
+    PositionPredicate,
+    PredicateClass,
     board_characteristics,
     board_from_encoding,
     board_phase,
     board_piece_ids,
     game_phase,
     legal_move_count_bucket,
+    match_position_predicates,
     ply_characteristics,
     position_slices,
     rating_band_name,
 )
+from anthro_chess.evaluation.results.metrics import ADJUDICATED_PREDICATE_NAMES
 
 
 def _phase(fen: str) -> GamePhase:
@@ -171,6 +176,57 @@ def test_rule_case_characteristics_are_derived_from_exact_logic() -> None:
 
     for fen, expected in cases.items():
         assert board_characteristics(chess.Board(fen)) == expected, fen
+
+
+def test_forward_predicates_cover_exact_forced_outcomes() -> None:
+    cases = {
+        "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1": {
+            PositionPredicate.MATE_AVAILABLE: 4,
+            PositionPredicate.STALEMATE_AVAILABLE: 10,
+        },
+        "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR w KQkq - 0 2": {
+            PositionPredicate.MATE_THREATENED: 10,
+        },
+        "8/8/8/r7/8/8/Q7/5k1K w - - 0 1": {
+            PositionPredicate.STALEMATE_REPLY: 19,
+        },
+        "R5k1/5p1p/6p1/8/8/8/8/6K1 b - - 0 1": {
+            PositionPredicate.ONLY_MOVE: 1,
+        },
+    }
+
+    for fen, expected in cases.items():
+        observed = match_position_predicates(chess.Board(fen))
+        assert {
+            predicate: len(match.successful_action_ids)
+            for predicate, match in observed.items()
+        } == expected, fen
+
+    assert all(
+        definition.classification is PredicateClass.DECIDABLE
+        for definition in PREDICATE_REGISTRY.values()
+    )
+    assert ADJUDICATED_PREDICATE_NAMES == tuple(
+        sorted(predicate.value for predicate in PREDICATE_REGISTRY)
+    )
+
+
+def test_mate_actions_include_promotion_and_en_passant() -> None:
+    promotion = chess.Board("7k/5P2/7K/8/8/8/8/8 w - - 0 1")
+    en_passant = chess.Board("4k3/2B3B1/1N5N/3pP3/8/8/8/K3R3 w - d6 0 1")
+
+    promoted = match_position_predicates(promotion)[
+        PositionPredicate.MATE_AVAILABLE
+    ].successful_action_ids
+    captured = match_position_predicates(en_passant)[
+        PositionPredicate.MATE_AVAILABLE
+    ].successful_action_ids
+
+    assert {decode_move(action).uci() for action in promoted} == {
+        "f7f8q",
+        "f7f8r",
+    }
+    assert {decode_move(action).uci() for action in captured} == {"e5d6"}
 
 
 def test_castling_rights_are_distinguished_from_an_available_castle() -> None:

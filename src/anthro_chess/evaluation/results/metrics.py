@@ -436,6 +436,18 @@ LEGALITY_FAMILY = register_family(
     )
 )
 
+ADJUDICATED_DECISIONS_FAMILY = register_family(
+    MetricFamily(
+        identifier="adjudicated-decisions",
+        title="Adjudicated decisions",
+        summary=(
+            "How the model handles rare decisions whose immediate outcome exact "
+            "chess logic resolves, read against the rate humans achieve in the "
+            "same positions."
+        ),
+    )
+)
+
 CORRECTNESS_FAMILY = register_family(
     MetricFamily(
         identifier="correctness",
@@ -755,6 +767,88 @@ LEGALITY_MASK_PENALTY_BY_RULE_CASE: Mapping[str, MetricDefinition] = {
         )
     )
     for case in RULE_CASE_SLICE_NAMES
+}
+
+ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
+    "mate_available",
+    "mate_threatened",
+    "only_move",
+    "stalemate_available",
+    "stalemate_reply",
+)
+
+
+def _adjudicated_metric(
+    predicate: str,
+    suffix: str,
+    *,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    return register_metric(
+        MetricDefinition(
+            identifier=f"adjudicated.{predicate}_{suffix}",
+            family=ADJUDICATED_DECISIONS_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.SINGLE_PASS,
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+
+
+ADJUDICATED_HUMAN_RATE: Mapping[str, MetricDefinition] = {
+    predicate: _adjudicated_metric(
+        predicate,
+        "human_rate",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Rate at which held-out humans handled {predicate.replace('_', ' ')} "
+            "positions, the reference for the model rather than a perfect-play target."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+ADJUDICATED_SELECTED_RATE: Mapping[str, MetricDefinition] = {
+    predicate: _adjudicated_metric(
+        predicate,
+        "selected_rate",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Rate at which the model's legal greedy action handles "
+            f"{predicate.replace('_', ' ')} positions."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+ADJUDICATED_POLICY_MASS: Mapping[str, MetricDefinition] = {
+    predicate: _adjudicated_metric(
+        predicate,
+        "policy_mass",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Raw policy mass assigned to actions that handle "
+            f"{predicate.replace('_', ' ')} positions."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+ADJUDICATED_HUMAN_GAP: Mapping[str, MetricDefinition] = {
+    predicate: _adjudicated_metric(
+        predicate,
+        "human_gap",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Model selected-action rate minus the held-out human rate for "
+            f"{predicate.replace('_', ' ')} positions. Zero is a match; the sign "
+            "shows whether the model over- or under-converts."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
 }
 
 

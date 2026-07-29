@@ -8,7 +8,7 @@ this layer should grow a private cache.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -80,6 +80,72 @@ class PositionCharacteristic(StrEnum):
     TERMINAL = "terminal"
     CHECKMATE = "checkmate"
     STALEMATE = "stalemate"
+
+
+class PredicateClass(StrEnum):
+    """How strongly exact chess logic supports a position predicate."""
+
+    DECIDABLE = "decidable"
+    HEURISTIC = "heuristic"
+
+
+class PositionPredicate(StrEnum):
+    """Forward-looking decisions shared by adjudication and novelty evaluation."""
+
+    MATE_AVAILABLE = "mate_available"
+    MATE_THREATENED = "mate_threatened"
+    STALEMATE_AVAILABLE = "stalemate_available"
+    STALEMATE_REPLY = "stalemate_reply"
+    ONLY_MOVE = "only_move"
+
+
+@dataclass(frozen=True)
+class PredicateDefinition:
+    """Stable metadata for one derived position predicate."""
+
+    predicate: PositionPredicate
+    classification: PredicateClass
+    summary: str
+
+
+@dataclass(frozen=True)
+class PredicateMatch:
+    """One predicate realized at a position and the actions that handle it."""
+
+    predicate: PositionPredicate
+    successful_action_ids: frozenset[int]
+
+
+PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
+    PositionPredicate.MATE_AVAILABLE: PredicateDefinition(
+        predicate=PositionPredicate.MATE_AVAILABLE,
+        classification=PredicateClass.DECIDABLE,
+        summary="The side to move can checkmate immediately.",
+    ),
+    PositionPredicate.MATE_THREATENED: PredicateDefinition(
+        predicate=PositionPredicate.MATE_THREATENED,
+        classification=PredicateClass.DECIDABLE,
+        summary="Passing would allow an immediate mate; successful moves remove it.",
+    ),
+    PositionPredicate.STALEMATE_AVAILABLE: PredicateDefinition(
+        predicate=PositionPredicate.STALEMATE_AVAILABLE,
+        classification=PredicateClass.DECIDABLE,
+        summary="The side to move can end the game by stalemate immediately.",
+    ),
+    PositionPredicate.STALEMATE_REPLY: PredicateDefinition(
+        predicate=PositionPredicate.STALEMATE_REPLY,
+        classification=PredicateClass.DECIDABLE,
+        summary=(
+            "A materially ahead side faces an immediate stalemate resource; "
+            "successful moves remove it."
+        ),
+    ),
+    PositionPredicate.ONLY_MOVE: PredicateDefinition(
+        predicate=PositionPredicate.ONLY_MOVE,
+        classification=PredicateClass.DECIDABLE,
+        summary="The side to move has exactly one legal move.",
+    ),
+}
 
 
 #: Half-open legal-move-count intervals. Legality metrics vary strongly with
@@ -235,6 +301,8 @@ def board_from_encoding(board: BoardEncoding) -> chess.Board:
 
 def board_characteristics(
     board: chess.Board,
+    *,
+    predicates: Mapping[PositionPredicate, PredicateMatch] | None = None,
 ) -> frozenset[PositionCharacteristic]:
     """Return the rule-sensitive properties exact chess logic finds.
 
@@ -246,7 +314,12 @@ def board_characteristics(
     observed: set[PositionCharacteristic] = set()
     if board.is_check():
         observed.add(PositionCharacteristic.CHECK)
-    if len(legal_moves) == 1:
+    resolved = (
+        match_position_predicates(board, legal_moves=legal_moves)
+        if predicates is None
+        else predicates
+    )
+    if PositionPredicate.ONLY_MOVE in resolved:
         observed.add(PositionCharacteristic.ONLY_MOVE)
     if not legal_moves:
         observed.add(PositionCharacteristic.TERMINAL)
@@ -269,6 +342,128 @@ def board_characteristics(
     ):
         observed.add(PositionCharacteristic.PIN)
     return frozenset(observed)
+
+
+def match_position_predicates(
+    board: chess.Board,
+    *,
+    legal_moves: Sequence[chess.Move] | None = None,
+) -> Mapping[PositionPredicate, PredicateMatch]:
+    """Return every forward-looking predicate exact chess logic resolves.
+
+    Threat predicates use the conventional null-move question: what could the
+    opponent do immediately if the side to move passed? A successful action is
+    then one that removes every such immediate reply. Null moves are used only
+    to derive a label; they are never exposed as model actions.
+    """
+
+    moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
+    if not moves:
+        return {}
+
+    action_ids = {move: _move_action_id(move) for move in moves}
+    matches: dict[PositionPredicate, PredicateMatch] = {}
+
+    if len(moves) == 1:
+        matches[PositionPredicate.ONLY_MOVE] = PredicateMatch(
+            predicate=PositionPredicate.ONLY_MOVE,
+            successful_action_ids=frozenset(action_ids.values()),
+        )
+
+    mates, stalemates = _terminal_moves(board, moves)
+    if mates:
+        matches[PositionPredicate.MATE_AVAILABLE] = PredicateMatch(
+            predicate=PositionPredicate.MATE_AVAILABLE,
+            successful_action_ids=frozenset(action_ids[move] for move in mates),
+        )
+    if stalemates:
+        matches[PositionPredicate.STALEMATE_AVAILABLE] = PredicateMatch(
+            predicate=PositionPredicate.STALEMATE_AVAILABLE,
+            successful_action_ids=frozenset(action_ids[move] for move in stalemates),
+        )
+
+    if board.is_check():
+        return matches
+
+    passed = board.copy(stack=True)
+    passed.push(chess.Move.null())
+    opponent_mates, opponent_stalemates = _terminal_moves(passed)
+    if opponent_mates:
+        safe = _moves_avoiding_reply(board, moves, checkmate=True)
+        matches[PositionPredicate.MATE_THREATENED] = PredicateMatch(
+            predicate=PositionPredicate.MATE_THREATENED,
+            successful_action_ids=frozenset(action_ids[move] for move in safe),
+        )
+
+    if opponent_stalemates and _material_balance_for_side_to_move(board) > 0:
+        safe = _moves_avoiding_reply(board, moves, checkmate=False)
+        matches[PositionPredicate.STALEMATE_REPLY] = PredicateMatch(
+            predicate=PositionPredicate.STALEMATE_REPLY,
+            successful_action_ids=frozenset(action_ids[move] for move in safe),
+        )
+    return matches
+
+
+def _terminal_moves(
+    board: chess.Board,
+    legal_moves: Sequence[chess.Move] | None = None,
+) -> tuple[tuple[chess.Move, ...], tuple[chess.Move, ...]]:
+    moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
+    mates: list[chess.Move] = []
+    stalemates: list[chess.Move] = []
+    for move in moves:
+        board.push(move)
+        if board.is_checkmate():
+            mates.append(move)
+        elif board.is_stalemate():
+            stalemates.append(move)
+        board.pop()
+    return tuple(mates), tuple(stalemates)
+
+
+def _moves_avoiding_reply(
+    board: chess.Board,
+    legal_moves: Sequence[chess.Move],
+    *,
+    checkmate: bool,
+) -> tuple[chess.Move, ...]:
+    safe: list[chess.Move] = []
+    for move in legal_moves:
+        board.push(move)
+        replies, stalemates = _terminal_moves(board)
+        terminal_replies = replies if checkmate else stalemates
+        board.pop()
+        if not terminal_replies:
+            safe.append(move)
+    return tuple(safe)
+
+
+def _material_balance_for_side_to_move(board: chess.Board) -> int:
+    values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0,
+    }
+    own = sum(
+        len(board.pieces(piece_type, board.turn)) * value
+        for piece_type, value in values.items()
+    )
+    opponent = sum(
+        len(board.pieces(piece_type, not board.turn)) * value
+        for piece_type, value in values.items()
+    )
+    return own - opponent
+
+
+def _move_action_id(move: chess.Move) -> int:
+    # Import locally so the slice module remains usable by lightweight result
+    # readers without pulling the action codec into module initialization.
+    from anthro_chess.chess import encode_move
+
+    return encode_move(move)
 
 
 def ply_characteristics(ply: PlyEncoding) -> frozenset[PositionCharacteristic]:
