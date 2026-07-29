@@ -64,8 +64,12 @@ from anthro_chess.evaluation.results.metrics import (
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
     PositionCharacteristic,
+    PositionPredicate,
     PositionSlices,
-    ply_characteristics,
+    PredicateMatch,
+    board_characteristics,
+    board_from_encoding,
+    match_position_predicates,
     position_slices,
 )
 
@@ -91,6 +95,10 @@ class ScoringInputs:
     plies: Mapping[PositionKey, PlyEncoding]
     slices: Mapping[PositionKey, PositionSlices]
     characteristics: Mapping[PositionKey, frozenset[PositionCharacteristic]]
+    predicates: Mapping[
+        PositionKey,
+        Mapping[PositionPredicate, PredicateMatch],
+    ]
     contexts: Mapping[PositionKey, PositionContext]
 
     @property
@@ -118,6 +126,10 @@ def build_scoring_inputs(
     plies: dict[PositionKey, PlyEncoding] = {}
     slices: dict[PositionKey, PositionSlices] = {}
     characteristics: dict[PositionKey, frozenset[PositionCharacteristic]] = {}
+    predicates: dict[
+        PositionKey,
+        Mapping[PositionPredicate, PredicateMatch],
+    ] = {}
     contexts: dict[PositionKey, PositionContext] = {}
     for row in ordered:
         encoded = encode_game(encoding_input(row))
@@ -134,7 +146,13 @@ def build_scoring_inputs(
             plies[key] = ply
             derived = position_slices(ply, DEFAULT_RATING_BANDS)
             slices[key] = derived
-            characteristics[key] = ply_characteristics(ply)
+            board = board_from_encoding(ply.board)
+            matched = match_position_predicates(board)
+            predicates[key] = matched
+            characteristics[key] = board_characteristics(
+                board,
+                predicates=matched,
+            )
             contexts[key] = PositionContext(
                 game_id=ply.game_id,
                 ply_index=ply.ply_index,
@@ -164,6 +182,7 @@ def build_scoring_inputs(
         plies=plies,
         slices=slices,
         characteristics=characteristics,
+        predicates=predicates,
         contexts=contexts,
     )
 

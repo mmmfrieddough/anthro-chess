@@ -15,6 +15,7 @@ from anthro_chess.evaluation.policy import (
     TOP_ILLEGAL_ACTIONS,
     legal_policy_log_probabilities,
     policy_divergence,
+    score_action_sets,
     score_positions,
     top_action,
 )
@@ -82,6 +83,33 @@ def test_target_rank_counts_only_stronger_legal_actions(
 
     assert position.target_rank == 1
     assert position.within_top(1) is True
+
+
+def test_named_action_sets_report_raw_mass_and_the_legal_greedy_choice(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), 1500, None)))
+    legal_actions = batch.legal_action_ids[0][0]
+    target = int(batch.action_targets[0, 0].item())
+    alternative = next(action for action in legal_actions if action != target)
+    illegal = _first_illegal_action(legal_actions)
+    logits = torch.zeros((1, 1, ACTION_VOCABULARY_SIZE))
+    logits[0, 0, target] = 2.0
+    logits[0, 0, alternative] = 3.0
+    logits[0, 0, illegal] = 9.0
+
+    (score,) = score_action_sets(
+        logits,
+        batch,
+        {(100, 0): {"forced": {target}}},
+    )
+
+    probabilities = torch.softmax(logits[0, 0].double(), dim=-1)
+    assert score.name == "forced"
+    assert score.selected_action_id == alternative
+    assert score.raw_probability_mass == pytest.approx(
+        float(probabilities[target].item())
+    )
 
 
 def test_legal_policy_normalizes_over_legal_actions_only(

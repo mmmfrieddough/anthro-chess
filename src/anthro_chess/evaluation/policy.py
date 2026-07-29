@@ -13,7 +13,7 @@ the negligible cost of moving one batch of active rows to the CPU.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -89,6 +89,17 @@ class PositionPolicy:
             "top_illegal_fraction": self.top_illegal_fraction,
             "target_rank": self.target_rank,
         }
+
+
+@dataclass(frozen=True)
+class ActionSetPolicy:
+    """What the model says about one named subset of legal actions."""
+
+    game_id: int
+    ply_index: int
+    name: str
+    selected_action_id: int
+    raw_probability_mass: float
 
 
 @dataclass(frozen=True)
@@ -172,6 +183,57 @@ def score_positions(
         )
         for offset, legal_actions in enumerate(active.legal_rows)
     )
+
+
+def score_action_sets(
+    logits: Tensor,
+    batch: MoveModelBatch,
+    action_sets: Mapping[tuple[int, int], Mapping[str, Collection[int]]],
+) -> tuple[ActionSetPolicy, ...]:
+    """Score named legal-action subsets without retaining whole policies."""
+
+    active = _active_batch(logits, batch)
+    if not active.legal_rows:
+        return ()
+
+    probabilities = torch.softmax(active.logits, dim=-1)
+    masked = active.logits.masked_fill(~active.legal_mask, -torch.inf)
+    selected = torch.argmax(masked, dim=-1).tolist()
+    scored: list[ActionSetPolicy] = []
+    for offset, legal_actions in enumerate(active.legal_rows):
+        key = (active.game_ids[offset], active.ply_indices[offset])
+        named_sets = action_sets.get(key)
+        if not named_sets:
+            continue
+        legal = frozenset(legal_actions)
+        for name, action_ids in sorted(named_sets.items()):
+            actions = tuple(sorted(set(action_ids)))
+            if any(action not in legal for action in actions):
+                raise ValueError(
+                    f"action set {name!r} contains an action that is not legal at {key}"
+                )
+            mass = (
+                float(
+                    probabilities[
+                        offset,
+                        torch.tensor(actions, dtype=torch.long),
+                    ]
+                    .sum()
+                    .item()
+                )
+                if actions
+                else 0.0
+            )
+            scored.append(
+                ActionSetPolicy(
+                    game_id=key[0],
+                    ply_index=key[1],
+                    name=name,
+                    selected_action_id=int(selected[offset]),
+                    raw_probability_mass=mass,
+                )
+            )
+    return tuple(scored)
 
 
 def legal_policy_log_probabilities(

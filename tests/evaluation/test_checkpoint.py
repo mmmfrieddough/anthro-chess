@@ -24,10 +24,18 @@ from anthro_chess.evaluation import (
     freeze_pool,
 )
 from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, RULE_CASE_DIMENSION
-from anthro_chess.evaluation.checkpoint import DEPENDENCY_KIND, HELD_OUT_KIND
+from anthro_chess.evaluation.checkpoint import (
+    ADJUDICATION_KIND,
+    DEPENDENCY_KIND,
+    HELD_OUT_KIND,
+)
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.results import DetailStore, ResultsStore
-from anthro_chess.evaluation.slices import GamePhase, PositionCharacteristic
+from anthro_chess.evaluation.slices import (
+    GamePhase,
+    PositionCharacteristic,
+    PositionPredicate,
+)
 from anthro_chess.interfaces.cli import main
 from anthro_chess.models import CausalMoveModel, MoveModelConfig
 from anthro_chess.training.checkpoints import save_training_checkpoint
@@ -160,6 +168,62 @@ def test_repeated_evaluation_reproduces_every_measurement(
         item.fingerprint for item in second.envelopes[0].measurements
     ]
     assert first.recorded_paths == ()
+
+
+def test_evaluation_records_human_referenced_forced_outcomes(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    forced_fen = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [
+            normalized_row(1, split="train", plies=4, rating=1500),
+            normalized_row(
+                2,
+                split="test",
+                rating=1100,
+                initial_position=forced_fen,
+                moves=("f7f8",),
+            ),
+            normalized_row(
+                3,
+                split="test",
+                rating=2100,
+                initial_position=forced_fen,
+                moves=("f7f8",),
+            ),
+        ],
+    )
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = evaluate_checkpoint(
+        _config(pool, checkpoint),
+        store=store,
+        detail=detail,
+    )
+
+    assert result.adjudication is not None
+    mate = result.adjudication.predicates[PositionPredicate.MATE_AVAILABLE]
+    assert mate.overall.opportunities == 2
+    assert set(mate.rating_bands) == {"under_1200", "2000_plus"}
+
+    envelope = next(item for item in result.envelopes if item.kind == ADJUDICATION_KIND)
+    metrics = {item.metric: item for item in envelope.measurements}
+    assert metrics["adjudicated.mate_available_human_rate"].value == pytest.approx(1.0)
+    assert metrics["adjudicated.mate_available_selected_rate"].sample_size == 2
+    assert envelope.detail is not None
+    payload = detail.read(envelope.detail)
+    assert payload["predicates"]["mate_available"]["overall"]["opportunities"] == 2
+    envelope.verify()
+
+    assert result.noise is not None
+    floor_metrics = {entry.metric for entry in result.noise.floors}
+    assert "adjudicated.mate_available_human_rate" in floor_metrics
 
 
 def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
