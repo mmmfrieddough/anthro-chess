@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from pyarrow import Schema  # type: ignore[import-untyped]
 
 SCHEMA_VERSION = 1
-PREPROCESSING_VERSION = 3
+PREPROCESSING_VERSION = 4
 
 FieldStatus = Literal["present", "unavailable", "rejected"]
 
@@ -33,6 +33,8 @@ class NormalizedColumn(StrEnum):
     RESULT = "result"
     TERMINATION = "termination"
     TERMINATION_STATUS = "termination_status"
+    TERMINATION_CATEGORY = "termination_category"
+    TERMINATION_BY_SIDE_TO_MOVE = "termination_by_side_to_move"
     PLY_COUNT = "ply_count"
     ACTION_IDS = "action_ids"
     WHITE_SOURCE_RATING = "white_source_rating"
@@ -77,6 +79,8 @@ def normalized_parquet_schema() -> Schema:
                 pa.field(column.RESULT, pa.string(), nullable=False),
                 pa.field(column.TERMINATION, pa.string()),
                 pa.field(column.TERMINATION_STATUS, pa.string(), nullable=False),
+                pa.field(column.TERMINATION_CATEGORY, pa.string(), nullable=False),
+                pa.field(column.TERMINATION_BY_SIDE_TO_MOVE, pa.bool_()),
                 pa.field(column.PLY_COUNT, pa.int32(), nullable=False),
                 pa.field(column.ACTION_IDS, pa.list_(pa.uint16()), nullable=False),
                 pa.field(column.WHITE_SOURCE_RATING, pa.int32()),

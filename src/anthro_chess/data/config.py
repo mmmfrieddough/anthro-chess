@@ -84,6 +84,23 @@ class FilterConfig(ConfigModel):
     maximum_games: int | None = Field(default=None, ge=1)
 
 
+class TerminationConfig(ConfigModel):
+    """Thresholds for deriving how a game ended.
+
+    Sources that collapse clock expiry and player abandonment into one
+    termination value leave the clock trace as the only separating evidence.
+    A losing player still holding this share of their initial time at their
+    last move is treated as having walked away rather than flagged. The
+    default comes from the measured arena sample in
+    ``0017-derived-termination-and-terminal-actions.md``, but the split
+    between the two populations depends on the source and time control, so
+    preparation reports how much of the population the threshold judged
+    instead of presenting the value as settled.
+    """
+
+    abandonment_clock_share: float = Field(default=0.3, gt=0.0, le=1.0)
+
+
 class OutputConfig(ConfigModel):
     """Normalized shard sizing for bounded-memory preparation."""
 
@@ -101,6 +118,7 @@ class PrepareConfig(ConfigModel):
     archive: ArchiveConfig | None = None
     split: SplitConfig = SplitConfig()
     filters: FilterConfig = FilterConfig()
+    termination: TerminationConfig = TerminationConfig()
     output: OutputConfig = OutputConfig()
 
 

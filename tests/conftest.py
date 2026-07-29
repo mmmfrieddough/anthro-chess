@@ -21,7 +21,9 @@ from anthro_chess.data import (
     GameEncodingInput,
     SequenceBatch,
     SequenceExample,
+    TerminationConfig,
     collate_sequences,
+    derive_termination,
     encode_game,
 )
 from anthro_chess.data.artifacts import file_sha256
@@ -66,6 +68,15 @@ def _action_ids(moves: tuple[str, ...]) -> tuple[int, ...]:
     return tuple(encode_move(chess.Move.from_uci(move)) for move in moves)
 
 
+def _final_board(moves: tuple[str, ...], initial_position: str) -> chess.Board:
+    """Return the position a fixture row's moves reach, with its move stack."""
+
+    board = chess.Board(initial_position)
+    for move in moves:
+        board.push(chess.Move.from_uci(move))
+    return board
+
+
 def _normalized_row(
     game_id: int,
     *,
@@ -85,6 +96,17 @@ def _normalized_row(
 
     moves = OPENING_MOVES[:plies] if moves is None else moves
     status = "present"
+    clock_trace = [290_000] * len(moves) if clocks else [None] * len(moves)
+    # Derive the ending the same way preparation would, so a fixture row never
+    # carries a category its own result and moves could not produce.
+    termination = derive_termination(
+        result=result,
+        source_termination="normal",
+        final_board=_final_board(moves, initial_position),
+        clock_remaining_ms=clock_trace,
+        time_initial_ms=300_000,
+        abandonment_clock_share=TerminationConfig().abandonment_clock_share,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "game_id": game_id,
@@ -95,6 +117,8 @@ def _normalized_row(
         "result": result,
         "termination": "normal",
         "termination_status": status,
+        "termination_category": termination.category.value,
+        "termination_by_side_to_move": termination.by_side_to_move,
         "ply_count": len(moves),
         "action_ids": list(_action_ids(moves)),
         "white_source_rating": rating,
@@ -111,7 +135,7 @@ def _normalized_row(
         "time_initial_status": status,
         "time_increment_ms": 0,
         "time_increment_status": status,
-        "clock_remaining_ms": [290_000] * len(moves) if clocks else [None] * len(moves),
+        "clock_remaining_ms": clock_trace,
         "clock_status": [status if clocks else "unavailable"] * len(moves),
         "clock_precision_ms": [100 if clocks else None] * len(moves),
         "split": split,

@@ -36,6 +36,11 @@ from anthro_chess.data.schema import (
     NormalizedColumn,
     SplitName,
 )
+from anthro_chess.data.termination import (
+    TERMINATION_CATEGORIES,
+    DerivedTermination,
+    derive_termination,
+)
 
 _STATUS_PRESENT: FieldStatus = "present"
 _STATUS_UNAVAILABLE: FieldStatus = "unavailable"
@@ -50,6 +55,14 @@ _EVENT_SPEED_RE = re.compile(
     re.IGNORECASE,
 )
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+#: Manifest labels for whether a player's decision ended the game while they
+#: held the move. ``not_applicable`` covers endings no player decided, which is
+#: a different statement from a decision made on the opponent's clock.
+_ATTRIBUTION_LABELS: dict[bool | None, str] = {
+    True: "side_to_move",
+    False: "opponent_to_move",
+    None: "not_applicable",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +113,7 @@ class _ParsedClock:
 class _ParsedGame:
     record: dict[str, object] | None
     rejection: str | None
+    termination: DerivedTermination | None = None
 
 
 def acquire_archive(
@@ -196,6 +210,9 @@ def prepare_pgn(
     time_initial_values: list[int] = []
     time_increment_values: list[int] = []
     rating_values: list[int] = []
+    termination_category_counts: Counter[str] = Counter()
+    termination_attribution_counts: Counter[str] = Counter()
+    abandonment_judged_games = 0
     total_plies = 0
     minimum_plies: int | None = None
     maximum_plies: int | None = None
@@ -252,6 +269,13 @@ def prepare_pgn(
                         for precision in clock_precisions
                         if isinstance(precision, int)
                     )
+                    assert parsed.termination is not None
+                    termination_category_counts[parsed.termination.category.value] += 1
+                    termination_attribution_counts[
+                        _ATTRIBUTION_LABELS[parsed.termination.by_side_to_move]
+                    ] += 1
+                    if parsed.termination.losing_clock_share is not None:
+                        abandonment_judged_games += 1
                     time_initial_status_counts[
                         str(parsed.record[NormalizedColumn.TIME_INITIAL_STATUS])
                     ] += 1
@@ -394,6 +418,22 @@ def prepare_pgn(
                 "minimum": min(rating_values) if rating_values else None,
                 "maximum": max(rating_values) if rating_values else None,
             },
+            "termination": {
+                "category_games": {
+                    category: termination_category_counts[category]
+                    for category in TERMINATION_CATEGORIES
+                },
+                "attribution_games": {
+                    label: termination_attribution_counts[label]
+                    for label in _ATTRIBUTION_LABELS.values()
+                },
+                "abandonment": {
+                    "clock_share_threshold": (
+                        resolved_config.value.termination.abandonment_clock_share
+                    ),
+                    "clock_share_judged_games": abandonment_judged_games,
+                },
+            },
         },
         "resolved_config": resolved_config.as_record(),
     }
@@ -508,6 +548,14 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
         return _ParsedGame(None, "invalid_result")
 
     termination, termination_status = _parse_text(game.headers.get("Termination"))
+    derived_termination = derive_termination(
+        result=result,
+        source_termination=termination,
+        final_board=board,
+        clock_remaining_ms=clock_values,
+        time_initial_ms=time_initial.value,
+        abandonment_clock_share=config.termination.abandonment_clock_share,
+    )
     game_id = _game_id(config.source.id, source_game_key)
     split = _split_name(
         game_id,
@@ -542,6 +590,10 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
             NormalizedColumn.RESULT: result,
             NormalizedColumn.TERMINATION: termination,
             NormalizedColumn.TERMINATION_STATUS: termination_status,
+            NormalizedColumn.TERMINATION_CATEGORY: derived_termination.category.value,
+            NormalizedColumn.TERMINATION_BY_SIDE_TO_MOVE: (
+                derived_termination.by_side_to_move
+            ),
             NormalizedColumn.PLY_COUNT: len(actions),
             NormalizedColumn.ACTION_IDS: actions,
             NormalizedColumn.WHITE_SOURCE_RATING: white_rating.value,
@@ -564,6 +616,7 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
             NormalizedColumn.SPLIT: split,
         },
         None,
+        derived_termination,
     )
 
 

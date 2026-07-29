@@ -463,17 +463,36 @@ is an automatic draw when exact chess logic already considers the final position
 terminal, a claimed draw when a claim was merely available, and a draw by
 agreement otherwise.
 
-Terminal actions belong in the action sequence when the game ended through a
-player's decision and that player was the side to move. Resignations made on the
-opponent's clock, which some platforms allow, have no decision point to attach
-to and are excluded from the action sequence while the game's moves are kept.
-The pipeline should record why a terminal action was omitted so the exclusion is
-auditable rather than silent.
+Exact chess logic takes precedence wherever the final position is already
+terminal, because the position is proof and the source field is not. A position
+that is terminal in a way the reported result contradicts means the source
+disagrees with itself, and the ending is recorded as unknown rather than
+resolved in either direction. An ending the source genuinely cannot support
+classifying is also recorded as unknown rather than guessed.
+
+The derived category is stored alongside the raw source value, together with
+whether the ending was attributable to the side to move. Terminal actions
+belong in the action sequence when the game ended through a player's decision
+and that player held the move. Resignations made on the opponent's clock, which
+some platforms allow, have no decision point to attach to and are excluded from
+the action sequence while the game's moves are kept. Endings no player decided
+are distinguished from decisions made off turn, so the exclusion is auditable
+rather than silent.
 
 Abandonment and clock expiry are not resignations and must not be relabelled as
 such, even where clock traces make abandonment identifiable. Abandonment keeps
 its own derived category so evaluation can compare against a reference
 distribution that separates it from behavior the model can actually produce.
+Separating the two uses the only evidence a PGN carries: the losing player's
+remaining time as a share of their initial time at their last move, tested
+against a configured threshold. Where a source exports no clocks the ending
+stays the clock expiry the source itself reported, since promoting it to
+unknown would discard a classification the source did support. The split
+between the two populations depends on the source and time control, so
+preparation reports the derived composition and how much of the time-forfeit
+population the threshold was able to judge, rather than presenting the
+threshold as settled.
+
 Draw offers are not recorded by any source in scope and are out of scope
 entirely. See
 [`0017-derived-termination-and-terminal-actions.md`](decisions/0017-derived-termination-and-terminal-actions.md)

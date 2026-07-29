@@ -9,6 +9,7 @@ from anthro_chess.data.config import (
     SequenceLoaderConfig,
     SourceConfig,
     SplitConfig,
+    TerminationConfig,
 )
 from anthro_chess.data.encoding import (
     BOARD_SQUARE_COUNT,
@@ -44,6 +45,12 @@ from anthro_chess.data.prepare import (
     acquire_archive,
     prepare_pgn,
 )
+from anthro_chess.data.termination import (
+    TERMINATION_CATEGORIES,
+    DerivedTermination,
+    TerminationCategory,
+    derive_termination,
+)
 
 __all__ = [
     "AcquisitionResult",
@@ -53,10 +60,12 @@ __all__ = [
     "ENCODING_SCHEMA_SHA256",
     "ENCODING_VERSION",
     "LOADER_STATE_VERSION",
+    "TERMINATION_CATEGORIES",
     "BoardEncoding",
     "DecisionContext",
     "DataLoadingError",
     "DataPreparationError",
+    "DerivedTermination",
     "EncodingError",
     "FilterConfig",
     "GameEncodingInput",
@@ -76,9 +85,12 @@ __all__ = [
     "SequenceLoaderState",
     "SourceConfig",
     "SplitConfig",
+    "TerminationCategory",
+    "TerminationConfig",
     "acquire_archive",
     "build_decision_context",
     "collate_sequences",
+    "derive_termination",
     "encode_game",
     "encoding_identity",
     "prepare_pgn",

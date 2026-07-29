@@ -334,6 +334,222 @@ def test_streams_zstandard_input_into_bounded_shards_and_one_namespace(
     }
 
 
+#: One game per ending preparation has to classify from a real PGN. The clock
+#: comments carry the abandonment evidence: ``flagged`` is a genuine flag fall
+#: and ``walked-away`` is a player who quit with most of their time left.
+_ENDING_GAMES: tuple[tuple[str, str], ...] = (
+    ("mated", "checkmate"),
+    ("resigned-on-turn", "resignation"),
+    ("resigned-off-turn", "resignation"),
+    ("flagged", "clock_expiry"),
+    ("walked-away", "abandonment"),
+    ("infraction", "unknown"),
+)
+
+
+def _ending_corpus() -> str:
+    return (
+        _ended_game(
+            site="mated",
+            result="1-0",
+            movetext="1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#",
+            termination="Normal",
+        )
+        # Three plies leave Black, the losing player, on move.
+        + _ended_game(
+            site="resigned-on-turn",
+            result="1-0",
+            movetext="1. e4 e5 2. Nf3",
+            termination="Normal",
+        )
+        # Two plies leave White on move while Black is the losing player, so
+        # the resignation was made on the opponent's clock.
+        + _ended_game(
+            site="resigned-off-turn",
+            result="1-0",
+            movetext="1. e4 e5",
+            termination="Normal",
+        )
+        + _ended_game(
+            site="flagged",
+            result="1-0",
+            movetext="1. e4 { [%clk 0:04:55] } e5 { [%clk 0:00:01] }",
+            termination="Time forfeit",
+        )
+        + _ended_game(
+            site="walked-away",
+            result="1-0",
+            movetext="1. e4 { [%clk 0:04:55] } e5 { [%clk 0:04:50] }",
+            termination="Time forfeit",
+        )
+        + _ended_game(
+            site="infraction",
+            result="1-0",
+            movetext="1. e4 e5",
+            termination="Rules infraction",
+        )
+    )
+
+
+def test_derives_a_termination_category_for_every_ending(tmp_path: Path) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    assert {
+        site: rows[site]["termination_category"] for site, _ in _ENDING_GAMES
+    } == dict(_ENDING_GAMES)
+
+
+def test_retains_the_raw_source_termination_beside_the_derived_category(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    # The source collapses all three into one value; only the derivation
+    # separates them.
+    assert {rows[site]["termination"] for site in ("mated", "resigned-on-turn")} == {
+        "normal"
+    }
+    assert rows["flagged"]["termination"] == "time_forfeit"
+    assert rows["walked-away"]["termination"] == "time_forfeit"
+
+
+def test_records_whether_an_ending_was_attributable_to_the_side_to_move(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    assert rows["resigned-on-turn"]["termination_by_side_to_move"] is True
+    assert rows["resigned-off-turn"]["termination_by_side_to_move"] is False
+    # A checkmate is nobody's decision, which is a different statement from a
+    # decision made off turn.
+    assert rows["mated"]["termination_by_side_to_move"] is None
+
+
+def test_reports_termination_composition_without_re_deriving_it(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    coverage = _read_json(result.manifest_path)["coverage"]["termination"]
+    assert coverage["category_games"]["resignation"] == 2
+    assert coverage["category_games"]["checkmate"] == 1
+    assert coverage["category_games"]["abandonment"] == 1
+    assert coverage["category_games"]["clock_expiry"] == 1
+    assert coverage["category_games"]["unknown"] == 1
+    assert coverage["category_games"]["stalemate"] == 0
+    assert coverage["attribution_games"] == {
+        "side_to_move": 1,
+        "opponent_to_move": 1,
+        "not_applicable": 4,
+    }
+    assert coverage["abandonment"] == {
+        "clock_share_threshold": 0.3,
+        "clock_share_judged_games": 2,
+    }
+
+
+def test_the_abandonment_threshold_is_configurable(tmp_path: Path) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=("termination.abandonment_clock_share=0.99",),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    coverage = _read_json(result.manifest_path)["coverage"]["termination"]
+    assert coverage["category_games"]["abandonment"] == 0
+    assert coverage["category_games"]["clock_expiry"] == 2
+
+
+def test_derives_an_ending_from_the_position_when_the_source_is_silent(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "silent.pgn"
+    input_path.write_text(
+        _ended_game(
+            site="mated-unlabelled",
+            result="1-0",
+            movetext="1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#",
+        )
+        + _ended_game(site="quiet-unlabelled", result="1-0", movetext="1. e4 e5"),
+        encoding="utf-8",
+    )
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    # Exact logic still classifies the mate, while a decided game with no rule
+    # ending and no source field cannot be classified at all.
+    assert rows["mated-unlabelled"]["termination_category"] == "checkmate"
+    assert rows["mated-unlabelled"]["termination_status"] == "unavailable"
+    assert rows["quiet-unlabelled"]["termination_category"] == "unknown"
+
+
+def _ended_game(
+    *,
+    site: str,
+    result: str,
+    movetext: str,
+    termination: str | None = None,
+    time_control: str = "300+0",
+) -> str:
+    """Return one rated game whose ending the derivation has to classify."""
+
+    termination_header = (
+        f'[Termination "{termination}"]\n' if termination is not None else ""
+    )
+    return f"""
+[Event "Rated Blitz game"]
+[Site "https://example.test/{site}"]
+[Date "2026.07.16"]
+[Round "-"]
+[White "White"]
+[Black "Black"]
+[Result "{result}"]
+[WhiteElo "1200"]
+[BlackElo "1200"]
+[TimeControl "{time_control}"]
+{termination_header}
+{movetext} {result}
+
+""".lstrip()
+
+
 def _short_game(
     *,
     site: str,
