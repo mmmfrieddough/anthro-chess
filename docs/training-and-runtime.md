@@ -453,7 +453,11 @@ and secrets.
 UCI uses bounded rotating file logs with a standard-error fallback. Its
 destination and verbosity controls are described in `docs/interfaces.md`; the
 logging module remains the source of truth for exact destination and rotation
-defaults.
+defaults. UCI's DEBUG tier is the narrow exception to the general move-history
+exclusion: it records versioned accepted-position snapshots and engine
+decisions so live games can be reconstructed after replacements and takebacks.
+These diagnostic events are not benchmark artifacts and do not change default
+logging volume.
 
 ## Inference Loop
 

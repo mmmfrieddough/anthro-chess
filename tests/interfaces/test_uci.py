@@ -10,6 +10,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import chess
 import chess.engine
@@ -590,7 +591,7 @@ def test_console_script_falls_back_to_stderr_without_contaminating_stdout(
     )
 
 
-def test_debug_logs_exclude_raw_commands_and_complete_game_history() -> None:
+def test_debug_logs_exclude_unrecognized_raw_input() -> None:
     engine = UciEngine(
         lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
         UciConfig(),
@@ -612,7 +613,98 @@ def test_debug_logs_exclude_raw_commands_and_complete_game_history() -> None:
     assert output == ""
     assert "Received UCI command" in error
     assert sensitive not in error
-    assert "e2e4 e7e5 g1f3" not in error
+
+
+def test_default_logging_omits_game_history_events() -> None:
+    diagnostics = io.StringIO()
+    configure_application_logging(level="INFO", stream=diagnostics)
+    engine = UciEngine(
+        lambda: StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        UciConfig(),
+    )
+    output = io.StringIO()
+
+    assert (
+        engine.run(
+            io.StringIO("position startpos moves e2e4 e7e5\nquit\n"),
+            output,
+            diagnostics,
+        )
+        == 0
+    )
+    assert "UCI game event" not in diagnostics.getvalue()
+    assert "e2e4" not in diagnostics.getvalue()
+
+
+def test_debug_game_events_reconstruct_positions_boundaries_and_decisions() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(seed=123, temperature=0.0)),
+    )
+    nonstandard_fen = "8/8/8/8/8/8/4K3/7k w - - 0 1"
+
+    output, error = _run(
+        engine,
+        "\n".join(
+            (
+                "debug on",
+                "position startpos moves e2e4 e7e5",
+                "go",
+                "position startpos moves e2e4",
+                "ucinewgame",
+                f"position fen {nonstandard_fen}",
+                "quit",
+            )
+        ),
+    )
+
+    assert output == "bestmove g1f3\n"
+    events = _game_events(error)
+    assert {event["schema"] for event in events} == {"anthro-uci-game-event-v1"}
+    assert len({event["session_id"] for event in events}) == 1
+
+    positions = [event for event in events if event["event"] == "position"]
+    assert [
+        (
+            event["game_index"],
+            event["initial_fen"],
+            event["moves"],
+            event["transition"],
+        )
+        for event in positions
+    ] == [
+        (0, chess.STARTING_FEN, ["e2e4", "e7e5"], "validated"),
+        (0, chess.STARTING_FEN, ["e2e4"], "replaced"),
+        (1, nonstandard_fen, [], "replaced"),
+    ]
+    for event in positions:
+        board = chess.Board(event["initial_fen"])
+        for move in event["moves"]:
+            board.push_uci(move)
+        assert board.fen() == event["position_fen"]
+
+    decisions = [event for event in events if event["event"] == "decision"]
+    assert len(decisions) == 1
+    decision = decisions[0]
+    board = chess.Board(decision["position_fen"])
+    assert decision["game_index"] == 0
+    assert decision["observed_plies"] == 2
+    assert chess.Move.from_uci(decision["move"]) in board.legal_moves
+    board.push_uci(decision["move"])
+    assert board.peek().uci() == decision["move"]
+    assert decision["runtime"] == {
+        "configured_seed": 123,
+        "resolved_seed": 123,
+        "resignation_enabled": False,
+        "target_rating": 2500,
+        "temperature": 0.0,
+    }
+
+    assert any(
+        event["event"] == "new-game" and event["game_index"] == 1 for event in events
+    )
 
 
 def test_debug_logs_record_option_names_and_values() -> None:
@@ -897,6 +989,15 @@ def _run(engine: UciEngine, transcript: str) -> tuple[str, str]:
     configure_application_logging(level="WARNING", stream=error)
     assert engine.run(io.StringIO(transcript), output, error) == 0
     return output.getvalue(), error.getvalue()
+
+
+def _game_events(log_output: str) -> list[dict[str, Any]]:
+    marker = "UCI game event "
+    return [
+        json.loads(line.split(marker, maxsplit=1)[1])
+        for line in log_output.splitlines()
+        if marker in line
+    ]
 
 
 def _sampling_logits() -> torch.Tensor:

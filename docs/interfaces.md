@@ -86,9 +86,23 @@ without claiming a best move.
 The entry point accepts standard application log levels. UCI `debug on|off`
 temporarily enables deeper module and command-boundary diagnostics in the same
 protocol-safe destination. Logs identify lifecycle events, command names, and
-the name and value of every option a GUI sets. They do not copy raw command
-lines, complete game histories, model distributions, or other high-volume or
-sensitive values.
+the name and value of every option a GUI sets. Debug logging also emits
+versioned JSON game events for accepted position snapshots, engine decisions,
+and `ucinewgame` boundaries. Each accepted snapshot records its initial FEN,
+complete UCI move list, and resulting FEN, so a replacement, takeback, or game
+rooted away from the standard position remains exactly reconstructable. The
+events carry a process-session identity and game index; decision events also
+carry the resolved runtime settings and sampling seed. The selected checkpoint
+is identified by the model runner's lifecycle log.
+
+This deliberately records accepted chess history rather than raw command
+lines. Unknown input, model distributions, corpus records, and other free-form
+or sensitive values remain excluded. The events are DEBUG-only, so default
+verbosity and volume do not change, and the existing rotating-file policy
+bounds sessions that enable them. Snapshot events were chosen over emitting a
+second complete-game artifact: the former preserve arbitrary UCI position
+replacement as it happens, while generated benchmark games remain owned by the
+evaluation artifact layer.
 
 Option values are logged because they are what makes a reported session
 reproducible: the engine's options are bounded scalars a GUI chose
