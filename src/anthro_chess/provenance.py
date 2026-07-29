@@ -8,11 +8,11 @@ None of this belongs in a comparability fingerprint. Software versions and
 platform details describe how a measurement was produced, not what it
 measured, and decision 0013 deliberately keeps them out of series identity.
 
-Efficiency metrics need some of the same facts as realized inputs rather than
-as provenance, and they get them from an execution component that is captured
-and digested separately. See
-``docs/decisions/0018-execution-sensitive-efficiency-series.md``; this module
-stays the provenance side of that split.
+Efficiency metrics record some of the same facts separately, as execution
+coordinates a report attributes a delta to. Those are still not fingerprint
+inputs; only an efficiency benchmark's declared workload is. See
+``docs/decisions/0018-workload-scoped-efficiency-series.md``; this module stays
+the general provenance side of that split.
 """
 
 from __future__ import annotations

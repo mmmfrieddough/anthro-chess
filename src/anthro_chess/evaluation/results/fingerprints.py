@@ -11,15 +11,19 @@ versions, file layout, and command shape, so a refactor or a new flag leaves
 every series intact while a change to what was measured breaks one
 automatically.
 
-Efficiency metrics are the exception, and they are the exception for the same
-reason. A latency figure is a property of a checkpoint *on a machine under a
-workload*, so the machine and the workload are realized inputs to it rather
-than incidental production detail. Those metrics declare themselves
-execution-sensitive and carry an :class:`ExecutionComponent`, which puts a
-change of device, precision, or workload on the same footing as a change of
-scored games: it ends one series and starts another instead of presenting two
-machines as progress. See
-``docs/decisions/0018-execution-sensitive-efficiency-series.md``.
+Efficiency metrics add one more realized input: the **declared workload**. A
+latency figure taken at forty plies and one taken at eighty measure different
+quantities, exactly as two different pools do, so the workload digest belongs
+in identity and those metrics carry a :class:`WorkloadComponent`.
+
+The machine deliberately does not. A cross-machine latency delta is not
+meaningless — it is perfectly interpretable, just attributable to the
+environment rather than to the model — and ending a series for it would
+fragment efficiency history at every hardware change, Torch bump, and cloud
+session, leaving no way to ask whether the shipped thing is getting slower.
+Whether two numbers are safe to subtract is a question for a report, which can
+answer it from the environment each result records. See
+``docs/decisions/0018-workload-scoped-efficiency-series.md``.
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ from anthro_chess.evaluation.results.metrics import (
 
 FINGERPRINT_ALGORITHM = "anthro-series-fingerprint-v1"
 CONTENT_DIGEST_ALGORITHM = "anthro-projection-digest-v1"
-EXECUTION_DIGEST_ALGORITHM = "anthro-execution-digest-v1"
+WORKLOAD_DIGEST_ALGORITHM = "anthro-workload-digest-v1"
 
 
 class FingerprintError(ValueError):
@@ -88,14 +92,13 @@ class DataComponent:
 
 
 @dataclass(frozen=True)
-class ExecutionComponent:
-    """The realized-execution half of an efficiency metric's fingerprint.
+class WorkloadComponent:
+    """The declared-workload half of an efficiency metric's fingerprint.
 
-    Everything here changes the number a benchmark would report even with the
-    parameters held fixed, which is exactly the test for belonging in series
-    identity. ``workload_sha256`` digests the declared measurement workload:
-    the ply depth a latency figure was taken at, the batch size a throughput
-    figure was declared for, and anything else that decides *what* was timed.
+    A workload says *what* was timed: the ply depth a latency figure was taken
+    at, the batch size a throughput figure was declared for. Change it and the
+    number measures a different quantity, which is the same test that puts
+    scored content into identity.
 
     How many samples were taken is deliberately absent. Measuring more
     decisions estimates the same quantity more precisely, in the same way that
@@ -103,40 +106,24 @@ class ExecutionComponent:
     identity.
     """
 
-    device: str
-    device_name: str
-    precision: str
-    torch_version: str
-    platform: str
-    workload_sha256: str
-    #: ``None`` on an accelerator, where the host thread count does not decide
-    #: throughput. Recorded on CPU, where it dominates it.
-    cpu_threads: int | None = None
+    sha256: str
 
     def as_record(self) -> dict[str, object]:
         """Return the stable record carried with every efficiency result."""
 
         return {
-            "algorithm": EXECUTION_DIGEST_ALGORITHM,
+            "algorithm": WORKLOAD_DIGEST_ALGORITHM,
             **self.fingerprint_component(),
         }
 
     def fingerprint_component(self) -> dict[str, object]:
         """Return only the fields fingerprint identity depends on."""
 
-        return {
-            "device": self.device,
-            "device_name": self.device_name,
-            "precision": self.precision,
-            "torch_version": self.torch_version,
-            "platform": self.platform,
-            "workload_sha256": self.workload_sha256,
-            "cpu_threads": self.cpu_threads,
-        }
+        return {"sha256": self.sha256}
 
 
 def workload_digest(workload: Mapping[str, Any]) -> str:
-    """Digest the declared workload half of an execution component.
+    """Digest the declared workload of an efficiency benchmark.
 
     A benchmark passes only the settings that decide what was timed. Passing
     its whole configuration would put warmup counts and output paths into
@@ -145,7 +132,7 @@ def workload_digest(workload: Mapping[str, Any]) -> str:
 
     return _canonical_digest(
         {
-            "algorithm": EXECUTION_DIGEST_ALGORITHM,
+            "algorithm": WORKLOAD_DIGEST_ALGORITHM,
             "workload": dict(workload),
         }
     )
@@ -208,33 +195,33 @@ def projection_content_digest(
 def series_fingerprint(
     metric: str | MetricDefinition,
     data: DataComponent | None,
-    execution: ExecutionComponent | None = None,
+    workload: WorkloadComponent | None = None,
 ) -> str:
     """Return the fingerprint identifying one metric's series.
 
     A metric with no data dependency must pass ``None``. Substituting an
     empty view for a null data component would tie a structurally immune
     metric to evaluation inputs it never read. The same holds in the other
-    direction for execution: only a metric that declares itself
-    execution-sensitive may carry a component, so an ordinary quality metric
-    cannot acquire a machine dependency by accident.
+    direction for the workload: only a metric that declares itself
+    execution-sensitive may carry one, so an ordinary quality metric cannot
+    acquire a workload dependency by accident.
     """
 
     definition = (
         metric if isinstance(metric, MetricDefinition) else metric_definition(metric)
     )
     _validate_data_component(definition, data)
-    _validate_execution_component(definition, execution)
+    _validate_workload_component(definition, workload)
     payload: dict[str, object] = {
         "algorithm": FINGERPRINT_ALGORITHM,
         "metric": definition.identifier,
         "definition_version": definition.definition_version,
         "data": None if data is None else data.fingerprint_component(),
     }
-    # Absent rather than null for an insensitive metric, so adding this
+    # Absent rather than null for a metric with no workload, so adding this
     # component leaves every existing series fingerprint bit-identical.
-    if execution is not None:
-        payload["execution"] = execution.fingerprint_component()
+    if workload is not None:
+        payload["workload"] = workload.fingerprint_component()
     return sha256(_canonical_bytes(payload)).hexdigest()
 
 
@@ -270,22 +257,22 @@ def _validate_data_component(
         )
 
 
-def _validate_execution_component(
+def _validate_workload_component(
     definition: MetricDefinition,
-    execution: ExecutionComponent | None,
+    workload: WorkloadComponent | None,
 ) -> None:
     if definition.execution_sensitive:
-        if execution is None:
+        if workload is None:
             raise FingerprintError(
                 f"metric {definition.identifier!r} is execution-sensitive and "
-                "needs an execution component; without one, two machines would "
-                "share a series"
+                "needs a workload component; without one, two different "
+                "measurements would share a series"
             )
         return
-    if execution is not None:
+    if workload is not None:
         raise FingerprintError(
             f"metric {definition.identifier!r} is not execution-sensitive and "
-            "must carry no execution component"
+            "must carry no workload component"
         )
 
 

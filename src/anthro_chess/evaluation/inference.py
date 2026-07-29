@@ -44,13 +44,13 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     DetailReference,
     DetailStore,
-    ExecutionComponent,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
     ResultsStoreError,
+    WorkloadComponent,
     build_result,
     configuration_reference,
     default_checkpoint_label,
@@ -81,7 +81,7 @@ INFERENCE_BENCHMARK = BenchmarkReference(
 #: Parameter precision the runtime loads. Recorded rather than configured,
 #: because the runner rejects a checkpoint that is not float32 today; when a
 #: precision dial arrives it becomes an input to this value rather than a new
-#: field in the execution component.
+#: execution coordinate.
 MEASURED_PRECISION = "float32"
 
 SampleT = TypeVar("SampleT")
@@ -355,7 +355,7 @@ def benchmark_inference(
                 overrides=resolved_config.provenance.overrides,
             ),
             execution=execution,
-            measurements=_measurements(result, execution.as_component()),
+            measurements=_measurements(result, execution.workload_component()),
             detail=detail_reference,
             recorded_at=recorded_at,
         )
@@ -636,7 +636,7 @@ def _board(history: Sequence[chess.Move]) -> chess.Board:
 
 def _measurements(
     result: InferenceBenchmarkResult,
-    execution: ExecutionComponent,
+    workload: WorkloadComponent,
 ) -> tuple[Measurement, ...]:
     """Return the committed measurements for one benchmark run."""
 
@@ -645,7 +645,7 @@ def _measurements(
         measurement(
             INFERENCE_MOVE_LATENCY_BY_PERCENTILE[percentile].identifier,
             latency.percentiles[percentile],
-            execution=execution,
+            workload=workload,
             sample_size=latency.decisions,
         )
         for percentile in LATENCY_PERCENTILES
@@ -654,7 +654,7 @@ def _measurements(
         measurement(
             INFERENCE_MOVE_LATENCY_MEAN.identifier,
             latency.mean_ms,
-            execution=execution,
+            workload=workload,
             sample_size=latency.decisions,
         )
     )
@@ -662,7 +662,7 @@ def _measurements(
         measurement(
             INFERENCE_BATCH_THROUGHPUT.identifier,
             result.reference_throughput.decisions_per_second,
-            execution=execution,
+            workload=workload,
             sample_size=result.reference_throughput.batches,
         )
     )
@@ -670,7 +670,7 @@ def _measurements(
         measurement(
             INFERENCE_MODEL_LOAD_SECONDS.identifier,
             result.cold_start.model_load_seconds,
-            execution=execution,
+            workload=workload,
             sample_size=1,
         )
     )
@@ -678,7 +678,7 @@ def _measurements(
         measurement(
             INFERENCE_FIRST_DECISION_SECONDS.identifier,
             result.cold_start.first_decision_seconds,
-            execution=execution,
+            workload=workload,
             sample_size=1,
         )
     )
@@ -696,6 +696,7 @@ def _execution_record(
         device_name=_device_name(device),
         precision=MEASURED_PRECISION,
         torch_version=torch.__version__,
+        platform_key=_platform_key(),
         platform=platform.platform(),
         cpu_threads=torch.get_num_threads() if device.type == "cpu" else None,
         workload={
@@ -709,6 +710,17 @@ def _execution_record(
             "temperature": config.runtime.temperature,
         },
     )
+
+
+def _platform_key() -> str:
+    """Return the coarse machine identity an environment comparison keys on.
+
+    Deliberately not the full platform string. That carries the OS patch
+    level, so keying on it would mark every delta as confounded after a point
+    release that changed no hardware.
+    """
+
+    return f"{platform.system() or 'unknown'}-{platform.machine() or 'unknown'}"
 
 
 def _device_name(device: torch.device) -> str:

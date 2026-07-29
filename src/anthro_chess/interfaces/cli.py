@@ -249,6 +249,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_store_argument(report_parser)
     report_parser.add_argument(
+        "--pivot",
+        choices=("checkpoint", "environment"),
+        default="checkpoint",
+        help=(
+            "What varies. 'checkpoint' asks whether the model changed; "
+            "'environment' pins the model and asks whether the machine, "
+            "precision, or software did (default: %(default)s)."
+        ),
+    )
+    report_parser.add_argument(
         "--current",
         help="Checkpoint label to report (default: the most recently recorded).",
     )
@@ -834,6 +844,7 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
         ResultsStore,
         ResultsStoreError,
         build_delta_report,
+        build_environment_report,
         build_history,
         render_history,
         render_provenance,
@@ -852,15 +863,26 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
             else:
                 print(render_history(history), end="")
             return 0
-        report = build_delta_report(
-            results,
-            bridges,
-            floors=NoiseFloorIndex(store.characterizations(), bridges),
-            current=arguments.current,
-            baseline=arguments.baseline,
-            families=arguments.family or None,
-            metrics=arguments.metric or None,
-        )
+        floors = NoiseFloorIndex(store.characterizations(), bridges)
+        if arguments.pivot == "environment":
+            report = build_environment_report(
+                results,
+                bridges,
+                floors=floors,
+                checkpoint=arguments.current,
+                families=arguments.family or None,
+                metrics=arguments.metric or None,
+            )
+        else:
+            report = build_delta_report(
+                results,
+                bridges,
+                floors=floors,
+                current=arguments.current,
+                baseline=arguments.baseline,
+                families=arguments.family or None,
+                metrics=arguments.metric or None,
+            )
     except (ReportError, ResultsStoreError) as error:
         print(f"anthro eval report: {error}", file=sys.stderr)
         return 2

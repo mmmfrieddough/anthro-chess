@@ -144,10 +144,11 @@ class MetricDefinition:
     #: fingerprint rather than a synthetic empty view, so they stay immune to
     #: every change in evaluation inputs.
     projection: str | None = None
-    #: Whether the device, precision, and workload the measurement ran under
-    #: are realized inputs to it. True only for efficiency metrics, where a
-    #: number taken on another machine is a different measurement rather than
-    #: a movement in the same one.
+    #: Whether the conditions the measurement ran under are inputs to its
+    #: value. True only for efficiency metrics. It has two consequences: the
+    #: declared workload joins series identity, because a different workload
+    #: measures a different quantity; and the environment is recorded so a
+    #: report can attribute a delta rather than credit it to the model.
     execution_sensitive: bool = False
 
 
@@ -481,12 +482,12 @@ TIMING_FAMILY = register_family(
     )
 )
 
-#: Efficiency is split from training health because the two invalidate on
-#: opposite terms. Training-health metrics carry no data component and are
-#: immune to evaluation-input changes; efficiency metrics are dominated by an
-#: environment component and are invalidated by a change of machine rather than
-#: a change of model. One family holding both would have no coherent answer to
-#: whether a series is still valid.
+#: Efficiency is split from training health because the two are read on
+#: different terms. A training-health metric is a statement about the model
+#: alone; an efficiency metric is a statement about the model on a machine
+#: under a workload, so its delta needs an attribution before it means
+#: anything. One family holding both would have no coherent answer to what a
+#: movement in it implies.
 TRAINING_EFFICIENCY_FAMILY = register_family(
     MetricFamily(
         identifier="training-efficiency",

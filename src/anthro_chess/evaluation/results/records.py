@@ -28,8 +28,8 @@ from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.data import encoding_identity
 from anthro_chess.evaluation.results.fingerprints import (
     DataComponent,
-    ExecutionComponent,
     FingerprintError,
+    WorkloadComponent,
     series_fingerprint,
     workload_digest,
 )
@@ -180,11 +180,30 @@ class EnvironmentRecord(ResultModel):
         )
 
 
+#: Execution fields a report compares to decide whether the environment moved.
+#: ``platform`` is deliberately absent: it carries the full OS version string,
+#: so including it would mark every delta as confounded after an operating
+#: system patch that changed no hardware. ``platform_key`` carries the part
+#: that matters.
+ENVIRONMENT_FIELDS: tuple[str, ...] = (
+    "device",
+    "device_name",
+    "precision",
+    "torch_version",
+    "platform_key",
+    "cpu_threads",
+)
+
+
 class ExecutionRecord(ResultModel):
     """The device, precision, and workload an efficiency result was taken on.
 
-    This is the stored form of the fingerprint's execution component, so a
-    reader can recompute an efficiency series identity from the record alone.
+    Two halves with different jobs. The **workload** says what was timed and is
+    part of series identity, so a reader can recompute an efficiency series
+    fingerprint from this record alone. The **environment** says where it ran
+    and is not: it is coordinates a report attributes a delta to, rather than
+    something that ends a series.
+
     ``workload`` is kept in full beside its digest because "why is this slower"
     is unanswerable from a hash, and because it is a handful of scalars rather
     than a diagnostic payload.
@@ -194,6 +213,11 @@ class ExecutionRecord(ResultModel):
     device_name: str = Field(min_length=1)
     precision: str = Field(min_length=1)
     torch_version: str = Field(min_length=1)
+    #: The coarse machine identity, such as ``Darwin-arm64``. This is what an
+    #: environment comparison keys on.
+    platform_key: str = Field(min_length=1)
+    #: The full platform string, kept as provenance for the reader who needs to
+    #: know the exact OS build.
     platform: str = Field(min_length=1)
     cpu_threads: int | None = Field(default=None, ge=1)
     workload: dict[str, Any] = Field(default_factory=dict)
@@ -214,18 +238,29 @@ class ExecutionRecord(ResultModel):
             )
         return self
 
-    def as_component(self) -> ExecutionComponent:
-        """Return the fingerprint component this record stands for."""
+    def workload_component(self) -> WorkloadComponent:
+        """Return the fingerprint component this record's workload stands for."""
 
-        return ExecutionComponent(
-            device=self.device,
-            device_name=self.device_name,
-            precision=self.precision,
-            torch_version=self.torch_version,
-            platform=self.platform,
-            workload_sha256=self.workload_sha256,
-            cpu_threads=self.cpu_threads,
-        )
+        return WorkloadComponent(sha256=self.workload_sha256)
+
+    def environment(self) -> dict[str, str | None]:
+        """Return the coordinates a report compares to attribute a delta."""
+
+        return {
+            field: _environment_value(getattr(self, field))
+            for field in ENVIRONMENT_FIELDS
+        }
+
+    def environment_label(self) -> str:
+        """Return a short human label for where this ran.
+
+        The Torch version is included because it is a coordinate an
+        optimization actually varies. A label showing only the machine would
+        render two sides of a software comparison identically, which is
+        precisely the comparison this label most often heads.
+        """
+
+        return f"{self.device_name} ({self.device}, torch {self.torch_version})"
 
 
 class NoiseFloor(ResultModel):
@@ -351,7 +386,7 @@ class ResultEnvelope(ResultModel):
                     "content digest"
                 )
             component = digest.as_component()
-        execution: ExecutionComponent | None = None
+        workload: WorkloadComponent | None = None
         if definition.execution_sensitive:
             if self.execution is None:
                 raise ResultRecordError(
@@ -359,9 +394,9 @@ class ResultEnvelope(ResultModel):
                     "execution-sensitive, without recording the execution it "
                     "was measured under"
                 )
-            execution = self.execution.as_component()
+            workload = self.execution.workload_component()
         try:
-            return series_fingerprint(definition, component, execution)
+            return series_fingerprint(definition, component, workload)
         except FingerprintError as error:
             raise ResultRecordError(str(error)) from error
 
@@ -507,7 +542,7 @@ def measurement(
     value: float,
     *,
     data: DataComponent | None = None,
-    execution: ExecutionComponent | None = None,
+    workload: WorkloadComponent | None = None,
     sample_size: int | None = None,
     noise_floor: NoiseFloor | None = None,
 ) -> Measurement:
@@ -515,7 +550,7 @@ def measurement(
 
     try:
         definition = metric_definition(metric)
-        fingerprint = series_fingerprint(definition, data, execution)
+        fingerprint = series_fingerprint(definition, data, workload)
     except (MetricRegistryError, FingerprintError) as error:
         raise ResultRecordError(str(error)) from error
     return Measurement(
@@ -558,6 +593,7 @@ def execution_reference(
     device_name: str,
     precision: str,
     torch_version: str,
+    platform_key: str,
     platform: str,
     workload: Mapping[str, Any],
     cpu_threads: int | None = None,
@@ -574,6 +610,7 @@ def execution_reference(
         device_name=device_name,
         precision=precision,
         torch_version=torch_version,
+        platform_key=platform_key,
         platform=platform,
         cpu_threads=cpu_threads,
         workload=dict(workload),
@@ -594,6 +631,12 @@ def configuration_reference(
         source=source,
         overrides=tuple(overrides),
     )
+
+
+def _environment_value(value: object) -> str | None:
+    """Render one environment coordinate as a comparable string."""
+
+    return None if value is None else str(value)
 
 
 def _record_id(record: ResultModel) -> str:

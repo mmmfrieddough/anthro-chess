@@ -28,13 +28,13 @@ their declared directions, and their definition versions; `anthro eval metrics`
 prints them.
 
 Efficiency is deliberately separate from training health rather than folded
-into it. The two invalidate on opposite terms: training-health metrics carry no
-data component and survive any change to evaluation inputs, while efficiency
-metrics are dominated by environment and are invalidated by a change of machine
-rather than a change of model. Training efficiency is scoped to a run and is
-not part of the end-of-run checkpoint suite; inference efficiency is scoped to a
-checkpoint and is, because an opponent too slow to play against is a product
-failure regardless of its other numbers.
+into it. The two are read on different terms: a training-health metric is a
+statement about the model alone, while an efficiency metric is a statement
+about the model on a machine under a workload, so a delta has to say which of
+those moved before it means anything. Training efficiency is scoped to a run
+and is not part of the end-of-run checkpoint suite; inference efficiency is
+scoped to a checkpoint and is, because an opponent too slow to play against is
+a product failure regardless of its other numbers.
 
 Each family should have one to three headline metrics. Detailed slices and
 diagnostics should remain available, but they should not be required reading for
@@ -92,13 +92,14 @@ restructuring. Metrics with no data dependency, such as optimizer and parameter
 statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
 
-Efficiency metrics carry the opposite kind of component. For them the device,
-precision, and declared workload are realized inputs rather than production
-detail, so those are part of series identity and a reading taken on another
-machine is incomparable rather than comparable-and-faster. Only a metric whose
-measurement *is* the execution may declare this, so an ordinary quality metric
-cannot acquire a machine dependency.
-`docs/decisions/0018-execution-sensitive-efficiency-series.md` owns the rule.
+Efficiency metrics carry one further component: the **declared workload**, the
+settings that decide what was timed. Change the ply depth a latency figure is
+taken at and the number measures a different quantity, so that belongs in
+identity just as scored content does. The **machine** deliberately does not. A
+cross-machine latency delta is interpretable rather than meaningless — it is
+just attributable to the environment rather than to the model — so it is
+attributed by a report instead of ending a series.
+`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule.
 
 ### Where The Store Lives
 
@@ -1378,13 +1379,35 @@ Accelerator work is asynchronous, so every measured window synchronizes queued
 device work before stopping its timer. Without that, a benchmark would time the
 enqueue and attribute the real work to whichever window happened to block next.
 
-These metrics are **execution-sensitive**: the device, precision, and declared
-workload are part of series identity, so a reading taken on another machine is
-reported as incomparable rather than as a faster checkpoint.
-`docs/decisions/0018-execution-sensitive-efficiency-series.md` owns that
-contract. `anthro eval inference` is the command;
+### Comparing Efficiency Readings
+
+Three questions are worth asking of these numbers, and they differ in what is
+held fixed. Did a model change cost us speed? Did an environment change buy us
+any? And what is the net effect on the thing we actually ship? A report
+therefore declares a **pivot** rather than assuming one.
+
+The default pivot varies the checkpoint. When the environment moved as well,
+the delta is still shown — it is a real, interpretable number — but the verdict
+is reported as `confounded` rather than better or worse, with an attribution
+naming which of model, environment, and workload changed. The honesty lives in
+the verdict rather than in a withheld delta, because any reader holding both
+values can subtract them, and automation reads the verdict.
+
+The environment pivot is the mirror image: the model is pinned by parameter
+digest and the machine, precision, or software version varies. That is the
+question an optimization asks, and pinning by digest rather than by label is
+what stops a model change being sold as a hardware win.
+
+Metric history is one continuous line per workload, annotated where the
+environment changed, which is what makes long-run drift answerable at all. A
+workload change does break the line, because that genuinely is a different
+measurement.
+
+`anthro eval inference` records; `anthro eval report --pivot` reads.
 `anthro_chess.evaluation.inference` owns the exact metrics, defaults, and
-workload fields.
+workload fields, and
+`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the
+comparability contract.
 
 ## Preference-Control Evaluation
 

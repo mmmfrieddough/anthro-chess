@@ -29,6 +29,7 @@ from anthro_chess.evaluation.inference import (
     benchmark_inference,
 )
 from anthro_chess.evaluation.results import (
+    AxisChange,
     BenchmarkReference,
     BridgeIndex,
     CheckpointReference,
@@ -37,13 +38,20 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ExecutionRecord,
     MetricDelta,
+    Movement,
+    ReportError,
+    ReportPivot,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
     build_delta_report,
+    build_environment_report,
+    build_history,
     build_result,
     execution_reference,
     measurement,
+    render_history,
+    workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_BATCH_THROUGHPUT,
@@ -172,10 +180,8 @@ def test_warmup_decisions_are_excluded_from_the_percentiles(tmp_path: Path) -> N
     assert sample.maximum_ms < delay_seconds * 1000.0
 
 
-def test_a_measurement_on_another_machine_is_not_a_faster_checkpoint(
-    tmp_path: Path,
-) -> None:
-    """The comparability layer already owns this; efficiency just declares it."""
+def test_a_faster_machine_is_not_reported_as_a_faster_model() -> None:
+    """The delta is real, so it is shown; it just is not a model verdict."""
 
     metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
     baseline = _efficiency_result("checkpoint-a", 12.0, device_name="laptop")
@@ -189,22 +195,92 @@ def test_a_measurement_on_another_machine_is_not_a_faster_checkpoint(
         [baseline, other_machine], BridgeIndex(), metrics=[metric]
     )
 
-    assert _comparability(within) is Comparability.SAME_SERIES
-    assert _comparability(across) is Comparability.INCOMPARABLE
-    # The faster machine posted the better number and is still not progress.
-    assert _delta(across).current == 9.0
-    assert _delta(across).delta is None
-    assert "execution" in {difference.field for difference in across.provenance}
+    # Same machine: an ordinary verdict on the model.
+    assert _delta(within).movement is Movement.BETTER
+    assert _delta(within).delta == -3.0
+
+    # Other machine: the same arithmetic, and no claim about the model.
+    row = _delta(across)
+    assert row.comparability is Comparability.SAME_SERIES
+    assert row.delta == -3.0
+    assert row.movement is Movement.CONFOUNDED
+    assert row.attribution is not None
+    assert row.attribution.environment is AxisChange.CHANGED
+    assert "device_name" in {difference.field for difference in row.environment}
+
+
+def test_an_agent_reading_the_record_cannot_mistake_a_machine_for_progress() -> None:
+    """Automation keys on ``movement``, so that is where the honesty has to be.
+
+    Withholding ``delta`` would protect nothing, since the record carries both
+    operands and any reader can subtract them.
+    """
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    report = build_delta_report(
+        [
+            _efficiency_result("checkpoint-a", 12.0, device_name="laptop"),
+            _efficiency_result(
+                "checkpoint-b",
+                9.0,
+                device_name="workstation",
+                weights="b" * 64,
+            ),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
+    )
+
+    row = _delta(report).as_record()
+
+    assert row["movement"] != "better"
+    assert row["movement"] == "confounded"
+    assert row["delta"] == -3.0
+    assert row["attribution"] == {
+        "model": "changed",
+        "environment": "changed",
+        "workload": "unchanged",
+    }
+    assert row["environment_differences"] == [
+        {"field": "device_name", "baseline": "laptop", "current": "workstation"}
+    ]
+
+
+def test_a_changed_workload_is_still_refused_outright() -> None:
+    """A different workload is a different measurement, not a confound."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    report = build_delta_report(
+        [
+            _efficiency_result("checkpoint-a", 12.0, device_name="laptop", plies=40),
+            _efficiency_result("checkpoint-b", 24.0, device_name="laptop", plies=80),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
+    )
+
+    row = _delta(report)
+
+    assert row.comparability is Comparability.INCOMPARABLE
+    assert row.delta is None
+    assert row.attribution is not None
+    assert row.attribution.workload is AxisChange.CHANGED
+    assert row.note is not None
+    assert "workload changed" in row.note
 
 
 def test_a_tampered_execution_record_cannot_reproduce_its_fingerprints() -> None:
-    """Relabelling the machine after the fact must not launder a comparison."""
+    """Relabelling the workload after the fact must not launder a comparison."""
 
     result = _efficiency_result("checkpoint-a", 12.0, device_name="laptop")
+    assert result.execution is not None
     relabelled = result.model_copy(
         update={
-            "execution": result.execution.model_copy(  # type: ignore[union-attr]
-                update={"device_name": "workstation"}
+            "execution": result.execution.model_copy(
+                update={
+                    "workload": {"latency_reference_plies": 80},
+                    "workload_sha256": workload_digest({"latency_reference_plies": 80}),
+                }
             )
         }
     )
@@ -430,6 +506,10 @@ def _efficiency_result(
     latency_ms: float,
     *,
     device_name: str,
+    plies: int = 40,
+    torch_version: str = "2.7.0",
+    weights: str = "a" * 64,
+    day: int | None = None,
 ) -> ResultEnvelope:
     """Build one recorded efficiency result on a named machine."""
 
@@ -437,24 +517,34 @@ def _efficiency_result(
         device="cpu",
         device_name=device_name,
         precision="float32",
-        torch_version="2.7.0",
-        platform="fixture",
+        torch_version=torch_version,
+        platform_key="Fixture-x86",
+        platform="fixture-1.2.3",
         cpu_threads=8,
-        workload={"latency_reference_plies": 40},
+        workload={"latency_reference_plies": plies},
     )
     return build_result(
         kind=INFERENCE_KIND,
         benchmark=BenchmarkReference(name="inference-efficiency", version=1),
-        checkpoint=CheckpointReference(label=label, step=1),
+        checkpoint=CheckpointReference(
+            label=label,
+            step=1,
+            parameter_sha256=weights,
+        ),
         execution=execution,
         measurements=[
             measurement(
                 INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier,
                 latency_ms,
-                execution=execution.as_component(),
+                workload=execution.workload_component(),
             )
         ],
-        recorded_at=datetime(2026, 7, 1 if label.endswith("a") else 2, tzinfo=UTC),
+        recorded_at=datetime(
+            2026,
+            7,
+            day if day is not None else (1 if label.endswith("a") else 2),
+            tzinfo=UTC,
+        ),
     )
 
 
@@ -561,7 +651,8 @@ def test_a_recorded_workload_must_produce_its_own_digest() -> None:
         device_name="laptop",
         precision="float32",
         torch_version="2.7.0",
-        platform="fixture",
+        platform_key="Fixture-x86",
+        platform="fixture-1.2.3",
         workload={"latency_reference_plies": 40},
     )
 
@@ -569,3 +660,134 @@ def test_a_recorded_workload_must_produce_its_own_digest() -> None:
         ExecutionRecord(
             **{**record.model_dump(), "workload": {"latency_reference_plies": 80}}
         )
+
+
+def test_the_environment_pivot_answers_whether_the_upgrade_helped() -> None:
+    """The mirror of the default view: model pinned, machine varying."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    report = build_environment_report(
+        [
+            _efficiency_result("blitz-v3", 27.0, device_name="laptop", day=1),
+            _efficiency_result("blitz-v3", 9.0, device_name="desktop", day=2),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
+    )
+    row = _delta(report)
+
+    assert report.pivot is ReportPivot.ENVIRONMENT
+    assert report.baseline is not None
+    assert "laptop" in report.baseline.label
+    assert "desktop" in report.current.label
+    # With the model pinned this is a real verdict rather than a confound.
+    assert row.delta == -18.0
+    assert row.movement is Movement.BETTER
+    assert row.attribution is not None
+    assert row.attribution.model is AxisChange.UNCHANGED
+    assert row.attribution.environment is AxisChange.CHANGED
+
+
+def test_the_environment_pivot_refuses_when_the_weights_moved() -> None:
+    """Otherwise a model change would be sold as a hardware win."""
+
+    with pytest.raises(ReportError, match="more than one set of weights"):
+        build_environment_report(
+            [
+                _efficiency_result("blitz-v3", 27.0, device_name="laptop", day=1),
+                _efficiency_result(
+                    "blitz-v3",
+                    9.0,
+                    device_name="desktop",
+                    weights="b" * 64,
+                    day=2,
+                ),
+            ],
+            BridgeIndex(),
+            metrics=[INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier],
+        )
+
+
+def test_the_environment_pivot_reports_a_torch_upgrade_on_one_machine() -> None:
+    """The optimization case that motivated keeping the series continuous."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    report = build_environment_report(
+        [
+            _efficiency_result(
+                "blitz-v3", 27.0, device_name="laptop", torch_version="2.7.0", day=1
+            ),
+            _efficiency_result(
+                "blitz-v3", 21.0, device_name="laptop", torch_version="2.9.0", day=2
+            ),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
+    )
+    row = _delta(report)
+
+    assert row.movement is Movement.BETTER
+    assert row.delta == -6.0
+    assert [difference.field for difference in row.environment] == ["torch_version"]
+
+
+def test_history_stays_one_line_across_machines_and_annotates_the_move() -> None:
+    """The net-effect question is only answerable if the series never split."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    history = build_history(
+        [
+            _efficiency_result("v1", 30.0, device_name="laptop", day=1),
+            _efficiency_result("v2", 27.0, device_name="laptop", day=2),
+            _efficiency_result("v3", 11.0, device_name="desktop", day=3),
+        ],
+        BridgeIndex(),
+        metric,
+    )
+
+    assert len(history.points) == 3
+    assert {point.series for point in history.points} == {history.points[0].series}
+    assert not any(point.starts_new_series for point in history.points)
+    assert [point.environment_changed for point in history.points] == [
+        False,
+        False,
+        True,
+    ]
+    assert "environment changed" in render_history(history)
+
+
+def test_history_still_splits_when_the_workload_changes() -> None:
+    """A workload change is a different measurement, so the line has to break."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    history = build_history(
+        [
+            _efficiency_result("v1", 27.0, device_name="laptop", plies=40, day=1),
+            _efficiency_result("v2", 54.0, device_name="laptop", plies=80, day=2),
+        ],
+        BridgeIndex(),
+        metric,
+    )
+
+    assert [point.starts_new_series for point in history.points] == [False, True]
+
+
+def test_an_os_patch_alone_does_not_confound_a_delta() -> None:
+    """Keying on the full platform string would flag every point release."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    baseline = _efficiency_result("checkpoint-a", 12.0, device_name="laptop")
+    patched = _efficiency_result("checkpoint-b", 11.0, device_name="laptop")
+    assert patched.execution is not None
+    updated = patched.model_copy(
+        update={
+            "execution": patched.execution.model_copy(
+                update={"platform": "fixture-1.2.4"}
+            )
+        }
+    )
+
+    report = build_delta_report([baseline, updated], BridgeIndex(), metrics=[metric])
+
+    assert _delta(report).movement is Movement.BETTER
+    assert _delta(report).environment == ()
