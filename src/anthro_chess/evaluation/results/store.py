@@ -28,6 +28,10 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from anthro_chess.evaluation.results.noise import (
+    NoiseCharacterization,
+    NoiseCharacterizationError,
+)
 from anthro_chess.evaluation.results.records import (
     Bridge,
     DetailReference,
@@ -44,6 +48,7 @@ DETAIL_ROOT_VARIABLE = "ANTHRO_CHESS_RESULT_DETAIL_ROOT"
 
 RECORDS_DIRECTORY = "records"
 BRIDGES_DIRECTORY = "bridges"
+FLOORS_DIRECTORY = "floors"
 LOCK_FILE_NAME = ".write-lock"
 
 logger = logging.getLogger(__name__)
@@ -76,6 +81,12 @@ class ResultsStore:
         """Return the directory holding committed bridges."""
 
         return self._root / BRIDGES_DIRECTORY
+
+    @property
+    def floors_directory(self) -> Path:
+        """Return the directory holding committed noise characterizations."""
+
+        return self._root / FLOORS_DIRECTORY
 
     def append(self, result: ResultEnvelope) -> Path:
         """Append one result, rejecting a payload that belongs in the detail tier."""
@@ -118,6 +129,33 @@ class ResultsStore:
         logger.info("Recorded bridge %s in %s", bridge.bridge_id, path)
         return path
 
+    def append_characterization(self, characterization: NoiseCharacterization) -> Path:
+        """Record one noise characterization beside the results it qualifies."""
+
+        try:
+            characterization.verify()
+        except NoiseCharacterizationError as error:
+            raise ResultsStoreError(str(error)) from error
+
+        path = self.floors_directory / _characterization_file_name(characterization)
+        payload = canonical_readable_json(characterization.as_record())
+        with self._write_lock():
+            self.floors_directory.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                if path.read_bytes() == payload:
+                    return path
+                raise ResultsStoreError(
+                    f"a different characterization is already recorded at {path}"
+                )
+            _write_atomically(path, payload)
+        logger.info(
+            "Recorded %s noise characterization %s in %s",
+            characterization.kind,
+            characterization.characterization_id,
+            path,
+        )
+        return path
+
     def revoke_bridge(self, bridge_id: str) -> Path:
         """Remove a bridge, leaving its removal as a reviewable diff."""
 
@@ -157,6 +195,23 @@ class ResultsStore:
         ]
         return tuple(
             sorted(bridges, key=lambda bridge: (bridge.recorded_at, bridge.bridge_id))
+        )
+
+    def characterizations(self) -> tuple[NoiseCharacterization, ...]:
+        """Return every recorded noise characterization in recording order."""
+
+        records = [
+            _load(path, NoiseCharacterization)
+            for path in sorted(self.floors_directory.glob("*.json"))
+        ]
+        return tuple(
+            sorted(
+                records,
+                key=lambda record: (
+                    record.recorded_at,
+                    record.characterization_id,
+                ),
+            )
         )
 
     def _reject_committed_detail(self, detail: DetailReference | None) -> None:
@@ -313,6 +368,13 @@ def results_for_checkpoint(
 def _record_file_name(result: ResultEnvelope) -> str:
     stamp = result.recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{result.kind}-{result.result_id}.json"
+
+
+def _characterization_file_name(characterization: NoiseCharacterization) -> str:
+    stamp = characterization.recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return (
+        f"{stamp}-{characterization.kind}-{characterization.characterization_id}.json"
+    )
 
 
 def _write_atomically(path: Path, payload: bytes) -> None:

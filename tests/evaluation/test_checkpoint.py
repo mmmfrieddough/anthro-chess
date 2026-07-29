@@ -100,7 +100,9 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     held_out = next(item for item in recorded if item.kind == HELD_OUT_KIND)
     metrics = {item.metric: item for item in held_out.measurements}
     assert kinds == {HELD_OUT_KIND, DEPENDENCY_KIND}
-    assert len(result.recorded_paths) == 2
+    # Two result envelopes plus the data-sampling floors bootstrapped from the
+    # same pass, all committed.
+    assert len(result.recorded_paths) == 3
     assert result.checkpoint.step == 1
     assert result.checkpoint.parameter_sha256 is not None
     assert result.dataset.pool_id == "fixture-test"
@@ -158,6 +160,55 @@ def test_repeated_evaluation_reproduces_every_measurement(
         item.fingerprint for item in second.envelopes[0].measurements
     ]
     assert first.recorded_paths == ()
+
+
+def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    store = ResultsStore(tmp_path / "results")
+
+    result = evaluate_checkpoint(_config(pool, checkpoint), store=store)
+
+    noise = result.noise
+    assert noise is not None
+    assert noise.kind == "data-sampling"
+
+    held_out = next(item for item in result.envelopes if item.kind == HELD_OUT_KIND)
+    reported = {item.metric: item.fingerprint for item in held_out.measurements}
+    floors = {entry.metric: entry for entry in noise.floors}
+    # A floor is only readable beside the value it qualifies, so every floor
+    # has to land on the same series as the measurement it describes.
+    assert set(floors) <= set(reported)
+    assert "held_out.move_loss" in floors
+    for metric, entry in floors.items():
+        assert entry.fingerprint == reported[metric]
+        assert entry.sampling_units == result.view.selected_games
+
+    assert store.characterizations() == (noise,)
+
+
+def test_a_noise_floor_is_reproducible_and_can_be_declined(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+
+    first = evaluate_checkpoint(_config(pool, checkpoint))
+    second = evaluate_checkpoint(_config(pool, checkpoint))
+    disabled = evaluate_checkpoint(
+        _config(pool, checkpoint, noise={"enabled": False}),
+    )
+
+    assert first.noise is not None
+    assert second.noise is not None
+    assert first.noise.floors == second.noise.floors
+    assert disabled.noise is None
 
 
 def test_dependency_tests_report_degradation_without_a_verdict(
@@ -438,6 +489,7 @@ def _config(
     checkpoint: Path,
     *,
     view: dict[str, Any] | None = None,
+    noise: dict[str, Any] | None = None,
 ) -> ResolvedConfig[CheckpointEvaluationConfig]:
     return ResolvedConfig(
         value=CheckpointEvaluationConfig.model_validate(
@@ -450,6 +502,7 @@ def _config(
                     "minimum_slice_positions": 1,
                     "minimum_prefix_decisions": 1,
                 },
+                "noise": noise or {"resamples": 100},
             }
         ),
         provenance=ConfigProvenance(source=None, overrides=()),

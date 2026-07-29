@@ -58,6 +58,13 @@ if TYPE_CHECKING:
         LeakageError,
         check_leakage,
     )
+    from anthro_chess.evaluation.noise import (
+        GameTotals,
+        MetricTotal,
+        NoiseConfig,
+        bootstrap_floors,
+        characterize_sampling_noise,
+    )
     from anthro_chess.evaluation.validation import (
         VALIDATION_METRICS_VERSION,
         MoveValidationAccumulator,
@@ -80,6 +87,11 @@ _LAZY_EXPORTS = {
     "LeakageCheck": "leakage",
     "LeakageError": "leakage",
     "check_leakage": "leakage",
+    "GameTotals": "noise",
+    "MetricTotal": "noise",
+    "NoiseConfig": "noise",
+    "bootstrap_floors": "noise",
+    "characterize_sampling_noise": "noise",
 }
 
 
@@ -113,8 +125,11 @@ __all__ = [
     "EvaluationPoolError",
     "FrozenPool",
     "GamePhase",
+    "GameTotals",
+    "MetricTotal",
     "MoveValidationAccumulator",
     "MoveValidationMetrics",
+    "NoiseConfig",
     "PlayerColor",
     "PoolConfig",
     "PoolGame",
@@ -130,6 +145,8 @@ __all__ = [
     "board_from_encoding",
     "board_phase",
     "board_piece_ids",
+    "bootstrap_floors",
+    "characterize_sampling_noise",
     "evaluate_move_model",
     "freeze_pool",
     "game_ids_sha256",

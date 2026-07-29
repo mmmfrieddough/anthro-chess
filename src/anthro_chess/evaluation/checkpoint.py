@@ -54,6 +54,7 @@ from anthro_chess.evaluation.dependency import (
     build_dependency_result,
 )
 from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_leakage
+from anthro_chess.evaluation.noise import NoiseConfig, characterize_sampling_noise
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     PositionPolicy,
@@ -95,11 +96,16 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
     MOVE_PREDICTION_PROJECTION,
 )
+from anthro_chess.evaluation.results.noise import (
+    NoiseCharacterization,
+    NoiseCharacterizationError,
+)
 from anthro_chess.evaluation.scoring import (
     EvaluationLoaderConfig,
     ScoringInputs,
     aggregate_positions,
     build_scoring_inputs,
+    per_game_totals,
     rows_identity_sha256,
     slice_measurements,
 )
@@ -154,6 +160,7 @@ class CheckpointEvaluationConfig(ConfigModel):
     dependency: DependencyTestConfig = DependencyTestConfig()
     leakage: LeakageConfig = LeakageConfig()
     detail: DetailConfig = DetailConfig()
+    noise: NoiseConfig = NoiseConfig()
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,7 @@ class CheckpointEvaluationResult:
     leakage: LeakageCheck
     slices: SliceTable
     dependency: DependencyTestResult | None
+    noise: NoiseCharacterization | None
     envelopes: tuple[ResultEnvelope, ...]
     recorded_paths: tuple[Path, ...]
     detail_paths: tuple[Path, ...]
@@ -185,6 +193,7 @@ class CheckpointEvaluationResult:
             "dependency": (
                 self.dependency.as_record() if self.dependency is not None else None
             ),
+            "noise": self.noise.as_record() if self.noise is not None else None,
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -402,6 +411,13 @@ def evaluate_checkpoint(
     checkpoint = _checkpoint_reference(config, runner)
     data = _dataset_reference(inputs, component)
     recorded_at = datetime.now(tz=UTC)
+    noise = _characterize_noise(
+        config,
+        inputs,
+        positions,
+        component,
+        recorded_at=recorded_at,
+    )
 
     envelopes: list[ResultEnvelope] = []
     detail_paths: list[Path] = []
@@ -417,6 +433,7 @@ def evaluate_checkpoint(
         leakage=leakage,
         slices=slices,
         dependency=dependency,
+        noise=noise,
         envelopes=(),
         recorded_paths=(),
         detail_paths=(),
@@ -480,6 +497,8 @@ def evaluate_checkpoint(
     if store is not None:
         try:
             recorded_paths = [store.append(envelope) for envelope in envelopes]
+            if noise is not None:
+                recorded_paths.append(store.append_characterization(noise))
         except (ResultRecordError, ResultsStoreError) as error:
             raise CheckpointEvaluationError(str(error)) from error
 
@@ -517,6 +536,41 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
         identity_sha256=rows_identity_sha256(rows, context=selection.as_record()),
     )
     return _EvaluationInputs(pool=pool, selection=selection, scoring=scoring)
+
+
+def _characterize_noise(
+    config: CheckpointEvaluationConfig,
+    inputs: _EvaluationInputs,
+    positions: Sequence[PositionPolicy],
+    component: DataComponent,
+    *,
+    recorded_at: datetime,
+) -> NoiseCharacterization | None:
+    """Estimate this reading's own data-sampling noise from the same pass.
+
+    The floor costs one resampling of numbers already computed, so it is on by
+    default. A reading with no floor beside it can only report that a number
+    moved.
+    """
+
+    if not config.noise.enabled:
+        return None
+    try:
+        return characterize_sampling_noise(
+            per_game_totals(positions, inputs.scoring),
+            component=component,
+            config=config.noise,
+            source=(
+                f"bootstrap over {inputs.selection.selected_games} game(s) of "
+                f"pool view {inputs.selection.name!r}"
+            ),
+            recorded_at=recorded_at,
+        )
+    except NoiseCharacterizationError as error:
+        # A view too small to resample is a fact about the view, not a failed
+        # evaluation. The reading still stands; it simply has no floor.
+        logger.warning("Skipping data-sampling noise characterization: %s", error)
+        return None
 
 
 def _run_dependency_tests(
