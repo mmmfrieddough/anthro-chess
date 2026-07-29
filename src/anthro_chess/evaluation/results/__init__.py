@@ -19,11 +19,14 @@ from anthro_chess.evaluation.results.comparability import (
 )
 from anthro_chess.evaluation.results.fingerprints import (
     CONTENT_DIGEST_ALGORITHM,
+    EXECUTION_DIGEST_ALGORITHM,
     FINGERPRINT_ALGORITHM,
     DataComponent,
+    ExecutionComponent,
     FingerprintError,
     projection_content_digest,
     series_fingerprint,
+    workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
     NOMINAL_REPEATED_PASSES,
@@ -73,6 +76,7 @@ from anthro_chess.evaluation.results.records import (
     DatasetReference,
     DetailReference,
     EnvironmentRecord,
+    ExecutionRecord,
     Measurement,
     NoiseFloor,
     ProjectionDigest,
@@ -83,6 +87,7 @@ from anthro_chess.evaluation.results.records import (
     configuration_reference,
     dataset_reference,
     default_checkpoint_label,
+    execution_reference,
     measurement,
 )
 from anthro_chess.evaluation.results.reporting import (
@@ -117,6 +122,7 @@ __all__ = [
     "CONTENT_DIGEST_ALGORITHM",
     "DEFAULT_COVERAGE",
     "DEFAULT_STORE_DIRECTORY",
+    "EXECUTION_DIGEST_ALGORITHM",
     "ENVELOPE_VERSION",
     "FINGERPRINT_ALGORITHM",
     "MAXIMUM_SUMMARY_BYTES",
@@ -135,6 +141,8 @@ __all__ = [
     "DetailReference",
     "DetailStore",
     "EnvironmentRecord",
+    "ExecutionComponent",
+    "ExecutionRecord",
     "FamilyReport",
     "FingerprintError",
     "FloorEntry",
@@ -172,6 +180,7 @@ __all__ = [
     "data_projection",
     "dataset_reference",
     "default_checkpoint_label",
+    "execution_reference",
     "floor_from_dispersion",
     "games_to_resolve",
     "iter_registry",
@@ -199,4 +208,5 @@ __all__ = [
     "resolve_store_root",
     "results_for_checkpoint",
     "series_fingerprint",
+    "workload_digest",
 ]

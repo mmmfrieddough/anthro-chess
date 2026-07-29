@@ -28,8 +28,10 @@ from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.data import encoding_identity
 from anthro_chess.evaluation.results.fingerprints import (
     DataComponent,
+    ExecutionComponent,
     FingerprintError,
     series_fingerprint,
+    workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
     MetricRegistryError,
@@ -37,7 +39,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
-ENVELOPE_VERSION = 1
+ENVELOPE_VERSION = 2
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -178,6 +180,54 @@ class EnvironmentRecord(ResultModel):
         )
 
 
+class ExecutionRecord(ResultModel):
+    """The device, precision, and workload an efficiency result was taken on.
+
+    This is the stored form of the fingerprint's execution component, so a
+    reader can recompute an efficiency series identity from the record alone.
+    ``workload`` is kept in full beside its digest because "why is this slower"
+    is unanswerable from a hash, and because it is a handful of scalars rather
+    than a diagnostic payload.
+    """
+
+    device: str = Field(min_length=1)
+    device_name: str = Field(min_length=1)
+    precision: str = Field(min_length=1)
+    torch_version: str = Field(min_length=1)
+    platform: str = Field(min_length=1)
+    cpu_threads: int | None = Field(default=None, ge=1)
+    workload: dict[str, Any] = Field(default_factory=dict)
+    workload_sha256: Sha256Hex
+
+    @model_validator(mode="after")
+    def _validate_workload_digest(self) -> ExecutionRecord:
+        """Keep the readable workload and the digest that identifies it agreed.
+
+        The digest is what series identity is built from and the mapping is
+        what a reader consults. Letting them drift would mean a record whose
+        stated workload is not the one its series was named for.
+        """
+
+        if workload_digest(self.workload) != self.workload_sha256:
+            raise ValueError(
+                "the recorded workload does not produce the recorded digest"
+            )
+        return self
+
+    def as_component(self) -> ExecutionComponent:
+        """Return the fingerprint component this record stands for."""
+
+        return ExecutionComponent(
+            device=self.device,
+            device_name=self.device_name,
+            precision=self.precision,
+            torch_version=self.torch_version,
+            platform=self.platform,
+            workload_sha256=self.workload_sha256,
+            cpu_threads=self.cpu_threads,
+        )
+
+
 class NoiseFloor(ResultModel):
     """How large a delta has to be before it is a finding rather than noise."""
 
@@ -225,6 +275,9 @@ class ResultEnvelope(ResultModel):
     action_vocabulary: dict[str, Any]
     encoding: dict[str, Any]
     environment: EnvironmentRecord
+    #: Present only on efficiency results. ``environment`` describes how any
+    #: result was produced; this describes what an efficiency result measured.
+    execution: ExecutionRecord | None = None
     measurements: tuple[Measurement, ...] = Field(min_length=1)
     detail: DetailReference | None = None
 
@@ -298,8 +351,17 @@ class ResultEnvelope(ResultModel):
                     "content digest"
                 )
             component = digest.as_component()
+        execution: ExecutionComponent | None = None
+        if definition.execution_sensitive:
+            if self.execution is None:
+                raise ResultRecordError(
+                    f"result {self.result_id} reports {metric}, which is "
+                    "execution-sensitive, without recording the execution it "
+                    "was measured under"
+                )
+            execution = self.execution.as_component()
         try:
-            return series_fingerprint(definition, component)
+            return series_fingerprint(definition, component, execution)
         except FingerprintError as error:
             raise ResultRecordError(str(error)) from error
 
@@ -387,6 +449,7 @@ def build_result(
     data: DatasetReference | None = None,
     detail: DetailReference | None = None,
     environment: EnvironmentRecord | None = None,
+    execution: ExecutionRecord | None = None,
     recorded_at: datetime | None = None,
 ) -> ResultEnvelope:
     """Assemble a verified result envelope with a content-derived identity.
@@ -408,6 +471,7 @@ def build_result(
         action_vocabulary=action_vocabulary_identity(),
         encoding=encoding_identity(),
         environment=environment or EnvironmentRecord.capture(),
+        execution=execution,
         measurements=ordered,
         detail=detail,
     )
@@ -443,6 +507,7 @@ def measurement(
     value: float,
     *,
     data: DataComponent | None = None,
+    execution: ExecutionComponent | None = None,
     sample_size: int | None = None,
     noise_floor: NoiseFloor | None = None,
 ) -> Measurement:
@@ -450,7 +515,7 @@ def measurement(
 
     try:
         definition = metric_definition(metric)
-        fingerprint = series_fingerprint(definition, data)
+        fingerprint = series_fingerprint(definition, data, execution)
     except (MetricRegistryError, FingerprintError) as error:
         raise ResultRecordError(str(error)) from error
     return Measurement(
@@ -484,6 +549,35 @@ def dataset_reference(
         selected_games=selected_games,
         game_ids_sha256=game_ids_sha256,
         components=tuple(digests),
+    )
+
+
+def execution_reference(
+    *,
+    device: str,
+    device_name: str,
+    precision: str,
+    torch_version: str,
+    platform: str,
+    workload: Mapping[str, Any],
+    cpu_threads: int | None = None,
+) -> ExecutionRecord:
+    """Return the execution record for one efficiency benchmark's conditions.
+
+    The workload digest is computed here rather than by each caller, so two
+    benchmarks declaring the same workload cannot end up on different series
+    through a difference in how they hashed it.
+    """
+
+    return ExecutionRecord(
+        device=device,
+        device_name=device_name,
+        precision=precision,
+        torch_version=torch_version,
+        platform=platform,
+        cpu_threads=cpu_threads,
+        workload=dict(workload),
+        workload_sha256=workload_digest(workload),
     )
 
 

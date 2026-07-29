@@ -7,6 +7,12 @@ producers instead of drifting into per-artifact reimplementations.
 None of this belongs in a comparability fingerprint. Software versions and
 platform details describe how a measurement was produced, not what it
 measured, and decision 0013 deliberately keeps them out of series identity.
+
+Efficiency metrics need some of the same facts as realized inputs rather than
+as provenance, and they get them from an execution component that is captured
+and digested separately. See
+``docs/decisions/0018-execution-sensitive-efficiency-series.md``; this module
+stays the provenance side of that split.
 """
 
 from __future__ import annotations

@@ -180,6 +180,7 @@ def provenance_differences(
             _action_vocabulary(current),
         ),
         ("dataset", _dataset(baseline), _dataset(current)),
+        ("execution", _execution(baseline), _execution(current)),
         ("configuration", _configuration(baseline), _configuration(current)),
     ):
         if baseline_value != current_value:
@@ -229,6 +230,23 @@ def _dataset(envelope: ResultEnvelope) -> str | None:
     return (
         f"{envelope.data.pool_id} v{envelope.data.pool_version} "
         f"view {envelope.data.view} ({envelope.data.selected_games} games)"
+    )
+
+
+def _execution(envelope: ResultEnvelope) -> str | None:
+    """Describe what an efficiency result was measured on.
+
+    An efficiency series already breaks on a device or workload change,
+    because both are in its fingerprint. This is what turns the resulting
+    "incomparable" into an explanation.
+    """
+
+    execution = envelope.execution
+    if execution is None:
+        return None
+    return (
+        f"{execution.device} ({execution.device_name}) {execution.precision} "
+        f"workload {execution.workload_sha256[:12]}"
     )
 
 

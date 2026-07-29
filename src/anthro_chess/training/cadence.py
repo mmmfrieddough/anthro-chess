@@ -473,6 +473,13 @@ def _resolve_metrics(
                 "generated games rather than a pass over stored positions and "
                 "cannot run at a training cadence"
             )
+        if definition.cost is MetricCost.MEASURED_EXECUTION:
+            raise CadenceError(
+                f"cadence {entry.name!r} names {identifier!r}, which measures "
+                "execution time. Taken beside a training step it would report "
+                "contention with that step rather than a property of the "
+                "checkpoint, so it runs as its own benchmark"
+            )
         if identifier in STEP_HEALTH_METRICS:
             health_metrics.append(identifier)
             continue

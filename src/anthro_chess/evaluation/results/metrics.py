@@ -61,6 +61,10 @@ class MetricCost(StrEnum):
     REPEATED_PASS = "repeated_pass"
     #: Needs generated games rather than a pass over stored positions.
     GENERATED = "generated"
+    #: Reads no view but costs real wall clock, because timing execution is
+    #: the measurement. Distinct from ``FREE``: both pass over nothing, but a
+    #: free metric is derived from work already done and this one is the work.
+    MEASURED_EXECUTION = "measured_execution"
 
     @property
     def view_passes(self) -> int | None:
@@ -71,6 +75,12 @@ class MetricCost(StrEnum):
         """
 
         return _VIEW_PASSES[self]
+
+    @property
+    def reads_data(self) -> bool:
+        """Return whether one reading consumes a projection of the pool."""
+
+        return self not in _NO_DATA_COSTS
 
 
 @dataclass(frozen=True)
@@ -112,7 +122,11 @@ _VIEW_PASSES: Mapping[MetricCost, int | None] = {
     MetricCost.SINGLE_PASS: 1,
     MetricCost.REPEATED_PASS: NOMINAL_REPEATED_PASSES,
     MetricCost.GENERATED: None,
+    MetricCost.MEASURED_EXECUTION: 0,
 }
+
+#: Costs that consume no projection of the evaluation pool.
+_NO_DATA_COSTS = frozenset({MetricCost.FREE, MetricCost.MEASURED_EXECUTION})
 
 
 @dataclass(frozen=True)
@@ -130,6 +144,11 @@ class MetricDefinition:
     #: fingerprint rather than a synthetic empty view, so they stay immune to
     #: every change in evaluation inputs.
     projection: str | None = None
+    #: Whether the device, precision, and workload the measurement ran under
+    #: are realized inputs to it. True only for efficiency metrics, where a
+    #: number taken on another machine is a different measurement rather than
+    #: a movement in the same one.
+    execution_sensitive: bool = False
 
 
 _PROJECTIONS: dict[str, DataProjection] = {}
@@ -199,11 +218,18 @@ def register_metric(metric: MetricDefinition) -> MetricDefinition:
             f"metric {metric.identifier!r} must declare a definition version "
             "of 1 or more"
         )
-    if (metric.cost is MetricCost.FREE) != (metric.projection is None):
+    if metric.cost.reads_data != (metric.projection is not None):
         raise MetricRegistryError(
             f"metric {metric.identifier!r} declares cost {metric.cost.value!r} "
-            f"with projection {metric.projection!r}; a free metric reads no "
-            "data and a metric that reads data is never free"
+            f"with projection {metric.projection!r}; a metric that passes over "
+            "no view reads no data, and one that reads data has to name the "
+            "projection it reads"
+        )
+    if metric.execution_sensitive and metric.cost is not MetricCost.MEASURED_EXECUTION:
+        raise MetricRegistryError(
+            f"metric {metric.identifier!r} is execution-sensitive but declares "
+            f"cost {metric.cost.value!r}; the device and workload are realized "
+            "inputs only to a metric whose measurement is the execution itself"
         )
     existing = _METRICS.get(metric.identifier)
     if existing is not None and existing != metric:
@@ -326,6 +352,7 @@ def registry_record() -> dict[str, object]:
                         "definition_version": metric.definition_version,
                         "cost": metric.cost.value,
                         "projection": metric.projection,
+                        "execution_sensitive": metric.execution_sensitive,
                         "summary": metric.summary,
                     }
                     for metric in metrics
@@ -839,6 +866,91 @@ DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT = register_metric(
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
+)
+
+
+def _inference_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one inference-efficiency metric.
+
+    Every metric in this family shares a cost and a sensitivity, so declaring
+    them once keeps a later addition from quietly landing as a machine-blind
+    series.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=INFERENCE_EFFICIENCY_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.MEASURED_EXECUTION,
+            execution_sensitive=True,
+        )
+    )
+
+
+#: Percentiles reported for batch-one move latency. The median says what play
+#: usually feels like and the tail says whether it ever stalls; a mean alone
+#: hides the second behind the first.
+LATENCY_PERCENTILES: tuple[int, ...] = (50, 90, 99)
+
+INFERENCE_MOVE_LATENCY_BY_PERCENTILE: Mapping[int, MetricDefinition] = {
+    percentile: _inference_metric(
+        f"inference.move_latency_p{percentile}_ms",
+        MetricDirection.LOWER_IS_BETTER,
+        (
+            f"The p{percentile} wall-clock milliseconds one batch-one move "
+            "decision takes end to end, spanning encoding, model execution, "
+            "legal masking, and sampling."
+        ),
+    )
+    for percentile in LATENCY_PERCENTILES
+}
+
+INFERENCE_MOVE_LATENCY_MEAN = _inference_metric(
+    "inference.move_latency_mean_ms",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean milliseconds per batch-one move decision. Reported to relate "
+        "latency to serving capacity rather than to be improved on its own, "
+        "since the percentiles are what a player experiences."
+    ),
+)
+
+INFERENCE_BATCH_THROUGHPUT = _inference_metric(
+    "inference.batch_throughput_per_second",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Decisions resolved per second at the declared batch size. Separate "
+        "from latency because batching trades one for the other, and reading a "
+        "serving figure as an interactive one is the usual way that trade "
+        "gets hidden."
+    ),
+)
+
+INFERENCE_MODEL_LOAD_SECONDS = _inference_metric(
+    "inference.model_load_seconds",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Seconds to resolve, validate, and load a checkpoint onto its device. "
+        "Paid once per process and excluded from steady-state latency."
+    ),
+)
+
+INFERENCE_FIRST_DECISION_SECONDS = _inference_metric(
+    "inference.first_decision_seconds",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Seconds the first decision after loading takes. Lazy kernel "
+        "compilation and allocator warmup land here rather than inflating the "
+        "steady-state percentiles, which is why warmup is excluded there and "
+        "measured here."
+    ),
 )
 
 

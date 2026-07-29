@@ -64,6 +64,11 @@ Metrics with no data dependency, such as gradient norm or weight statistics,
 carry a null data component. They are structurally immune to pool changes, so at
 least one metric family keeps an unbroken line across the project's lifetime.
 
+Decision 0018 extends this to efficiency metrics, where the device and the
+declared workload are realized inputs rather than production detail, and are
+therefore part of series identity. The principle is unchanged; the enumeration
+above reflected the metrics that existed when this was written.
+
 ### Preview Views Subsample, Never Filter
 
 A cheap in-training reading and an expensive canonical reading are separate
@@ -159,3 +164,4 @@ core and current is the observable symptom, available at no extra cost.
 - `docs/decisions/0011-held-out-test-partition.md`
 - `docs/decisions/0012-derived-evaluation-views.md`
 - `docs/decisions/0014-evaluation-result-storage.md`
+- `docs/decisions/0018-execution-sensitive-efficiency-series.md`

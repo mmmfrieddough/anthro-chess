@@ -454,7 +454,9 @@ When it is the bot's turn:
    - current clocks and previous move times when timing is enabled.
 3. Run the rating-neutral causal history encoder, then condition the current
    decision feature on Anthro's one configured target rating. Add a causal KV
-   cache later only if measured runtime performance requires it.
+   cache later only if measured runtime performance requires it. `anthro eval
+   inference` is the measurement that answers that, and it reports latency
+   against history depth, which is where recomputation shows up.
 4. Mask illegal moves while preserving enabled non-move actions such as
    resignation.
 5. Sample a valid action using temperature.

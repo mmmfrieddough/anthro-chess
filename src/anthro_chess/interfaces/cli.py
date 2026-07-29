@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation import (
         CheckpointEvaluationConfig,
         CheckpointEvaluationResult,
+        InferenceBenchmarkResult,
         PoolConfig,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
@@ -197,6 +198,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     run_parser.set_defaults(handler=_run_eval_run)
+
+    inference_parser = eval_commands.add_parser(
+        "inference",
+        help="Measure a checkpoint's move latency, throughput, and cold start.",
+    )
+    inference_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML inference-benchmark selection.",
+    )
+    inference_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(inference_parser)
+    inference_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    inference_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Measure and print without writing to the store. Use this on a "
+            "machine that is doing other work, where the figures are real but "
+            "do not belong in the committed history."
+        ),
+    )
+    inference_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    inference_parser.set_defaults(handler=_run_eval_inference)
 
     report_parser = eval_commands.add_parser(
         "report",
@@ -644,6 +689,120 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
                     "See `anthro eval noise list`."
                 ),
             ]
+        )
+    if result.recorded_paths:
+        lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
+    else:
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _run_eval_inference(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        InferenceBenchmarkConfig,
+        InferenceBenchmarkError,
+        benchmark_inference,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = load_config(
+            InferenceBenchmarkConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_inference(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, InferenceBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval inference: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_inference(result), end="")
+    return 0
+
+
+def _render_inference(result: InferenceBenchmarkResult) -> str:
+    execution = result.execution
+    latency = result.reference_latency
+    throughput = result.reference_throughput
+    threads = (
+        "" if execution.cpu_threads is None else f", {execution.cpu_threads} thread(s)"
+    )
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        (
+            f"Execution: {execution.device} ({execution.device_name}) "
+            f"{execution.precision}{threads}"
+        ),
+        f"Series: workload {execution.workload_sha256[:12]}",
+        "",
+        (
+            f"Batch-one move latency at {latency.history_plies} plies "
+            f"({latency.decisions} decision(s), warmup excluded):"
+        ),
+    ]
+    lines.extend(
+        f"  p{percentile:<3} {value:8.1f} ms"
+        for percentile, value in sorted(latency.percentiles.items())
+    )
+    lines.extend(
+        [
+            f"  mean {latency.mean_ms:8.1f} ms "
+            f"(min {latency.minimum_ms:.1f}, max {latency.maximum_ms:.1f})",
+            "",
+            "Where a decision spends its mean latency:",
+            f"  encode    {latency.encode_mean_ms:8.1f} ms",
+            f"  model     {latency.model_mean_ms:8.1f} ms",
+            f"  remainder {latency.remainder_mean_ms:8.1f} ms (masking and sampling)",
+            "",
+            (
+                f"Throughput at batch {throughput.batch_size}: "
+                f"{throughput.decisions_per_second:.1f} decisions/s "
+                f"({throughput.batch_mean_ms:.1f} ms per batch)"
+            ),
+            "",
+            "Cold start, reported apart from steady state:",
+            f"  model load     {result.cold_start.model_load_seconds:8.3f} s",
+            f"  first decision {result.cold_start.first_decision_seconds:8.3f} s",
+        ]
+    )
+    if len(result.latency_sweep) > 1:
+        lines.extend(["", "Latency by history depth:"])
+        lines.extend(
+            f"  {sample.history_plies:>4} plies  p50 {sample.percentiles[50]:8.1f} ms  "
+            f"mean {sample.mean_ms:8.1f} ms"
+            for sample in result.latency_sweep
+        )
+    if len(result.throughput_sweep) > 1:
+        lines.extend(["", "Throughput by batch size:"])
+        lines.extend(
+            f"  batch {sample.batch_size:>4}  "
+            f"{sample.decisions_per_second:8.1f} decisions/s"
+            for sample in result.throughput_sweep
         )
     if result.recorded_paths:
         lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])

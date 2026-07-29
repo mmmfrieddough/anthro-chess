@@ -92,6 +92,14 @@ restructuring. Metrics with no data dependency, such as optimizer and parameter
 statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
 
+Efficiency metrics carry the opposite kind of component. For them the device,
+precision, and declared workload are realized inputs rather than production
+detail, so those are part of series identity and a reading taken on another
+machine is incomparable rather than comparable-and-faster. Only a metric whose
+measurement *is* the execution may declare this, so an ordinary quality metric
+cannot acquire a machine dependency.
+`docs/decisions/0018-execution-sensitive-efficiency-series.md` owns the rule.
+
 ### Where The Store Lives
 
 `anthro_chess.evaluation.results` implements this layer and owns the exact
@@ -116,7 +124,8 @@ root resolves from `ANTHRO_CHESS_RESULT_DETAIL_ROOT`, or beneath
 with slices, provenance, per-series history, and machine-readable output behind
 explicit options. `anthro eval bridge` records, lists, and revokes bridges.
 `anthro eval noise` characterizes floors, lists them, and answers how many
-games an axis needs.
+games an axis needs. `anthro eval inference` measures what a checkpoint costs
+to play with; see inference efficiency below.
 
 ### The Checkpoint Evaluation Runner
 
@@ -382,7 +391,10 @@ than seconds is what keeps one schedule resolving identically on two machines.
 A metric a training run cannot compute is rejected by name rather than silently
 skipped. Generated-play metrics are the clearest case: they need whole games
 rather than a pass over stored positions, so they belong to a post-training
-benchmark and not to a cadence.
+benchmark and not to a cadence. Efficiency metrics are rejected for a different
+reason: they pass over no view at all, so they look free, but taken beside a
+training step they would report contention with that step rather than a property
+of the checkpoint.
 
 In-training readings are written to the results store like any other benchmark
 result, with a preview and its canonical counterpart carrying the same
@@ -1322,6 +1334,57 @@ rate: generated untimed games that reach a claimable dead position and never
 end. That is the failure the claim action exists to prevent. Correctness gates
 should also cover constructed claimable-threefold and automatic-draw sequences,
 so claim availability and claim handling are exact rather than sampled.
+
+## Inference Efficiency
+
+What a checkpoint costs to play with. An opponent too slow to play against is a
+product failure regardless of how it scores on move loss, so this is part of the
+checkpoint suite rather than an operational aside.
+
+Three quantities are kept apart, because folding them together lets a win in one
+hide a regression in another:
+
+**Batch-one move latency**, reported as percentiles rather than a mean. This is
+what a person waiting for a move experiences. It is measured end to end through
+the decision runtime, spanning encoding, model execution, legal masking, and
+sampling, because that is what a move actually costs; timing the forward pass
+alone would report a number no player ever sees and would stay healthy while the
+encoder regressed. A mean is reported alongside for capacity arithmetic, but the
+median says what play usually feels like and the tail says whether it ever
+stalls.
+
+**Declared-batch throughput**, in decisions per second at one declared batch
+size. Batching trades latency for throughput, so quoting a serving figure as an
+interactive one is the usual way that trade gets hidden.
+
+**Cold start**, split into model-load time and the first decision after loading.
+Lazy kernel compilation and allocator warmup land in the first decision rather
+than inflating the steady-state percentiles, which is why warmup is excluded
+there and measured here.
+
+The workload is synthetic and self-contained rather than drawn from the
+evaluation pool. Latency depends on history length and legal-move count, not on
+which human played the game, so binding this benchmark to the pool would break
+its series at every pool generation without changing what it measures. Positions
+come from a seeded legal-move walk, so the same declared workload replays the
+same positions on every machine.
+
+Headline metrics are taken at one declared reference point: one ply depth for
+latency and one batch size for throughput. Sweeps over depth and batch size are
+retained as drill-down and are deliberately outside series identity, so
+extending a sweep does not end the headline series.
+
+Accelerator work is asynchronous, so every measured window synchronizes queued
+device work before stopping its timer. Without that, a benchmark would time the
+enqueue and attribute the real work to whichever window happened to block next.
+
+These metrics are **execution-sensitive**: the device, precision, and declared
+workload are part of series identity, so a reading taken on another machine is
+reported as incomparable rather than as a faster checkpoint.
+`docs/decisions/0018-execution-sensitive-efficiency-series.md` owns that
+contract. `anthro eval inference` is the command;
+`anthro_chess.evaluation.inference` owns the exact metrics, defaults, and
+workload fields.
 
 ## Preference-Control Evaluation
 

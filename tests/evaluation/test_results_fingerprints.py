@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any
 
 import pytest
 
 from anthro_chess.evaluation.results import (
+    FINGERPRINT_ALGORITHM,
     DataComponent,
+    ExecutionComponent,
     FingerprintError,
     MetricCost,
     MetricDefinition,
@@ -17,6 +21,7 @@ from anthro_chess.evaluation.results import (
     projection_content_digest,
     register_metric,
     series_fingerprint,
+    workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
     MOVE_PREDICTION_PROJECTION,
@@ -232,3 +237,109 @@ def test_scored_game_count_is_provenance_rather_than_identity(
     assert series_fingerprint("held_out.move_loss", component) == series_fingerprint(
         "held_out.move_loss", miscounted
     )
+
+
+def _execution(**overrides: Any) -> ExecutionComponent:
+    fields: dict[str, Any] = {
+        "device": "cpu",
+        "device_name": "arm",
+        "precision": "float32",
+        "torch_version": "2.7.0",
+        "platform": "macOS-15",
+        "workload_sha256": workload_digest({"plies": 40}),
+        "cpu_threads": 8,
+    }
+    fields.update(overrides)
+    return ExecutionComponent(**fields)
+
+
+def test_an_efficiency_series_breaks_on_the_machine_it_was_measured_on() -> None:
+    """A latency figure is a property of a checkpoint on a machine.
+
+    Without this, two laptops would share one line and a faster machine would
+    read as an optimization.
+    """
+
+    baseline = series_fingerprint(
+        "inference.move_latency_p50_ms",
+        None,
+        _execution(),
+    )
+
+    assert (
+        series_fingerprint(
+            "inference.move_latency_p50_ms",
+            None,
+            _execution(device="mps", device_name="arm64-mps", cpu_threads=None),
+        )
+        != baseline
+    )
+    assert (
+        series_fingerprint(
+            "inference.move_latency_p50_ms",
+            None,
+            _execution(cpu_threads=4),
+        )
+        != baseline
+    )
+
+
+def test_an_efficiency_series_breaks_when_the_declared_workload_changes() -> None:
+    baseline = series_fingerprint(
+        "inference.move_latency_p50_ms",
+        None,
+        _execution(workload_sha256=workload_digest({"plies": 40})),
+    )
+    deeper = series_fingerprint(
+        "inference.move_latency_p50_ms",
+        None,
+        _execution(workload_sha256=workload_digest({"plies": 80})),
+    )
+
+    assert deeper != baseline
+
+
+def test_an_efficiency_series_survives_an_unrelated_provenance_change() -> None:
+    """Only what decides the number belongs in its identity."""
+
+    assert series_fingerprint(
+        "inference.move_latency_p50_ms", None, _execution()
+    ) == series_fingerprint("inference.move_latency_p50_ms", None, _execution())
+
+
+def test_an_execution_component_is_required_exactly_where_it_applies(
+    move_prediction_component: Digest,
+) -> None:
+    with pytest.raises(FingerprintError, match="needs an execution component"):
+        series_fingerprint("inference.move_latency_p50_ms", None, None)
+    with pytest.raises(FingerprintError, match="not execution-sensitive"):
+        series_fingerprint(
+            "held_out.move_loss",
+            move_prediction_component(),
+            _execution(),
+        )
+
+
+def test_adding_execution_leaves_an_insensitive_series_bit_identical(
+    move_prediction_component: Digest,
+) -> None:
+    """The component is absent, not null, for a metric that has no execution.
+
+    Every series recorded before efficiency metrics existed has to keep its
+    fingerprint, or this change would silently end all of them.
+    """
+
+    component = move_prediction_component()
+    payload = {
+        "algorithm": FINGERPRINT_ALGORITHM,
+        "metric": "held_out.move_loss",
+        "definition_version": metric_definition(
+            "held_out.move_loss"
+        ).definition_version,
+        "data": component.fingerprint_component(),
+    }
+    expected = sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    assert series_fingerprint("held_out.move_loss", component) == expected

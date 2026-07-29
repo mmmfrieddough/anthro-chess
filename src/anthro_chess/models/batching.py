@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -202,6 +203,67 @@ class MoveModelBatch:
             game_ids=torch.zeros((1, length), dtype=torch.long, device=tensor_device),
             ply_indices=required(tuple(ply.ply_index for ply in plies)),
             chunk_start_plies=(plies[0].ply_index,),
+        )
+        result.validate()
+        return result
+
+    @classmethod
+    def stack(cls, batches: Sequence[MoveModelBatch]) -> MoveModelBatch:
+        """Combine equal-length batches into one wider batch.
+
+        This is the narrow case: every input covers the same number of plies,
+        so the rows concatenate with no padding and the causal mask is already
+        shared. It exists for declared-batch throughput measurement, where the
+        workload fixes one history length on purpose. Batching in-flight games
+        of differing lengths is a padding problem rather than a stacking one
+        and does not belong here.
+        """
+
+        if not batches:
+            raise ValueError("stacking needs at least one batch")
+        length = batches[0].action_targets.shape[1]
+        if any(batch.action_targets.shape[1] != length for batch in batches):
+            raise ValueError("stacked batches must cover the same sequence length")
+
+        def joined(select: Callable[[MoveModelBatch], Tensor]) -> Tensor:
+            return torch.cat([select(batch) for batch in batches], dim=0)
+
+        def joined_optional(
+            select: Callable[[MoveModelInputs], OptionalTensor],
+        ) -> OptionalTensor:
+            return OptionalTensor(
+                torch.cat([select(batch.inputs).values for batch in batches], dim=0),
+                torch.cat([select(batch.inputs).present for batch in batches], dim=0),
+            )
+
+        first = batches[0]
+        result = cls(
+            inputs=MoveModelInputs(
+                piece_ids=joined(lambda batch: batch.inputs.piece_ids),
+                side_to_move=joined(lambda batch: batch.inputs.side_to_move),
+                castling_rights=joined(lambda batch: batch.inputs.castling_rights),
+                en_passant_square=joined_optional(
+                    lambda inputs: inputs.en_passant_square
+                ),
+                halfmove_clock=joined(lambda batch: batch.inputs.halfmove_clock),
+                fullmove_number=joined(lambda batch: batch.inputs.fullmove_number),
+                previous_action_id=joined_optional(
+                    lambda inputs: inputs.previous_action_id
+                ),
+                target_rating=joined_optional(lambda inputs: inputs.target_rating),
+            ),
+            action_targets=joined(lambda batch: batch.action_targets),
+            action_loss_mask=joined(lambda batch: batch.action_loss_mask),
+            attention_mask=joined(lambda batch: batch.attention_mask),
+            causal_attention_mask=first.causal_attention_mask,
+            legal_action_ids=tuple(
+                row for batch in batches for row in batch.legal_action_ids
+            ),
+            game_ids=joined(lambda batch: batch.game_ids),
+            ply_indices=joined(lambda batch: batch.ply_indices),
+            chunk_start_plies=tuple(
+                start for batch in batches for start in batch.chunk_start_plies
+            ),
         )
         result.validate()
         return result

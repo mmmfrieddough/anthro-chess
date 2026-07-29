@@ -56,6 +56,11 @@ UNREGISTERED_FAMILY_ABSENCE = "no metric is registered for this family yet"
 #: rather than relying on the reader's window.
 MAXIMUM_LINE_WIDTH = 120
 
+#: Column the metric identifier is rendered in. A longer identifier would push
+#: its whole row out of alignment, so the registry is held to it rather than
+#: the table growing to fit one name.
+METRIC_COLUMN_WIDTH = 38
+
 
 class ReportError(ValueError):
     """Raised when a report cannot be built from the requested selection."""
@@ -378,7 +383,7 @@ def render_report(report: DeltaReport) -> str:
         )
     lines.append("")
     lines.append(
-        f"  {'metric':<38} {'better':<6} "
+        f"  {'metric':<{METRIC_COLUMN_WIDTH}} {'better':<6} "
         f"{'baseline':>11} {'current':>11} {'delta':>11}  {'change':<9} noise"
     )
 
@@ -485,7 +490,7 @@ _NOISE_KIND_LABELS = {
 def _render_metric(metric: MetricDelta) -> str:
     change = "-" if metric.movement is Movement.INFORMATIONAL else metric.movement.value
     row = (
-        f"  {metric.metric:<38} "
+        f"  {metric.metric:<{METRIC_COLUMN_WIDTH}} "
         f"{_DIRECTION_LABELS[metric.direction]:<6} "
         f"{_format(metric.baseline):>11} "
         f"{_format(metric.current):>11} "
