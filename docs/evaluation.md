@@ -206,6 +206,29 @@ human and is ignoring its rating input. That is the behavioral form of a rating
 dependency test, and unlike the corrupted-conditioning form it survives
 discrete sampling into whole games.
 
+The pooled reading averages each side's own curve across the rating grid rather
+than pooling raw games. The two sides are different rating designs — a human
+corpus concentrated in the middle of the range against generated games spread
+evenly across it — so pooling raw games would report that design difference as
+a distance. Averaging the curves keeps both sides on one rating mixture and
+keeps the smoothing bias cancelling, for the same reason the shared bandwidth
+does point by point.
+
+A distance also needs a reference level rather than only a floor, and the two
+are not interchangeable. A floor says how far a number moves between two runs
+when nothing changed, which is what qualifies a delta between checkpoints. A
+level says what the number reads at when there is nothing to find: two finite
+samples of one population never agree exactly, so a distance is never zero and
+a curve is never exactly flat. Both come from the comparison's own resampling,
+and both travel with the result, since neither is a property of a series that
+could be characterized once and looked up.
+
+`anthro_chess.evaluation.curves` implements this shape and owns the estimator,
+the declared bandwidth and its offline selection, the distance reduction, and
+the artifact each benchmark writes: curve points as data in the detail tier,
+and the scalar distances, their floors, and their reference levels in the
+committed summary tier.
+
 ## Noise Characterization
 
 A delta is not a finding until it is larger than the noise in the measurement.
