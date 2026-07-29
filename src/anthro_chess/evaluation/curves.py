@@ -1,0 +1,1346 @@
+"""The comparison shape every human-reference benchmark shares.
+
+Opening repertoire, book depth, game length, result and termination patterns,
+and repetition ask the same question in the same way: measure a quantity on
+generated games, measure the same quantity on human games from the pool, and
+compare the two as a function of rating. Building that once is what keeps five
+benchmarks from drifting apart on the parts that are easy to get subtly wrong.
+
+Rating is continuous here rather than banded. Each game contributes one
+observation at its own rating, so a single quantity as a function of rating
+needs no bins at all. Binning is forced only when a whole categorical
+distribution has to be estimated at a point, and there the neighbourhood the
+smoother already uses *is* the bin.
+
+Two properties keep the comparison honest, and both are about the bandwidth.
+The human reference's density over the rating range is uneven while the model's
+is uniform by construction, so smoothing each side at its own bandwidth would
+put an artifact into their difference near every peak: the human side forces
+the local bandwidth and the model side is estimated at the same one. And
+because smoothing bias scales with bandwidth, re-selecting it per run would
+mean two checkpoints were measured differently and their series would not be
+comparable. It is selected once from the human reference by cross-validation
+and then declared in a frozen ``CurveSpec`` that a benchmark version owns.
+Changing it is a version bump rather than a configuration change, which is why
+a spec lives in code rather than in a config file.
+
+One pass produces both readings a benchmark needs. The pooled reading asks
+whether the model behaves like humans at all; the curve asks whether it
+responds to rating the way humans do. They dissociate in a specific and likely
+way, and a model that matches the pooled human distribution with a flat curve
+is reported as such rather than as a pass. The pooled reading averages each
+side's own curve across the grid rather than pooling raw games, because the two
+sides are different rating designs and pooling raw games would report that
+difference as a distance.
+
+Every distance comes back with two things to read it against, and they are not
+interchangeable. A floor says how far the number moves between two runs when
+nothing changed, which qualifies a delta between checkpoints. A reference level
+says what it reads at when there is nothing to find, which is what a distance
+needs on its own: two finite samples of one population never agree exactly, and
+a sampled curve is never exactly flat.
+
+Curve points are data, not pictures. They go to the machine-local detail tier,
+so overlaying several checkpoints against the human reference is a query rather
+than another run, and only the scalar distances reach the committed summary
+tier.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+import numpy as np
+
+from anthro_chess.evaluation.results import (
+    BridgeIndex,
+    DataComponent,
+    Measurement,
+    NoiseFloor,
+    measurement,
+)
+from anthro_chess.evaluation.results.noise import (
+    DEFAULT_COVERAGE,
+    floor_from_dispersion,
+)
+
+CURVE_COMPARISON_VERSION = 1
+
+#: How a curve comparison estimates its own floor. A distributional distance
+#: has a floor that is a function of its own configuration rather than of a
+#: series, so it is estimated here and carried with the measurement instead of
+#: being characterized separately and looked up.
+CURVE_BOOTSTRAP_METHOD = "bootstrap-over-games"
+
+#: Resamples behind a comparison's own floor. Lower than a scalar metric's
+#: bootstrap because one resample here re-estimates whole curves rather than
+#: recomputing a mean, and the floor is read to a couple of significant figures.
+DEFAULT_RESAMPLES = 200
+
+#: Neighbour counts a bandwidth selection considers by default. Spread wide
+#: because the right span depends on how densely the corpus covers the rating
+#: range, which is a property of the corpus rather than of the quantity.
+DEFAULT_NEIGHBOUR_CANDIDATES: tuple[int, ...] = (16, 32, 64, 128, 256, 512)
+
+#: Label the human reference carries in an overlay of several checkpoints.
+HUMAN_REFERENCE_LABEL = "human-reference"
+
+_NAME_PATTERN = r"^[a-z0-9][a-z0-9_-]*$"
+
+#: A radius is one of the observed distances, so the game that defines it must
+#: land inside its own neighbourhood rather than on the wrong side of a float
+#: comparison with itself.
+_RADIUS_TOLERANCE = 1e-9
+
+
+class CurveComparisonError(ValueError):
+    """Raised when a curve comparison cannot be estimated as specified."""
+
+
+class CurveQuantity(StrEnum):
+    """What one game contributes to a curve.
+
+    A scalar quantity is a number per game, such as game length or the share of
+    available theory a game consumed. A categorical quantity is one label per
+    game whose whole distribution is the measurement, such as opening family,
+    result, or termination category.
+    """
+
+    SCALAR = "scalar"
+    CATEGORICAL = "categorical"
+
+
+class RatingResponse(StrEnum):
+    """How the model's rating response reads against the human reference."""
+
+    #: Pooled behavior and the curve both agree within sampling noise.
+    MATCHES = "matches"
+    #: Pooled behavior matches while the curve does not, and the model's curve
+    #: is as flat as one with no rating response at all. The model learned the
+    #: average human and is ignoring its rating input.
+    AVERAGE_HUMAN = "average_human"
+    #: Pooled behavior matches and the curve moves, but not the way humans do.
+    DIVERGENT_RESPONSE = "divergent_response"
+    #: The pooled distribution itself differs, so the curve reading is not the
+    #: first thing to explain.
+    MISMATCH = "mismatch"
+    #: Nothing was resampled, so no distance can be judged against anything.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One game's contribution: the rating it was played at, and its value.
+
+    Games are the unit throughout, including for resampling, because positions
+    within one game are far from independent and a curve is a statement about
+    games anyway.
+    """
+
+    rating: float
+    value: float | str
+
+
+@dataclass(frozen=True)
+class CurveSpec:
+    """The frozen, declared shape of one human-reference curve comparison.
+
+    ``neighbours`` is the bandwidth, expressed as a neighbour count so the span
+    adapts to the human reference's density rather than fixing a rating width
+    that is far too wide where the corpus is thick and far too narrow where it
+    is thin. It belongs to the benchmark version: two results computed at
+    different neighbour counts are not on the same line, however similar their
+    inputs.
+    """
+
+    name: str
+    version: int
+    quantity: CurveQuantity
+    neighbours: int
+    grid: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(_NAME_PATTERN, self.name) is None:
+            raise CurveComparisonError(
+                f"curve name {self.name!r} must be lowercase and dashed"
+            )
+        if self.version < 1:
+            raise CurveComparisonError(
+                "a curve spec must declare a version of 1 or more"
+            )
+        if self.neighbours < 2:
+            raise CurveComparisonError(
+                "a curve bandwidth needs at least two neighbours to smooth over"
+            )
+        if len(self.grid) < 2:
+            raise CurveComparisonError("a curve grid needs at least two rating points")
+        if any(not math.isfinite(rating) for rating in self.grid):
+            raise CurveComparisonError("curve grid ratings must be finite")
+        if any(
+            later <= earlier
+            for earlier, later in zip(self.grid, self.grid[1:], strict=False)
+        ):
+            raise CurveComparisonError("curve grid ratings must strictly increase")
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the spec record every artifact carries."""
+
+        return {
+            "name": self.name,
+            "version": self.version,
+            "quantity": self.quantity.value,
+            "neighbours": self.neighbours,
+            "grid": list(self.grid),
+        }
+
+
+def rating_grid(low: float, high: float, points: int) -> tuple[float, ...]:
+    """Return an evenly spaced rating grid, which is what a model side plays."""
+
+    if points < 2:
+        raise CurveComparisonError("a rating grid needs at least two points")
+    if not (math.isfinite(low) and math.isfinite(high)) or high <= low:
+        raise CurveComparisonError("a rating grid needs a finite, increasing range")
+    step = (high - low) / (points - 1)
+    return tuple(low + step * index for index in range(points))
+
+
+@dataclass(frozen=True)
+class LocalEstimate:
+    """One side's curve at one evaluation point.
+
+    The effective sample size is Kish's, so a neighbourhood whose weight sits
+    on a handful of games reports a small number even when many games are
+    nominally inside it. That is what stops a difference where the human
+    reference is thin from reading like one where it is dense.
+    """
+
+    value: float | None
+    distribution: Mapping[str, float] | None
+    effective_sample_size: float
+    games: int
+
+    @property
+    def supported(self) -> bool:
+        """Return whether any game fell inside this neighbourhood."""
+
+        return self.games > 0
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one estimate."""
+
+        return {
+            "value": self.value,
+            "distribution": (
+                None if self.distribution is None else dict(self.distribution)
+            ),
+            "effective_sample_size": self.effective_sample_size,
+            "games": self.games,
+        }
+
+
+@dataclass(frozen=True)
+class CurvePoint:
+    """One evaluation point of the comparison, with the bandwidth it used."""
+
+    rating: float
+    bandwidth: float
+    human: LocalEstimate
+    model: LocalEstimate
+    #: ``None`` when no generated game fell inside the human-forced radius, so
+    #: the point has a human curve and nothing to compare it against.
+    distance: float | None
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one curve point."""
+
+        return {
+            "rating": self.rating,
+            "bandwidth": self.bandwidth,
+            "human": self.human.as_record(),
+            "model": self.model.as_record(),
+            "distance": self.distance,
+        }
+
+
+@dataclass(frozen=True)
+class TracePoint:
+    """One estimated curve point of one side, without its counterpart."""
+
+    rating: float
+    estimate: LocalEstimate
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one trace point."""
+
+        return {"rating": self.rating, **self.estimate.as_record()}
+
+
+@dataclass(frozen=True)
+class CurveTrace:
+    """One curve, labeled and pinned to the series it was measured on.
+
+    A trace is what a chart draws. It carries its fingerprint because two
+    curves may be drawn as one continuous comparison only when they sit on the
+    same series.
+    """
+
+    label: str
+    fingerprint: str
+    quantity: CurveQuantity
+    points: tuple[TracePoint, ...]
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one trace."""
+
+        return {
+            "label": self.label,
+            "fingerprint": self.fingerprint,
+            "quantity": self.quantity.value,
+            "points": [point.as_record() for point in self.points],
+        }
+
+
+@dataclass(frozen=True)
+class CurveOverlay:
+    """Curves that may be drawn together, and the series they belong to."""
+
+    series: str
+    traces: tuple[CurveTrace, ...]
+
+
+@dataclass(frozen=True)
+class CurveFloors:
+    """A comparison's own data-sampling floors, estimated as it was computed."""
+
+    conditional: NoiseFloor
+    pooled: NoiseFloor
+    model_variation: NoiseFloor
+    resamples: int
+    coverage: float
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one comparison's floors."""
+
+        return {
+            "method": CURVE_BOOTSTRAP_METHOD,
+            "resamples": self.resamples,
+            "coverage": self.coverage,
+            "conditional": self.conditional.model_dump(mode="json"),
+            "pooled": self.pooled.model_dump(mode="json"),
+            "model_variation": self.model_variation.model_dump(mode="json"),
+        }
+
+
+@dataclass(frozen=True)
+class CurveReferences:
+    """The levels a model that already matches would still read at.
+
+    Floors and references answer different questions and are not
+    interchangeable. A floor says how far a number moves between two runs when
+    nothing changed, which is what qualifies a delta between checkpoints. A
+    reference says what the number reads at when there is nothing to find at
+    all, which is what a distance needs: two finite samples of one population
+    never agree exactly, and neither does a smoothed curve with itself.
+
+    Both nulls are estimated from the comparison's own resampling.
+    ``conditional`` and ``pooled`` come from pairing each side's sampling noise
+    independently, which is the distance the two curves would show if they
+    estimated the same behavior. ``flat`` comes from permuting which generated
+    game was played at which rating, which is the curve variation a model with
+    no rating response would still show.
+    """
+
+    conditional: float
+    pooled: float
+    flat: float
+    replicates: int
+    coverage: float
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one comparison's reference levels."""
+
+        return {
+            "replicates": self.replicates,
+            "coverage": self.coverage,
+            "conditional": self.conditional,
+            "pooled": self.pooled,
+            "flat": self.flat,
+        }
+
+
+@dataclass(frozen=True)
+class CurveMetrics:
+    """Which registered metrics a benchmark reports one comparison as.
+
+    The shape does not own metric identities. Each benchmark names its own,
+    because a repertoire distance and a game-length distance are different
+    series however identically they are computed.
+    """
+
+    conditional: str
+    pooled: str
+    model_variation: str | None = None
+
+
+@dataclass(frozen=True)
+class CurveComparison:
+    """One benchmark's whole reading: two curves, two distances, and a verdict."""
+
+    spec: CurveSpec
+    points: tuple[CurvePoint, ...]
+    human_pooled: LocalEstimate
+    model_pooled: LocalEstimate
+    #: Mean distance between the curves over the evaluation points the model
+    #: supports. This is the rating-conditional reading.
+    conditional_distance: float
+    #: Distance between the two rating-free readings, each of which is that
+    #: side's own curve averaged across the grid.
+    pooled_distance: float
+    #: How much each curve moves across the rating range, measured as the mean
+    #: distance of its points from its own grid average. Reported for both
+    #: sides because a flat model curve only means something beside the human
+    #: curve it is supposed to follow.
+    human_variation: float
+    model_variation: float
+    human_games: int
+    model_games: int
+    #: Delta floors, for reading one checkpoint's distance against another's.
+    floors: CurveFloors | None
+    #: Null levels, for reading one distance on its own.
+    references: CurveReferences | None
+
+    @property
+    def unsupported_points(self) -> int:
+        """Return how many grid points no generated game reached."""
+
+        return sum(1 for point in self.points if point.distance is None)
+
+    @property
+    def response(self) -> RatingResponse:
+        """Return how this comparison reads, judged against its own nulls.
+
+        Order matters. A model whose pooled distribution is wrong is not first
+        a rating-response finding, and a model whose curve already agrees with
+        the human one needs no flatness reading at all: a flat model matching a
+        flat human reference is matching, not ignoring its input.
+        """
+
+        if self.references is None:
+            return RatingResponse.UNKNOWN
+        if self.pooled_distance > self.references.pooled:
+            return RatingResponse.MISMATCH
+        if self.conditional_distance <= self.references.conditional:
+            return RatingResponse.MATCHES
+        if self.model_variation <= self.references.flat:
+            return RatingResponse.AVERAGE_HUMAN
+        return RatingResponse.DIVERGENT_RESPONSE
+
+    def trace(self, side: str, *, label: str, fingerprint: str) -> CurveTrace:
+        """Return one side's curve as a drawable, series-pinned trace."""
+
+        if side not in ("human", "model"):
+            raise CurveComparisonError(f"unknown curve side: {side}")
+        return CurveTrace(
+            label=label,
+            fingerprint=fingerprint,
+            quantity=self.spec.quantity,
+            points=tuple(
+                TracePoint(
+                    rating=point.rating,
+                    estimate=point.human if side == "human" else point.model,
+                )
+                for point in self.points
+            ),
+        )
+
+    def traces(
+        self,
+        *,
+        model_label: str,
+        fingerprint: str,
+        human_label: str = HUMAN_REFERENCE_LABEL,
+    ) -> tuple[CurveTrace, CurveTrace]:
+        """Return the human and model traces of this comparison, in that order."""
+
+        return (
+            self.trace("human", label=human_label, fingerprint=fingerprint),
+            self.trace("model", label=model_label, fingerprint=fingerprint),
+        )
+
+    def measurements(
+        self,
+        metrics: CurveMetrics,
+        *,
+        data: DataComponent | None = None,
+    ) -> tuple[Measurement, ...]:
+        """Return the scalar measurements the committed summary tier records.
+
+        Each distance carries the floor estimated for it, so a report reads the
+        floor from the measurement rather than looking one up for a series that
+        cannot have a series-wide floor in the first place.
+        """
+
+        games = self.human_games + self.model_games
+        reported: list[tuple[str, float, NoiseFloor | None]] = [
+            (
+                metrics.conditional,
+                self.conditional_distance,
+                None if self.floors is None else self.floors.conditional,
+            ),
+            (
+                metrics.pooled,
+                self.pooled_distance,
+                None if self.floors is None else self.floors.pooled,
+            ),
+        ]
+        if metrics.model_variation is not None:
+            reported.append(
+                (
+                    metrics.model_variation,
+                    self.model_variation,
+                    None if self.floors is None else self.floors.model_variation,
+                )
+            )
+        return tuple(
+            measurement(
+                metric,
+                value,
+                data=data,
+                sample_size=games,
+                noise_floor=floor,
+            )
+            for metric, value, floor in reported
+        )
+
+    def as_detail_record(self) -> dict[str, Any]:
+        """Return the curve payload written to the machine-local detail tier.
+
+        Points are stored as data rather than as a rendered image, so drawing
+        several checkpoints against one human reference later is a query over
+        payloads that already exist.
+        """
+
+        return {
+            "version": CURVE_COMPARISON_VERSION,
+            "spec": self.spec.as_record(),
+            "human_games": self.human_games,
+            "model_games": self.model_games,
+            "conditional_distance": self.conditional_distance,
+            "pooled_distance": self.pooled_distance,
+            "human_variation": self.human_variation,
+            "model_variation": self.model_variation,
+            "unsupported_points": self.unsupported_points,
+            "response": self.response.value,
+            "floors": None if self.floors is None else self.floors.as_record(),
+            "references": (
+                None if self.references is None else self.references.as_record()
+            ),
+            "pooled": {
+                "human": self.human_pooled.as_record(),
+                "model": self.model_pooled.as_record(),
+            },
+            "points": [point.as_record() for point in self.points],
+        }
+
+
+@dataclass(frozen=True)
+class BandwidthSelection:
+    """The bandwidth one cross-validation pass chose, and what it considered."""
+
+    neighbours: int
+    error: float
+    observations: int
+    candidates: tuple[tuple[int, float], ...]
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the record to quote when declaring a spec's bandwidth."""
+
+        return {
+            "neighbours": self.neighbours,
+            "error": self.error,
+            "observations": self.observations,
+            "candidates": [
+                {"neighbours": neighbours, "error": error}
+                for neighbours, error in self.candidates
+            ],
+        }
+
+
+def compare_curves(
+    *,
+    spec: CurveSpec,
+    human: Sequence[Observation],
+    model: Sequence[Observation],
+    resamples: int = DEFAULT_RESAMPLES,
+    seed: int = 0,
+    coverage: float = DEFAULT_COVERAGE,
+) -> CurveComparison:
+    """Compare a generated curve against the human reference it should match.
+
+    The human reference forces the local bandwidth at every evaluation point
+    and the generated side is estimated at exactly that bandwidth, so the
+    smoothing bias in the two curves cancels in their difference instead of
+    accumulating in it.
+    """
+
+    if len(human) < spec.neighbours:
+        raise CurveComparisonError(
+            f"curve {spec.name!r} smooths over {spec.neighbours} neighbours but "
+            f"the human reference has {len(human)} game(s)"
+        )
+    if not model:
+        raise CurveComparisonError(
+            f"curve {spec.name!r} has no generated games to compare"
+        )
+
+    categories = _categories(spec, human, model)
+    human_side = _Side.prepare(human, spec, categories)
+    model_side = _Side.prepare(model, spec, categories)
+
+    weights = (
+        np.ones((1, len(human)), dtype=np.float64),
+        np.ones((1, len(model)), dtype=np.float64),
+    )
+    reading = _read(spec, human_side, model_side, *weights)
+    generator = np.random.default_rng(seed)
+    floors, references = _resample(
+        spec,
+        human_side,
+        model_side,
+        reading,
+        resamples=resamples,
+        generator=generator,
+        coverage=coverage,
+    )
+
+    points = tuple(
+        CurvePoint(
+            rating=rating,
+            bandwidth=float(reading.radii[0, index]),
+            human=_estimate_at(spec, categories, reading.human, index),
+            model=_estimate_at(spec, categories, reading.model, index),
+            distance=(
+                float(reading.distances[0, index])
+                if bool(reading.supported[0, index])
+                else None
+            ),
+        )
+        for index, rating in enumerate(spec.grid)
+    )
+    return CurveComparison(
+        spec=spec,
+        points=points,
+        human_pooled=_pooled_estimate(
+            spec, categories, reading.human_pooled, reading.human, reading.supported
+        ),
+        model_pooled=_pooled_estimate(
+            spec, categories, reading.model_pooled, reading.model, reading.supported
+        ),
+        conditional_distance=float(reading.conditional[0]),
+        pooled_distance=float(reading.pooled[0]),
+        human_variation=float(reading.human_variation[0]),
+        model_variation=float(reading.model_variation[0]),
+        human_games=len(human),
+        model_games=len(model),
+        floors=floors,
+        references=references,
+    )
+
+
+def select_neighbours(
+    observations: Sequence[Observation],
+    *,
+    quantity: CurveQuantity,
+    candidates: Sequence[int] = DEFAULT_NEIGHBOUR_CANDIDATES,
+) -> BandwidthSelection:
+    """Choose a bandwidth from the human reference by cross-validation.
+
+    This is an offline step whose output is declared in a ``CurveSpec`` and
+    then frozen. Calling it per run would re-select the bandwidth from whatever
+    reference that run happened to read, which would mean two checkpoints were
+    measured differently and their series would not be comparable.
+
+    Leave-one-out squared error is the criterion for both kinds: on a scalar it
+    is the usual prediction error, and on a categorical quantity it is the
+    Brier score of the estimated distribution against the observed label, which
+    a zero probability cannot blow up the way a log score can.
+    """
+
+    if len(observations) < 3:
+        raise CurveComparisonError(
+            "selecting a bandwidth needs at least three human observations"
+        )
+    usable = sorted({int(candidate) for candidate in candidates})
+    usable = [
+        candidate for candidate in usable if 2 <= candidate <= len(observations) - 1
+    ]
+    if not usable:
+        raise CurveComparisonError(
+            "no candidate bandwidth fits the human reference; every candidate is "
+            "below two neighbours or larger than the reference itself"
+        )
+
+    categories = _observed_categories(quantity, observations)
+    order = np.argsort(
+        [observation.rating for observation in observations], kind="stable"
+    )
+    ratings = np.asarray(
+        [observations[index].rating for index in order], dtype=np.float64
+    )
+    values = _values(quantity, [observations[index] for index in order], categories)
+
+    scored = tuple(
+        (candidate, _leave_one_out_error(ratings, values, candidate))
+        for candidate in usable
+    )
+    best = min(scored, key=lambda entry: (entry[1], entry[0]))
+    return BandwidthSelection(
+        neighbours=best[0],
+        error=best[1],
+        observations=len(observations),
+        candidates=scored,
+    )
+
+
+def curve_overlays(
+    traces: Iterable[CurveTrace],
+    *,
+    bridges: BridgeIndex | None = None,
+) -> tuple[CurveOverlay, ...]:
+    """Group traces into the sets that may be drawn as one comparison.
+
+    Curves whose fingerprints do not match are not one continuous comparison,
+    so they come back as separate overlays rather than as one line a reader
+    would take for a history. Recorded bridges are followed, because a series
+    legitimately rejoined is one series.
+    """
+
+    index = bridges if bridges is not None else BridgeIndex()
+    grouped: dict[str, list[CurveTrace]] = {}
+    for trace in traces:
+        grouped.setdefault(index.series(trace.fingerprint), []).append(trace)
+
+    overlays: list[CurveOverlay] = []
+    for series in sorted(grouped):
+        seen: dict[str, CurveTrace] = {}
+        for trace in grouped[series]:
+            # One series has one human reference by construction, so a repeated
+            # label is the same curve arriving with each checkpoint rather than
+            # a second line to draw.
+            seen.setdefault(trace.label, trace)
+        overlays.append(CurveOverlay(series=series, traces=tuple(seen.values())))
+    return tuple(overlays)
+
+
+@dataclass(frozen=True)
+class _Side:
+    """One side's observations, ordered for repeated local estimation."""
+
+    ratings: np.ndarray
+    values: np.ndarray
+    order: np.ndarray
+    distances: np.ndarray
+
+    @property
+    def size(self) -> int:
+        """Return how many observations this side holds."""
+
+        return int(self.ratings.shape[0])
+
+    @classmethod
+    def prepare(
+        cls,
+        observations: Sequence[Observation],
+        spec: CurveSpec,
+        categories: tuple[str, ...],
+    ) -> _Side:
+        """Sort observations by distance to each grid point, once."""
+
+        ratings = np.asarray(
+            [observation.rating for observation in observations], dtype=np.float64
+        )
+        if not np.all(np.isfinite(ratings)):
+            raise CurveComparisonError("every observation needs a finite rating")
+        values = _values(spec.quantity, observations, categories)
+        grid = np.asarray(spec.grid, dtype=np.float64)
+        distances = np.abs(ratings[None, :] - grid[:, None])
+        order = np.argsort(distances, axis=1, kind="stable")
+        return cls(
+            ratings=ratings,
+            values=values,
+            order=order,
+            distances=np.take_along_axis(distances, order, axis=1),
+        )
+
+
+@dataclass(frozen=True)
+class _Local:
+    """Local estimates of one side across every replicate and grid point."""
+
+    values: np.ndarray
+    effective_sample_size: np.ndarray
+    games: np.ndarray
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """Everything one pass over a set of resampling weights produces."""
+
+    radii: np.ndarray
+    human: _Local
+    model: _Local
+    human_pooled: np.ndarray
+    model_pooled: np.ndarray
+    supported: np.ndarray
+    distances: np.ndarray
+    conditional: np.ndarray
+    pooled: np.ndarray
+    human_variation: np.ndarray
+    model_variation: np.ndarray
+
+
+def _read(
+    spec: CurveSpec,
+    human: _Side,
+    model: _Side,
+    human_weights: np.ndarray,
+    model_weights: np.ndarray,
+) -> _Reading:
+    """Estimate both curves and reduce them, for every replicate at once."""
+
+    radii = _radii(human, human_weights, spec.neighbours)
+    human_local = _local(human, human_weights, radii)
+    model_local = _local(model, model_weights, radii)
+
+    supported = (model_local.games > 0) & (human_local.games > 0)
+    distances = _distance(spec.quantity, human_local.values, model_local.values)
+    conditional = _masked_mean(distances, supported)
+
+    # The rating-free reading averages each side's own curve over the grid
+    # rather than pooling raw observations. Pooling raw games would compare a
+    # human corpus concentrated around the middle of the rating range against
+    # a generated set spread evenly across it, so the distance would report the
+    # difference between two rating designs rather than anything about the
+    # model. Averaging the curves keeps both sides on one rating mixture, and
+    # keeps the smoothing bias cancelling here as it does point by point.
+    human_pooled = _masked_centre(human_local.values, supported)
+    model_pooled = _masked_centre(model_local.values, supported)
+    pooled = _distance(spec.quantity, human_pooled, model_pooled)
+
+    return _Reading(
+        radii=radii,
+        human=human_local,
+        model=model_local,
+        human_pooled=human_pooled,
+        model_pooled=model_pooled,
+        supported=supported,
+        distances=distances,
+        conditional=conditional,
+        pooled=pooled,
+        human_variation=_variation(spec.quantity, human_local, human_pooled, supported),
+        model_variation=_variation(spec.quantity, model_local, model_pooled, supported),
+    )
+
+
+def _radii(side: _Side, weights: np.ndarray, neighbours: int) -> np.ndarray:
+    """Return the radius holding ``neighbours`` observations, per grid point.
+
+    The bandwidth is a neighbour count rather than a rating width, so the span
+    widens automatically where the human reference is thin and tightens where
+    it is dense.
+    """
+
+    replicates = weights.shape[0]
+    grid_points = side.order.shape[0]
+    radii = np.empty((replicates, grid_points), dtype=np.float64)
+    for index in range(grid_points):
+        ordered = weights[:, side.order[index]]
+        cumulative = np.cumsum(ordered, axis=1)
+        reached = np.clip((cumulative < neighbours).sum(axis=1), 0, side.size - 1)
+        radii[:, index] = side.distances[index][reached]
+    return radii
+
+
+def _local(side: _Side, weights: np.ndarray, radii: np.ndarray) -> _Local:
+    """Estimate one side at every grid point, under the given radii.
+
+    Weights inside a neighbourhood are tricube, which is the usual local-fit
+    kernel: it goes smoothly to zero at the radius instead of jumping, so a
+    curve does not step whenever one game enters or leaves the window.
+    """
+
+    replicates = weights.shape[0]
+    grid_points = side.order.shape[0]
+    dimensions = side.values.shape[1]
+    values = np.full((replicates, grid_points, dimensions), np.nan, dtype=np.float64)
+    effective = np.zeros((replicates, grid_points), dtype=np.float64)
+    games = np.zeros((replicates, grid_points), dtype=np.int64)
+
+    for index in range(grid_points):
+        distances = side.distances[index]
+        radius = radii[:, index][:, None]
+        inside = distances[None, :] <= radius + _RADIUS_TOLERANCE
+        scaled = np.divide(
+            distances[None, :],
+            radius,
+            out=np.zeros((replicates, side.size), dtype=np.float64),
+            where=radius > 0.0,
+        )
+        kernel = np.clip(1.0 - np.clip(scaled, 0.0, 1.0) ** 3, 0.0, 1.0) ** 3
+        ordered_weights = weights[:, side.order[index]]
+        weighted = ordered_weights * kernel * inside
+        total = weighted.sum(axis=1)
+        # Tricube weight is zero exactly at the radius, so a neighbourhood
+        # whose games all sit on it would read as empty. Fall back to an
+        # unweighted local mean there rather than dropping a point that does
+        # have games behind it.
+        degenerate = total <= 0.0
+        if bool(degenerate.any()):
+            uniform = ordered_weights * inside
+            weighted = np.where(degenerate[:, None], uniform, weighted)
+            total = weighted.sum(axis=1)
+        squared = (weighted**2).sum(axis=1)
+        ordered_values = side.values[side.order[index]]
+        np.divide(
+            weighted @ ordered_values,
+            total[:, None],
+            out=values[:, index, :],
+            where=total[:, None] > 0.0,
+        )
+        np.divide(
+            total**2,
+            squared,
+            out=effective[:, index],
+            where=squared > 0.0,
+        )
+        games[:, index] = (weighted > 0.0).sum(axis=1)
+    return _Local(values=values, effective_sample_size=effective, games=games)
+
+
+def _distance(
+    quantity: CurveQuantity,
+    left: np.ndarray,
+    right: np.ndarray,
+) -> np.ndarray:
+    """Return the distance between two estimates, along their last axis.
+
+    A scalar quantity uses the absolute difference and a categorical one uses
+    total variation, so both land on a scale where zero is agreement and the
+    number means the same thing at every rating.
+    """
+
+    absolute: np.ndarray = np.abs(left - right).sum(axis=-1)
+    if quantity is CurveQuantity.CATEGORICAL:
+        return 0.5 * absolute
+    return absolute
+
+
+def _variation(
+    quantity: CurveQuantity,
+    local: _Local,
+    centre: np.ndarray,
+    supported: np.ndarray,
+) -> np.ndarray:
+    """Return how far one curve moves from its own grid average.
+
+    This is what makes a flat curve reportable. A model that matches the
+    pooled human distribution while reading near zero here has learned the
+    average human and is ignoring its rating input, which is a different
+    finding from behaving unlike humans at all.
+    """
+
+    distances = _distance(quantity, local.values, centre[:, None, :])
+    return _masked_mean(distances, supported)
+
+
+def _masked_centre(values: np.ndarray, supported: np.ndarray) -> np.ndarray:
+    """Return each replicate's average estimate over its supported points."""
+
+    weights = supported.astype(np.float64)
+    total = weights.sum(axis=1)
+    filled = np.where(supported[:, :, None], values, 0.0)
+    centre = np.full((values.shape[0], values.shape[2]), np.nan)
+    np.divide(
+        np.einsum("rg,rgd->rd", weights, filled),
+        total[:, None],
+        out=centre,
+        where=total[:, None] > 0.0,
+    )
+    return centre
+
+
+def _masked_mean(values: np.ndarray, supported: np.ndarray) -> np.ndarray:
+    """Average over supported grid points, leaving unsupported ones out."""
+
+    weights = supported.astype(np.float64)
+    total = weights.sum(axis=1)
+    summed = (np.where(supported, values, 0.0)).sum(axis=1)
+    mean = np.full(values.shape[0], np.nan)
+    np.divide(summed, total, out=mean, where=total > 0.0)
+    return mean
+
+
+def _resample(
+    spec: CurveSpec,
+    human: _Side,
+    model: _Side,
+    point: _Reading,
+    *,
+    resamples: int,
+    generator: np.random.Generator,
+    coverage: float,
+) -> tuple[CurveFloors | None, CurveReferences | None]:
+    """Estimate this comparison's own floors and null levels in one pass.
+
+    Both sides are resampled, because either one landing a different draw of
+    the same size moves the distance. ``None`` means nothing could be
+    estimated, which is a reportable state rather than an error: a floor
+    invented from too few replicates would license every delta as a finding.
+    """
+
+    if resamples < 2:
+        return None, None
+    human_weights = generator.multinomial(
+        human.size, np.full(human.size, 1.0 / human.size), size=resamples
+    ).astype(np.float64)
+    model_weights = generator.multinomial(
+        model.size, np.full(model.size, 1.0 / model.size), size=resamples
+    ).astype(np.float64)
+    reading = _read(spec, human, model, human_weights, model_weights)
+
+    floors: list[NoiseFloor] = []
+    source = f"{spec.name} v{spec.version} {CURVE_BOOTSTRAP_METHOD}"
+    for values in (reading.conditional, reading.pooled, reading.model_variation):
+        observed = values[np.isfinite(values)]
+        if observed.size < 2:
+            return None, None
+        floors.append(
+            NoiseFloor(
+                value=floor_from_dispersion(
+                    float(np.std(observed, ddof=1)), coverage=coverage
+                ),
+                kind="data-sampling",
+                source=source,
+            )
+        )
+
+    references = _references(
+        spec,
+        point,
+        reading,
+        model,
+        resamples=resamples,
+        generator=generator,
+        coverage=coverage,
+    )
+    return (
+        CurveFloors(
+            conditional=floors[0],
+            pooled=floors[1],
+            model_variation=floors[2],
+            resamples=resamples,
+            coverage=coverage,
+        ),
+        references,
+    )
+
+
+def _references(
+    spec: CurveSpec,
+    point: _Reading,
+    resampled: _Reading,
+    model: _Side,
+    *,
+    resamples: int,
+    generator: np.random.Generator,
+    coverage: float,
+) -> CurveReferences | None:
+    """Return the levels this comparison would read at with nothing to find.
+
+    The distance nulls pair each side's own sampling noise independently, which
+    is what two curves estimating the same behavior would differ by. The
+    flatness null permutes which generated game was played at which rating,
+    which destroys any rating response while leaving the sample, the grid, and
+    the bandwidth exactly as they were.
+    """
+
+    pairing = generator.permutation(resamples)
+    supported = np.broadcast_to(point.supported, resampled.distances.shape)
+    conditional = _masked_mean(
+        _distance(
+            spec.quantity,
+            resampled.human.values - point.human.values,
+            (resampled.model.values - point.model.values)[pairing],
+        ),
+        supported,
+    )
+    pooled = _distance(
+        spec.quantity,
+        resampled.human_pooled - point.human_pooled,
+        (resampled.model_pooled - point.model_pooled)[pairing],
+    )
+    flat = _flat_variation(
+        spec,
+        model,
+        point.radii,
+        permutations=resamples,
+        generator=generator,
+    )
+
+    levels: list[float] = []
+    for values in (conditional, pooled, flat):
+        observed = values[np.isfinite(values)]
+        if observed.size < 2:
+            return None
+        levels.append(float(observed.mean() + coverage * observed.std(ddof=1)))
+    return CurveReferences(
+        conditional=levels[0],
+        pooled=levels[1],
+        flat=levels[2],
+        replicates=resamples,
+        coverage=coverage,
+    )
+
+
+def _flat_variation(
+    spec: CurveSpec,
+    model: _Side,
+    radii: np.ndarray,
+    *,
+    permutations: int,
+    generator: np.random.Generator,
+) -> np.ndarray:
+    """Return the curve variation of a model with its ratings permuted away."""
+
+    weights = np.ones((1, model.size), dtype=np.float64)
+    point_radii = radii[:1]
+    observed = np.empty(permutations, dtype=np.float64)
+    for index in range(permutations):
+        shuffled = _Side(
+            ratings=model.ratings,
+            values=model.values[generator.permutation(model.size)],
+            order=model.order,
+            distances=model.distances,
+        )
+        local = _local(shuffled, weights, point_radii)
+        supported = local.games > 0
+        centre = _masked_centre(local.values, supported)
+        observed[index] = _variation(spec.quantity, local, centre, supported)[0]
+    return observed
+
+
+def _estimate_at(
+    spec: CurveSpec,
+    categories: tuple[str, ...],
+    local: _Local,
+    index: int,
+) -> LocalEstimate:
+    """Return one stored estimate out of the array the point pass produced."""
+
+    return _estimate(
+        spec,
+        categories,
+        local.values[0, index],
+        float(local.effective_sample_size[0, index]),
+        int(local.games[0, index]),
+    )
+
+
+def _pooled_estimate(
+    spec: CurveSpec,
+    categories: tuple[str, ...],
+    pooled: np.ndarray,
+    local: _Local,
+    supported: np.ndarray,
+) -> LocalEstimate:
+    """Return the rating-free estimate in the shape a reader stores.
+
+    Its support is reported as the total across the grid points it averages,
+    which is what stands behind the average even though neighbourhoods overlap
+    and the games are therefore not independent of one another.
+    """
+
+    covered = supported[0]
+    if not bool(covered.any()):
+        return _estimate(spec, categories, pooled[0], 0.0, 0)
+    return _estimate(
+        spec,
+        categories,
+        pooled[0],
+        float(local.effective_sample_size[0][covered].sum()),
+        int(local.games[0][covered].sum()),
+    )
+
+
+def _estimate(
+    spec: CurveSpec,
+    categories: tuple[str, ...],
+    values: np.ndarray,
+    effective_sample_size: float,
+    games: int,
+) -> LocalEstimate:
+    if games == 0:
+        return LocalEstimate(
+            value=None,
+            distribution=None,
+            effective_sample_size=0.0,
+            games=0,
+        )
+    if spec.quantity is CurveQuantity.CATEGORICAL:
+        return LocalEstimate(
+            value=None,
+            distribution={
+                category: float(values[position])
+                for position, category in enumerate(categories)
+            },
+            effective_sample_size=float(effective_sample_size),
+            games=games,
+        )
+    return LocalEstimate(
+        value=float(values[0]),
+        distribution=None,
+        effective_sample_size=float(effective_sample_size),
+        games=games,
+    )
+
+
+def _categories(
+    spec: CurveSpec,
+    human: Sequence[Observation],
+    model: Sequence[Observation],
+) -> tuple[str, ...]:
+    """Return the category vocabulary both sides are counted over.
+
+    The union rather than the human side alone, so a family the model plays and
+    humans never do shows up as a difference instead of vanishing.
+    """
+
+    if spec.quantity is not CurveQuantity.CATEGORICAL:
+        return ()
+    return _observed_categories(spec.quantity, (*human, *model))
+
+
+def _observed_categories(
+    quantity: CurveQuantity,
+    observations: Iterable[Observation],
+) -> tuple[str, ...]:
+    if quantity is not CurveQuantity.CATEGORICAL:
+        return ()
+    categories = {
+        observation.value
+        for observation in observations
+        if isinstance(observation.value, str)
+    }
+    if not categories:
+        raise CurveComparisonError(
+            "a categorical curve needs observations carrying category labels"
+        )
+    return tuple(sorted(categories))
+
+
+def _values(
+    quantity: CurveQuantity,
+    observations: Sequence[Observation],
+    categories: tuple[str, ...],
+) -> np.ndarray:
+    """Return the observation values in the shape the estimator averages.
+
+    A categorical observation becomes an indicator row, so one weighted mean
+    produces the whole local distribution rather than one pass per category.
+    """
+
+    if quantity is CurveQuantity.CATEGORICAL:
+        positions = {category: index for index, category in enumerate(categories)}
+        values = np.zeros((len(observations), len(categories)), dtype=np.float64)
+        for row, observation in enumerate(observations):
+            if not isinstance(observation.value, str):
+                raise CurveComparisonError(
+                    "a categorical curve needs a category label per observation, "
+                    f"not {observation.value!r}"
+                )
+            values[row, positions[observation.value]] = 1.0
+        return values
+
+    numbers = []
+    for observation in observations:
+        if isinstance(observation.value, str):
+            raise CurveComparisonError(
+                "a scalar curve needs a number per observation, not "
+                f"{observation.value!r}"
+            )
+        if not math.isfinite(observation.value):
+            raise CurveComparisonError("scalar observations must be finite")
+        numbers.append(observation.value)
+    return np.asarray(numbers, dtype=np.float64).reshape(-1, 1)
+
+
+def _leave_one_out_error(
+    ratings: np.ndarray,
+    values: np.ndarray,
+    neighbours: int,
+) -> float:
+    """Return the mean leave-one-out squared error at one neighbour count.
+
+    Ratings arrive sorted, so the nearest neighbours of an observation are
+    inside a window around it and the search never scans the whole reference.
+    """
+
+    total = 0.0
+    size = int(ratings.shape[0])
+    for index in range(size):
+        low = max(0, index - neighbours)
+        high = min(size, index + neighbours + 1)
+        window = np.concatenate(
+            (np.arange(low, index), np.arange(index + 1, high)),
+        )
+        distances = np.abs(ratings[window] - ratings[index])
+        nearest = window[np.argsort(distances, kind="stable")[:neighbours]]
+        chosen = np.abs(ratings[nearest] - ratings[index])
+        radius = float(chosen.max())
+        if radius > 0.0:
+            kernel = (1.0 - np.clip(chosen / radius, 0.0, 1.0) ** 3) ** 3
+        else:
+            kernel = np.ones_like(chosen)
+        weight = kernel.sum()
+        if weight <= 0.0:
+            # Every neighbour sits exactly at the radius, which only happens
+            # when the window is one tie: fall back to an unweighted mean.
+            kernel = np.ones_like(chosen)
+            weight = kernel.sum()
+        predicted = (kernel @ values[nearest]) / weight
+        total += float(((predicted - values[index]) ** 2).sum())
+    return total / size
+
+
+__all__ = [
+    "CURVE_BOOTSTRAP_METHOD",
+    "CURVE_COMPARISON_VERSION",
+    "DEFAULT_NEIGHBOUR_CANDIDATES",
+    "DEFAULT_RESAMPLES",
+    "HUMAN_REFERENCE_LABEL",
+    "BandwidthSelection",
+    "CurveComparison",
+    "CurveComparisonError",
+    "CurveFloors",
+    "CurveMetrics",
+    "CurveOverlay",
+    "CurvePoint",
+    "CurveQuantity",
+    "CurveReferences",
+    "CurveSpec",
+    "CurveTrace",
+    "LocalEstimate",
+    "Observation",
+    "RatingResponse",
+    "TracePoint",
+    "compare_curves",
+    "curve_overlays",
+    "rating_grid",
+    "select_neighbours",
+]
