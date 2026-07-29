@@ -24,6 +24,7 @@ from anthro_chess.evaluation.results import (
     registry_snapshot,
     restore_registry,
 )
+from anthro_chess.evaluation.results.reporting import METRIC_COLUMN_WIDTH
 
 
 def _definition(**overrides: object) -> MetricDefinition:
@@ -53,11 +54,11 @@ def test_every_registered_metric_prices_itself_against_its_data_dependency() -> 
 
     for metric in registered_metrics():
         assert metric.cost in set(MetricCost)
-        assert (metric.cost is MetricCost.FREE) == (metric.projection is None)
+        assert metric.cost.reads_data == (metric.projection is not None)
 
 
 def test_a_cost_that_contradicts_the_data_dependency_is_refused() -> None:
-    with pytest.raises(MetricRegistryError, match="never free"):
+    with pytest.raises(MetricRegistryError, match="reads no data"):
         register_metric(
             _definition(
                 identifier="legality.mispriced",
@@ -65,7 +66,7 @@ def test_a_cost_that_contradicts_the_data_dependency_is_refused() -> None:
                 projection="move_prediction",
             )
         )
-    with pytest.raises(MetricRegistryError, match="reads no"):
+    with pytest.raises(MetricRegistryError, match="has to name the projection"):
         register_metric(
             _definition(
                 identifier="training_health.mispriced",
@@ -76,11 +77,38 @@ def test_a_cost_that_contradicts_the_data_dependency_is_refused() -> None:
         )
 
 
+def test_an_execution_sensitive_metric_must_measure_execution() -> None:
+    """Only a timed measurement may claim the device as a realized input.
+
+    Otherwise a quality metric could acquire a machine dependency, which would
+    end its series on every move between machines for no reason.
+    """
+
+    with pytest.raises(MetricRegistryError, match="execution-sensitive"):
+        register_metric(
+            _definition(
+                identifier="held_out.mislabelled",
+                cost=MetricCost.SINGLE_PASS,
+                projection="move_prediction",
+                execution_sensitive=True,
+            )
+        )
+
+
 def test_a_free_metric_costs_no_view_passes_and_a_generated_one_is_unbounded() -> None:
     assert MetricCost.FREE.view_passes == 0
     assert MetricCost.SINGLE_PASS.view_passes == 1
     assert MetricCost.REPEATED_PASS.view_passes == NOMINAL_REPEATED_PASSES
     assert MetricCost.GENERATED.view_passes is None
+    assert MetricCost.MEASURED_EXECUTION.view_passes == 0
+
+
+def test_measured_execution_is_not_free_despite_passing_over_no_view() -> None:
+    """Both read no data; only one is derived from work already done."""
+
+    assert not MetricCost.MEASURED_EXECUTION.reads_data
+    assert not MetricCost.FREE.reads_data
+    assert MetricCost.MEASURED_EXECUTION is not MetricCost.FREE
 
 
 def test_the_registry_covers_the_families_reports_read() -> None:
@@ -180,3 +208,20 @@ def test_the_registry_record_names_every_metric_and_projection() -> None:
         "move_prediction",
         "move_timing",
     }
+
+
+def test_inference_metric_identifiers_fit_the_report_column() -> None:
+    """A longer identifier pushes its whole row out of alignment.
+
+    Scoped to this family rather than the registry: four dependency and
+    legality identifiers already overflow the column, which is a pre-existing
+    rendering defect rather than something this test should adopt.
+    """
+
+    too_long = [
+        metric.identifier
+        for metric in registered_metrics("inference-efficiency")
+        if len(metric.identifier) > METRIC_COLUMN_WIDTH
+    ]
+
+    assert not too_long

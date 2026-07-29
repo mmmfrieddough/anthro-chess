@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any
 
 import pytest
 
 from anthro_chess.evaluation.results import (
+    FINGERPRINT_ALGORITHM,
     DataComponent,
     FingerprintError,
     MetricCost,
     MetricDefinition,
     MetricDirection,
+    WorkloadComponent,
     metric_definition,
     projection_content_digest,
     register_metric,
     series_fingerprint,
+    workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
     MOVE_PREDICTION_PROJECTION,
@@ -232,3 +237,71 @@ def test_scored_game_count_is_provenance_rather_than_identity(
     assert series_fingerprint("held_out.move_loss", component) == series_fingerprint(
         "held_out.move_loss", miscounted
     )
+
+
+def _workload(**fields: Any) -> WorkloadComponent:
+    return WorkloadComponent(sha256=workload_digest(fields or {"plies": 40}))
+
+
+def test_an_efficiency_series_breaks_when_the_declared_workload_changes() -> None:
+    """Latency at forty plies and at eighty measure different quantities."""
+
+    baseline = series_fingerprint(
+        "inference.move_latency_p50_ms", None, _workload(plies=40)
+    )
+    deeper = series_fingerprint(
+        "inference.move_latency_p50_ms", None, _workload(plies=80)
+    )
+
+    assert deeper != baseline
+
+
+def test_an_efficiency_series_survives_the_machine_it_was_measured_on() -> None:
+    """The machine is not in identity, so history does not fragment.
+
+    A cross-machine latency delta is interpretable rather than meaningless, so
+    it is attributed by a report rather than used to end a series. Ending one
+    would leave no way to ask whether the shipped thing is getting slower.
+    """
+
+    assert series_fingerprint(
+        "inference.move_latency_p50_ms", None, _workload(plies=40)
+    ) == series_fingerprint("inference.move_latency_p50_ms", None, _workload(plies=40))
+
+
+def test_a_workload_component_is_required_exactly_where_it_applies(
+    move_prediction_component: Digest,
+) -> None:
+    with pytest.raises(FingerprintError, match="needs a workload component"):
+        series_fingerprint("inference.move_latency_p50_ms", None, None)
+    with pytest.raises(FingerprintError, match="not execution-sensitive"):
+        series_fingerprint(
+            "held_out.move_loss",
+            move_prediction_component(),
+            _workload(),
+        )
+
+
+def test_adding_a_workload_leaves_an_insensitive_series_bit_identical(
+    move_prediction_component: Digest,
+) -> None:
+    """The component is absent, not null, for a metric that has no execution.
+
+    Every series recorded before efficiency metrics existed has to keep its
+    fingerprint, or this change would silently end all of them.
+    """
+
+    component = move_prediction_component()
+    payload = {
+        "algorithm": FINGERPRINT_ALGORITHM,
+        "metric": "held_out.move_loss",
+        "definition_version": metric_definition(
+            "held_out.move_loss"
+        ).definition_version,
+        "data": component.fingerprint_component(),
+    }
+    expected = sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    assert series_fingerprint("held_out.move_loss", component) == expected

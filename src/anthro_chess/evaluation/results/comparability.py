@@ -180,6 +180,7 @@ def provenance_differences(
             _action_vocabulary(current),
         ),
         ("dataset", _dataset(baseline), _dataset(current)),
+        ("execution", _execution(baseline), _execution(current)),
         ("configuration", _configuration(baseline), _configuration(current)),
     ):
         if baseline_value != current_value:
@@ -191,6 +192,101 @@ def provenance_differences(
                 )
             )
     return tuple(differences)
+
+
+class AxisChange(StrEnum):
+    """Whether one coordinate of a comparison moved between two results."""
+
+    UNCHANGED = "unchanged"
+    CHANGED = "changed"
+    #: Neither result recorded enough to say. Distinct from unchanged, because
+    #: an unverifiable claim of sameness is what an attribution must not make.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class Attribution:
+    """Which of a comparison's three coordinates moved.
+
+    An efficiency delta is only a statement about the model when the
+    environment held still. Reporting the three axes separately is what lets a
+    reader — or an agent — tell "my change made this slower" from "I measured
+    it on a different machine".
+    """
+
+    model: AxisChange
+    environment: AxisChange
+    workload: AxisChange
+
+    @property
+    def attributable_to_model(self) -> bool:
+        """Return whether the delta can be read as a property of the model."""
+
+        return (
+            self.environment is AxisChange.UNCHANGED
+            and self.workload is AxisChange.UNCHANGED
+        )
+
+    def as_record(self) -> dict[str, str]:
+        """Return the machine-readable attribution."""
+
+        return {
+            "model": self.model.value,
+            "environment": self.environment.value,
+            "workload": self.workload.value,
+        }
+
+
+def attribute(baseline: ResultEnvelope, current: ResultEnvelope) -> Attribution:
+    """Return which coordinates moved between two results."""
+
+    return Attribution(
+        model=_axis(
+            baseline.checkpoint.parameter_sha256,
+            current.checkpoint.parameter_sha256,
+        ),
+        environment=_environment_axis(baseline, current),
+        workload=_axis(
+            None if baseline.execution is None else baseline.execution.workload_sha256,
+            None if current.execution is None else current.execution.workload_sha256,
+        ),
+    )
+
+
+def environment_differences(
+    baseline: ResultEnvelope,
+    current: ResultEnvelope,
+) -> tuple[ProvenanceDifference, ...]:
+    """Report which execution coordinates differ between two results.
+
+    Unlike :func:`provenance_differences`, this is scoped to the fields that
+    decide an efficiency number, so a report can name the cause of a delta it
+    refuses to credit to the model.
+    """
+
+    if baseline.execution is None or current.execution is None:
+        return ()
+    before = baseline.execution.environment()
+    after = current.execution.environment()
+    return tuple(
+        ProvenanceDifference(field=field, baseline=before[field], current=after[field])
+        for field in sorted(before)
+        if before[field] != after[field]
+    )
+
+
+def _environment_axis(baseline: ResultEnvelope, current: ResultEnvelope) -> AxisChange:
+    if baseline.execution is None or current.execution is None:
+        return AxisChange.UNKNOWN
+    if baseline.execution.environment() != current.execution.environment():
+        return AxisChange.CHANGED
+    return AxisChange.UNCHANGED
+
+
+def _axis(baseline: str | None, current: str | None) -> AxisChange:
+    if baseline is None or current is None:
+        return AxisChange.UNKNOWN
+    return AxisChange.UNCHANGED if baseline == current else AxisChange.CHANGED
 
 
 def latest_measurement(
@@ -229,6 +325,19 @@ def _dataset(envelope: ResultEnvelope) -> str | None:
     return (
         f"{envelope.data.pool_id} v{envelope.data.pool_version} "
         f"view {envelope.data.view} ({envelope.data.selected_games} games)"
+    )
+
+
+def _execution(envelope: ResultEnvelope) -> str | None:
+    """Describe what an efficiency result was measured on."""
+
+    execution = envelope.execution
+    if execution is None:
+        return None
+    return (
+        f"{execution.environment_label()} {execution.precision} "
+        f"torch {execution.torch_version} "
+        f"workload {execution.workload_sha256[:12]}"
     )
 
 

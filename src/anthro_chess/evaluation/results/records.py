@@ -29,7 +29,9 @@ from anthro_chess.data import encoding_identity
 from anthro_chess.evaluation.results.fingerprints import (
     DataComponent,
     FingerprintError,
+    WorkloadComponent,
     series_fingerprint,
+    workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
     MetricRegistryError,
@@ -37,7 +39,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
-ENVELOPE_VERSION = 1
+ENVELOPE_VERSION = 2
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -178,6 +180,89 @@ class EnvironmentRecord(ResultModel):
         )
 
 
+#: Execution fields a report compares to decide whether the environment moved.
+#: ``platform`` is deliberately absent: it carries the full OS version string,
+#: so including it would mark every delta as confounded after an operating
+#: system patch that changed no hardware. ``platform_key`` carries the part
+#: that matters.
+ENVIRONMENT_FIELDS: tuple[str, ...] = (
+    "device",
+    "device_name",
+    "precision",
+    "torch_version",
+    "platform_key",
+    "cpu_threads",
+)
+
+
+class ExecutionRecord(ResultModel):
+    """The device, precision, and workload an efficiency result was taken on.
+
+    Two halves with different jobs. The **workload** says what was timed and is
+    part of series identity, so a reader can recompute an efficiency series
+    fingerprint from this record alone. The **environment** says where it ran
+    and is not: it is coordinates a report attributes a delta to, rather than
+    something that ends a series.
+
+    ``workload`` is kept in full beside its digest because "why is this slower"
+    is unanswerable from a hash, and because it is a handful of scalars rather
+    than a diagnostic payload.
+    """
+
+    device: str = Field(min_length=1)
+    device_name: str = Field(min_length=1)
+    precision: str = Field(min_length=1)
+    torch_version: str = Field(min_length=1)
+    #: The coarse machine identity, such as ``Darwin-arm64``. This is what an
+    #: environment comparison keys on.
+    platform_key: str = Field(min_length=1)
+    #: The full platform string, kept as provenance for the reader who needs to
+    #: know the exact OS build.
+    platform: str = Field(min_length=1)
+    cpu_threads: int | None = Field(default=None, ge=1)
+    workload: dict[str, Any] = Field(default_factory=dict)
+    workload_sha256: Sha256Hex
+
+    @model_validator(mode="after")
+    def _validate_workload_digest(self) -> ExecutionRecord:
+        """Keep the readable workload and the digest that identifies it agreed.
+
+        The digest is what series identity is built from and the mapping is
+        what a reader consults. Letting them drift would mean a record whose
+        stated workload is not the one its series was named for.
+        """
+
+        if workload_digest(self.workload) != self.workload_sha256:
+            raise ValueError(
+                "the recorded workload does not produce the recorded digest"
+            )
+        return self
+
+    def workload_component(self) -> WorkloadComponent:
+        """Return the fingerprint component this record's workload stands for."""
+
+        return WorkloadComponent(sha256=self.workload_sha256)
+
+    def environment(self) -> dict[str, str | None]:
+        """Return the coordinates a report compares to attribute a delta."""
+
+        return {
+            field: _environment_value(getattr(self, field))
+            for field in ENVIRONMENT_FIELDS
+        }
+
+    def environment_label(self) -> str:
+        """Return a short human label for where this ran.
+
+        The Torch version is included because it is a coordinate an
+        optimization actually varies. A label showing only the machine would
+        render two sides of a software comparison identically, which is
+        precisely the comparison this label most often heads.
+        """
+
+        return f"{self.device_name} ({self.device}, torch {self.torch_version})"
+
+
 class NoiseFloor(ResultModel):
     """How large a delta has to be before it is a finding rather than noise."""
 
@@ -225,6 +310,9 @@ class ResultEnvelope(ResultModel):
     action_vocabulary: dict[str, Any]
     encoding: dict[str, Any]
     environment: EnvironmentRecord
+    #: Present only on efficiency results. ``environment`` describes how any
+    #: result was produced; this describes what an efficiency result measured.
+    execution: ExecutionRecord | None = None
     measurements: tuple[Measurement, ...] = Field(min_length=1)
     detail: DetailReference | None = None
 
@@ -298,8 +386,17 @@ class ResultEnvelope(ResultModel):
                     "content digest"
                 )
             component = digest.as_component()
+        workload: WorkloadComponent | None = None
+        if definition.execution_sensitive:
+            if self.execution is None:
+                raise ResultRecordError(
+                    f"result {self.result_id} reports {metric}, which is "
+                    "execution-sensitive, without recording the execution it "
+                    "was measured under"
+                )
+            workload = self.execution.workload_component()
         try:
-            return series_fingerprint(definition, component)
+            return series_fingerprint(definition, component, workload)
         except FingerprintError as error:
             raise ResultRecordError(str(error)) from error
 
@@ -387,6 +484,7 @@ def build_result(
     data: DatasetReference | None = None,
     detail: DetailReference | None = None,
     environment: EnvironmentRecord | None = None,
+    execution: ExecutionRecord | None = None,
     recorded_at: datetime | None = None,
 ) -> ResultEnvelope:
     """Assemble a verified result envelope with a content-derived identity.
@@ -408,6 +506,7 @@ def build_result(
         action_vocabulary=action_vocabulary_identity(),
         encoding=encoding_identity(),
         environment=environment or EnvironmentRecord.capture(),
+        execution=execution,
         measurements=ordered,
         detail=detail,
     )
@@ -443,6 +542,7 @@ def measurement(
     value: float,
     *,
     data: DataComponent | None = None,
+    workload: WorkloadComponent | None = None,
     sample_size: int | None = None,
     noise_floor: NoiseFloor | None = None,
 ) -> Measurement:
@@ -450,7 +550,7 @@ def measurement(
 
     try:
         definition = metric_definition(metric)
-        fingerprint = series_fingerprint(definition, data)
+        fingerprint = series_fingerprint(definition, data, workload)
     except (MetricRegistryError, FingerprintError) as error:
         raise ResultRecordError(str(error)) from error
     return Measurement(
@@ -487,6 +587,37 @@ def dataset_reference(
     )
 
 
+def execution_reference(
+    *,
+    device: str,
+    device_name: str,
+    precision: str,
+    torch_version: str,
+    platform_key: str,
+    platform: str,
+    workload: Mapping[str, Any],
+    cpu_threads: int | None = None,
+) -> ExecutionRecord:
+    """Return the execution record for one efficiency benchmark's conditions.
+
+    The workload digest is computed here rather than by each caller, so two
+    benchmarks declaring the same workload cannot end up on different series
+    through a difference in how they hashed it.
+    """
+
+    return ExecutionRecord(
+        device=device,
+        device_name=device_name,
+        precision=precision,
+        torch_version=torch_version,
+        platform_key=platform_key,
+        platform=platform,
+        cpu_threads=cpu_threads,
+        workload=dict(workload),
+        workload_sha256=workload_digest(workload),
+    )
+
+
 def configuration_reference(
     resolved: Mapping[str, Any],
     *,
@@ -500,6 +631,12 @@ def configuration_reference(
         source=source,
         overrides=tuple(overrides),
     )
+
+
+def _environment_value(value: object) -> str | None:
+    """Render one environment coordinate as a comparable string."""
+
+    return None if value is None else str(value)
 
 
 def _record_id(record: ResultModel) -> str:

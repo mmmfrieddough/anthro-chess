@@ -21,9 +21,13 @@ from datetime import datetime
 from enum import StrEnum
 
 from anthro_chess.evaluation.results.comparability import (
+    Attribution,
+    AxisChange,
     BridgeIndex,
     Comparability,
     ProvenanceDifference,
+    attribute,
+    environment_differences,
     latest_measurement,
     provenance_differences,
 )
@@ -56,6 +60,11 @@ UNREGISTERED_FAMILY_ABSENCE = "no metric is registered for this family yet"
 #: rather than relying on the reader's window.
 MAXIMUM_LINE_WIDTH = 120
 
+#: Column the metric identifier is rendered in. A longer identifier would push
+#: its whole row out of alignment, so the registry is held to it rather than
+#: the table growing to fit one name.
+METRIC_COLUMN_WIDTH = 38
+
 
 class ReportError(ValueError):
     """Raised when a report cannot be built from the requested selection."""
@@ -69,6 +78,24 @@ class Movement(StrEnum):
     UNCHANGED = "unchanged"
     INFORMATIONAL = "informational"
     UNKNOWN = "unknown"
+    #: The delta is real and interpretable, but something other than the model
+    #: moved as well, so it is not a verdict on the model. Distinct from
+    #: ``UNKNOWN``, which means there was nothing to compare against.
+    #:
+    #: This is the field automation keys on, which is why the honesty lives
+    #: here rather than in a withheld ``delta``: a reader holding both operands
+    #: can always subtract them, so hiding the arithmetic protects nobody.
+    CONFOUNDED = "confounded"
+
+
+class ReportPivot(StrEnum):
+    """Which coordinate a report varies, and therefore which it asks about."""
+
+    #: Vary the checkpoint, hold the environment still. "Did the model change
+    #: make this slower?"
+    CHECKPOINT = "checkpoint"
+    #: Vary the environment, hold the model still. "Did the upgrade help?"
+    ENVIRONMENT = "environment"
 
 
 class NoiseVerdict(StrEnum):
@@ -102,6 +129,11 @@ class MetricDelta:
     noise_floors: tuple[NoiseFloor, ...]
     bridges: tuple[str, ...]
     note: str | None
+    #: Which coordinates moved. ``None`` for a metric with no execution
+    #: context, where the model is the only thing that can have moved.
+    attribution: Attribution | None = None
+    #: The execution coordinates that differ, when the environment moved.
+    environment: tuple[ProvenanceDifference, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable row."""
@@ -123,6 +155,17 @@ class MetricDelta:
             ],
             "bridges": list(self.bridges),
             "note": self.note,
+            "attribution": (
+                None if self.attribution is None else self.attribution.as_record()
+            ),
+            "environment_differences": [
+                {
+                    "field": difference.field,
+                    "baseline": difference.baseline,
+                    "current": difference.current,
+                }
+                for difference in self.environment
+            ],
         }
 
 
@@ -133,6 +176,10 @@ class FamilyReport:
     family: MetricFamily
     metrics: tuple[MetricDelta, ...]
     absence: str | None
+    #: Execution differences shared by every row in this family. Rendered once
+    #: as a header rather than repeated per row, because execution is a
+    #: property of the result the whole family was recorded in.
+    environment: tuple[ProvenanceDifference, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable family section."""
@@ -141,6 +188,14 @@ class FamilyReport:
             "family": self.family.identifier,
             "title": self.family.title,
             "absence": self.absence,
+            "environment_differences": [
+                {
+                    "field": difference.field,
+                    "baseline": difference.baseline,
+                    "current": difference.current,
+                }
+                for difference in self.environment
+            ],
             "metrics": [metric.as_record() for metric in self.metrics],
         }
 
@@ -171,11 +226,13 @@ class DeltaReport:
     current: CheckpointSelection
     families: tuple[FamilyReport, ...]
     provenance: tuple[ProvenanceDifference, ...]
+    pivot: ReportPivot = ReportPivot.CHECKPOINT
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable report."""
 
         return {
+            "pivot": self.pivot.value,
             "baseline": None if self.baseline is None else self.baseline.as_record(),
             "current": self.current.as_record(),
             "families": [family.as_record() for family in self.families],
@@ -201,6 +258,11 @@ class HistoryPoint:
     series: str
     starts_new_series: bool
     bridged_from_previous: bool
+    #: Where this point was measured, for an efficiency metric. The series is
+    #: continuous across machines by design, so the line stays readable as a
+    #: long-run trend and the annotation is what keeps it honest.
+    environment: str | None = None
+    environment_changed: bool = False
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable point."""
@@ -213,6 +275,8 @@ class HistoryPoint:
             "series": self.series,
             "starts_new_series": self.starts_new_series,
             "bridged_from_previous": self.bridged_from_previous,
+            "environment": self.environment,
+            "environment_changed": self.environment_changed,
         }
 
 
@@ -246,6 +310,7 @@ def build_delta_report(
 ) -> DeltaReport:
     """Build the default compact view between two recorded checkpoints."""
 
+    pivot = ReportPivot.CHECKPOINT
     resolved_floors = floors if floors is not None else NoiseFloorIndex()
     labels = checkpoint_labels(results)
     if not labels:
@@ -294,6 +359,7 @@ def build_delta_report(
                 resolved_floors,
                 current_label,
                 baseline_label,
+                pivot,
             )
         )
 
@@ -306,6 +372,99 @@ def build_delta_report(
         current=_selection(current_label, current_results),
         families=tuple(sections),
         provenance=_report_provenance(baseline_results, current_results),
+        pivot=pivot,
+    )
+
+
+def build_environment_report(
+    results: Sequence[ResultEnvelope],
+    bridges: BridgeIndex,
+    *,
+    floors: NoiseFloorIndex | None = None,
+    checkpoint: str | None = None,
+    families: Sequence[str] | None = None,
+    metrics: Sequence[str] | None = None,
+) -> DeltaReport:
+    """Compare one checkpoint's efficiency across two environments.
+
+    The mirror image of the default view: the model is pinned and the machine
+    varies, which is the question an optimization asks. Pinning is by
+    ``parameter_sha256`` rather than by label, because a reused label would
+    quietly turn a model change into an apparent hardware win.
+    """
+
+    pivot = ReportPivot.ENVIRONMENT
+    resolved_floors = floors if floors is not None else NoiseFloorIndex()
+    measured = [envelope for envelope in results if envelope.execution is not None]
+    if not measured:
+        raise ReportError(
+            "no recorded result carries an execution record, so there is no "
+            "environment to compare"
+        )
+
+    label = (
+        checkpoint if checkpoint is not None else _latest_multi_environment(measured)
+    )
+    selected = [envelope for envelope in measured if envelope.checkpoint.label == label]
+    if not selected:
+        raise ReportError(f"no efficiency result is recorded for checkpoint {label!r}")
+    _require_one_model(selected, label)
+
+    groups = _by_environment(selected)
+    if len(groups) < 2:
+        raise ReportError(
+            f"checkpoint {label!r} was only measured in one environment; there "
+            "is nothing to compare it against"
+        )
+    ordered = sorted(
+        groups.values(),
+        key=lambda group: max(envelope.recorded_at for envelope in group),
+    )
+    baseline_results = ordered[-2]
+    current_results = ordered[-1]
+
+    sliced = families is not None or metrics is not None
+    selected_metrics = _selected_metrics(families, metrics)
+    sections: list[FamilyReport] = []
+    for family in registered_families():
+        family_metrics = tuple(
+            definition
+            for definition in registered_metrics(family.identifier)
+            if definition.identifier in selected_metrics
+            # An environment comparison is only meaningful for a metric whose
+            # value depends on execution. Reporting move loss here would invite
+            # reading an unchanged number as evidence about the machine.
+            and definition.execution_sensitive
+        )
+        if not family_metrics:
+            if sliced:
+                continue
+            continue
+        sections.append(
+            _family_report(
+                family,
+                family_metrics,
+                current_results,
+                baseline_results,
+                bridges,
+                resolved_floors,
+                _environment_name(current_results),
+                _environment_name(baseline_results),
+                pivot,
+            )
+        )
+    if not sections:
+        raise ReportError(
+            "no execution-sensitive metric was selected; an environment "
+            "comparison has nothing to report about other metrics"
+        )
+
+    return DeltaReport(
+        baseline=_environment_selection(baseline_results),
+        current=_environment_selection(current_results),
+        families=tuple(sections),
+        provenance=_report_provenance(baseline_results, current_results),
+        pivot=pivot,
     )
 
 
@@ -323,6 +482,7 @@ def build_history(
 
     points: list[HistoryPoint] = []
     previous_fingerprint: str | None = None
+    previous_environment: dict[str, str | None] | None = None
     for envelope in sorted(
         results,
         key=lambda item: (item.recorded_at, item.result_id),
@@ -335,6 +495,8 @@ def build_history(
             if previous_fingerprint is not None
             else None
         )
+        execution = envelope.execution
+        environment = None if execution is None else execution.environment()
         points.append(
             HistoryPoint(
                 recorded_at=envelope.recorded_at,
@@ -350,9 +512,19 @@ def build_history(
                     comparison is not None
                     and comparison.comparability is Comparability.BRIDGED
                 ),
+                environment=(
+                    None if execution is None else execution.environment_label()
+                ),
+                environment_changed=(
+                    environment is not None
+                    and previous_environment is not None
+                    and environment != previous_environment
+                ),
             )
         )
         previous_fingerprint = found.fingerprint
+        if environment is not None:
+            previous_environment = environment
     return MetricHistory(
         metric=definition.identifier,
         direction=definition.direction,
@@ -363,22 +535,25 @@ def build_history(
 def render_report(report: DeltaReport) -> str:
     """Render the compact default view as text."""
 
+    noun = "checkpoint" if report.pivot is ReportPivot.CHECKPOINT else "environment"
     lines = [
         f"Current:  {report.current.label} "
         f"({report.current.results} result(s), "
         f"{report.current.recorded_at.date().isoformat()})"
     ]
     if report.baseline is None:
-        lines.append("Baseline: none; no earlier checkpoint is recorded")
+        lines.append(f"Baseline: none; no earlier {noun} is recorded")
     else:
         lines.append(
             f"Baseline: {report.baseline.label} "
             f"({report.baseline.results} result(s), "
             f"{report.baseline.recorded_at.date().isoformat()})"
         )
+    if report.pivot is ReportPivot.ENVIRONMENT:
+        lines.append("Model held fixed; the environment is what varies.")
     lines.append("")
     lines.append(
-        f"  {'metric':<38} {'better':<6} "
+        f"  {'metric':<{METRIC_COLUMN_WIDTH}} {'better':<6} "
         f"{'baseline':>11} {'current':>11} {'delta':>11}  {'change':<9} noise"
     )
 
@@ -392,7 +567,7 @@ def render_report(report: DeltaReport) -> str:
         if family.absence == UNREGISTERED_FAMILY_ABSENCE:
             unregistered.append(family.family.identifier)
             continue
-        lines.append(family.family.identifier)
+        lines.append(_render_family_header(family))
         if family.absence is not None:
             lines.append(f"  absent: {family.absence}")
             continue
@@ -406,8 +581,46 @@ def render_report(report: DeltaReport) -> str:
                 subsequent_indent="  ",
             )
         )
-    lines.extend(["", *_noise_legend(report)])
+    lines.extend(["", *_confounded_legend(report), *_noise_legend(report)])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_family_header(family: FamilyReport) -> str:
+    """Name the family, and the execution change every row in it shares.
+
+    Execution belongs to the result rather than to a metric, so repeating it
+    on seven rows would say the same thing seven times in the width the
+    numbers need.
+    """
+
+    if not family.environment:
+        return family.family.identifier
+    changes = "; ".join(
+        f"{difference.field} {difference.baseline} \u2192 {difference.current}"
+        for difference in family.environment
+    )
+    return f"{family.family.identifier}  [environment changed: {changes}]"
+
+
+def _confounded_legend(report: DeltaReport) -> list[str]:
+    """Explain the confounded verdict, when any row carries one."""
+
+    if not any(
+        metric.movement is Movement.CONFOUNDED
+        for family in report.families
+        for metric in family.metrics
+    ):
+        return []
+    varied = (
+        "the environment moved as well, so it is not a verdict on the model"
+        if report.pivot is ReportPivot.CHECKPOINT
+        else "the model moved as well, so it is not a verdict on the environment"
+    )
+    return textwrap.wrap(
+        f"confound: the delta is real and interpretable, but {varied}.",
+        width=MAXIMUM_LINE_WIDTH,
+        subsequent_indent="  ",
+    )
 
 
 def _noise_legend(report: DeltaReport) -> list[str]:
@@ -437,19 +650,27 @@ def render_history(history: MetricHistory) -> str:
     if not history.points:
         lines.append("  no recorded values")
         return "\n".join(lines) + "\n"
+    annotated = False
     for point in history.points:
         seam = "  "
         if point.starts_new_series:
             seam = "| "
         elif point.bridged_from_previous:
             seam = "~ "
-        lines.append(
+        row = (
             f"  {seam}{point.recorded_at.date().isoformat()}  "
             f"{point.checkpoint:<24} {_format(point.value):>12}  "
             f"series {point.series[:12]}"
         )
+        if point.environment_changed:
+            annotated = True
+            row = f"{row}  * now on {point.environment}"
+        lines.append(row)
     lines.append("")
-    lines.append("  | series break    ~ bridged seam")
+    legend = "  | series break    ~ bridged seam"
+    if annotated:
+        legend = f"{legend}    * environment changed"
+    lines.append(legend)
     return "\n".join(lines) + "\n"
 
 
@@ -482,10 +703,17 @@ _NOISE_KIND_LABELS = {
 }
 
 
+#: Movement values whose enum name does not fit the change column.
+_MOVEMENT_LABELS = {
+    Movement.INFORMATIONAL: "-",
+    Movement.CONFOUNDED: "confound",
+}
+
+
 def _render_metric(metric: MetricDelta) -> str:
-    change = "-" if metric.movement is Movement.INFORMATIONAL else metric.movement.value
+    change = _MOVEMENT_LABELS.get(metric.movement, metric.movement.value)
     row = (
-        f"  {metric.metric:<38} "
+        f"  {metric.metric:<{METRIC_COLUMN_WIDTH}} "
         f"{_DIRECTION_LABELS[metric.direction]:<6} "
         f"{_format(metric.baseline):>11} "
         f"{_format(metric.current):>11} "
@@ -554,6 +782,7 @@ def _family_report(
     floors: NoiseFloorIndex,
     current_label: str,
     baseline_label: str | None,
+    pivot: ReportPivot,
 ) -> FamilyReport:
     if not definitions:
         return FamilyReport(
@@ -563,45 +792,54 @@ def _family_report(
         )
 
     rows: list[MetricDelta] = []
+    environment: tuple[ProvenanceDifference, ...] = ()
     for definition in definitions:
         current = latest_measurement(current_results, definition.identifier)
         baseline = latest_measurement(baseline_results, definition.identifier)
         if current is None and baseline is None:
             continue
-        rows.append(
-            _metric_delta(
-                definition,
-                baseline=None if baseline is None else baseline[1],
-                current=None if current is None else current[1],
-                bridges=bridges,
-                floors=floors,
-                current_label=current_label,
-                baseline_label=baseline_label,
-            )
+        row = _metric_delta(
+            definition,
+            baseline=baseline,
+            current=current,
+            bridges=bridges,
+            floors=floors,
+            current_label=current_label,
+            baseline_label=baseline_label,
+            pivot=pivot,
         )
+        if row.environment:
+            environment = row.environment
+        rows.append(row)
     if not rows:
         return FamilyReport(
             family=family,
             metrics=(),
             absence=f"no result recorded for {current_label}",
         )
-    return FamilyReport(family=family, metrics=tuple(rows), absence=None)
+    return FamilyReport(
+        family=family,
+        metrics=tuple(rows),
+        absence=None,
+        environment=environment,
+    )
 
 
 def _metric_delta(
     definition: MetricDefinition,
     *,
-    baseline: Measurement | None,
-    current: Measurement | None,
+    baseline: tuple[ResultEnvelope, Measurement] | None,
+    current: tuple[ResultEnvelope, Measurement] | None,
     bridges: BridgeIndex,
     floors: NoiseFloorIndex,
     current_label: str,
     baseline_label: str | None,
+    pivot: ReportPivot,
 ) -> MetricDelta:
     if current is None:
         return _incomparable_delta(
             definition,
-            baseline=None if baseline is None else baseline.value,
+            baseline=None if baseline is None else baseline[1].value,
             current=None,
             comparability=Comparability.INCOMPARABLE,
             note=f"not measured for {current_label}",
@@ -610,7 +848,7 @@ def _metric_delta(
         return _incomparable_delta(
             definition,
             baseline=None,
-            current=current.value,
+            current=current[1].value,
             comparability=Comparability.INCOMPARABLE,
             note=(
                 "no baseline recorded"
@@ -619,33 +857,64 @@ def _metric_delta(
             ),
         )
 
-    comparison = bridges.compare_measurements(baseline, current)
+    baseline_envelope, baseline_measurement = baseline
+    current_envelope, current_measurement = current
+    comparison = bridges.compare_measurements(
+        baseline_measurement,
+        current_measurement,
+    )
+    attribution = (
+        attribute(baseline_envelope, current_envelope)
+        if definition.execution_sensitive
+        else None
+    )
     if not comparison.is_comparable:
+        # For an efficiency metric this can only be a workload change, since
+        # the environment is not in the fingerprint. That is the case where
+        # the delta really is meaningless rather than merely confounded.
         return _incomparable_delta(
             definition,
-            baseline=baseline.value,
-            current=current.value,
+            baseline=baseline_measurement.value,
+            current=current_measurement.value,
             comparability=comparison.comparability,
-            note="incomparable; these results are not on the same series",
+            note=(
+                "different measurement; the declared workload changed"
+                if attribution is not None
+                and attribution.workload is AxisChange.CHANGED
+                else "incomparable; these results are not on the same series"
+            ),
+            attribution=attribution,
         )
 
-    delta = current.value - baseline.value
-    applicable = _applicable_floors(definition.identifier, baseline, current, floors)
+    delta = current_measurement.value - baseline_measurement.value
+    applicable = _applicable_floors(
+        definition.identifier,
+        baseline_measurement,
+        current_measurement,
+        floors,
+    )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
+    environment = (
+        environment_differences(baseline_envelope, current_envelope)
+        if definition.execution_sensitive
+        else ()
+    )
     return MetricDelta(
         metric=definition.identifier,
         family=definition.family,
         direction=definition.direction,
-        baseline=baseline.value,
-        current=current.value,
+        baseline=baseline_measurement.value,
+        current=current_measurement.value,
         delta=delta,
         comparability=comparison.comparability,
-        movement=_movement(definition.direction, delta),
+        movement=_pivoted_movement(definition, delta, attribution, pivot),
         noise=_noise_verdict(delta, None if binding is None else binding.value),
         noise_floor=None if binding is None else binding.value,
         noise_floor_kind=None if binding is None else binding.kind,
         noise_floors=applicable,
         bridges=tuple(bridge.bridge_id for bridge in comparison.bridges),
+        attribution=attribution,
+        environment=environment,
         note=(
             "bridged series seam"
             if comparison.comparability is Comparability.BRIDGED
@@ -661,8 +930,15 @@ def _incomparable_delta(
     current: float | None,
     comparability: Comparability,
     note: str,
+    attribution: Attribution | None = None,
 ) -> MetricDelta:
-    """Return a row with no delta, and therefore nothing to judge against noise."""
+    """Return a row with no delta, and therefore nothing to judge against noise.
+
+    Reserved for a delta that carries no meaning at all: a metric measured
+    over different games, or an efficiency metric measured under a different
+    workload. A merely confounded delta is reported with its value, because it
+    does mean something.
+    """
 
     return MetricDelta(
         metric=definition.identifier,
@@ -679,7 +955,34 @@ def _incomparable_delta(
         noise_floors=(),
         bridges=(),
         note=note,
+        attribution=attribution,
     )
+
+
+def _pivoted_movement(
+    definition: MetricDefinition,
+    delta: float,
+    attribution: Attribution | None,
+    pivot: ReportPivot,
+) -> Movement:
+    """Return the verdict, given what the report holds fixed.
+
+    The checkpoint pivot asks whether the *model* improved, so any environment
+    movement makes that unanswerable. The environment pivot asks whether the
+    *environment* is faster with the model pinned, so there the environment
+    moving is the point and the model moving is what would confound it.
+    """
+
+    if attribution is None:
+        return _movement(definition.direction, delta)
+    confounder = (
+        attribution.environment
+        if pivot is ReportPivot.CHECKPOINT
+        else attribution.model
+    )
+    if confounder is not AxisChange.UNCHANGED:
+        return Movement.CONFOUNDED
+    return _movement(definition.direction, delta)
 
 
 def _applicable_floors(
@@ -749,3 +1052,65 @@ def _report_provenance(
 
 def _newest(results: Iterable[ResultEnvelope]) -> ResultEnvelope:
     return max(results, key=lambda envelope: (envelope.recorded_at, envelope.result_id))
+
+
+def _by_environment(
+    results: Sequence[ResultEnvelope],
+) -> dict[tuple[tuple[str, str | None], ...], list[ResultEnvelope]]:
+    """Group results by the environment coordinates they were measured in."""
+
+    groups: dict[tuple[tuple[str, str | None], ...], list[ResultEnvelope]] = {}
+    for envelope in results:
+        assert envelope.execution is not None  # filtered by the caller
+        key = tuple(sorted(envelope.execution.environment().items()))
+        groups.setdefault(key, []).append(envelope)
+    return groups
+
+
+def _latest_multi_environment(results: Sequence[ResultEnvelope]) -> str:
+    """Return the most recent checkpoint measured in more than one environment."""
+
+    by_label: dict[str, list[ResultEnvelope]] = {}
+    for envelope in results:
+        by_label.setdefault(envelope.checkpoint.label, []).append(envelope)
+    candidates = [
+        (max(group, key=lambda item: item.recorded_at).recorded_at, label)
+        for label, group in by_label.items()
+        if len(_by_environment(group)) > 1
+    ]
+    if not candidates:
+        raise ReportError(
+            "no checkpoint has been measured in more than one environment yet; "
+            "record the same checkpoint elsewhere to compare them"
+        )
+    return max(candidates)[1]
+
+
+def _require_one_model(results: Sequence[ResultEnvelope], label: str) -> None:
+    """Reject a comparison whose two sides are not the same weights."""
+
+    digests = {envelope.checkpoint.parameter_sha256 for envelope in results}
+    if None in digests:
+        raise ReportError(
+            f"checkpoint {label!r} has a result with no parameter digest, so "
+            "an environment comparison cannot prove the model was held fixed"
+        )
+    if len(digests) > 1:
+        raise ReportError(
+            f"checkpoint label {label!r} covers more than one set of weights; "
+            "an environment comparison needs the model held fixed"
+        )
+
+
+def _environment_name(results: Sequence[ResultEnvelope]) -> str:
+    execution = _newest(results).execution
+    assert execution is not None  # filtered by the caller
+    return execution.environment_label()
+
+
+def _environment_selection(results: Sequence[ResultEnvelope]) -> CheckpointSelection:
+    return CheckpointSelection(
+        label=_environment_name(results),
+        recorded_at=max(envelope.recorded_at for envelope in results),
+        results=len(results),
+    )
