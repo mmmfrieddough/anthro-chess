@@ -19,6 +19,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Protocol
 
 from anthro_chess.evaluation.results.comparability import (
     Attribution,
@@ -68,6 +69,17 @@ METRIC_COLUMN_WIDTH = 38
 
 class ReportError(ValueError):
     """Raised when a report cannot be built from the requested selection."""
+
+
+class ComparisonFloorProvider(Protocol):
+    """Supply a floor that depends on both operands of one comparison."""
+
+    def floor(
+        self,
+        baseline: ResultEnvelope,
+        current: ResultEnvelope,
+        metric: str,
+    ) -> NoiseFloor | None: ...
 
 
 class Movement(StrEnum):
@@ -303,6 +315,7 @@ def build_delta_report(
     bridges: BridgeIndex,
     *,
     floors: NoiseFloorIndex | None = None,
+    comparison_floors: ComparisonFloorProvider | None = None,
     current: str | None = None,
     baseline: str | None = None,
     families: Sequence[str] | None = None,
@@ -357,6 +370,7 @@ def build_delta_report(
                 baseline_results,
                 bridges,
                 resolved_floors,
+                comparison_floors,
                 current_label,
                 baseline_label,
                 pivot,
@@ -448,6 +462,7 @@ def build_environment_report(
                 baseline_results,
                 bridges,
                 resolved_floors,
+                None,
                 _environment_name(current_results),
                 _environment_name(baseline_results),
                 pivot,
@@ -780,6 +795,7 @@ def _family_report(
     baseline_results: Sequence[ResultEnvelope],
     bridges: BridgeIndex,
     floors: NoiseFloorIndex,
+    comparison_floors: ComparisonFloorProvider | None,
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
@@ -804,6 +820,7 @@ def _family_report(
             current=current,
             bridges=bridges,
             floors=floors,
+            comparison_floors=comparison_floors,
             current_label=current_label,
             baseline_label=baseline_label,
             pivot=pivot,
@@ -832,6 +849,7 @@ def _metric_delta(
     current: tuple[ResultEnvelope, Measurement] | None,
     bridges: BridgeIndex,
     floors: NoiseFloorIndex,
+    comparison_floors: ComparisonFloorProvider | None,
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
@@ -887,11 +905,21 @@ def _metric_delta(
         )
 
     delta = current_measurement.value - baseline_measurement.value
+    comparison_floor = (
+        None
+        if comparison_floors is None
+        else comparison_floors.floor(
+            baseline_envelope,
+            current_envelope,
+            definition.identifier,
+        )
+    )
     applicable = _applicable_floors(
         definition.identifier,
         baseline_measurement,
         current_measurement,
         floors,
+        comparison_floor=comparison_floor,
     )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
     environment = (
@@ -990,6 +1018,8 @@ def _applicable_floors(
     baseline: Measurement,
     current: Measurement,
     floors: NoiseFloorIndex,
+    *,
+    comparison_floor: NoiseFloor | None,
 ) -> tuple[NoiseFloor, ...]:
     """Return one floor per noise kind that applies to this comparison.
 
@@ -1007,6 +1037,14 @@ def _applicable_floors(
         if floor is not None
     ]
     candidates.extend(floors.floors(metric, current.fingerprint))
+    if comparison_floor is not None:
+        # A paired floor is the data-sampling uncertainty of this exact delta.
+        # An independently characterized sampling floor answers a different,
+        # wider question and must not bind the same fixed-input comparison.
+        candidates = [
+            floor for floor in candidates if floor.kind != comparison_floor.kind
+        ]
+        candidates.append(comparison_floor)
     for floor in candidates:
         existing = widest.get(floor.kind)
         if existing is None or floor.value > existing.value:

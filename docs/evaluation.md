@@ -128,7 +128,8 @@ explicit options. `anthro eval bridge` records, lists, and revokes bridges.
 games an axis needs. `anthro eval inference` measures what a checkpoint costs
 to play with; see inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
-session's log; see decision decomposition below.
+session's log; see decision decomposition below. `anthro eval puzzles` measures
+the external puzzle-rating response described in the rating section.
 
 ### The Checkpoint Evaluation Runner
 
@@ -252,14 +253,15 @@ Three sources of noise are distinct, and conflating them is the usual mistake:
   expensive one, since it needs several training runs.
 
 All three reduce to one reportable quantity: the spread of the metric across
-independent replicates of that noise source. A **floor** is that spread
-expressed as a delta, because a delta is what a report shows and a standard
-deviation is not directly comparable to one. Two independent measurements of an
-unchanged quantity differ by more than either one varies on its own, so the
-floor is that difference at a declared confidence rather than the raw spread.
-One coverage factor is declared per characterization, and
-`anthro_chess.evaluation.results.noise` owns the arithmetic, the stored record,
-and the lookup.
+replicates of that noise source. A **floor** is that spread expressed as a
+delta, because a delta is what a report shows and a standard deviation is not
+directly comparable to one. When two measurements use independent inputs, the
+floor covers the difference between two independent replicates at a declared
+confidence. When comparable checkpoints score the same frozen units, the
+data-sampling floor instead comes from resampling their paired per-unit
+differences. One coverage factor is declared per characterization, and
+`anthro_chess.evaluation.results` owns the arithmetic, stored inputs, and
+lookup.
 
 The estimators differ even though the reported quantity does not. Data-sampling
 noise is bootstrapped by resampling the **games** a run scored, since positions
@@ -277,10 +279,16 @@ unknown, which is the honest answer.
 
 Because a data-sampling floor costs only a resampling of numbers a run already
 computed, the checkpoint evaluation runner produces its own and records it
-alongside the reading. A benchmark whose floor is a function of its own
-configuration rather than of a series — a distributional distance, whose floor
-grows with the category count and shrinks with the sample — attaches the floor
-to its measurement instead, because that is the only place it can be correct.
+alongside the reading where its inputs are independent. A deterministic
+fixed-input benchmark retains aligned per-unit contributions in the detail tier
+instead; reporting joins those contributions and bootstraps the checkpoint
+delta. Such a floor belongs to the comparison and cannot correctly be attached
+to either checkpoint alone. If either detail payload is unavailable, its paired
+floor is unknown rather than replaced with an independent-input estimate. A
+benchmark whose floor is a function of its own configuration rather than of a
+series — a distributional distance, whose floor grows with the category count
+and shrinks with the sample — attaches the floor to its measurement instead,
+because that is the only place it can be correct.
 
 A delta is judged against the widest floor that applies to it, since a finding
 has to clear every noise source, and the report names which one that was. A
@@ -293,11 +301,12 @@ time: once runs are long and expensive, several repeat runs stop being
 affordable, and the project loses the ability to distinguish a small improvement
 from seed luck for the rest of its life.
 
-Sampling-noise estimates are also what size the evaluation inputs. A sampling
-floor shrinks with the square root of the games behind it, so how many games an
-axis needs in order to resolve an effect of a given size is a computable
-quantity rather than a guess, and it should be computed rather than assumed when
-a pool generation is planned.
+Sampling-noise estimates are also what size the evaluation inputs. A
+conservative independent-input estimate is suitable before representative
+checkpoint pairs exist. Once they do, paired pilot deltas give the more relevant
+power calculation for a frozen benchmark. Either floor shrinks with the square
+root of the units behind it, so how many games an axis needs in order to resolve
+an effect of a given size is computable rather than guessed.
 
 ## Benchmark Data Layers
 
@@ -1001,13 +1010,13 @@ human rating, especially at lower ratings.
 ### Puzzle Rating Response
 
 A published puzzle set whose puzzles carry difficulty ratings supports a third
-rating diagnostic, and it is the cheapest of the three: solve rate by
-puzzle-rating band across a configured-rating grid, from forward passes alone,
-with no matches, no external engine process, and no sampling noise at
-temperature zero. The human reference curve does not need per-band solve
-statistics, because a puzzle rating is itself a difficulty calibrated from human
-attempts, so expected human solve rate follows from the same expected-score
-formula used above.
+rating diagnostic, and it is the cheapest of the three: solve rate as a
+continuous function of puzzle rating across a configured-rating grid, from
+forward passes alone, with no matches, no external engine process, and no
+sampling noise at temperature zero. The human reference curve needs no
+empirical solve-rate bins, because a puzzle rating is itself a difficulty
+calibrated from human attempts, so expected human solve rate follows from the
+same expected-score formula used above.
 
 What this measures is calibration, not tactical strength. The quantity of
 interest is whether solve rate tracks configured rating the way human solve rate
@@ -1037,14 +1046,57 @@ decision decomposition measures. Multi-move puzzles distinguish first-move
 accuracy from completing the line, and those are separate metrics.
 
 The puzzle set is an external dependency with its own identity and license
-record, versioned like the opening book, because a set version change alters
-what a number means. Puzzle positions derive from real games on the same
-platform the corpus is drawn from, so a source-game-key join against the
-training selection should report the overlap rate as provenance. The measured
+record because a set version change alters what a number means. It follows the
+same boundary as the frozen evaluation pool: the acquisition and selection
+recipe plus expected identity are committed, while the generated records and
+raw source stay under the data root. Puzzle positions derive from real games on
+the same platform the corpus is drawn from, so a source-game-key join against
+the training selection reports the overlap rate as provenance. The measured
 risk is small, since one exposure among millions does not produce recall and
 worst-case inflation is bounded by the overlap fraction. It is worth reporting
 anyway because it grows silently as the corpus expands, and the join is cheap
 enough that there is no reason to carry the uncertainty.
+
+`anthro eval prepare-puzzles` builds the artifact selected by
+`configs/evaluation/lichess-puzzles-v1.toml`; `anthro eval puzzles`, selected by
+`configs/evaluation/puzzle-rating-response.toml`, reads it. The canonical set is
+sized from a conservative two-independent-proportions calculation at declared
+confidence and power. That is a planning bound made before representative
+checkpoint pairs exist. Actual checkpoint reports resample the
+source-game-aligned differences retained in their machine-local detail
+payloads within exact-rating strata, preserving the selection design; they
+never use the independent-input bound as the comparison floor. Selection is
+uniform over every exact integer puzzle rating in the declared range, with
+deterministic hash ranking only among eligible puzzles at that rating. This
+removes the source population's rating-density bias without creating arbitrary
+selection discontinuities at a handful of wide band boundaries.
+
+The primary drill-down uses the shared nearest-neighbour curve machinery with a
+frozen bandwidth and grid. The analytic human reference and model response are
+smoothed at the same local bandwidth, preserving the bias-cancellation rule
+used by other human-reference comparisons. Wide rating bands remain as a
+readable secondary table, not as the estimator. The generated manifest records
+the power assumptions, source candidate coverage, quality filters, exact source
+and selected-content digests, license, and rating-design identity. Tests use
+small generated fixtures rather than the canonical records.
+
+Each solution is scored on the canonical verified line. First-move accuracy and
+full-line completion stay separate; later player moves are conditioned on the
+published preceding solution, so a miss does not invent an opponent reply. The
+Lichess mate-in-one exception is preserved by accepting every legal checkmate
+rather than only the move written in the export. The
+sampled reading is the exact probability of drawing the verified move, or the
+product of those probabilities for a line, under the declared temperature.
+That is the infinite-sample solve rate without Monte Carlo noise and remains
+directly comparable with the greedy reading at temperature zero.
+
+The detail artifact carries the configured-rating grid, continuous human and
+model curves with effective local sample sizes, the rating-band drill-down, and
+the aligned per-source-game values needed for later paired checkpoint floors.
+The summary tier carries overall solve rates, continuous curve distance,
+fitted-rating slope and pairwise ordering, plus the source-game overlap rate.
+The overlap join reads only Lichess train and validation keys; test-only games
+remain excluded because training never consumes that partition.
 
 ## Timing Evaluation
 

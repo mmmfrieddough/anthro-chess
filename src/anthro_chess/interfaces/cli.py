@@ -27,6 +27,8 @@ if TYPE_CHECKING:
         DecisionDecomposition,
         InferenceBenchmarkResult,
         PoolConfig,
+        PuzzleBenchmarkConfig,
+        PuzzleBenchmarkResult,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
     from anthro_chess.training import TrainingConfig
@@ -160,6 +162,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
 
+    prepare_puzzles_parser = eval_commands.add_parser(
+        "prepare-puzzles",
+        help="Acquire and build the pinned external puzzle benchmark artifact.",
+    )
+    prepare_puzzles_parser.add_argument(
+        "input",
+        type=Path,
+        nargs="?",
+        help="Pinned Lichess puzzle archive; downloaded when omitted.",
+    )
+    prepare_puzzles_parser.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help=(
+            "Directory for the puzzle artifact. Defaults beneath "
+            "ANTHRO_CHESS_DATA_ROOT."
+        ),
+    )
+    prepare_puzzles_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML puzzle-source and selection recipe.",
+    )
+    prepare_puzzles_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    prepare_puzzles_parser.set_defaults(handler=_run_eval_prepare_puzzles)
+
     run_parser = eval_commands.add_parser(
         "run",
         help="Evaluate a checkpoint over the frozen pool and record the result.",
@@ -199,6 +235,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     run_parser.set_defaults(handler=_run_eval_run)
+
+    puzzles_parser = eval_commands.add_parser(
+        "puzzles",
+        help="Measure rating response against the owned calibrated puzzle set.",
+    )
+    puzzles_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML puzzle-rating benchmark selection.",
+    )
+    puzzles_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(puzzles_parser)
+    puzzles_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    puzzles_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Compute and print results without writing them to the store.",
+    )
+    puzzles_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    puzzles_parser.set_defaults(handler=_run_eval_puzzles)
 
     inference_parser = eval_commands.add_parser(
         "inference",
@@ -298,6 +374,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the compact benchmark delta view over the results store.",
     )
     _add_store_argument(report_parser)
+    report_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory used for paired checkpoint "
+            "floors. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
+            "directory beneath ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
     report_parser.add_argument(
         "--pivot",
         choices=("checkpoint", "environment"),
@@ -624,6 +709,41 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_prepare_puzzles(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        PuzzleSetBuildConfig,
+        PuzzleSetError,
+        prepare_puzzle_set,
+    )
+
+    try:
+        resolved = load_config(
+            PuzzleSetBuildConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        output = _data_output_path(
+            arguments.output,
+            resolved.value.artifact_name,
+        )
+        result = prepare_puzzle_set(
+            resolved,
+            output,
+            source_path=arguments.input,
+        )
+    except (ConfigError, PuzzleSetError) as error:
+        print(f"anthro eval prepare-puzzles: {error}", file=sys.stderr)
+        return 2
+
+    disposition = "Reused" if result.source_reused else "Acquired"
+    print(f"{disposition} verified source: {result.source_path}")
+    print(f"Prepared {result.entries} puzzle(s): {result.puzzle_path}")
+    print(f"Manifest: {result.manifest_path}")
+    print(f"Identity: {result.puzzles_sha256}")
+    return 0
+
+
 def _run_eval_run(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.evaluation import (
@@ -754,6 +874,104 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
         lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _run_eval_puzzles(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        PuzzleBenchmarkConfig,
+        PuzzleBenchmarkError,
+        benchmark_puzzles,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = load_config(
+            PuzzleBenchmarkConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        resolved = _resolve_puzzle_roots(resolved, arguments.set)
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_puzzles(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, PuzzleBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval puzzles: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_puzzles(result), end="")
+    return 0
+
+
+def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        (
+            f"Puzzle set: {result.dataset.pool_id} v{result.dataset.pool_version} "
+            f"({result.dataset.selected_games} puzzle(s))"
+        ),
+        f"Reference temperature: {result.reference_temperature:.3f}",
+        "",
+        "Configured rating response:",
+    ]
+    for rating in result.ratings:
+        lines.append(
+            f"  {rating.target_rating:>4}  "
+            f"greedy first={rating.greedy_first_move_accuracy:.3f} "
+            f"line={rating.greedy_line_completion:.3f} "
+            f"fit={rating.greedy_fitted_puzzle_rating:7.1f}  "
+            f"sampled first={rating.sampled_first_move_solve_rate:.3f} "
+            f"line={rating.sampled_line_completion:.3f} "
+            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}  "
+            f"curve gap={rating.greedy_curve_distance:.3f}/"
+            f"{rating.sampled_curve_distance:.3f}"
+        )
+    lines.extend(
+        [
+            "",
+            (
+                f"Greedy slope={result.greedy_rating_slope:.4f}, "
+                f"order={result.greedy_order_accuracy:.3f}"
+            ),
+            (
+                f"Sampled slope={result.sampled_rating_slope:.4f}, "
+                f"order={result.sampled_order_accuracy:.3f}"
+            ),
+            (
+                f"Training overlap: {result.overlapping_puzzles}/"
+                f"{result.dataset.selected_games} puzzle source games "
+                f"({result.overlap_rate:.3%}) across "
+                f"{result.training_games} training/validation games"
+            ),
+        ]
+    )
+    if result.recorded_path is None:
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    else:
+        lines.extend(["", f"Recorded: {result.recorded_path}"])
     return "\n".join(lines) + "\n"
 
 
@@ -990,7 +1208,9 @@ def _add_store_argument(parser: argparse.ArgumentParser) -> None:
 def _run_eval_report(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         BridgeIndex,
+        DetailStore,
         NoiseFloorIndex,
+        PairedFloorIndex,
         ReportError,
         ResultsStore,
         ResultsStoreError,
@@ -1000,6 +1220,7 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
         render_history,
         render_provenance,
         render_report,
+        resolve_optional_detail_root,
         resolve_store_root,
     )
 
@@ -1015,6 +1236,10 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
                 print(render_history(history), end="")
             return 0
         floors = NoiseFloorIndex(store.characterizations(), bridges)
+        detail_root = resolve_optional_detail_root(arguments.detail_root)
+        comparison_floors = (
+            None if detail_root is None else PairedFloorIndex(DetailStore(detail_root))
+        )
         if arguments.pivot == "environment":
             report = build_environment_report(
                 results,
@@ -1029,6 +1254,7 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
                 results,
                 bridges,
                 floors=floors,
+                comparison_floors=comparison_floors,
                 current=arguments.current,
                 baseline=arguments.baseline,
                 families=arguments.family or None,
@@ -1437,6 +1663,36 @@ def _resolve_evaluation_roots(
     ):
         update["leakage"] = config.leakage.model_copy(
             update={"training_normalized": _rooted_artifact_path(root, training)}
+        )
+    if not update:
+        return resolved
+    return ResolvedConfig(
+        value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
+
+
+def _resolve_puzzle_roots(
+    resolved: ResolvedConfig[PuzzleBenchmarkConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[PuzzleBenchmarkConfig]:
+    """Resolve puzzle and training-overlap artifacts beneath the data root."""
+
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+    config = resolved.value
+    override_keys = {item.partition("=")[0] for item in overrides}
+    root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
+    update: dict[str, Path] = {}
+    if not config.puzzle_set.is_absolute() and "puzzle_set" not in override_keys:
+        update["puzzle_set"] = _rooted_artifact_path(root, config.puzzle_set)
+    if (
+        not config.training_normalized.is_absolute()
+        and "training_normalized" not in override_keys
+    ):
+        update["training_normalized"] = _rooted_artifact_path(
+            root,
+            config.training_normalized,
         )
     if not update:
         return resolved

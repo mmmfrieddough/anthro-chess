@@ -48,6 +48,18 @@ def test_help_only_advertises_implemented_commands(
         assert f"  {planned_command} " not in help_text
 
 
+def test_eval_help_advertises_the_puzzle_rating_benchmark(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["eval", "--help"])
+
+    assert exit_info.value.code == 0
+    output = capsys.readouterr().out
+    assert "prepare-puzzles" in output
+    assert "puzzles" in output
+
+
 def test_data_prepare_command_routes_to_importable_pipeline(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

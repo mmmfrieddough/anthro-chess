@@ -27,7 +27,7 @@ from anthro_chess.data.artifacts import (
     file_sha256,
     write_normalized_rows,
 )
-from anthro_chess.data.config import PrepareConfig, SplitConfig
+from anthro_chess.data.config import ArchiveConfig, PrepareConfig, SplitConfig
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
@@ -126,6 +126,14 @@ def acquire_archive(
         raise DataPreparationError(
             "configuration has no archive selection for data acquisition"
         )
+    return acquire_configured_archive(output_directory, archive)
+
+
+def acquire_configured_archive(
+    output_directory: str | Path,
+    archive: ArchiveConfig,
+) -> AcquisitionResult:
+    """Download one explicitly pinned archive into an artifact's raw directory."""
 
     raw_directory = Path(output_directory) / "raw"
     raw_directory.mkdir(parents=True, exist_ok=True)

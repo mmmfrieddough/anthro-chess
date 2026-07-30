@@ -85,27 +85,31 @@ class MetricCost(StrEnum):
 
 @dataclass(frozen=True)
 class DataProjection:
-    """The normalized columns one measurement actually consumes.
+    """The input fields one measurement actually consumes.
 
-    Fingerprints digest this projection rather than the whole normalized row,
-    so adding a schema field that no existing metric reads cannot break an
-    unrelated series. Timing fields and per-ply opening metadata are both
-    expected; without a projection each would otherwise invalidate every
-    series in the project on arrival.
+    Most projections name normalized game columns. An explicitly external
+    projection names fields in an owned benchmark dataset, such as the puzzle
+    set. Fingerprints digest either form rather than the whole input record, so
+    adding a field that no existing metric reads cannot break an unrelated
+    series.
     """
 
     name: str
     version: int
     columns: tuple[str, ...]
+    external: bool = False
 
     def as_record(self) -> dict[str, object]:
         """Return the stable record stored beside a content digest."""
 
-        return {
+        record: dict[str, object] = {
             "name": self.name,
             "version": self.version,
             "columns": list(self.columns),
         }
+        if self.external:
+            record["external"] = True
+        return record
 
 
 @dataclass(frozen=True)
@@ -165,8 +169,12 @@ def register_projection(projection: DataProjection) -> DataProjection:
         raise MetricRegistryError(
             f"projection {projection.name!r} is already registered differently"
         )
-    unknown = tuple(
-        column for column in projection.columns if column not in _NORMALIZED_COLUMNS
+    unknown = (
+        ()
+        if projection.external
+        else tuple(
+            column for column in projection.columns if column not in _NORMALIZED_COLUMNS
+        )
     )
     if unknown:
         raise MetricRegistryError(
@@ -401,6 +409,21 @@ MOVE_TIMING_PROJECTION = register_projection(
             NormalizedColumn.TIME_INITIAL_MS.value,
             NormalizedColumn.WHITE_NORMALIZED_RATING.value,
         ),
+    )
+)
+
+PUZZLE_RESPONSE_PROJECTION = register_projection(
+    DataProjection(
+        name="puzzle_response",
+        version=1,
+        columns=(
+            "initial_fen",
+            "moves",
+            "puzzle_id",
+            "rating",
+            "source_game_key",
+        ),
+        external=True,
     )
 )
 
@@ -1049,6 +1072,124 @@ DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT = register_metric(
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
     )
+)
+
+
+def _puzzle_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=RATING_BEHAVIOR_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.REPEATED_PASS,
+            projection=PUZZLE_RESPONSE_PROJECTION.name,
+        )
+    )
+
+
+PUZZLE_GREEDY_FIRST_MOVE_ACCURACY = _puzzle_metric(
+    "puzzle.greedy_first_move_accuracy",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Fraction of puzzles whose first player move is the legal-masked "
+        "argmax, averaged across the declared configured-rating grid."
+    ),
+)
+
+PUZZLE_GREEDY_LINE_COMPLETION = _puzzle_metric(
+    "puzzle.greedy_line_completion",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Fraction of complete verified puzzle lines for which every player "
+        "move is the legal-masked argmax, averaged across configured ratings."
+    ),
+)
+
+PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE = _puzzle_metric(
+    "puzzle.sampled_first_move_solve_rate",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Expected first-move solve rate under the declared reference "
+        "temperature, averaged across the configured-rating grid."
+    ),
+)
+
+PUZZLE_SAMPLED_LINE_COMPLETION = _puzzle_metric(
+    "puzzle.sampled_line_completion",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Expected probability of sampling every player move in the verified "
+        "line at the declared reference temperature."
+    ),
+)
+
+PUZZLE_GREEDY_RATING_SLOPE = _puzzle_metric(
+    "puzzle.greedy_rating_slope",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Linear slope of fitted puzzle rating against configured game rating "
+        "under greedy selection. One is a reference shape, not a promotion gate."
+    ),
+)
+
+PUZZLE_SAMPLED_RATING_SLOPE = _puzzle_metric(
+    "puzzle.sampled_rating_slope",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Linear slope of fitted puzzle rating against configured game rating "
+        "at the declared reference temperature."
+    ),
+)
+
+PUZZLE_GREEDY_RATING_ORDER_ACCURACY = _puzzle_metric(
+    "puzzle.greedy_rating_order_accuracy",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Pairwise accuracy with which higher configured ratings produce higher "
+        "fitted puzzle ratings under greedy selection."
+    ),
+)
+
+PUZZLE_SAMPLED_RATING_ORDER_ACCURACY = _puzzle_metric(
+    "puzzle.sampled_rating_order_accuracy",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Pairwise accuracy with which higher configured ratings produce higher "
+        "fitted puzzle ratings at the declared reference temperature."
+    ),
+)
+
+PUZZLE_GREEDY_CURVE_DISTANCE = _puzzle_metric(
+    "puzzle.greedy_curve_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean absolute distance between the continuous human expected-solve "
+        "curve and greedy full-line completion over puzzle rating."
+    ),
+)
+
+PUZZLE_SAMPLED_CURVE_DISTANCE = _puzzle_metric(
+    "puzzle.sampled_curve_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean absolute distance between the continuous human expected-solve "
+        "curve and sampled full-line completion over puzzle rating."
+    ),
+)
+
+PUZZLE_TRAINING_OVERLAP_RATE = _puzzle_metric(
+    "puzzle.training_overlap_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Fraction of puzzle source games present in the selected checkpoint's "
+        "training or validation corpus. This is provenance, not model quality."
+    ),
 )
 
 

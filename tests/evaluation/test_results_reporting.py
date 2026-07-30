@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from anthro_chess.evaluation.results import (
+    PAIRED_CONTRIBUTIONS_KEY,
     BridgeIndex,
     Comparability,
     DataComponent,
     DeltaReport,
+    DetailStore,
     FamilyReport,
     FloorEntry,
     MetricDelta,
@@ -20,6 +23,7 @@ from anthro_chess.evaluation.results import (
     NoiseFloor,
     NoiseFloorIndex,
     NoiseVerdict,
+    PairedFloorIndex,
     ReportError,
     ResultEnvelope,
     build_bridge,
@@ -27,6 +31,7 @@ from anthro_chess.evaluation.results import (
     build_delta_report,
     build_history,
     measurement,
+    paired_contributions,
     render_history,
     render_provenance,
     render_report,
@@ -136,7 +141,7 @@ def test_a_family_with_no_supporting_result_is_named_with_a_reason(
     assert training_health.absence == "no result recorded for checkpoint-b"
 
     rating = _family(report, "rating-behavior")
-    assert rating.absence == "no metric is registered for this family yet"
+    assert rating.absence == "no result recorded for checkpoint-b"
 
 
 def test_mismatched_fingerprints_are_reported_as_incomparable(
@@ -270,6 +275,139 @@ def test_a_delta_is_annotated_against_its_noise_floor(
 
     assert _row(within, "held_out.move_loss").noise is NoiseVerdict.WITHIN
     assert _row(cleared, "held_out.move_loss").noise is NoiseVerdict.CLEARED
+
+
+def test_a_paired_floor_replaces_independent_sampling_floors(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    component = move_prediction_component()
+    independent = NoiseFloor(
+        value=1.0,
+        kind="data-sampling",
+        source="independent benchmark draws",
+    )
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.5,
+                data=component,
+                noise_floor=independent,
+            )
+        ],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.3,
+                data=component,
+                noise_floor=independent,
+            )
+        ],
+        recorded_at=CURRENT_AT,
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(values: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="fixture-game",
+                unit_ids=("a", "b"),
+                metrics={"held_out.move_loss": values},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={"detail": detail.write("baseline.json", retained([3.0, 4.0]))}
+    )
+    current = current.model_copy(
+        update={"detail": detail.write("current.json", retained([2.9, 3.7]))}
+    )
+
+    report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, "held_out.move_loss")
+
+    assert row.noise is NoiseVerdict.CLEARED
+    assert row.noise_floor is not None
+    assert row.noise_floor < 0.2
+    assert row.noise_floors[0].source is not None
+    assert "paired bootstrap" in row.noise_floors[0].source
+
+
+def test_a_paired_floor_preserves_the_benchmark_strata(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    component = move_prediction_component()
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement("held_out.move_loss", 0.0, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement("held_out.move_loss", 0.5, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(values: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="fixture-game",
+                unit_ids=("a", "b", "c", "d"),
+                stratum="rating",
+                strata=("low", "low", "high", "high"),
+                metrics={"held_out.move_loss": values},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={
+            "detail": detail.write(
+                "stratified-baseline.json",
+                retained([0.0, 0.0, 0.0, 0.0]),
+            )
+        }
+    )
+    current = current.model_copy(
+        update={
+            "detail": detail.write(
+                "stratified-current.json",
+                retained([0.0, 0.0, 1.0, 1.0]),
+            )
+        }
+    )
+
+    report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, "held_out.move_loss")
+
+    # Each stratum's delta is constant. Resampling within the fixed allocation
+    # therefore adds no composition variance between the two strata.
+    assert row.noise_floor == 0.0
+    assert row.noise_floors[0].source is not None
+    assert "stratified paired bootstrap" in row.noise_floors[0].source
 
 
 def test_an_unknown_noise_floor_is_stated_rather_than_assumed(
@@ -608,7 +746,7 @@ def test_the_default_text_view_stays_readable(
     assert "absent: no result recorded for" in rendered
     assert max(len(line) for line in rendered.splitlines()) <= 120
     # A ratchet rather than a round number: it is the current height, so a
-    # change that grows the default view has to be a deliberate one. Two of
-    # these lines belong to decision decomposition, whose metrics are
-    # registered ahead of the rollout suites that will report them.
-    assert len(rendered.splitlines()) <= 22
+    # change that grows the default view has to be a deliberate one. Two lines
+    # belong to decision decomposition, and two to the puzzle-backed rating
+    # family; both are registered ahead of results in this fixture.
+    assert len(rendered.splitlines()) <= 24

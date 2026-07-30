@@ -321,6 +321,20 @@ def resolve_store_root(explicit: str | Path | None = None) -> Path:
 def resolve_detail_root(explicit: str | Path | None = None) -> Path:
     """Resolve the machine-local detail root from an argument or the environment."""
 
+    resolved = resolve_optional_detail_root(explicit)
+    if resolved is not None:
+        return resolved
+    raise ResultsStoreError(
+        "a detail-tier directory must be provided explicitly, or "
+        f"{DETAIL_ROOT_VARIABLE} or ANTHRO_CHESS_RUN_ROOT must be set"
+    )
+
+
+def resolve_optional_detail_root(
+    explicit: str | Path | None = None,
+) -> Path | None:
+    """Resolve a detail root when configured, without making it mandatory."""
+
     if explicit is not None:
         return Path(explicit)
     configured = os.environ.get(DETAIL_ROOT_VARIABLE, "").strip()
@@ -329,10 +343,7 @@ def resolve_detail_root(explicit: str | Path | None = None) -> Path:
     run_root = os.environ.get("ANTHRO_CHESS_RUN_ROOT", "").strip()
     if run_root:
         return Path(run_root).expanduser() / "benchmark-detail"
-    raise ResultsStoreError(
-        "a detail-tier directory must be provided explicitly, or "
-        f"{DETAIL_ROOT_VARIABLE} or ANTHRO_CHESS_RUN_ROOT must be set"
-    )
+    return None
 
 
 def canonical_readable_json(value: Any) -> bytes:
