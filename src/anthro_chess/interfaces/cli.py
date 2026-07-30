@@ -375,6 +375,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_store_argument(report_parser)
     report_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory used for paired checkpoint "
+            "floors. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
+            "directory beneath ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    report_parser.add_argument(
         "--pivot",
         choices=("checkpoint", "environment"),
         default="checkpoint",
@@ -1199,7 +1208,9 @@ def _add_store_argument(parser: argparse.ArgumentParser) -> None:
 def _run_eval_report(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         BridgeIndex,
+        DetailStore,
         NoiseFloorIndex,
+        PairedFloorIndex,
         ReportError,
         ResultsStore,
         ResultsStoreError,
@@ -1209,6 +1220,7 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
         render_history,
         render_provenance,
         render_report,
+        resolve_optional_detail_root,
         resolve_store_root,
     )
 
@@ -1224,6 +1236,10 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
                 print(render_history(history), end="")
             return 0
         floors = NoiseFloorIndex(store.characterizations(), bridges)
+        detail_root = resolve_optional_detail_root(arguments.detail_root)
+        comparison_floors = (
+            None if detail_root is None else PairedFloorIndex(DetailStore(detail_root))
+        )
         if arguments.pivot == "environment":
             report = build_environment_report(
                 results,
@@ -1238,6 +1254,7 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
                 results,
                 bridges,
                 floors=floors,
+                comparison_floors=comparison_floors,
                 current=arguments.current,
                 baseline=arguments.baseline,
                 families=arguments.family or None,

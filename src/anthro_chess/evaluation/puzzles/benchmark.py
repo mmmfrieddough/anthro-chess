@@ -27,14 +27,10 @@ from anthro_chess.evaluation.curves import (
     Observation,
     compare_curves,
 )
-from anthro_chess.evaluation.noise import (
-    GameTotals,
-    MetricTotal,
-    NoiseConfig,
-    bootstrap_floors,
-)
+from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles.dataset import Puzzle, PuzzleSet, load_puzzle_set
 from anthro_chess.evaluation.results import (
+    PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
@@ -42,7 +38,6 @@ from anthro_chess.evaluation.results import (
     DetailReference,
     DetailStore,
     Measurement,
-    NoiseFloor,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
@@ -52,6 +47,7 @@ from anthro_chess.evaluation.results import (
     dataset_reference,
     default_checkpoint_label,
     measurement,
+    paired_contributions,
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -369,13 +365,13 @@ def benchmark_puzzles(
     detail_reference = _write_detail(
         detail,
         result,
+        scored_ratings=scored_ratings,
+        noise=config.noise,
         recorded_at=recorded_at,
     )
     measurements = _measurements(
         result,
         component,
-        scored_ratings,
-        noise=config.noise,
     )
     envelope = build_result(
         kind=PUZZLE_KIND,
@@ -811,9 +807,6 @@ def _dataset_reference(
 def _measurements(
     result: PuzzleBenchmarkResult,
     component: DataComponent,
-    scored_ratings: Sequence[_ScoredRating],
-    *,
-    noise: NoiseConfig,
 ) -> tuple[Measurement, ...]:
     ratings = result.ratings
     sample_size = len(ratings) * result.dataset.selected_games
@@ -874,26 +867,27 @@ def _measurements(
             result.dataset.selected_games,
         ),
     )
-    floors = _sampling_floors(scored_ratings, component, noise) if noise.enabled else {}
     return tuple(
         measurement(
             definition.identifier,
             value,
             data=component,
             sample_size=measurement_size,
-            noise_floor=floors.get(definition.identifier),
         )
         for definition, value, measurement_size in values
     )
 
 
-def _sampling_floors(
+def _paired_contributions(
     scored_ratings: Sequence[_ScoredRating],
-    component: DataComponent,
     config: NoiseConfig,
-) -> dict[str, NoiseFloor]:
+) -> dict[str, object] | None:
+    """Retain aligned values so later reports can bootstrap checkpoint deltas."""
+
+    if not config.enabled:
+        return None
     if not scored_ratings:
-        return {}
+        return None
     puzzles = scored_ratings[0].scores
     metric_values = (
         (PUZZLE_GREEDY_FIRST_MOVE_ACCURACY, "greedy_first"),
@@ -901,64 +895,55 @@ def _sampling_floors(
         (PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE, "sampled_first"),
         (PUZZLE_SAMPLED_LINE_COMPLETION, "sampled_line"),
     )
-    totals: list[GameTotals] = []
-    for index, puzzle_score in enumerate(puzzles):
-        puzzle_id = puzzle_score.puzzle.puzzle_id
-        ratings = [scored.scores[index] for scored in scored_ratings]
-        if any(score.puzzle.puzzle_id != puzzle_id for score in ratings):
-            raise PuzzleBenchmarkError("puzzle score grids are not aligned")
-        totals.append(
-            GameTotals(
-                game_id=int.from_bytes(
-                    sha256(puzzle_id.encode()).digest()[:8],
-                    "big",
-                ),
-                metrics={
-                    definition.identifier: MetricTotal(
-                        total=sum(
-                            float(getattr(score, attribute)) for score in ratings
-                        ),
-                        positions=len(ratings),
-                    )
-                    for definition, attribute in metric_values
-                },
-            )
-        )
-    entries = bootstrap_floors(
-        totals,
-        component=component,
-        seed=config.seed,
-        resamples=config.resamples,
-        coverage=config.coverage,
-    )
-    return {
-        entry.metric: NoiseFloor(
-            value=entry.floor,
-            kind="data-sampling",
-            source=(
-                f"{config.resamples} bootstrap resamples of "
-                f"{len(totals)} puzzle source games"
-            ),
-        )
-        for entry in entries
+    metrics: dict[str, list[float]] = {
+        definition.identifier: [] for definition, _ in metric_values
     }
+    unit_ids: list[str] = []
+    strata: list[str] = []
+    for index, puzzle_score in enumerate(puzzles):
+        source_game_key = puzzle_score.puzzle.source_game_key
+        ratings = [scored.scores[index] for scored in scored_ratings]
+        if any(score.puzzle.source_game_key != source_game_key for score in ratings):
+            raise PuzzleBenchmarkError("puzzle score grids are not aligned")
+        unit_ids.append(source_game_key)
+        strata.append(str(puzzle_score.puzzle.rating))
+        for definition, attribute in metric_values:
+            metrics[definition.identifier].append(
+                _mean([float(getattr(score, attribute)) for score in ratings])
+            )
+    return paired_contributions(
+        unit="puzzle-source-game",
+        unit_ids=unit_ids,
+        stratum="puzzle-rating",
+        strata=strata,
+        metrics=metrics,
+        resamples=config.resamples,
+        seed=config.seed,
+        coverage=config.coverage,
+    ).as_record()
 
 
 def _write_detail(
     detail: DetailStore | None,
     result: PuzzleBenchmarkResult,
     *,
+    scored_ratings: Sequence[_ScoredRating],
+    noise: NoiseConfig,
     recorded_at: datetime,
 ) -> DetailReference | None:
     if detail is None:
         return None
     stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    payload = result.as_record()
+    contributions = _paired_contributions(scored_ratings, noise)
+    if contributions is not None:
+        payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
     return detail.write(
         Path(PUZZLE_KIND) / f"{result.checkpoint.label}-{stamp}.json",
-        result.as_record(),
+        payload,
         description=(
             "Puzzle-rating grid, human reference curve, rating-band response, "
-            "and source-game overlap provenance."
+            "source-game overlap provenance, and paired comparison inputs."
         ),
     )
 

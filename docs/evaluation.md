@@ -253,14 +253,15 @@ Three sources of noise are distinct, and conflating them is the usual mistake:
   expensive one, since it needs several training runs.
 
 All three reduce to one reportable quantity: the spread of the metric across
-independent replicates of that noise source. A **floor** is that spread
-expressed as a delta, because a delta is what a report shows and a standard
-deviation is not directly comparable to one. Two independent measurements of an
-unchanged quantity differ by more than either one varies on its own, so the
-floor is that difference at a declared confidence rather than the raw spread.
-One coverage factor is declared per characterization, and
-`anthro_chess.evaluation.results.noise` owns the arithmetic, the stored record,
-and the lookup.
+replicates of that noise source. A **floor** is that spread expressed as a
+delta, because a delta is what a report shows and a standard deviation is not
+directly comparable to one. When two measurements use independent inputs, the
+floor covers the difference between two independent replicates at a declared
+confidence. When comparable checkpoints score the same frozen units, the
+data-sampling floor instead comes from resampling their paired per-unit
+differences. One coverage factor is declared per characterization, and
+`anthro_chess.evaluation.results` owns the arithmetic, stored inputs, and
+lookup.
 
 The estimators differ even though the reported quantity does not. Data-sampling
 noise is bootstrapped by resampling the **games** a run scored, since positions
@@ -278,10 +279,16 @@ unknown, which is the honest answer.
 
 Because a data-sampling floor costs only a resampling of numbers a run already
 computed, the checkpoint evaluation runner produces its own and records it
-alongside the reading. A benchmark whose floor is a function of its own
-configuration rather than of a series — a distributional distance, whose floor
-grows with the category count and shrinks with the sample — attaches the floor
-to its measurement instead, because that is the only place it can be correct.
+alongside the reading where its inputs are independent. A deterministic
+fixed-input benchmark retains aligned per-unit contributions in the detail tier
+instead; reporting joins those contributions and bootstraps the checkpoint
+delta. Such a floor belongs to the comparison and cannot correctly be attached
+to either checkpoint alone. If either detail payload is unavailable, its paired
+floor is unknown rather than replaced with an independent-input estimate. A
+benchmark whose floor is a function of its own configuration rather than of a
+series — a distributional distance, whose floor grows with the category count
+and shrinks with the sample — attaches the floor to its measurement instead,
+because that is the only place it can be correct.
 
 A delta is judged against the widest floor that applies to it, since a finding
 has to clear every noise source, and the report names which one that was. A
@@ -294,11 +301,12 @@ time: once runs are long and expensive, several repeat runs stop being
 affordable, and the project loses the ability to distinguish a small improvement
 from seed luck for the rest of its life.
 
-Sampling-noise estimates are also what size the evaluation inputs. A sampling
-floor shrinks with the square root of the games behind it, so how many games an
-axis needs in order to resolve an effect of a given size is a computable
-quantity rather than a guess, and it should be computed rather than assumed when
-a pool generation is planned.
+Sampling-noise estimates are also what size the evaluation inputs. A
+conservative independent-input estimate is suitable before representative
+checkpoint pairs exist. Once they do, paired pilot deltas give the more relevant
+power calculation for a frozen benchmark. Either floor shrinks with the square
+root of the units behind it, so how many games an axis needs in order to resolve
+an effect of a given size is computable rather than guessed.
 
 ## Benchmark Data Layers
 
@@ -1053,8 +1061,11 @@ enough that there is no reason to carry the uncertainty.
 `configs/evaluation/lichess-puzzles-v1.toml`; `anthro eval puzzles`, selected by
 `configs/evaluation/puzzle-rating-response.toml`, reads it. The canonical set is
 sized from a conservative two-independent-proportions calculation at declared
-confidence and power. That calculation is deliberately pessimistic because
-checkpoint comparisons score the same puzzles and are paired. Selection is
+confidence and power. That is a planning bound made before representative
+checkpoint pairs exist. Actual checkpoint reports resample the
+source-game-aligned differences retained in their machine-local detail
+payloads within exact-rating strata, preserving the selection design; they
+never use the independent-input bound as the comparison floor. Selection is
 uniform over every exact integer puzzle rating in the declared range, with
 deterministic hash ranking only among eligible puzzles at that rating. This
 removes the source population's rating-density bias without creating arbitrary
@@ -1080,7 +1091,8 @@ That is the infinite-sample solve rate without Monte Carlo noise and remains
 directly comparable with the greedy reading at temperature zero.
 
 The detail artifact carries the configured-rating grid, continuous human and
-model curves with effective local sample sizes, and the rating-band drill-down.
+model curves with effective local sample sizes, the rating-band drill-down, and
+the aligned per-source-game values needed for later paired checkpoint floors.
 The summary tier carries overall solve rates, continuous curve distance,
 fitted-rating slope and pairwise ordering, plus the source-game overlap rate.
 The overlap join reads only Lichess train and validation keys; test-only games

@@ -33,6 +33,7 @@ from anthro_chess.evaluation.results import (
     register_metric,
     registry_snapshot,
     resolve_detail_root,
+    resolve_optional_detail_root,
     resolve_store_root,
     restore_registry,
 )
@@ -329,15 +330,18 @@ def test_store_roots_resolve_from_the_environment(
 
     assert resolve_store_root() == tmp_path / "store"
     assert resolve_detail_root() == tmp_path / "detail"
+    assert resolve_optional_detail_root() == tmp_path / "detail"
     assert resolve_store_root(tmp_path / "explicit") == tmp_path / "explicit"
 
     monkeypatch.delenv(DETAIL_ROOT_VARIABLE)
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
     assert resolve_detail_root() == tmp_path / "runs" / "benchmark-detail"
+    assert resolve_optional_detail_root() == tmp_path / "runs" / "benchmark-detail"
 
     monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT")
     with pytest.raises(ResultsStoreError, match="must be set"):
         resolve_detail_root()
+    assert resolve_optional_detail_root() is None
 
 
 def test_a_new_benchmark_kind_needs_no_schema_change(

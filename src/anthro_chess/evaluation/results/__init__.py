@@ -70,6 +70,13 @@ from anthro_chess.evaluation.results.noise import (
     replicate_dispersion,
     replicate_floors,
 )
+from anthro_chess.evaluation.results.paired import (
+    PAIRED_CONTRIBUTIONS_KEY,
+    PAIRED_CONTRIBUTIONS_VERSION,
+    PairedContributions,
+    PairedFloorIndex,
+    paired_contributions,
+)
 from anthro_chess.evaluation.results.records import (
     ENVELOPE_VERSION,
     ENVIRONMENT_FIELDS,
@@ -96,6 +103,7 @@ from anthro_chess.evaluation.results.records import (
     measurement,
 )
 from anthro_chess.evaluation.results.reporting import (
+    ComparisonFloorProvider,
     DeltaReport,
     FamilyReport,
     HistoryPoint,
@@ -119,6 +127,7 @@ from anthro_chess.evaluation.results.store import (
     ResultsStoreError,
     checkpoint_labels,
     resolve_detail_root,
+    resolve_optional_detail_root,
     resolve_store_root,
     results_for_checkpoint,
 )
@@ -134,6 +143,8 @@ __all__ = [
     "FINGERPRINT_ALGORITHM",
     "MAXIMUM_SUMMARY_BYTES",
     "NOMINAL_REPEATED_PASSES",
+    "PAIRED_CONTRIBUTIONS_KEY",
+    "PAIRED_CONTRIBUTIONS_VERSION",
     "REPLICATE_METHOD",
     "Attribution",
     "AxisChange",
@@ -142,6 +153,7 @@ __all__ = [
     "BridgeIndex",
     "CheckpointReference",
     "Comparability",
+    "ComparisonFloorProvider",
     "ConfigurationReference",
     "DataComponent",
     "DataProjection",
@@ -169,6 +181,8 @@ __all__ = [
     "NoiseFloor",
     "NoiseFloorIndex",
     "NoiseVerdict",
+    "PairedContributions",
+    "PairedFloorIndex",
     "ProjectionDigest",
     "ProvenanceDifference",
     "RegistrySnapshot",
@@ -198,6 +212,7 @@ __all__ = [
     "iter_registry",
     "latest_measurement",
     "measurement",
+    "paired_contributions",
     "metric_definition",
     "metric_family",
     "projection_content_digest",
@@ -217,6 +232,7 @@ __all__ = [
     "render_provenance",
     "render_report",
     "resolve_detail_root",
+    "resolve_optional_detail_root",
     "resolve_store_root",
     "results_for_checkpoint",
     "series_fingerprint",

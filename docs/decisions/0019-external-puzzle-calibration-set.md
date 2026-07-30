@@ -26,8 +26,11 @@ Size the canonical set with a conservative worst-case comparison of two
 independent proportions at 95 percent confidence and 80 percent power. Use a
 target that resolves roughly a one-and-a-half percentage-point overall change
 and roughly a three-point change in a broad local rating region. Because every
-checkpoint scores the same puzzles, actual checkpoint comparisons are paired
-and should be at least as sensitive.
+checkpoint scores the same puzzles, retain source-game-aligned metric
+contributions in the machine-local detail tier and bootstrap their paired
+differences within exact-rating strata for actual checkpoint comparisons. The
+independent calculation is a conservative planning bound, not the floor used to
+judge those deltas.
 
 Use a uniform exact-rating design: select the same fixed count at every integer
 puzzle rating in the declared interval. Within each rating, choose by stable
@@ -68,6 +71,11 @@ Source-game keys remain in the artifact for overlap provenance and resampling.
 The pinned source currently contributes at most one eligible puzzle per source
 game, so game-clustered and puzzle-level support are identical; validation
 rejects a selected set that violates that property.
+
+A paired sampling floor belongs to two results rather than either result alone.
+Reports compute it from matching detail payloads. If those machine-local
+payloads are unavailable, the paired floor is unknown; an independent-input
+floor must not be substituted.
 
 ## References
 

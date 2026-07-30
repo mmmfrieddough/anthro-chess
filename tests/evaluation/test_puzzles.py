@@ -18,6 +18,7 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
+from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
     PuzzleSet,
@@ -31,6 +32,8 @@ from anthro_chess.evaluation.puzzles import (
 )
 from anthro_chess.evaluation.puzzles.benchmark import (
     _accepted_actions,
+    _paired_contributions,
+    _score_rating,
     _training_overlap,
     score_puzzle_set,
 )
@@ -38,6 +41,7 @@ from anthro_chess.evaluation.puzzles.dataset import (
     PUZZLE_FILE_NAME,
     PUZZLE_METADATA_FILE_NAME,
 )
+from anthro_chess.evaluation.results import PairedContributions
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:
@@ -402,6 +406,38 @@ def test_first_move_and_full_line_stay_separate_and_output_is_deterministic() ->
     assert high.sampled_line_completion == high.greedy_line_completion
     assert high.greedy_fitted_puzzle_rating > low.greedy_fitted_puzzle_rating
     assert sum(band.puzzles for band in high.bands) == 2
+
+
+def test_puzzle_details_retain_source_game_aligned_checkpoint_contributions() -> None:
+    puzzle_set = _fixture_set()
+    runner = _ControlledRunner(puzzle_set.puzzles, fail_continuations=True)
+    scored = tuple(
+        _score_rating(
+            puzzle_set,
+            runner,
+            target_rating=rating,
+            temperature=0.0,
+            batch_size=2,
+        )
+        for rating in (1000, 2000)
+    )
+
+    raw = _paired_contributions(scored, NoiseConfig())
+
+    assert raw is not None
+    retained = PairedContributions.model_validate(raw)
+    assert retained.unit == "puzzle-source-game"
+    assert retained.stratum == "puzzle-rating"
+    assert retained.strata == tuple(str(puzzle.rating) for puzzle in puzzle_set.puzzles)
+    assert retained.unit_ids == tuple(
+        puzzle.source_game_key for puzzle in puzzle_set.puzzles
+    )
+    assert retained.metrics["puzzle.greedy_line_completion"] == (0.0, 0.5)
+    assert sum(retained.metrics["puzzle.greedy_first_move_accuracy"]) / 2 == (
+        pytest.approx(
+            sum(item.result.greedy_first_move_accuracy for item in scored) / 2
+        )
+    )
 
 
 def test_training_overlap_joins_source_keys_and_excludes_test_games(
