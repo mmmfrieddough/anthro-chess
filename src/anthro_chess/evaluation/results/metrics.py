@@ -472,6 +472,19 @@ RATING_BEHAVIOR_FAMILY = register_family(
     )
 )
 
+DECISION_DECOMPOSITION_FAMILY = register_family(
+    MetricFamily(
+        identifier="decision-decomposition",
+        title="Decision decomposition",
+        summary=(
+            "Whether a bad decision came from the model preferring a bad action "
+            "or from sampling drawing an action the model did not prefer. The "
+            "two need opposite fixes and are indistinguishable in any aggregate "
+            "that reports only how the game turned out."
+        ),
+    )
+)
+
 GENERATED_PLAY_FAMILY = register_family(
     MetricFamily(
         identifier="generated-play",
@@ -850,6 +863,81 @@ ADJUDICATED_HUMAN_GAP: Mapping[str, MetricDefinition] = {
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
 }
+
+
+def _decision_metric(identifier: str, summary: str) -> MetricDefinition:
+    """Register one decision-decomposition metric.
+
+    Every metric in this family is informational, and deliberately so. Each one
+    moves with temperature by construction: a run at temperature zero selects
+    the preferred action every time and gives up no probability, which is not an
+    improvement but a different tradeoff between the two error classes. A
+    declared direction here would invite a report to reward turning the dial
+    down.
+
+    They are also generated-play readings rather than view passes, so none can
+    be scheduled into a training cadence as though it were a cheap scoring pass.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=DECISION_DECOMPOSITION_FAMILY.identifier,
+            direction=MetricDirection.INFORMATIONAL,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+
+
+DECISION_PREFERRED_SELECTION_RATE = _decision_metric(
+    "decision.preferred_selection_rate",
+    (
+        "Fraction of decisions whose selected action was the model's own "
+        "preferred action. The complement is the share of decisions sampling "
+        "decided rather than the model."
+    ),
+)
+
+DECISION_POLICY_REGRET = _decision_metric(
+    "decision.policy_regret",
+    (
+        "Mean untempered policy probability given up by the selected action "
+        "against the preferred one, over every decision. Zero means the draw "
+        "never overrode the model."
+    ),
+)
+
+DECISION_DEPARTURE_POLICY_REGRET = _decision_metric(
+    "decision.departure_policy_regret",
+    (
+        "Mean probability given up over the decisions that departed from the "
+        "preferred action alone. Small values mean the draws that overrode the "
+        "model were near ties rather than rejections of a confident preference, "
+        "which the pooled figure cannot distinguish from rare large losses."
+    ),
+)
+
+DECISION_PREFERRED_PROBABILITY = _decision_metric(
+    "decision.preferred_probability",
+    (
+        "Mean untempered probability the model gave its preferred action. This "
+        "is the policy's own sharpness, measured independently of the "
+        "temperature the draw used."
+    ),
+)
+
+DECISION_SELECTED_RANK = _decision_metric(
+    "decision.selected_rank",
+    (
+        "Mean rank of the selected action in the untempered policy. Reported "
+        "beside the probabilities because rank and probability disagree: rank "
+        "two can carry nearly the preferred action's probability, or almost "
+        "none of it."
+    ),
+)
 
 
 DEPENDENCY_RATING_SHUFFLED_DEGRADATION = register_metric(

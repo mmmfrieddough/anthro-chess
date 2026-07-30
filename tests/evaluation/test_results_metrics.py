@@ -119,7 +119,20 @@ def test_the_registry_covers_the_families_reports_read() -> None:
         "legality",
         "rating-behavior",
         "generated-play",
+        "decision-decomposition",
     } <= identifiers
+
+
+def test_decision_decomposition_metrics_declare_no_direction() -> None:
+    """Every one of them moves with temperature, which is a trade, not a gain."""
+
+    metrics = registered_metrics("decision-decomposition")
+
+    assert metrics
+    for metric in metrics:
+        assert metric.direction is MetricDirection.INFORMATIONAL
+        assert metric.cost is MetricCost.GENERATED
+        assert metric.cost.view_passes is None
 
 
 def test_a_later_family_registers_additively() -> None:

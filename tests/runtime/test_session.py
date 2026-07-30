@@ -457,6 +457,56 @@ def test_a_resignation_decision_still_reports_its_policy() -> None:
     assert decision.policy.enabled_action_count == 21
 
 
+def test_scoring_an_action_reports_what_deciding_it_would_have_reported() -> None:
+    """One selection path, so a re-scored decision is comparable to a live one."""
+
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 10.0
+    logits[encode_move(chess.Move.from_uci("d2d4"))] = 9.0
+    scored = GameSession(StubRunner(logits), config=RuntimeConfig(temperature=0.0))
+    decided = GameSession(StubRunner(logits), config=RuntimeConfig(temperature=0.0))
+
+    policy = scored.score_action(encode_move(chess.Move.from_uci("e2e4")))
+
+    assert policy == decided.decide().policy
+
+
+def test_scoring_reads_the_model_without_deciding_anything() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 10.0
+    session = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=1.0, seed=9),
+    )
+    drawn = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=1.0, seed=9),
+    )
+
+    weak = session.score_action(encode_move(chess.Move.from_uci("a2a3")))
+
+    assert weak.selected_rank > 1
+    assert weak.preferred_action_id == encode_move(chess.Move.from_uci("e2e4"))
+    assert session.move_history == ()
+    assert session.board.fen() == chess.STARTING_FEN
+    # The stream is untouched, so the next draw is the one it would have made.
+    assert _chosen_move(session) == _chosen_move(drawn)
+
+
+def test_scoring_an_unenabled_action_is_an_error() -> None:
+    session = GameSession(
+        StubRunner(torch.zeros(ACTION_VOCABULARY_SIZE)),
+        config=RuntimeConfig(temperature=0.0),
+    )
+
+    with pytest.raises(ActionSelectionError, match="not enabled"):
+        session.score_action(RESIGNATION_ACTION_ID)
+    with pytest.raises(ActionSelectionError, match="not enabled"):
+        session.score_action(encode_move(chess.Move.from_uci("e7e5")))
+    with pytest.raises(TypeError):
+        session.score_action("e2e4")  # type: ignore[arg-type]
+
+
 def test_choosing_an_action_stays_the_thin_call_interfaces_use() -> None:
     session = GameSession(
         StubRunner(_ranked_logits("e2e4")),

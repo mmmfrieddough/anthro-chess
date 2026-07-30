@@ -599,6 +599,102 @@ def test_eval_metrics_lists_the_registry(
     )
 
 
+def test_eval_decisions_reads_a_stored_payload_and_writes_the_detail(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import chess
+
+    from anthro_chess.chess import encode_move
+    from anthro_chess.evaluation.games import (
+        GAME_RECORD_VERSION,
+        DecisionPolicy,
+        DecisionRecord,
+        GameOutcome,
+        GameTermination,
+        SeatRecord,
+        build_game_record,
+    )
+
+    action_ids = tuple(
+        encode_move(chess.Move.from_uci(uci)) for uci in ("e2e4", "e7e5")
+    )
+    seat = SeatRecord(
+        kind="model",
+        label="model-a",
+        seed=1,
+        configuration={"target_rating": 1500, "temperature": 1.0},
+    )
+    record = build_game_record(
+        initial_position=chess.STARTING_FEN,
+        prefix_plies=0,
+        action_ids=action_ids,
+        white=seat,
+        black=seat,
+        seed=2,
+        decisions=[
+            DecisionRecord(
+                ply_index=0,
+                slot="white",
+                action_id=action_ids[0],
+                policy=DecisionPolicy(
+                    enabled_action_count=20,
+                    selected_probability=0.4,
+                    selected_rank=1,
+                    preferred_action_id=action_ids[0],
+                    preferred_probability=0.4,
+                ),
+            ),
+            DecisionRecord(
+                ply_index=1,
+                slot="black",
+                action_id=action_ids[1],
+                policy=DecisionPolicy(
+                    enabled_action_count=20,
+                    selected_probability=0.1,
+                    selected_rank=4,
+                    preferred_action_id=action_ids[0],
+                    preferred_probability=0.5,
+                ),
+            ),
+        ],
+        outcome=GameOutcome(
+            result="*",
+            termination=GameTermination.PLY_LIMIT,
+            adjudicated=True,
+        ),
+    )
+    games = tmp_path / "games.json"
+    games.write_text(
+        json.dumps({"version": GAME_RECORD_VERSION, "games": [record.as_record()]}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "detail" / "decisions.json"
+
+    assert (
+        main(["eval", "decisions", "--games", str(games), "--output", str(output)]) == 0
+    )
+
+    printed = capsys.readouterr().out
+    assert "Decisions classified: 2" in printed
+    assert "model preference" in printed
+    assert "sampling" in printed
+    detail = json.loads(output.read_text(encoding="utf-8"))
+    assert detail["overall"]["departures"] == 1
+    assert [entry["selected_rank"] for entry in detail["samples"]] == [1, 4]
+
+
+def test_eval_decisions_reports_an_unreadable_payload(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    games = tmp_path / "games.json"
+    games.write_text("{", encoding="utf-8")
+
+    assert main(["eval", "decisions", "--games", str(games)]) == 2
+    assert "anthro eval decisions:" in capsys.readouterr().err
+
+
 def test_eval_bridge_records_lists_and_revokes(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
