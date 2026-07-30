@@ -100,6 +100,77 @@ def test_decision_tensorization_rates_only_the_current_decision() -> None:
     ]
 
 
+def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:
+    short_board, short_moves = _position(("d2d4",))
+    long_board, long_moves = _position(("d2d4", "d7d5", "c2c4"))
+    contexts = (
+        build_decision_context(short_board, short_moves, target_rating=1800),
+        build_decision_context(long_board, long_moves, target_rating=1200),
+    )
+
+    batch = MoveModelBatch.from_decision_contexts(contexts)
+
+    assert batch.attention_mask.tolist() == [
+        [True, True, False, False],
+        [True, True, True, True],
+    ]
+    # Each history's rating marks its own last real timestep, and the padded
+    # columns carry no inputs at all.
+    assert batch.inputs.target_rating.values.tolist() == [
+        [0, 1800, 0, 0],
+        [0, 0, 0, 1200],
+    ]
+    assert batch.inputs.previous_action_id.present.tolist() == [
+        [False, True, False, False],
+        [False, True, True, True],
+    ]
+    assert batch.ply_indices.tolist() == [[0, 1, 0, 0], [0, 1, 2, 3]]
+
+
+def test_a_batched_prediction_serves_every_pending_decision_in_one_pass(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_run(tmp_path / "run", seed=13)
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+    )
+    board, moves = _position(("e2e4", "e7e5", "g1f3"))
+    contexts = (
+        build_decision_context(chess.Board(), (), target_rating=1650),
+        build_decision_context(board, moves, target_rating=1650),
+    )
+    separate = tuple(runner.predict(context) for context in contexts)
+
+    widths: list[int] = []
+    hook = runner._model.register_forward_pre_hook(  # noqa: SLF001
+        lambda _module, arguments: widths.append(arguments[0].attention_mask.shape[1])
+    )
+    try:
+        together = runner.predict_batch(contexts)
+    finally:
+        hook.remove()
+
+    assert widths == [4]
+    assert len(together) == len(contexts)
+    # Batching changes which floating-point kernels run, so a padded row agrees
+    # with its own single-history prediction to float32 precision rather than
+    # bit for bit.
+    for batched, alone in zip(together, separate, strict=True):
+        assert batched.shape == (ACTION_VOCABULARY_SIZE,)
+        torch.testing.assert_close(batched, alone, rtol=1e-5, atol=1e-5)
+    assert not torch.equal(together[0], together[1])
+
+
+def test_a_prediction_batch_cannot_be_empty(tmp_path: Path) -> None:
+    checkpoint = _write_run(tmp_path / "run", seed=13)
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+    )
+
+    with pytest.raises(ModelRunnerError, match="at least one context"):
+        runner.predict_batch(())
+
+
 def test_default_and_explicit_run_selection_have_deliberate_precedence(
     tmp_path: Path,
 ) -> None:

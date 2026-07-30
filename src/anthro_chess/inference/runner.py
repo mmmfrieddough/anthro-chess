@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -134,23 +134,41 @@ class CheckpointModelRunner:
     def predict(self, context: DecisionContext) -> Tensor:
         """Return current-decision raw action logits on CPU."""
 
+        return self.predict_batch((context,))[0]
+
+    def predict_batch(self, contexts: Sequence[DecisionContext]) -> tuple[Tensor, ...]:
+        """Return current-decision raw action logits for several histories.
+
+        One padded forward pass serves every pending decision, which is what
+        lets a benchmark playing many games at once keep the model fed instead
+        of running it one position at a time. Each history is read at its own
+        length, since padding sits past the end of the shorter ones.
+        """
+
+        if not contexts:
+            raise ModelRunnerError("a prediction batch needs at least one context")
+        lengths = tuple(len(context.plies) for context in contexts)
         try:
-            batch = MoveModelBatch.from_decision_context(
-                context,
+            batch = MoveModelBatch.from_decision_contexts(
+                contexts,
                 device=self.device,
             )
             with torch.inference_mode():
-                logits = self._model(batch)[0, -1]
+                predicted = self._model(batch)
+            decisions = torch.as_tensor(
+                [length - 1 for length in lengths],
+                device=predicted.device,
+            )
+            rows = torch.arange(len(contexts), device=predicted.device)
+            logits = predicted[rows, decisions]
         except (RuntimeError, ValueError) as error:
             raise ModelRunnerError(f"model inference failed: {error}") from error
-        if logits.shape != (ACTION_VOCABULARY_SIZE,):
+        if logits.shape != (len(contexts), ACTION_VOCABULARY_SIZE):
             raise ModelRunnerError("model returned an invalid action-logit shape")
         if not torch.isfinite(logits).all():
             raise ModelRunnerError("model returned non-finite action logits")
-        return cast(
-            Tensor,
-            logits.detach().to(device="cpu", dtype=torch.float32).clone(),
-        )
+        resolved = logits.detach().to(device="cpu", dtype=torch.float32).clone()
+        return tuple(cast(Tensor, row) for row in resolved.unbind(0))
 
 
 def _load_run_record(path: Path) -> dict[str, Any]:

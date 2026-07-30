@@ -35,6 +35,7 @@ from anthro_chess.evaluation.games.harness import (
     standard_positions,
 )
 from anthro_chess.evaluation.games.players import (
+    BatchingGamePlayer,
     DecisionRequest,
     ExternalEngine,
     ExternalEnginePlayer,
@@ -69,6 +70,7 @@ __all__ = [
     "GAME_ANALYSIS_VERSION",
     "GAME_RECORD_VERSION",
     "GENERATION_VERSION",
+    "BatchingGamePlayer",
     "ClockState",
     "DecisionPolicy",
     "DecisionRecord",

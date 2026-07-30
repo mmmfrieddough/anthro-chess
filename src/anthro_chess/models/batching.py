@@ -9,8 +9,37 @@ import torch
 from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
-from anthro_chess.data import DecisionContext, SequenceBatch
+from anthro_chess.data import (
+    BOARD_SQUARE_COUNT,
+    DecisionContext,
+    PlyContext,
+    SequenceBatch,
+)
 from anthro_chess.data.loading import LegalActionTensor
+
+
+def _validated_plies(context: DecisionContext) -> tuple[PlyContext, ...]:
+    """Return one decision history after rejecting misaligned inputs."""
+
+    plies = context.plies
+    if tuple(ply.ply_index for ply in plies) != tuple(range(len(plies))):
+        raise ValueError("decision context plies must be a complete zero-based history")
+    if plies[0].previous_action_id is not None or any(
+        ply.previous_action_id is None for ply in plies[1:]
+    ):
+        raise ValueError("decision context previous actions must align with history")
+    if any(
+        value is not None
+        for ply in plies
+        for value in (
+            ply.time_initial_ms,
+            ply.time_increment_ms,
+            ply.player_clock_ms,
+            ply.opponent_clock_ms,
+        )
+    ):
+        raise ValueError("the current move model does not support timing inputs")
+    return plies
 
 
 @dataclass(frozen=True)
@@ -123,86 +152,115 @@ class MoveModelBatch:
     ) -> MoveModelBatch:
         """Tensorize one target-free full history for its current decision."""
 
+        return cls.from_decision_contexts((context,), device=device)
+
+    @classmethod
+    def from_decision_contexts(
+        cls,
+        contexts: Sequence[DecisionContext],
+        *,
+        device: torch.device | str | None = None,
+    ) -> MoveModelBatch:
+        """Tensorize several pending decisions into one padded batch.
+
+        Games in flight are at different plies, so their histories cannot be
+        stacked. Rows are padded to the longest history and the padded
+        timesteps are marked absent in the attention mask, which is what the
+        model reads to exclude them as attention keys.
+
+        Padding goes after the history rather than before it. Every real ply
+        then keeps the index it would have had on its own, and since the
+        position encoding reads that index and the causal mask lets a timestep
+        attend only to earlier ones, the row's last real timestep sees exactly
+        the inputs the same history would present alone. A caller reads each
+        decision at its own history length rather than at a shared last
+        column.
+        """
+
+        if not contexts:
+            raise ValueError("a decision batch needs at least one context")
         tensor_device = torch.device(device) if device is not None else None
-        plies = context.plies
-        length = len(plies)
-        if tuple(ply.ply_index for ply in plies) != tuple(range(length)):
-            raise ValueError(
-                "decision context plies must be a complete zero-based history"
-            )
-        if plies[0].previous_action_id is not None or any(
-            ply.previous_action_id is None for ply in plies[1:]
-        ):
-            raise ValueError(
-                "decision context previous actions must align with history"
-            )
-        if any(
-            value is not None
-            for ply in plies
-            for value in (
-                ply.time_initial_ms,
-                ply.time_increment_ms,
-                ply.player_clock_ms,
-                ply.opponent_clock_ms,
-            )
-        ):
-            raise ValueError("the current move model does not support timing inputs")
+        histories = tuple(_validated_plies(context) for context in contexts)
+        lengths = tuple(len(plies) for plies in histories)
+        width = max(lengths)
 
-        def required(values: object) -> Tensor:
-            return torch.as_tensor(
-                (values,),
-                dtype=torch.long,
-                device=tensor_device,
+        def padded(
+            select: Callable[[PlyContext], int | None],
+            fill: int | None = 0,
+        ) -> tuple[tuple[int | None, ...], ...]:
+            return tuple(
+                tuple(select(ply) for ply in plies) + (fill,) * (width - len(plies))
+                for plies in histories
             )
 
-        def optional(values: tuple[int | None, ...]) -> OptionalTensor:
+        def required(rows: tuple[tuple[int | None, ...], ...]) -> Tensor:
+            return torch.as_tensor(rows, dtype=torch.long, device=tensor_device)
+
+        def optional(rows: tuple[tuple[int | None, ...], ...]) -> OptionalTensor:
             return OptionalTensor(
-                required(tuple(value if value is not None else 0 for value in values)),
+                required(
+                    tuple(
+                        tuple(value if value is not None else 0 for value in row)
+                        for row in rows
+                    )
+                ),
                 torch.as_tensor(
-                    (tuple(value is not None for value in values),),
+                    tuple(tuple(value is not None for value in row) for row in rows),
                     dtype=torch.bool,
                     device=tensor_device,
                 ),
             )
 
-        ratings = (None,) * (length - 1) + (context.target_rating,)
+        boards = tuple(
+            tuple(ply.board.piece_ids for ply in plies)
+            + ((0,) * BOARD_SQUARE_COUNT,) * (width - len(plies))
+            for plies in histories
+        )
+        ratings = tuple(
+            (None,) * (length - 1)
+            + (context.target_rating,)
+            + (None,) * (width - length)
+            for context, length in zip(contexts, lengths, strict=True)
+        )
         result = cls(
             inputs=MoveModelInputs(
-                piece_ids=required(tuple(ply.board.piece_ids for ply in plies)),
-                side_to_move=required(tuple(ply.board.side_to_move for ply in plies)),
-                castling_rights=required(
-                    tuple(ply.board.castling_rights for ply in plies)
+                piece_ids=torch.as_tensor(
+                    boards, dtype=torch.long, device=tensor_device
                 ),
+                side_to_move=required(padded(lambda ply: ply.board.side_to_move)),
+                castling_rights=required(padded(lambda ply: ply.board.castling_rights)),
                 en_passant_square=optional(
-                    tuple(ply.board.en_passant_square for ply in plies)
+                    padded(lambda ply: ply.board.en_passant_square, fill=None)
                 ),
-                halfmove_clock=required(
-                    tuple(ply.board.halfmove_clock for ply in plies)
-                ),
-                fullmove_number=required(
-                    tuple(ply.board.fullmove_number for ply in plies)
-                ),
+                halfmove_clock=required(padded(lambda ply: ply.board.halfmove_clock)),
+                fullmove_number=required(padded(lambda ply: ply.board.fullmove_number)),
                 previous_action_id=optional(
-                    tuple(ply.previous_action_id for ply in plies)
+                    padded(lambda ply: ply.previous_action_id, fill=None)
                 ),
                 target_rating=optional(ratings),
             ),
             action_targets=torch.zeros(
-                (1, length), dtype=torch.long, device=tensor_device
+                (len(contexts), width), dtype=torch.long, device=tensor_device
             ),
             action_loss_mask=torch.zeros(
-                (1, length), dtype=torch.bool, device=tensor_device
+                (len(contexts), width), dtype=torch.bool, device=tensor_device
             ),
-            attention_mask=torch.ones(
-                (1, length), dtype=torch.bool, device=tensor_device
+            attention_mask=torch.as_tensor(
+                tuple(
+                    (True,) * length + (False,) * (width - length) for length in lengths
+                ),
+                dtype=torch.bool,
+                device=tensor_device,
             ),
             causal_attention_mask=torch.tril(
-                torch.ones((length, length), dtype=torch.bool, device=tensor_device)
+                torch.ones((width, width), dtype=torch.bool, device=tensor_device)
             ),
-            legal_action_ids=(((),) * length,),
-            game_ids=torch.zeros((1, length), dtype=torch.long, device=tensor_device),
-            ply_indices=required(tuple(ply.ply_index for ply in plies)),
-            chunk_start_plies=(plies[0].ply_index,),
+            legal_action_ids=(((),) * width,) * len(contexts),
+            game_ids=torch.zeros(
+                (len(contexts), width), dtype=torch.long, device=tensor_device
+            ),
+            ply_indices=required(padded(lambda ply: ply.ply_index)),
+            chunk_start_plies=tuple(plies[0].ply_index for plies in histories),
         )
         result.validate()
         return result
@@ -214,9 +272,9 @@ class MoveModelBatch:
         This is the narrow case: every input covers the same number of plies,
         so the rows concatenate with no padding and the causal mask is already
         shared. It exists for declared-batch throughput measurement, where the
-        workload fixes one history length on purpose. Batching in-flight games
-        of differing lengths is a padding problem rather than a stacking one
-        and does not belong here.
+        workload fixes one history length on purpose. In-flight games of
+        differing lengths are a padding problem rather than a stacking one and
+        belong in :meth:`from_decision_contexts`.
         """
 
         if not batches:

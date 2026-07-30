@@ -119,6 +119,14 @@ model tensor boundary, applies the controlled player's rating only to the final
 decision, recomputes the complete causal history, and returns detached raw
 action logits to the decision runtime.
 
+It also accepts several pending decisions at once, padding the shorter
+histories past their end so each keeps the timestep indices it would have had
+alone and reads its own decision at its own length. A live game has one
+decision to make and never uses this; a caller holding many independent games,
+such as a generated-game benchmark, is the reason it exists. The batched
+surface is declared separately from the single-decision one, so a runner that
+offers only the latter stays a valid runner.
+
 The current game-session runtime owns the canonical board and complete observed
 move history, holds the context encoded for it, masks actions against exact
 legal moves, and applies the selected move. Its strict settings keep target
