@@ -128,7 +128,8 @@ explicit options. `anthro eval bridge` records, lists, and revokes bridges.
 games an axis needs. `anthro eval inference` measures what a checkpoint costs
 to play with; see inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
-session's log; see decision decomposition below.
+session's log; see decision decomposition below. `anthro eval puzzles` measures
+the external puzzle-rating response described in the rating section.
 
 ### The Checkpoint Evaluation Runner
 
@@ -1045,6 +1046,30 @@ risk is small, since one exposure among millions does not produce recall and
 worst-case inflation is bounded by the overlap fraction. It is worth reporting
 anyway because it grows silently as the corpus expands, and the join is cheap
 enough that there is no reason to carry the uncertainty.
+
+The implemented benchmark is `anthro eval puzzles`, selected by
+`configs/evaluation/puzzle-rating-response.toml`. The owned set, its loader, and
+its source and license record live under
+`anthro_chess.evaluation.puzzles`; `scripts/vendor-puzzle-set.py` regenerates it
+from a digest-pinned Lichess export through deterministic hash-rank selection
+within rating bands. Tests use small injected sets, while the command always
+reads the complete owned set.
+
+Each solution is scored on the canonical verified line. First-move accuracy and
+full-line completion stay separate; later player moves are conditioned on the
+published preceding solution, so a miss does not invent an opponent reply. The
+Lichess mate-in-one exception is preserved by accepting every legal checkmate
+rather than only the move written in the export. The
+sampled reading is the exact probability of drawing the verified move, or the
+product of those probabilities for a line, under the declared temperature.
+That is the infinite-sample solve rate without Monte Carlo noise and remains
+directly comparable with the greedy reading at temperature zero.
+
+The detail artifact carries the configured-rating grid and the human expected
+curve per puzzle-rating band. The summary tier carries overall solve rates,
+fitted-rating slope and pairwise ordering, plus the source-game overlap rate.
+The overlap join reads only Lichess train and validation keys; test-only games
+remain excluded because training never consumes that partition.
 
 ## Timing Evaluation
 

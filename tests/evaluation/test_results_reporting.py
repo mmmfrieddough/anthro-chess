@@ -136,7 +136,7 @@ def test_a_family_with_no_supporting_result_is_named_with_a_reason(
     assert training_health.absence == "no result recorded for checkpoint-b"
 
     rating = _family(report, "rating-behavior")
-    assert rating.absence == "no metric is registered for this family yet"
+    assert rating.absence == "no result recorded for checkpoint-b"
 
 
 def test_mismatched_fingerprints_are_reported_as_incomparable(
@@ -608,7 +608,7 @@ def test_the_default_text_view_stays_readable(
     assert "absent: no result recorded for" in rendered
     assert max(len(line) for line in rendered.splitlines()) <= 120
     # A ratchet rather than a round number: it is the current height, so a
-    # change that grows the default view has to be a deliberate one. Two of
-    # these lines belong to decision decomposition, whose metrics are
-    # registered ahead of the rollout suites that will report them.
-    assert len(rendered.splitlines()) <= 22
+    # change that grows the default view has to be a deliberate one. Two lines
+    # belong to decision decomposition, and two to the puzzle-backed rating
+    # family; both are registered ahead of results in this fixture.
+    assert len(rendered.splitlines()) <= 24

@@ -118,6 +118,15 @@ if TYPE_CHECKING:
         bootstrap_floors,
         characterize_sampling_noise,
     )
+    from anthro_chess.evaluation.puzzles import (
+        PUZZLE_BENCHMARK_VERSION,
+        PuzzleBandResult,
+        PuzzleBenchmarkConfig,
+        PuzzleBenchmarkError,
+        PuzzleBenchmarkResult,
+        PuzzleRatingResult,
+        benchmark_puzzles,
+    )
     from anthro_chess.evaluation.reconstruction import (
         ReconstructedGame,
         ReconstructionError,
@@ -194,6 +203,13 @@ _LAZY_EXPORTS = {
     "NoiseConfig": "noise",
     "bootstrap_floors": "noise",
     "characterize_sampling_noise": "noise",
+    "PUZZLE_BENCHMARK_VERSION": "puzzles",
+    "PuzzleBandResult": "puzzles",
+    "PuzzleBenchmarkConfig": "puzzles",
+    "PuzzleBenchmarkError": "puzzles",
+    "PuzzleBenchmarkResult": "puzzles",
+    "PuzzleRatingResult": "puzzles",
+    "benchmark_puzzles": "puzzles",
 }
 
 
@@ -237,6 +253,7 @@ __all__ = [
     "DecisionSetting",
     "INFERENCE_BENCHMARK_VERSION",
     "INFERENCE_KIND",
+    "PUZZLE_BENCHMARK_VERSION",
     "InferenceBenchmarkConfig",
     "InferenceBenchmarkError",
     "InferenceBenchmarkResult",
@@ -246,6 +263,7 @@ __all__ = [
     "RatingResponse",
     "TracePoint",
     "benchmark_inference",
+    "benchmark_puzzles",
     "LeakageCheck",
     "LeakageError",
     "check_leakage",
@@ -272,6 +290,11 @@ __all__ = [
     "PoolConfig",
     "PoolGame",
     "PoolResult",
+    "PuzzleBandResult",
+    "PuzzleBenchmarkConfig",
+    "PuzzleBenchmarkError",
+    "PuzzleBenchmarkResult",
+    "PuzzleRatingResult",
     "PositionCharacteristic",
     "PositionPredicate",
     "PositionSlices",

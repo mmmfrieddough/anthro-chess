@@ -1,0 +1,27 @@
+{
+  "entries": 320,
+  "license": {
+    "attribution": "Puzzles produced by Lichess and released as part of its open database under CC0 1.0.",
+    "name": "Creative Commons Zero v1.0 Universal",
+    "spdx_id": "CC0-1.0",
+    "url": "https://database.lichess.org/"
+  },
+  "name": "anthro-lichess-puzzles",
+  "puzzles_sha256": "0d974a10001042eb0319436b873b0ee4ed16468dcc59f9b741491bd8f3e22a2c",
+  "selection": {
+    "algorithm": "sha256-rank-by-rating-band-v1",
+    "band_width": 400,
+    "maximum_rating_exclusive": 2800,
+    "minimum_plays": 100,
+    "minimum_popularity": 0,
+    "minimum_rating": 800,
+    "per_band": 64
+  },
+  "source": {
+    "format": "lichess-puzzle-csv-v1",
+    "retrieved": "2026-07-29",
+    "sha256": "5503bfaf5534518ffe3c4c3bb0ac1ae82350d117ad1a52947796096b75e6247e",
+    "url": "https://database.lichess.org/lichess_db_puzzle.csv.zst"
+  },
+  "version": 1
+}

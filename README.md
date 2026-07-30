@@ -60,13 +60,13 @@ uv run anthro --version
 uv run anthro smoke
 uv run anthro data acquire --help
 uv run anthro data prepare --help
+uv run anthro eval --help
 uv run anthro train --help
 uv run anthro-uci --help
 ```
 
-Only implemented commands appear in `--help`. Evaluation and native play
-commands will be added as those capabilities become real. UCI is a separate
-installed console script because chess GUIs launch engines directly.
+Only implemented commands appear in `--help`. UCI is a separate installed
+console script because chess GUIs launch engines directly.
 
 Generated datasets and runs can be shared across worktrees by setting:
 
@@ -233,6 +233,8 @@ diagnostics stay machine-local.
 uv run anthro eval report
 uv run anthro eval report --history held_out.move_loss
 uv run anthro eval metrics
+uv run anthro eval puzzles \
+  --config configs/evaluation/puzzle-rating-response.toml --no-record
 ```
 
 The default report is a compact delta view by family and metric, with the
