@@ -120,10 +120,16 @@ decision, recomputes the complete causal history, and returns detached raw
 action logits to the decision runtime.
 
 The current game-session runtime owns the canonical board and complete observed
-move history, builds that shared context, masks actions against exact legal
-moves, and applies the selected move. Its strict settings keep target rating
-and temperature independent and leave resignation disabled unless a caller
-deliberately enables it.
+move history, holds the context encoded for it, masks actions against exact
+legal moves, and applies the selected move. Its strict settings keep target
+rating and temperature independent and leave resignation disabled unless a
+caller deliberately enables it.
+
+An encoded timestep depends only on the root position and the moves before it,
+so the session keeps the encoding it already has and builds only the timesteps
+a position update actually added. That makes per-decision encoding a function
+of new plies rather than of game length, and it is why validating an incoming
+history and building the context the model reads are one pass rather than two.
 
 Selection also reports what the policy said about the action it applied. This
 is the single place an action is chosen, so exposing those quantities here is
@@ -142,6 +148,13 @@ history and future transformer key-value caches should follow the same
 common-prefix boundary. Caching is not allowed to weaken support for arbitrary
 valid positions and should be implemented only where its correctness and
 measured value justify the complexity.
+
+Encoded history reuses that boundary today. Transformer key-value caching does
+not, and is deliberately still open: once encoding is reused, the remaining
+per-decision cost is almost entirely the forward pass, so caching model state
+is the next thing worth measuring rather than something already ruled out. It
+would change shared model code that training also runs, so the case for it
+should rest on inference measurement at a chosen model capacity.
 
 The sampling generator has a game lifetime and must not be reset as a side
 effect of synchronizing a position. Greedy temperature-zero selection is

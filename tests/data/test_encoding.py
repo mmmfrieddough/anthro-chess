@@ -1,4 +1,6 @@
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 
 import chess
@@ -7,12 +9,14 @@ import pytest
 from anthro_chess.chess import RESIGNATION_ACTION_ID, encode_move
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
+    DecisionHistory,
     EncodingError,
     GameEncodingInput,
     build_decision_context,
     encode_game,
     encoding_identity,
 )
+from anthro_chess.data import encoding as encoding_module
 
 PRESENT_60_SECONDS = 60_000
 
@@ -211,6 +215,120 @@ def test_target_free_context_preserves_missing_rating_and_rejects_mismatch() -> 
             (),
             target_rating=None,
         )
+
+
+def test_reused_prefix_encodes_exactly_what_a_full_rebuild_would() -> None:
+    """Every update path must be indistinguishable from encoding from scratch."""
+
+    history = DecisionHistory()
+    updates = (
+        (chess.STARTING_FEN, ("e2e4",), 0),
+        (chess.STARTING_FEN, ("e2e4", "e7e5"), 1),
+        (chess.STARTING_FEN, ("e2e4", "e7e5", "g1f3", "b8c6"), 2),
+        # A takeback and a divergence both keep the moves they still share.
+        (chess.STARTING_FEN, ("e2e4", "e7e5"), 2),
+        (chess.STARTING_FEN, ("e2e4", "c7c5"), 1),
+        # An unchanged history reuses everything and re-encodes nothing.
+        (chess.STARTING_FEN, ("e2e4", "c7c5"), 2),
+        # A different root shares nothing with the game it replaces.
+        ("7k/5Q2/7K/8/8/8/8/8 b - - 0 1", (), 0),
+    )
+
+    for initial_fen, texts, expected_reuse in updates:
+        moves = tuple(chess.Move.from_uci(text) for text in texts)
+
+        reused = history.synchronize(initial_fen=initial_fen, moves=moves)
+
+        assert reused == expected_reuse
+        assert history.moves == moves
+        assert history.initial_fen == initial_fen
+        assert history.context(target_rating=1500) == build_decision_context(
+            history.board,
+            moves,
+            target_rating=1500,
+        )
+
+
+def test_only_the_plies_past_the_divergence_point_are_encoded() -> None:
+    """The reuse count has to describe encoding actually skipped, not intent."""
+
+    history = DecisionHistory(
+        moves=tuple(chess.Move.from_uci(text) for text in ("e2e4", "e7e5", "g1f3"))
+    )
+    appended = tuple(
+        chess.Move.from_uci(text) for text in ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5")
+    )
+    divergent = tuple(
+        chess.Move.from_uci(text) for text in ("e2e4", "e7e5", "d2d4", "e5d4")
+    )
+
+    with _counted_encodings() as counter:
+        history.synchronize(moves=appended)
+    assert counter.encodings == 2
+
+    with _counted_encodings() as counter:
+        history.synchronize(moves=divergent)
+    assert counter.encodings == 2
+
+    with _counted_encodings() as counter:
+        history.push(chess.Move.from_uci("g1f3"))
+    assert counter.encodings == 1
+
+
+def test_a_rejected_history_leaves_the_encoded_prefix_untouched() -> None:
+    """Validation failures must not leave a half-applied game behind."""
+
+    moves = tuple(chess.Move.from_uci(text) for text in ("e2e4", "e7e5"))
+    history = DecisionHistory(moves=moves)
+    before = history.context(target_rating=None)
+
+    illegal_append = (*moves, chess.Move.from_uci("g1f3"), chess.Move.from_uci("a1a8"))
+    with pytest.raises(EncodingError, match="illegal at ply 3"):
+        history.synchronize(moves=illegal_append)
+    assert history.moves == moves
+    assert history.context(target_rating=None) == before
+
+    with pytest.raises(EncodingError, match="illegal at ply 1"):
+        history.synchronize(moves=(chess.Move.from_uci("d2d4"), *moves))
+    assert history.moves == moves
+    assert history.context(target_rating=None) == before
+
+    with pytest.raises(EncodingError, match="illegal at ply 2"):
+        history.push(chess.Move.from_uci("a1a8"))
+    assert history.moves == moves
+    assert history.context(target_rating=None) == before
+
+    with pytest.raises(EncodingError, match="invalid initial position"):
+        history.synchronize(initial_fen="not a position", moves=())
+    assert history.initial_fen == chess.STARTING_FEN
+    assert history.context(target_rating=None) == before
+
+    with pytest.raises(TypeError, match="move at ply 0 must be"):
+        history.synchronize(moves=("e2e4",))  # type: ignore[arg-type]
+    assert history.moves == moves
+
+
+class _EncodingCounter:
+    """Count board encodings performed inside one block."""
+
+    def __init__(self) -> None:
+        self.encodings = 0
+
+
+@contextmanager
+def _counted_encodings() -> Iterator[_EncodingCounter]:
+    counter = _EncodingCounter()
+    original = encoding_module._context_for_position
+
+    def counted(**kwargs: object) -> object:
+        counter.encodings += 1
+        return original(**kwargs)  # type: ignore[arg-type]
+
+    encoding_module._context_for_position = counted  # type: ignore[assignment]
+    try:
+        yield counter
+    finally:
+        encoding_module._context_for_position = original
 
 
 def _game(

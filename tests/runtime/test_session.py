@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,7 +16,8 @@ from anthro_chess.chess import (
     encode_move,
 )
 from anthro_chess.config import load_config
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import DecisionContext, build_decision_context
+from anthro_chess.data import encoding as encoding_module
 from anthro_chess.runtime import (
     ActionSelectionError,
     GameSession,
@@ -465,6 +468,127 @@ def test_choosing_an_action_stays_the_thin_call_interfaces_use() -> None:
     assert isinstance(action, MoveAction)
     assert action.move == chess.Move.from_uci("e2e4")
     assert session.move_history == (action.move,)
+
+
+def test_a_played_game_encodes_each_ply_once_however_often_it_is_resent() -> None:
+    """Per-decision cost must follow appended plies, not total game length.
+
+    A UCI client resends the whole game before every move, which is the shape
+    that used to make encoding quadratic. Counting encodings rather than timing
+    them keeps the bound exact and free of machine noise.
+    """
+
+    runner = ScriptedRunner()
+    session = GameSession(runner, config=RuntimeConfig(temperature=0.0, seed=3))
+    board = chess.Board()
+    history: list[chess.Move] = []
+    decisions = 24
+
+    with _counted_encodings() as counter:
+        for _ in range(decisions):
+            runner.next_move = _quiet_move(board)
+            session.sync_position(moves=tuple(history))
+            move = _chosen_move(session)
+            board.push(move)
+            history.append(move)
+
+    # One encoding per ply the game gained, and nothing for the plies resent.
+    assert counter.encodings == decisions
+    assert session.move_history == tuple(history)
+    assert len(runner.contexts[-1].plies) == decisions
+
+
+def test_a_reused_prefix_gives_the_model_the_same_context_as_a_rebuild() -> None:
+    """Reuse is only correct if the model cannot tell that it happened."""
+
+    runner = ScriptedRunner()
+    session = GameSession(runner, config=RuntimeConfig(temperature=0.0, seed=3))
+    board = chess.Board()
+    history: list[chess.Move] = []
+
+    def play(move: chess.Move | None = None) -> None:
+        runner.next_move = move or _quiet_move(board)
+        session.sync_position(moves=tuple(history))
+        chosen = _chosen_move(session)
+        assert runner.contexts[-1] == build_decision_context(
+            board,
+            tuple(history),
+            target_rating=session.config.target_rating,
+        )
+        assert chosen == runner.next_move
+        board.push(runner.next_move)
+        history.append(runner.next_move)
+
+    def take_back() -> None:
+        board.pop()
+        history.pop()
+
+    for _ in range(4):
+        play()
+
+    take_back()
+    play()  # Resynchronizing onto a shorter history.
+    take_back()
+    play(_quiet_move(board, skip=1))  # Replacing the last move with another.
+    play()
+
+    assert session.move_history == tuple(history)
+
+
+def _quiet_move(board: chess.Board, *, skip: int = 0) -> chess.Move:
+    """Pick a deterministic move that neither ends the game nor repeats.
+
+    ``skip`` selects a later candidate, which is how a test asks for a move
+    that diverges from the one ordinary play would have chosen.
+    """
+
+    for move in sorted(board.legal_moves, key=lambda move: move.uci()):
+        board.push(move)
+        playable = not board.is_game_over() and not board.is_repetition(2)
+        board.pop()
+        if not playable:
+            continue
+        if skip == 0:
+            return move
+        skip -= 1
+    raise AssertionError("the position has no quiet continuation")
+
+
+@dataclass
+class ScriptedRunner:
+    """Force one chosen legal move so a long game can be driven exactly."""
+
+    next_move: chess.Move = chess.Move.null()
+    contexts: list[DecisionContext] = field(default_factory=list)
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.contexts.append(context)
+        logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+        logits[encode_move(self.next_move)] = 10.0
+        return logits
+
+
+class _EncodingCounter:
+    """Count board encodings performed inside one block."""
+
+    def __init__(self) -> None:
+        self.encodings = 0
+
+
+@contextmanager
+def _counted_encodings() -> Iterator[_EncodingCounter]:
+    counter = _EncodingCounter()
+    original = encoding_module._context_for_position
+
+    def counted(**kwargs: object) -> object:
+        counter.encodings += 1
+        return original(**kwargs)  # type: ignore[arg-type]
+
+    encoding_module._context_for_position = counted  # type: ignore[assignment]
+    try:
+        yield counter
+    finally:
+        encoding_module._context_for_position = original
 
 
 def _chosen_move(session: GameSession) -> chess.Move:
