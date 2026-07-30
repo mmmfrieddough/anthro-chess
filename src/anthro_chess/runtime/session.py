@@ -18,7 +18,7 @@ from anthro_chess.chess import (
     decode_move,
     legal_action_ids,
 )
-from anthro_chess.data import DecisionContext, EncodingError, build_decision_context
+from anthro_chess.data import DecisionContext, DecisionHistory, EncodingError
 from anthro_chess.runtime.config import RuntimeConfig
 
 logger = logging.getLogger(__name__)
@@ -137,36 +137,34 @@ class GameSession:
         self._runner = runner
         self.config = config or RuntimeConfig()
         self._generator = torch.Generator(device="cpu")
-        self._board = chess.Board()
-        self._initial_fen = chess.STARTING_FEN
+        self._history = DecisionHistory()
         self._resigned_by: chess.Color | None = None
-        self._reusable_prefix_plies = 0
         self._resolved_seed = 0
         self.reset(initial_fen=initial_fen, moves=moves)
+
+    @property
+    def _board(self) -> chess.Board:
+        """Return the live canonical board the encoded history owns."""
+
+        return self._history.board
 
     @property
     def board(self) -> chess.Board:
         """Return a defensive copy of the canonical board."""
 
-        return self._board.copy(stack=True)
+        return self._history.board.copy(stack=True)
 
     @property
     def initial_fen(self) -> str:
         """Return the FEN the current game history is rooted at."""
 
-        return self._initial_fen
+        return self._history.initial_fen
 
     @property
     def move_history(self) -> tuple[chess.Move, ...]:
         """Return every observed move from both players."""
 
-        return tuple(self._board.move_stack)
-
-    @property
-    def reusable_prefix_plies(self) -> int:
-        """Return plies whose encoded history survived the last sync."""
-
-        return self._reusable_prefix_plies
+        return self._history.moves
 
     @property
     def resolved_seed(self) -> int:
@@ -192,17 +190,24 @@ class GameSession:
         initial_fen: str = chess.STARTING_FEN,
         moves: Sequence[chess.Move] = (),
     ) -> None:
-        """Start a new game and a new random stream after validating history."""
+        """Start a new game and a new random stream after validating history.
 
-        board = self._reconstruct_and_validate(initial_fen, tuple(moves))
-        self._board = board
-        self._initial_fen = initial_fen
+        A new game shares nothing with the old one, so the encoded history is
+        rebuilt rather than resynchronized. Encoding it is the validation, and
+        the plies it produces are the ones the first decision reads, so nothing
+        is built here only to be built again when the model is asked to move.
+        """
+
+        try:
+            history = DecisionHistory(initial_fen=initial_fen, moves=moves)
+        except EncodingError as error:
+            raise SessionStateError(str(error)) from error
+        self._history = history
         self._resigned_by = None
-        self._reusable_prefix_plies = 0
         self._begin_random_stream()
         logger.debug(
             "Reset game session with %s observed plies",
-            len(board.move_stack),
+            len(history.moves),
         )
 
     def sync_position(
@@ -221,31 +226,26 @@ class GameSession:
         """
 
         moves = tuple(moves)
-        target = self._reconstruct_and_validate(initial_fen, moves)
-        current = tuple(self._board.move_stack)
-        same_root = initial_fen == self._initial_fen
-        prefix = _common_prefix_length(current, moves) if same_root else 0
+        same_root = self._history.initial_fen == initial_fen
+        current_plies = len(self._history.moves)
+        try:
+            reused = self._history.synchronize(initial_fen=initial_fen, moves=moves)
+        except EncodingError as error:
+            raise SessionStateError(str(error)) from error
+        # Keeping every ply of the previous history is exactly what makes an
+        # update append-only; anything less replaced part of the game.
+        replaced = not (same_root and reused == current_plies)
 
         self._resigned_by = None
-        if same_root and prefix == len(current) and len(moves) >= len(current):
-            for move in moves[len(current) :]:
-                self._board.push(move)
-            self._reusable_prefix_plies = len(current)
-            replaced = False
-        else:
-            self._board = target
-            self._initial_fen = initial_fen
-            self._reusable_prefix_plies = prefix
-            replaced = True
         logger.debug(
             "Synced position: %s, reused %s of %s plies",
             "replaced" if replaced else "append-only",
-            self._reusable_prefix_plies,
+            reused,
             len(moves),
         )
         return PositionSync(
             total_plies=len(moves),
-            reused_prefix_plies=self._reusable_prefix_plies,
+            reused_prefix_plies=reused,
             replaced=replaced,
         )
 
@@ -253,33 +253,6 @@ class GameSession:
         """Establish the next random stream from the current seed policy."""
 
         self._begin_random_stream()
-
-    def _reconstruct_and_validate(
-        self,
-        initial_fen: str,
-        moves: tuple[chess.Move, ...],
-    ) -> chess.Board:
-        try:
-            board = chess.Board(initial_fen)
-        except ValueError as error:
-            raise SessionStateError(f"invalid initial position: {error}") from error
-        for ply_index, move in enumerate(moves):
-            if not isinstance(move, chess.Move):
-                raise TypeError(f"move at ply {ply_index} must be a chess.Move")
-            if move not in board.legal_moves:
-                raise SessionStateError(
-                    f"move history is illegal at ply {ply_index}: {move.uci()}"
-                )
-            board.push(move)
-        try:
-            build_decision_context(
-                board,
-                tuple(board.move_stack),
-                target_rating=self.config.target_rating,
-            )
-        except EncodingError as error:
-            raise SessionStateError(f"invalid move history: {error}") from error
-        return board
 
     def _begin_random_stream(self) -> None:
         seed = self.config.seed
@@ -305,7 +278,7 @@ class GameSession:
             raise SessionStateError(
                 f"cannot apply illegal move {move.uci()} in the current position"
             )
-        self._board.push(move)
+        self._history.push(move)
 
     def choose_action(self) -> GameAction:
         """Select, apply, and return one valid action for the player to move."""
@@ -319,11 +292,7 @@ class GameSession:
             raise SessionStateError("cannot choose an action in a terminal game")
 
         try:
-            context = build_decision_context(
-                self._board,
-                self.move_history,
-                target_rating=self.config.target_rating,
-            )
+            context = self._history.context(target_rating=self.config.target_rating)
         except EncodingError as error:
             raise SessionStateError(
                 f"cannot build decision context: {error}"
@@ -345,7 +314,7 @@ class GameSession:
             raise ActionSelectionError(
                 "selected move is not legal in the current position"
             )
-        self._board.push(move)
+        self._history.push(move)
         logger.debug("Selected and applied move action %s", action_id)
         return ActionDecision(
             action=MoveAction(action_id=action_id, move=move),
@@ -428,15 +397,3 @@ class GameSession:
             preferred_action_id=enabled_ids[preferred_index],
             preferred_probability=float(probabilities[preferred_index].item()),
         )
-
-
-def _common_prefix_length(
-    current: tuple[chess.Move, ...],
-    target: tuple[chess.Move, ...],
-) -> int:
-    length = 0
-    for existing, incoming in zip(current, target, strict=False):
-        if existing != incoming:
-            break
-        length += 1
-    return length

@@ -284,45 +284,224 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
     return tuple(encodings)
 
 
+class DecisionHistory:
+    """One game's exact board and the encoded context it has accumulated.
+
+    A :class:`PlyContext` depends only on the root position and the moves
+    before it, so the encoding of a prefix that survives a position update is
+    still exactly right and never needs rebuilding. This owns that invariant:
+    it holds the canonical board together with the contexts already encoded
+    for it, and re-encodes only the plies past the point where an incoming
+    history diverges.
+
+    Every mutation validates a candidate before adopting it, so a rejected
+    move or history leaves the board and the encoded prefix untouched.
+    """
+
+    def __init__(
+        self,
+        *,
+        initial_fen: str = chess.STARTING_FEN,
+        moves: Sequence[chess.Move] = (),
+    ) -> None:
+        target = _validated_moves(moves)
+        board, plies = _fresh_root(initial_fen)
+        _extend(board, plies, target, 0)
+        self._initial_fen = initial_fen
+        self._board = board
+        self._plies = plies
+        self._moves = target
+
+    @property
+    def board(self) -> chess.Board:
+        """Return the live canonical board.
+
+        This is the object itself rather than a copy, because the owning
+        session reads legality and game state from it on every decision.
+        Mutate it only through this class; a push that bypasses these methods
+        leaves the encoded plies describing a position that no longer exists.
+        """
+
+        return self._board
+
+    @property
+    def initial_fen(self) -> str:
+        """Return the FEN this history is rooted at."""
+
+        return self._initial_fen
+
+    @property
+    def moves(self) -> tuple[chess.Move, ...]:
+        """Return every move played since the root position."""
+
+        return self._moves
+
+    def push(self, move: chess.Move) -> None:
+        """Apply one legal move, encoding only the position it creates."""
+
+        target = (*self._moves, move)
+        _extend(self._board, self._plies, target, len(self._moves))
+        self._moves = target
+
+    def synchronize(
+        self,
+        *,
+        initial_fen: str = chess.STARTING_FEN,
+        moves: Sequence[chess.Move] = (),
+    ) -> int:
+        """Advance to a target history and return the reused prefix plies.
+
+        An append-only history keeps everything already encoded. A takeback or
+        divergence on the same root keeps the common prefix. A different root
+        shares nothing, so it re-encodes from the start.
+        """
+
+        target = _validated_moves(moves)
+        same_root = initial_fen == self._initial_fen
+        reused = _common_prefix_length(self._moves, target) if same_root else 0
+        if same_root and reused == len(self._moves):
+            # The ordinary case in a game being played forward. Nothing already
+            # encoded is affected, so the live state is extended in place
+            # rather than rebuilt beside itself and swapped in.
+            _extend(self._board, self._plies, target, reused)
+            self._moves = target
+            return reused
+        board, plies = (
+            self._resume_at(reused) if same_root else _fresh_root(initial_fen)
+        )
+        _extend(board, plies, target, reused)
+        self._initial_fen = initial_fen
+        self._board = board
+        self._plies = plies
+        self._moves = target
+        return reused
+
+    def context(self, *, target_rating: int | None) -> DecisionContext:
+        """Return the full target-free context for the current position."""
+
+        _validate_optional_nonnegative_integer("target_rating", target_rating)
+        return DecisionContext(target_rating, tuple(self._plies))
+
+    def _resume_at(self, reused: int) -> tuple[chess.Board, list[PlyContext]]:
+        """Return a private board and encoded prefix rewound to one ply count.
+
+        Unwinding the live board is what keeps a takeback cheap: the moves
+        being discarded were already played, so popping them costs nothing
+        against re-deriving the position from the root.
+        """
+
+        board = self._board.copy(stack=True)
+        for _ in range(len(self._moves) - reused):
+            board.pop()
+        return board, list(self._plies[: reused + 1])
+
+
 def build_decision_context(
     board: chess.Board,
     move_history: Sequence[chess.Move],
     *,
     target_rating: int | None,
 ) -> DecisionContext:
-    """Build full target-free model context from one exact canonical board."""
+    """Build full target-free model context from one exact canonical board.
 
-    _validate_optional_nonnegative_integer("target_rating", target_rating)
+    This is the one-shot form for callers holding a finished board, such as
+    offline scoring of independent positions. A caller making repeated
+    decisions in one game should hold a :class:`DecisionHistory` instead, so
+    the unchanged prefix is encoded once rather than once per decision.
+    """
+
     history = tuple(move_history)
     if tuple(board.move_stack) != history:
         raise EncodingError("move history does not match the canonical board stack")
-
-    replay = board.root()
-    plies: list[PlyContext] = []
-    previous_action_id: int | None = None
-    for ply_index in range(len(history) + 1):
-        plies.append(
-            _context_for_position(
-                ply_index=ply_index,
-                board=replay,
-                previous_action_id=previous_action_id,
-                time_initial_ms=None,
-                time_increment_ms=None,
-                player_clock_ms=None,
-                opponent_clock_ms=None,
-            )
-        )
-        if ply_index == len(history):
-            break
-        move = history[ply_index]
-        if move not in replay.legal_moves:
-            raise EncodingError(f"move history is illegal at ply {ply_index}")
-        previous_action_id = _encode_observed_move(move, ply_index)
-        replay.push(move)
-
-    if replay.fen() != board.fen():
+    replayed = DecisionHistory(initial_fen=board.root().fen(), moves=history)
+    if replayed.board.fen() != board.fen():
         raise EncodingError("move history does not reconstruct the canonical board")
-    return DecisionContext(target_rating, tuple(plies))
+    return replayed.context(target_rating=target_rating)
+
+
+def _fresh_root(initial_fen: str) -> tuple[chess.Board, list[PlyContext]]:
+    """Return an empty history rooted at one position, with that root encoded."""
+
+    try:
+        board = chess.Board(initial_fen)
+    except ValueError as error:
+        raise EncodingError(f"invalid initial position: {error}") from error
+    return board, [_history_context(ply_index=0, board=board, previous_action_id=None)]
+
+
+def _extend(
+    board: chess.Board,
+    plies: list[PlyContext],
+    moves: tuple[chess.Move, ...],
+    start: int,
+) -> None:
+    """Play and encode ``moves[start:]`` onto one board and its encoded plies.
+
+    A rejected move unwinds whatever this call already applied, so a caller
+    extending its own live state is left exactly as it was rather than holding
+    a half-applied history.
+    """
+
+    applied = 0
+    try:
+        for ply_index in range(start, len(moves)):
+            move = moves[ply_index]
+            if move not in board.legal_moves:
+                raise EncodingError(f"move history is illegal at ply {ply_index}")
+            previous_action_id = _encode_observed_move(move, ply_index)
+            board.push(move)
+            applied += 1
+            plies.append(
+                _history_context(
+                    ply_index=ply_index + 1,
+                    board=board,
+                    previous_action_id=previous_action_id,
+                )
+            )
+    except EncodingError:
+        del plies[len(plies) - applied :]
+        for _ in range(applied):
+            board.pop()
+        raise
+
+
+def _history_context(
+    *,
+    ply_index: int,
+    board: chess.Board,
+    previous_action_id: int | None,
+) -> PlyContext:
+    """Encode one timestep of a live game, which carries no timing inputs."""
+
+    return _context_for_position(
+        ply_index=ply_index,
+        board=board,
+        previous_action_id=previous_action_id,
+        time_initial_ms=None,
+        time_increment_ms=None,
+        player_clock_ms=None,
+        opponent_clock_ms=None,
+    )
+
+
+def _validated_moves(moves: Sequence[chess.Move]) -> tuple[chess.Move, ...]:
+    history = tuple(moves)
+    for ply_index, move in enumerate(history):
+        if not isinstance(move, chess.Move):
+            raise TypeError(f"move at ply {ply_index} must be a chess.Move")
+    return history
+
+
+def _common_prefix_length(
+    current: tuple[chess.Move, ...],
+    target: tuple[chess.Move, ...],
+) -> int:
+    length = 0
+    for existing, incoming in zip(current, target, strict=False):
+        if existing != incoming:
+            break
+        length += 1
+    return length
 
 
 def _context_for_position(
