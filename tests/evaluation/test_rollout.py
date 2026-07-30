@@ -25,15 +25,19 @@ from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.results import (
     CheckpointReference,
     DetailStore,
+    ResultEnvelope,
     ResultsStore,
 )
 from anthro_chess.evaluation.results.metrics import (
+    GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
     GENERATED_PLAY_FAMILY,
+    GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION,
     GENERATED_PLAY_MEAN_GAME_PLIES,
     GENERATED_PLAY_RESIGNATION_RATE,
     GENERATED_PLAY_UNFINISHED_GAME_RATE,
     GENERATED_PLAY_WHITE_SCORE,
+    MetricDefinition,
     registered_metrics,
 )
 from anthro_chess.evaluation.rollout import (
@@ -123,6 +127,14 @@ def _run(
         store=store,
         detail=detail,
     )
+
+
+def _sample(envelope: ResultEnvelope, metric: MetricDefinition) -> int | None:
+    """Return one metric's recorded sample size."""
+
+    found = envelope.measurement(metric.identifier)
+    assert found is not None
+    return found.sample_size
 
 
 @pytest.fixture
@@ -312,6 +324,47 @@ def test_the_ply_limit_is_reported_as_unfinished_rather_than_as_a_result() -> No
     white = envelope.measurement(GENERATED_PLAY_WHITE_SCORE.identifier)
     assert white is not None
     assert white.value == pytest.approx(0.0)
+
+
+def test_a_metric_averaged_over_a_subset_reports_that_subset_as_its_sample() -> None:
+    """Sample size is per metric, because three of them average over a subset.
+
+    Reporting the suite's game count for a cycle depth estimated from the games
+    that repeated would overstate its precision to every reader, the noise-floor
+    layer included. An empty subset reports no sample size rather than one.
+    """
+
+    result = _run(
+        _config(generation={"games_per_position": 2, "maximum_generated_plies": 6})
+    )
+
+    (envelope,) = result.envelopes
+    distribution = result.cells[0].distribution
+    assert distribution.games == 2
+    # Nothing repeated and nothing finished inside six plies, so both subsets
+    # are empty and neither reports a sample size it does not have.
+    assert distribution.repeated_games == 0
+    assert _sample(envelope, GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION) is None
+    assert _sample(envelope, GENERATED_PLAY_DECISIVE_GAME_RATE) is None
+    # A rate over every game keeps the suite's count.
+    assert _sample(envelope, GENERATED_PLAY_UNFINISHED_GAME_RATE) == 2
+    assert _sample(envelope, GENERATED_PLAY_MEAN_GAME_PLIES) == 2
+
+
+def test_a_finished_game_counts_toward_the_rates_computed_over_results() -> None:
+    """The denominator for a decisive rate is the games that produced a result."""
+
+    result = _run(
+        _config(runtime=RuntimeConfig(resignation_enabled=True)),
+        runner=ResigningRunner(),
+    )
+
+    (envelope,) = result.envelopes
+    assert _sample(envelope, GENERATED_PLAY_DECISIVE_GAME_RATE) == 1
+    decisive = envelope.measurement(GENERATED_PLAY_DECISIVE_GAME_RATE.identifier)
+    assert decisive is not None
+    # A resignation is a decided game, so it is decisive rather than unfinished.
+    assert decisive.value == pytest.approx(1.0)
 
 
 def test_a_resigning_model_is_recorded_as_resigning() -> None:

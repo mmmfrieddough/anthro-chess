@@ -733,71 +733,99 @@ def _record(
 def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
     """Return one cell's committed measurements.
 
-    Every metric here is estimated from the same games, so they share a sample
-    size, and every one is scoped by the cell's workload rather than by a view.
+    Every metric is scoped by the cell's workload rather than by a view. Sample
+    size is per metric rather than shared, because three of these are averaged
+    over a subset: a cycle depth is estimated only from the games that repeated,
+    and a decisive rate only from the games that ended. Reporting the suite's
+    game count for those would overstate their precision to every reader that
+    consumes it, the noise-floor layer included. A subset that is empty reports
+    no sample size at all, which is honest: the value is a defined zero but
+    nothing was averaged.
     """
 
     distribution = cell.distribution
     games = distribution.games
+    repeated = distribution.repeated_games
+    finished = _finished_games(distribution)
     workload = cell.execution.workload_component()
-    finished = games - _termination_count(distribution, GameTermination.PLY_LIMIT)
     decisive = distribution.result_counts.get(
         "1-0", 0
     ) + distribution.result_counts.get("0-1", 0)
-    values: tuple[tuple[str, float], ...] = (
-        (GENERATED_PLAY_MEAN_GAME_PLIES.identifier, distribution.mean_ply_count),
+    values: tuple[tuple[str, float, int], ...] = (
+        (
+            GENERATED_PLAY_MEAN_GAME_PLIES.identifier,
+            distribution.mean_ply_count,
+            games,
+        ),
         (
             GENERATED_PLAY_MEAN_GENERATED_PLIES.identifier,
             distribution.mean_generated_plies,
+            games,
         ),
-        (GENERATED_PLAY_WHITE_SCORE.identifier, _white_score(distribution)),
+        # White's score is over the games that produced a result, which is the
+        # same denominator the decisive rate uses.
+        (GENERATED_PLAY_WHITE_SCORE.identifier, _white_score(distribution), finished),
         # Decisiveness is a share of the games that actually ended, since an
         # unfinished game has no result to be decisive or drawn. Its own rate
         # below is what says how many those were.
         (
             GENERATED_PLAY_DECISIVE_GAME_RATE.identifier,
             _fraction(decisive, finished),
+            finished,
         ),
         (
             GENERATED_PLAY_UNFINISHED_GAME_RATE.identifier,
             _fraction(
                 _termination_count(distribution, GameTermination.PLY_LIMIT), games
             ),
+            games,
         ),
         (
             GENERATED_PLAY_RESIGNATION_RATE.identifier,
             _fraction(
                 _termination_count(distribution, GameTermination.RESIGNATION), games
             ),
+            games,
         ),
         (
             GENERATED_PLAY_REPEATED_POSITION_GAME_RATE.identifier,
-            _fraction(distribution.repeated_games, games),
+            _fraction(repeated, games),
+            games,
         ),
         (
             GENERATED_PLAY_THREEFOLD_CLAIMABLE_GAME_RATE.identifier,
             _fraction(distribution.threefold_claimable_games, games),
+            games,
         ),
         (
             GENERATED_PLAY_MEAN_FIRST_REPETITION_PLY.identifier,
             distribution.mean_first_repetition_ply,
+            repeated,
         ),
         (
             GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION.identifier,
             distribution.mean_cycle_ply_fraction,
+            repeated,
         ),
         (
             GENERATED_PLAY_MEAN_DISTINCT_MOVE_FRACTION.identifier,
             distribution.mean_distinct_move_fraction,
+            games,
         ),
         (
             GENERATED_PLAY_DISTINCT_GAME_FRACTION.identifier,
             distribution.distinct_game_fraction,
+            games,
         ),
     )
     return tuple(
-        measurement(identifier, value, workload=workload, sample_size=games)
-        for identifier, value in values
+        measurement(
+            identifier,
+            value,
+            workload=workload,
+            sample_size=sample_size if sample_size > 0 else None,
+        )
+        for identifier, value, sample_size in values
     )
 
 
@@ -883,13 +911,24 @@ def _device(runner: ActionModelRunner) -> torch.device:
     return device if isinstance(device, torch.device) else torch.device("cpu")
 
 
+def _finished_games(distribution: GameDistribution) -> int:
+    """Return how many games produced a result.
+
+    Counted from the results rather than as the complement of the ply limit, so
+    a later adjudicated ending that also has no result cannot quietly inflate
+    the denominator of every rate computed over finished games.
+    """
+
+    counts = distribution.result_counts
+    return counts.get("1-0", 0) + counts.get("0-1", 0) + counts.get("1/2-1/2", 0)
+
+
 def _white_score(distribution: GameDistribution) -> float:
     """Return white's score per finished game, counting a draw as a half."""
 
     counts = distribution.result_counts
-    finished = counts.get("1-0", 0) + counts.get("0-1", 0) + counts.get("1/2-1/2", 0)
     points = counts.get("1-0", 0) + 0.5 * counts.get("1/2-1/2", 0)
-    return points / finished if finished else 0.0
+    return _quotient(points, _finished_games(distribution))
 
 
 def _termination_count(
@@ -902,6 +941,10 @@ def _termination_count(
 
 
 def _fraction(part: int, whole: int) -> float:
+    return _quotient(part, whole)
+
+
+def _quotient(part: float, whole: int) -> float:
     return part / whole if whole else 0.0
 
 
