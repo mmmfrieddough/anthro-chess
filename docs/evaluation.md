@@ -20,9 +20,9 @@ important tradeoffs, such as improving move loss while hurting rating
 calibration or timing.
 
 Families cover training health, held-out prediction, legality, correctness,
-rating behavior, generated play, timing, training efficiency, inference
-efficiency, and later additions such as move-time coherence, human-likeness,
-and preference controls. The metric registry in
+rating behavior, generated play, decision decomposition, timing, training
+efficiency, inference efficiency, and later additions such as move-time
+coherence, human-likeness, and preference controls. The metric registry in
 `anthro_chess.evaluation.results` owns the exact family and metric identifiers,
 their declared directions, and their definition versions; `anthro eval metrics`
 prints them.
@@ -126,7 +126,9 @@ with slices, provenance, per-series history, and machine-readable output behind
 explicit options. `anthro eval bridge` records, lists, and revokes bridges.
 `anthro eval noise` characterizes floors, lists them, and answers how many
 games an axis needs. `anthro eval inference` measures what a checkpoint costs
-to play with; see inference efficiency below.
+to play with; see inference efficiency below. `anthro eval decisions` separates
+model error from sampling error over a payload of generated games or a played
+session's log; see decision decomposition below.
 
 ### The Checkpoint Evaluation Runner
 
@@ -771,6 +773,57 @@ checkpoint runner scores each realized predicate during its existing policy
 pass and writes human rate, legal-greedy model rate, raw policy mass, their
 signed gap, rating-band drill-down, and clustered sample counts through the
 shared result envelope.
+
+## Decision Decomposition
+
+A decision can go wrong in two ways that need opposite fixes. The model can
+prefer a bad action, or sampling can draw an action the model did not prefer.
+Two consecutive decisions in one played game failed in exactly those two ways:
+in the first the model ranked the three winning captures first, second, and
+third and the draw took its seventh choice; in the next it ranked a free queen
+capture sixth and played its own top choice. Lowering the temperature would have
+prevented the first and guaranteed the second. Both classes appear in an
+aggregate only as a worse result, so no metric that reports outcomes can say
+which fix a checkpoint needs.
+
+The decomposition reports both classes over the decisions a run actually made:
+how often the selection was the model's own preference, and how much probability
+the draws that departed from it gave up. Regret over departures is reported apart
+from regret over all decisions, because a small pooled figure means either that
+the draw rarely overrode the model or that it overrode it only on near ties, and
+those are different findings. Rank and probability are both reported, since rank
+two can carry nearly the preferred action's probability or almost none of it.
+
+Every quantity comes from the model's own untempered distribution over enabled
+actions, which is what the runtime records at selection time. The temperature is
+carried beside them rather than applied to them, so a reading describes the model
+and not the dial. Readings are cell-scoped by target rating and temperature: the
+balance between the two classes depends on both, and a pooled figure over a grid
+would move with grid composition rather than with the model. A pass that varied
+either dial therefore has no single committed reading; the caller names the cell
+it means.
+
+Nothing in the family declares a direction of improvement. Each metric moves
+with temperature by construction — a greedy run follows its policy every time
+and gives up nothing — which is a different tradeoff between the two classes
+rather than a better model. Choosing a default temperature is out of scope; this
+is the measurement such a choice needs.
+
+The decomposition is derivable for games the runtime did not originate. Given a
+move sequence and the settings it was played under, each decision is re-scored
+through the same session path that would have produced it, so a game played
+through a chess GUI is analyzed by the same code as a benchmark rollout. That is
+what the UCI adapter's reconstructable debug events are for; `docs/interfaces.md`
+owns the event format and `anthro eval decisions` is the reading surface. A
+reconstructed session is deliberately not turned into a game record: a log can
+end mid-game, and an invented termination would corrupt the one format the
+termination benchmarks read.
+
+Per-decision records are retained rather than summarized away, in the
+machine-local detail tier. A checkpoint's interesting decisions are individual
+ones, and no mean recovers them. A decomposition over one manually played game is
+a diagnostic rather than a series, so it is not appended to the results store;
+committed measurements come from suites that declare their inputs.
 
 ## Novelty
 

@@ -505,6 +505,13 @@ define rating, temperature, the random-seed policy, and whether resignation is
 enabled. Timing and preference settings remain future additions rather than
 placeholder inputs or fabricated clock values.
 
+A session can also score an enabled action without deciding anything, leaving the
+board and the random stream untouched. That is one call rather than a second
+selection path on purpose: the decisions of a game the runtime did not originate
+are recovered through the same code that would have made them, so a re-scored
+decision and a live one are the same measurement. `docs/evaluation.md` describes
+what reads it.
+
 A session separates advancing the game from establishing randomness. Only a new
 game — session construction, `reset`, or a `ucinewgame` boundary — begins a new
 random stream from the seed policy; synchronizing to a new position never

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation import (
         CheckpointEvaluationConfig,
         CheckpointEvaluationResult,
+        DecisionDecomposition,
         InferenceBenchmarkResult,
         PoolConfig,
     )
@@ -242,6 +243,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     inference_parser.set_defaults(handler=_run_eval_inference)
+
+    decisions_parser = eval_commands.add_parser(
+        "decisions",
+        help=(
+            "Separate decisions the model preferred badly from decisions "
+            "sampling drew against the model."
+        ),
+    )
+    decisions_source = decisions_parser.add_mutually_exclusive_group(required=True)
+    decisions_source.add_argument(
+        "--games",
+        type=Path,
+        help=(
+            "Stored game-record payload. Its decisions already carry their "
+            "policy, so no checkpoint is loaded."
+        ),
+    )
+    decisions_source.add_argument(
+        "--log",
+        type=Path,
+        help=(
+            "UCI debug log of a played session. Its decisions are re-scored "
+            "against the checkpoint named by --config."
+        ),
+    )
+    decisions_parser.add_argument(
+        "--config",
+        type=Path,
+        help="Explicit TOML model-runner selection; required with --log.",
+    )
+    decisions_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    decisions_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Write the full decomposition, per-decision records included, here.",
+    )
+    decisions_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    decisions_parser.set_defaults(handler=_run_eval_decisions)
 
     report_parser = eval_commands.add_parser(
         "report",
@@ -818,6 +868,107 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
         lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _run_eval_decisions(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation.decisions import (
+        DecisionAnalysisConfig,
+        DecisionDecompositionError,
+        decompose_game_records,
+    )
+    from anthro_chess.evaluation.reconstruction import (
+        ReconstructionError,
+        decompose_played_log,
+    )
+
+    try:
+        if arguments.games is not None:
+            decomposition = decompose_game_records(arguments.games)
+        else:
+            resolved = load_config(
+                DecisionAnalysisConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            )
+            decomposition = decompose_played_log(
+                arguments.log,
+                resolved.value.model,
+                run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            )
+        if arguments.output is not None:
+            arguments.output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.output.write_text(
+                json.dumps(decomposition.as_record(), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+    except (
+        ConfigError,
+        DecisionDecompositionError,
+        ReconstructionError,
+        OSError,
+    ) as error:
+        print(f"anthro eval decisions: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(decomposition.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_decisions(decomposition), end="")
+    return 0
+
+
+def _render_decisions(decomposition: DecisionDecomposition) -> str:
+    overall = decomposition.overall
+    lines = [
+        f"Decisions classified: {overall.decisions}",
+    ]
+    if decomposition.unscored_decisions:
+        lines.append(
+            f"Decisions without a policy to classify: "
+            f"{decomposition.unscored_decisions} "
+            "(a random or external-engine seat reports none)"
+        )
+    lines.extend(
+        [
+            "",
+            "Where a decision came from:",
+            (
+                f"  model preference  {overall.followed_policy:6d}  "
+                f"({overall.preferred_selection_rate:.3f})"
+            ),
+            (
+                f"  sampling          {overall.departures:6d}  "
+                f"({1.0 - overall.preferred_selection_rate:.3f})"
+            ),
+            "",
+            "What the draws gave up, in untempered policy probability:",
+            f"  mean over all decisions   {overall.policy_regret:.4f}",
+            f"  mean over departures      {overall.departure_policy_regret:.4f}",
+            f"  worst single decision     {overall.maximum_policy_regret:.4f}",
+            "",
+            "What the policy itself looked like:",
+            f"  preferred action probability  {overall.preferred_probability:.4f}",
+            f"  selected action probability    {overall.selected_probability:.4f}",
+            f"  selected action rank          {overall.selected_rank:.2f}",
+            f"  enabled actions               {overall.enabled_action_count:.1f}",
+        ]
+    )
+    if len(decomposition.cells) > 1:
+        lines.extend(
+            [
+                "",
+                "By setting, because the balance between the two depends on both:",
+            ]
+        )
+        lines.extend(
+            f"  {cell.setting.label if cell.setting else 'pooled':<34} "
+            f"{cell.decisions:6d} decisions  "
+            f"preferred {cell.preferred_selection_rate:.3f}  "
+            f"regret {cell.policy_regret:.4f}"
+            for cell in decomposition.cells
+        )
     return "\n".join(lines) + "\n"
 
 

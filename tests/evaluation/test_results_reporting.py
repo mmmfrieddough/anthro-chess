@@ -607,4 +607,8 @@ def test_the_default_text_view_stays_readable(
     # its own line, because it is the actionable one.
     assert "absent: no result recorded for" in rendered
     assert max(len(line) for line in rendered.splitlines()) <= 120
-    assert len(rendered.splitlines()) <= 20
+    # A ratchet rather than a round number: it is the current height, so a
+    # change that grows the default view has to be a deliberate one. Two of
+    # these lines belong to decision decomposition, whose metrics are
+    # registered ahead of the rollout suites that will report them.
+    assert len(rendered.splitlines()) <= 22

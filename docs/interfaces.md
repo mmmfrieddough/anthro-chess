@@ -95,6 +95,15 @@ events carry a process-session identity and game index; decision events also
 carry the resolved runtime settings and sampling seed. The selected checkpoint
 is identified by the model runner's lifecycle log.
 
+The events are not written for their own sake: the evaluation layer reads them
+back, and `anthro eval decisions` re-scores a played session's decisions against
+a checkpoint so a game played in a GUI is analyzed by the same code as a
+benchmark rollout. Model distributions stay out of the log because they are
+recoverable this way, from the move sequence and the settings that produced it.
+Because the checkpoint is a caller declaration rather than something the log
+pins down, that command names its own; see the decision-decomposition section of
+`docs/evaluation.md`.
+
 This deliberately records accepted chess history rather than raw command
 lines. Unknown input, model distributions, corpus records, and other free-form
 or sensitive values remain excluded. The events are DEBUG-only, so default

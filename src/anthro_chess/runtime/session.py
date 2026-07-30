@@ -68,7 +68,7 @@ class SelectionPolicy:
     The distribution is over the actions the position enabled, not over the
     raw vocabulary, so these describe the decision that was actually available
     rather than the model's unmasked preference. It is untempered; see
-    :meth:`GameSession._selection_policy` for why.
+    :meth:`describe` for why.
 
     Reporting them here is what lets a benchmark rollout and a game
     reconstructed from a live session carry the same per-decision quantities:
@@ -80,6 +80,40 @@ class SelectionPolicy:
     selected_rank: int
     preferred_action_id: int
     preferred_probability: float
+
+    @classmethod
+    def describe(
+        cls,
+        candidate_logits: Tensor,
+        enabled_ids: tuple[int, ...],
+        candidate_index: int,
+    ) -> SelectionPolicy:
+        """Describe one enabled action under the model's own policy.
+
+        The reported probabilities come from the untempered distribution over
+        enabled actions rather than from the tempered one a draw would use. The
+        temperature is a dial recorded beside the decision, so reading these
+        through it would make the model's confidence move whenever the dial
+        did, and would collapse to a point mass at temperature zero exactly
+        where the model's confidence in its greedy choice is the interesting
+        quantity.
+
+        Sampling and after-the-fact scoring both come here, so a decomposition
+        of a game the runtime did not originate describes it in the same terms
+        the runtime reported at the time.
+        """
+
+        probabilities = torch.softmax(candidate_logits, dim=0)
+        preferred_index = int(torch.argmax(candidate_logits).item())
+        selected_logit = candidate_logits[candidate_index]
+        rank = int((candidate_logits > selected_logit).sum().item()) + 1
+        return cls(
+            enabled_action_count=len(enabled_ids),
+            selected_probability=float(probabilities[candidate_index].item()),
+            selected_rank=rank,
+            preferred_action_id=enabled_ids[preferred_index],
+            preferred_probability=float(probabilities[preferred_index].item()),
+        )
 
 
 @dataclass(frozen=True)
@@ -288,20 +322,7 @@ class GameSession:
     def decide(self) -> ActionDecision:
         """Select and apply one action, reporting the policy behind it."""
 
-        if self.is_terminal:
-            raise SessionStateError("cannot choose an action in a terminal game")
-
-        try:
-            context = self._history.context(target_rating=self.config.target_rating)
-        except EncodingError as error:
-            raise SessionStateError(
-                f"cannot build decision context: {error}"
-            ) from error
-        logits = self._validate_logits(self._runner.predict(context))
-        enabled_ids = legal_action_ids(
-            self._board,
-            include_resignation=self.config.resignation_enabled,
-        )
+        logits, enabled_ids = self._policy_inputs()
         action_id, policy = self._sample_action(logits, enabled_ids)
 
         if action_id == RESIGNATION_ACTION_ID:
@@ -320,6 +341,53 @@ class GameSession:
             action=MoveAction(action_id=action_id, move=move),
             policy=policy,
         )
+
+    def score_action(self, action_id: int) -> SelectionPolicy:
+        """Describe what the policy says about one enabled action right now.
+
+        Reads the model without deciding anything: the board is unchanged and
+        the random stream is untouched, because no draw is made. This is how a
+        game the runtime did not originate is decomposed — a manually played
+        game reconstructed from a log, or any recorded game whose per-decision
+        policy quantities were never stored — through the same selection path
+        that would have produced the decision.
+        """
+
+        if type(action_id) is not int:
+            raise TypeError("action id must be an int")
+        logits, enabled_ids = self._policy_inputs()
+        try:
+            candidate_index = enabled_ids.index(action_id)
+        except ValueError:
+            raise ActionSelectionError(
+                f"action {action_id} is not enabled in the current position"
+            ) from None
+        candidate_logits = logits[torch.tensor(enabled_ids, dtype=torch.long)]
+        return SelectionPolicy.describe(candidate_logits, enabled_ids, candidate_index)
+
+    def _policy_inputs(self) -> tuple[Tensor, tuple[int, ...]]:
+        """Return validated action logits and the actions this position enables.
+
+        Shared by deciding and by scoring, so re-scoring a recorded decision
+        reads the same encoded history, the same legal mask, and the same logit
+        validation the live path does.
+        """
+
+        if self.is_terminal:
+            raise SessionStateError("cannot choose an action in a terminal game")
+
+        try:
+            context = self._history.context(target_rating=self.config.target_rating)
+        except EncodingError as error:
+            raise SessionStateError(
+                f"cannot build decision context: {error}"
+            ) from error
+        logits = self._validate_logits(self._runner.predict(context))
+        enabled_ids = legal_action_ids(
+            self._board,
+            include_resignation=self.config.resignation_enabled,
+        )
+        return logits, enabled_ids
 
     @staticmethod
     def _validate_logits(logits: object) -> Tensor:
@@ -366,34 +434,5 @@ class GameSession:
             )
         return (
             enabled_ids[candidate_index],
-            self._selection_policy(candidate_logits, enabled_ids, candidate_index),
-        )
-
-    @staticmethod
-    def _selection_policy(
-        candidate_logits: Tensor,
-        enabled_ids: tuple[int, ...],
-        candidate_index: int,
-    ) -> SelectionPolicy:
-        """Describe the selected action under the model's own policy.
-
-        The reported probabilities come from the untempered distribution over
-        enabled actions rather than from the tempered one the draw used. The
-        temperature is a dial recorded beside the decision, so reading these
-        through it would make the model's confidence move whenever the dial
-        did, and would collapse to a point mass at temperature zero exactly
-        where the model's confidence in its greedy choice is the interesting
-        quantity.
-        """
-
-        probabilities = torch.softmax(candidate_logits, dim=0)
-        preferred_index = int(torch.argmax(candidate_logits).item())
-        selected_logit = candidate_logits[candidate_index]
-        rank = int((candidate_logits > selected_logit).sum().item()) + 1
-        return SelectionPolicy(
-            enabled_action_count=len(enabled_ids),
-            selected_probability=float(probabilities[candidate_index].item()),
-            selected_rank=rank,
-            preferred_action_id=enabled_ids[preferred_index],
-            preferred_probability=float(probabilities[preferred_index].item()),
+            SelectionPolicy.describe(candidate_logits, enabled_ids, candidate_index),
         )

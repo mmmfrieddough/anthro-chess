@@ -46,8 +46,12 @@ from anthro_chess.runtime import (
 ENGINE_NAME = "Anthro Chess"
 ENGINE_AUTHOR = "Anthro Chess contributors"
 NULL_BESTMOVE = "0000"
+#: Identity and log-line marker of the DEBUG-tier game events this module
+#: emits. This module owns the format; `anthro_chess.evaluation.reconstruction`
+#: reads it back, so both sides share these constants rather than agreeing on a
+#: string twice.
 UCI_GAME_EVENT_SCHEMA = "anthro-uci-game-event-v1"
-_UCI_GAME_EVENT_PREFIX = "UCI game event "
+UCI_GAME_EVENT_PREFIX = "UCI game event "
 _COMMANDS = frozenset(
     {
         "debug",
@@ -429,7 +433,7 @@ class UciEngine:
         }
         logger.debug(
             "%s%s",
-            _UCI_GAME_EVENT_PREFIX,
+            UCI_GAME_EVENT_PREFIX,
             json.dumps(payload, sort_keys=True, separators=(",", ":")),
         )
 
