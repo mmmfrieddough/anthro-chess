@@ -589,6 +589,7 @@ def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
     (envelope,) = result.envelopes
     assert envelope.kind == ROLLOUT_KIND
     assert envelope.detail is not None
+    assert envelope.execution is not None
     (path,) = result.detail_paths
     payload = json.loads(path.read_text())
     assert len(payload["games_detail"]) == 2
