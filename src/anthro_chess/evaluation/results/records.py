@@ -196,10 +196,10 @@ ENVIRONMENT_FIELDS: tuple[str, ...] = (
 
 
 class ExecutionRecord(ResultModel):
-    """The device, precision, and workload an efficiency result was taken on.
+    """The device, precision, and workload a workload-scoped result was taken on.
 
-    Two halves with different jobs. The **workload** says what was timed and is
-    part of series identity, so a reader can recompute an efficiency series
+    Two halves with different jobs. The **workload** says what was measured and
+    is part of series identity, so a reader can recompute the series
     fingerprint from this record alone. The **environment** says where it ran
     and is not: it is coordinates a report attributes a delta to, rather than
     something that ends a series.
@@ -310,8 +310,9 @@ class ResultEnvelope(ResultModel):
     action_vocabulary: dict[str, Any]
     encoding: dict[str, Any]
     environment: EnvironmentRecord
-    #: Present only on efficiency results. ``environment`` describes how any
-    #: result was produced; this describes what an efficiency result measured.
+    #: Present only on results whose declared settings are inputs to their
+    #: value: efficiency and generated play. ``environment`` describes how any
+    #: result was produced; this describes what such a result measured.
     execution: ExecutionRecord | None = None
     measurements: tuple[Measurement, ...] = Field(min_length=1)
     detail: DetailReference | None = None

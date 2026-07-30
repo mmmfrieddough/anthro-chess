@@ -92,14 +92,19 @@ restructuring. Metrics with no data dependency, such as optimizer and parameter
 statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
 
-Efficiency metrics carry one further component: the **declared workload**, the
-settings that decide what was timed. Change the ply depth a latency figure is
-taken at and the number measures a different quantity, so that belongs in
-identity just as scored content does. The **machine** deliberately does not. A
-cross-machine latency delta is interpretable rather than meaningless — it is
-just attributable to the environment rather than to the model — so it is
-attributed by a report instead of ending a series.
-`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule.
+Efficiency and generated-play metrics carry one further component: the
+**declared workload**, the settings that decide what was measured. Change the
+ply depth a latency figure is taken at, or the temperature a rollout is played
+at, and the number measures a different quantity, so that belongs in identity
+just as scored content does. Sample counts do not: generating more games, like
+scoring more, estimates the same quantity more precisely. The **machine**
+deliberately does not either. A cross-machine latency delta is interpretable
+rather than meaningless — it is just attributable to the environment rather than
+to the model — so it is attributed by a report instead of ending a series.
+`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule and
+`docs/decisions/0020-declared-settings-scope-generated-series.md` extends it to
+generated play, including why a rollout's human prefixes are provenance rather
+than a data component.
 
 ### Where The Store Lives
 
@@ -402,8 +407,8 @@ were shrunk. Optimizer and parameter statistics have no data dependency at all.
 A model's exact policy at a fixed position is one forward pass, so distribution
 comparisons over early-game positions are exactly computable rather than
 estimated from rollouts. These belong at frequent cadences without any loss of
-precision. Rollout metrics are the opposite: irreducibly sampled, with view size
-as the only dial.
+precision. Rollout metrics are the opposite: irreducibly sampled, with the
+number of games generated as the only dial.
 
 View size should be declared explicitly rather than resolved from a compute or
 time budget. An adaptive budget would make the same cadence resolve differently
@@ -1431,6 +1436,29 @@ interaction is the measurement target. The reusable core should cover:
 - rating and temperature grids as independent controls;
 - enough games per configuration to distinguish one deterministic trajectory
   from a stable behavioral pattern.
+
+`anthro_chess.evaluation.rollout` implements that core and owns the matrix, the
+metric set it reports, and the artifact it writes. The unit is the **cell**: one
+arm at one rating and one temperature. A cell is a series and a stored result,
+and the seeds inside it are replicates whose spread is that cell's evaluation
+noise, so they are kept apart in the artifact rather than only pooled. Both arms
+run in one pass over one checkpoint so they share a grid and a seed derivation.
+
+The two arms are not interchangeable for every reading. On the prefix arm the
+opening distribution belongs to the view rather than to the model, because the
+prefix decided the opening before the model moved; measured on a real
+checkpoint, the prefix arm reports the identical opening counts at every rating.
+Repertoire is a statement about the model only on the standard-start arm, and
+the prefix arm's opening labels exist to slice its other readings rather than to
+be read as choices.
+
+Diversity is measured over *trajectories* rather than over record identities. A
+record's identity is derived from the whole record, seed included, so two
+replicates that played the identical game carry different ids; counting ids
+would report a suite collapsed onto one trajectory as fully diverse, which is
+the failure the measurement exists to catch. Temperature zero collapses it by
+construction, which is why the reading is scoped to the temperature it was
+played at rather than treated as something to maximize.
 
 Repetition needs both correctness tests and quality benchmarks. Correctness
 tests should use constructed move sequences with known non-repeating,

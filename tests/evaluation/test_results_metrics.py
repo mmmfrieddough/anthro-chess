@@ -50,11 +50,43 @@ def test_every_registered_metric_declares_a_family_and_a_direction() -> None:
 
 
 def test_every_registered_metric_prices_itself_against_its_data_dependency() -> None:
-    """A schedule can only reject an unaffordable pairing if cost is declared."""
+    """A schedule can only reject an unaffordable pairing if cost is declared.
+
+    Generating is the one cost whose data dependency is the metric's own
+    statement rather than a property of the cost: it covers both generating
+    decisions at pool positions and playing whole games from the standard
+    start. Every other cost has to agree with its projection.
+    """
 
     for metric in registered_metrics():
         assert metric.cost in set(MetricCost)
+        if metric.cost is MetricCost.GENERATED:
+            continue
         assert metric.cost.reads_data == (metric.projection is not None)
+
+
+def test_a_generated_metric_may_declare_either_data_dependency() -> None:
+    """Both generated readings are legitimate, so neither may be refused."""
+
+    with_positions = register_metric(
+        _definition(
+            identifier="generated_play.from_pool_positions",
+            family="generated-play",
+            cost=MetricCost.GENERATED,
+            projection="move_prediction",
+        )
+    )
+    without = register_metric(
+        _definition(
+            identifier="generated_play.from_the_standard_start",
+            family="generated-play",
+            cost=MetricCost.GENERATED,
+            projection=None,
+        )
+    )
+
+    assert with_positions.projection == "move_prediction"
+    assert without.projection is None
 
 
 def test_a_cost_that_contradicts_the_data_dependency_is_refused() -> None:

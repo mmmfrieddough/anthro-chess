@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any
 
 import chess
@@ -33,8 +34,9 @@ from anthro_chess.evaluation.openings import (
     opening_book_identity,
     opening_distribution,
 )
+from anthro_chess.evaluation.results.records import canonical_json
 
-GAME_ANALYSIS_VERSION = 1
+GAME_ANALYSIS_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,12 @@ class GameFeatures:
     """The distribution features one game contributes."""
 
     game_id: str
+    #: Digest of the root position and the moves played from it, which is what
+    #: identifies a *trajectory*. Deliberately not the game id: that is derived
+    #: from the whole record, seed and seat configuration included, so two
+    #: replicates that played the identical game carry different ids. Counting
+    #: ids would report every suite as fully diverse.
+    trajectory_sha256: str
     ply_count: int
     generated_plies: int
     result: GameResult
@@ -98,6 +106,7 @@ class GameFeatures:
 
         return {
             "game_id": self.game_id,
+            "trajectory_sha256": self.trajectory_sha256,
             "ply_count": self.ply_count,
             "generated_plies": self.generated_plies,
             "result": self.result,
@@ -131,6 +140,9 @@ class GameDistribution:
     opening_book: dict[str, object]
     repeated_games: int
     threefold_claimable_games: int
+    #: Averaged over the games that repeated at all, so it says when cycles
+    #: started rather than how often they happened. Zero when no game repeated.
+    mean_first_repetition_ply: float
     mean_repeated_ply_fraction: float
     #: Averaged over the games that repeated at all, so it says how deep the
     #: cycles ran rather than how often they happened. Averaging it over every
@@ -138,9 +150,11 @@ class GameDistribution:
     #: neither. Zero when no game repeated.
     mean_cycle_ply_fraction: float
     mean_distinct_move_fraction: float
-    #: Distinct move sequences as a share of games. A suite whose games are all
-    #: the same trajectory reports one here, which is the signature of a seed
-    #: that did not vary or a temperature that collapsed the policy.
+    #: Distinct trajectories as a share of games. A suite whose games are all
+    #: the same trajectory reports one over the game count here, which is the
+    #: signature of a seed that did not vary or a temperature that collapsed the
+    #: policy. Read beside the temperature it was played at rather than
+    #: maximized: greedy selection collapses it by construction.
     distinct_game_fraction: float
 
     def as_record(self) -> dict[str, Any]:
@@ -159,6 +173,7 @@ class GameDistribution:
             "opening_book": dict(self.opening_book),
             "repeated_games": self.repeated_games,
             "threefold_claimable_games": self.threefold_claimable_games,
+            "mean_first_repetition_ply": self.mean_first_repetition_ply,
             "mean_repeated_ply_fraction": self.mean_repeated_ply_fraction,
             "mean_cycle_ply_fraction": self.mean_cycle_ply_fraction,
             "mean_distinct_move_fraction": self.mean_distinct_move_fraction,
@@ -176,6 +191,7 @@ def analyze_game(
     moves = record.move_action_ids
     return GameFeatures(
         game_id=record.game_id,
+        trajectory_sha256=_trajectory_sha256(record),
         ply_count=record.ply_count,
         generated_plies=record.generated_plies,
         result=record.outcome.result,
@@ -234,6 +250,11 @@ def summarize_games(
         threefold_claimable_games=sum(
             1 for feature in features if feature.repetition.threefold_claimable
         ),
+        mean_first_repetition_ply=_mean(
+            feature.repetition.first_repetition_ply
+            for feature in features
+            if feature.repetition.first_repetition_ply is not None
+        ),
         mean_repeated_ply_fraction=_mean(
             feature.repetition.repeated_ply_fraction for feature in features
         ),
@@ -246,10 +267,22 @@ def summarize_games(
             feature.distinct_move_fraction for feature in features
         ),
         distinct_game_fraction=_fraction(
-            len({feature.game_id for feature in features}),
+            len({feature.trajectory_sha256 for feature in features}),
             games,
         ),
     )
+
+
+def _trajectory_sha256(record: GameRecord) -> str:
+    """Digest the game a record played, ignoring how it came to be played.
+
+    Root position and actions only. Two seeds that produced the identical game
+    have to collide here, which is the whole point: that collision is how a
+    collapsed suite becomes visible.
+    """
+
+    payload = canonical_json([record.initial_position, list(record.action_ids)])
+    return sha256(payload).hexdigest()
 
 
 def _repetition_diagnostics(record: GameRecord) -> RepetitionDiagnostics:

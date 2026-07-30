@@ -1,0 +1,60 @@
+# What whole generated games look like, across a declared rollout matrix.
+#
+# The model selection is deliberately absent: with no explicit checkpoint or
+# run, `anthro eval rollout` uses the machine-local default selection beneath
+# ANTHRO_CHESS_RUN_ROOT, the same record the playable engine reads. Override it
+# for one run with, for example:
+#
+#   anthro eval rollout --config <this file> --set model.run_path='"blitz-v3"'
+#
+# Every cell of the matrix is its own measurement and its own stored result.
+# Values that decide *what* is measured are part of series identity: the arm,
+# each rating, each temperature, `generation.maximum_generated_plies`,
+# `generation.swap_colors`, `generation.claim_draws`, and
+# `runtime.resignation_enabled`. Values that decide only how precisely are not:
+# `grid.seeds`, `generation.games_per_position`, and `generation.concurrency`
+# can all be raised without ending a series.
+#
+# Rollout metrics are irreducibly sampled, so raising the game count is the
+# only way to narrow them. The counts below are a routine reading; a headline
+# reading wants considerably more games per cell.
+#
+# The human-prefix arm needs a frozen pool, so it is left out of this selection.
+# Enable it alongside a pool with:
+#
+#   --set arms='["standard-start", "human-prefix"]'
+#   --set prefix.pool='"artifacts/lichess-blitz-2017-04-test"'
+arms = ["standard-start"]
+
+[runtime]
+# Rating, temperature, and seed are supplied per cell and per game, so setting
+# them here would be overridden. Resignation stays off: it is a model action
+# rather than a harness one, and enabling it changes what every ending means.
+resignation_enabled = false
+
+[grid]
+# Three ratings spanning the range the corpus actually covers, so a rating
+# response has somewhere to show up. Temperature is a separate axis because it
+# is a separate dial; zero is included deliberately as the degenerate case that
+# makes every game from a position identical, which is what a collapsed
+# distinct-game fraction should be read against.
+target_ratings = [1100, 1500, 1900]
+temperatures = [0.0, 0.7, 1.0]
+seeds = [0, 1, 2, 3, 4]
+
+[generation]
+# Long enough for a real game to finish and short enough that a checkpoint
+# shuffling in a drawn endgame does not run the suite for hours.
+maximum_generated_plies = 300
+games_per_position = 4
+swap_colors = true
+# The model has no draw-claim action, so claiming for it would report the
+# harness's policy as the model's behavior. Games still end on their own
+# through the fivefold and seventy-five-move rules.
+claim_draws = false
+concurrency = 8
+
+[detail]
+# Whole games, machine-local. Every later distribution feature is recomputed
+# from these rather than by regenerating the suite.
+retain_games = true

@@ -46,6 +46,15 @@ filters, and expected generated identity for `anthro eval prepare-puzzles`.
 Puzzle records remain under `ANTHRO_CHESS_DATA_ROOT`; only the recipe and
 expected identity are committed.
 
+It also contains the generated-play rollout selection for `anthro eval rollout`,
+which declares the matrix a suite plays rather than naming a checkpoint. Values
+that decide what is measured — the arms, the rating and temperature grids, the
+ply limit, the color and draw-claim settings — are part of series identity, so
+changing one starts a new series. The seed list, games per position, and
+concurrency are sample and throughput settings and can be raised freely. The
+human-prefix arm needs a frozen pool and is therefore left out of the checked-in
+selection, which runs the standard-start arm alone.
+
 Add a focused `runtime/` subdirectory when the corresponding command exists. Do
 not add speculative example files for commands that have not been implemented.
 

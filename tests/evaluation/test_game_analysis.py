@@ -42,6 +42,7 @@ def _record(
     adjudicated: bool = True,
     prefix_plies: int = 0,
     initial_position: str = chess.STARTING_FEN,
+    seed: int = 3,
 ) -> GameRecord:
     action_ids = tuple(encode_move(chess.Move.from_uci(uci)) for uci in moves)
     root = chess.Board(initial_position)
@@ -51,7 +52,7 @@ def _record(
         action_ids=action_ids,
         white=SeatRecord(kind="model", label="white-seat", seed=1),
         black=SeatRecord(kind="model", label="black-seat", seed=2),
-        seed=3,
+        seed=seed,
         decisions=[
             DecisionRecord(
                 ply_index=index,
@@ -176,6 +177,67 @@ def test_a_summary_reports_identical_trajectories_as_collapsed_diversity() -> No
 
     assert summary.games == 3
     assert summary.distinct_game_fraction == pytest.approx(1 / 3)
+
+
+def test_replicates_that_played_the_same_game_collapse_diversity() -> None:
+    """Diversity is a property of the trajectory, not of the record.
+
+    A record's identity is derived from the whole record, seeds included, so
+    replicates that played the identical game carry different ids. Counting ids
+    would report a suite collapsed to one trajectory as fully diverse, which is
+    precisely the failure this metric exists to catch.
+    """
+
+    moves = ("e2e4", "c7c5")
+    records = tuple(_record(moves, seed=seed) for seed in (1, 2, 3))
+
+    summary = summarize_games(analyze_games(records))
+
+    assert len({record.game_id for record in records}) == 3
+    assert summary.distinct_game_fraction == pytest.approx(1 / 3)
+
+
+def test_the_same_moves_from_a_different_root_is_a_different_trajectory() -> None:
+    """The root belongs to the trajectory, not only the moves played from it.
+
+    A prefix arm continues many different positions, and two continuations that
+    happen to play the same moves from different openings are two games. Keying
+    on the move list alone would merge them.
+    """
+
+    moves = ("e2e4", "c7c5")
+    # The standard position, and the standard position a black pawn short. The
+    # same two moves are legal in both, so only the root differs.
+    handicap = "rnbqkbnr/1ppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    features = analyze_games(
+        (
+            _record(moves),
+            _record(moves, initial_position=handicap),
+        )
+    )
+
+    assert len({feature.trajectory_sha256 for feature in features}) == 2
+
+
+def test_a_summary_reports_when_recurrence_started_across_games() -> None:
+    """Averaged over the games that repeated, so it says when, not how often."""
+
+    records = (
+        _record(SHUFFLE),
+        _record(("e2e4", "e7e5", "g1f3", "b8c6")),
+    )
+
+    summary = summarize_games(analyze_games(records))
+
+    assert summary.repeated_games == 1
+    assert summary.mean_first_repetition_ply == pytest.approx(3.0)
+
+
+def test_a_summary_with_no_recurrence_reports_no_first_repetition_ply() -> None:
+    summary = summarize_games(analyze_games((_record(("e2e4", "c7c5")),)))
+
+    assert summary.repeated_games == 0
+    assert summary.mean_first_repetition_ply == 0.0
 
 
 def test_a_summary_can_aggregate_at_a_deeper_naming_level() -> None:

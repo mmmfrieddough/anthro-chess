@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         PoolConfig,
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkResult,
+        RolloutBenchmarkResult,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
     from anthro_chess.training import TrainingConfig
@@ -319,6 +320,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     inference_parser.set_defaults(handler=_run_eval_inference)
+
+    rollout_parser = eval_commands.add_parser(
+        "rollout",
+        help=(
+            "Play a declared matrix of generated games and report what whole "
+            "games look like."
+        ),
+    )
+    rollout_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML rollout-benchmark selection.",
+    )
+    rollout_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(rollout_parser)
+    rollout_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    rollout_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Play and print without writing to the store. Use this for an "
+            "exploratory reading at one temperature, which is real but does "
+            "not belong in the committed history."
+        ),
+    )
+    rollout_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    rollout_parser.set_defaults(handler=_run_eval_rollout)
 
     decisions_parser = eval_commands.add_parser(
         "decisions",
@@ -1087,6 +1135,122 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
+
+
+def _run_eval_rollout(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        RolloutBenchmarkConfig,
+        RolloutBenchmarkError,
+        benchmark_rollout,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = load_config(
+            RolloutBenchmarkConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_rollout(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, RolloutBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval rollout: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_rollout(result), end="")
+    return 0
+
+
+def _render_rollout(result: RolloutBenchmarkResult) -> str:
+    from anthro_chess.evaluation.games import GameTermination
+
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        f"Games: {result.games} across {len(result.cells)} matrix cell(s)",
+    ]
+    if result.view is not None:
+        record = result.view.as_record()
+        lines.append(
+            f"Prefix view: {result.view.name} "
+            f"({result.view.selected_games} of {result.view.eligible_games} "
+            f"eligible game(s), prefix {record['prefix_plies']} plies)"
+        )
+    for cell in result.cells:
+        distribution = cell.distribution
+        unfinished = distribution.termination_counts.get(
+            GameTermination.PLY_LIMIT.value, 0
+        )
+        lines.extend(
+            [
+                "",
+                f"{cell.label}  "
+                f"(series workload {cell.execution.workload_sha256[:12]})",
+                (
+                    f"  games          {distribution.games} from "
+                    f"{cell.positions} position(s) over {len(cell.seeds)} seed(s)"
+                ),
+                (
+                    f"  length         mean {distribution.mean_ply_count:.1f} plies "
+                    f"({distribution.mean_generated_plies:.1f} generated)"
+                ),
+                f"  results        {_counts(distribution.result_counts)}",
+                f"  terminations   {_counts(distribution.termination_counts)}",
+                f"  unfinished     {unfinished} at the ply limit",
+                (
+                    f"  repetition     {distribution.repeated_games} repeated, "
+                    f"{distribution.threefold_claimable_games} threefold-claimable, "
+                    f"cycle fraction {distribution.mean_cycle_ply_fraction:.3f}"
+                ),
+                (
+                    f"  diversity      {distribution.distinct_game_fraction:.3f} "
+                    f"distinct games, {distribution.mean_distinct_move_fraction:.3f} "
+                    "distinct moves"
+                ),
+                f"  openings       {_counts(distribution.opening_counts, limit=5)}",
+            ]
+        )
+    if result.recorded_paths:
+        lines.extend(
+            ["", f"Recorded: {len(result.recorded_paths)} result(s)"],
+        )
+        lines.extend(f"  {path}" for path in result.recorded_paths)
+    else:
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _counts(counts: Mapping[str, int], *, limit: int | None = None) -> str:
+    """Render a count mapping most-frequent first, truncated when asked."""
+
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    shown = ordered if limit is None else ordered[:limit]
+    rendered = ", ".join(f"{name}={count}" for name, count in shown)
+    remaining = len(ordered) - len(shown)
+    return f"{rendered} (+{remaining} more)" if remaining else rendered or "none"
 
 
 def _run_eval_decisions(arguments: argparse.Namespace) -> int:
