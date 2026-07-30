@@ -598,9 +598,9 @@ Key information:
 
 Applies to Anthro Chess:
 
-- A rating-response diagnostic: solve rate by puzzle-rating band across a
-  configured-rating grid, with the human reference curve derivable from the
-  puzzle ratings themselves.
+- A rating-response diagnostic: solve rate as a continuous function of puzzle
+  rating across a configured-rating grid, with the human reference curve
+  derivable from the puzzle ratings themselves.
 - The cheapest external rating instrument available, needing only forward
   passes.
 - A benchmark input immune to evaluation pool regeneration, so its scale stays

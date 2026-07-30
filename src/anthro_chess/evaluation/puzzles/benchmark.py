@@ -20,6 +20,19 @@ from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.data.artifacts import read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.evaluation.curves import (
+    CurveComparison,
+    CurveQuantity,
+    CurveSpec,
+    Observation,
+    compare_curves,
+)
+from anthro_chess.evaluation.noise import (
+    GameTotals,
+    MetricTotal,
+    NoiseConfig,
+    bootstrap_floors,
+)
 from anthro_chess.evaluation.puzzles.dataset import Puzzle, PuzzleSet, load_puzzle_set
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -29,6 +42,7 @@ from anthro_chess.evaluation.results import (
     DetailReference,
     DetailStore,
     Measurement,
+    NoiseFloor,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
@@ -41,11 +55,13 @@ from anthro_chess.evaluation.results import (
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
+    PUZZLE_GREEDY_CURVE_DISTANCE,
     PUZZLE_GREEDY_FIRST_MOVE_ACCURACY,
     PUZZLE_GREEDY_LINE_COMPLETION,
     PUZZLE_GREEDY_RATING_ORDER_ACCURACY,
     PUZZLE_GREEDY_RATING_SLOPE,
     PUZZLE_RESPONSE_PROJECTION,
+    PUZZLE_SAMPLED_CURVE_DISTANCE,
     PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE,
     PUZZLE_SAMPLED_LINE_COMPLETION,
     PUZZLE_SAMPLED_RATING_ORDER_ACCURACY,
@@ -59,6 +75,9 @@ from anthro_chess.inference import (
 )
 
 PUZZLE_BENCHMARK_VERSION = 1
+PUZZLE_CURVE_VERSION = 1
+PUZZLE_CURVE_NEIGHBOURS = 4000
+PUZZLE_CURVE_GRID = tuple(float(rating) for rating in range(850, 2800, 100))
 PUZZLE_KIND = "puzzle-rating-response"
 PUZZLE_BENCHMARK = BenchmarkReference(
     name=PUZZLE_KIND,
@@ -87,6 +106,7 @@ class PuzzleBenchmarkConfig(ConfigModel):
         default=None,
         pattern=r"^[a-z0-9][a-z0-9._-]*$",
     )
+    puzzle_set: Path
     training_normalized: Path
     target_ratings: tuple[StrictInt, ...] = (1000, 1400, 1800, 2200)
     reference_temperature: float = Field(
@@ -96,6 +116,7 @@ class PuzzleBenchmarkConfig(ConfigModel):
         allow_inf_nan=False,
     )
     inference_batch_size: StrictInt = Field(default=32, ge=1)
+    noise: NoiseConfig = NoiseConfig()
 
     @model_validator(mode="after")
     def _validate_ratings(self) -> PuzzleBenchmarkConfig:
@@ -138,6 +159,32 @@ class PuzzleBandResult:
 
 
 @dataclass(frozen=True)
+class PuzzleCurvePoint:
+    """One continuous local estimate over exact puzzle ratings."""
+
+    puzzle_rating: float
+    bandwidth: float
+    effective_sample_size: float
+    human_expected_score: float
+    greedy_first_move_accuracy: float
+    greedy_line_completion: float
+    sampled_first_move_solve_rate: float
+    sampled_line_completion: float
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "puzzle_rating": self.puzzle_rating,
+            "bandwidth": self.bandwidth,
+            "effective_sample_size": self.effective_sample_size,
+            "human_expected_score": self.human_expected_score,
+            "greedy_first_move_accuracy": self.greedy_first_move_accuracy,
+            "greedy_line_completion": self.greedy_line_completion,
+            "sampled_first_move_solve_rate": self.sampled_first_move_solve_rate,
+            "sampled_line_completion": self.sampled_line_completion,
+        }
+
+
+@dataclass(frozen=True)
 class PuzzleRatingResult:
     """The response at one configured model rating."""
 
@@ -149,6 +196,9 @@ class PuzzleRatingResult:
     sampled_first_move_solve_rate: float
     sampled_line_completion: float
     sampled_fitted_puzzle_rating: float
+    greedy_curve_distance: float
+    sampled_curve_distance: float
+    curve: tuple[PuzzleCurvePoint, ...]
     bands: tuple[PuzzleBandResult, ...]
 
     def as_record(self) -> dict[str, object]:
@@ -161,6 +211,9 @@ class PuzzleRatingResult:
             "sampled_first_move_solve_rate": self.sampled_first_move_solve_rate,
             "sampled_line_completion": self.sampled_line_completion,
             "sampled_fitted_puzzle_rating": self.sampled_fitted_puzzle_rating,
+            "greedy_curve_distance": self.greedy_curve_distance,
+            "sampled_curve_distance": self.sampled_curve_distance,
+            "curve": [point.as_record() for point in self.curve],
             "bands": [band.as_record() for band in self.bands],
         }
 
@@ -232,6 +285,12 @@ class _PuzzleScore:
     sampled_line: float
 
 
+@dataclass(frozen=True)
+class _ScoredRating:
+    result: PuzzleRatingResult
+    scores: tuple[_PuzzleScore, ...]
+
+
 def benchmark_puzzles(
     resolved_config: ResolvedConfig[PuzzleBenchmarkConfig],
     *,
@@ -242,14 +301,14 @@ def benchmark_puzzles(
     """Measure and optionally record puzzle response for one checkpoint."""
 
     config = resolved_config.value
-    puzzle_set = load_puzzle_set()
+    puzzle_set = load_puzzle_set(config.puzzle_set)
     try:
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
         training_games, overlapping = _training_overlap(
             puzzle_set,
             config.training_normalized,
         )
-        ratings = tuple(
+        scored_ratings = tuple(
             _score_rating(
                 puzzle_set,
                 runner,
@@ -259,6 +318,7 @@ def benchmark_puzzles(
             )
             for target_rating in config.target_ratings
         )
+        ratings = tuple(scored.result for scored in scored_ratings)
         component = projection_content_digest(
             (puzzle.as_projection_record() for puzzle in puzzle_set.puzzles),
             PUZZLE_RESPONSE_PROJECTION,
@@ -311,7 +371,12 @@ def benchmark_puzzles(
         result,
         recorded_at=recorded_at,
     )
-    measurements = _measurements(result, component)
+    measurements = _measurements(
+        result,
+        component,
+        scored_ratings,
+        noise=config.noise,
+    )
     envelope = build_result(
         kind=PUZZLE_KIND,
         benchmark=PUZZLE_BENCHMARK,
@@ -348,7 +413,7 @@ def score_puzzle_set(
             target_rating=rating,
             temperature=temperature,
             batch_size=batch_size,
-        )
+        ).result
         for rating in target_ratings
     )
 
@@ -396,7 +461,7 @@ def _score_rating(
     target_rating: int,
     temperature: float,
     batch_size: int,
-) -> PuzzleRatingResult:
+) -> _ScoredRating:
     tasks = _decision_tasks(puzzle_set, target_rating)
     decisions: dict[str, list[_DecisionScore]] = {
         puzzle.puzzle_id: [] for puzzle in puzzle_set.puzzles
@@ -420,19 +485,125 @@ def _score_rating(
     puzzle_ratings = [score.puzzle.rating for score in scores]
     greedy_lines = [score.greedy_line for score in scores]
     sampled_lines = [score.sampled_line for score in scores]
-    return PuzzleRatingResult(
-        target_rating=target_rating,
-        human_expected_score=_mean(
-            [expected_score(target_rating, rating) for rating in puzzle_ratings]
-        ),
-        greedy_first_move_accuracy=_mean([score.greedy_first for score in scores]),
-        greedy_line_completion=_mean(greedy_lines),
-        greedy_fitted_puzzle_rating=fitted_rating(puzzle_ratings, greedy_lines),
-        sampled_first_move_solve_rate=_mean([score.sampled_first for score in scores]),
-        sampled_line_completion=_mean(sampled_lines),
-        sampled_fitted_puzzle_rating=fitted_rating(puzzle_ratings, sampled_lines),
-        bands=_band_results(puzzle_set, scores, target_rating),
+    curve, greedy_curve_distance, sampled_curve_distance = _continuous_curve(
+        scores,
+        target_rating,
     )
+    return _ScoredRating(
+        result=PuzzleRatingResult(
+            target_rating=target_rating,
+            human_expected_score=_mean(
+                [expected_score(target_rating, rating) for rating in puzzle_ratings]
+            ),
+            greedy_first_move_accuracy=_mean([score.greedy_first for score in scores]),
+            greedy_line_completion=_mean(greedy_lines),
+            greedy_fitted_puzzle_rating=fitted_rating(puzzle_ratings, greedy_lines),
+            sampled_first_move_solve_rate=_mean(
+                [score.sampled_first for score in scores]
+            ),
+            sampled_line_completion=_mean(sampled_lines),
+            sampled_fitted_puzzle_rating=fitted_rating(puzzle_ratings, sampled_lines),
+            greedy_curve_distance=greedy_curve_distance,
+            sampled_curve_distance=sampled_curve_distance,
+            curve=curve,
+            bands=_band_results(puzzle_set, scores, target_rating),
+        ),
+        scores=scores,
+    )
+
+
+def _continuous_curve(
+    scores: Sequence[_PuzzleScore],
+    target_rating: int,
+) -> tuple[tuple[PuzzleCurvePoint, ...], float, float]:
+    """Estimate continuous response with the shared frozen curve machinery."""
+
+    neighbours = min(PUZZLE_CURVE_NEIGHBOURS, len(scores))
+    if neighbours < 2:
+        raise PuzzleBenchmarkError("a puzzle response curve needs at least two puzzles")
+    ratings = [score.puzzle.rating for score in scores]
+    low = min(ratings)
+    high = max(ratings)
+    grid = tuple(rating for rating in PUZZLE_CURVE_GRID if low <= rating <= high)
+    if len(grid) < 2:
+        grid = (
+            (float(low), float(high))
+            if low < high
+            else (float(low) - 0.5, float(high) + 0.5)
+        )
+    spec = CurveSpec(
+        name="puzzle-solve-response",
+        version=PUZZLE_CURVE_VERSION,
+        quantity=CurveQuantity.SCALAR,
+        neighbours=neighbours,
+        grid=grid,
+    )
+    human = [
+        Observation(
+            rating=float(score.puzzle.rating),
+            value=expected_score(target_rating, score.puzzle.rating),
+        )
+        for score in scores
+    ]
+
+    def comparison(values: Sequence[float]) -> CurveComparison:
+        return compare_curves(
+            spec=spec,
+            human=human,
+            model=[
+                Observation(rating=float(score.puzzle.rating), value=value)
+                for score, value in zip(scores, values, strict=True)
+            ],
+            # The human curve is analytic rather than a sampled corpus. The
+            # shared curve estimator is useful here, but its two-sample
+            # bootstrap would invent uncertainty on the human side.
+            resamples=0,
+        )
+
+    greedy_first = comparison([score.greedy_first for score in scores])
+    greedy_line = comparison([score.greedy_line for score in scores])
+    sampled_first = comparison([score.sampled_first for score in scores])
+    sampled_line = comparison([score.sampled_line for score in scores])
+    points: list[PuzzleCurvePoint] = []
+    for (
+        human_point,
+        greedy_first_point,
+        greedy_line_point,
+        sampled_first_point,
+        sampled_line_point,
+    ) in zip(
+        greedy_line.points,
+        greedy_first.points,
+        greedy_line.points,
+        sampled_first.points,
+        sampled_line.points,
+        strict=True,
+    ):
+        points.append(
+            PuzzleCurvePoint(
+                puzzle_rating=human_point.rating,
+                bandwidth=human_point.bandwidth,
+                effective_sample_size=greedy_line_point.model.effective_sample_size,
+                human_expected_score=_curve_value(human_point.human.value),
+                greedy_first_move_accuracy=_curve_value(greedy_first_point.model.value),
+                greedy_line_completion=_curve_value(greedy_line_point.model.value),
+                sampled_first_move_solve_rate=_curve_value(
+                    sampled_first_point.model.value
+                ),
+                sampled_line_completion=_curve_value(sampled_line_point.model.value),
+            )
+        )
+    return (
+        tuple(points),
+        greedy_line.conditional_distance,
+        sampled_line.conditional_distance,
+    )
+
+
+def _curve_value(value: float | None) -> float:
+    if value is None:
+        raise PuzzleBenchmarkError("puzzle response curve has an unsupported point")
+    return value
 
 
 def _decision_tasks(
@@ -544,7 +715,7 @@ def _band_results(
     try:
         minimum = int(selection["minimum_rating"])
         maximum = int(selection["maximum_rating_exclusive"])
-        width = int(selection["band_width"])
+        width = int(selection["local_precision_span"])
     except (KeyError, TypeError, ValueError) as error:
         raise PuzzleBenchmarkError(
             f"puzzle set has invalid rating-band metadata: {error}"
@@ -640,6 +811,9 @@ def _dataset_reference(
 def _measurements(
     result: PuzzleBenchmarkResult,
     component: DataComponent,
+    scored_ratings: Sequence[_ScoredRating],
+    *,
+    noise: NoiseConfig,
 ) -> tuple[Measurement, ...]:
     ratings = result.ratings
     sample_size = len(ratings) * result.dataset.selected_games
@@ -685,20 +859,89 @@ def _measurements(
             len(ratings),
         ),
         (
+            PUZZLE_GREEDY_CURVE_DISTANCE,
+            _mean([item.greedy_curve_distance for item in ratings]),
+            sample_size,
+        ),
+        (
+            PUZZLE_SAMPLED_CURVE_DISTANCE,
+            _mean([item.sampled_curve_distance for item in ratings]),
+            sample_size,
+        ),
+        (
             PUZZLE_TRAINING_OVERLAP_RATE,
             result.overlap_rate,
             result.dataset.selected_games,
         ),
     )
+    floors = _sampling_floors(scored_ratings, component, noise) if noise.enabled else {}
     return tuple(
         measurement(
             definition.identifier,
             value,
             data=component,
             sample_size=measurement_size,
+            noise_floor=floors.get(definition.identifier),
         )
         for definition, value, measurement_size in values
     )
+
+
+def _sampling_floors(
+    scored_ratings: Sequence[_ScoredRating],
+    component: DataComponent,
+    config: NoiseConfig,
+) -> dict[str, NoiseFloor]:
+    if not scored_ratings:
+        return {}
+    puzzles = scored_ratings[0].scores
+    metric_values = (
+        (PUZZLE_GREEDY_FIRST_MOVE_ACCURACY, "greedy_first"),
+        (PUZZLE_GREEDY_LINE_COMPLETION, "greedy_line"),
+        (PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE, "sampled_first"),
+        (PUZZLE_SAMPLED_LINE_COMPLETION, "sampled_line"),
+    )
+    totals: list[GameTotals] = []
+    for index, puzzle_score in enumerate(puzzles):
+        puzzle_id = puzzle_score.puzzle.puzzle_id
+        ratings = [scored.scores[index] for scored in scored_ratings]
+        if any(score.puzzle.puzzle_id != puzzle_id for score in ratings):
+            raise PuzzleBenchmarkError("puzzle score grids are not aligned")
+        totals.append(
+            GameTotals(
+                game_id=int.from_bytes(
+                    sha256(puzzle_id.encode()).digest()[:8],
+                    "big",
+                ),
+                metrics={
+                    definition.identifier: MetricTotal(
+                        total=sum(
+                            float(getattr(score, attribute)) for score in ratings
+                        ),
+                        positions=len(ratings),
+                    )
+                    for definition, attribute in metric_values
+                },
+            )
+        )
+    entries = bootstrap_floors(
+        totals,
+        component=component,
+        seed=config.seed,
+        resamples=config.resamples,
+        coverage=config.coverage,
+    )
+    return {
+        entry.metric: NoiseFloor(
+            value=entry.floor,
+            kind="data-sampling",
+            source=(
+                f"{config.resamples} bootstrap resamples of "
+                f"{len(totals)} puzzle source games"
+            ),
+        )
+        for entry in entries
+    }
 
 
 def _write_detail(

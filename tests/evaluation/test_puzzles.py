@@ -2,25 +2,31 @@
 
 from __future__ import annotations
 
-from collections import Counter
+import csv
+import io
+import json
 from collections.abc import Callable, Sequence
 from hashlib import sha256
-from importlib.resources import files
 from pathlib import Path
 
 import chess
 import pytest
 import torch
+import zstandard
 from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
+from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
     PuzzleSet,
+    PuzzleSetBuildConfig,
+    conservative_detectable_difference,
     expected_score,
     fitted_rating,
     load_puzzle_set,
+    prepare_puzzle_set,
     puzzle_set_identity,
 )
 from anthro_chess.evaluation.puzzles.benchmark import (
@@ -28,7 +34,10 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     _training_overlap,
     score_puzzle_set,
 )
-from anthro_chess.evaluation.puzzles.dataset import PUZZLE_FILE_NAME
+from anthro_chess.evaluation.puzzles.dataset import (
+    PUZZLE_FILE_NAME,
+    PUZZLE_METADATA_FILE_NAME,
+)
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:
@@ -87,14 +96,27 @@ class _ControlledRunner:
 
 
 def _fixture_set() -> PuzzleSet:
-    packaged = load_puzzle_set()
-    single = next(
-        puzzle for puzzle in packaged.puzzles if len(puzzle.solution_moves) == 1
+    puzzles = tuple(
+        sorted(
+            (
+                _puzzle(
+                    "0db6n",
+                    "N1bk2nr/1p1p1ppp/p2Qp3/8/4P3/6P1/1Pn1KP1P/2qN1B1R b - - 1 14",
+                    "c2a1 d6f8",
+                    1379,
+                    "zotX7Zc3",
+                ),
+                _puzzle(
+                    "01k4m",
+                    "r1bqr1k1/1p2bppp/p4n2/3p2B1/8/2PB1N1P/PP2Q1P1/RN2R1K1 w - - 4 15",
+                    "b1d2 e7c5 g1h1 e8e2",
+                    1350,
+                    "NGD3XQIZ",
+                ),
+            ),
+            key=lambda puzzle: puzzle.puzzle_id,
+        )
     )
-    multi = next(
-        puzzle for puzzle in packaged.puzzles if len(puzzle.solution_moves) > 1
-    )
-    puzzles = tuple(sorted((single, multi), key=lambda puzzle: puzzle.puzzle_id))
     return PuzzleSet(
         name="fixture-puzzles",
         version=1,
@@ -104,37 +126,219 @@ def _fixture_set() -> PuzzleSet:
         selection={
             "minimum_rating": 800,
             "maximum_rating_exclusive": 2800,
-            "band_width": 400,
+            "local_precision_span": 400,
         },
+        sizing={},
+        coverage={},
         puzzles=puzzles,
     )
 
 
-def test_packaged_set_matches_its_identity_license_and_balanced_selection() -> None:
-    puzzle_set = load_puzzle_set()
-    packaged = (
-        files("anthro_chess.evaluation.puzzles")
-        .joinpath("data", PUZZLE_FILE_NAME)
-        .read_text(encoding="utf-8")
+def _puzzle(
+    puzzle_id: str,
+    initial_fen: str,
+    moves: str,
+    rating: int,
+    source_game_key: str,
+) -> Puzzle:
+    return Puzzle(
+        puzzle_id=puzzle_id,
+        initial_fen=initial_fen,
+        moves=tuple(chess.Move.from_uci(move) for move in moves.split()),
+        rating=rating,
+        source_game_key=source_game_key,
     )
 
-    assert puzzle_set_identity() == {
+
+def _write_fixture_artifact(path: Path) -> Path:
+    puzzle_set = _fixture_set()
+    rows = [
+        "puzzle_id,initial_fen,moves,rating,source_game_key",
+        *[
+            ",".join(
+                (
+                    puzzle.puzzle_id,
+                    puzzle.initial_fen,
+                    " ".join(move.uci() for move in puzzle.moves),
+                    str(puzzle.rating),
+                    puzzle.source_game_key,
+                )
+            )
+            for puzzle in puzzle_set.puzzles
+        ],
+    ]
+    content = "\n".join(rows) + "\n"
+    path.mkdir()
+    (path / PUZZLE_FILE_NAME).write_text(content)
+    (path / PUZZLE_METADATA_FILE_NAME).write_text(
+        json.dumps(
+            {
+                "name": puzzle_set.name,
+                "version": puzzle_set.version,
+                "entries": len(puzzle_set.puzzles),
+                "puzzles_sha256": sha256(content.encode()).hexdigest(),
+                "source": {"url": "https://example.test/puzzles"},
+                "license": {"spdx_id": "CC0-1.0"},
+                "selection": puzzle_set.selection,
+                "sizing": {},
+                "coverage": {},
+            }
+        )
+    )
+    return path
+
+
+def test_external_set_matches_its_identity_and_validates_lines(
+    tmp_path: Path,
+) -> None:
+    path = _write_fixture_artifact(tmp_path / "puzzles")
+    puzzle_set = load_puzzle_set(path)
+    content = (path / PUZZLE_FILE_NAME).read_text()
+
+    assert puzzle_set_identity(path) == {
         "name": puzzle_set.name,
         "version": puzzle_set.version,
-        "entries": 320,
-        "sha256": sha256(packaged.encode()).hexdigest(),
+        "entries": 2,
+        "sha256": sha256(content.encode()).hexdigest(),
     }
     assert puzzle_set.license["spdx_id"] == "CC0-1.0"
-    assert puzzle_set.source["url"] == (
-        "https://database.lichess.org/lichess_db_puzzle.csv.zst"
+    assert len(puzzle_set.puzzles) == 2
+
+
+def test_statistical_size_resolves_small_overall_and_local_differences() -> None:
+    assert conservative_detectable_difference(20_000) == pytest.approx(0.0140, abs=1e-4)
+    assert conservative_detectable_difference(4_000) == pytest.approx(0.0313, abs=1e-4)
+
+
+def test_preparation_selects_uniform_exact_ratings_and_records_coverage(
+    tmp_path: Path,
+) -> None:
+    source_rows = [
+        (
+            "candidate-a",
+            "N1bk2nr/1p1p1ppp/p2Qp3/8/4P3/6P1/1Pn1KP1P/2qN1B1R b - - 1 14",
+            "c2a1 d6f8",
+            1000,
+            80,
+            90,
+            500,
+            "https://lichess.org/game0001#1",
+        ),
+        (
+            "candidate-b",
+            "N1bk2nr/1p1p1ppp/p2Qp3/8/4P3/6P1/1Pn1KP1P/2qN1B1R b - - 1 14",
+            "c2a1 d6f8",
+            1000,
+            80,
+            90,
+            500,
+            "https://lichess.org/game0002#1",
+        ),
+        (
+            "candidate-c",
+            "r1bqr1k1/1p2bppp/p4n2/3p2B1/8/2PB1N1P/PP2Q1P1/RN2R1K1 w - - 4 15",
+            "b1d2 e7c5 g1h1 e8e2",
+            1001,
+            75,
+            91,
+            700,
+            "https://lichess.org/game0003#1",
+        ),
+        (
+            "filtered-rd",
+            "r1bqr1k1/1p2bppp/p4n2/3p2B1/8/2PB1N1P/PP2Q1P1/RN2R1K1 w - - 4 15",
+            "b1d2 e7c5 g1h1 e8e2",
+            1001,
+            101,
+            91,
+            700,
+            "https://lichess.org/game0004#1",
+        ),
+    ]
+    source_text = _source_csv(source_rows)
+    compressed = zstandard.ZstdCompressor().compress(source_text.encode())
+    source = tmp_path / "source.csv.zst"
+    source.write_bytes(compressed)
+
+    selected = [
+        min(
+            source_rows[:2],
+            key=lambda row: sha256(str(row[0]).encode()).digest(),
+        ),
+        source_rows[2],
+    ]
+    output_text = _selected_csv(sorted(selected, key=lambda row: str(row[0])))
+    config = PuzzleSetBuildConfig.model_validate(
+        {
+            "artifact_name": "fixture-puzzles",
+            "name": "fixture-puzzles",
+            "version": 1,
+            "source_retrieved": "2026-07-29",
+            "expected_entries": 2,
+            "expected_puzzles_sha256": sha256(output_text.encode()).hexdigest(),
+            "archive": {
+                "url": "https://example.test/puzzles.csv.zst",
+                "file_name": "source.csv.zst",
+                "sha256": sha256(compressed).hexdigest(),
+            },
+            "selection": {
+                "minimum_rating": 1000,
+                "maximum_rating_exclusive": 1002,
+                "puzzles_per_rating": 1,
+                "minimum_plays": 100,
+                "minimum_popularity": 0,
+                "maximum_rating_deviation": 100,
+                "local_precision_span": 2,
+            },
+        }
     )
-    minimum = int(puzzle_set.selection["minimum_rating"])
-    width = int(puzzle_set.selection["band_width"])
-    bands = Counter(
-        ((puzzle.rating - minimum) // width) * width + minimum
-        for puzzle in puzzle_set.puzzles
+    result = prepare_puzzle_set(
+        ResolvedConfig(
+            value=config,
+            provenance=ConfigProvenance(source=None, overrides=()),
+        ),
+        tmp_path / "artifact",
+        source_path=source,
     )
-    assert set(bands.values()) == {64}
+    loaded = load_puzzle_set(result.artifact_path)
+
+    assert result.entries == 2
+    assert [puzzle.rating for puzzle in loaded.puzzles] == [1000, 1001]
+    assert loaded.coverage["eligible_candidates"] == 3
+    assert loaded.coverage["minimum_candidates_per_rating"] == 1
+    assert loaded.sizing["overall_puzzles"] == 2
+
+
+def _source_csv(rows: Sequence[tuple[object, ...]]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        (
+            "PuzzleId",
+            "FEN",
+            "Moves",
+            "Rating",
+            "RatingDeviation",
+            "Popularity",
+            "NbPlays",
+            "Themes",
+            "GameUrl",
+            "OpeningTags",
+        )
+    )
+    for row in rows:
+        writer.writerow((*row[:7], "fixture", row[7], ""))
+    return output.getvalue()
+
+
+def _selected_csv(rows: Sequence[tuple[object, ...]]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(("puzzle_id", "initial_fen", "moves", "rating", "source_game_key"))
+    for row in rows:
+        game_key = str(row[7]).split("/")[3].split("#")[0][:8]
+        writer.writerow((row[0], row[1], row[2], row[3], game_key))
+    return output.getvalue()
 
 
 def test_reference_curve_and_fit_share_the_expected_score_definition() -> None:
@@ -147,8 +351,12 @@ def test_reference_curve_and_fit_share_the_expected_score_definition() -> None:
 
 
 def test_every_checkmate_is_accepted_for_a_mate_in_one() -> None:
-    puzzle = next(
-        puzzle for puzzle in load_puzzle_set().puzzles if puzzle.puzzle_id == "90Yss"
+    puzzle = _puzzle(
+        "90Yss",
+        "4r3/6pk/1b1P4/5p1p/7P/5p2/2QRK1B1/4R1q1 w - - 0 37",
+        "e2d1 g1e1",
+        996,
+        "DBhDAhGJ",
     )
     history = DecisionHistory(initial_fen=puzzle.initial_fen)
     history.push(puzzle.moves[0])

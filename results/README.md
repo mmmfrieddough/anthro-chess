@@ -21,7 +21,8 @@ legality, and rating-dependency results for it, and bootstraps the
 data-sampling floors for that reading from the same pass.
 Other benchmark commands append through the same boundary. In particular,
 `anthro eval puzzles` records rating-response headlines over the owned external
-puzzle set while leaving its grid and band tables in the detail tier.
+puzzle set while leaving its continuous response curves and band drill-downs in
+the detail tier.
 
 Read the numbers with ordinary file tools, or with `anthro eval report` for a
 compact delta view, which annotates every delta with the floor it did or did

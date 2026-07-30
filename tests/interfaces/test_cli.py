@@ -55,7 +55,9 @@ def test_eval_help_advertises_the_puzzle_rating_benchmark(
         main(["eval", "--help"])
 
     assert exit_info.value.code == 0
-    assert "puzzles" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "prepare-puzzles" in output
+    assert "puzzles" in output
 
 
 def test_data_prepare_command_routes_to_importable_pipeline(

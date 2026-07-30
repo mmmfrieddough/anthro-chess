@@ -18,6 +18,16 @@ from anthro_chess.evaluation.pool import (
     load_pool,
     pool_game,
 )
+from anthro_chess.evaluation.puzzles import (
+    PuzzleSelectionConfig,
+    PuzzleSetBuildConfig,
+    PuzzleSetBuildResult,
+    PuzzleSetError,
+    conservative_detectable_difference,
+    load_puzzle_set,
+    prepare_puzzle_set,
+    puzzle_set_identity,
+)
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
     LEGAL_MOVE_COUNT_BUCKETS,
@@ -124,6 +134,7 @@ if TYPE_CHECKING:
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkError,
         PuzzleBenchmarkResult,
+        PuzzleCurvePoint,
         PuzzleRatingResult,
         benchmark_puzzles,
     )
@@ -208,6 +219,7 @@ _LAZY_EXPORTS = {
     "PuzzleBenchmarkConfig": "puzzles",
     "PuzzleBenchmarkError": "puzzles",
     "PuzzleBenchmarkResult": "puzzles",
+    "PuzzleCurvePoint": "puzzles",
     "PuzzleRatingResult": "puzzles",
     "benchmark_puzzles": "puzzles",
 }
@@ -294,7 +306,12 @@ __all__ = [
     "PuzzleBenchmarkConfig",
     "PuzzleBenchmarkError",
     "PuzzleBenchmarkResult",
+    "PuzzleCurvePoint",
     "PuzzleRatingResult",
+    "PuzzleSelectionConfig",
+    "PuzzleSetBuildConfig",
+    "PuzzleSetBuildResult",
+    "PuzzleSetError",
     "PositionCharacteristic",
     "PositionPredicate",
     "PositionSlices",
@@ -314,6 +331,7 @@ __all__ = [
     "collect_decisions",
     "compare_curves",
     "compare_reference_rate",
+    "conservative_detectable_difference",
     "curve_overlays",
     "decision_measurements",
     "reconstruct_uci_games",
@@ -329,7 +347,10 @@ __all__ = [
     "match_position_predicates",
     "ply_characteristics",
     "load_pool",
+    "load_puzzle_set",
     "pool_game",
     "position_slices",
+    "prepare_puzzle_set",
+    "puzzle_set_identity",
     "rating_band_name",
 ]

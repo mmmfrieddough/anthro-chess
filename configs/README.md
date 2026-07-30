@@ -38,10 +38,13 @@ the model selection out keeps the canonical reading defined by its inputs
 rather than by whichever checkpoint was current when the file was written; the
 machine-local default selection or an explicit override supplies the rest.
 The puzzle-rating selection for `anthro eval puzzles` likewise leaves out the
-checkpoint, declares the rating grid and reference temperature, and names the
-normalized training selection used only for the source-game overlap report.
-The owned puzzle set and its exact external-source identity live in the
-evaluation package rather than in TOML.
+checkpoint, declares the rating grid and reference temperature, and names both
+the generated puzzle artifact and the normalized training selection used only
+for the source-game overlap report. Its companion puzzle-set selection pins the
+source archive, exact-rating sampling recipe, statistical size target, quality
+filters, and expected generated identity for `anthro eval prepare-puzzles`.
+Puzzle records remain under `ANTHRO_CHESS_DATA_ROOT`; only the recipe and
+expected identity are committed.
 
 Add a focused `runtime/` subdirectory when the corresponding command exists. Do
 not add speculative example files for commands that have not been implemented.

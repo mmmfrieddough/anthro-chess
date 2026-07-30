@@ -162,6 +162,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
 
+    prepare_puzzles_parser = eval_commands.add_parser(
+        "prepare-puzzles",
+        help="Acquire and build the pinned external puzzle benchmark artifact.",
+    )
+    prepare_puzzles_parser.add_argument(
+        "input",
+        type=Path,
+        nargs="?",
+        help="Pinned Lichess puzzle archive; downloaded when omitted.",
+    )
+    prepare_puzzles_parser.add_argument(
+        "output",
+        type=Path,
+        nargs="?",
+        help=(
+            "Directory for the puzzle artifact. Defaults beneath "
+            "ANTHRO_CHESS_DATA_ROOT."
+        ),
+    )
+    prepare_puzzles_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML puzzle-source and selection recipe.",
+    )
+    prepare_puzzles_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    prepare_puzzles_parser.set_defaults(handler=_run_eval_prepare_puzzles)
+
     run_parser = eval_commands.add_parser(
         "run",
         help="Evaluate a checkpoint over the frozen pool and record the result.",
@@ -666,6 +700,41 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_prepare_puzzles(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        PuzzleSetBuildConfig,
+        PuzzleSetError,
+        prepare_puzzle_set,
+    )
+
+    try:
+        resolved = load_config(
+            PuzzleSetBuildConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        output = _data_output_path(
+            arguments.output,
+            resolved.value.artifact_name,
+        )
+        result = prepare_puzzle_set(
+            resolved,
+            output,
+            source_path=arguments.input,
+        )
+    except (ConfigError, PuzzleSetError) as error:
+        print(f"anthro eval prepare-puzzles: {error}", file=sys.stderr)
+        return 2
+
+    disposition = "Reused" if result.source_reused else "Acquired"
+    print(f"{disposition} verified source: {result.source_path}")
+    print(f"Prepared {result.entries} puzzle(s): {result.puzzle_path}")
+    print(f"Manifest: {result.manifest_path}")
+    print(f"Identity: {result.puzzles_sha256}")
+    return 0
+
+
 def _run_eval_run(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.evaluation import (
@@ -867,7 +936,9 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             f"fit={rating.greedy_fitted_puzzle_rating:7.1f}  "
             f"sampled first={rating.sampled_first_move_solve_rate:.3f} "
             f"line={rating.sampled_line_completion:.3f} "
-            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}"
+            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}  "
+            f"curve gap={rating.greedy_curve_distance:.3f}/"
+            f"{rating.sampled_curve_distance:.3f}"
         )
     lines.extend(
         [
@@ -1588,27 +1659,28 @@ def _resolve_puzzle_roots(
     resolved: ResolvedConfig[PuzzleBenchmarkConfig],
     overrides: Sequence[str],
 ) -> ResolvedConfig[PuzzleBenchmarkConfig]:
-    """Resolve the explicit training-overlap input beneath the data root."""
+    """Resolve puzzle and training-overlap artifacts beneath the data root."""
 
     if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
         return resolved
     config = resolved.value
     override_keys = {item.partition("=")[0] for item in overrides}
-    if (
-        config.training_normalized.is_absolute()
-        or "training_normalized" in override_keys
-    ):
-        return resolved
     root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
+    update: dict[str, Path] = {}
+    if not config.puzzle_set.is_absolute() and "puzzle_set" not in override_keys:
+        update["puzzle_set"] = _rooted_artifact_path(root, config.puzzle_set)
+    if (
+        not config.training_normalized.is_absolute()
+        and "training_normalized" not in override_keys
+    ):
+        update["training_normalized"] = _rooted_artifact_path(
+            root,
+            config.training_normalized,
+        )
+    if not update:
+        return resolved
     return ResolvedConfig(
-        value=config.model_copy(
-            update={
-                "training_normalized": _rooted_artifact_path(
-                    root,
-                    config.training_normalized,
-                )
-            }
-        ),
+        value=config.model_copy(update=update),
         provenance=resolved.provenance,
     )
 

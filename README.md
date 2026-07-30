@@ -233,6 +233,8 @@ diagnostics stay machine-local.
 uv run anthro eval report
 uv run anthro eval report --history held_out.move_loss
 uv run anthro eval metrics
+uv run anthro eval prepare-puzzles \
+  --config configs/evaluation/lichess-puzzles-v1.toml
 uv run anthro eval puzzles \
   --config configs/evaluation/puzzle-rating-response.toml --no-record
 ```

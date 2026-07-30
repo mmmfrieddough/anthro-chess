@@ -9,10 +9,13 @@
 #
 #   anthro eval puzzles --config configs/evaluation/puzzle-rating-response.toml
 
+# The generated puzzle artifact is built by the companion checked-in selection.
+puzzle_set = "artifacts/lichess-puzzles-v1"
+
 # The overlap join includes train and validation games and excludes the test
 # partition, which training never consumes. ANTHRO_CHESS_DATA_ROOT relocates
 # this checked-in relative artifact path.
-training_normalized = "artifacts/lichess-blitz-2017-04"
+training_normalized = "artifacts/lichess-blitz-2017-04/normalized"
 
 target_ratings = [1000, 1400, 1800, 2200]
 reference_temperature = 1.0

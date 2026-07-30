@@ -1165,6 +1165,24 @@ PUZZLE_SAMPLED_RATING_ORDER_ACCURACY = _puzzle_metric(
     ),
 )
 
+PUZZLE_GREEDY_CURVE_DISTANCE = _puzzle_metric(
+    "puzzle.greedy_curve_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean absolute distance between the continuous human expected-solve "
+        "curve and greedy full-line completion over puzzle rating."
+    ),
+)
+
+PUZZLE_SAMPLED_CURVE_DISTANCE = _puzzle_metric(
+    "puzzle.sampled_curve_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean absolute distance between the continuous human expected-solve "
+        "curve and sampled full-line completion over puzzle rating."
+    ),
+)
+
 PUZZLE_TRAINING_OVERLAP_RATE = _puzzle_metric(
     "puzzle.training_overlap_rate",
     MetricDirection.INFORMATIONAL,

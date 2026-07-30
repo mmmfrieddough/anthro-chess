@@ -4,9 +4,14 @@ from typing import TYPE_CHECKING, Any
 
 from anthro_chess.evaluation.puzzles.dataset import (
     Puzzle,
+    PuzzleSelectionConfig,
     PuzzleSet,
+    PuzzleSetBuildConfig,
+    PuzzleSetBuildResult,
     PuzzleSetError,
+    conservative_detectable_difference,
     load_puzzle_set,
+    prepare_puzzle_set,
     puzzle_set_identity,
 )
 
@@ -17,6 +22,7 @@ if TYPE_CHECKING:
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkError,
         PuzzleBenchmarkResult,
+        PuzzleCurvePoint,
         PuzzleRatingResult,
         benchmark_puzzles,
         expected_score,
@@ -30,6 +36,7 @@ _LAZY_EXPORTS = frozenset(
         "PuzzleBenchmarkConfig",
         "PuzzleBenchmarkError",
         "PuzzleBenchmarkResult",
+        "PuzzleCurvePoint",
         "PuzzleRatingResult",
         "benchmark_puzzles",
         "expected_score",
@@ -52,16 +59,22 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "PUZZLE_BENCHMARK_VERSION",
     "Puzzle",
+    "PuzzleSelectionConfig",
     "PuzzleBandResult",
     "PuzzleBenchmarkConfig",
     "PuzzleBenchmarkError",
     "PuzzleBenchmarkResult",
+    "PuzzleCurvePoint",
     "PuzzleRatingResult",
     "PuzzleSet",
+    "PuzzleSetBuildConfig",
+    "PuzzleSetBuildResult",
     "PuzzleSetError",
     "benchmark_puzzles",
+    "conservative_detectable_difference",
     "expected_score",
     "fitted_rating",
     "load_puzzle_set",
+    "prepare_puzzle_set",
     "puzzle_set_identity",
 ]
