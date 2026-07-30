@@ -18,16 +18,19 @@ import logging
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 import chess
 from chess import engine as chess_engine
+from torch import Tensor
 
 from anthro_chess.chess import RESIGNATION_ACTION_ID, encode_move, legal_action_ids
+from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.games.records import DecisionPolicy, SeatRecord
 from anthro_chess.evaluation.results.records import CheckpointReference
 from anthro_chess.runtime import (
     ActionModelRunner,
+    BatchedActionModelRunner,
     DecisionRuntimeError,
     GameSession,
     MoveAction,
@@ -82,6 +85,15 @@ class PlayerSeat(Protocol):
 class GamePlayer(Protocol):
     """One player configuration, reused across the games of a suite."""
 
+    @property
+    def supports_concurrent_games(self) -> bool:
+        """Return whether several of this player's seats may be open at once.
+
+        A player backed by shared state that only tracks one game at a time,
+        such as a single engine process, says no and the harness plays its
+        suites one game at a time.
+        """
+
     def seat_record(self, *, seed: int) -> SeatRecord:
         """Return the resolved configuration this seat plays a game under."""
 
@@ -90,6 +102,24 @@ class GamePlayer(Protocol):
 
     def close(self) -> None:
         """Release any state that outlives a single game."""
+
+
+@runtime_checkable
+class BatchingGamePlayer(GamePlayer, Protocol):
+    """A player that can resolve several of its seats' decisions together.
+
+    Separate from :class:`GamePlayer` because most players have nothing to
+    gain from it: a uniform-random seat is already free, and an external
+    engine decides in its own process. A player that does not implement this
+    is asked one seat at a time, so batching is an optimization the harness
+    offers rather than a requirement it imposes.
+    """
+
+    def decide_batch(
+        self,
+        pending: Sequence[tuple[PlayerSeat, DecisionRequest]],
+    ) -> tuple[SeatDecision, ...]:
+        """Choose one action for each pending seat, in the order given."""
 
 
 class ModelPlayer:
@@ -120,6 +150,12 @@ class ModelPlayer:
 
         return self._config
 
+    @property
+    def supports_concurrent_games(self) -> bool:
+        """Report that seats are independent sessions over a shared runner."""
+
+        return True
+
     def seat_record(self, *, seed: int) -> SeatRecord:
         """Return this player's resolved configuration for one game."""
 
@@ -137,25 +173,75 @@ class ModelPlayer:
         seeded = self._config.model_copy(update={"seed": seed})
         return ModelSeat(self._runner, config=seeded)
 
+    def decide_batch(
+        self,
+        pending: Sequence[tuple[PlayerSeat, DecisionRequest]],
+    ) -> tuple[SeatDecision, ...]:
+        """Resolve several of this player's pending decisions in one pass.
+
+        Every seat is synchronized and encoded first, the runner is asked once
+        for the whole wave, and each seat then samples from its own logits
+        through its own session. Sampling stays per seat, so which games
+        happened to share a pass does not enter any game's random stream.
+        """
+
+        if not pending:
+            return ()
+        seats = tuple(_model_seat(seat) for seat, _ in pending)
+        contexts = tuple(
+            seat.prepare(request)
+            for seat, (_, request) in zip(seats, pending, strict=True)
+        )
+        if isinstance(self._runner, BatchedActionModelRunner) and len(contexts) > 1:
+            try:
+                logits = self._runner.predict_batch(contexts)
+            except ValueError as error:
+                raise PlayerError(f"model seats cannot decide: {error}") from error
+            if len(logits) != len(contexts):
+                raise PlayerError("model runner returned the wrong number of decisions")
+        else:
+            logits = tuple(self._runner.predict(context) for context in contexts)
+        return tuple(seat.resolve(row) for seat, row in zip(seats, logits, strict=True))
+
     def close(self) -> None:
         """Leave the shared runner alone; its lifetime is the caller's."""
+
+
+def _model_seat(seat: PlayerSeat) -> ModelSeat:
+    if not isinstance(seat, ModelSeat):
+        raise PlayerError("a model player can only resolve its own seats")
+    return seat
 
 
 class ModelSeat:
     """One game's session for a model player."""
 
     def __init__(self, runner: ActionModelRunner, *, config: RuntimeConfig) -> None:
+        self._runner = runner
         self._session = GameSession(runner, config=config)
 
     def decide(self, request: DecisionRequest) -> SeatDecision:
         """Synchronize the session to the position and select one action."""
+
+        return self.resolve(self._runner.predict(self.prepare(request)))
+
+    def prepare(self, request: DecisionRequest) -> DecisionContext:
+        """Synchronize the session and return the context to predict from."""
 
         try:
             self._session.sync_position(
                 initial_fen=request.initial_position,
                 moves=request.move_history,
             )
-            decision = self._session.decide()
+            return self._session.decision_context()
+        except DecisionRuntimeError as error:
+            raise PlayerError(f"model seat cannot decide: {error}") from error
+
+    def resolve(self, logits: Tensor) -> SeatDecision:
+        """Select and apply one action from this seat's own action logits."""
+
+        try:
+            decision = self._session.decide_from_logits(logits)
         except DecisionRuntimeError as error:
             raise PlayerError(f"model seat cannot decide: {error}") from error
         action_id = (
@@ -182,6 +268,12 @@ class RandomPlayer:
 
     def __init__(self, *, label: str = "uniform-random") -> None:
         self._label = label
+
+    @property
+    def supports_concurrent_games(self) -> bool:
+        """Report that each seat owns its own random stream and nothing else."""
+
+        return True
 
     def seat_record(self, *, seed: int) -> SeatRecord:
         """Return this player's resolved configuration for one game."""
@@ -260,6 +352,17 @@ class ExternalEnginePlayer:
         self._engine = engine
         self._label = label
         self._configuration = dict(configuration or {})
+
+    @property
+    def supports_concurrent_games(self) -> bool:
+        """Report that one process cannot hold several games at once.
+
+        Seats mark game boundaries on a shared process, so overlapping games
+        would leave the engine believing it is still in the previous one. A
+        suite with an engine seat therefore plays one game at a time.
+        """
+
+        return False
 
     def seat_record(self, *, seed: int) -> SeatRecord:
         """Return this player's resolved configuration for one game."""

@@ -520,6 +520,46 @@ def test_choosing_an_action_stays_the_thin_call_interfaces_use() -> None:
     assert session.move_history == (action.move,)
 
 
+def test_a_split_decision_matches_the_one_the_session_makes_for_itself() -> None:
+    """A caller that predicts elsewhere must still decide the same way.
+
+    Batching decisions across games means asking the session for its context
+    and handing the logits back, so the split path has to be the ordinary path
+    with the prediction lifted out of it.
+    """
+
+    logits = _ranked_logits("e2e4")
+    whole = GameSession(
+        StubRunner(logits), config=RuntimeConfig(temperature=0.5, seed=9)
+    )
+    split = GameSession(
+        StubRunner(logits), config=RuntimeConfig(temperature=0.5, seed=9)
+    )
+
+    expected = whole.decide()
+    context = split.decision_context()
+    decision = split.decide_from_logits(logits.clone())
+
+    assert len(context.plies) == 1
+    assert decision == expected
+    assert split.move_history == whole.move_history
+
+
+def test_a_terminal_game_refuses_both_halves_of_a_split_decision() -> None:
+    session = GameSession(
+        StubRunner(_ranked_logits("e2e4")),
+        config=RuntimeConfig(temperature=0.0),
+        moves=tuple(
+            chess.Move.from_uci(move) for move in ("f2f3", "e7e5", "g2g4", "d8h4")
+        ),
+    )
+
+    with pytest.raises(SessionStateError, match="terminal game"):
+        session.decision_context()
+    with pytest.raises(SessionStateError, match="terminal game"):
+        session.decide_from_logits(_ranked_logits("e2e4"))
+
+
 def test_a_played_game_encodes_each_ply_once_however_often_it_is_resent() -> None:
     """Per-decision cost must follow appended plies, not total game length.
 

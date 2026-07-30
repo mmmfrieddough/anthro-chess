@@ -1245,6 +1245,26 @@ one game reproduces on its own from the seed its record carries. Nothing waits
 in wall-clock time; an external engine is bounded by depth or nodes, because a
 time limit would make results depend on how loaded the machine was.
 
+Games are played in lock-step waves so one player configuration's pending
+decisions can be resolved in a single forward pass instead of one position at
+a time. Concurrency is a declared setting, and the sequential path is the same
+code with a wave of one. Games never observe each other: each keeps its own
+board, each seat its own random stream, and a game that ends simply stops
+contributing decisions while the rest of its wave continues. A player whose
+seats cannot overlap, such as one external engine process serving every game,
+holds its suites at one game at a time.
+
+What batching does change is which floating-point kernels run, and a padded
+batched pass is not bit-for-bit identical to a single-history pass. Measured on
+a trained checkpoint, the *games* were unaffected — the same moves and the same
+endings at every concurrency, on both CPU and MPS — while the recorded policy
+probabilities moved in their last bits, by under `3e-6`. That is immaterial to
+every metric computed from them, but it means concurrency belongs in a run's
+recorded configuration, and that a game regenerated on its own reproduces its
+moves rather than its stored floats to the last digit. A decision sitting on an
+exact tie could in principle fall the other way; none did in the measured
+suites.
+
 Endings are recorded precisely enough to tell them apart. Rule endings come
 from the chess layer, a learned resignation and the ply limit that stops an
 unfinished game are the harness's own, and a claimed draw is marked as

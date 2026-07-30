@@ -6,7 +6,7 @@ import logging
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, runtime_checkable
 
 import chess
 import torch
@@ -41,6 +41,20 @@ class ActionModelRunner(Protocol):
 
     def predict(self, context: DecisionContext) -> Tensor:
         """Return raw logits over the shared action vocabulary."""
+
+
+@runtime_checkable
+class BatchedActionModelRunner(ActionModelRunner, Protocol):
+    """A runner that can resolve several pending decisions in one pass.
+
+    Kept separate from :class:`ActionModelRunner` because a live game has one
+    decision to make and gains nothing from it. Only a caller holding several
+    independent games at once, such as a generated-game benchmark, has a batch
+    to offer, and it asks whether the runner it was handed can take one.
+    """
+
+    def predict_batch(self, contexts: Sequence[DecisionContext]) -> tuple[Tensor, ...]:
+        """Return raw action logits for each context, in the order given."""
 
 
 @dataclass(frozen=True)
@@ -322,8 +336,36 @@ class GameSession:
     def decide(self) -> ActionDecision:
         """Select and apply one action, reporting the policy behind it."""
 
-        logits, enabled_ids = self._policy_inputs()
-        action_id, policy = self._sample_action(logits, enabled_ids)
+        return self.decide_from_logits(self._runner.predict(self.decision_context()))
+
+    def decision_context(self) -> DecisionContext:
+        """Return the encoded trajectory the next decision is made from.
+
+        Public so a caller holding several games at once can collect their
+        pending contexts, run one batched forward pass, and hand each result
+        back to :meth:`decide_from_logits`. Splitting the decision in two is
+        the only way to batch across games without a second selection path.
+        """
+
+        if self.is_terminal:
+            raise SessionStateError("cannot choose an action in a terminal game")
+        try:
+            return self._history.context(target_rating=self.config.target_rating)
+        except EncodingError as error:
+            raise SessionStateError(
+                f"cannot build decision context: {error}"
+            ) from error
+
+    def decide_from_logits(self, logits: object) -> ActionDecision:
+        """Select and apply one action from already-computed action logits.
+
+        The logits must be the ones this session's own decision context would
+        have produced. Nothing here can check that, so a caller that batches
+        decisions owns keeping the two aligned.
+        """
+
+        validated, enabled_ids = self._policy_inputs(logits)
+        action_id, policy = self._sample_action(validated, enabled_ids)
 
         if action_id == RESIGNATION_ACTION_ID:
             self._resigned_by = self._board.turn
@@ -355,7 +397,9 @@ class GameSession:
 
         if type(action_id) is not int:
             raise TypeError("action id must be an int")
-        logits, enabled_ids = self._policy_inputs()
+        logits, enabled_ids = self._policy_inputs(
+            self._runner.predict(self.decision_context())
+        )
         try:
             candidate_index = enabled_ids.index(action_id)
         except ValueError:
@@ -365,29 +409,24 @@ class GameSession:
         candidate_logits = logits[torch.tensor(enabled_ids, dtype=torch.long)]
         return SelectionPolicy.describe(candidate_logits, enabled_ids, candidate_index)
 
-    def _policy_inputs(self) -> tuple[Tensor, tuple[int, ...]]:
+    def _policy_inputs(self, logits: object) -> tuple[Tensor, tuple[int, ...]]:
         """Return validated action logits and the actions this position enables.
 
         Shared by deciding and by scoring, so re-scoring a recorded decision
-        reads the same encoded history, the same legal mask, and the same logit
-        validation the live path does.
+        reads the same legal mask and the same logit validation the live path
+        does. The prediction itself is the caller's, because a batched caller
+        made it for several games at once.
         """
 
         if self.is_terminal:
             raise SessionStateError("cannot choose an action in a terminal game")
 
-        try:
-            context = self._history.context(target_rating=self.config.target_rating)
-        except EncodingError as error:
-            raise SessionStateError(
-                f"cannot build decision context: {error}"
-            ) from error
-        logits = self._validate_logits(self._runner.predict(context))
+        validated = self._validate_logits(logits)
         enabled_ids = legal_action_ids(
             self._board,
             include_resignation=self.config.resignation_enabled,
         )
-        return logits, enabled_ids
+        return validated, enabled_ids
 
     @staticmethod
     def _validate_logits(logits: object) -> Tensor:

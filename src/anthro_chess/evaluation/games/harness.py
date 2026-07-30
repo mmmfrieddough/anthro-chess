@@ -18,6 +18,7 @@ import logging
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
+from itertools import islice
 from typing import Annotated, Any
 
 import chess
@@ -26,10 +27,12 @@ from pydantic import Field, StrictBool, StrictInt
 from anthro_chess.chess import RESIGNATION_ACTION_ID, decode_move
 from anthro_chess.config import ConfigModel
 from anthro_chess.evaluation.games.players import (
+    BatchingGamePlayer,
     DecisionRequest,
     GamePlayer,
     PlayerError,
     PlayerSeat,
+    SeatDecision,
 )
 from anthro_chess.evaluation.games.records import (
     DecisionRecord,
@@ -155,6 +158,11 @@ class GenerationConfig(ConfigModel):
     #: report the harness's policy as the model's behavior. Games still end on
     #: their own through the fivefold and seventy-five-move rules.
     claim_draws: StrictBool = False
+    #: How many games are played at once. Concurrent games are advanced in
+    #: lock step so one player's pending decisions can be resolved together;
+    #: one keeps the sequential path. Games never observe each other, so this
+    #: is a throughput setting rather than a measurement setting.
+    concurrency: Annotated[StrictInt, Field(ge=1)] = 1
 
 
 @dataclass
@@ -178,6 +186,49 @@ class _GameState:
     decisions: list[DecisionRecord] = field(default_factory=list)
 
 
+class _GameRun:
+    """One game in flight: its plan, its open seats, and how far it has gone."""
+
+    def __init__(self, *, plan: _GamePlan) -> None:
+        self.plan = plan
+        self.state = _GameState(
+            board=plan.position.board(),
+            action_ids=list(plan.position.prefix_action_ids),
+        )
+        self.seats: dict[PlayerSlot, PlayerSeat] = {
+            "white": plan.white.seat(seed=plan.white_seed),
+            "black": plan.black.seat(seed=plan.black_seed),
+        }
+        self.outcome: GameOutcome | None = None
+
+    def close(self) -> None:
+        """Release both seats' per-game state."""
+
+        for seat in self.seats.values():
+            seat.close()
+
+
+@dataclass(frozen=True)
+class _PendingDecision:
+    """One game waiting on one seat to choose an action."""
+
+    run: _GameRun
+    slot: PlayerSlot
+    request: DecisionRequest
+
+    @property
+    def player(self) -> GamePlayer:
+        """Return the player configuration occupying the deciding seat."""
+
+        return self.run.plan.white if self.slot == "white" else self.run.plan.black
+
+    @property
+    def seat(self) -> PlayerSeat:
+        """Return the open seat this decision belongs to."""
+
+        return self.run.seats[self.slot]
+
+
 def generate_games(
     first: GamePlayer,
     second: GamePlayer,
@@ -188,14 +239,41 @@ def generate_games(
     """Play every planned game and yield one record each.
 
     Records are yielded rather than returned so a long suite can be written to
-    the detail tier incrementally instead of accumulating in memory.
+    the detail tier incrementally instead of accumulating in memory. Concurrent
+    games are played in waves, so a suite accumulates one wave of records at a
+    time rather than one game's.
     """
 
     resolved = config or GenerationConfig()
     if not positions:
         raise GenerationError("a generation suite needs at least one position")
-    for plan in _plan_games(first, second, positions, resolved):
-        yield _play_game(plan, resolved)
+    width = _wave_width(first, second, resolved)
+    plans = _plan_games(first, second, positions, resolved)
+    while wave := tuple(islice(plans, width)):
+        yield from _play_wave(wave, resolved)
+
+
+def _wave_width(
+    first: GamePlayer,
+    second: GamePlayer,
+    config: GenerationConfig,
+) -> int:
+    """Return how many games may be in flight at once for this pairing.
+
+    A player whose seats cannot overlap, such as one external engine process
+    serving every game, forces the suite back to one game at a time. Refusing
+    to overlap is cheaper than a wrong measurement, and the pairing is known
+    before anything is played.
+    """
+
+    if config.concurrency == 1:
+        return 1
+    if first.supports_concurrent_games and second.supports_concurrent_games:
+        return config.concurrency
+    logger.info(
+        "Playing one game at a time: a seat in this pairing cannot overlap games",
+    )
+    return 1
 
 
 def _plan_games(
@@ -227,27 +305,156 @@ def _plan_games(
                 )
 
 
-def _play_game(plan: _GamePlan, config: GenerationConfig) -> GameRecord:
-    position = plan.position
-    board = position.board()
-    state = _GameState(board=board, action_ids=list(position.prefix_action_ids))
-    seats: dict[PlayerSlot, PlayerSeat] = {
-        "white": plan.white.seat(seed=plan.white_seed),
-        "black": plan.black.seat(seed=plan.black_seed),
-    }
+def _play_wave(
+    plans: Sequence[_GamePlan],
+    config: GenerationConfig,
+) -> tuple[GameRecord, ...]:
+    """Play one wave of games in lock step and return their records in order.
+
+    Every game in the wave advances one ply per round, so the decisions the
+    round produces for a single player configuration can be resolved together.
+    Games never observe each other: each keeps its own board and each seat its
+    own random stream, and a game that ends simply stops contributing
+    decisions while the rest of the wave continues. A wave of one is the
+    sequential path.
+    """
+
+    runs = [_GameRun(plan=plan) for plan in plans]
     try:
-        outcome = _play_out(state, seats, position, config)
+        while True:
+            pending = tuple(
+                filter(None, (_pending_decision(run, config) for run in runs))
+            )
+            if not pending:
+                break
+            for player, group in _grouped_by_player(pending):
+                _resolve(player, group)
     finally:
-        for seat in seats.values():
-            seat.close()
+        for run in runs:
+            run.close()
+    return tuple(_finished_record(run) for run in runs)
+
+
+def _pending_decision(
+    run: _GameRun,
+    config: GenerationConfig,
+) -> _PendingDecision | None:
+    """Return the decision this game is waiting on, or nothing once it ended.
+
+    A prefix that is already terminal yields a game with no decisions rather
+    than an error. A perturbed or truncated position source can produce one,
+    and recording it honestly keeps it visible in the suite's distribution
+    instead of failing the whole run.
+    """
+
+    if run.outcome is not None:
+        return None
+    finished = _rule_outcome(run.state.board, config)
+    if finished is not None:
+        run.outcome = finished
+        return None
+    if len(run.state.decisions) >= config.maximum_generated_plies:
+        run.outcome = GameOutcome(
+            result="*",
+            termination=GameTermination.PLY_LIMIT,
+            adjudicated=True,
+        )
+        return None
+    slot: PlayerSlot = "white" if run.state.board.turn == chess.WHITE else "black"
+    return _PendingDecision(
+        run=run,
+        slot=slot,
+        request=DecisionRequest(
+            board=run.state.board.copy(stack=True),
+            initial_position=run.plan.position.initial_position,
+            ply_index=len(run.state.action_ids),
+        ),
+    )
+
+
+def _grouped_by_player(
+    pending: Sequence[_PendingDecision],
+) -> tuple[tuple[GamePlayer, tuple[_PendingDecision, ...]], ...]:
+    """Group one round's pending decisions by the player configuration to ask.
+
+    Grouping is by identity rather than by equality, because one player object
+    in both seats is exactly the self-play case that should share a pass, while
+    two players configured alike are still two configurations.
+    """
+
+    groups: list[tuple[GamePlayer, list[_PendingDecision]]] = []
+    for item in pending:
+        player = item.player
+        for known, members in groups:
+            if known is player:
+                members.append(item)
+                break
+        else:
+            groups.append((player, [item]))
+    return tuple((player, tuple(members)) for player, members in groups)
+
+
+def _resolve(player: GamePlayer, group: Sequence[_PendingDecision]) -> None:
+    """Choose and apply one action for every decision pending on one player."""
+
+    if isinstance(player, BatchingGamePlayer) and len(group) > 1:
+        decisions = player.decide_batch(
+            tuple((item.seat, item.request) for item in group)
+        )
+        if len(decisions) != len(group):
+            raise PlayerError("a batched player returned the wrong decision count")
+    else:
+        decisions = tuple(item.seat.decide(item.request) for item in group)
+    for item, decision in zip(group, decisions, strict=True):
+        _apply(item, decision)
+
+
+def _apply(pending: _PendingDecision, decision: SeatDecision) -> None:
+    """Record one chosen action and advance or end the game it belongs to."""
+
+    run = pending.run
+    state = run.state
+    state.decisions.append(
+        DecisionRecord(
+            ply_index=len(state.action_ids),
+            slot=pending.slot,
+            action_id=decision.action_id,
+            policy=decision.policy,
+        )
+    )
+    state.action_ids.append(decision.action_id)
+    if decision.action_id == RESIGNATION_ACTION_ID:
+        run.outcome = GameOutcome(
+            result="0-1" if state.board.turn == chess.WHITE else "1-0",
+            termination=GameTermination.RESIGNATION,
+            adjudicated=False,
+        )
+        return
+    move = decode_move(decision.action_id)
+    if move not in state.board.legal_moves:
+        raise PlayerError(
+            f"seat {pending.slot} returned illegal move {move.uci()} in the "
+            "position it was asked about"
+        )
+    state.board.push(move)
+
+
+def _finished_record(run: _GameRun) -> GameRecord:
+    """Build the record of one game the wave played to an outcome."""
+
+    plan = run.plan
+    position = plan.position
+    outcome = run.outcome
+    if outcome is None:  # pragma: no cover - the wave only returns on outcomes
+        raise GenerationError("cannot record a game that has not ended")
     record = build_game_record(
         initial_position=position.initial_position,
         prefix_plies=len(position.prefix_action_ids),
-        action_ids=state.action_ids,
+        action_ids=run.state.action_ids,
         white=plan.white.seat_record(seed=plan.white_seed),
         black=plan.black.seat_record(seed=plan.black_seed),
         seed=plan.seed,
-        decisions=state.decisions,
+        decisions=run.state.decisions,
         outcome=outcome,
         source_game_id=position.source_game_id,
         position_label=position.label,
@@ -260,61 +467,6 @@ def _play_game(plan: _GamePlan, config: GenerationConfig) -> GameRecord:
         outcome.termination.value,
     )
     return record
-
-
-def _play_out(
-    state: _GameState,
-    seats: dict[PlayerSlot, PlayerSeat],
-    position: StartPosition,
-    config: GenerationConfig,
-) -> GameOutcome:
-    """Decide plies until the rules or the ply limit end the game.
-
-    A prefix that is already terminal yields a game with no decisions rather
-    than an error. A perturbed or truncated position source can produce one,
-    and recording it honestly keeps it visible in the suite's distribution
-    instead of failing the whole run.
-    """
-
-    while True:
-        finished = _rule_outcome(state.board, config)
-        if finished is not None:
-            return finished
-        if len(state.decisions) >= config.maximum_generated_plies:
-            return GameOutcome(
-                result="*",
-                termination=GameTermination.PLY_LIMIT,
-                adjudicated=True,
-            )
-        slot: PlayerSlot = "white" if state.board.turn == chess.WHITE else "black"
-        request = DecisionRequest(
-            board=state.board.copy(stack=True),
-            initial_position=position.initial_position,
-            ply_index=len(state.action_ids),
-        )
-        decision = seats[slot].decide(request)
-        state.decisions.append(
-            DecisionRecord(
-                ply_index=len(state.action_ids),
-                slot=slot,
-                action_id=decision.action_id,
-                policy=decision.policy,
-            )
-        )
-        state.action_ids.append(decision.action_id)
-        if decision.action_id == RESIGNATION_ACTION_ID:
-            return GameOutcome(
-                result="0-1" if state.board.turn == chess.WHITE else "1-0",
-                termination=GameTermination.RESIGNATION,
-                adjudicated=False,
-            )
-        move = decode_move(decision.action_id)
-        if move not in state.board.legal_moves:
-            raise PlayerError(
-                f"seat {slot} returned illegal move {move.uci()} in the "
-                "position it was asked about"
-            )
-        state.board.push(move)
 
 
 def _rule_outcome(board: chess.Board, config: GenerationConfig) -> GameOutcome | None:
