@@ -608,6 +608,33 @@ def test_eval_report_reports_an_unknown_selection_without_a_traceback(
     assert "anthro eval report:" in capsys.readouterr().err
 
 
+def test_eval_tensorboard_projects_the_store(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = tmp_path / "results"
+    output = tmp_path / "tensorboard-history"
+    _record_fixture_results(store)
+
+    assert (
+        main(
+            [
+                "eval",
+                "tensorboard",
+                str(output),
+                "--store",
+                str(store),
+            ]
+        )
+        == 0
+    )
+
+    assert len(tuple(output.rglob("events.out.tfevents.*"))) == 1
+    rendered = capsys.readouterr().out
+    assert "2 points" in rendered
+    assert "2 checkpoints" in rendered
+
+
 def test_eval_metrics_lists_the_registry(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

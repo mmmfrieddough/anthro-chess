@@ -35,6 +35,9 @@ not clear. `anthro eval metrics` lists every metric identifier and its declared
 direction of improvement. `anthro eval noise` characterizes evaluation and
 training floors from recorded replicates, lists what is characterized, and
 reports how many games an axis needs to resolve an effect of a given size.
+`anthro eval tensorboard OUTPUT` regenerates a disposable checkpoint-history
+view outside this directory, with one TensorBoard line per raw series
+fingerprint.
 
 Bulk diagnostics — per-position tables, slice breakdowns, generated games — do
 not belong here. They stay in the machine-local detail tier and are referenced
