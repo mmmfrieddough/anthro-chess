@@ -24,7 +24,7 @@ from anthro_chess.evaluation.results import (
     registry_snapshot,
     restore_registry,
 )
-from anthro_chess.evaluation.results.reporting import METRIC_COLUMN_WIDTH
+from anthro_chess.evaluation.results.reporting import MAXIMUM_METRIC_COLUMN_WIDTH
 
 
 def _definition(**overrides: object) -> MetricDefinition:
@@ -255,18 +255,21 @@ def test_the_registry_record_names_every_metric_and_projection() -> None:
     }
 
 
-def test_inference_metric_identifiers_fit_the_report_column() -> None:
-    """A longer identifier pushes its whole row out of alignment.
+def test_every_registered_identifier_fits_the_report_column() -> None:
+    """The report's column stretches to the names in it; its line does not.
 
-    Scoped to this family rather than the registry: four dependency and
-    legality identifiers already overflow the column, which is a pre-existing
-    rendering defect rather than something this test should adopt.
+    The delta table sizes its identifier column from the identifiers actually
+    being rendered, so alignment holds for any name. What cannot stretch is
+    the line the table's header has to fit inside, and the width left over
+    after the header's other columns is what bounds the registry. A new
+    identifier past it is caught here rather than in a report nobody is
+    reading closely.
     """
 
     too_long = [
         metric.identifier
-        for metric in registered_metrics("inference-efficiency")
-        if len(metric.identifier) > METRIC_COLUMN_WIDTH
+        for metric in registered_metrics()
+        if len(metric.identifier) > MAXIMUM_METRIC_COLUMN_WIDTH
     ]
 
     assert not too_long

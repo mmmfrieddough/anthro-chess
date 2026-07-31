@@ -404,9 +404,6 @@ def test_every_training_efficiency_metric_is_execution_sensitive() -> None:
     for definition in metrics:
         assert definition.execution_sensitive is True
         assert definition.projection is None
-        # Identity has to fit the report's metric column or its row loses
-        # alignment; the registry is held to the width rather than the reverse.
-        assert len(definition.identifier) <= 38
 
 
 def test_measurements_carry_the_workload_fingerprint() -> None:

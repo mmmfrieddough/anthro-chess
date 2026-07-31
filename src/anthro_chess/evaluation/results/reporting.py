@@ -65,10 +65,47 @@ UNREGISTERED_FAMILY_ABSENCE = "no metric is registered for this family yet"
 #: rather than relying on the reader's window.
 MAXIMUM_LINE_WIDTH = 120
 
-#: Column the metric identifier is rendered in. A longer identifier would push
-#: its whole row out of alignment, so the registry is held to it rather than
-#: the table growing to fit one name.
-METRIC_COLUMN_WIDTH = 38
+
+def _delta_header(metric_width: int) -> str:
+    """Return the delta table's header row at one identifier-column width.
+
+    Defined beside the widths rather than with the other renderers because the
+    budget below is measured from it. The header is the widest fixed part of
+    the table, so what it spends is what the identifier column has left.
+    """
+
+    return (
+        f"  {'metric':<{metric_width}} {'better':<6} "
+        f"{'baseline':>11} {'current':>11} {'delta':>11}  {'change':<9} noise"
+    )
+
+
+#: Any width past the header's own ``metric`` label, so subtracting it from the
+#: rendered header leaves exactly the fixed part.
+_HEADER_PROBE_WIDTH = 64
+
+#: Everything the header spends on something other than the identifier: the
+#: indent, the fixed columns, and the separators between them. Measured from
+#: the header rather than written down, so resizing a column cannot leave the
+#: budget below it stale.
+_HEADER_OVERHEAD = len(_delta_header(_HEADER_PROBE_WIDTH)) - _HEADER_PROBE_WIDTH
+
+#: The identifier column never renders narrower than this, so an ordinary
+#: report keeps the shape a reader is used to instead of reflowing to whatever
+#: names happen to be in it.
+MINIMUM_METRIC_COLUMN_WIDTH = 38
+
+#: The longest identifier the header can carry inside ``MAXIMUM_LINE_WIDTH``.
+#: The renderer widens to whatever it is given rather than truncating here,
+#: because a truncated identifier is not one a reader can look up; this is the
+#: budget the registry is held to, so nothing longer reaches the report.
+#:
+#: Measured on the header rather than on a row, because a row's noise
+#: annotation is optional and long enough that bounding it would force the
+#: column back to a width the registry has already outgrown. A row carrying
+#: one can therefore run past the line, as it does today wherever a long
+#: identifier is reported.
+MAXIMUM_METRIC_COLUMN_WIDTH = MAXIMUM_LINE_WIDTH - _HEADER_OVERHEAD
 
 #: How much of one workload value a series label shows. The label exists to
 #: tell two cells of a matrix apart, and the whole value is in the envelope for
@@ -594,6 +631,19 @@ def build_history(
     )
 
 
+def metric_column_width(identifiers: Iterable[str]) -> int:
+    """Return the identifier-column width for the identifiers being rendered.
+
+    Sized from what is present rather than fixed, because registered names
+    range across more than forty characters. A column fixed to the longest
+    spends that width on every report that does not contain it, and one fixed
+    to the common case pushes the whole of a longer row out of alignment.
+    """
+
+    longest = max((len(identifier) for identifier in identifiers), default=0)
+    return max(longest, MINIMUM_METRIC_COLUMN_WIDTH)
+
+
 def render_report(report: DeltaReport) -> str:
     """Render the compact default view as text."""
 
@@ -613,11 +663,11 @@ def render_report(report: DeltaReport) -> str:
         )
     if report.pivot is ReportPivot.ENVIRONMENT:
         lines.append("Model held fixed; the environment is what varies.")
-    lines.append("")
-    lines.append(
-        f"  {'metric':<{METRIC_COLUMN_WIDTH}} {'better':<6} "
-        f"{'baseline':>11} {'current':>11} {'delta':>11}  {'change':<9} noise"
+    width = metric_column_width(
+        metric.metric for family in report.families for metric in family.metrics
     )
+    lines.append("")
+    lines.append(_delta_header(width))
 
     # Families awaiting their first metric are collapsed onto one line. They are
     # a statement about the plan rather than about this checkpoint, and giving
@@ -636,7 +686,7 @@ def render_report(report: DeltaReport) -> str:
         for group in family.series:
             lines.extend(_render_group_header(group))
             for metric in group.metrics:
-                lines.append(_render_metric(metric))
+                lines.append(_render_metric(metric, width))
     if unregistered:
         lines.extend(
             textwrap.wrap(
@@ -802,10 +852,10 @@ _MOVEMENT_LABELS = {
 }
 
 
-def _render_metric(metric: MetricDelta) -> str:
+def _render_metric(metric: MetricDelta, width: int) -> str:
     change = _MOVEMENT_LABELS.get(metric.movement, metric.movement.value)
     row = (
-        f"  {metric.metric:<{METRIC_COLUMN_WIDTH}} "
+        f"  {metric.metric:<{width}} "
         f"{_DIRECTION_LABELS[metric.direction]:<6} "
         f"{_format(metric.baseline):>11} "
         f"{_format(metric.current):>11} "
