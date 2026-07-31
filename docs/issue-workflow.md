@@ -246,11 +246,19 @@ reduced view and `--no-record`, and report in the pull request what was
 expected, what was read, and whether they agreed. A disagreement is a finding to
 write up rather than a run to repeat until it looks better.
 
-A session with no checkpoints or normalized corpus on its machine cannot take
-the reading, and this does not block implementation. Route it the way a pending
-GPU check is routed: complete the implementation, open the pull request with the
-pending reading named prominently, including the exact command and what the
-expected direction is, and leave the reading as part of local review.
+Establish whether this machine has checkpoints before concluding that it has
+none. They live outside the worktree, beneath `ANTHRO_CHESS_RUN_ROOT` and
+`ANTHRO_CHESS_DATA_ROOT`, so a checkout with no `artifacts/` or `runs/`
+directory is not evidence either way and neither is an empty search of the
+repository and its worktrees. `CONTRIBUTING.md` gives the commands that answer
+it. Deferring a reading that could have been taken is the more costly error,
+because it moves work to the maintainer and lands the change on fixtures alone.
+
+A session that genuinely has neither checkpoints nor a normalized corpus cannot
+take the reading, and this does not block implementation. Route it the way a
+pending GPU check is routed: complete the implementation, open the pull request
+with the pending reading named prominently, including the exact command and what
+the expected direction is, and leave the reading as part of local review.
 
 Shakedown readings are never appended to the committed results store. Committing
 a benchmark result is a separate decision about project history and is made
