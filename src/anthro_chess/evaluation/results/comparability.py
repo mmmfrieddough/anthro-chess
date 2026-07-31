@@ -344,7 +344,13 @@ def latest_measurement(
     envelopes: Sequence[ResultEnvelope],
     metric: str,
 ) -> tuple[ResultEnvelope, Measurement] | None:
-    """Return the most recently recorded measurement of one metric."""
+    """Return the most recently recorded measurement of one metric.
+
+    Blind to series by construction, so a caller that may hold several results
+    for one checkpoint should reach for :func:`measurements_by_workload`
+    instead. This stays for the readings where one result per checkpoint is
+    guaranteed by the benchmark rather than assumed by the reader.
+    """
 
     ordered = sorted(
         envelopes,
@@ -355,6 +361,62 @@ def latest_measurement(
         if found is not None:
             return envelope, found
     return None
+
+
+#: Group key for a reading whose metric declares no workload. One group, which
+#: is the case every benchmark writing a single envelope per checkpoint stays
+#: in.
+UNSCOPED_WORKLOAD = ""
+
+
+def measurements_by_workload(
+    envelopes: Sequence[ResultEnvelope],
+    metric: str,
+    *,
+    workload_scoped: bool,
+) -> dict[str, tuple[ResultEnvelope, Measurement]]:
+    """Return one checkpoint's most recent reading of a metric per workload.
+
+    A benchmark that writes one envelope per matrix cell records several
+    results for one checkpoint that share a metric identifier and differ only
+    by declared workload. Choosing the single most recent one would present one
+    arbitrary cell as the checkpoint's value and hide the rest, so the caller
+    is handed every cell and decides how to present them.
+
+    ``workload_scoped`` is the metric's property rather than the envelope's. A
+    result may carry an execution record while reporting a metric whose value
+    does not depend on it — a training-efficiency run also reporting held-out
+    quality is the case — and splitting that metric by workload would show two
+    rows for readings that are genuinely on one series.
+    """
+
+    grouped: dict[str, tuple[ResultEnvelope, Measurement]] = {}
+    for envelope in sorted(
+        envelopes,
+        key=lambda item: (item.recorded_at, item.result_id),
+    ):
+        found = envelope.measurement(metric)
+        if found is None:
+            continue
+        key = UNSCOPED_WORKLOAD
+        if workload_scoped and envelope.execution is not None:
+            key = envelope.execution.workload_sha256
+        grouped[key] = (envelope, found)
+    return grouped
+
+
+def recorded_series(
+    envelopes: Sequence[ResultEnvelope],
+    metric: str,
+    bridges: BridgeIndex,
+) -> frozenset[str]:
+    """Return the distinct series one metric was recorded on."""
+
+    return frozenset(
+        bridges.series(found.fingerprint)
+        for found in (envelope.measurement(metric) for envelope in envelopes)
+        if found is not None
+    )
 
 
 def _benchmark(envelope: ResultEnvelope) -> str:

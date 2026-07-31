@@ -11,7 +11,9 @@ import pytest
 
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
+    BenchmarkReference,
     BridgeIndex,
+    CheckpointReference,
     Comparability,
     DataComponent,
     DeltaReport,
@@ -26,10 +28,13 @@ from anthro_chess.evaluation.results import (
     PairedFloorIndex,
     ReportError,
     ResultEnvelope,
+    SeriesGroup,
     build_bridge,
     build_characterization,
     build_delta_report,
     build_history,
+    build_result,
+    execution_reference,
     measurement,
     paired_contributions,
     render_history,
@@ -45,6 +50,8 @@ Digest = Callable[..., DataComponent]
 BASELINE_AT = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 CURRENT_AT = datetime(2026, 7, 8, 12, 0, tzinfo=UTC)
 
+GENERATED_PLIES = "generated_play.mean_game_plies"
+
 
 def _row(report: DeltaReport, metric: str) -> MetricDelta:
     for family in report.families:
@@ -52,6 +59,63 @@ def _row(report: DeltaReport, metric: str) -> MetricDelta:
             if row.metric == metric:
                 return row
     raise AssertionError(f"{metric} is not in the report")
+
+
+def _groups(report: DeltaReport, metric: str) -> tuple[SeriesGroup, ...]:
+    """Return the series a metric was reported on, in report order."""
+
+    return tuple(
+        group
+        for family in report.families
+        for group in family.series
+        if any(row.metric == metric for row in group.metrics)
+    )
+
+
+def _rollout_cell(
+    label: str,
+    plies: float,
+    *,
+    arm: str = "standard-start",
+    rating: int = 1500,
+    temperature: float = 0.9,
+    recorded_at: datetime,
+) -> ResultEnvelope:
+    """Build one recorded cell of a generated-play matrix.
+
+    A rollout writes one envelope per cell, so a single run records several
+    results for one checkpoint that share a metric identifier and differ only
+    by declared workload.
+    """
+
+    execution = execution_reference(
+        device="cpu",
+        device_name="fixture",
+        precision="float32",
+        torch_version="2.7.0",
+        platform_key="Fixture-x86",
+        platform="fixture-1.2.3",
+        workload={
+            "positions": {"kind": arm, "count": 8},
+            "target_rating": rating,
+            "temperature": temperature,
+            "maximum_generated_plies": 200,
+        },
+    )
+    return build_result(
+        kind="generated-play",
+        benchmark=BenchmarkReference(name="generated-play", version=1),
+        checkpoint=CheckpointReference(label=label, step=1),
+        execution=execution,
+        measurements=[
+            measurement(
+                GENERATED_PLIES,
+                plies,
+                workload=execution.workload_component(),
+            )
+        ],
+        recorded_at=recorded_at,
+    )
 
 
 def _family(report: DeltaReport, identifier: str) -> FamilyReport:
@@ -727,6 +791,207 @@ def test_provenance_differences_are_available_behind_an_option(
 
     assert [difference.field for difference in report.provenance] == ["package_version"]
     assert "9.9.9" in rendered
+
+
+def test_every_cell_of_a_matrix_is_reported_rather_than_one_of_them() -> None:
+    """One envelope per cell must not collapse into one arbitrary row.
+
+    A suite shares one ``recorded_at``, so choosing the most recent measurement
+    of a metric broke the tie on ``result_id`` and rendered one cell as though
+    it were the checkpoint's value.
+    """
+
+    report = build_delta_report(
+        [
+            _rollout_cell(
+                "checkpoint-a", 60.0, arm="standard-start", recorded_at=BASELINE_AT
+            ),
+            _rollout_cell(
+                "checkpoint-a", 90.0, arm="human-prefix", recorded_at=BASELINE_AT
+            ),
+            _rollout_cell(
+                "checkpoint-b", 64.0, arm="standard-start", recorded_at=CURRENT_AT
+            ),
+            _rollout_cell(
+                "checkpoint-b", 88.0, arm="human-prefix", recorded_at=CURRENT_AT
+            ),
+        ],
+        BridgeIndex(),
+        metrics=[GENERATED_PLIES],
+    )
+
+    groups = _groups(report, GENERATED_PLIES)
+    assert [group.label for group in groups] == [
+        "positions.kind=human-prefix",
+        "positions.kind=standard-start",
+    ]
+    values = {
+        group.label: (group.metrics[0].baseline, group.metrics[0].current)
+        for group in groups
+    }
+    assert values["positions.kind=human-prefix"] == (90.0, 88.0)
+    assert values["positions.kind=standard-start"] == (60.0, 64.0)
+    # Each cell is its own series, so the rows have to be distinguishable in
+    # the record without reconstructing the grouping.
+    assert len({group.metrics[0].series for group in groups}) == 2
+
+
+def test_a_series_label_names_only_what_tells_the_cells_apart() -> None:
+    """A cell's whole declared workload above every row carries no information."""
+
+    report = build_delta_report(
+        [
+            _rollout_cell("checkpoint-a", 60.0, rating=1200, recorded_at=BASELINE_AT),
+            _rollout_cell("checkpoint-a", 70.0, rating=1800, recorded_at=BASELINE_AT),
+            _rollout_cell("checkpoint-b", 62.0, rating=1200, recorded_at=CURRENT_AT),
+            _rollout_cell("checkpoint-b", 74.0, rating=1800, recorded_at=CURRENT_AT),
+        ],
+        BridgeIndex(),
+        metrics=[GENERATED_PLIES],
+    )
+
+    labels = [group.label for group in _groups(report, GENERATED_PLIES)]
+
+    assert labels == ["target_rating=1200", "target_rating=1800"]
+    # The fields the two cells share stay in the envelope rather than in a
+    # label that has to fit above a table.
+    assert not any("temperature" in (label or "") for label in labels)
+
+
+def test_a_cell_measured_for_only_one_checkpoint_is_named_rather_than_dropped() -> None:
+    report = build_delta_report(
+        [
+            _rollout_cell("checkpoint-a", 60.0, rating=1200, recorded_at=BASELINE_AT),
+            _rollout_cell("checkpoint-b", 62.0, rating=1200, recorded_at=CURRENT_AT),
+            _rollout_cell("checkpoint-b", 74.0, rating=1800, recorded_at=CURRENT_AT),
+        ],
+        BridgeIndex(),
+        metrics=[GENERATED_PLIES],
+    )
+
+    added = next(
+        group
+        for group in _groups(report, GENERATED_PLIES)
+        if group.label == "target_rating=1800"
+    )
+    row = added.metrics[0]
+
+    assert row.current == 74.0
+    assert row.baseline is None
+    assert row.delta is None
+    assert row.note == "not measured for checkpoint-a"
+
+
+def test_one_workload_replacing_another_is_reported_as_a_workload_change() -> None:
+    """The sequential case keeps its diagnosis rather than becoming two halves.
+
+    Splitting a family whose workload simply moved would report two half-rows
+    that never name the cause, so exactly one unmatched workload on each side
+    is paired instead. Anything looser would be guessing which cell of a matrix
+    succeeded which.
+    """
+
+    report = build_delta_report(
+        [
+            _rollout_cell("checkpoint-a", 60.0, rating=1200, recorded_at=BASELINE_AT),
+            _rollout_cell("checkpoint-b", 74.0, rating=1800, recorded_at=CURRENT_AT),
+        ],
+        BridgeIndex(),
+        metrics=[GENERATED_PLIES],
+    )
+
+    (group,) = _groups(report, GENERATED_PLIES)
+    row = group.metrics[0]
+
+    assert group.label is None
+    assert row.comparability is Comparability.INCOMPARABLE
+    assert row.delta is None
+    assert row.note is not None
+    assert "the declared workload changed" in row.note
+
+
+def test_a_metric_on_several_series_says_so_rather_than_showing_one(
+    recorded_result: ResultFactory,
+    scored_row: RowFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A metric that declares no workload can still be hiding a second series.
+
+    Nothing can be compared across them, so the most recent is the right one to
+    show; what would be wrong is showing it as though it were the only one.
+    """
+
+    small = move_prediction_component([scored_row(1)])
+    grown = move_prediction_component([scored_row(1), scored_row(2)])
+    report = build_delta_report(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                move_loss=3.5,
+                component=grown,
+                recorded_at=BASELINE_AT,
+            ),
+            recorded_result(
+                label="checkpoint-b",
+                move_loss=9.9,
+                component=small,
+                recorded_at=CURRENT_AT,
+            ),
+            recorded_result(
+                label="checkpoint-b",
+                move_loss=3.2,
+                component=grown,
+                recorded_at=datetime(2026, 7, 9, 12, 0, tzinfo=UTC),
+            ),
+        ],
+        BridgeIndex(),
+        metrics=["held_out.move_loss"],
+    )
+    row = _row(report, "held_out.move_loss")
+
+    assert row.current == pytest.approx(3.2)
+    assert row.note == "2 series recorded for this checkpoint; showing the most recent"
+
+
+def test_the_text_view_states_which_series_each_row_belongs_to() -> None:
+    report = build_delta_report(
+        [
+            _rollout_cell(
+                "checkpoint-a", 60.0, arm="standard-start", recorded_at=BASELINE_AT
+            ),
+            _rollout_cell(
+                "checkpoint-a", 90.0, arm="human-prefix", recorded_at=BASELINE_AT
+            ),
+            _rollout_cell(
+                "checkpoint-b", 64.0, arm="standard-start", recorded_at=CURRENT_AT
+            ),
+            _rollout_cell(
+                "checkpoint-b", 88.0, arm="human-prefix", recorded_at=CURRENT_AT
+            ),
+        ],
+        BridgeIndex(),
+        metrics=[GENERATED_PLIES],
+    )
+
+    rendered = render_report(report)
+
+    assert "[series: positions.kind=standard-start]" in rendered
+    assert "[series: positions.kind=human-prefix]" in rendered
+    assert rendered.count(GENERATED_PLIES) == 2
+    assert max(len(line) for line in rendered.splitlines()) <= 120
+
+
+def test_a_single_series_family_renders_without_a_series_header(
+    two_checkpoints: tuple[ResultEnvelope, ResultEnvelope],
+) -> None:
+    """The benchmark writing one result per checkpoint gains no new lines."""
+
+    report = build_delta_report(list(two_checkpoints), BridgeIndex())
+
+    assert all(
+        group.label is None for family in report.families for group in family.series
+    )
+    assert "[series:" not in render_report(report)
 
 
 def test_the_default_text_view_stays_readable(
