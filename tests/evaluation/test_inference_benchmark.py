@@ -185,9 +185,16 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
 
 def test_warmup_decisions_are_excluded_from_the_percentiles(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     inference_run: Callable[..., Path],
 ) -> None:
-    """The measured window must start after the slow first calls."""
+    """The measured window must start after the slow first calls.
+
+    Time is injected here for the reason the cold-start test injects it: the
+    startup cost and a real decision are both a few milliseconds, so comparing
+    them ambiently decides which piece of machine noise won rather than
+    whether warmup landed inside the measured window.
+    """
 
     checkpoint = inference_run(tmp_path / "run", seed=8)
     runner = CheckpointModelRunner.load(
@@ -195,7 +202,14 @@ def test_warmup_decisions_are_excluded_from_the_percentiles(
     )
     warmup = 2
     delay_seconds = 0.05
-    slow = _SlowFirstRunner(runner, slow_calls=warmup, delay_seconds=delay_seconds)
+    clock = _FakeClock()
+    monkeypatch.setattr(inference_module, "time", clock)
+    slow = _SlowFirstRunner(
+        runner,
+        slow_calls=warmup,
+        delay_seconds=delay_seconds,
+        clock=clock,
+    )
     session = GameSession(slow, config=RuntimeConfig(seed=7))
     config = LatencyWorkloadConfig(
         reference_plies=2,
@@ -209,7 +223,9 @@ def test_warmup_decisions_are_excluded_from_the_percentiles(
 
     assert slow.slow_calls_served == warmup
     assert sample.decisions == 4
-    assert sample.maximum_ms < delay_seconds * 1000.0
+    # Nothing in the measured window advanced the clock, so a warmup decision
+    # inside it would show up as the whole injected startup cost.
+    assert sample.maximum_ms == 0.0
 
 
 def test_a_faster_machine_is_not_reported_as_a_faster_model() -> None:
@@ -522,6 +538,30 @@ def test_an_execution_metric_cannot_be_scheduled_at_a_training_cadence() -> None
         )
 
 
+class _FakeClock:
+    """A clock only the test advances, so no ambient time is measured.
+
+    A startup cost has to be compared against something, and comparing it
+    against a real decision makes the comparison a property of what else the
+    machine is doing: a contended runner stalls a fast decision for longer
+    than the cost being injected. Advancing time only where the test says so
+    removes the ambient side of that comparison, and costs no sleep.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        """Return the current fake time, in seconds."""
+
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        """Charge the caller for time it did not really spend."""
+
+        self.now += seconds
+
+
 class _SlowFirstRunner:
     """A runner whose first calls are slow, standing in for a cold device."""
 
@@ -531,10 +571,12 @@ class _SlowFirstRunner:
         *,
         slow_calls: int,
         delay_seconds: float,
+        clock: _FakeClock,
     ) -> None:
         self._runner = runner
         self._slow_calls = slow_calls
         self._delay_seconds = delay_seconds
+        self._clock = clock
         self.device = runner.device
         self.slow_calls_served = 0
 
@@ -543,7 +585,7 @@ class _SlowFirstRunner:
 
         if self.slow_calls_served < self._slow_calls:
             self.slow_calls_served += 1
-            time.sleep(self._delay_seconds)
+            self._clock.advance(self._delay_seconds)
         return self._runner.predict(context)
 
 
