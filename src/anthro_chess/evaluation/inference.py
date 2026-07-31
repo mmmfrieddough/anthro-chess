@@ -80,6 +80,17 @@ INFERENCE_BENCHMARK = BenchmarkReference(
     version=INFERENCE_BENCHMARK_VERSION,
 )
 
+#: What a process pays once. Measuring these again inside the same process
+#: reads a warm file cache, an imported Torch, and compiled kernels, so a
+#: repeat is not a second cold start. Anything replicating this benchmark has
+#: to know which readings are per-process rather than per-measurement.
+COLD_START_METRICS: frozenset[str] = frozenset(
+    {
+        INFERENCE_MODEL_LOAD_SECONDS.identifier,
+        INFERENCE_FIRST_DECISION_SECONDS.identifier,
+    }
+)
+
 SampleT = TypeVar("SampleT")
 
 logger = logging.getLogger(__name__)

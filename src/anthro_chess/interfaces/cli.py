@@ -759,11 +759,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_store_argument(noise_characterize_parser)
     noise_characterize_parser.add_argument(
         "--kind",
-        choices=("evaluation", "training"),
+        choices=("evaluation", "training", "execution"),
         required=True,
         help=(
             "Which noise source the replicates vary. Data-sampling noise is "
-            "bootstrapped by the evaluation run itself and is not estimated here."
+            "bootstrapped by the evaluation run itself and is not estimated "
+            "here. Execution noise is measured rather than read from the "
+            "store, so it takes --config instead of --checkpoint."
         ),
     )
     noise_characterize_parser.add_argument(
@@ -780,6 +782,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict the characterization to one metric; may be repeated.",
     )
     noise_characterize_parser.add_argument(
+        "--config",
+        type=Path,
+        help=(
+            "Execution noise only: the inference-benchmark selection to repeat. "
+            "The floor it produces describes this machine under that workload."
+        ),
+    )
+    noise_characterize_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override for --config; may be repeated.",
+    )
+    noise_characterize_parser.add_argument(
+        "--processes",
+        type=int,
+        help=(
+            "Execution noise only: how many separate processes to measure in. "
+            "A reading a report compares is one process's, so this is the "
+            "count that decides the floor."
+        ),
+    )
+    noise_characterize_parser.add_argument(
+        "--repeats",
+        type=int,
+        help=(
+            "Execution noise only: readings per process. These say how much of "
+            "the spread a repeat inside one process reproduces."
+        ),
+    )
+    noise_characterize_parser.add_argument(
         "--source",
         required=True,
         help="What the replicates are, such as which seeds produced them.",
@@ -793,6 +827,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     noise_characterize_parser.set_defaults(handler=_run_eval_noise_characterize)
+
+    noise_sample_parser = noise_commands.add_parser(
+        "sample",
+        help="Measure one process's repeated efficiency readings, recording nothing.",
+    )
+    noise_sample_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML inference-benchmark selection to repeat.",
+    )
+    noise_sample_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    noise_sample_parser.add_argument(
+        "--repeats",
+        type=int,
+        help="Readings to take in this process.",
+    )
+    noise_sample_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    noise_sample_parser.set_defaults(handler=_run_eval_noise_sample)
 
     noise_list_parser = noise_commands.add_parser(
         "list",
@@ -2441,6 +2505,24 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
         resolve_store_root,
     )
 
+    if arguments.kind == "execution":
+        return _run_eval_noise_characterize_execution(arguments)
+    if arguments.config is not None or arguments.set:
+        print(
+            f"anthro eval noise characterize: --config and --set describe a "
+            f"measurement to repeat, which a {arguments.kind} floor is not; it "
+            "reads replicates the store already holds",
+            file=sys.stderr,
+        )
+        return 2
+    if arguments.processes is not None or arguments.repeats is not None:
+        print(
+            "anthro eval noise characterize: --processes and --repeats apply "
+            "only to --kind execution",
+            file=sys.stderr,
+        )
+        return 2
+
     labels: list[str] = arguments.checkpoint
     if len(labels) < 2:
         print(
@@ -2498,6 +2580,141 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
     for metric, reason in skipped:
         print(f"  {metric:<44} skipped: {reason}")
     print(f"Recorded: {path}")
+    return 0
+
+
+def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int:
+    """Measure this machine's own timing noise and record the floor.
+
+    Unlike every other kind, the replicates do not exist yet: the noise is the
+    machine's, so it is observed by measuring again rather than by reading
+    numbers the store already holds.
+    """
+
+    from anthro_chess.evaluation.execution_noise import (
+        DEFAULT_PROCESSES,
+        DEFAULT_REPEATS,
+        ExecutionNoiseError,
+        characterize_execution_noise,
+        subprocess_sampler,
+    )
+    from anthro_chess.evaluation.results import (
+        DEFAULT_COVERAGE,
+        NoiseCharacterizationError,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    if arguments.config is None:
+        print(
+            "anthro eval noise characterize: --kind execution measures a "
+            "workload rather than reading one, so it needs --config",
+            file=sys.stderr,
+        )
+        return 2
+    if arguments.checkpoint:
+        print(
+            "anthro eval noise characterize: an execution floor describes a "
+            "machine rather than a set of checkpoints, so it takes no "
+            "--checkpoint; the configuration names the model it measures with",
+            file=sys.stderr,
+        )
+        return 2
+    if arguments.metric:
+        print(
+            "anthro eval noise characterize: an execution floor covers every "
+            "metric the measured benchmark reports, so it takes no --metric",
+            file=sys.stderr,
+        )
+        return 2
+
+    processes = (
+        DEFAULT_PROCESSES if arguments.processes is None else arguments.processes
+    )
+    repeats = DEFAULT_REPEATS if arguments.repeats is None else arguments.repeats
+    coverage = DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
+    try:
+        store = ResultsStore(resolve_store_root(arguments.store))
+        characterization = characterize_execution_noise(
+            subprocess_sampler(
+                config_path=arguments.config,
+                overrides=arguments.set,
+                repeats=repeats,
+            ),
+            processes=processes,
+            source=arguments.source,
+            coverage=coverage,
+        )
+        path = store.append_characterization(characterization)
+    except (
+        ExecutionNoiseError,
+        NoiseCharacterizationError,
+        ResultsStoreError,
+    ) as error:
+        print(f"anthro eval noise characterize: {error}", file=sys.stderr)
+        return 2
+
+    execution = characterization.execution
+    assert execution is not None  # the record refuses an execution floor without one
+    print(
+        f"Characterized execution noise over {characterization.replicates} "
+        f"reading(s) in {processes} process(es) for "
+        f"{len(characterization.floors)} metric(s)."
+    )
+    print(f"Valid on: {execution.environment_label()}")
+    for entry in characterization.floors:
+        within = (
+            ""
+            if entry.within_process_dispersion is None
+            else f"  in-process {entry.within_process_dispersion:.6g}"
+        )
+        print(
+            f"  {entry.metric:<44} floor {entry.floor:.6g}  "
+            f"dispersion {entry.dispersion:.6g}{within}"
+        )
+    print(f"Recorded: {path}")
+    return 0
+
+
+def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
+    """Take one process's readings, so a caller can measure across processes."""
+
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import InferenceBenchmarkConfig
+    from anthro_chess.evaluation.execution_noise import (
+        DEFAULT_REPEATS,
+        ExecutionNoiseError,
+        sample_execution_noise,
+    )
+
+    repeats = DEFAULT_REPEATS if arguments.repeats is None else arguments.repeats
+    try:
+        resolved = load_config(
+            InferenceBenchmarkConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        sample = sample_execution_noise(
+            resolved,
+            repeats=repeats,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+        )
+    except (ConfigError, ExecutionNoiseError) as error:
+        print(f"anthro eval noise sample: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(sample.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(
+        f"Checkpoint: {sample.checkpoint.label} on "
+        f"{sample.execution.environment_label()}"
+    )
+    print(f"{len(sample.readings)} reading(s) in this process, recorded nowhere:")
+    for metric in sorted(sample.readings[0]):
+        values = "  ".join(f"{reading[metric]:.6g}" for reading in sample.readings)
+        print(f"  {metric:<44} {values}")
     return 0
 
 
@@ -2577,17 +2794,30 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
         print("No noise characterization is recorded.")
         return 0
     for record in characterizations:
+        processes = (
+            "" if record.processes is None else f" in {record.processes} process(es)"
+        )
         print(
             f"{record.recorded_at.date().isoformat()}  {record.kind}  "
-            f"{record.method}  {record.replicates} replicate(s)  {record.source}"
+            f"{record.method}  {record.replicates} replicate(s){processes}  "
+            f"{record.source}"
         )
+        if record.execution is not None:
+            # An execution floor is only valid where it was measured, so where
+            # that was belongs beside it rather than in the record alone.
+            print(f"  valid on {record.execution.environment_label()}")
         for entry in record.floors:
             units = (
                 "" if entry.sampling_units is None else f"  n={entry.sampling_units}"
             )
+            within = (
+                ""
+                if entry.within_process_dispersion is None
+                else f"  in-process {entry.within_process_dispersion:.6g}"
+            )
             print(
                 f"  {entry.metric:<44} floor {entry.floor:.6g}  "
-                f"dispersion {entry.dispersion:.6g}{units}"
+                f"dispersion {entry.dispersion:.6g}{units}{within}"
             )
     return 0
 

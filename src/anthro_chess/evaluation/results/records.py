@@ -51,8 +51,10 @@ Sha256Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Identifier = Annotated[str, Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*$")]
 
 #: How a noise floor was characterized. Conflating these is the usual mistake,
-#: so a stored floor has to say which one it is.
-NoiseFloorKind = Literal["evaluation", "data-sampling", "training"]
+#: so a stored floor has to say which one it is. ``execution`` is the machine's
+#: own contribution — scheduler contention, thermal state, allocator and kernel
+#: warmth — which no resampling of an already-computed number can estimate.
+NoiseFloorKind = Literal["evaluation", "data-sampling", "training", "execution"]
 
 
 class ResultRecordError(ValueError):

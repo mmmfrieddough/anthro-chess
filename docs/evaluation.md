@@ -319,7 +319,7 @@ Reports should annotate every change with the noise floor it did or did not
 clear, and a delta inside the floor should be visible but marked rather than
 hidden, so a consistent small regression is not lost.
 
-Three sources of noise are distinct, and conflating them is the usual mistake.
+Four sources of noise are distinct, and conflating them is the usual mistake.
 Each one licenses a different comparison, so the useful way to name them is by
 the question they answer rather than by how they are computed:
 
@@ -334,6 +334,10 @@ the question they answer rather than by how they are computed:
 - **training noise**: the same configuration trained from a different seed. This
   qualifies a **configuration change** rather than a checkpoint delta, and it is
   the expensive one, since it needs several training runs.
+- **execution noise**: the same checkpoint timed again on the same machine. This
+  qualifies a **delta between two efficiency readings**, and it is the one
+  source that cannot be estimated from numbers already computed, because what
+  varies is the machine rather than the sample.
 
 The first two coincide for generated play, and that is worth stating plainly
 because the definitions above read as if they never could. A rollout has no
@@ -353,7 +357,7 @@ noticeably, while at the declared bandwidth over the frozen blitz pool the
 difference was under a percent. It is excluded because it is not part of the
 question, rather than because it is always large.
 
-All three reduce to one reportable quantity: the spread of the metric across
+All four reduce to one reportable quantity: the spread of the metric across
 replicates of that noise source. A **floor** is that spread expressed as a
 delta, because a delta is what a report shows and a standard deviation is not
 directly comparable to one. When two measurements use independent inputs, the
@@ -377,6 +381,43 @@ fingerprint rules as any other measurement, so they invalidate on the same
 terms rather than lingering as stale constants. A floor characterized on a pool
 that has since been regenerated stops matching and the report says the floor is
 unknown, which is the honest answer.
+
+### Execution Noise
+
+Timing is where a floor matters most and where the usual estimators do not
+apply. Two readings of one checkpoint taken minutes apart differ, and nothing
+about the model, the data, or the seed moved; a report with no floor can only
+say the number changed, so sub-percent jitter renders as a regression.
+
+The noise source here is the machine — scheduler contention, thermal state,
+other processes, allocator and kernel warmth — so it cannot be bootstrapped out
+of an already-measured latency. It is characterized by **measuring again**, and
+by measuring in more than one process. A reading a report compares was produced
+by its own invocation, which paid its own model load and its own lazy kernel
+compilation, so a floor built only from repeats inside one process omits the
+component most likely to dominate. Repeats within a process are still taken, and
+what they add is the answer to whether that cheaper form of replication would
+have sufficed on this device; that share is reported beside the floor rather
+than folded into it. Cold-start metrics take one reading per process, because a
+reload inside a warm process is not a second cold start.
+
+The floor is a property of a machine and a workload rather than of a checkpoint.
+Decision 0018 deliberately keeps the machine out of an efficiency series so that
+a latency history stays continuous across a hardware change, which means the
+series fingerprint alone cannot stop one machine's floor from qualifying
+another's delta. An execution characterization therefore carries the execution
+it was measured under, and a report applies it only where that environment
+matches on both sides of the delta; anywhere else the noise is reported as
+unknown. `docs/decisions/0025-machine-scoped-execution-noise-floors.md` owns
+that rule.
+
+Nothing measured during a characterization is appended to the results store.
+The readings are evidence about the machine rather than about the model, and
+recording them would let a checkpoint's history depend on how often its noise
+was characterized. `anthro eval noise sample` takes one process's readings and
+`anthro eval noise characterize --kind execution` spreads them across processes
+and records the resulting floor;
+`anthro_chess.evaluation.execution_noise` owns the procedure.
 
 Because a data-sampling floor costs only a resampling of numbers a run already
 computed, the checkpoint evaluation runner produces its own and records it
@@ -2108,6 +2149,12 @@ Metric history is one continuous line per workload, annotated where the
 environment changed, which is what makes long-run drift answerable at all. A
 workload change does break the line, because that genuinely is a different
 measurement.
+
+Whether a delta between two of these readings means anything is a separate
+question from whether it is comparable, and it is answered by the execution
+noise floor described above. Without one characterized on the machine that took
+both readings, a report says the noise is unknown rather than calling ordinary
+run-to-run jitter an improvement.
 
 `anthro eval inference` records; `anthro eval report --pivot` reads.
 `anthro_chess.evaluation.inference` owns the exact metrics, defaults, and

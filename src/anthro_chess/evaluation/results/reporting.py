@@ -47,6 +47,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.results.noise import NoiseFloorIndex
 from anthro_chess.evaluation.results.records import (
+    ExecutionRecord,
     Measurement,
     NoiseFloor,
     ResultEnvelope,
@@ -792,6 +793,7 @@ _NOISE_KIND_LABELS = {
     "evaluation": "eval",
     "data-sampling": "sampling",
     "training": "training",
+    "execution": "machine",
 }
 
 
@@ -1234,6 +1236,7 @@ def _metric_delta(
         current_measurement,
         floors,
         comparison_floor=comparison_floor,
+        executions=(baseline_envelope.execution, current_envelope.execution),
     )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
     environment = (
@@ -1382,6 +1385,7 @@ def _applicable_floors(
     floors: NoiseFloorIndex,
     *,
     comparison_floor: NoiseFloor | None,
+    executions: Sequence[ExecutionRecord | None] = (),
 ) -> tuple[NoiseFloor, ...]:
     """Return one floor per noise kind that applies to this comparison.
 
@@ -1390,6 +1394,11 @@ def _applicable_floors(
     place it can be right; a calibration pass characterizes a floor for the
     whole series. Where both exist for one kind, the wider one is kept, since
     a floor that understates the noise is worse than one that overstates it.
+
+    ``executions`` are the executions this delta spans, which is what decides
+    whether a machine-scoped execution floor describes it. A delta whose two
+    sides ran on different machines is covered by no characterized execution
+    floor, and reporting the noise as unknown there is the honest answer.
     """
 
     widest: dict[str, NoiseFloor] = {}
@@ -1398,7 +1407,7 @@ def _applicable_floors(
         for floor in (current.noise_floor, baseline.noise_floor)
         if floor is not None
     ]
-    candidates.extend(floors.floors(metric, current.fingerprint))
+    candidates.extend(floors.floors(metric, current.fingerprint, executions=executions))
     if comparison_floor is not None:
         # A paired floor is the data-sampling uncertainty of this exact delta.
         # An independently characterized sampling floor answers a different,

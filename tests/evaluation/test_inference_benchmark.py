@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import copy
-import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,9 +13,8 @@ import torch
 from pydantic import ValidationError
 
 import anthro_chess.evaluation.inference as inference_module
-from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import DecisionContext, encoding_identity
+from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.inference import (
     INFERENCE_KIND,
     InferenceBenchmarkConfig,
@@ -29,6 +27,7 @@ from anthro_chess.evaluation.inference import (
     benchmark_inference,
 )
 from anthro_chess.evaluation.results import (
+    PROCESS_REPLICATE_METHOD,
     AxisChange,
     BenchmarkReference,
     BridgeIndex,
@@ -37,13 +36,18 @@ from anthro_chess.evaluation.results import (
     DeltaReport,
     DetailStore,
     ExecutionRecord,
+    FloorEntry,
     MetricDelta,
     Movement,
+    NoiseCharacterization,
+    NoiseFloorIndex,
+    NoiseVerdict,
     ReportError,
     ReportPivot,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
+    build_characterization,
     build_delta_report,
     build_environment_report,
     build_history,
@@ -51,6 +55,7 @@ from anthro_chess.evaluation.results import (
     execution_reference,
     measurement,
     render_history,
+    series_fingerprint,
     workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -61,9 +66,8 @@ from anthro_chess.evaluation.results.metrics import (
     INFERENCE_MOVE_LATENCY_MEAN,
 )
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
-from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
+from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import GameSession, RuntimeConfig
-from anthro_chess.training.checkpoints import save_training_checkpoint
 
 #: A workload small enough for the CPU suite. The measured quantities are
 #: unchanged; only the number of samples behind them is.
@@ -100,8 +104,11 @@ def _config(
     )
 
 
-def test_benchmark_reports_latency_throughput_and_cold_start(tmp_path: Path) -> None:
-    checkpoint = _write_run(tmp_path / "run", seed=5)
+def test_benchmark_reports_latency_throughput_and_cold_start(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    checkpoint = inference_run(tmp_path / "run", seed=5)
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
@@ -135,6 +142,7 @@ def test_benchmark_reports_latency_throughput_and_cold_start(tmp_path: Path) -> 
 
 def test_cold_start_is_reported_apart_from_steady_state_latency(
     tmp_path: Path,
+    inference_run: Callable[..., Path],
 ) -> None:
     """Loading and first-call warmup must not inflate the percentiles.
 
@@ -142,7 +150,7 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
     with when it is only slow to start, and the two have different fixes.
     """
 
-    checkpoint = _write_run(tmp_path / "run", seed=6)
+    checkpoint = inference_run(tmp_path / "run", seed=6)
 
     result = benchmark_inference(_config(checkpoint))
 
@@ -154,10 +162,13 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
     )
 
 
-def test_warmup_decisions_are_excluded_from_the_percentiles(tmp_path: Path) -> None:
+def test_warmup_decisions_are_excluded_from_the_percentiles(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
     """The measured window must start after the slow first calls."""
 
-    checkpoint = _write_run(tmp_path / "run", seed=8)
+    checkpoint = inference_run(tmp_path / "run", seed=8)
     runner = CheckpointModelRunner.load(
         ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
     )
@@ -294,8 +305,9 @@ def test_a_tampered_execution_record_cannot_reproduce_its_fingerprints() -> None
 
 def test_the_recorded_execution_reproduces_its_own_series_identity(
     tmp_path: Path,
+    inference_run: Callable[..., Path],
 ) -> None:
-    checkpoint = _write_run(tmp_path / "run", seed=10)
+    checkpoint = inference_run(tmp_path / "run", seed=10)
 
     (envelope,) = benchmark_inference(_config(checkpoint)).envelopes
 
@@ -308,8 +320,11 @@ def test_the_recorded_execution_reproduces_its_own_series_identity(
     envelope.verify()
 
 
-def test_a_declared_workload_change_starts_a_new_series(tmp_path: Path) -> None:
-    checkpoint = _write_run(tmp_path / "run", seed=12)
+def test_a_declared_workload_change_starts_a_new_series(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    checkpoint = inference_run(tmp_path / "run", seed=12)
     shallow = benchmark_inference(_config(checkpoint)).envelopes[0]
     deeper = benchmark_inference(
         _config(
@@ -327,10 +342,13 @@ def test_a_declared_workload_change_starts_a_new_series(tmp_path: Path) -> None:
     assert shallow_measurement.fingerprint != deeper_measurement.fingerprint
 
 
-def test_extending_a_sweep_does_not_end_the_headline_series(tmp_path: Path) -> None:
+def test_extending_a_sweep_does_not_end_the_headline_series(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
     """The sweep is drill-down. Only the reference point decides identity."""
 
-    checkpoint = _write_run(tmp_path / "run", seed=13)
+    checkpoint = inference_run(tmp_path / "run", seed=13)
     narrow = benchmark_inference(_config(checkpoint)).envelopes[0]
     wide = benchmark_inference(
         _config(
@@ -350,8 +368,9 @@ def test_extending_a_sweep_does_not_end_the_headline_series(tmp_path: Path) -> N
 
 def test_the_reference_point_is_measured_even_when_the_sweep_omits_it(
     tmp_path: Path,
+    inference_run: Callable[..., Path],
 ) -> None:
-    checkpoint = _write_run(tmp_path / "run", seed=14)
+    checkpoint = inference_run(tmp_path / "run", seed=14)
 
     result = benchmark_inference(
         _config(
@@ -419,8 +438,11 @@ def test_history_factory_is_deterministic_and_varies_by_offset() -> None:
     assert first != other
 
 
-def test_stacked_batches_carry_every_row_through_the_model(tmp_path: Path) -> None:
-    checkpoint = _write_run(tmp_path / "run", seed=15)
+def test_stacked_batches_carry_every_row_through_the_model(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    checkpoint = inference_run(tmp_path / "run", seed=15)
     runner = CheckpointModelRunner.load(
         ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
     )
@@ -571,81 +593,6 @@ def _context(history: tuple[chess.Move, ...]) -> DecisionContext:
     return build_decision_context(board, tuple(board.move_stack), target_rating=None)
 
 
-def _write_run(path: Path, *, seed: int) -> Path:
-    """Write a retained run holding one tiny compatible checkpoint."""
-
-    torch.manual_seed(seed)
-    path.mkdir(parents=True, exist_ok=True)
-    config = MoveModelConfig(
-        piece_embedding_dim=2,
-        action_embedding_dim=2,
-        model_dim=4,
-        attention_heads=1,
-        transformer_layers=1,
-        feedforward_dim=8,
-        dropout=0.0,
-    )
-    model = CausalMoveModel(config)
-    model_identity = model.identity()
-    resolved_config = {
-        "config": {"model": config.model_dump(mode="json")},
-        "provenance": {"source": None, "overrides": []},
-    }
-    execution = {
-        "device": "cpu",
-        "backend": "cpu",
-        "precision": "float32",
-        "parameter_dtype": "float32",
-        "determinism": "strict",
-        "gradient_accumulation_steps": 1,
-        "phase_profiling": False,
-    }
-    metadata = {
-        "resolved_config": copy.deepcopy(resolved_config),
-        "code": {"package_version": "test", "git_revision": "test"},
-        "data": {},
-        "model": copy.deepcopy(model_identity),
-        "action_vocabulary": action_vocabulary_identity(),
-        "encoding": encoding_identity(),
-        "execution": copy.deepcopy(execution),
-    }
-    checkpoint = path / "checkpoints" / "step-00000001.pt"
-    save_training_checkpoint(
-        checkpoint,
-        global_step=1,
-        counters={"processed_positions": 1},
-        model_state=model.state_dict(),
-        optimizer_state={},
-        scheduler_state=None,
-        scaler_state=None,
-        loader_state={},
-        compatibility={
-            "training_config": {},
-            "data": {},
-            "model": copy.deepcopy(model_identity),
-            "action_vocabulary": action_vocabulary_identity(),
-            "encoding": encoding_identity(),
-        },
-        metadata=metadata,
-        device="cpu",
-    )
-    (path / "run.json").write_text(
-        json.dumps(
-            {
-                "version": 3,
-                "resolved_config": copy.deepcopy(resolved_config),
-                "model": copy.deepcopy(model_identity),
-                "action_vocabulary": action_vocabulary_identity(),
-                "encoding": encoding_identity(),
-                "execution": copy.deepcopy(execution),
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return checkpoint
-
-
 def test_a_recorded_workload_must_produce_its_own_digest() -> None:
     """The readable workload and the digest naming its series stay agreed."""
 
@@ -794,3 +741,110 @@ def test_an_os_patch_alone_does_not_confound_a_delta() -> None:
 
     assert _delta(report).movement is Movement.BETTER
     assert _delta(report).environment == ()
+
+
+def _execution_floor(
+    *,
+    device_name: str,
+    floor: float,
+    plies: int = 40,
+) -> NoiseCharacterization:
+    """Return a characterized machine floor for the p50 latency series."""
+
+    execution = execution_reference(
+        device="cpu",
+        device_name=device_name,
+        precision="float32",
+        torch_version="2.7.0",
+        platform_key="Fixture-x86",
+        platform="fixture-1.2.3",
+        cpu_threads=8,
+        workload={"latency_reference_plies": plies},
+    )
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    return build_characterization(
+        kind="execution",
+        method=PROCESS_REPLICATE_METHOD,
+        replicates=6,
+        processes=3,
+        source=f"three processes on {device_name}",
+        execution=execution,
+        floors=[
+            FloorEntry(
+                metric=metric,
+                fingerprint=series_fingerprint(
+                    metric,
+                    None,
+                    execution.workload_component(),
+                ),
+                floor=floor,
+                dispersion=floor / 2,
+            )
+        ],
+        recorded_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+
+
+def test_run_to_run_jitter_stops_reading_as_a_regression() -> None:
+    """The reading this benchmark most often produces is noise, not a finding.
+
+    Two readings of the same checkpoint minutes apart move by a fraction of a
+    millisecond. With no characterized floor the report can only say the number
+    moved, which is how sub-percent jitter gets written up as a regression.
+    """
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    results = [
+        _efficiency_result("checkpoint-a", 12.000, device_name="laptop"),
+        _efficiency_result("checkpoint-b", 12.008, device_name="laptop"),
+    ]
+
+    unknown = build_delta_report(results, BridgeIndex(), metrics=[metric])
+    qualified = build_delta_report(
+        results,
+        BridgeIndex(),
+        metrics=[metric],
+        floors=NoiseFloorIndex([_execution_floor(device_name="laptop", floor=0.4)]),
+    )
+
+    assert _delta(unknown).noise is NoiseVerdict.UNKNOWN
+    assert _delta(unknown).noise_floor is None
+    assert _delta(qualified).noise is NoiseVerdict.WITHIN
+    assert _delta(qualified).noise_floor_kind == "execution"
+    # The delta is still shown, so a small regression that repeats across
+    # checkpoints stays visible rather than being filtered away.
+    assert _delta(qualified).delta == pytest.approx(0.008)
+
+
+def test_a_real_movement_still_clears_the_machine_floor() -> None:
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    report = build_delta_report(
+        [
+            _efficiency_result("checkpoint-a", 12.0, device_name="laptop"),
+            _efficiency_result("checkpoint-b", 9.0, device_name="laptop"),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
+        floors=NoiseFloorIndex([_execution_floor(device_name="laptop", floor=0.4)]),
+    )
+
+    assert _delta(report).noise is NoiseVerdict.CLEARED
+    assert _delta(report).movement is Movement.BETTER
+
+
+def test_a_floor_from_one_machine_does_not_qualify_another_machines_delta() -> None:
+    """The series is continuous across machines; the noise in it is not."""
+
+    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    report = build_delta_report(
+        [
+            _efficiency_result("checkpoint-a", 12.000, device_name="laptop"),
+            _efficiency_result("checkpoint-b", 12.008, device_name="workstation"),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
+        floors=NoiseFloorIndex([_execution_floor(device_name="laptop", floor=0.4)]),
+    )
+
+    assert _delta(report).noise is NoiseVerdict.UNKNOWN
+    assert _delta(report).movement is Movement.CONFOUNDED

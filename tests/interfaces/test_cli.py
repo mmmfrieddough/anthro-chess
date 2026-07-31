@@ -1,5 +1,7 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
@@ -1300,3 +1302,221 @@ def test_eval_noise_list_says_when_nothing_is_characterized(
     assert main(["eval", "noise", "list", "--store", str(tmp_path / "results")]) == 0
 
     assert "No noise characterization is recorded." in capsys.readouterr().out
+
+
+def _inference_config(path: Path, checkpoint: Path) -> Path:
+    """Write the smallest inference-benchmark selection that still measures."""
+
+    path.write_text(
+        "\n".join(
+            [
+                "[model]",
+                f'checkpoint_path = "{checkpoint}"',
+                'device = "cpu"',
+                "",
+                "[runtime]",
+                "seed = 0",
+                "",
+                "[latency]",
+                "reference_plies = 4",
+                "sweep_plies = [4]",
+                "decisions = 2",
+                "warmup_decisions = 0",
+                "",
+                "[throughput]",
+                "reference_batch_size = 2",
+                "sweep_batch_sizes = [2]",
+                "history_plies = 4",
+                "batches = 1",
+                "warmup_batches = 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _run_worker_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the replicate subprocess without paying for an interpreter.
+
+    The command is still the real one and the worker is still the real handler;
+    only the process boundary is stubbed, because a CPU suite cannot afford one
+    Torch import per replicate.
+    """
+
+    import contextlib
+    import io
+    import subprocess
+
+    import anthro_chess.evaluation.execution_noise as execution_noise_module
+
+    real_run = subprocess.run
+
+    def fake_run(
+        command: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[1:3] != ["-m", "anthro_chess"]:
+            # Provenance capture shells out to git; only the replicate worker
+            # is being stood in for here.
+            return cast(
+                "subprocess.CompletedProcess[str]",
+                real_run(command, **kwargs),
+            )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(command[3:])
+        return subprocess.CompletedProcess(
+            command,
+            returncode=code,
+            stdout=stdout.getvalue(),
+            stderr="",
+        )
+
+    monkeypatch.setattr(execution_noise_module.subprocess, "run", fake_run)
+
+
+def test_eval_noise_sample_measures_repeatedly_and_records_nothing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    inference_run: Callable[..., Path],
+) -> None:
+    checkpoint = inference_run(tmp_path / "run", seed=21)
+    config = _inference_config(tmp_path / "inference.toml", checkpoint)
+    monkeypatch_store = tmp_path / "results"
+
+    assert (
+        main(["eval", "noise", "sample", "--config", str(config), "--repeats", "2"])
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "2 reading(s) in this process, recorded nowhere" in output
+    assert "inference.move_latency_p50_ms" in output
+    assert not monkeypatch_store.exists()
+
+
+def test_eval_noise_characterizes_this_machines_timing_noise(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    inference_run: Callable[..., Path],
+) -> None:
+    checkpoint = inference_run(tmp_path / "run", seed=22)
+    config = _inference_config(tmp_path / "inference.toml", checkpoint)
+    store = str(tmp_path / "results")
+    _run_worker_in_process(monkeypatch)
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                store,
+                "--kind",
+                "execution",
+                "--config",
+                str(config),
+                "--processes",
+                "2",
+                "--repeats",
+                "1",
+                "--source",
+                "two processes on the test machine",
+            ]
+        )
+        == 0
+    )
+    characterized = capsys.readouterr().out
+    assert "Characterized execution noise over 2 reading(s) in 2 process(es)" in (
+        characterized
+    )
+    assert "Valid on:" in characterized
+
+    assert main(["eval", "noise", "list", "--store", store]) == 0
+    listed = capsys.readouterr().out
+    assert "execution" in listed
+    assert "valid on" in listed
+    assert "inference.move_latency_p50_ms" in listed
+
+
+def test_eval_noise_characterize_execution_needs_a_workload_to_repeat(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                str(tmp_path / "results"),
+                "--kind",
+                "execution",
+                "--source",
+                "this machine",
+            ]
+        )
+        == 2
+    )
+    assert "needs --config" in capsys.readouterr().err
+
+
+def test_eval_noise_characterize_execution_takes_no_checkpoint_list(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An execution floor describes a machine, not a set of checkpoints."""
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                str(tmp_path / "results"),
+                "--kind",
+                "execution",
+                "--config",
+                str(tmp_path / "inference.toml"),
+                "--checkpoint",
+                "checkpoint-a",
+                "--source",
+                "this machine",
+            ]
+        )
+        == 2
+    )
+    assert "takes no --checkpoint" in capsys.readouterr().err
+
+
+def test_eval_noise_characterize_reads_other_kinds_from_the_store(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only execution noise is measured; the rest are already recorded."""
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                str(tmp_path / "results"),
+                "--kind",
+                "training",
+                "--config",
+                str(tmp_path / "inference.toml"),
+                "--source",
+                "three seeds",
+            ]
+        )
+        == 2
+    )
+    assert "reads replicates the store already holds" in capsys.readouterr().err

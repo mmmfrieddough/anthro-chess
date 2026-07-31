@@ -403,6 +403,93 @@ def training_run() -> Callable[..., Path]:
     return write_training_run
 
 
+@pytest.fixture
+def inference_run() -> Callable[..., Path]:
+    """Return a factory writing a run with no training corpus recorded.
+
+    What the efficiency benchmarks need is a loadable checkpoint rather than
+    a provenance trail: they read no evaluation pool, so nothing about the
+    corpus reaches the measurement.
+    """
+
+    return write_inference_run
+
+
+def write_inference_run(path: Path, *, seed: int = 5) -> Path:
+    """Write a retained run holding one tiny loadable checkpoint."""
+
+    torch.manual_seed(seed)
+    path.mkdir(parents=True, exist_ok=True)
+    config = MoveModelConfig(
+        piece_embedding_dim=2,
+        action_embedding_dim=2,
+        model_dim=4,
+        attention_heads=1,
+        transformer_layers=1,
+        feedforward_dim=8,
+        dropout=0.0,
+    )
+    model = CausalMoveModel(config)
+    model_identity = model.identity()
+    resolved_config = {
+        "config": {"model": config.model_dump(mode="json")},
+        "provenance": {"source": None, "overrides": []},
+    }
+    execution = {
+        "device": "cpu",
+        "backend": "cpu",
+        "precision": "float32",
+        "parameter_dtype": "float32",
+        "determinism": "strict",
+        "gradient_accumulation_steps": 1,
+        "phase_profiling": False,
+    }
+    metadata = {
+        "resolved_config": copy.deepcopy(resolved_config),
+        "code": {"package_version": "test", "git_revision": "test"},
+        "data": {},
+        "model": copy.deepcopy(model_identity),
+        "action_vocabulary": action_vocabulary_identity(),
+        "encoding": encoding_identity(),
+        "execution": copy.deepcopy(execution),
+    }
+    checkpoint = path / "checkpoints" / "step-00000001.pt"
+    save_training_checkpoint(
+        checkpoint,
+        global_step=1,
+        counters={"processed_positions": 1},
+        model_state=model.state_dict(),
+        optimizer_state={},
+        scheduler_state=None,
+        scaler_state=None,
+        loader_state={},
+        compatibility={
+            "training_config": {},
+            "data": {},
+            "model": copy.deepcopy(model_identity),
+            "action_vocabulary": action_vocabulary_identity(),
+            "encoding": encoding_identity(),
+        },
+        metadata=metadata,
+        device="cpu",
+    )
+    (path / "run.json").write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "resolved_config": copy.deepcopy(resolved_config),
+                "model": copy.deepcopy(model_identity),
+                "action_vocabulary": action_vocabulary_identity(),
+                "encoding": encoding_identity(),
+                "execution": copy.deepcopy(execution),
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return checkpoint
+
+
 def write_training_run(
     path: Path,
     *,
