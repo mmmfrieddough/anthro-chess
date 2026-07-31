@@ -1853,17 +1853,23 @@ direction anyway: the question is which human population a checkpoint's endings
 resemble. A class no reference game belongs to reports as unavailable rather
 than as a distance over nothing.
 
-The mix's headline distance is **blind to redistribution among categories the
-model already over-produces**, and that is worth knowing before reading it. A
-total-variation distance is the sum of one side's positive deviations, so moving
-mass between two categories the model over-produces leaves it exactly unchanged.
-The first shakedown reading hit this squarely: a checkpoint pair whose generated
-mix went from all resignation to 94% resignation and 6% ply limit reported the
-identical distance to sixteen significant figures, because both categories were
-above their human share. The reading is not wrong and the shared shape is not
-the wrong one to use — the category drill-down and the rating-variation metric
-both moved — but the scalar alone will understate a real change in composition,
-which is why it is read with its drill-down rather than on its own.
+The mix distance **saturates while the model produces none of the human
+categories**, and a reader tracking it early will otherwise mistake that for a
+broken instrument. A total-variation distance is the mass that has to move for
+the two distributions to agree, so a model producing zero of some set of human
+endings cannot score below the human mass on that set, whatever it does with
+its own. The first shakedown reading sat exactly there: across five checkpoints
+of one run the model ended games only by resigning or by hitting the ply limit,
+producing none of the eight other human categories, which carry 0.626 of human
+mass — and the distance read 0.626 at every checkpoint, to sixteen significant
+figures.
+
+That is the correct answer rather than a defect, and the number is not stuck:
+moving one percent of the model's mass onto checkmate moves the distance by
+exactly one percent. It unpins the moment a checkpoint checkmates anyone. Until
+then the composition change that *is* happening shows up in the category
+drill-down and in the rating-variation metric rather than in the headline, which
+is the reason the distance is read with its drill-down rather than on its own.
 
 Every reading with no population behind it reports an explicit unavailable with
 its reason rather than a zero. This matters most where a zero is a plausible
