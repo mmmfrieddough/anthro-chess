@@ -1443,12 +1443,36 @@ distribution over destinations, and report the rate of ending on a waypoint as
 its own scalar. That rate is a real and strongly rating-sensitive behavior; it
 is simply not a repertoire choice.
 
+The rule that follows from that is threshold-free: a position is a waypoint at
+the level being reported when more than one label at that level is still
+reachable from it, and reachability is positional exactly as matching is. A
+position reaches itself, so a destination is a position whose only reachable
+label is its own. The same structure supplies the depth reading, since the
+deepest reachable entry is the theory still available onward; one index over the
+book answers both. Its consequences are worth naming. The rule is level-relative,
+so the deepest name of a line is a waypoint at family level and a destination at
+line level, or the reverse. And a broad name a transposition can leave — a bare
+`Sicilian Defense`, which a handful of unrelated families pass back through —
+counts as a waypoint, so games that stopped exactly there sit in the waypoint
+rate rather than in the Sicilian's repertoire share. That is the intended
+reading: those games left the book at the second ply and chose no Sicilian line,
+while every game that stayed in book still lands in the family.
+
 Book depth is reported as three quantities, because the raw depth conflates
 choosing a well-analyzed line with knowing it. Record the deepest matched ply,
 the deepest theory available onward from that position, and the fraction of it
 consumed. A model with a human-like repertoire that abandons theory early and
 one that plays offbeat lines both show shallow raw depth, and only the
 decomposition tells them apart.
+
+All three are in **book** coordinates rather than game plies. The same position
+is the same distance into theory however unusual the move order that reached it,
+and a continuation from a human prefix shares no origin with the book at all, so
+counting game plies would make depth partly a statement about move order and
+partly about where the benchmark started. Games the book never names have no
+depth at all and are left out of the depth quantities rather than contributing a
+zero, which would otherwise read as an opening played badly rather than an
+opening not played.
 
 Depth is a property of the pair, not of one player, since either side leaving
 book ends it. Matched-rating games control this on the human side and a
@@ -1461,6 +1485,11 @@ tier: category count grows with depth, so its noise floor grows too, and it must
 never be shown without that floor. If it ever becomes the number people quote,
 that is the signal it was a mistake.
 
+That sweep reads raw labels rather than destinations. The waypoint distinction
+is about where a game *stopped*, and at a truncation the reading imposed every
+line is still on its way somewhere, so excluding waypoints there would drop
+nearly everything at the shallow end and would be measuring the truncation.
+
 The shallow end of that curve is exactly computable rather than sampled. A
 model's policy at a fixed position is one forward pass, so an opening-tree walk
 that keeps lines above a cumulative-probability threshold produces the
@@ -1468,6 +1497,26 @@ repertoire distribution with no sampling noise at all and a reported bound on
 the pruned mass. Deep readings must still be sampled, which is a second reason
 repertoire and depth belong apart: they differ in computational character as
 well as in meaning.
+
+The walk's depth and threshold decide what its numbers mean, so it is scoped as
+its own series rather than sharing the sampled reading's. Deepening the walk or
+loosening its threshold should end the walk's own history and leave the curves
+recorded beside it untouched. The bound travels with the reading for the same
+reason a distance travels with its floor: above the threshold the walk is exact,
+and below it nothing is known, so a distance quoted without the pruned mass is a
+precision claim the walk does not support. Prefixes are never merged across
+transpositions, because the policy conditions on the trajectory rather than on
+the position alone.
+
+The walk answers a question only the standard-start arm asks. On a prefix arm
+the opening was decided by the view before the model moved, so there is nothing
+of the model's to enumerate.
+
+A quantity some games do not have can leave a side with no observations at all —
+a checkpoint whose every game stops on a waypoint has made no repertoire choice.
+That is a reading about the checkpoint rather than a failed run, so the affected
+quantity is reported as explicitly unavailable with its reason and the rest of
+the comparison stands.
 
 Human prefixes are especially useful early, when the model may not yet be good
 at creating coherent full games from the start position.
@@ -1483,13 +1532,16 @@ interaction is the measurement target. The reusable core should cover:
   from a stable behavioral pattern.
 
 `anthro_chess.evaluation.rollout` implements that core and owns the matrix, the
-metric set it reports, and the artifact it writes. It produces two units, and
-the distinction matters. A **cell** is one arm at one rating and one temperature,
+metric set it reports, and the artifact it writes. It produces three units, and
+the distinctions matter. A **cell** is one arm at one rating and one temperature,
 and carries the raw rollout scalars; the seeds inside it are replicates whose
 spread is that cell's evaluation noise, so they are kept apart in the artifact
 rather than only pooled. A **reading** spans one arm's whole rating grid at one
-temperature and carries the distances against matched human play. Both arms run
-in one pass over one checkpoint so they share a grid and a seed derivation.
+temperature and carries the distances against matched human play. An **exact
+walk** enumerates the shallow repertoire instead of playing it, and is scoped by
+its own depth and threshold so changing either cannot end the sampled series
+recorded beside it. Both arms run in one pass over one checkpoint so they share a
+grid and a seed derivation.
 
 The reading is the unit because the rating grid is the curve's axis: a single
 cell has one rating and therefore no curve at all. Temperature stays fixed

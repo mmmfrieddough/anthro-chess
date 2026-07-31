@@ -23,6 +23,8 @@ from anthro_chess.evaluation.curves import (
     compare_curves,
     compare_reference_rate,
     curve_overlays,
+    distribution_distance,
+    estimate_curve,
     rating_grid,
     select_neighbours,
 )
@@ -118,6 +120,7 @@ def _compare(
     *,
     human: Sequence[Observation] | None = None,
     resamples: int = 80,
+    references: bool = True,
 ) -> CurveComparison:
     return compare_curves(
         spec=SCALAR_SPEC,
@@ -125,6 +128,7 @@ def _compare(
         model=model,
         resamples=resamples,
         seed=17,
+        references=references,
     )
 
 
@@ -814,3 +818,155 @@ def test_a_curve_rejects_values_of_the_wrong_kind() -> None:
             model=[Observation(1200.0, "sicilian")],
             resamples=0,
         )
+
+
+def test_the_category_drilldown_shows_mass_beside_the_delta() -> None:
+    """Family granularity is uneven, so a delta alone is not a finding."""
+
+    spec = CurveSpec(
+        name="opening-repertoire",
+        version=1,
+        quantity=CurveQuantity.CATEGORICAL,
+        neighbours=3,
+        grid=(1200.0, 1600.0),
+    )
+    # One narrow category against a broad one, which is exactly the pair a
+    # reader needs the mass column to tell apart.
+    human = [
+        Observation(1200.0 + 100.0 * step, "novelty" if step == 7 else "sicilian")
+        for step in range(8)
+    ]
+    model = [Observation(1200.0, "novelty"), Observation(1600.0, "novelty")]
+
+    shares = compare_curves(
+        spec=spec, human=human, model=model, resamples=0
+    ).category_shares()
+
+    # Ordered by the reference's own mass, so the broad family leads.
+    assert [share.category for share in shares] == ["sicilian", "novelty"]
+    assert shares[0].mass == shares[0].human
+    assert shares[0].delta == pytest.approx(shares[0].model - shares[0].human)
+    assert sum(abs(share.delta) for share in shares) == pytest.approx(
+        2.0 * comparison_pooled(spec, human, model)
+    )
+
+
+def comparison_pooled(
+    spec: CurveSpec,
+    human: Sequence[Observation],
+    model: Sequence[Observation],
+) -> float:
+    """Return the pooled distance, for checking the drill-down sums to it."""
+
+    return compare_curves(
+        spec=spec, human=human, model=model, resamples=0
+    ).pooled_distance
+
+
+def test_a_scalar_comparison_has_no_category_drilldown() -> None:
+    comparison = _compare(_generated(lambda rating, _: _length(rating)))
+
+    assert comparison.category_shares() == ()
+
+
+def test_a_floor_only_comparison_skips_the_null_levels() -> None:
+    """A sweep recomputing a distance per ply pays for floors, not for nulls."""
+
+    comparison = _compare(
+        _generated(
+            lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0)
+        ),
+        references=False,
+    )
+
+    assert comparison.floors is not None
+    assert comparison.references is None
+    assert comparison.response is RatingResponse.UNKNOWN
+
+
+def test_a_floor_only_comparison_reports_the_same_distances() -> None:
+    """Skipping the nulls is a cost decision, not a different measurement."""
+
+    generated = _generated(
+        lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0)
+    )
+
+    full = _compare(generated)
+    floors_only = _compare(generated, references=False)
+
+    assert floors_only.conditional_distance == pytest.approx(full.conditional_distance)
+    assert floors_only.pooled_distance == pytest.approx(full.pooled_distance)
+
+
+def test_one_side_can_be_estimated_without_a_counterpart() -> None:
+    """A model side computed exactly has no games to put through a comparison."""
+
+    spec = CurveSpec(
+        name="opening-repertoire",
+        version=1,
+        quantity=CurveQuantity.CATEGORICAL,
+        neighbours=3,
+        grid=(1200.0, 2000.0),
+    )
+    human = [
+        Observation(
+            1000.0 + 100.0 * step,
+            "sicilian" if 1000.0 + 100.0 * step >= 1600.0 else "other",
+        )
+        for step in range(11)
+    ]
+
+    curve = estimate_curve(spec, human)
+
+    assert [point.rating for point in curve.points] == [1200.0, 2000.0]
+    assert curve.distribution_at(1200.0) == {
+        "other": pytest.approx(1.0),
+        "sicilian": 0.0,
+    }
+    assert curve.distribution_at(2000.0) == {
+        "other": 0.0,
+        "sicilian": pytest.approx(1.0),
+    }
+    assert curve.distribution_at(1400.0) is None
+
+
+def test_an_estimated_curve_keeps_room_for_a_category_it_never_saw() -> None:
+    """A category only the counterpart produces must read zero, not vanish."""
+
+    spec = CurveSpec(
+        name="opening-repertoire",
+        version=1,
+        quantity=CurveQuantity.CATEGORICAL,
+        neighbours=2,
+        grid=(1200.0, 1600.0),
+    )
+    human = [Observation(1200.0 + 100.0 * step, "other") for step in range(5)]
+
+    curve = estimate_curve(spec, human, categories=("kings-gambit",))
+
+    assert curve.categories == ("kings-gambit", "other")
+    assert curve.distribution_at(1200.0) == {
+        "kings-gambit": 0.0,
+        "other": pytest.approx(1.0),
+    }
+
+
+def test_an_estimated_curve_needs_its_declared_bandwidth() -> None:
+    spec = CurveSpec(
+        name="opening-repertoire",
+        version=1,
+        quantity=CurveQuantity.CATEGORICAL,
+        neighbours=10,
+        grid=(1200.0, 1600.0),
+    )
+
+    with pytest.raises(CurveComparisonError, match="smooths over"):
+        estimate_curve(spec, [Observation(1200.0, "other")])
+
+
+def test_the_distribution_distance_is_the_comparison_shape_s_own() -> None:
+    """An exact reading and a sampled one have to land on one scale."""
+
+    assert distribution_distance({"a": 1.0}, {"a": 1.0}) == pytest.approx(0.0)
+    assert distribution_distance({"a": 1.0}, {"b": 1.0}) == pytest.approx(1.0)
+    assert distribution_distance({"a": 0.5, "b": 0.5}, {"a": 1.0}) == pytest.approx(0.5)

@@ -693,3 +693,50 @@ def _ranked_logits(best: str, *, illegal: str | None = None) -> torch.Tensor:
     if illegal is not None:
         logits[encode_move(chess.Move.from_uci(illegal))] = 100.0
     return logits
+
+
+def test_the_selection_distribution_is_the_one_a_draw_would_sample_from() -> None:
+    """An exhaustive walk has to see the same dial the live path samples under."""
+
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 2.0
+    session = GameSession(StubRunner(logits), config=RuntimeConfig(temperature=1.0))
+
+    enabled, probabilities = session.selection_distribution(logits)
+
+    assert len(enabled) == len(probabilities)
+    assert float(probabilities.sum()) == pytest.approx(1.0)
+    candidates = logits[torch.tensor(enabled, dtype=torch.long)].to(torch.float64)
+    assert torch.allclose(probabilities, torch.softmax(candidates, dim=0))
+
+
+def test_the_selection_distribution_follows_the_temperature_dial() -> None:
+    """At temperature zero the sampling distribution really is a point mass."""
+
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 2.0
+    session = GameSession(StubRunner(logits), config=RuntimeConfig(temperature=0.0))
+
+    enabled, probabilities = session.selection_distribution(logits)
+
+    assert float(probabilities.sum()) == pytest.approx(1.0)
+    assert float(probabilities.max()) == pytest.approx(1.0)
+    chosen = enabled[int(torch.argmax(probabilities).item())]
+    assert chosen == encode_move(chess.Move.from_uci("e2e4"))
+
+
+def test_reading_the_selection_distribution_decides_nothing() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("e2e4"))] = 2.0
+    session = GameSession(
+        StubRunner(logits), config=RuntimeConfig(temperature=1.0, seed=5)
+    )
+    drawn = GameSession(
+        StubRunner(logits), config=RuntimeConfig(temperature=1.0, seed=5)
+    )
+
+    session.selection_distribution(logits)
+
+    assert session.move_history == ()
+    assert session.board.fen() == chess.STARTING_FEN
+    assert _chosen_move(session) == _chosen_move(drawn)

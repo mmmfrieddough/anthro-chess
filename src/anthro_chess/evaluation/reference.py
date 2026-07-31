@@ -88,8 +88,26 @@ class ComparedQuantity(StrEnum):
     REPETITION = "repetition"
     #: How much of the play from first recurrence onward stayed in the cycle.
     CYCLE = "cycle"
-    #: Which openings get played, grouped by classified family.
-    OPENING = "opening"
+    #: Which openings get chosen, grouped by classified family. Destinations
+    #: only: a game that left the book on a position several openings still
+    #: pass through has not chosen anything, and counting it here would let a
+    #: depth effect into a distribution that is supposed to measure preference.
+    #: Games with no destination contribute nothing rather than a category, so
+    #: this quantity's observation counts are below the game count by the
+    #: waypoint rate.
+    REPERTOIRE = "repertoire"
+    #: Whether the game stopped on a waypoint. The behavior the repertoire
+    #: distribution deliberately excludes, reported on its own because it is
+    #: real and strongly rating-sensitive — just not a choice.
+    WAYPOINT = "waypoint"
+    #: How deep into catalogued theory the game got, in book plies.
+    BOOK_DEPTH = "book-depth"
+    #: How deep the book still ran onward from where the game left it. Raw
+    #: depth conflates choosing a well-analyzed line with knowing it, and this
+    #: is the half that says which line was chosen.
+    BOOK_AVAILABLE_DEPTH = "book-available-depth"
+    #: The share of that available theory the game actually consumed.
+    BOOK_CONSUMED_FRACTION = "book-consumed-fraction"
     #: Distinct moves as a share of moves played.
     MOVE_DIVERSITY = "move-diversity"
 
@@ -105,7 +123,11 @@ _QUANTITY_KINDS: Mapping[ComparedQuantity, CurveQuantity] = {
     ComparedQuantity.RESULT: CurveQuantity.CATEGORICAL,
     ComparedQuantity.REPETITION: CurveQuantity.SCALAR,
     ComparedQuantity.CYCLE: CurveQuantity.SCALAR,
-    ComparedQuantity.OPENING: CurveQuantity.CATEGORICAL,
+    ComparedQuantity.REPERTOIRE: CurveQuantity.CATEGORICAL,
+    ComparedQuantity.WAYPOINT: CurveQuantity.SCALAR,
+    ComparedQuantity.BOOK_DEPTH: CurveQuantity.SCALAR,
+    ComparedQuantity.BOOK_AVAILABLE_DEPTH: CurveQuantity.SCALAR,
+    ComparedQuantity.BOOK_CONSUMED_FRACTION: CurveQuantity.SCALAR,
     ComparedQuantity.MOVE_DIVERSITY: CurveQuantity.SCALAR,
 }
 
@@ -128,10 +150,18 @@ class ComparableGame:
         quantity: ComparedQuantity,
         *,
         level: OpeningLevel = OpeningLevel.FAMILY,
-    ) -> float | str:
-        """Return this game's contribution to one compared quantity."""
+    ) -> float | str | None:
+        """Return this game's contribution to one compared quantity.
+
+        ``None`` means the game has nothing to say about this quantity, which
+        is not the same as a zero: a game that stopped on a waypoint made no
+        repertoire choice, and one the book never named has no depth. Those
+        games are left out of the quantity rather than given a value that would
+        be read as one.
+        """
 
         repetition = self.trajectory.repetition
+        opening = self.trajectory.opening
         if quantity is ComparedQuantity.GAME_LENGTH:
             return float(self.trajectory.ply_count)
         if quantity is ComparedQuantity.RESULT:
@@ -140,8 +170,16 @@ class ComparableGame:
             return repetition.repeated_ply_fraction
         if quantity is ComparedQuantity.CYCLE:
             return repetition.cycle_ply_fraction
-        if quantity is ComparedQuantity.OPENING:
-            return self.trajectory.opening.label(level)
+        if quantity is ComparedQuantity.REPERTOIRE:
+            return opening.destination(level)
+        if quantity is ComparedQuantity.WAYPOINT:
+            return float(opening.waypoint(level))
+        if quantity is ComparedQuantity.BOOK_DEPTH:
+            return float(opening.book_ply) if opening.classified else None
+        if quantity is ComparedQuantity.BOOK_AVAILABLE_DEPTH:
+            return float(opening.available_ply) if opening.classified else None
+        if quantity is ComparedQuantity.BOOK_CONSUMED_FRACTION:
+            return opening.consumed_fraction if opening.classified else None
         return self.trajectory.distinct_move_fraction
 
     def observation(
@@ -149,10 +187,11 @@ class ComparableGame:
         quantity: ComparedQuantity,
         *,
         level: OpeningLevel = OpeningLevel.FAMILY,
-    ) -> Observation:
-        """Return this game as one observation of a curve."""
+    ) -> Observation | None:
+        """Return this game as one observation of a curve, when it has one."""
 
-        return Observation(rating=self.rating, value=self.value(quantity, level=level))
+        value = self.value(quantity, level=level)
+        return None if value is None else Observation(rating=self.rating, value=value)
 
 
 class ReferenceConfig(ConfigModel):
@@ -185,9 +224,14 @@ class HumanReference:
         *,
         level: OpeningLevel = OpeningLevel.FAMILY,
     ) -> tuple[Observation, ...]:
-        """Return the reference observations for one quantity."""
+        """Return the reference observations for one quantity.
 
-        return tuple(game.observation(quantity, level=level) for game in self.games)
+        Shorter than the reference for a quantity some games do not have. That
+        is the intended shape: both sides drop the same games for the same
+        reason, so the comparison stays like for like.
+        """
+
+        return observations_for(self.games, quantity, level=level)
 
     def as_record(self) -> dict[str, Any]:
         """Return the provenance record stored with a comparison."""
@@ -233,6 +277,18 @@ def human_reference(
         sum(excluded.values()),
     )
     return HumanReference(games=tuple(games), excluded=excluded)
+
+
+def observations_for(
+    games: Sequence[ComparableGame],
+    quantity: ComparedQuantity,
+    *,
+    level: OpeningLevel = OpeningLevel.FAMILY,
+) -> tuple[Observation, ...]:
+    """Return one quantity's observations, skipping games that lack it."""
+
+    collected = (game.observation(quantity, level=level) for game in games)
+    return tuple(observation for observation in collected if observation is not None)
 
 
 def generated_games(
@@ -311,6 +367,14 @@ CURVE_SPEC_VERSION = 1
 #: 0.15%, cycle 0.15%, move diversity 0.09%, opening 0.04%). Their error curves
 #: are flat enough over this range that the choice sits inside the noise of
 #: their optima, so one explainable number beats six boundary artifacts.
+#:
+#: The repertoire, waypoint, and book-depth quantities inherit the same number
+#: rather than one selected for them. Selection needs the real pool, which this
+#: change had no access to; inheriting a declared bandwidth is what the single
+#: shared value was for, and re-running `anthro eval curve-bandwidth` against
+#: the pool is what would replace it. A later selection that moves the number
+#: is a spec version bump, which is the mechanism that keeps the two readings
+#: from being silently merged.
 DECLARED_NEIGHBOURS: Mapping[ComparedQuantity, int] = {
     quantity: 1024 for quantity in ComparedQuantity
 }
@@ -400,5 +464,6 @@ __all__ = [
     "generated_games",
     "human_reference",
     "iter_quantities",
+    "observations_for",
     "select_bandwidths",
 ]

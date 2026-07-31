@@ -33,10 +33,13 @@ from anthro_chess.evaluation.openings import (
     classify_action_ids,
     opening_book_identity,
     opening_distribution,
+    repertoire_distribution,
 )
 from anthro_chess.evaluation.results.records import canonical_json
 
-GAME_ANALYSIS_VERSION = 2
+#: Version 3 adds the repertoire, waypoint, and book-depth readings that come
+#: out of the same classification pass the opening counts already used.
+GAME_ANALYSIS_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,13 @@ class TrajectoryFeatures:
     #: replicates that played the identical game carry different ids. Counting
     #: ids would report every suite as fully diverse.
     trajectory_sha256: str
+    #: The trajectory itself, kept so a later pass can recompute a feature from
+    #: it without regenerating anything. Deliberately absent from
+    #: :meth:`as_record`: the games it came from are already retained whole in
+    #: the detail tier, and writing every move twice per game would double the
+    #: largest payload a rollout produces.
+    initial_position: str
+    action_ids: tuple[int, ...]
     ply_count: int
     opening: OpeningLabel
     repetition: RepetitionDiagnostics
@@ -191,6 +201,23 @@ class GameDistribution:
     adjudicated_games: int
     opening_level: OpeningLevel
     opening_counts: dict[str, int]
+    #: Counts over destinations only, which is the repertoire: games that
+    #: stopped on a waypoint chose nothing yet and are counted by the waypoint
+    #: rate instead. Kept beside the raw counts rather than replacing them,
+    #: because the raw distribution is what the depth diagnostic recomputes.
+    repertoire_counts: dict[str, int]
+    #: Share of games whose deepest book match was a position several openings
+    #: still pass through. A depth behavior rather than a repertoire choice,
+    #: and strongly rating-sensitive, so it is its own number.
+    waypoint_game_rate: float
+    #: Book depth, in the three parts that keep it readable. Averaged over the
+    #: games the book named at all, since an unnamed game has no depth to
+    #: average: raw depth reached, theory still available onward from there,
+    #: and the share of that theory the game consumed.
+    mean_book_ply: float
+    mean_available_ply: float
+    mean_consumed_fraction: float
+    classified_games: int
     opening_book: dict[str, object]
     repeated_games: int
     threefold_claimable_games: int
@@ -224,6 +251,12 @@ class GameDistribution:
             "adjudicated_games": self.adjudicated_games,
             "opening_level": self.opening_level.value,
             "opening_counts": dict(self.opening_counts),
+            "repertoire_counts": dict(self.repertoire_counts),
+            "waypoint_game_rate": self.waypoint_game_rate,
+            "mean_book_ply": self.mean_book_ply,
+            "mean_available_ply": self.mean_available_ply,
+            "mean_consumed_fraction": self.mean_consumed_fraction,
+            "classified_games": self.classified_games,
             "opening_book": dict(self.opening_book),
             "repeated_games": self.repeated_games,
             "threefold_claimable_games": self.threefold_claimable_games,
@@ -256,6 +289,8 @@ def analyze_trajectory(
     )
     return TrajectoryFeatures(
         trajectory_sha256=_trajectory_sha256(initial_position, action_ids),
+        initial_position=initial_position,
+        action_ids=tuple(action_ids),
         ply_count=len(moves),
         opening=classify_action_ids(
             tuple(action_ids),
@@ -314,6 +349,7 @@ def summarize_games(
     if not features:
         raise ValueError("a distribution summary needs at least one game")
     games = len(features)
+    classified = [feature.opening for feature in features if feature.opening.classified]
     return GameDistribution(
         version=GAME_ANALYSIS_VERSION,
         games=games,
@@ -327,6 +363,18 @@ def summarize_games(
             (feature.opening for feature in features),
             level,
         ),
+        repertoire_counts=repertoire_distribution(
+            (feature.opening for feature in features),
+            level,
+        ),
+        waypoint_game_rate=_fraction(
+            sum(1 for feature in features if feature.opening.waypoint(level)),
+            games,
+        ),
+        mean_book_ply=_mean(label.book_ply for label in classified),
+        mean_available_ply=_mean(label.available_ply for label in classified),
+        mean_consumed_fraction=_mean(label.consumed_fraction for label in classified),
+        classified_games=len(classified),
         opening_book=opening_book_identity(),
         repeated_games=sum(1 for feature in features if feature.repetition.repeated),
         threefold_claimable_games=sum(
