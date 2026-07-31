@@ -71,9 +71,11 @@ from pathlib import Path
 from statistics import stdev
 from typing import Annotated, Any
 
+import chess
 import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
+from anthro_chess.chess import MOVE_ACTION_COUNT, decode_move
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
@@ -81,7 +83,10 @@ from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveComparisonError,
     CurveMetrics,
+    Observation,
     compare_curves,
+    distribution_distance,
+    estimate_curve,
 )
 from anthro_chess.evaluation.execution import execution_record
 from anthro_chess.evaluation.games import (
@@ -103,10 +108,16 @@ from anthro_chess.evaluation.games import (
     summarize_games,
 )
 from anthro_chess.evaluation.openings import (
+    ActionPolicy,
     OpeningBook,
     OpeningBookError,
+    OpeningLabel,
     OpeningLevel,
+    OpeningTreeError,
+    RepertoireWalk,
     load_book,
+    progression_for_action_ids,
+    walk_repertoire,
 )
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
@@ -125,6 +136,7 @@ from anthro_chess.evaluation.reference import (
     generated_games,
     human_reference,
     iter_quantities,
+    observations_for,
 )
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -152,6 +164,14 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
+    GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE,
+    GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE,
+    GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS,
+    GENERATED_PLAY_EXACT_REPERTOIRE_UNSETTLED_MASS,
+    GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS,
+    GENERATED_PLAY_MEAN_AVAILABLE_PLY,
+    GENERATED_PLAY_MEAN_BOOK_PLY,
+    GENERATED_PLAY_MEAN_CONSUMED_FRACTION,
     GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION,
     GENERATED_PLAY_MEAN_DISTINCT_MOVE_FRACTION,
     GENERATED_PLAY_MEAN_FIRST_REPETITION_PLY,
@@ -163,6 +183,7 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_RESIGNATION_RATE,
     GENERATED_PLAY_THREEFOLD_CLAIMABLE_GAME_RATE,
     GENERATED_PLAY_UNFINISHED_GAME_RATE,
+    GENERATED_PLAY_WAYPOINT_GAME_RATE,
     GENERATED_PLAY_WHITE_SCORE,
     MOVE_PREDICTION_PROJECTION,
 )
@@ -171,6 +192,11 @@ from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
+from anthro_chess.runtime.session import (
+    BatchedActionModelRunner,
+    DecisionRuntimeError,
+    GameSession,
+)
 
 ROLLOUT_BENCHMARK_VERSION = 1
 
@@ -264,6 +290,54 @@ class RolloutReferenceConfig(ReferenceConfig):
     view: ViewConfig = ViewConfig(name="rollout-reference", require_ratings=True)
 
 
+class RepertoireWalkConfig(ConfigModel):
+    """The exact shallow repertoire reading, computed rather than sampled.
+
+    A model's policy at a fixed position is one forward pass, so the shallow
+    end of the repertoire distribution can be enumerated with no sampling noise
+    at all. Only the shallow end: the branching factor past a handful of plies
+    beats any threshold, which is why the deep reading stays sampled.
+    """
+
+    enabled: StrictBool = True
+    #: How deep to enumerate. Eight plies covers the depth at which the openings
+    #: people actually name their repertoire after become nameable — the Ruy
+    #: Lopez, Italian, and Scotch split at five — while staying inside what an
+    #: exhaustive walk can afford.
+    plies: Annotated[StrictInt, Field(ge=1)] = 8
+    #: Cumulative-probability threshold below which a line stops being expanded.
+    #: Its reciprocal bounds the positions evaluated per ply, and the mass it
+    #: leaves uncommitted is reported as the reading's error bound.
+    #:
+    #: Chosen by measurement rather than by feel. On a real checkpoint the
+    #: leading family share reads 0.281 at 1e-2, 0.260 at 1e-3, and 0.258 at
+    #: 1e-4: the distribution has converged by 1e-3, and the order of magnitude
+    #: past it buys 0.002 of movement for roughly nine times the work. Cost at
+    #: this value is a few seconds per rating, against a suite that spends
+    #: minutes generating games.
+    threshold: Annotated[float, Field(gt=0.0, le=1.0)] = 0.001
+
+
+class DivergenceDepthConfig(ConfigModel):
+    """The divergence-versus-depth diagnostic, recomputed at each book ply.
+
+    A diagnostic rather than a headline: it says *where* the model departs from
+    human play rather than whether it does, and its category count grows with
+    depth, so its floor grows with depth too. Detail tier only, and never
+    stored without the floor each point was estimated against.
+    """
+
+    enabled: StrictBool = True
+    #: Resamples behind each depth's floor. Lower than a headline comparison's,
+    #: because this runs once per ply and only the floor is read from it — the
+    #: null levels are skipped entirely.
+    resamples: Annotated[StrictInt, Field(ge=2)] = 64
+    #: Deepest ply to recompute at. Defaults to the deepest match either side
+    #: actually reached, so a shallow suite does not pay for plies no game got
+    #: near.
+    maximum_ply: Annotated[StrictInt, Field(ge=1)] | None = None
+
+
 class RolloutDetailConfig(ConfigModel):
     """What the machine-local detail tier keeps beside a committed summary."""
 
@@ -299,6 +373,8 @@ class RolloutBenchmarkConfig(ConfigModel):
     #: Granularity the opening distribution is aggregated at. Family groups
     #: transpositions together, which literal move prefixes cannot.
     opening_level: OpeningLevel = OpeningLevel.FAMILY
+    walk: RepertoireWalkConfig = RepertoireWalkConfig()
+    divergence: DivergenceDepthConfig = DivergenceDepthConfig()
     detail: RolloutDetailConfig = RolloutDetailConfig()
 
     @model_validator(mode="after")
@@ -446,6 +522,98 @@ class SeedSpread:
 
 
 @dataclass(frozen=True)
+class DepthDivergence:
+    """One point of the divergence-versus-depth diagnostic.
+
+    The repertoire distance recomputed with classification truncated at one
+    ply. Raw labels rather than destinations, because at a truncated depth
+    every line is still en route: the waypoint distinction is a statement about
+    where a game *stopped*, which has no meaning at a depth the reading imposed.
+
+    The floor travels with the point and is not optional. Category count grows
+    with depth, so the distance a model with nothing wrong would still show
+    grows with it, and the raw number read alone says that the model diverges
+    more deeply than it does.
+    """
+
+    ply: int
+    categories: int
+    conditional_distance: float
+    conditional_floor: float | None
+    pooled_distance: float
+    pooled_floor: float | None
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one depth point."""
+
+        return {
+            "ply": self.ply,
+            "categories": self.categories,
+            "conditional_distance": self.conditional_distance,
+            "conditional_floor": self.conditional_floor,
+            "pooled_distance": self.pooled_distance,
+            "pooled_floor": self.pooled_floor,
+        }
+
+
+@dataclass(frozen=True)
+class ExactRepertoire:
+    """The shallow repertoire enumerated exactly, against the human reference.
+
+    One walk per conditioning rating, since the policy is conditioned on it.
+    The human side is the same reference every other curve reads, classified at
+    the walk's own depth and smoothed at the declared bandwidth, so the two
+    sides meet on one definition.
+    """
+
+    plies: int
+    threshold: float
+    walks: tuple[tuple[int, RepertoireWalk], ...]
+    #: Distance at each rating the walk ran at, and the mean over them.
+    distances: tuple[tuple[int, float], ...]
+    conditional_distance: float
+    pooled_distance: float
+    #: Worst pruned mass across the ratings, which is the bound that applies to
+    #: the reading as a whole rather than to its most favorable point.
+    pruned_mass: float
+    #: The same, for the bound that discounts mass the book has already
+    #: committed. This is the one to read; ``pruned_mass`` saturates near one on
+    #: any real policy and says almost nothing.
+    unsettled_mass: float
+    waypoint_mass: float
+    #: Deepest ply any rating's walk actually expanded to, which is below
+    #: ``plies`` whenever the threshold bit first.
+    deepest_expanded_ply: int
+    execution: ExecutionRecord
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one exact repertoire reading."""
+
+        return {
+            "plies": self.plies,
+            "threshold": self.threshold,
+            "conditional_distance": self.conditional_distance,
+            "pooled_distance": self.pooled_distance,
+            "pruned_mass": self.pruned_mass,
+            "unsettled_mass": self.unsettled_mass,
+            "waypoint_mass": self.waypoint_mass,
+            "deepest_expanded_ply": self.deepest_expanded_ply,
+            "workload_sha256": self.execution.workload_sha256,
+            "workload": dict(self.execution.workload),
+            "ratings": [
+                {
+                    "target_rating": rating,
+                    "distance": distance,
+                    "walk": walk.as_record(),
+                }
+                for (rating, walk), (_, distance) in zip(
+                    self.walks, self.distances, strict=True
+                )
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class RolloutReading:
     """One arm's whole rating grid, compared against matched human play.
 
@@ -469,6 +637,15 @@ class RolloutReading:
     #: estimate of this quantity; recording both is what makes it checkable
     #: rather than trusted.
     seed_spread: dict[ComparedQuantity, SeedSpread] = field(default_factory=dict)
+    #: Quantities no game on one side had a value for, with the reason. A real
+    #: state rather than an error: a checkpoint whose every game leaves the book
+    #: on a waypoint has made no repertoire choice to compare, and reporting
+    #: that is more useful than failing the whole reading or writing a zero.
+    unavailable: dict[ComparedQuantity, str] = field(default_factory=dict)
+    #: The repertoire distance recomputed at each book ply. Detail tier only.
+    divergence: tuple[DepthDivergence, ...] = ()
+    #: The shallow repertoire enumerated exactly, when the walk ran.
+    exact: ExactRepertoire | None = None
 
     @property
     def label(self) -> str:
@@ -491,6 +668,11 @@ class RolloutReading:
                 quantity.value: spread.as_record()
                 for quantity, spread in self.seed_spread.items()
             },
+            "unavailable": {
+                quantity.value: reason
+                for quantity, reason in sorted(self.unavailable.items())
+            },
+            "divergence_by_depth": [point.as_record() for point in self.divergence],
             "comparisons": {
                 quantity.value: comparison.as_detail_record()
                 for quantity, comparison in self.comparisons.items()
@@ -557,6 +739,11 @@ class RolloutBenchmarkResult:
                 None if self.reference_view is None else self.reference_view.as_record()
             ),
             "readings": [reading.as_record() for reading in self.readings],
+            "exact_repertoire": [
+                reading.exact.as_record()
+                for reading in self.readings
+                if reading.exact is not None
+            ],
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -631,6 +818,8 @@ def benchmark_rollout(
             config,
             cells,
             reference,
+            book=book,
+            runner=loaded,
             device=_device(loaded),
         )
 
@@ -859,6 +1048,8 @@ def _curve_readings(
     cells: Sequence[RolloutCell],
     reference: HumanReference,
     *,
+    book: OpeningBook | None,
+    runner: ActionModelRunner,
     device: torch.device,
 ) -> tuple[RolloutReading, ...]:
     """Compare each arm's rating grid against matched human play.
@@ -879,7 +1070,14 @@ def _curve_readings(
                 continue
             readings.append(
                 _curve_reading(
-                    config, arm, temperature, selected, reference, device=device
+                    config,
+                    arm,
+                    temperature,
+                    selected,
+                    reference,
+                    book=book,
+                    runner=runner,
+                    device=device,
                 )
             )
     return tuple(readings)
@@ -892,6 +1090,8 @@ def _curve_reading(
     cells: Sequence[RolloutCell],
     reference: HumanReference,
     *,
+    book: OpeningBook | None,
+    runner: ActionModelRunner,
     device: torch.device,
 ) -> RolloutReading:
     """Compare one arm's whole rating grid at one temperature."""
@@ -901,15 +1101,22 @@ def _curve_reading(
         model.extend(generated_games(cell.features, rating=cell.target_rating))
     ratings = tuple(sorted({cell.target_rating for cell in cells}))
     comparisons: dict[ComparedQuantity, CurveComparison] = {}
+    unavailable: dict[ComparedQuantity, str] = {}
     for quantity in iter_quantities():
         try:
             spec = curve_spec(quantity, ratings)
         except ReferenceError as error:
             raise RolloutBenchmarkError(str(error)) from error
         human = reference.observations(quantity, level=config.opening_level)
-        generated = tuple(
-            game.observation(quantity, level=config.opening_level) for game in model
-        )
+        generated = observations_for(model, quantity, level=config.opening_level)
+        # A quantity some games simply do not have is a reading about the
+        # checkpoint, not a broken run: every generated game leaving the book on
+        # a waypoint means there is no repertoire to compare, and the waypoint
+        # rate is where that shows up.
+        if not generated or not human:
+            side = "generated" if not generated else "human"
+            unavailable[quantity] = f"no {side} game carries this quantity"
+            continue
         try:
             comparisons[quantity] = compare_curves(
                 spec=spec,
@@ -930,10 +1137,342 @@ def _curve_reading(
         human_games=len(reference.games),
         comparisons=comparisons,
         seed_spread=_seed_spread(config, cells, reference, ratings),
+        unavailable=unavailable,
+        divergence=_divergence_by_depth(config, cells, reference, ratings, book=book),
+        exact=_exact_repertoire(
+            config,
+            arm,
+            temperature,
+            cells,
+            reference,
+            ratings,
+            book=book,
+            runner=runner,
+            device=device,
+        ),
         execution=_reading_execution_record(
             config, cells, temperature, ratings, device=device
         ),
     )
+
+
+def _divergence_by_depth(
+    config: RolloutBenchmarkConfig,
+    cells: Sequence[RolloutCell],
+    reference: HumanReference,
+    ratings: Sequence[int],
+    *,
+    book: OpeningBook | None,
+) -> tuple[DepthDivergence, ...]:
+    """Recompute the opening distance with classification truncated per ply.
+
+    Says where the model departs from human play rather than whether it does.
+    Every point carries the floor it was estimated against, because category
+    count grows with depth and so does the distance two identical populations
+    would still show.
+
+    The distance is over raw labels rather than destinations. At an imposed
+    truncation every line is still on its way somewhere, so excluding waypoints
+    would exclude nearly everything at the shallow end and would be measuring
+    the truncation rather than the model.
+    """
+
+    if not config.divergence.enabled:
+        return ()
+    level = config.opening_level
+    human_games = reference.games
+    model_games = [
+        game
+        for cell in cells
+        for game in generated_games(cell.features, rating=cell.target_rating)
+    ]
+    if not model_games:  # pragma: no cover - a cell always plays games
+        return ()
+    deepest = config.divergence.maximum_ply or max(
+        (game.trajectory.opening.matched_ply for game in (*human_games, *model_games)),
+        default=0,
+    )
+    if deepest < 1:
+        return ()
+
+    try:
+        spec = curve_spec(ComparedQuantity.REPERTOIRE, ratings)
+    except ReferenceError as error:  # pragma: no cover - the grid is validated
+        raise RolloutBenchmarkError(str(error)) from error
+
+    human_labels = _label_progressions(human_games, deepest, book=book)
+    model_labels = _label_progressions(model_games, deepest, book=book)
+
+    points: list[DepthDivergence] = []
+    for ply in range(1, deepest + 1):
+        human = _depth_observations(human_games, human_labels, ply, level)
+        model = _depth_observations(model_games, model_labels, ply, level)
+        if not human or not model:  # pragma: no cover - both sides start named
+            continue
+        try:
+            comparison = compare_curves(
+                spec=spec,
+                human=human,
+                model=model,
+                resamples=config.divergence.resamples,
+                seed=config.reference.seed,
+                references=False,
+            )
+        except CurveComparisonError:
+            # One depth the reference cannot support is a reason to report
+            # fewer points, not to fail a diagnostic the rest of them support.
+            continue
+        floors = comparison.floors
+        points.append(
+            DepthDivergence(
+                ply=ply,
+                categories=len({observation.value for observation in (*human, *model)}),
+                conditional_distance=comparison.conditional_distance,
+                conditional_floor=(
+                    None if floors is None else floors.conditional.value
+                ),
+                pooled_distance=comparison.pooled_distance,
+                pooled_floor=None if floors is None else floors.pooled.value,
+            )
+        )
+    return tuple(points)
+
+
+def _label_progressions(
+    games: Sequence[ComparableGame],
+    deepest: int,
+    *,
+    book: OpeningBook | None,
+) -> tuple[tuple[OpeningLabel, ...], ...]:
+    """Classify every game once, keeping the label it held at each ply.
+
+    One replay per game rather than one per game and depth. The sweep asks the
+    same question at thirty-odd plies, and reclassifying from the start each
+    time would make a diagnostic cost more than the games it reads.
+    """
+
+    return tuple(
+        progression_for_action_ids(
+            game.trajectory.action_ids,
+            initial_position=game.trajectory.initial_position,
+            book=book,
+            plies=deepest,
+        )
+        for game in games
+    )
+
+
+def _depth_observations(
+    games: Sequence[ComparableGame],
+    progressions: Sequence[tuple[OpeningLabel, ...]],
+    ply: int,
+    level: OpeningLevel,
+) -> tuple[Observation, ...]:
+    """Return one depth's raw opening labels, one observation per game."""
+
+    return tuple(
+        Observation(rating=game.rating, value=progression[ply - 1].label(level))
+        for game, progression in zip(games, progressions, strict=True)
+    )
+
+
+def _exact_repertoire(
+    config: RolloutBenchmarkConfig,
+    arm: RolloutArm,
+    temperature: float,
+    cells: Sequence[RolloutCell],
+    reference: HumanReference,
+    ratings: Sequence[int],
+    *,
+    book: OpeningBook | None,
+    runner: ActionModelRunner,
+    device: torch.device,
+) -> ExactRepertoire | None:
+    """Enumerate the shallow repertoire exactly, and meet the human reference.
+
+    Standard-start only. On the prefix arm the opening was decided by the view
+    before the model moved, so a walk from the standard start would be
+    answering a question that arm never asked.
+
+    One walk per conditioning rating, because the policy is conditioned on it
+    and the whole point of the reading is whether that dial moves the openings
+    it plays.
+    """
+
+    if not config.walk.enabled or arm is not RolloutArm.STANDARD_START:
+        return None
+    level = config.opening_level
+    plies = config.walk.plies
+
+    human_labels = [
+        progression[plies - 1]
+        for progression in _label_progressions(reference.games, plies, book=book)
+    ]
+    observations = tuple(
+        Observation(rating=game.rating, value=destination)
+        for game, label in zip(reference.games, human_labels, strict=True)
+        if (destination := label.destination(level)) is not None
+    )
+    if not observations:
+        logger.info(
+            "Exact repertoire skipped: no reference game reaches a destination "
+            "within %s plies",
+            plies,
+        )
+        return None
+
+    walks: list[tuple[int, RepertoireWalk]] = []
+    for rating in ratings:
+        runtime = config.runtime.model_copy(
+            update={"target_rating": rating, "temperature": temperature}
+        )
+        try:
+            walks.append(
+                (
+                    rating,
+                    walk_repertoire(
+                        _walk_policy(runner, runtime),
+                        plies=plies,
+                        threshold=config.walk.threshold,
+                        level=level,
+                        book=book,
+                    ),
+                )
+            )
+        except (OpeningTreeError, DecisionRuntimeError) as error:
+            raise RolloutBenchmarkError(
+                f"cannot walk the opening tree at rating {rating}: {error}"
+            ) from error
+
+    model_categories = sorted(
+        {label for _, walk in walks for label in walk.destinations}
+    )
+    try:
+        curve = estimate_curve(
+            curve_spec(ComparedQuantity.REPERTOIRE, ratings),
+            observations,
+            categories=model_categories,
+        )
+    except (CurveComparisonError, ReferenceError) as error:
+        raise RolloutBenchmarkError(
+            f"cannot estimate the human repertoire reference: {error}"
+        ) from error
+
+    distances: list[tuple[int, float]] = []
+    for rating, walk in walks:
+        human = curve.distribution_at(float(rating))
+        if human is None:
+            continue
+        distances.append((rating, distribution_distance(walk.repertoire(), human)))
+    if not distances:  # pragma: no cover - the grid is the reference's own
+        return None
+
+    pooled_model: dict[str, float] = {}
+    for _, walk in walks:
+        for label, share in walk.repertoire().items():
+            pooled_model[label] = pooled_model.get(label, 0.0) + share / len(walks)
+    return ExactRepertoire(
+        plies=plies,
+        threshold=config.walk.threshold,
+        walks=tuple(walks),
+        distances=tuple(distances),
+        conditional_distance=sum(value for _, value in distances) / len(distances),
+        pooled_distance=distribution_distance(
+            pooled_model, curve.pooled.distribution or {}
+        ),
+        pruned_mass=max(walk.pruned_mass for _, walk in walks),
+        unsettled_mass=max(walk.unsettled_mass for _, walk in walks),
+        waypoint_mass=sum(walk.waypoint_mass for _, walk in walks) / len(walks),
+        deepest_expanded_ply=max(walk.deepest_expanded_ply for _, walk in walks),
+        execution=_walk_execution_record(
+            config, cells, temperature, ratings, device=device
+        ),
+    )
+
+
+def _walk_policy(
+    runner: ActionModelRunner,
+    runtime: RuntimeConfig,
+) -> ActionPolicy:
+    """Return the policy an opening-tree walk asks for its move distributions.
+
+    Each prefix gets its own session, so the legal mask, the encoding, and the
+    temperature all come from the runtime the games were played under rather
+    than from a second implementation. A whole depth is encoded and predicted in
+    one batch, which is what keeps an exhaustive walk affordable.
+    """
+
+    def policy(
+        prefixes: Sequence[tuple[chess.Move, ...]],
+    ) -> tuple[dict[chess.Move, float], ...]:
+        sessions = [
+            GameSession(runner, config=runtime, moves=prefix) for prefix in prefixes
+        ]
+        # A line that is already over contributes no continuation. It is not an
+        # error: eight plies is long enough to reach a fool's mate.
+        live = [
+            index for index, session in enumerate(sessions) if not session.is_terminal
+        ]
+        contexts = [sessions[index].decision_context() for index in live]
+        if isinstance(runner, BatchedActionModelRunner) and len(contexts) > 1:
+            logits = runner.predict_batch(contexts)
+            if len(logits) != len(contexts):
+                raise RolloutBenchmarkError(
+                    "model runner returned the wrong number of predictions"
+                )
+        else:
+            logits = tuple(runner.predict(context) for context in contexts)
+
+        distributions: list[dict[chess.Move, float]] = [{} for _ in prefixes]
+        for index, row in zip(live, logits, strict=True):
+            enabled, probabilities = sessions[index].selection_distribution(row)
+            moves: dict[chess.Move, float] = {}
+            for action_id, probability in zip(
+                enabled, probabilities.tolist(), strict=True
+            ):
+                # Mass on a non-move action ends the line rather than
+                # continuing it, so it is simply left out of the sub-
+                # distribution the walk expands.
+                if action_id < MOVE_ACTION_COUNT and probability > 0.0:
+                    moves[decode_move(action_id)] = float(probability)
+            distributions[index] = moves
+        return tuple(distributions)
+
+    return policy
+
+
+def _walk_execution_record(
+    config: RolloutBenchmarkConfig,
+    cells: Sequence[RolloutCell],
+    temperature: float,
+    ratings: Sequence[int],
+    *,
+    device: torch.device,
+) -> ExecutionRecord:
+    """Declare what the exact walk measured.
+
+    Its own workload rather than the reading's, because the walk's depth and
+    threshold decide the quantity: a repertoire enumerated to eight plies and
+    one enumerated to twelve are different readings, and a looser threshold is
+    a different approximation of each. Keeping them here rather than on the
+    reading is what stops a change to the walk from ending every other curve
+    series in the same run.
+    """
+
+    workload = dict(cells[0].execution.workload)
+    workload.pop("target_rating", None)
+    workload.update(
+        {
+            "target_ratings": list(ratings),
+            "temperature": temperature,
+            "walk_plies": config.walk.plies,
+            "walk_threshold": config.walk.threshold,
+            "curve_spec_version": CURVE_SPEC_VERSION,
+            "curve_neighbours": DECLARED_NEIGHBOURS[ComparedQuantity.REPERTOIRE],
+            "reference_maximum_rating_gap": config.reference.maximum_rating_gap,
+        }
+    )
+    return execution_record(device, workload)
 
 
 def _seed_spread(
@@ -973,10 +1512,7 @@ def _seed_spread(
                 comparison = compare_curves(
                     spec=curve_spec(quantity, ratings),
                     human=reference.observations(quantity, level=config.opening_level),
-                    model=tuple(
-                        game.observation(quantity, level=config.opening_level)
-                        for game in games
-                    ),
+                    model=observations_for(games, quantity, level=config.opening_level),
                     resamples=0,
                 )
             except (CurveComparisonError, ReferenceError):
@@ -1111,13 +1647,15 @@ def _record(
     store: ResultsStore | None,
     detail: DetailStore | None,
 ) -> RolloutBenchmarkResult:
-    """Write one envelope per cell, plus one per curve reading.
+    """Write one envelope per cell, per curve reading, and per exact walk.
 
-    Two kinds of record from one run, because they are two units. A cell is one
-    point of the matrix and carries the raw rollout scalars; a reading spans one
-    arm's whole rating grid and carries the distances against human play. They
-    have different workloads and so different series, which is why neither can
-    stand in for the other.
+    Three kinds of record from one run, because they are three units. A cell is
+    one point of the matrix and carries the raw rollout scalars; a reading spans
+    one arm's whole rating grid and carries the distances against human play; an
+    exact walk enumerates the shallow repertoire instead of playing it. Each has
+    its own declared workload and so its own series, which is why none can stand
+    in for another — and why changing the walk's depth cannot end the curve
+    series recorded beside it.
     """
 
     configuration = configuration_reference(
@@ -1182,6 +1720,30 @@ def _record(
                     data=result.dataset,
                     execution=reading.execution,
                     measurements=_curve_measurements(reading),
+                    detail=detail_reference,
+                    recorded_at=recorded_at,
+                )
+            )
+            if reading.exact is None:
+                continue
+            detail_reference = _write_detail(
+                detail,
+                checkpoint=result.checkpoint,
+                slug=f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}",
+                description=f"Exact shallow repertoire: {reading.label}",
+                payload=reading.exact.as_record(),
+                recorded_at=recorded_at,
+                paths=detail_paths,
+            )
+            envelopes.append(
+                build_result(
+                    kind=ROLLOUT_KIND,
+                    benchmark=ROLLOUT_BENCHMARK,
+                    checkpoint=result.checkpoint,
+                    configuration=configuration,
+                    data=result.dataset,
+                    execution=reading.exact.execution,
+                    measurements=_exact_measurements(reading),
                     detail=detail_reference,
                     recorded_at=recorded_at,
                 )
@@ -1291,6 +1853,28 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
             distribution.distinct_game_fraction,
             games,
         ),
+        (
+            GENERATED_PLAY_WAYPOINT_GAME_RATE.identifier,
+            distribution.waypoint_game_rate,
+            games,
+        ),
+        # The three depth readings are averaged over the games the book named
+        # at all, since an unnamed game has no depth to average in.
+        (
+            GENERATED_PLAY_MEAN_BOOK_PLY.identifier,
+            distribution.mean_book_ply,
+            distribution.classified_games,
+        ),
+        (
+            GENERATED_PLAY_MEAN_AVAILABLE_PLY.identifier,
+            distribution.mean_available_ply,
+            distribution.classified_games,
+        ),
+        (
+            GENERATED_PLAY_MEAN_CONSUMED_FRACTION.identifier,
+            distribution.mean_consumed_fraction,
+            distribution.classified_games,
+        ),
     )
     return tuple(
         measurement(
@@ -1334,6 +1918,51 @@ def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
             )
         )
     return tuple(measurements)
+
+
+def _exact_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
+    """Return the exactly computed repertoire distances, when the walk ran.
+
+    Its own workload rather than the reading's: the walk's depth and threshold
+    decide what these numbers mean, and a change to either should end this
+    series without touching the sampled ones beside it.
+
+    No sample size. The model side was enumerated rather than drawn, so there
+    is no count of games behind it that a precision estimate could use; the
+    pruned mass is the reading's error bound and is recorded as a metric of its
+    own instead.
+    """
+
+    exact = reading.exact
+    if exact is None:
+        return ()
+    workload = exact.execution.workload_component()
+    values = (
+        (
+            GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE.identifier,
+            exact.conditional_distance,
+        ),
+        (
+            GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE.identifier,
+            exact.pooled_distance,
+        ),
+        (
+            GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS.identifier,
+            exact.pruned_mass,
+        ),
+        (
+            GENERATED_PLAY_EXACT_REPERTOIRE_UNSETTLED_MASS.identifier,
+            exact.unsettled_mass,
+        ),
+        (
+            GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS.identifier,
+            exact.waypoint_mass,
+        ),
+    )
+    return tuple(
+        measurement(identifier, value, workload=workload)
+        for identifier, value in values
+    )
 
 
 def _write_detail(

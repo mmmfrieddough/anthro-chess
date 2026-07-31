@@ -21,6 +21,7 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation.curves import CurveQuantity
 from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.reference import (
     DECLARED_NEIGHBOURS,
@@ -37,11 +38,17 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
+    GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE,
+    GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE,
+    GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS,
+    GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS,
     GENERATED_PLAY_FAMILY,
+    GENERATED_PLAY_MEAN_BOOK_PLY,
     GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION,
     GENERATED_PLAY_MEAN_GAME_PLIES,
     GENERATED_PLAY_RESIGNATION_RATE,
     GENERATED_PLAY_UNFINISHED_GAME_RATE,
+    GENERATED_PLAY_WAYPOINT_GAME_RATE,
     GENERATED_PLAY_WHITE_SCORE,
     MetricDefinition,
     registered_metrics,
@@ -370,6 +377,19 @@ def test_a_temperature_change_starts_a_new_curve_series(
     assert len({r.execution.workload_sha256 for r in result.readings}) == 2
 
 
+#: Quantities every game has, whatever it played. The opening-derived ones do
+#: not belong here: a game that stopped on a waypoint made no repertoire choice
+#: and one the book never named has no depth, so both sides drop those games.
+_UNIVERSAL_QUANTITIES = (
+    ComparedQuantity.GAME_LENGTH,
+    ComparedQuantity.RESULT,
+    ComparedQuantity.REPETITION,
+    ComparedQuantity.CYCLE,
+    ComparedQuantity.WAYPOINT,
+    ComparedQuantity.MOVE_DIVERSITY,
+)
+
+
 def test_every_compared_quantity_is_measured_against_the_human_reference(
     reference_pool: Path,
     small_bandwidth: None,
@@ -379,11 +399,14 @@ def test_every_compared_quantity_is_measured_against_the_human_reference(
     result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
 
     (reading,) = result.readings
-    assert set(reading.comparisons) == set(ComparedQuantity)
+    assert set(reading.comparisons) | set(reading.unavailable) == set(ComparedQuantity)
     for quantity, comparison in reading.comparisons.items():
         assert comparison.spec.quantity is quantity.kind
-        assert comparison.human_games == reading.human_games
-        assert comparison.model_games == reading.model_games
+        assert comparison.human_games <= reading.human_games
+        assert comparison.model_games <= reading.model_games
+        if quantity in _UNIVERSAL_QUANTITIES:
+            assert comparison.human_games == reading.human_games
+            assert comparison.model_games == reading.model_games
 
 
 def test_a_distance_carries_the_floor_it_has_to_clear(
@@ -1041,3 +1064,274 @@ def test_a_grid_axis_cannot_be_empty_or_repeat_a_value() -> None:
         _config(grid={"target_ratings": ()})
     with pytest.raises(ValidationError, match="must not repeat a seeds"):
         _config(grid={"seeds": (0, 0)})
+
+
+def test_a_cell_reports_the_repertoire_apart_from_the_waypoint_rate(
+    pool: Path,
+) -> None:
+    """Two readings out of one classification pass, kept separate on purpose."""
+
+    result = _run(_config(arms=("standard-start",)))
+
+    distribution = result.cells[0].distribution
+    assert set(distribution.repertoire_counts) <= set(distribution.opening_counts)
+    chosen = sum(distribution.repertoire_counts.values())
+    assert (
+        chosen + round(distribution.waypoint_game_rate * distribution.games)
+        == distribution.games
+    )
+
+
+def test_a_cell_reports_book_depth_in_three_parts(pool: Path) -> None:
+    """Raw depth alone cannot tell a deep line abandoned from an offbeat one."""
+
+    distribution = _run(_config()).cells[0].distribution
+
+    assert distribution.classified_games > 0
+    assert distribution.mean_book_ply <= distribution.mean_available_ply
+    assert distribution.mean_consumed_fraction == pytest.approx(
+        distribution.mean_book_ply / distribution.mean_available_ply, rel=0.5
+    )
+
+
+def test_the_depth_readings_are_averaged_over_named_games_only(
+    pool: Path,
+) -> None:
+    """An unnamed game has no depth, so counting it would dilute the average."""
+
+    result = _run(_config(), store=None)
+    envelope = next(
+        envelope
+        for envelope in result.envelopes
+        if envelope.measurement(GENERATED_PLAY_MEAN_BOOK_PLY.identifier) is not None
+    )
+    distribution = result.cells[0].distribution
+
+    assert _sample(envelope, GENERATED_PLAY_MEAN_BOOK_PLY) == (
+        distribution.classified_games
+    )
+    assert _sample(envelope, GENERATED_PLAY_WAYPOINT_GAME_RATE) == distribution.games
+
+
+def test_the_repertoire_curve_leaves_waypoint_games_out(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A game that chose nothing cannot contribute to a distribution of choices."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    repertoire = reading.comparisons[ComparedQuantity.REPERTOIRE]
+    waypoints = reading.comparisons[ComparedQuantity.WAYPOINT]
+
+    # The waypoint rate is measured over every game; the repertoire only over
+    # the games that reached a destination.
+    assert waypoints.human_games == reading.human_games
+    assert repertoire.human_games <= reading.human_games
+    assert repertoire.spec.quantity is CurveQuantity.CATEGORICAL
+
+
+def test_the_repertoire_comparison_carries_its_category_drilldown(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Uneven family granularity makes a bare delta unreadable."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    record = reading.comparisons[ComparedQuantity.REPERTOIRE].as_detail_record()
+    categories = record["categories"]
+
+    assert categories
+    assert set(categories[0]) == {"category", "human", "model", "delta", "mass"}
+    masses = [row["mass"] for row in categories]
+    assert masses == sorted(masses, reverse=True)
+
+
+def test_divergence_by_depth_never_arrives_without_its_floor(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Category count grows with depth, so the raw distance does too."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    assert reading.divergence
+    plies = [point.ply for point in reading.divergence]
+    assert plies == sorted(plies)
+    for point in reading.divergence:
+        assert point.conditional_floor is not None
+        assert point.pooled_floor is not None
+        assert point.categories >= 1
+
+
+def test_divergence_by_depth_stays_in_the_detail_tier(
+    reference_pool: Path,
+    small_bandwidth: None,
+    tmp_path: Path,
+) -> None:
+    """A diagnostic that became a headline would be the signal it was a mistake."""
+
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _run(
+        _compared(reference_pool, grid={"target_ratings": (1200, 1800)}),
+        store=store,
+        detail=detail,
+    )
+
+    envelope = _curve_envelope(result)
+    assert all(
+        "divergence" not in measurement.metric for measurement in envelope.measurements
+    )
+    assert envelope.detail is not None
+    payload = json.loads(
+        (detail.root / envelope.detail.path).read_text(encoding="utf-8")
+    )
+    assert payload["divergence_by_depth"]
+
+
+def test_the_depth_sweep_can_be_switched_off(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            divergence={"enabled": False},
+        )
+    )
+
+    (reading,) = result.readings
+    assert reading.divergence == ()
+
+
+def test_the_exact_walk_is_its_own_series_apart_from_the_curves(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Changing the walk's depth must not end the sampled curve series."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    assert reading.exact is not None
+    assert reading.exact.execution.workload_sha256 != reading.execution.workload_sha256
+    assert reading.exact.execution.workload["walk_plies"] == reading.exact.plies
+
+
+def test_the_exact_walk_reports_the_bound_its_pruning_implies(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A distance quoted without the pruned mass overstates its own precision."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    exact = result.readings[0].exact
+    assert exact is not None
+    assert [rating for rating, _ in exact.walks] == [1200, 1800]
+    assert 0.0 <= exact.pruned_mass <= 1.0
+    assert exact.pruned_mass == max(walk.pruned_mass for _, walk in exact.walks)
+    assert exact.conditional_distance == pytest.approx(
+        sum(value for _, value in exact.distances) / len(exact.distances)
+    )
+
+
+def test_the_exact_walk_records_its_own_measurements(
+    reference_pool: Path,
+    small_bandwidth: None,
+    tmp_path: Path,
+) -> None:
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _run(
+        _compared(reference_pool, grid={"target_ratings": (1200, 1800)}),
+        store=store,
+        detail=detail,
+    )
+
+    exact = result.readings[0].exact
+    assert exact is not None
+    envelope = next(
+        envelope
+        for envelope in result.envelopes
+        if envelope.execution is not None
+        and envelope.execution.workload_sha256 == exact.execution.workload_sha256
+    )
+    for metric in (
+        GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE,
+        GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE,
+        GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS,
+        GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS,
+    ):
+        found = envelope.measurement(metric.identifier)
+        assert found is not None
+        # Enumerated rather than drawn, so there is no game count behind it that
+        # a precision estimate could use.
+        assert found.sample_size is None
+    assert envelope.detail is not None
+    payload = json.loads(
+        (detail.root / envelope.detail.path).read_text(encoding="utf-8")
+    )
+    assert len(payload["ratings"]) == 2
+
+
+def test_the_exact_walk_is_skipped_on_the_prefix_arm(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A prefix decided the opening before the model moved."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            arms=("human-prefix",),
+            grid={"target_ratings": (1200, 1800)},
+            prefix={"plies": 4, "view": {"name": "rollout-prefix", "maximum_games": 2}},
+        )
+    )
+
+    (reading,) = result.readings
+    assert reading.arm is RolloutArm.HUMAN_PREFIX
+    assert reading.exact is None
+
+
+def test_the_exact_walk_can_be_switched_off(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            walk={"enabled": False},
+        )
+    )
+
+    assert result.readings[0].exact is None
+
+
+def test_the_rendered_walk_names_the_bound_that_matters(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The assumption-free bound alone would read as an unusable measurement."""
+
+    from anthro_chess.interfaces.cli import _render_rollout
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    rendered = _render_rollout(result)
+
+    assert "exact repertoire to" in rendered
+    assert "uncommitted mass at most" in rendered
+    assert "pruned in all" in rendered
+    assert "reached ply" in rendered
+    assert max(len(line) for line in rendered.splitlines()) <= 120

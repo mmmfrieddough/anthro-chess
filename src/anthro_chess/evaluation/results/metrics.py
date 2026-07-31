@@ -1451,6 +1451,47 @@ GENERATED_PLAY_DISTINCT_GAME_FRACTION = _generated_play_metric(
     ),
 )
 
+GENERATED_PLAY_WAYPOINT_GAME_RATE = _generated_play_metric(
+    "generated_play.waypoint_game_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of games whose deepest book match was a position several named "
+        "openings still pass through. A depth behavior rather than a "
+        "repertoire choice, which is why the repertoire distribution excludes "
+        "these games and this rate reports them instead."
+    ),
+)
+
+GENERATED_PLAY_MEAN_BOOK_PLY = _generated_play_metric(
+    "generated_play.mean_book_ply",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean book depth reached, in book plies, over the games the book named "
+        "at all. Book coordinates rather than game plies, so a transposition "
+        "and the main move order read the same depth."
+    ),
+)
+
+GENERATED_PLAY_MEAN_AVAILABLE_PLY = _generated_play_metric(
+    "generated_play.mean_available_ply",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean depth the book still ran onward from where the game left it. "
+        "Read beside the depth reached: alone it says how well analyzed the "
+        "chosen lines are rather than how well the model knows them."
+    ),
+)
+
+GENERATED_PLAY_MEAN_CONSUMED_FRACTION = _generated_play_metric(
+    "generated_play.mean_consumed_fraction",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean share of the theory still available that the game consumed. The "
+        "part of book depth that separates playing an offbeat line to its end "
+        "from abandoning a deeply analyzed one early."
+    ),
+)
+
 
 #: Quantities compared against matched human play. Kept as plain strings here
 #: because the registry is the bottom of the import graph; the evaluation layer
@@ -1460,7 +1501,11 @@ GENERATED_PLAY_COMPARED_QUANTITIES: tuple[str, ...] = (
     "result",
     "repetition",
     "cycle",
-    "opening",
+    "repertoire",
+    "waypoint",
+    "book-depth",
+    "book-available-depth",
+    "book-consumed-fraction",
     "move-diversity",
 )
 
@@ -1647,6 +1692,63 @@ TRAINING_STEP_SYNC_COST_SECONDS = _training_efficiency_metric(
         "Added seconds per optimizer step when per-micro-batch device "
         "synchronization is not deferred to the logging interval, measured by "
         "interleaving both arms through the same window."
+    ),
+)
+
+
+#: The shallow repertoire read exactly rather than from played games. A policy
+#: at a fixed position is one forward pass, so an opening-tree walk that keeps
+#: every line above a threshold produces the distribution with no sampling
+#: noise at all. Separate series from the sampled repertoire distances: they
+#: measure the same behavior by different instruments, at different depths, and
+#: merging them would hide which one moved.
+GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE = _curve_metric(
+    "generated_play.exact_repertoire_conditional_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean distance between the exactly computed shallow repertoire and the "
+        "human one, over the ratings the walk was run at. No sampling noise on "
+        "the model side, so a delta here is the policy moving."
+    ),
+)
+
+GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE = _curve_metric(
+    "generated_play.exact_repertoire_pooled_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Distance between the rating-free exact repertoire and the human one, "
+        "each averaged over the rating grid."
+    ),
+)
+
+GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS = _curve_metric(
+    "generated_play.exact_repertoire_pruned_mass",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Probability mass the walk stopped expanding below its threshold. The "
+        "error bound on the exact reading rather than a discarded remainder: "
+        "no rearrangement of those lines can move a label's share by more."
+    ),
+)
+
+GENERATED_PLAY_EXACT_REPERTOIRE_UNSETTLED_MASS = _curve_metric(
+    "generated_play.exact_repertoire_unsettled_mass",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Pruned mass whose label the book had not yet committed, so continuing "
+        "it could still move the distribution. The bound worth reading: mass "
+        "pruned on a destination keeps the label it already has, and the "
+        "assumption-free bound beside it saturates near one on any real policy."
+    ),
+)
+
+GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS = _curve_metric(
+    "generated_play.exact_repertoire_waypoint_mass",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Probability mass the walk left on waypoints rather than on a chosen "
+        "opening. The exact counterpart of the sampled waypoint rate, at the "
+        "walk's own shallow depth."
     ),
 )
 

@@ -483,6 +483,52 @@ class CurveReferences:
 
 
 @dataclass(frozen=True)
+class CategoryShare:
+    """One category's share on each side, beside the delta between them.
+
+    Family granularity follows naming convention rather than a uniform level of
+    abstraction: the largest family holds a few hundred lines and the median
+    holds a handful. A distributional distance is mass-weighted so tiny
+    families contribute proportionally little, but a reader looking at a
+    per-category delta needs the mass beside it, because a share change on a
+    broad family and one on a narrow line are not the same finding.
+    """
+
+    category: str
+    human: float
+    model: float
+
+    @property
+    def delta(self) -> float:
+        """Return how much more of the model's play this category takes."""
+
+        return self.model - self.human
+
+    @property
+    def mass(self) -> float:
+        """Return the category's size, taken from the human reference.
+
+        The reference side rather than the mean of the two, because "how big is
+        this family" is a question about human play; a model that invents mass
+        in a narrow line should read as a large delta on a small category
+        rather than inflating the category itself.
+        """
+
+        return self.human
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one category's drill-down row."""
+
+        return {
+            "category": self.category,
+            "human": self.human,
+            "model": self.model,
+            "delta": self.delta,
+            "mass": self.mass,
+        }
+
+
+@dataclass(frozen=True)
 class CurveMetrics:
     """Which registered metrics a benchmark reports one comparison as.
 
@@ -548,6 +594,31 @@ class CurveComparison:
         if self.model_variation <= self.references.flat:
             return RatingResponse.AVERAGE_HUMAN
         return RatingResponse.DIVERGENT_RESPONSE
+
+    def category_shares(self) -> tuple[CategoryShare, ...]:
+        """Return the per-category drill-down behind a categorical distance.
+
+        Taken from the rating-free reading, which is each side's own curve
+        averaged over the grid, so the shares are on the same rating mixture the
+        pooled distance is computed from and sum to that distance.
+
+        Ordered by mass, because that is the order the rows matter in: a delta
+        on a family nobody plays is noise wearing the shape of a finding.
+        """
+
+        if self.spec.quantity is not CurveQuantity.CATEGORICAL:
+            return ()
+        human = self.human_pooled.distribution or {}
+        model = self.model_pooled.distribution or {}
+        shares = tuple(
+            CategoryShare(
+                category=category,
+                human=float(human.get(category, 0.0)),
+                model=float(model.get(category, 0.0)),
+            )
+            for category in sorted({*human, *model})
+        )
+        return tuple(sorted(shares, key=lambda share: (-share.mass, share.category)))
 
     def trace(self, side: str, *, label: str, fingerprint: str) -> CurveTrace:
         """Return one side's curve as a drawable, series-pinned trace."""
@@ -660,6 +731,7 @@ class CurveComparison:
                 "human": self.human_pooled.as_record(),
                 "model": self.model_pooled.as_record(),
             },
+            "categories": [share.as_record() for share in self.category_shares()],
             "points": [point.as_record() for point in self.points],
         }
 
@@ -696,6 +768,7 @@ def compare_curves(
     seed: int = 0,
     coverage: float = DEFAULT_COVERAGE,
     floor_kind: NoiseFloorKind = "evaluation",
+    references: bool = True,
 ) -> CurveComparison:
     """Compare a generated curve against the human reference it should match.
 
@@ -710,6 +783,11 @@ def compare_curves(
     whose model side is a deterministic pass over fixed inputs should say so,
     since re-measuring it changes nothing and its floor describes the input
     draw instead.
+
+    ``references`` may be turned off by a caller that needs only the floor.
+    The null levels cost a permutation pass per replicate on top of the
+    resampling, which a sweep recomputing this comparison at every book ply
+    pays once per ply for a reading it does not use.
     """
 
     if len(human) < spec.neighbours:
@@ -732,7 +810,7 @@ def compare_curves(
     )
     reading = _read(spec, human_side, model_side, *weights)
     generator = np.random.default_rng(seed)
-    floors, references = _resample(
+    floors, reference_levels = _resample(
         spec,
         human_side,
         model_side,
@@ -741,6 +819,7 @@ def compare_curves(
         generator=generator,
         coverage=coverage,
         floor_kind=floor_kind,
+        references=references,
     )
 
     points = tuple(
@@ -773,7 +852,101 @@ def compare_curves(
         human_games=len(human),
         model_games=len(model),
         floors=floors,
-        references=references,
+        references=reference_levels,
+    )
+
+
+@dataclass(frozen=True)
+class ReferenceCurve:
+    """One side's curve estimated on its own, with no counterpart to subtract.
+
+    A comparison needs one observation per game on both sides. A model side
+    computed exactly rather than played has no games at all — it is a
+    distribution — so it cannot go through ``compare_curves``, but it still has
+    to meet the human reference smoothed exactly as every other reading
+    smooths it. This is that half.
+    """
+
+    spec: CurveSpec
+    points: tuple[TracePoint, ...]
+    pooled: LocalEstimate
+    categories: tuple[str, ...]
+
+    def distribution_at(self, rating: float) -> Mapping[str, float] | None:
+        """Return the estimated categorical distribution at one grid point."""
+
+        for point in self.points:
+            if point.rating == rating:
+                return point.estimate.distribution
+        return None
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one estimated reference curve."""
+
+        return {
+            "spec": self.spec.as_record(),
+            "categories": list(self.categories),
+            "pooled": self.pooled.as_record(),
+            "points": [point.as_record() for point in self.points],
+        }
+
+
+def estimate_curve(
+    spec: CurveSpec,
+    observations: Sequence[Observation],
+    *,
+    categories: Sequence[str] = (),
+) -> ReferenceCurve:
+    """Estimate one side's curve at the spec's grid, at its own bandwidth.
+
+    ``categories`` extends the vocabulary beyond what these observations
+    contain, which is how a category the counterpart produces and this side
+    never does stays visible as a zero rather than vanishing from the
+    comparison.
+    """
+
+    if len(observations) < spec.neighbours:
+        raise CurveComparisonError(
+            f"curve {spec.name!r} smooths over {spec.neighbours} neighbours but "
+            f"the reference has {len(observations)} observation(s)"
+        )
+    vocabulary: tuple[str, ...] = ()
+    if spec.quantity is CurveQuantity.CATEGORICAL:
+        observed = _observed_categories(spec.quantity, observations)
+        vocabulary = tuple(sorted({*observed, *categories}))
+    side = _Side.prepare(observations, spec, vocabulary)
+    weights = np.ones((1, len(observations)), dtype=np.float64)
+    radii = _radii(side, weights, spec.neighbours)
+    local = _local(side, weights, radii)
+    supported = local.games > 0
+    pooled = _masked_centre(local.values, supported)
+    return ReferenceCurve(
+        spec=spec,
+        points=tuple(
+            TracePoint(
+                rating=rating,
+                estimate=_estimate_at(spec, vocabulary, local, index),
+            )
+            for index, rating in enumerate(spec.grid)
+        ),
+        pooled=_pooled_estimate(spec, vocabulary, pooled, local, supported),
+        categories=vocabulary,
+    )
+
+
+def distribution_distance(
+    left: Mapping[str, float],
+    right: Mapping[str, float],
+) -> float:
+    """Return the total variation distance between two label distributions.
+
+    The same distance ``compare_curves`` uses for a categorical quantity, so an
+    exactly computed distribution and a sampled one land on one scale.
+    """
+
+    return 0.5 * sum(
+        abs(float(left.get(category, 0.0)) - float(right.get(category, 0.0)))
+        for category in {*left, *right}
     )
 
 
@@ -1120,6 +1293,7 @@ def _resample(
     generator: np.random.Generator,
     coverage: float,
     floor_kind: NoiseFloorKind,
+    references: bool = True,
 ) -> tuple[CurveFloors | None, CurveReferences | None]:
     """Estimate this comparison's own floors and null levels in one pass.
 
@@ -1152,7 +1326,9 @@ def _resample(
     model_weights = generator.multinomial(
         model.size, np.full(model.size, 1.0 / model.size), size=resamples
     ).astype(np.float64)
-    paired = _read(spec, human, model, human_weights, model_weights)
+    paired = (
+        _read(spec, human, model, human_weights, model_weights) if references else None
+    )
     # The human reference held exactly as measured, so this varies only in
     # which games the model produced.
     model_only = _read(
@@ -1183,14 +1359,18 @@ def _resample(
             )
         )
 
-    references = _references(
-        spec,
-        point,
-        paired,
-        model,
-        resamples=resamples,
-        generator=generator,
-        coverage=coverage,
+    levels = (
+        None
+        if paired is None
+        else _references(
+            spec,
+            point,
+            paired,
+            model,
+            resamples=resamples,
+            generator=generator,
+            coverage=coverage,
+        )
     )
     return (
         CurveFloors(
@@ -1200,7 +1380,7 @@ def _resample(
             resamples=resamples,
             coverage=coverage,
         ),
-        references,
+        levels,
     )
 
 
@@ -1478,6 +1658,7 @@ __all__ = [
     "DEFAULT_RESAMPLES",
     "HUMAN_REFERENCE_LABEL",
     "BandwidthSelection",
+    "CategoryShare",
     "CurveComparison",
     "CurveComparisonError",
     "CurveFloors",
@@ -1491,9 +1672,12 @@ __all__ = [
     "LocalEstimate",
     "Observation",
     "RatingResponse",
+    "ReferenceCurve",
     "TracePoint",
     "compare_curves",
     "curve_overlays",
+    "distribution_distance",
+    "estimate_curve",
     "rating_grid",
     "select_neighbours",
 ]

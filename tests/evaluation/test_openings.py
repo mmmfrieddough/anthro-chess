@@ -21,10 +21,12 @@ from anthro_chess.evaluation.openings import (
     OpeningLevel,
     classify_action_ids,
     classify_moves,
+    classify_progression,
     load_book,
     opening_book_identity,
     opening_distribution,
     opening_levels,
+    repertoire_distribution,
 )
 from anthro_chess.evaluation.openings.book import BOOK_FILE_NAME
 
@@ -52,30 +54,27 @@ def build_book(entries: Sequence[tuple[str, str, str]]) -> OpeningBook:
     """Build a small in-memory book so semantics do not depend on the vendored one."""
 
     built: list[OpeningEntry] = []
-    positions: dict[str, OpeningEntry] = {}
     for eco, name, sans in entries:
         played = moves(sans)
         board = chess.Board()
         for move in played:
             board.push(move)
-        entry = OpeningEntry(
-            eco=eco,
-            name=name,
-            uci=" ".join(move.uci() for move in played),
-            epd=board.epd(),
-            ply=len(played),
+        built.append(
+            OpeningEntry(
+                eco=eco,
+                name=name,
+                uci=" ".join(move.uci() for move in played),
+                epd=board.epd(),
+                ply=len(played),
+            )
         )
-        positions[entry.epd] = entry
-        built.append(entry)
-    return OpeningBook(
+    return OpeningBook.indexed(
         name="test-book",
         version=1,
         content_sha256="0" * 64,
         source={},
         license={},
-        entries=tuple(built),
-        positions=positions,
-        maximum_ply=max(entry.ply for entry in built),
+        entries=built,
     )
 
 
@@ -266,6 +265,13 @@ def test_the_label_record_is_stable() -> None:
         "classified": True,
         "eco": "B90",
         "matched_ply": 11,
+        "book_ply": 11,
+        "available_ply": 17,
+        "consumed_fraction": pytest.approx(11 / 17),
+        # The English Attack is the family's destination — no other family is
+        # reachable from it — while deeper names split it further, so the same
+        # position is a waypoint at the two finer levels.
+        "waypoint": {"family": False, "variation": True, "line": True},
         "family": "Sicilian Defense",
         "variation": "Sicilian Defense: Najdorf Variation",
         "line": "Sicilian Defense: Najdorf Variation, English Attack",
@@ -312,3 +318,129 @@ def test_classification_is_deterministic_and_needs_no_network(
         load_book.cache_clear()
 
     assert first == second
+
+
+def test_the_continuation_index_covers_every_named_position() -> None:
+    """A named position with no continuations could never be judged."""
+
+    book = load_book()
+
+    assert set(book.continuations) == set(book.positions)
+    for entry in book.entries:
+        continuation = book.continuation_for(entry.epd)
+        assert continuation is not None
+        # A position reaches itself, so the deepest theory onward can never be
+        # shallower than the position's own depth.
+        assert continuation.deepest_ply >= entry.ply
+        assert continuation.reachable_labels(OpeningLevel.FAMILY) >= 1
+
+
+def test_a_position_many_openings_pass_through_is_a_waypoint() -> None:
+    """The rule is structural: more than one label still reachable onward."""
+
+    book = build_book(
+        [
+            ("A00", "Test Waypoint", "e4"),
+            ("B20", "Sicilian Test", "e4 c5"),
+            ("C20", "Open Test", "e4 e5"),
+        ]
+    )
+
+    waypoint = classify_moves(moves("e4"), book=book)
+    chosen = classify_moves(moves("e4 c5"), book=book)
+
+    assert waypoint.waypoint(OpeningLevel.FAMILY)
+    assert waypoint.destination(OpeningLevel.FAMILY) is None
+    assert not chosen.waypoint(OpeningLevel.FAMILY)
+    assert chosen.destination(OpeningLevel.FAMILY) == "Sicilian Test"
+
+
+def test_book_depth_separates_how_far_from_how_far_it_could_have_gone() -> None:
+    """Raw depth conflates choosing a deep line with knowing one."""
+
+    book = build_book(
+        [
+            ("C20", "Open Test", "e4 e5"),
+            ("C60", "Deep Test", "e4 e5 Nf3 Nc6 Bb5"),
+        ]
+    )
+
+    shallow = classify_moves(moves("e4 e5"), book=book)
+    deep = classify_moves(moves("e4 e5 Nf3 Nc6 Bb5"), book=book)
+
+    assert (shallow.book_ply, shallow.available_ply) == (2, 5)
+    assert shallow.consumed_fraction == pytest.approx(0.4)
+    assert (deep.book_ply, deep.available_ply) == (5, 5)
+    assert deep.consumed_fraction == pytest.approx(1.0)
+
+
+def test_an_unnamed_game_has_no_depth_and_is_not_a_waypoint() -> None:
+    """Off book is a statement about what was played, not about how far."""
+
+    label = classify_moves(moves("a3"), book=build_book([("C20", "Open", "e4 e5")]))
+
+    assert not label.classified
+    assert (label.book_ply, label.available_ply) == (0, 0)
+    assert label.consumed_fraction == 0.0
+    assert not label.waypoint(OpeningLevel.FAMILY)
+    assert label.destination(OpeningLevel.FAMILY) == UNCLASSIFIED
+
+
+def test_book_depth_is_in_book_coordinates_rather_than_game_plies() -> None:
+    """A transposition reaches the same theory however long the order took."""
+
+    direct = classify_moves(moves(NIMZO_INDIAN))
+    transposed = classify_moves(moves(NIMZO_INDIAN_TRANSPOSED))
+
+    assert direct.book_ply == transposed.book_ply
+    assert direct.available_ply == transposed.available_ply
+
+
+def test_truncated_classification_only_ever_removes_matches() -> None:
+    label = classify_moves(moves(NAJDORF_ENGLISH_ATTACK), plies=6)
+
+    assert label.matched_ply <= 6
+    assert label.family == "Sicilian Defense"
+    assert label.line != "Sicilian Defense: Najdorf Variation, English Attack"
+
+
+def test_a_progression_matches_classifying_each_depth_separately() -> None:
+    """One replay has to agree with the obvious slow way, or it is not the same."""
+
+    played = moves(NAJDORF_ENGLISH_ATTACK)
+    progression = classify_progression(played, plies=12)
+
+    assert len(progression) == 12
+    for ply, label in enumerate(progression, start=1):
+        assert label == classify_moves(played, plies=ply)
+
+
+def test_a_progression_pads_a_short_game_with_the_label_it_kept() -> None:
+    progression = classify_progression(moves("e4 e5"), plies=5)
+
+    assert len(progression) == 5
+    assert progression[-1] == progression[1]
+
+
+def test_the_repertoire_distribution_leaves_waypoints_out() -> None:
+    """Counting a game that chose nothing turns depth into a preference."""
+
+    book = build_book(
+        [
+            ("A00", "Waypoint Test", "e4"),
+            ("B20", "Sicilian Test", "e4 c5"),
+            ("C20", "Open Test", "e4 e5"),
+        ]
+    )
+    labels = [
+        classify_moves(moves("e4"), book=book),
+        classify_moves(moves("e4 c5"), book=book),
+        classify_moves(moves("e4 e5"), book=book),
+    ]
+
+    assert opening_distribution(labels) == {
+        "Open Test": 1,
+        "Sicilian Test": 1,
+        "Waypoint Test": 1,
+    }
+    assert repertoire_distribution(labels) == {"Open Test": 1, "Sicilian Test": 1}

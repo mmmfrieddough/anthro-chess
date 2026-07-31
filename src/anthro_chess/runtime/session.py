@@ -441,29 +441,58 @@ class GameSession:
             raise ActionSelectionError("model runner returned non-finite action logits")
         return observed
 
+    def selection_distribution(self, logits: object) -> tuple[tuple[int, ...], Tensor]:
+        """Return the distribution a draw from these logits would sample from.
+
+        Tempered, unlike :class:`SelectionPolicy`, because this *is* the
+        sampling distribution rather than a description of the model's own
+        confidence: a caller enumerating what the session would play has to see
+        the dial that decides it, and at temperature zero that is the point
+        mass on the greedy action.
+
+        Reading it makes no draw, so the board and the random stream are
+        untouched. It exists so an exhaustive walk over what the model would
+        play can be computed exactly instead of estimated by sampling, through
+        the same legal mask and the same temperature the live path uses.
+        """
+
+        validated, enabled_ids = self._policy_inputs(logits)
+        return enabled_ids, self._selection_probabilities(validated, enabled_ids)
+
+    def _selection_probabilities(
+        self,
+        logits: Tensor,
+        enabled_ids: tuple[int, ...],
+    ) -> Tensor:
+        """Return the tempered distribution over the enabled actions."""
+
+        if not enabled_ids:
+            raise ActionSelectionError("the current position has no enabled actions")
+        candidate_logits = logits[torch.tensor(enabled_ids, dtype=torch.long)]
+        if self.config.temperature == 0.0:
+            probabilities = torch.zeros_like(candidate_logits)
+            probabilities[int(torch.argmax(candidate_logits).item())] = 1.0
+            return probabilities
+        probabilities = torch.softmax(
+            candidate_logits / self.config.temperature,
+            dim=0,
+        )
+        if not torch.isfinite(probabilities).all() or probabilities.sum().item() <= 0.0:
+            raise ActionSelectionError(
+                "enabled action logits cannot form a sampling distribution"
+            )
+        return probabilities
+
     def _sample_action(
         self,
         logits: Tensor,
         enabled_ids: tuple[int, ...],
     ) -> tuple[int, SelectionPolicy]:
-        if not enabled_ids:
-            raise ActionSelectionError("the current position has no enabled actions")
-        candidate_ids = torch.tensor(enabled_ids, dtype=torch.long)
-        candidate_logits = logits[candidate_ids]
+        probabilities = self._selection_probabilities(logits, enabled_ids)
+        candidate_logits = logits[torch.tensor(enabled_ids, dtype=torch.long)]
         if self.config.temperature == 0.0:
             candidate_index = int(torch.argmax(candidate_logits).item())
         else:
-            probabilities = torch.softmax(
-                candidate_logits / self.config.temperature,
-                dim=0,
-            )
-            if (
-                not torch.isfinite(probabilities).all()
-                or probabilities.sum().item() <= 0.0
-            ):
-                raise ActionSelectionError(
-                    "enabled action logits cannot form a sampling distribution"
-                )
             candidate_index = int(
                 torch.multinomial(
                     probabilities,

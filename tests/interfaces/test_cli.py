@@ -889,6 +889,13 @@ def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None
     assert "series workload" in rendered
     # One game per cell, cut off at the four-ply limit this fixture declares.
     assert rendered.count("unfinished     1 at the ply limit") == 2
+    # Repertoire, waypoint rate, and book depth are separate lines because they
+    # answer separate questions: which opening, how far, and how far it could
+    # have gone.
+    assert "repertoire     " in rendered
+    assert "waypoints      " in rendered
+    assert "book depth     " in rendered
+    assert "available plies" in rendered
     assert "Recorded: nothing" in rendered
     assert max(len(line) for line in rendered.splitlines()) <= 120
 

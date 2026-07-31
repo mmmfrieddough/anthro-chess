@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         RolloutBenchmarkResult,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
+    from anthro_chess.evaluation.rollout import RolloutReading
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -1331,7 +1332,18 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                     f"distinct games, {distribution.mean_distinct_move_fraction:.3f} "
                     "distinct moves"
                 ),
-                f"  openings       {_counts(distribution.opening_counts, limit=5)}",
+                f"  repertoire     {_counts(distribution.repertoire_counts, limit=5)}",
+                (
+                    f"  waypoints      "
+                    f"{distribution.waypoint_game_rate:.3f} of games stopped "
+                    "before choosing"
+                ),
+                (
+                    f"  book depth     {distribution.mean_book_ply:.1f} of "
+                    f"{distribution.mean_available_ply:.1f} available plies "
+                    f"({distribution.mean_consumed_fraction:.3f} consumed) over "
+                    f"{distribution.classified_games} named game(s)"
+                ),
             ]
         )
     for reading in result.readings:
@@ -1384,6 +1396,9 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 f"  floor qualifies a delta; seed range is each of {replicates} "
                 f"seeds read alone on {1 / replicates:.0%} of the games"
             )
+        lines.extend(_render_unavailable(reading))
+        lines.extend(_render_repertoire_drilldown(reading))
+        lines.extend(_render_exact_repertoire(reading))
     if result.recorded_paths:
         lines.extend(
             ["", f"Recorded: {len(result.recorded_paths)} result(s)"],
@@ -1392,6 +1407,82 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
+
+
+#: Categories the repertoire drill-down shows. Enough to see where the mass
+#: went without turning a summary into the whole distribution, which lives in
+#: the detail tier.
+_DRILLDOWN_CATEGORIES = 8
+
+
+def _render_unavailable(reading: RolloutReading) -> list[str]:
+    """Name the quantities nothing could be compared on, and why."""
+
+    if not reading.unavailable:
+        return []
+    return [
+        f"  unavailable    {quantity.value}: {reason}"
+        for quantity, reason in sorted(reading.unavailable.items())
+    ]
+
+
+def _render_repertoire_drilldown(reading: RolloutReading) -> list[str]:
+    """Show the largest repertoire categories with their mass beside the delta.
+
+    Family granularity is uneven — the broadest family holds a few hundred lines
+    and the median holds a handful — so a delta read without the category's mass
+    invites treating a swing on a narrow line as the same finding as one on a
+    family half the corpus plays.
+    """
+
+    from anthro_chess.evaluation.reference import ComparedQuantity
+
+    comparison = reading.comparisons.get(ComparedQuantity.REPERTOIRE)
+    if comparison is None:
+        return []
+    shares = comparison.category_shares()[:_DRILLDOWN_CATEGORIES]
+    if not shares:
+        return []
+    lines = [
+        "  repertoire by family",
+        f"    {'family':<40}{'mass':>8}{'model':>8}{'delta':>9}",
+    ]
+    lines.extend(
+        f"    {share.category[:40]:<40}{share.mass:>8.3f}"
+        f"{share.model:>8.3f}{share.delta:>+9.3f}"
+        for share in shares
+    )
+    return lines
+
+
+def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
+    """Report the exactly enumerated repertoire beside its pruning bound.
+
+    The bound is not decoration. The walk is exact only above its threshold, so
+    a distance quoted without the mass that stopped being expanded is a
+    precision claim the reading does not support.
+    """
+
+    exact = reading.exact
+    if exact is None:
+        return []
+    return [
+        (
+            f"  exact repertoire to {exact.plies} plies "
+            f"(threshold {exact.threshold:g}, series "
+            f"{exact.execution.workload_sha256[:12]})"
+        ),
+        (
+            f"    conditional {exact.conditional_distance:.4f}  "
+            f"pooled {exact.pooled_distance:.4f}  "
+            f"waypoints {exact.waypoint_mass:.3f}"
+        ),
+        (
+            f"    reached ply {exact.deepest_expanded_ply} of {exact.plies}; "
+            f"uncommitted mass at most {exact.unsettled_mass:.3f} "
+            f"({exact.pruned_mass:.3f} pruned in all)"
+        ),
+    ]
 
 
 def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
