@@ -236,10 +236,17 @@ user changes and do not stage them into the issue commit.
 
 ### Claiming Active Work
 
-After the isolated issue worktree is ready and before substantive editing,
-claim the issue in GitHub so another agent does not select the same task. Assign
-the issue to the configured GitHub identity and add one concise comment that
-identifies the agent and, when available, its stable session link or identifier:
+Claim the issue in GitHub as soon as the selection is final, before creating the
+worktree and before reading implementation code, so another agent does not
+select the same task. Claiming is two cheap API calls; creating a worktree and
+installing dependencies is not, and every second spent on setup beforehand is a
+window for a parallel session to choose the same issue. Claiming first also
+surfaces an authentication or permission failure immediately rather than after
+the environment is built.
+
+Assign the issue to the configured GitHub identity and add one concise comment
+that identifies the agent and, when available, its stable session link or
+identifier:
 
 ```text
 Claimed for implementation by <agent-name>.
@@ -382,9 +389,13 @@ the diff and merges it when satisfied; a separate formal approval is not
 required when repository rules allow the pull-request author to merge their
 own work.
 
-Use the configured Git and GitHub identities for commits and publication. Do
-not invent a bot identity or add AI-attribution trailers or footers unless the
-user requests them or the repository adopts an explicit attribution policy.
+Use the configured Git and GitHub identities for commits and publication, and do
+not invent a bot identity. Authorship stays with the maintainer.
+
+AI-attribution trailers and footers are acceptable. Several agent harnesses add
+them automatically, so a rule against them would be contradicted on every commit
+and leaves the agent resolving a conflict it cannot win. Leave whatever the
+harness adds in place.
 
 Before ending the session, leave GitHub in a useful review state:
 
