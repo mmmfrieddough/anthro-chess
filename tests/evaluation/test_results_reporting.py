@@ -21,6 +21,8 @@ from anthro_chess.evaluation.results import (
     FamilyReport,
     FloorEntry,
     MetricDelta,
+    MetricDirection,
+    MetricFamily,
     Movement,
     NoiseFloor,
     NoiseFloorIndex,
@@ -41,6 +43,12 @@ from anthro_chess.evaluation.results import (
     render_provenance,
     render_report,
     series_fingerprint,
+)
+from anthro_chess.evaluation.results.reporting import (
+    MAXIMUM_LINE_WIDTH,
+    MAXIMUM_METRIC_COLUMN_WIDTH,
+    MINIMUM_METRIC_COLUMN_WIDTH,
+    CheckpointSelection,
 )
 
 ResultFactory = Callable[..., ResultEnvelope]
@@ -1017,3 +1025,105 @@ def test_the_default_text_view_stays_readable(
     # have metrics but no result in this fixture; a family gets its own
     # actionable absence section as soon as it has a metric to be absent.
     assert len(rendered.splitlines()) <= 32
+
+
+def _width_report(*identifiers: str) -> DeltaReport:
+    """Build a report whose rows carry exactly the given identifiers.
+
+    Assembled directly rather than measured, because the property under test
+    belongs to the renderer: what the column has to do is hold whatever
+    identifiers it is handed, including ones no benchmark has registered yet.
+    """
+
+    rows = tuple(
+        MetricDelta(
+            metric=identifier,
+            family="legality",
+            direction=MetricDirection.LOWER_IS_BETTER,
+            baseline=0.5,
+            current=0.4,
+            delta=-0.1,
+            comparability=Comparability.SAME_SERIES,
+            movement=Movement.BETTER,
+            noise=NoiseVerdict.NOT_APPLICABLE,
+            noise_floor=None,
+            noise_floor_kind=None,
+            noise_floors=(),
+            bridges=(),
+            note=None,
+        )
+        for identifier in identifiers
+    )
+    return DeltaReport(
+        baseline=CheckpointSelection(
+            label="checkpoint-a", recorded_at=BASELINE_AT, results=1
+        ),
+        current=CheckpointSelection(
+            label="checkpoint-b", recorded_at=CURRENT_AT, results=1
+        ),
+        families=(
+            FamilyReport(
+                family=MetricFamily(
+                    identifier="legality",
+                    title="Legality",
+                    summary="fixture family",
+                ),
+                series=(SeriesGroup(workload=None, label=None, metrics=rows),),
+                absence=None,
+            ),
+        ),
+        provenance=(),
+    )
+
+
+def _header(rendered: str) -> str:
+    return next(
+        line for line in rendered.splitlines() if line.lstrip().startswith("metric ")
+    )
+
+
+def test_a_long_identifier_does_not_push_its_row_out_of_alignment() -> None:
+    """The column widens to the longest name present, header included.
+
+    Every column right of the identifier shifts on an overflowing row, so the
+    default view stops scanning cleanly exactly where a reader is comparing
+    numbers down a column.
+    """
+
+    rendered = render_report(
+        _width_report(
+            "legality.mask_penalty",
+            "x" * MAXIMUM_METRIC_COLUMN_WIDTH,
+        )
+    )
+
+    # The direction column is the first thing right of the identifier, so it is
+    # where a shifted row shows up first.
+    directions = {
+        line.index("lower") for line in rendered.splitlines() if "lower" in line
+    }
+
+    assert directions == {_header(rendered).index("better")}
+
+
+def test_the_widest_permitted_identifier_still_fits_the_line() -> None:
+    """The registry's budget is exactly what keeps the header on one line."""
+
+    rendered = render_report(_width_report("x" * MAXIMUM_METRIC_COLUMN_WIDTH))
+
+    assert len(_header(rendered)) == MAXIMUM_LINE_WIDTH
+
+
+def test_short_identifiers_keep_the_column_at_its_minimum() -> None:
+    """A report of short names keeps the table's usual shape.
+
+    Sizing from what is present is about making room, not about reflowing the
+    common report to whichever family happens to be selected.
+    """
+
+    rendered = render_report(_width_report("legality.legal_mass"))
+
+    indent, separator = len("  "), len(" ")
+    assert _header(rendered).index("better") == (
+        indent + MINIMUM_METRIC_COLUMN_WIDTH + separator
+    )

@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -654,6 +655,32 @@ def test_eval_metrics_lists_the_registry(
     )
     assert efficiency["metrics"]
     assert all(metric["execution_sensitive"] for metric in efficiency["metrics"])
+
+
+def test_eval_metrics_aligns_every_family_on_one_column(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The listing is read top to bottom, so its column spans the families.
+
+    Sizing per family would let a family of short names print a narrower table
+    than the one above it, which reads as a different table rather than as the
+    rest of the same one.
+    """
+
+    assert main(["eval", "metrics"]) == 0
+
+    rendered = capsys.readouterr().out
+    # Where the direction column starts on each metric row. It is the first
+    # thing right of the identifier, so a row that outgrew the column shows up
+    # here first. Matching on a dotted first token skips the family headings
+    # and the line a family with no metric yet prints.
+    directions = {
+        match.end()
+        for line in rendered.splitlines()
+        if (match := re.match(r"  \S+\.\S+ +", line)) is not None
+    }
+
+    assert len(directions) == 1
 
 
 def test_eval_budget_reports_quality_against_the_training_budget(

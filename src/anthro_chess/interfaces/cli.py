@@ -2500,6 +2500,7 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
         ResultsStore,
         ResultsStoreError,
         build_characterization,
+        metric_column_width,
         metric_definition,
         replicate_floors,
         resolve_store_root,
@@ -2575,10 +2576,14 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
         f"Characterized {arguments.kind} noise over {len(labels)} replicate(s) "
         f"for {len(characterization.floors)} metric(s)."
     )
+    width = metric_column_width(
+        [entry.metric for entry in characterization.floors]
+        + [metric for metric, _ in skipped]
+    )
     for entry in characterization.floors:
-        print(f"  {entry.metric:<44} floor {entry.floor:.6g}")
+        print(f"  {entry.metric:<{width}} floor {entry.floor:.6g}")
     for metric, reason in skipped:
-        print(f"  {metric:<44} skipped: {reason}")
+        print(f"  {metric:<{width}} skipped: {reason}")
     print(f"Recorded: {path}")
     return 0
 
@@ -2603,6 +2608,7 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
         NoiseCharacterizationError,
         ResultsStore,
         ResultsStoreError,
+        metric_column_width,
         resolve_store_root,
     )
 
@@ -2663,6 +2669,7 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
         f"{len(characterization.floors)} metric(s)."
     )
     print(f"Valid on: {execution.environment_label()}")
+    width = metric_column_width(entry.metric for entry in characterization.floors)
     for entry in characterization.floors:
         within = (
             ""
@@ -2670,7 +2677,7 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
             else f"  in-process {entry.within_process_dispersion:.6g}"
         )
         print(
-            f"  {entry.metric:<44} floor {entry.floor:.6g}  "
+            f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
             f"dispersion {entry.dispersion:.6g}{within}"
         )
     print(f"Recorded: {path}")
@@ -2687,6 +2694,7 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
         ExecutionNoiseError,
         sample_execution_noise,
     )
+    from anthro_chess.evaluation.results import metric_column_width
 
     repeats = DEFAULT_REPEATS if arguments.repeats is None else arguments.repeats
     try:
@@ -2712,9 +2720,10 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
         f"{sample.execution.environment_label()}"
     )
     print(f"{len(sample.readings)} reading(s) in this process, recorded nowhere:")
+    width = metric_column_width(sample.readings[0])
     for metric in sorted(sample.readings[0]):
         values = "  ".join(f"{reading[metric]:.6g}" for reading in sample.readings)
-        print(f"  {metric:<44} {values}")
+        print(f"  {metric:<{width}} {values}")
     return 0
 
 
@@ -2771,6 +2780,7 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         ResultsStore,
         ResultsStoreError,
+        metric_column_width,
         resolve_store_root,
     )
 
@@ -2793,6 +2803,9 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
     if not characterizations:
         print("No noise characterization is recorded.")
         return 0
+    width = metric_column_width(
+        entry.metric for record in characterizations for entry in record.floors
+    )
     for record in characterizations:
         processes = (
             "" if record.processes is None else f" in {record.processes} process(es)"
@@ -2816,7 +2829,7 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
                 else f"  in-process {entry.within_process_dispersion:.6g}"
             )
             print(
-                f"  {entry.metric:<44} floor {entry.floor:.6g}  "
+                f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
                 f"dispersion {entry.dispersion:.6g}{units}{within}"
             )
     return 0
@@ -2920,19 +2933,29 @@ def _run_eval_budget(arguments: argparse.Namespace) -> int:
 
 
 def _run_eval_metrics(arguments: argparse.Namespace) -> int:
-    from anthro_chess.evaluation.results import iter_registry, registry_record
+    from anthro_chess.evaluation.results import (
+        iter_registry,
+        metric_column_width,
+        registry_record,
+    )
 
     if arguments.format == "json":
         print(json.dumps(registry_record(), indent=2, sort_keys=True))
         return 0
-    for family, metrics in iter_registry():
+    registry = list(iter_registry())
+    # One width across every family, because the listing is read top to bottom
+    # as a single table rather than as one table per family.
+    width = metric_column_width(
+        metric.identifier for _, metrics in registry for metric in metrics
+    )
+    for family, metrics in registry:
         print(f"{family.identifier}  {family.title}")
         if not metrics:
             print("  no metric is registered for this family yet")
         for metric in metrics:
             projection = metric.projection or "no data dependency"
             print(
-                f"  {metric.identifier:<44} {metric.direction.value:<18} "
+                f"  {metric.identifier:<{width}} {metric.direction.value:<18} "
                 f"v{metric.definition_version}  {metric.cost.value:<14} "
                 f"{projection}"
             )

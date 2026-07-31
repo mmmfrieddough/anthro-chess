@@ -142,24 +142,45 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
 
 def test_cold_start_is_reported_apart_from_steady_state_latency(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     inference_run: Callable[..., Path],
 ) -> None:
     """Loading and first-call warmup must not inflate the percentiles.
 
     A benchmark that folded them in would report a checkpoint as slow to play
     with when it is only slow to start, and the two have different fixes.
+
+    The startup cost is injected rather than measured. Loading this fixture
+    checkpoint and deciding one move are both a few milliseconds on an idle
+    machine, and which of the two comes out larger is a property of what else
+    the machine is doing rather than of the benchmark, so comparing them
+    ambiently decides which piece of noise won.
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=6)
+    delay_seconds = 0.05
+    real_decide = inference_module._decide
+    served = 0
+
+    def slow_first_decision(session: GameSession) -> None:
+        nonlocal served
+        if served == 0:
+            served += 1
+            time.sleep(delay_seconds)
+        real_decide(session)
+
+    monkeypatch.setattr(inference_module, "_decide", slow_first_decision)
 
     result = benchmark_inference(_config(checkpoint))
 
-    load_ms = result.cold_start.model_load_seconds * 1000.0
-    assert result.reference_latency.maximum_ms < load_ms
-    assert (
-        result.cold_start.first_decision_seconds * 1000.0
-        >= result.reference_latency.minimum_ms
-    )
+    delay_ms = delay_seconds * 1000.0
+    assert served == 1
+    # The cold reading carries the startup cost the first decision paid.
+    assert result.cold_start.first_decision_seconds * 1000.0 >= delay_ms
+    # The steady-state percentiles do not, which is the whole separation.
+    assert result.reference_latency.maximum_ms < delay_ms
+    # Loading is still reported, on its own, as the other half of cold start.
+    assert result.cold_start.model_load_seconds > 0.0
 
 
 def test_warmup_decisions_are_excluded_from_the_percentiles(
