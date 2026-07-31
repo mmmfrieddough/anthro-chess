@@ -8,6 +8,7 @@ import random
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,10 @@ from anthro_chess.data.artifacts import (
 from anthro_chess.evaluation import MoveValidationMetrics, evaluate_move_model
 from anthro_chess.evaluation.results import (
     CheckpointReference,
+    ConfigurationReference,
+    DetailReference,
+    DetailStore,
+    ExecutionRecord,
     ResultsStore,
     configuration_reference,
     default_checkpoint_label,
@@ -58,6 +63,18 @@ from anthro_chess.training.devices import (
     DeviceError,
     resolve_training_device,
 )
+from anthro_chess.training.efficiency import (
+    DeferredStepTotals,
+    TrainingEfficiencyError,
+    TrainingEfficiencyMonitor,
+    TrainingEfficiencySummary,
+    record_efficiency,
+    workload_record,
+    write_efficiency_detail,
+)
+from anthro_chess.training.efficiency import (
+    execution_record as efficiency_execution_record,
+)
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import masked_action_cross_entropy
 from anthro_chess.training.tensorboard import (
@@ -65,7 +82,7 @@ from anthro_chess.training.tensorboard import (
     TrainingTensorBoard,
 )
 
-RUN_ARTIFACT_VERSION = 4
+RUN_ARTIFACT_VERSION = 5
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +102,9 @@ class TrainingResult:
     final_parameter_sha256: str
     validation: MoveValidationMetrics | None
     readings: tuple[CadenceReading, ...] = ()
+    efficiency: TrainingEfficiencySummary | None = None
+    efficiency_paths: tuple[Path, ...] = ()
+    efficiency_detail_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,12 +119,54 @@ class _OptimizationResult:
     checkpoint_path: Path
     readings: tuple[CadenceReading, ...]
     instrumentation_seconds: float
+    efficiency_paths: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class _EfficiencyRecorder:
+    """How a run writes what it cost, at a cadence and at the end.
+
+    An intermediate reading exists so a budget report has more than one point
+    per run. Without it, quality against processed positions would be a curve
+    of one point per training run, which answers nothing about where in a run
+    the returns fell off.
+    """
+
+    monitor: TrainingEfficiencyMonitor
+    execution: ExecutionRecord
+    configuration: ConfigurationReference | None
+    store: ResultsStore | None
+    record_at_cadence: bool
+
+    def record(
+        self,
+        *,
+        checkpoint: CheckpointReference,
+        processed_positions: int,
+        detail: DetailReference | None = None,
+    ) -> tuple[Path, ...]:
+        """Append one efficiency reading for the parameters named."""
+
+        summary = self.monitor.summary(processed_positions=processed_positions)
+        try:
+            _, paths = record_efficiency(
+                summary,
+                checkpoint=checkpoint,
+                execution=self.execution,
+                store=self.store,
+                configuration=self.configuration,
+                detail=detail,
+            )
+        except TrainingEfficiencyError as error:
+            raise TrainingError(str(error)) from error
+        return paths
 
 
 def run_training(
     resolved_config: ResolvedConfig[TrainingConfig],
     *,
     store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
 ) -> TrainingResult:
     """Run a bounded optimization on the resolved device and write provenance.
 
@@ -113,8 +175,14 @@ def run_training(
     somebody meant to keep.
     """
 
+    run_started = time.perf_counter()
     config = resolved_config.value
     device = _training_device(config)
+    efficiency_monitor = TrainingEfficiencyMonitor(
+        config.efficiency,
+        device=device,
+        started=run_started,
+    )
     logger.info(
         "Starting training on %s for %s optimizer step(s)",
         device.type,
@@ -240,21 +308,44 @@ def run_training(
                 fallback_seed=config.seed,
             )
 
+        configuration = configuration_reference(
+            resolved_config.as_record(),
+            source=resolved_config.provenance.source,
+            overrides=resolved_config.provenance.overrides,
+        )
         schedule = prepare_schedule(
             config.evaluation,
             config.validation,
-            configuration=configuration_reference(
-                resolved_config.as_record(),
-                source=resolved_config.provenance.source,
-                overrides=resolved_config.provenance.overrides,
-            ),
+            configuration=configuration,
             store=store if config.evaluation.record else None,
+        )
+        efficiency_recorder = _EfficiencyRecorder(
+            monitor=efficiency_monitor,
+            execution=efficiency_execution_record(
+                workload_record(
+                    dataset_sha256=str(train.provenance["dataset_sha256"]),
+                    loader_configuration_sha256=str(
+                        train.provenance["loader_configuration_sha256"]
+                    ),
+                    model_identity=model_identity,
+                    batch_size=train.loader.config.batch_size,
+                    gradient_accumulation_steps=config.gradient_accumulation_steps,
+                    determinism=config.determinism,
+                    profile_phases=config.profile_phases,
+                ),
+                device=device,
+                precision=config.precision,
+            ),
+            configuration=configuration,
+            store=store if config.efficiency.record else None,
+            record_at_cadence=config.efficiency.record_at_cadence,
         )
 
         initial_parameter_sha256 = parameter_sha256(model)
         if resumed_from is None:
             clear_latest_checkpoint(output_directory)
         _prepare_metrics(metrics_path, through_step=starting_step)
+        efficiency_monitor.begin_optimization(starting_step=starting_step)
         optimization = _optimize(
             model,
             optimizer,
@@ -273,6 +364,7 @@ def run_training(
             checkpoint_metadata=checkpoint_metadata,
             schedule=schedule,
             run_id=output_directory.name,
+            efficiency=efficiency_recorder,
         )
         _synchronize_device(device)
         final_parameter_sha256 = parameter_sha256(model)
@@ -281,13 +373,44 @@ def run_training(
 
         if validation is not None:
             logger.info("Running validation")
+            validation_started = time.perf_counter()
             validation_metrics = evaluate_move_model(
                 model,
                 validation.loader,
                 device=device,
             )
+            efficiency_monitor.charge_validation(
+                time.perf_counter() - validation_started
+            )
         else:
             validation_metrics = None
+
+        final_checkpoint = CheckpointReference(
+            label=default_checkpoint_label(output_directory.name, config.steps),
+            step=config.steps,
+            run_id=output_directory.name,
+            parameter_sha256=final_parameter_sha256,
+        )
+        efficiency_summary = efficiency_monitor.summary(
+            processed_positions=optimization.processed_positions,
+        )
+        efficiency_detail_paths: list[Path] = []
+        recorded_at = datetime.now(tz=UTC)
+        efficiency_detail = write_efficiency_detail(
+            detail,
+            checkpoint=final_checkpoint,
+            recorded_at=recorded_at,
+            payload=efficiency_summary.as_record(),
+            paths=efficiency_detail_paths,
+        )
+        efficiency_paths = (
+            *optimization.efficiency_paths,
+            *efficiency_recorder.record(
+                checkpoint=final_checkpoint,
+                processed_positions=optimization.processed_positions,
+                detail=efficiency_detail,
+            ),
+        )
         run_record = {
             "version": RUN_ARTIFACT_VERSION,
             "resolved_config": resolved_config.as_record(),
@@ -328,6 +451,12 @@ def run_training(
                 ],
                 "instrumentation_seconds": optimization.instrumentation_seconds,
             },
+            "efficiency": {
+                **efficiency_summary.as_record(),
+                "workload_sha256": efficiency_recorder.execution.workload_sha256,
+                "recorded": [str(path) for path in efficiency_paths],
+                "detail": [str(path) for path in efficiency_detail_paths],
+            },
         }
         run_path.write_text(
             json.dumps(run_record, indent=2, sort_keys=True) + "\n",
@@ -357,6 +486,9 @@ def run_training(
         final_parameter_sha256=final_parameter_sha256,
         validation=validation_metrics,
         readings=optimization.readings,
+        efficiency=efficiency_summary,
+        efficiency_paths=efficiency_paths,
+        efficiency_detail_paths=tuple(efficiency_detail_paths),
     )
 
 
@@ -379,19 +511,21 @@ def _optimize(
     checkpoint_metadata: Mapping[str, object],
     schedule: CadenceSchedule,
     run_id: str,
+    efficiency: _EfficiencyRecorder,
 ) -> _OptimizationResult:
     model.train()
-    start_time = time.perf_counter()
+    monitor = efficiency.monitor
     saved_checkpoint: Path | None = None
-    measured_positions = 0
     data_seconds = 0.0
     transfer_seconds = 0.0
     compute_seconds = 0.0
     health_monitor = StepHealthMonitor(model.parameters())
+    charged_instrumentation = 0.0
     readings: list[CadenceReading] = []
-    evaluation_seconds = 0.0
-    peak_sampled_allocated_memory_bytes = _allocated_memory_bytes(device)
-    peak_sampled_driver_memory_bytes = _driver_allocated_memory_bytes(device)
+    efficiency_paths: list[Path] = []
+    totals = DeferredStepTotals(device)
+    interval_start_step = starting_step + 1
+    interval_positions = 0
     purge_step = starting_step + 1 if starting_step > 0 else None
     with (
         TrainingTensorBoard(
@@ -401,9 +535,27 @@ def _optimize(
         metrics_path.open("a", encoding="utf-8") as metrics_file,
     ):
         for global_step in range(starting_step + 1, steps + 1):
+            # Everything that decides how a step is instrumented is resolved
+            # before it runs. A probe step has to know it is one before its
+            # first micro-batch, and a step that draws its arm afterwards would
+            # already have skipped the synchronization being measured.
+            due = schedule.due(global_step)
+            reported = (
+                global_step % log_every_steps == 0 or global_step == steps or bool(due)
+            )
+            saving = global_step % checkpoint_every_steps == 0 or global_step == steps
+            draining = reported or saving
+            if not monitor.interval_open:
+                monitor.begin_interval(global_step)
+            # The whole interval shares an arm. A step that drew its own would
+            # skip the synchronization being measured before the draw, and its
+            # neighbours would absorb the device work it deferred.
+            probe = monitor.interval_probing
+            in_window = monitor.interval_in_window
+
+            monitor.begin_step()
+            totals.begin_step()
             optimizer.zero_grad(set_to_none=True)
-            accumulated_loss = 0.0
-            step_positions = 0
             for _ in range(gradient_accumulation_steps):
                 data_started = time.perf_counter()
                 try:
@@ -436,22 +588,19 @@ def _optimize(
                     batch.action_targets,
                     batch.action_loss_mask,
                 )
-                if not torch.isfinite(loss):
-                    raise TrainingError(
-                        f"move loss is not finite at global step {global_step}"
-                    )
                 (loss / gradient_accumulation_steps).backward()
                 if profile_phases:
                     _synchronize_device(device)
                 compute_seconds += time.perf_counter() - compute_started
-                positions = int(batch.action_loss_mask.sum().item())
-                step_positions += positions
-                accumulated_loss += float(loss.detach().item())
+                totals.observe(
+                    loss,
+                    batch.action_loss_mask,
+                    window=in_window,
+                    probe=probe,
+                )
+                if probe:
+                    totals.synchronize()
 
-            due = schedule.due(global_step)
-            reported = (
-                global_step % log_every_steps == 0 or global_step == steps or bool(due)
-            )
             health_monitor.observe_gradients()
             if reported:
                 health_monitor.snapshot_parameters()
@@ -462,50 +611,72 @@ def _optimize(
                 _synchronize_device(device)
             compute_seconds += time.perf_counter() - compute_started
             health_monitor.observe_update()
-            processed_positions += step_positions
-            measured_positions += step_positions
-            peak_sampled_allocated_memory_bytes = _maximum_optional(
-                peak_sampled_allocated_memory_bytes,
-                _allocated_memory_bytes(device),
+            totals.end_step()
+            # Both drains stay inside the timed span. They are where the
+            # interval's queued device work is finally paid for, and timing an
+            # interval without them would report the enqueue rather than the
+            # work. Their cost is charged to instrumentation, not to training.
+            health: StepHealth | None = (
+                health_monitor.drain(global_step) if reported else None
             )
-            peak_sampled_driver_memory_bytes = _maximum_optional(
-                peak_sampled_driver_memory_bytes,
-                _driver_allocated_memory_bytes(device),
+            charged_instrumentation = _charge_instrumentation(
+                monitor,
+                health_monitor,
+                charged_instrumentation,
             )
-            epoch = loader.state().epoch
+            padded_positions = totals.padded_positions
+            drained = totals.drain() if draining else None
+            monitor.end_step()
 
-            health: StepHealth | None = None
+            average_loss: float | None = None
+            if drained is not None:
+                if not drained.finite:
+                    raise TrainingError(
+                        "move loss is not finite between global steps "
+                        f"{interval_start_step} and {global_step}; the deferred "
+                        "loss read-back reports the interval rather than the "
+                        "exact step"
+                    )
+                interval_positions = drained.active_positions
+                processed_positions += drained.active_positions
+                monitor.close_interval(drained, padded_positions=padded_positions)
+                average_loss = drained.final_step_loss_sum / gradient_accumulation_steps
+                interval_start_step = global_step + 1
+
+            epoch = loader.state().epoch
             if reported:
-                _synchronize_device(device)
-                health = health_monitor.drain(global_step)
-                elapsed = max(time.perf_counter() - start_time, 1e-12)
-                average_loss = accumulated_loss / gradient_accumulation_steps
+                assert average_loss is not None  # a reported step always drains
+                report_started = time.perf_counter()
                 learning_rate = float(optimizer.param_groups[0]["lr"])
-                # Throughput has to describe training, so time spent inside a
-                # cadence reading comes out of the denominator. Leaving it in
-                # would report a run as several times slower for no reason
-                # other than that it measured itself on the way past.
-                training_seconds = max(elapsed - evaluation_seconds, 1e-12)
-                positions_per_second = measured_positions / training_seconds
+                summary = monitor.summary(processed_positions=processed_positions)
                 record: dict[str, object] = {
                     "record": "step",
                     "global_step": global_step,
                     "epoch": epoch,
                     "move_loss": average_loss,
                     "learning_rate": learning_rate,
-                    "batch_positions": step_positions,
+                    # The logging interval's active positions, not one step's.
+                    # A per-step count would need a device read-back on every
+                    # step, which is the cost the deferred totals exist to
+                    # avoid, so the field says which quantity it carries.
+                    "interval_active_positions": interval_positions,
                     "processed_positions": processed_positions,
-                    "positions_per_second": positions_per_second,
-                    "elapsed_seconds": elapsed,
-                    "evaluation_seconds": evaluation_seconds,
+                    # Steady state, so it is null until the window opens. The
+                    # figure that included warmup answered a different question
+                    # and drifted for the whole run.
+                    "positions_per_second": summary.active_positions_per_second,
+                    "elapsed_seconds": summary.run_seconds,
+                    "training_seconds": summary.training_seconds,
+                    "evaluation_seconds": summary.evaluation_seconds,
+                    "checkpoint_seconds": summary.checkpoint_seconds,
                     "data_seconds": data_seconds if profile_phases else None,
                     "transfer_seconds": (transfer_seconds if profile_phases else None),
                     "compute_seconds": compute_seconds if profile_phases else None,
                     "peak_sampled_allocated_memory_bytes": (
-                        peak_sampled_allocated_memory_bytes
+                        monitor.peak_allocated_memory_bytes
                     ),
                     "peak_sampled_driver_memory_bytes": (
-                        peak_sampled_driver_memory_bytes
+                        monitor.peak_driver_memory_bytes
                     ),
                     "training_health": (
                         health.as_record() if health is not None else None
@@ -527,7 +698,12 @@ def _optimize(
                 logger.info(
                     f"step={global_step} move_loss={average_loss:.6f} "
                     f"lr={learning_rate:.6g} positions={processed_positions} "
-                    f"positions_per_second={positions_per_second:.2f}"
+                    f"positions_per_second="
+                    f"{_render_throughput(summary.active_positions_per_second)}"
+                )
+                monitor.charge(
+                    time.perf_counter() - report_started,
+                    kind="instrumentation",
                 )
             if due:
                 # One reference for every entry firing here: an in-training
@@ -549,7 +725,7 @@ def _optimize(
                         health=health,
                     )
                     readings.append(reading)
-                    evaluation_seconds += reading.seconds
+                    monitor.charge(reading.seconds, kind="evaluation")
                     metrics_file.write(
                         json.dumps(
                             reading.as_record(),
@@ -560,7 +736,17 @@ def _optimize(
                     )
                     metrics_file.flush()
                     tensorboard.write_evaluation(reading)
-            if global_step % checkpoint_every_steps == 0 or global_step == steps:
+                if efficiency.record_at_cadence:
+                    # The budget point a quality-versus-time report joins to
+                    # the preview reading just taken, under the same label.
+                    efficiency_paths.extend(
+                        efficiency.record(
+                            checkpoint=measured,
+                            processed_positions=processed_positions,
+                        )
+                    )
+            if saving:
+                checkpoint_started = time.perf_counter()
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
                 save_training_checkpoint(
                     saved_checkpoint,
@@ -575,6 +761,10 @@ def _optimize(
                     metadata=checkpoint_metadata,
                     device=device,
                 )
+                monitor.charge(
+                    time.perf_counter() - checkpoint_started,
+                    kind="checkpoint",
+                )
                 logger.info("Saved checkpoint at optimizer step %s", global_step)
     if saved_checkpoint is None:
         raise TrainingError("training completed without saving a checkpoint")
@@ -583,32 +773,38 @@ def _optimize(
         checkpoint_path=saved_checkpoint,
         readings=tuple(readings),
         instrumentation_seconds=health_monitor.instrumentation_seconds,
+        efficiency_paths=tuple(efficiency_paths),
     )
 
 
+def _charge_instrumentation(
+    monitor: TrainingEfficiencyMonitor,
+    health_monitor: StepHealthMonitor,
+    charged: float,
+) -> float:
+    """Charge the health monitor's new instrumentation time to this step.
+
+    The monitor reports a running total, so the step owns the increment. Left
+    uncharged, a run that measures its own gradients would report itself as
+    slower at training than one that does not.
+    """
+
+    total = health_monitor.instrumentation_seconds
+    monitor.charge_step_overhead(max(total - charged, 0.0), kind="instrumentation")
+    return total
+
+
+def _render_throughput(value: float | None) -> str:
+    """Render steady-state throughput, which is absent during warmup."""
+
+    return "warmup" if value is None else f"{value:.2f}"
+
+
 def _synchronize_device(device: torch.device) -> None:
-    if device.type == "mps":
+    if device.type == "mps":  # pragma: no cover - no MPS in the CPU suite
         torch.mps.synchronize()
-
-
-def _allocated_memory_bytes(device: torch.device) -> int | None:
-    if device.type == "mps":
-        return int(torch.mps.current_allocated_memory())
-    return None
-
-
-def _driver_allocated_memory_bytes(device: torch.device) -> int | None:
-    if device.type == "mps":
-        return int(torch.mps.driver_allocated_memory())
-    return None
-
-
-def _maximum_optional(current: int | None, observed: int | None) -> int | None:
-    if current is None:
-        return observed
-    if observed is None:
-        return current
-    return max(current, observed)
+    elif device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
+        torch.cuda.synchronize(device)
 
 
 def _prepare_metrics(path: Path, *, through_step: int) -> None:
@@ -650,6 +846,7 @@ def _compatibility_record(
         exclude={
             "checkpoint_every_steps",
             "device",
+            "efficiency",
             "evaluation",
             "log_every_steps",
             "model",

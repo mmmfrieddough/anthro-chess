@@ -16,6 +16,7 @@ from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
 from anthro_chess.evaluation.results import ResultsStore
+from anthro_chess.evaluation.results.budget import build_budget_report
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
     TrainingConfig,
@@ -68,7 +69,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     assert all(
         record["learning_rate"] == pytest.approx(0.003) for record in metric_records
     )
-    assert all(record["batch_positions"] == 26 for record in metric_records)
+    assert all(record["interval_active_positions"] == 26 for record in metric_records)
 
     run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
     assert run_record["resolved_config"] == resolved.as_record()
@@ -180,7 +181,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     }
 
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
-    assert run_record["version"] == 4
+    assert run_record["version"] == 5
     assert run_record["optimization"]["starting_step"] == 2
     assert run_record["optimization"]["processed_positions"] == 104
     assert run_record["optimization"]["resumed_from"] == str(
@@ -443,7 +444,7 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
         for line in result.metrics_path.read_text(encoding="utf-8").splitlines()
     ]
     assert [record["processed_positions"] for record in records] == [52, 104]
-    assert all(record["batch_positions"] == 52 for record in records)
+    assert all(record["interval_active_positions"] == 52 for record in records)
     assert all(record["data_seconds"] >= 0.0 for record in records)
     assert all(record["transfer_seconds"] >= 0.0 for record in records)
     assert all(record["compute_seconds"] >= 0.0 for record in records)
@@ -556,11 +557,27 @@ maximum_games = 2
     assert {envelope.kind for envelope in recorded} == {
         "held-out-preview",
         "training-health",
+        "training-efficiency",
     }
     assert {envelope.checkpoint.label for envelope in recorded} == {
         "run-step-00000002",
         "run-step-00000004",
     }
+    # Every cadence firing leaves a budget point under the same label as the
+    # preview taken beside it, which is the join a budget report reads.
+    efficiency = [item for item in recorded if item.kind == "training-efficiency"]
+    assert {item.checkpoint.label for item in efficiency} == {
+        "run-step-00000002",
+        "run-step-00000004",
+    }
+    budget = build_budget_report(recorded)
+    assert [point.checkpoint for point in budget.points] == [
+        "run-step-00000002",
+        "run-step-00000004",
+    ]
+    assert budget.points[0].processed_positions < budget.points[1].processed_positions
+    assert budget.points[0].training_seconds < budget.points[1].training_seconds
+    assert budget.points[0].view == "preview-small"
     # A preview reads the validation split, so it can never score a game the
     # training loop consumed.
     preview = next(item for item in recorded if item.kind == "held-out-preview")
@@ -686,6 +703,10 @@ def test_reported_throughput_excludes_the_time_a_cadence_spent_measuring(
         validation_split="validation",
         steps=4,
         extra="""
+[efficiency]
+warmup_steps = 0
+synchronization_probe_every_intervals = 0
+
 [evaluation]
 position_budget_per_step = 4096
 
@@ -715,20 +736,36 @@ maximum_games = 6
     assert final["evaluation_seconds"] == pytest.approx(readings[0]["seconds"])
     assert final["evaluation_seconds"] > 0.0
     assert final["elapsed_seconds"] > final["evaluation_seconds"]
+    # Warmup is disabled and the probe is off, so every step is in the window
+    # and the headline reduces to the whole run's training time.
     assert final["positions_per_second"] == pytest.approx(
-        final["processed_positions"]
-        / (final["elapsed_seconds"] - final["evaluation_seconds"])
+        final["processed_positions"] / final["training_seconds"]
+    )
+    # Startup and checkpoint writes come out of the numerator too, so the
+    # measured training time is strictly less than the run minus evaluation.
+    assert final["training_seconds"] < (
+        final["elapsed_seconds"] - final["evaluation_seconds"]
     )
     assert final["positions_per_second"] > (
         final["processed_positions"] / final["elapsed_seconds"]
     )
+    assert result.efficiency is not None
+    assert result.efficiency.evaluation_seconds > 0.0
+    assert result.efficiency.startup_seconds > 0.0
+    assert result.efficiency.checkpoint_seconds > 0.0
 
 
-def test_a_run_without_declared_cadences_records_nothing(
+def test_a_run_without_declared_cadences_records_only_what_it_cost(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
+    """Efficiency is not a cadence reading, so it does not need one declared.
+
+    A run's cost cannot be measured after the fact, so it is recorded whether
+    or not the run also chose to evaluate itself on the way past.
+    """
+
     rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
     normalized, manifest = write_corpus(tmp_path / "corpus", rows)
     config_path = _write_training_config(
@@ -743,8 +780,44 @@ def test_a_run_without_declared_cadences_records_nothing(
     result = run_training(load_config(TrainingConfig, path=config_path), store=store)
 
     assert result.readings == ()
+    recorded = store.results()
+    assert [envelope.kind for envelope in recorded] == ["training-efficiency"]
+    assert recorded[0].checkpoint.label == "run-step-00000002"
+    assert recorded[0].execution is not None
+    assert result.efficiency is not None
+    assert result.efficiency.processed_positions == 12
+    # Two steps against a three-step warmup, so the run never reaches steady
+    # state and reports no throughput rather than a figure taken from warmup.
+    assert result.efficiency.active_positions_per_second is None
+
+
+def test_declining_to_record_keeps_a_run_cost_out_of_committed_history(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "run",
+        validation=False,
+        extra="""
+[efficiency]
+record = false
+""",
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    result = run_training(load_config(TrainingConfig, path=config_path), store=store)
+
     assert store.results() == ()
     assert not (tmp_path / "results" / "records").exists()
+    # Measured anyway, so the run still reports what it cost.
+    assert result.efficiency is not None
+    assert result.efficiency_paths == ()
 
 
 def test_an_unaffordable_cadence_fails_before_training_starts(

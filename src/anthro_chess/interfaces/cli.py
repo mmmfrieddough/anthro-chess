@@ -525,6 +525,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_parser.set_defaults(handler=_run_eval_report)
 
+    budget_parser = eval_commands.add_parser(
+        "budget",
+        help=(
+            "Report held-out quality against the training budget that bought "
+            "it, joining the training-efficiency and held-out families."
+        ),
+    )
+    _add_store_argument(budget_parser)
+    budget_parser.add_argument(
+        "--metric",
+        default=None,
+        help=(
+            "Held-out quality metric to plot against budget "
+            "(default: held_out.move_loss)."
+        ),
+    )
+    budget_parser.add_argument(
+        "--positions",
+        type=int,
+        action="append",
+        default=[],
+        metavar="COUNT",
+        help=(
+            "Processed-position budget to answer for; may be repeated. Reports "
+            "the best recorded quality reached without exceeding it."
+        ),
+    )
+    budget_parser.add_argument(
+        "--seconds",
+        type=float,
+        action="append",
+        default=[],
+        metavar="SECONDS",
+        help="Training wall-clock budget to answer for; may be repeated.",
+    )
+    budget_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    budget_parser.set_defaults(handler=_run_eval_budget)
+
     metrics_parser = eval_commands.add_parser(
         "metrics",
         help="List registered metric families, metrics, and their directions.",
@@ -681,9 +724,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_store_argument(train_parser)
     train_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory for the efficiency "
+            "breakdown. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
+            "directory beneath ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    train_parser.add_argument(
         "--no-record",
         action="store_true",
-        help="Run declared evaluation cadences without writing to the store.",
+        help=(
+            "Run declared evaluation cadences and measure efficiency without "
+            "writing either to the store."
+        ),
     )
     train_parser.set_defaults(handler=_run_train)
     return parser
@@ -1844,6 +1899,38 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_budget(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ReportError,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+    from anthro_chess.evaluation.results.budget import (
+        DEFAULT_QUALITY_METRIC,
+        build_budget_report,
+        render_budget_report,
+    )
+
+    try:
+        results = ResultsStore(resolve_store_root(arguments.store)).results()
+        report = build_budget_report(
+            results,
+            metric=arguments.metric or DEFAULT_QUALITY_METRIC,
+            position_budgets=arguments.positions,
+            time_budgets=arguments.seconds,
+        )
+    except (ReportError, ResultsStoreError) as error:
+        print(f"anthro eval budget: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(report.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(render_budget_report(report), end="")
+    return 0
+
+
 def _run_eval_metrics(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import iter_registry, registry_record
 
@@ -1936,8 +2023,10 @@ def _run_eval_bridge_revoke(arguments: argparse.Namespace) -> int:
 def _run_train(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.evaluation.results import (
+        DetailStore,
         ResultsStore,
         ResultsStoreError,
+        resolve_optional_detail_root,
         resolve_store_root,
     )
     from anthro_chess.training import TrainingConfig, TrainingError, run_training
@@ -1954,7 +2043,15 @@ def _run_train(arguments: argparse.Namespace) -> int:
             if arguments.no_record
             else ResultsStore(resolve_store_root(arguments.store))
         )
-        result = run_training(resolved, store=store)
+        # The efficiency breakdown is a nice-to-have, not a reason to refuse a
+        # run: an unconfigured machine records the summary tier and skips it.
+        detail_root = (
+            None
+            if arguments.no_record
+            else resolve_optional_detail_root(arguments.detail_root)
+        )
+        detail = None if detail_root is None else DetailStore(detail_root)
+        result = run_training(resolved, store=store, detail=detail)
     except (ConfigError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2
@@ -1977,6 +2074,13 @@ def _run_train(arguments: argparse.Namespace) -> int:
             "uniform_over_legal="
             f"{result.validation.uniform_over_legal_move_loss:.6f}"
         )
+    if result.efficiency is not None:
+        from anthro_chess.training.efficiency import render_efficiency
+
+        print()
+        print(render_efficiency(result.efficiency), end="")
+        if result.efficiency_paths:
+            print(f"Recorded {len(result.efficiency_paths)} efficiency result(s).")
     return 0
 
 

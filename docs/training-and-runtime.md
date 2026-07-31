@@ -336,8 +336,44 @@ than inferring it from which fields happen to be present.
 Reported throughput describes training and excludes the time a cadence spent
 measuring, which is reported beside it. Wall-clock elapsed time is reported
 unchanged. Without that separation a run would appear several times slower for
-no reason other than that it evaluated itself on the way past, and the training
-efficiency work would inherit a contaminated number.
+no reason other than that it evaluated itself on the way past.
+
+Throughput is a **steady-state** figure over active non-padding positions, so
+it is absent until the run leaves warmup rather than reported as a number that
+drifts for the whole run. Startup, checkpoint writes, cadence evaluation, final
+validation, and the run's own instrumentation are each timed and each excluded
+from it. `anthro_chess.training.efficiency` owns the measurement and its
+configuration; `docs/evaluation.md` owns how the results are read.
+
+### Deferred Read-Back
+
+A training step's reported quantities — loss, active positions, whether the
+loss is finite — are accumulated **on device** and read back once per logging
+interval, the way `anthro_chess.training.health` already handles optimizer
+statistics. Reading any of them per micro-batch forces a device
+synchronization, which stops the host from queueing the next step while the
+device works on this one.
+
+Two consequences are worth stating because neither is obvious.
+
+A non-finite loss is detected at the next logging boundary rather than at the
+exact step, so the failure names the interval it occurred in and up to one
+interval of updates is applied from a corrupted gradient. The run fails either
+way; what changes is the precision of the report, and `log_every_steps` sets
+it.
+
+An individual step no longer has a meaningful duration. Between two
+synchronizations the host runs ahead, so a step returns when its work is queued
+and the queue is paid off by whichever step synchronizes next. Only a
+drain-bracketed **interval** is honestly timed, which is why the measurement's
+unit is the interval and why the reported step-time spread is per interval.
+
+How much the deferral is worth depends on which side is the bottleneck, so the
+run measures it rather than assuming: a configured share of intervals runs the
+synchronizing arm, interleaved with the deferred one, and the difference is
+reported. On one Apple Silicon MPS run it was worth about 1.5 ms of a 39.8 ms
+step without gradient accumulation, and nothing measurable at four accumulation
+micro-batches, where the device is busy enough that the host never gets ahead.
 
 Bulk benchmark diagnostics are machine-local for the same reason and default
 beneath this root. `ANTHRO_CHESS_RESULT_DETAIL_ROOT` overrides that location

@@ -12,6 +12,12 @@ from anthro_chess.training.checkpoints import (
     load_training_checkpoint,
 )
 from anthro_chess.training.config import TrainingConfig
+from anthro_chess.training.efficiency import (
+    TRAINING_EFFICIENCY_KIND,
+    TrainingEfficiencyConfig,
+    TrainingEfficiencyError,
+    TrainingEfficiencySummary,
+)
 from anthro_chess.training.losses import masked_action_cross_entropy
 
 if TYPE_CHECKING:
@@ -20,8 +26,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CHECKPOINT_VERSION",
     "RUN_ARTIFACT_VERSION",
+    "TRAINING_EFFICIENCY_KIND",
     "CheckpointError",
     "TrainingConfig",
+    "TrainingEfficiencyConfig",
+    "TrainingEfficiencyError",
+    "TrainingEfficiencySummary",
     "TrainingError",
     "TrainingResult",
     "checkpoint_path",

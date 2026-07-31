@@ -135,6 +135,10 @@ to play with; see inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
 the external puzzle-rating response described in the rating section.
+`anthro eval budget` reports held-out quality against the training budget that
+bought it, joining two families rather than defining a third; see training
+efficiency below. Training efficiency itself has no command, because it is
+measured by `anthro train` while the run happens.
 
 ### The Checkpoint Evaluation Runner
 
@@ -1616,6 +1620,83 @@ rate: generated untimed games that reach a claimable dead position and never
 end. That is the failure the claim action exists to prevent. Correctness gates
 should also cover constructed claimable-threefold and automatic-draw sequences,
 so claim availability and claim handling are exact rather than sampled.
+
+## Training Efficiency
+
+What a training configuration costs to run. Unlike every other family here,
+this one cannot be measured after the fact: a finished run cannot be re-timed,
+so the instrumentation lives inside the training loop and the result is scoped
+to a **run** rather than to a checkpoint. That is also why it is not part of
+the end-of-run checkpoint suite.
+
+The headline is **active non-padding positions per second**. Padding is kept
+out of the numerator because a configuration that pads more is not learning
+faster, and the realized padding fraction is reported beside the headline
+rather than folded into it, so a throughput change caused by batch composition
+is distinguishable from one caused by execution speed. Wall-clock training
+time, total processed positions, and peak device memory are reported alongside.
+
+Two exclusions decide whether the number means anything.
+
+**Warmup is excluded**, because the first steps pay for lazy kernel compilation
+and allocator growth. Those are real costs and they are reported, but they are
+startup costs; leaving them in would make a short run look slower than a long
+one for reasons unrelated to the configuration. A run that never leaves warmup
+reports no throughput rather than a figure taken from it.
+
+**Overhead is identified rather than averaged away.** Startup, checkpoint
+writes, cadence evaluation, final validation, and the run's own instrumentation
+are each timed and each subtracted, and the share of the run spent outside
+training is reported as its own metric. A run that evaluates itself every ten
+steps is not slower at training, and a number saying otherwise would make the
+cadence look like a regression.
+
+The declared workload is what decided the work: the dataset selection, the
+loader configuration, the model architecture, the effective batch and
+accumulation, whether determinism is strict, and whether phase profiling
+inserted its own synchronizations. The realized sequence-length distribution is
+deliberately not in it — that is an outcome of those choices rather than an
+input — and is reported as measurements instead.
+
+One consequence of decision 0018 is specific to this family. The environment
+pivot pins the model by parameter digest and varies the machine, which training
+efficiency cannot generally reach: training the same configuration on two
+machines produces two different sets of weights, so there is no pinned model to
+compare. The continuous per-workload history is what answers whether a
+configuration got slower, and the budget report below is what relates it to
+quality.
+
+`anthro_chess.training.efficiency` owns the exact metrics, defaults, and
+workload fields. `docs/training-and-runtime.md` owns the deferred read-back the
+measurement depends on, including why the measurement's unit is a logging
+interval rather than a step.
+
+### Quality Against Budget
+
+A throughput ranking is not an efficiency verdict. A step that runs twice as
+fast while learning less per position is a regression that every efficiency
+metric in isolation reports as a win. The question worth asking is what
+held-out quality a run reached for a given number of processed positions or a
+given amount of wall clock.
+
+That spans two families, so it is a **report joining them** rather than a third
+family duplicating both: `training-efficiency` supplies the budget axes and
+`held-out-prediction` supplies the quality. It needs no benchmark of its own —
+the points already exist, written by the run as it trained and by the cadence
+readings taken beside them — and the join is by checkpoint label, which is why
+every reading of the same parameters has to agree on that name.
+
+A budget answer reports the best **recorded** point within the budget rather
+than an interpolation, because the curve between two cadence readings was not
+measured. Two refusals keep the curve honest: every point's quality must sit on
+one series, so a view or pool change cannot masquerade as learning, and every
+point's efficiency must sit on one declared workload, so a batch-size change
+cannot masquerade as a faster machine. An environment change is not a refusal —
+it is recorded per point and surfaced, matching decision 0018's posture
+everywhere else.
+
+`anthro eval budget` reads it; `anthro_chess.evaluation.results.budget` owns
+the join and its comparability rules.
 
 ## Inference Efficiency
 
