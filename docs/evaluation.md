@@ -207,6 +207,40 @@ changed band boundary is a different measurement rather than movement in an
 existing series, so it reports into the detail tier instead of quietly
 continuing a line.
 
+### Shakedown Readings
+
+A benchmark is not finished when its tests pass. Fixtures prove the code runs;
+they cannot prove the benchmark measures anything, because a fixture returns
+whatever it was built to return. So a new benchmark takes a **shakedown
+reading** on real checkpoints before it lands, and the reading is reported
+where the change is reviewed.
+
+The reading is on **two checkpoints far apart in one training run**, with the
+expected direction stated before the run rather than after it. One reading
+only shows the benchmark completing. Two show whether it *discriminates*, which
+is the failure that matters: a benchmark returning the same number early and
+late in training is broken, and nothing in a fixture suite will say so. Stating
+the expectation first is what makes the reading falsifiable; a number
+interpreted afterwards can always be made to sound reasonable.
+
+A shakedown is deliberately cheap. Sample counts are not part of series
+identity, so a small view reads the same metric the headline configuration
+does, and a benchmark whose full grid is expensive should be shaken down on a
+reduced one. Cost measured at realistic scale is a useful thing to report
+alongside it, since a benchmark nobody can afford to run is a different kind of
+defect.
+
+A shakedown reading **is not recorded**. Every benchmark command that appends
+to the store takes `--no-record` for exactly this, and the reading is evidence
+about the instrument rather than about the model. It is not quoted as model
+quality, does not satisfy an evidence gate stated anywhere in these docs, and
+does not become a baseline. Readings that disagree with the expectation are the
+valuable ones and are reported rather than quietly re-run; the outcome of a
+shakedown can legitimately be that the benchmark is wrong.
+
+`docs/issue-workflow.md` owns when a change needs one and how a session without
+checkpoints routes it.
+
 ## Human-Reference Curve Comparisons
 
 Several benchmarks turn out to have one shape: measure something on generated

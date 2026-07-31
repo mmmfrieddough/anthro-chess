@@ -62,6 +62,13 @@ at, and what a good result looks like. The GUI itself is configured once and is
 never reconfigured per issue. See `docs/issue-workflow.md` for when this applies
 and `docs/playable-uci.md` for the mechanism.
 
+When a change adds or alters a benchmark, take a shakedown reading on two real
+checkpoints from one training run before the pull request is ready, using a
+reduced view and `--no-record`, and report what was expected against what was
+read. Fixtures cannot show that a benchmark measures anything. See
+`docs/issue-workflow.md` for when this applies and `docs/evaluation.md` for
+what the reading is and is not.
+
 Local setup, dependency installation, and the verification commands are in
 `CONTRIBUTING.md`.
 
