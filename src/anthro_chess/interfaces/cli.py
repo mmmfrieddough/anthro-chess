@@ -526,6 +526,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_parser.set_defaults(handler=_run_eval_report)
 
+    tensorboard_parser = eval_commands.add_parser(
+        "tensorboard",
+        help="Project checkpoint history from the results store into TensorBoard.",
+    )
+    tensorboard_parser.add_argument(
+        "output",
+        type=Path,
+        help=(
+            "Disposable TensorBoard log directory. Must be outside the committed "
+            "results store."
+        ),
+    )
+    _add_store_argument(tensorboard_parser)
+    tensorboard_parser.set_defaults(handler=_run_eval_tensorboard)
+
     budget_parser = eval_commands.add_parser(
         "budget",
         help=(
@@ -1756,6 +1771,44 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
     if arguments.provenance:
         print()
         print(render_provenance(report), end="")
+    return 0
+
+
+def _run_eval_tensorboard(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    try:
+        from anthro_chess.evaluation.tensorboard import (
+            TensorBoardProjectionError,
+            project_results,
+        )
+    except ImportError as error:
+        print(
+            "anthro eval tensorboard: TensorBoard projection requires the "
+            f"model dependencies: {error}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        store = ResultsStore(resolve_store_root(arguments.store))
+        projection = project_results(
+            store.results(),
+            arguments.output,
+            store_root=store.root,
+        )
+    except (ResultsStoreError, TensorBoardProjectionError) as error:
+        print(f"anthro eval tensorboard: {error}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Projected {projection.points} points across {projection.runs} runs "
+        f"and {projection.checkpoints} checkpoints into {projection.output}"
+    )
     return 0
 
 

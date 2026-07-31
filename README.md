@@ -232,6 +232,7 @@ diagnostics stay machine-local.
 ```console
 uv run anthro eval report
 uv run anthro eval report --history held_out.move_loss
+uv run anthro eval tensorboard .local/tensorboard-history
 uv run anthro eval metrics
 uv run anthro eval prepare-puzzles \
   --config configs/evaluation/lichess-puzzles-v1.toml
@@ -242,7 +243,9 @@ uv run anthro eval puzzles \
 The default report is a compact delta view by family and metric, with the
 direction of improvement declared rather than inferred, and with results that
 are not on the same series reported as incomparable instead of shown as a
-quality change. See [`docs/evaluation.md`](docs/evaluation.md) for the layering
+quality change. The TensorBoard projection is a disposable chart view that
+keeps each series fingerprint on its own line. See
+[`docs/evaluation.md`](docs/evaluation.md) for the layering
 and comparability rules.
 
 ## Development

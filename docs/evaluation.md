@@ -160,6 +160,20 @@ bought it, joining two families rather than defining a third; see training
 efficiency below. Training efficiency itself has no command, because it is
 measured by `anthro train` while the run happens.
 
+`anthro eval tensorboard OUTPUT` regenerates a disposable chart view of the
+store's checkpoint history. Checkpoint ordinal is its step axis, and each raw
+series fingerprint is emitted as a separate TensorBoard run, so a comparability
+break becomes another line rather than a continuous line through the seam.
+Metric families and identifiers organize the tags and run names.
+
+This view is deliberately less expressive than `anthro eval report`. It has no
+checkpoint labels on the x-axis, no noise-floor error bars, no explicit absent
+families, and no bridge semantics; even bridged fingerprints stay on separate
+lines. Deleting the output loses nothing, and the output must live outside the
+committed results store. Decision 0023 owns this constrained projection and
+refines decision 0014's earlier prohibition on cross-version TensorBoard
+history.
+
 ### The Checkpoint Evaluation Runner
 
 `anthro eval run` scores one compatible checkpoint over a deterministic view of
