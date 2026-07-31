@@ -45,33 +45,25 @@ specified GPU environment must exclude `execution: gpu-required` issues, while
 `verification: gpu-required` issues remain eligible for implementation and use
 the documented handoff when GPU verification remains.
 
-Treat a request to work on or implement an issue as authorization to complete
-the normal pre-merge workflow: start from current `origin/main`, create or reuse
-an isolated issue branch and worktree, implement and verify the change, commit
-and push it, and open a ready-for-review pull request that closes the issue on
-merge. Do not work directly in the shared main checkout when another session
-could be using it, do not merge the pull request, and do not require the user to
-return for routine post-merge cleanup. The full mechanics and exceptions are in
-`docs/issue-workflow.md`.
+A request to work on an issue is authorization to carry it through to a
+ready-for-review pull request that closes the issue on merge. The pull request
+is the maintainer's review boundary and is not merged by the agent. Several
+sessions often run against this repository at once, so the issue is claimed in
+GitHub while it is being worked on.
 
-Once dispatched, the implementation session owns the issue updates, claim,
-publication, and any handoff. Treat an explicit execution-surface or hardware
-capability declaration supplied by the dispatcher or environment as
-authoritative instead of guessing from the operating system or available
-commands.
+Treat an explicit execution-surface or hardware capability declaration supplied
+by the dispatcher or environment as authoritative instead of guessing from the
+operating system or available commands.
 
 When a change alters what a chess GUI observes, offer a real GUI check without
-being asked: point the maintainer's GUI at the issue worktree with
+being asked: point the maintainer's GUI at the working checkout with
 `scripts/anthro-gui-target .` and say the engine is ready to test, what to look
 at, and what a good result looks like. The GUI itself is configured once and is
 never reconfigured per issue. See `docs/issue-workflow.md` for when this applies
 and `docs/playable-uci.md` for the mechanism.
 
-Before implementation, ensure required machine-level bootstrap tools are
-available; install a missing tool or report a genuine installation blocker.
-Initialize and use the project environment in the current issue worktree. Do
-not run development or final verification commands through another worktree's
-virtual environment.
+Local setup, dependency installation, and the verification commands are in
+`CONTRIBUTING.md`.
 
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project

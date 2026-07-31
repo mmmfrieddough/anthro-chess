@@ -14,8 +14,8 @@ The main topic docs under `docs/` describe the intended end state of the
 project. They are living design docs: treat them as the current best intent,
 not as a claim that every described feature is already implemented.
 
-`docs/issue-workflow.md` describes how actionable work is organized and carried
-through review. `docs/planning/` is for implementation order, staged plans, and
+`docs/issue-workflow.md` describes how actionable work is tracked and organized
+in GitHub. `docs/planning/` is for implementation order, staged plans, and
 tradeoffs about how to reach the intended end state. When planning docs and
 end-state docs disagree, the end-state docs win unless the project direction is
 explicitly changed.
@@ -34,8 +34,8 @@ the project specification.
 - `configs/README.md`: checked-in configuration conventions and ownership.
 - `results/README.md`: the committed benchmark results store and the boundary
   with machine-local diagnostics.
-- `docs/issue-workflow.md`: issue organization, task selection, worktrees,
-  verification, and publication for review.
+- `docs/issue-workflow.md`: issue organization, labels, GPU routing, claiming,
+  and the tracking conventions specific to this repository.
 - `docs/vision.md`: high-level product intent and boundaries.
 - `docs/design-principles.md`: principles that guide implementation choices.
 - `docs/architecture.md`: system shape, major layers, and module boundaries.
