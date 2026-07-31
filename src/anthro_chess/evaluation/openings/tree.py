@@ -29,8 +29,11 @@ from typing import Any, Protocol
 import chess
 
 from anthro_chess.evaluation.openings.book import OpeningBook, load_book
-from anthro_chess.evaluation.openings.classification import classify_moves
-from anthro_chess.evaluation.openings.names import UNCLASSIFIED, OpeningLevel
+from anthro_chess.evaluation.openings.classification import (
+    UNCLASSIFIED_LABEL,
+    classify_moves,
+)
+from anthro_chess.evaluation.openings.names import OpeningLevel
 
 OPENING_TREE_VERSION = 1
 
@@ -61,15 +64,40 @@ class RepertoireWalk:
     destinations: Mapping[str, float]
     waypoint_mass: float
     #: Mass that stopped being expanded because it fell below the threshold.
-    #: The walk is exact apart from this: no rearrangement of the pruned lines
-    #: can move any label's share by more than this much, so it is the error
-    #: bound rather than a discarded remainder.
+    #: The assumption-free bound: if pruned lines could go anywhere, no label's
+    #: share can be wrong by more than this.
     pruned_mass: float
+    #: The bound that is actually worth reading. Pruned mass whose label had not
+    #: been committed yet — it sat on a waypoint, or off book entirely — so
+    #: continuing it could still move the distribution. Mass pruned on a
+    #: destination cannot: a destination is a position with one reachable label
+    #: at this level, so playing on keeps the label it already has.
+    #:
+    #: This is far tighter than ``pruned_mass`` and it matters. Measured on a
+    #: real checkpoint, the assumption-free bound sits near one: probability
+    #: disperses across dozens of legal moves per ply, so most individual lines
+    #: fall below any affordable threshold even while the dominant ones reach
+    #: full depth. Most of that pruned mass has already picked a family, which
+    #: is why the two numbers are so far apart — 0.96 against 0.38 at one
+    #: measured setting.
+    #:
+    #: Reachability here is the book's own canonical-path notion, the same one
+    #: that separates a waypoint from a destination. A game that transposed out
+    #: of a destination into another family by a route no book entry takes would
+    #: escape it; that is a narrow case, and treating it otherwise would mean
+    #: two different definitions of reachability in one reading.
+    unsettled_mass: float
     #: Lines that ended before the ply limit because the model put mass on a
     #: non-move action. Reported apart from pruning, which is an approximation,
     #: because this is behavior.
     terminal_mass: float
     positions_evaluated: int
+    #: Deepest ply the walk actually expanded to. Normally equal to ``plies``,
+    #: since the dominant line usually stays above the threshold the whole way;
+    #: it falls short when the policy is flat enough that even the best line
+    #: disperses first. Reported because nothing else in the record would say
+    #: that a walk declaring eight plies had stopped at three.
+    deepest_expanded_ply: int
     lines: int
 
     def repertoire(self) -> dict[str, float]:
@@ -101,8 +129,10 @@ class RepertoireWalk:
             "repertoire": self.repertoire(),
             "waypoint_mass": self.waypoint_mass,
             "pruned_mass": self.pruned_mass,
+            "unsettled_mass": self.unsettled_mass,
             "terminal_mass": self.terminal_mass,
             "positions_evaluated": self.positions_evaluated,
+            "deepest_expanded_ply": self.deepest_expanded_ply,
             "lines": self.lines,
         }
 
@@ -137,35 +167,52 @@ def walk_repertoire(
     destinations: dict[str, float] = {}
     waypoint_mass = 0.0
     pruned_mass = 0.0
+    unsettled_mass = 0.0
     terminal_mass = 0.0
     evaluated = 0
+    deepest = 0
     lines = 0
 
-    def settle(prefix: tuple[chess.Move, ...], mass: float) -> None:
-        nonlocal waypoint_mass, lines
+    def settle(
+        prefix: tuple[chess.Move, ...],
+        mass: float,
+        *,
+        pruned: bool = False,
+    ) -> None:
+        nonlocal waypoint_mass, unsettled_mass, lines
         lines += 1
-        if not prefix:
-            label: str | None = UNCLASSIFIED
-        else:
-            label = classify_moves(prefix, book=resolved, plies=plies).destination(
-                level
-            )
-        if label is None:
+        label = (
+            UNCLASSIFIED_LABEL
+            if not prefix
+            else classify_moves(prefix, book=resolved, plies=plies)
+        )
+        destination = label.destination(level)
+        # A line stopped short can still move the distribution unless the book
+        # has already committed its label. Off book counts as uncommitted: it
+        # can transpose back into a named position later.
+        if pruned and (destination is None or not label.classified):
+            unsettled_mass += mass
+        if destination is None:
             waypoint_mass += mass
             return
-        destinations[label] = destinations.get(label, 0.0) + mass
+        destinations[destination] = destinations.get(destination, 0.0) + mass
 
     frontier: dict[tuple[chess.Move, ...], float] = {(): 1.0}
-    for _ in range(plies):
+    for depth in range(plies):
         survivors: list[tuple[tuple[chess.Move, ...], float]] = []
         for prefix, mass in frontier.items():
             if mass < threshold:
                 pruned_mass += mass
-                settle(prefix, mass)
+                settle(prefix, mass, pruned=True)
                 continue
             survivors.append((prefix, mass))
         if not survivors:
+            # Everything left was pruned and settled just above, so the frontier
+            # is empty rather than pending: leaving it populated would settle
+            # the same mass a second time in the trailing pass.
+            frontier = {}
             break
+        deepest = depth + 1
         evaluated += len(survivors)
         distributions = policy([prefix for prefix, _ in survivors])
         if len(distributions) != len(survivors):
@@ -209,8 +256,10 @@ def walk_repertoire(
         destinations=dict(sorted(destinations.items())),
         waypoint_mass=_unit(waypoint_mass),
         pruned_mass=_unit(pruned_mass),
+        unsettled_mass=_unit(unsettled_mass),
         terminal_mass=_unit(terminal_mass),
         positions_evaluated=evaluated,
+        deepest_expanded_ply=deepest,
         lines=lines,
     )
 

@@ -167,6 +167,7 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE,
     GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS,
+    GENERATED_PLAY_EXACT_REPERTOIRE_UNSETTLED_MASS,
     GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS,
     GENERATED_PLAY_MEAN_AVAILABLE_PLY,
     GENERATED_PLAY_MEAN_BOOK_PLY,
@@ -306,8 +307,15 @@ class RepertoireWalkConfig(ConfigModel):
     plies: Annotated[StrictInt, Field(ge=1)] = 8
     #: Cumulative-probability threshold below which a line stops being expanded.
     #: Its reciprocal bounds the positions evaluated per ply, and the mass it
-    #: prunes is reported as the reading's error bound.
-    threshold: Annotated[float, Field(gt=0.0, le=1.0)] = 0.01
+    #: leaves uncommitted is reported as the reading's error bound.
+    #:
+    #: Chosen by measurement rather than by feel. On a real checkpoint the
+    #: leading family share reads 0.281 at 1e-2, 0.260 at 1e-3, and 0.258 at
+    #: 1e-4: the distribution has converged by 1e-3, and the order of magnitude
+    #: past it buys 0.002 of movement for roughly nine times the work. Cost at
+    #: this value is a few seconds per rating, against a suite that spends
+    #: minutes generating games.
+    threshold: Annotated[float, Field(gt=0.0, le=1.0)] = 0.001
 
 
 class DivergenceDepthConfig(ConfigModel):
@@ -568,7 +576,14 @@ class ExactRepertoire:
     #: Worst pruned mass across the ratings, which is the bound that applies to
     #: the reading as a whole rather than to its most favorable point.
     pruned_mass: float
+    #: The same, for the bound that discounts mass the book has already
+    #: committed. This is the one to read; ``pruned_mass`` saturates near one on
+    #: any real policy and says almost nothing.
+    unsettled_mass: float
     waypoint_mass: float
+    #: Deepest ply any rating's walk actually expanded to, which is below
+    #: ``plies`` whenever the threshold bit first.
+    deepest_expanded_ply: int
     execution: ExecutionRecord
 
     def as_record(self) -> dict[str, Any]:
@@ -580,7 +595,9 @@ class ExactRepertoire:
             "conditional_distance": self.conditional_distance,
             "pooled_distance": self.pooled_distance,
             "pruned_mass": self.pruned_mass,
+            "unsettled_mass": self.unsettled_mass,
             "waypoint_mass": self.waypoint_mass,
+            "deepest_expanded_ply": self.deepest_expanded_ply,
             "workload_sha256": self.execution.workload_sha256,
             "workload": dict(self.execution.workload),
             "ratings": [
@@ -1364,7 +1381,9 @@ def _exact_repertoire(
             pooled_model, curve.pooled.distribution or {}
         ),
         pruned_mass=max(walk.pruned_mass for _, walk in walks),
+        unsettled_mass=max(walk.unsettled_mass for _, walk in walks),
         waypoint_mass=sum(walk.waypoint_mass for _, walk in walks) / len(walks),
+        deepest_expanded_ply=max(walk.deepest_expanded_ply for _, walk in walks),
         execution=_walk_execution_record(
             config, cells, temperature, ratings, device=device
         ),
@@ -1930,6 +1949,10 @@ def _exact_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
         (
             GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS.identifier,
             exact.pruned_mass,
+        ),
+        (
+            GENERATED_PLAY_EXACT_REPERTOIRE_UNSETTLED_MASS.identifier,
+            exact.unsettled_mass,
         ),
         (
             GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS.identifier,

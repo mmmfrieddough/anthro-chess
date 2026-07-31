@@ -8,6 +8,7 @@ import chess
 import pytest
 
 from anthro_chess.evaluation.openings import (
+    UNCLASSIFIED,
     ActionPolicy,
     OpeningBook,
     OpeningEntry,
@@ -182,6 +183,32 @@ def test_mass_the_policy_does_not_spend_on_a_move_ends_the_line() -> None:
     assert walk.waypoint_mass == pytest.approx(0.25)
 
 
+@pytest.mark.parametrize("threshold", [0.01, 0.3, 0.7, 1.0])
+def test_mass_is_conserved_however_the_walk_ends(threshold: float) -> None:
+    """Every line is settled exactly once, whether it is pruned or expanded.
+
+    The threshold decides which way a walk terminates: expanded to its depth,
+    or stopped when nothing survives. A line settled on both paths would inflate
+    its own label's share and read as behavior.
+    """
+
+    walk = walk_repertoire(
+        scripted(
+            {
+                (): {"e2e4": 0.4, "d2d4": 0.6},
+                ("e2e4",): {"c7c5": 0.5, "e7e5": 0.5},
+            }
+        ),
+        plies=3,
+        threshold=threshold,
+        book=BOOK,
+    )
+
+    total = sum(walk.destinations.values()) + walk.waypoint_mass
+    assert total == pytest.approx(1.0)
+    assert walk.unsettled_mass <= walk.pruned_mass + 1e-9
+
+
 def test_every_line_lands_somewhere() -> None:
     """Mass that vanished would be a distribution nobody could read."""
 
@@ -301,3 +328,82 @@ def test_the_walk_labels_by_the_level_it_was_asked_for() -> None:
 
     assert set(family.repertoire()) == {"Open Test"}
     assert set(deepest.repertoire()) == {"Open Test: Deep Line"}
+
+
+def test_mass_pruned_on_a_destination_is_not_counted_as_unsettled() -> None:
+    """A destination has one reachable label, so playing on cannot change it.
+
+    This is what keeps the bound readable. The assumption-free pruned mass
+    saturates near one on any real policy, because probability disperses across
+    dozens of moves per ply; almost all of that mass has already picked a
+    family, and the tight bound is what says so.
+    """
+
+    walk = walk_repertoire(
+        scripted(
+            {
+                (): {"e2e4": 1.0},
+                # Both continuations are named destinations, and both fall
+                # below the threshold at the next ply.
+                ("e2e4",): {"c7c5": 0.5, "e7e5": 0.5},
+            }
+        ),
+        plies=4,
+        threshold=0.6,
+        book=BOOK,
+    )
+
+    assert walk.pruned_mass == pytest.approx(1.0)
+    assert walk.unsettled_mass == pytest.approx(0.0)
+
+
+def test_mass_pruned_before_committing_stays_in_the_bound() -> None:
+    """A line stopped on a waypoint could still have chosen anything."""
+
+    walk = walk_repertoire(
+        scripted({(): {"e2e4": 0.4, "d2d4": 0.6}}),
+        plies=4,
+        # Both first moves fall below the threshold, so both are pruned while
+        # still uncommitted: one on a waypoint, one off book entirely.
+        threshold=0.7,
+        book=BOOK,
+    )
+
+    assert walk.pruned_mass == pytest.approx(1.0)
+    assert walk.unsettled_mass == pytest.approx(1.0)
+
+
+def test_an_unnamed_line_pruned_early_stays_in_the_bound() -> None:
+    """Off book is uncommitted too: it can transpose back into a name later."""
+
+    walk = walk_repertoire(
+        scripted({(): {"a2a3": 0.5, "h2h3": 0.5}}),
+        plies=4,
+        threshold=0.7,
+        book=BOOK,
+    )
+
+    assert walk.destinations == {UNCLASSIFIED: pytest.approx(1.0)}
+    assert walk.unsettled_mass == pytest.approx(1.0)
+
+
+def test_the_walk_reports_the_depth_it_actually_reached() -> None:
+    """A walk declaring eight plies and stopping at one has to say so."""
+
+    stopped = walk_repertoire(
+        scripted({(): {"e2e4": 0.4, "d2d4": 0.6}}),
+        plies=8,
+        # Nothing survives the second round, so expansion stops after one ply.
+        threshold=0.7,
+        book=BOOK,
+    )
+    line = [move.uci() for move in moves("e4 e5 Nf3")]
+    full = walk_repertoire(
+        scripted({tuple(line[:i]): {line[i]: 1.0} for i in range(len(line))}),
+        plies=3,
+        threshold=0.5,
+        book=BOOK,
+    )
+
+    assert stopped.deepest_expanded_ply == 1
+    assert full.deepest_expanded_ply == 3

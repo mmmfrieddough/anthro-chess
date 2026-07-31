@@ -1316,3 +1316,22 @@ def test_the_exact_walk_can_be_switched_off(
     )
 
     assert result.readings[0].exact is None
+
+
+def test_the_rendered_walk_names_the_bound_that_matters(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The assumption-free bound alone would read as an unusable measurement."""
+
+    from anthro_chess.interfaces.cli import _render_rollout
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    rendered = _render_rollout(result)
+
+    assert "exact repertoire to" in rendered
+    assert "uncommitted mass at most" in rendered
+    assert "pruned in all" in rendered
+    assert "reached ply" in rendered
+    assert max(len(line) for line in rendered.splitlines()) <= 120

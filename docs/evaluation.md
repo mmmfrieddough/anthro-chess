@@ -1501,12 +1501,39 @@ well as in meaning.
 The walk's depth and threshold decide what its numbers mean, so it is scoped as
 its own series rather than sharing the sampled reading's. Deepening the walk or
 loosening its threshold should end the walk's own history and leave the curves
-recorded beside it untouched. The bound travels with the reading for the same
-reason a distance travels with its floor: above the threshold the walk is exact,
-and below it nothing is known, so a distance quoted without the pruned mass is a
-precision claim the walk does not support. Prefixes are never merged across
-transpositions, because the policy conditions on the trajectory rather than on
-the position alone.
+recorded beside it untouched. Prefixes are never merged across transpositions,
+because the policy conditions on the trajectory rather than on the position
+alone.
+
+The bound travels with the reading for the same reason a distance travels with
+its floor. But the obvious bound is the wrong one to report. Probability
+disperses across dozens of legal moves per ply, so on a real policy nearly every
+individual line falls below any affordable threshold even while the dominant
+ones reach full depth, and a bound that assumes pruned mass could go anywhere
+saturates near one — declaring an informative reading unusable. Measured on a
+proof-scale checkpoint it read 0.96.
+
+What rescues it is the same structure that separates a waypoint from a
+destination. A destination has one reachable label at the reported level, so a
+line pruned there keeps the label it already has however it continues. Only mass
+pruned while still uncommitted — sitting on a waypoint, or off book — can move
+the distribution. Report that as the bound and the assumption-free number beside
+it; on the same reading they were 0.38 against 0.96. The tighter bound inherits
+the book's canonical-path notion of reachability, so a game transposing out of a
+destination into another family by a route no book entry takes would escape it.
+That is narrow, and the alternative is two definitions of reachability in one
+reading.
+
+Report the depth the walk actually reached, too. It normally equals the declared
+depth, since the leading line usually stays above the threshold the whole way,
+but a walk that stopped early is reporting something shallower than its
+configuration claims and nothing else in the record would say so.
+
+The threshold is a measured choice rather than a felt one. Across an order of
+magnitude either side of the declared value, the leading family share moved by
+0.02 tightening once and by 0.002 tightening again: the distribution converges
+well before the cost does, and the point to stop is where further work stops
+changing the answer.
 
 The walk answers a question only the standard-start arm asks. On a prefix arm
 the opening was decided by the view before the model moved, so there is nothing

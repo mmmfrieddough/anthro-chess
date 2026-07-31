@@ -1475,8 +1475,12 @@ def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
         (
             f"    conditional {exact.conditional_distance:.4f}  "
             f"pooled {exact.pooled_distance:.4f}  "
-            f"pruned at most {exact.pruned_mass:.4f} of the mass  "
             f"waypoints {exact.waypoint_mass:.3f}"
+        ),
+        (
+            f"    reached ply {exact.deepest_expanded_ply} of {exact.plies}; "
+            f"uncommitted mass at most {exact.unsettled_mass:.3f} "
+            f"({exact.pruned_mass:.3f} pruned in all)"
         ),
     ]
 

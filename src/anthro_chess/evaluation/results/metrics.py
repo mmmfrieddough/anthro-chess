@@ -1731,6 +1731,17 @@ GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS = _curve_metric(
     ),
 )
 
+GENERATED_PLAY_EXACT_REPERTOIRE_UNSETTLED_MASS = _curve_metric(
+    "generated_play.exact_repertoire_unsettled_mass",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Pruned mass whose label the book had not yet committed, so continuing "
+        "it could still move the distribution. The bound worth reading: mass "
+        "pruned on a destination keeps the label it already has, and the "
+        "assumption-free bound beside it saturates near one on any real policy."
+    ),
+)
+
 GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS = _curve_metric(
     "generated_play.exact_repertoire_waypoint_mass",
     MetricDirection.INFORMATIONAL,
