@@ -71,10 +71,18 @@ class ComparedQuantity(StrEnum):
     termination is measured separately rather than folded in here.
     """
 
-    #: Moves per game. The most legible human-likeness reading there is.
+    #: Moves per game. The most legible human-likeness reading there is, and
+    #: censored by the ply limit: a suite that adjudicates most of its games
+    #: reports a lower bound rather than an estimate, so read this beside the
+    #: unfinished rate.
     GAME_LENGTH = "game-length"
     #: The result distribution. A model that draws far more or far less than
     #: humans of its rating is not playing like them, whichever way it errs.
+    #: Also gated by the unfinished rate: an adjudicated game contributes a
+    #: result humans essentially never produce, so a suite that does not finish
+    #: its games measures the ply limit here rather than the model. Measured on
+    #: the proof run, 72% of generated games hit the limit against 0.075% of
+    #: human games in the same pool.
     RESULT = "result"
     #: Share of plies that revisited a position. Humans repeat, so the target
     #: is the human rate rather than zero.

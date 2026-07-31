@@ -1483,6 +1483,18 @@ Those drop out of the conditional reading rather than being interpolated, and
 the count of unsupported points is reported, because a distance averaged over a
 third of the grid should not read like one averaged over all of it.
 
+**The unfinished rate gates two of the quantities.** Game length and result are
+only about the model when the model's games actually end. Measured on the proof
+run, 72% of generated games hit the ply limit while 0.075% of human games in the
+same pool exceed it, which makes the result distance mostly a statement that the
+model does not finish, and makes the mean length a censored lower bound rather
+than an estimate. Neither is a defect in the comparison — the ply limit is in
+the declared workload and the unfinished rate is reported beside the distances —
+but the two should be read together, and a high unfinished rate means those two
+distances are measuring the ply limit rather than the checkpoint. Repetition,
+cycle, opening, and move diversity are computed from the play itself and stay
+interpretable regardless.
+
 The two arms are not interchangeable for every reading. On the prefix arm the
 opening distribution belongs to the view rather than to the model, because the
 prefix decided the opening before the model moved; measured on a real
