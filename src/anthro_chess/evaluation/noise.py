@@ -26,7 +26,11 @@ import numpy as np
 from pydantic import Field, StrictBool
 
 from anthro_chess.config import ConfigModel
-from anthro_chess.evaluation.results import DataComponent, series_fingerprint
+from anthro_chess.evaluation.results import (
+    DataComponent,
+    WorkloadComponent,
+    series_fingerprint,
+)
 from anthro_chess.evaluation.results.noise import (
     BOOTSTRAP_METHOD,
     DEFAULT_COVERAGE,
@@ -81,6 +85,7 @@ def bootstrap_floors(
     seed: int,
     resamples: int = DEFAULT_RESAMPLES,
     coverage: float = DEFAULT_COVERAGE,
+    workload: WorkloadComponent | None = None,
 ) -> tuple[FloorEntry, ...]:
     """Return one data-sampling floor per metric the scored games support.
 
@@ -88,6 +93,11 @@ def bootstrap_floors(
     reported as zero. That happens for a rule case rare enough that resamples
     frequently contain none of it, and a floor of zero there would license
     every delta as a finding.
+
+    ``workload`` is required by a benchmark whose metrics are execution-
+    sensitive, because a floor has to be stored under the same fingerprint as
+    the measurement it qualifies. Omitting it there would file every floor
+    against a series no measurement belongs to.
     """
 
     if len(totals) < 2:
@@ -124,7 +134,7 @@ def bootstrap_floors(
         entries.append(
             FloorEntry(
                 metric=metric,
-                fingerprint=series_fingerprint(metric, component),
+                fingerprint=series_fingerprint(metric, component, workload),
                 floor=floor_from_dispersion(dispersion, coverage=coverage),
                 dispersion=dispersion,
                 sampling_units=len(totals),
@@ -140,6 +150,7 @@ def characterize_sampling_noise(
     config: NoiseConfig,
     source: str,
     recorded_at: datetime | None = None,
+    workload: WorkloadComponent | None = None,
 ) -> NoiseCharacterization | None:
     """Return the recordable characterization for one evaluation's own noise.
 
@@ -154,6 +165,7 @@ def characterize_sampling_noise(
         seed=config.seed,
         resamples=config.resamples,
         coverage=config.coverage,
+        workload=workload,
     )
     if not entries:
         return None

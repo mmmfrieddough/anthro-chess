@@ -43,6 +43,7 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
             raw_probability_mass=(
                 0.75 if predicate is PositionPredicate.MATE_AVAILABLE else 0.1
             ),
+            best_rank=1 if predicate is PositionPredicate.MATE_AVAILABLE else 4,
         )
         for predicate in inputs.predicates[key]
     )
@@ -59,6 +60,8 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
     assert mate.overall.policy_mass == pytest.approx(0.75)
     assert mate.overall.human_gap == pytest.approx(0.0)
     assert mate.rating_bands["1200_to_1599"] == mate.overall
+    assert mate.mean_best_rank == pytest.approx(1.0)
+    assert mate.rankable_opportunities == 1
 
     totals = report.per_game_totals()
     assert len(totals) == 1

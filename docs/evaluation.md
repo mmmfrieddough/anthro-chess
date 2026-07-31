@@ -879,8 +879,26 @@ passed, could the opponent mate or create stalemate on the reply? The label is
 derived only for evaluation; null is never exposed as a model action. The
 checkpoint runner scores each realized predicate during its existing policy
 pass and writes human rate, legal-greedy model rate, raw policy mass, their
-signed gap, rating-band drill-down, and clustered sample counts through the
-shared result envelope.
+signed gap, the best successful action's rank, rating-band drill-down, and
+clustered sample counts through the shared result envelope.
+
+The rank is reported because mass alone cannot separate a near miss from an
+absence: a predicate whose best action sits second and one whose best action
+sits twentieth can carry the same small probability, and they are different
+findings. It is absent rather than zero where no legal action handles the
+predicate, which is a real state — a threatened mate nothing prevents offers
+nothing to rank.
+
+Material gain is the one implemented heuristic predicate, and it resolves the
+exchange on the target square rather than counting the captured piece. Plain
+counting would admit every capture of a defended piece, which is not a gain at
+all. The resolution uses exact legal move generation rather than a bitboard
+approximation, so pins, discovered attacks, and a king that cannot recapture
+into check are handled by the chess layer instead of by a second implementation
+of the rules. That is a deterministic, identically applied criterion rather than
+a sound one, which is what the reporting rule above requires. It is also far
+more common than the decidable predicates, so it is the one that carries useful
+statistics onto the perturbed arms of the novelty sweep.
 
 ## Decision Decomposition
 
@@ -1022,6 +1040,55 @@ dose-response curve exactly. The rollout form plays whole games against a random
 opponent and is the direct product test. Both are wanted, and they should not be
 conflated: one-sided perturbation leaves the model with a large material edge,
 so conversion there partly measures whether it can finish a won position.
+
+### The Implemented Offline Sweep
+
+`anthro_chess.evaluation.novelty` implements the offline form and
+`anthro eval novelty` is its reading surface. Each arm derives its own
+continuations from the same view of the frozen pool, and each dose writes its
+own result, because a dose is a declared workload rather than a sample size: two
+doses measure different quantities and cannot share a line. The source games
+stay the data component, which is what lets a perturbed arm and the control it
+is read against share evaluation inputs while sitting on different series.
+
+The derivation opens a **window** at a configured onset ply and runs for a
+configured number of the opponent's moves, each followed by the player reply the
+benchmark scores. Holding the window fixed across arms is what makes the control
+and the perturbed arms paired position by position rather than merely drawn from
+the same games.
+
+**Divergence is absorbing**, and that is what the dose actually controls. Once
+one opponent move has been replaced, the human's later opponent moves belong to
+a game that no longer exists, so every later opponent move in the window is
+drawn too. The configured dose is therefore the per-move rate at which
+divergence *starts*, and the realized share of replaced moves is reported beside
+every reading rather than assumed equal to it.
+
+The player's side is the human's own continuation, replayed while it stays
+legal. That keeps the arm model-independent, and it ends the derived game the
+moment the human's move is illegal in the diverged position. The resulting
+truncation is a real selection effect — the surviving continuations are the ones
+whose human replies happened to stay legal — so the share of the control arm's
+positions that survived is reported as its own metric rather than left for a
+reader to infer from differing sample sizes.
+
+**Retention is paired on position**, and this is not a refinement. A perturbed
+arm scores a subset of the control's positions, so reading its mean against the
+control's mean over everything reports the composition difference as a novelty
+effect. On a shakedown reading the artifact was large enough to invert the
+answer: legality appeared to *improve* under perturbation, by seven to ten
+percent at both an early and a late checkpoint. Restricting the control to the
+plies the arm actually reached moved the same readings to roughly one, which is
+the honest result. Every retention here reads the control over the arm's own
+positions.
+
+The material-gain probe is not a private criterion here. It is a heuristic entry
+in the shared predicate registry, so the same pass scores it on every arm and it
+carries a human reference at dose zero, which is the reporting rule heuristic
+predicates require.
+
+`docs/decisions/0024-one-sided-perturbation-derived-novelty.md` owns the
+derivation contract and why the alternatives were rejected.
 
 ## Rating Calibration
 

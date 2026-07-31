@@ -538,6 +538,19 @@ DECISION_DECOMPOSITION_FAMILY = register_family(
     )
 )
 
+NOVELTY_FAMILY = register_family(
+    MetricFamily(
+        identifier="novelty",
+        title="Novelty robustness",
+        summary=(
+            "What survives when the model is taken off distribution by a known "
+            "dose of perturbation. Only measurements whose ground truth comes "
+            "from the chess layer appear here, because human-referenced ones "
+            "are undefined once a prefix stops being what the humans played."
+        ),
+    )
+)
+
 GENERATED_PLAY_FAMILY = register_family(
     MetricFamily(
         identifier="generated-play",
@@ -838,6 +851,7 @@ LEGALITY_MASK_PENALTY_BY_RULE_CASE: Mapping[str, MetricDefinition] = {
 ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
     "mate_available",
     "mate_threatened",
+    "material_gain",
     "only_move",
     "stalemate_available",
     "stalemate_reply",
@@ -912,6 +926,178 @@ ADJUDICATED_HUMAN_GAP: Mapping[str, MetricDefinition] = {
             f"Model selected-action rate minus the held-out human rate for "
             f"{predicate.replace('_', ' ')} positions. Zero is a match; the sign "
             "shows whether the model over- or under-converts."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+ADJUDICATED_BEST_RANK: Mapping[str, MetricDefinition] = {
+    predicate: _adjudicated_metric(
+        predicate,
+        "best_rank",
+        direction=MetricDirection.LOWER_IS_BETTER,
+        summary=(
+            f"Mean legal-masked rank of the best action that handles a "
+            f"{predicate.replace('_', ' ')} position. One means the model "
+            "preferred it; a large rank distinguishes an absence from the near "
+            "miss the policy mass alone cannot separate."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+
+def _novelty_metric(
+    identifier: str,
+    *,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one novelty dose-response metric.
+
+    Every metric here is generated rather than a view pass, and every one is
+    execution-sensitive: the perturbation recipe, seed, onset, and dose are
+    realized inputs to the value, so two doses are two series rather than two
+    readings of one. That is decision 0020's rule applied to derived positions
+    instead of to generated games.
+
+    The source games stay the data component, which is what lets a perturbed
+    arm and the control arm it is read against share evaluation inputs while
+    sitting on different series.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=NOVELTY_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            projection=MOVE_PREDICTION_PROJECTION.name,
+            execution_sensitive=True,
+        )
+    )
+
+
+NOVELTY_LEGAL_MASS = _novelty_metric(
+    "novelty.legal_mass",
+    direction=MetricDirection.HIGHER_IS_BETTER,
+    summary=(
+        "Raw probability mass on legal moves at derived positions, on the arm's "
+        "own dose. Legality needs no target, which is why it survives out of "
+        "distribution at all."
+    ),
+)
+
+NOVELTY_MASK_PENALTY = _novelty_metric(
+    "novelty.mask_penalty",
+    direction=MetricDirection.LOWER_IS_BETTER,
+    summary=(
+        "Negative log of raw legal mass at derived positions on the arm's own dose."
+    ),
+)
+
+NOVELTY_MASK_PENALTY_BY_PHASE: Mapping[str, MetricDefinition] = {
+    phase: _novelty_metric(
+        f"novelty.mask_penalty_{phase}",
+        direction=MetricDirection.LOWER_IS_BETTER,
+        summary=(
+            f"Negative log of raw legal mass at derived {phase} positions. "
+            "Phase dominates the absolute level, so a dose comparison that does "
+            "not hold it fixed reads phase composition as a novelty effect."
+        ),
+    )
+    for phase in PHASE_SLICE_NAMES
+}
+
+NOVELTY_LEGAL_MASS_RETENTION = _novelty_metric(
+    "novelty.legal_mass_retention",
+    direction=MetricDirection.HIGHER_IS_BETTER,
+    summary=(
+        "Legal mass at this dose over the same checkpoint's unperturbed rate on "
+        "the same games. Perturbed arms have no human reference, so the model's "
+        "own control arm is the only honest one; an absolute rate there would "
+        "quietly become a correctness gate."
+    ),
+)
+
+NOVELTY_MASK_PENALTY_RATIO = _novelty_metric(
+    "novelty.mask_penalty_ratio",
+    direction=MetricDirection.LOWER_IS_BETTER,
+    summary=(
+        "Mask penalty at this dose over the same checkpoint's unperturbed mask "
+        "penalty on the same games. One means the dose cost nothing."
+    ),
+)
+
+NOVELTY_REALIZED_DOSE = _novelty_metric(
+    "novelty.realized_dose",
+    direction=MetricDirection.INFORMATIONAL,
+    summary=(
+        "Share of the opponent plies past the onset that were actually replaced "
+        "by a random legal move. The configured dose is a rate, so the realized "
+        "one is what the arm was measured at."
+    ),
+)
+
+NOVELTY_DERIVED_PLY_RETENTION = _novelty_metric(
+    "novelty.derived_ply_retention",
+    direction=MetricDirection.INFORMATIONAL,
+    summary=(
+        "Scored positions on this arm over those on the control arm. A "
+        "perturbation can make the human's own next move illegal, which ends "
+        "the derivation, so this reports how much of the source play survived "
+        "and how selected the surviving positions are."
+    ),
+)
+
+NOVELTY_PREDICATE_SELECTED_RATE: Mapping[str, MetricDefinition] = {
+    predicate: _novelty_metric(
+        f"novelty.{predicate}_selected_rate",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Rate at which the model's legal greedy action handles "
+            f"{predicate.replace('_', ' ')} positions at this dose. Absolute "
+            "rates are readable against the human reference only at dose zero."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+NOVELTY_PREDICATE_POLICY_MASS: Mapping[str, MetricDefinition] = {
+    predicate: _novelty_metric(
+        f"novelty.{predicate}_policy_mass",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Raw policy mass on actions that handle "
+            f"{predicate.replace('_', ' ')} positions at this dose."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+NOVELTY_PREDICATE_BEST_RANK: Mapping[str, MetricDefinition] = {
+    predicate: _novelty_metric(
+        f"novelty.{predicate}_best_rank",
+        direction=MetricDirection.LOWER_IS_BETTER,
+        summary=(
+            f"Mean legal-masked rank of the best action handling a "
+            f"{predicate.replace('_', ' ')} position at this dose, so a near "
+            "miss stays distinguishable from an absence."
+        ),
+    )
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
+NOVELTY_PREDICATE_RETENTION: Mapping[str, MetricDefinition] = {
+    predicate: _novelty_metric(
+        f"novelty.{predicate}_retention",
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        summary=(
+            f"Selected-action rate on {predicate.replace('_', ' ')} positions at "
+            "this dose over the same checkpoint's unperturbed rate. This is the "
+            "capability question the dose sweep exists to ask."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
