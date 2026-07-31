@@ -1853,6 +1853,18 @@ direction anyway: the question is which human population a checkpoint's endings
 resemble. A class no reference game belongs to reports as unavailable rather
 than as a distance over nothing.
 
+The mix's headline distance is **blind to redistribution among categories the
+model already over-produces**, and that is worth knowing before reading it. A
+total-variation distance is the sum of one side's positive deviations, so moving
+mass between two categories the model over-produces leaves it exactly unchanged.
+The first shakedown reading hit this squarely: a checkpoint pair whose generated
+mix went from all resignation to 94% resignation and 6% ply limit reported the
+identical distance to sixteen significant figures, because both categories were
+above their human share. The reading is not wrong and the shared shape is not
+the wrong one to use — the category drill-down and the rating-variation metric
+both moved — but the scalar alone will understate a real change in composition,
+which is why it is read with its drill-down rather than on its own.
+
 Every reading with no population behind it reports an explicit unavailable with
 its reason rather than a zero. This matters most where a zero is a plausible
 measurement: a model that never resigned has no median deficit, and writing zero
