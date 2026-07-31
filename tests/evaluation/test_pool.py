@@ -145,10 +145,13 @@ def test_coverage_makes_thin_slices_visible(
     }
     assert coverage["results"] == {"0-1": 1, "1-0": 1}
     assert coverage["clock_presence_games"] == {"absent": 1, "present": 1}
-    assert coverage["color_positions"] == {"black": 6, "white": 6}
-    assert sum(coverage["phase_positions"].values()) == 12
-    assert sum(coverage["legal_move_count_positions"].values()) == 12
-    assert coverage["rating_band_positions"] == {"1200_to_1599": 4, "under_1200": 8}
+    # Thirteen scored positions over twelve plies: one pool game ends in a
+    # resignation its loser made on their own turn, which is a decision the
+    # model is scored at even though it moves nothing.
+    assert coverage["color_positions"] == {"black": 6, "white": 7}
+    assert sum(coverage["phase_positions"].values()) == 13
+    assert sum(coverage["legal_move_count_positions"].values()) == 13
+    assert coverage["rating_band_positions"] == {"1200_to_1599": 5, "under_1200": 8}
     assert coverage["positions_without_rating"] == 0
 
 

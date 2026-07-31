@@ -13,11 +13,12 @@ from anthro_chess.chess import (
     action_vocabulary_identity,
     decode_move,
     encode_move,
+    is_terminal_action,
     legal_action_ids,
 )
 
 ENCODING_NAME = "anthro-per-ply"
-ENCODING_VERSION = 3
+ENCODING_VERSION = 4
 BOARD_SQUARE_COUNT = 64
 
 _ENCODING_SCHEMA = {
@@ -41,8 +42,11 @@ _ENCODING_SCHEMA = {
     },
     "trajectory": {
         "previous_action_id": "null on the first ply, otherwise action id",
-        "target_action_id": "action id",
-        "legal_action_ids": "sorted action ids before the target move",
+        "target_action_id": "action id; a terminal action only as the last step",
+        "legal_action_ids": (
+            "sorted action ids enabled before the target action: every legal "
+            "move, resignation, and a draw claim when the rules allow one"
+        ),
     },
     "context": {
         "nullable_integer": "nonnegative integer when present, otherwise null",
@@ -222,7 +226,19 @@ def encoding_identity() -> dict[str, object]:
 
 
 def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
-    """Convert one normalized game into exact, aligned per-ply examples."""
+    """Convert one normalized game into exact, aligned per-ply examples.
+
+    A terminal action is a decision like any other and gets its own timestep,
+    read from the position the last move left. It changes nothing on the board,
+    so it can only be a game's final action.
+
+    The enabled set every step is scored against is what the player to move
+    could actually have chosen: the legal moves, resignation, and a draw claim
+    where the rules already allow one. Terminal actions are enabled throughout
+    rather than only where one was taken, so a model that puts mass on
+    resigning mid-game is measured as making an available choice rather than an
+    illegal one.
+    """
 
     try:
         board = chess.Board(game.initial_position)
@@ -235,16 +251,28 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
     }
     encodings: list[PlyEncoding] = []
     previous_action_id: int | None = None
+    final_index = len(game.action_ids) - 1
 
     for ply_index, target_action_id in enumerate(game.action_ids):
-        try:
-            target_move = decode_move(target_action_id)
-        except ValueError as error:
+        terminal = is_terminal_action(target_action_id)
+        if terminal and ply_index != final_index:
             raise EncodingError(
-                f"action at ply {ply_index} is not a board move: {target_action_id}"
-            ) from error
+                f"terminal action at ply {ply_index} is not the game's last action"
+            )
+        target_move = None
+        if not terminal:
+            try:
+                target_move = decode_move(target_action_id)
+            except ValueError as error:
+                raise EncodingError(
+                    f"action at ply {ply_index} is not a board move: {target_action_id}"
+                ) from error
 
-        legal_ids = legal_action_ids(board)
+        legal_ids = legal_action_ids(
+            board,
+            include_resignation=True,
+            include_draw_claim=True,
+        )
         if target_action_id not in legal_ids:
             raise EncodingError(
                 f"action at ply {ply_index} is illegal in the reconstructed position"
@@ -277,6 +305,8 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
                 target_clock_after_move_ms=target_clock,
             )
         )
+        if target_move is None:
+            break
         clocks_by_color[player_color] = target_clock
         board.push(target_move)
         previous_action_id = target_action_id

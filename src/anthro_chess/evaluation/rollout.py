@@ -1635,6 +1635,7 @@ def _execution_record(
             "swap_colors": config.generation.swap_colors,
             "claim_draws": config.generation.claim_draws,
             "resignation_enabled": config.runtime.resignation_enabled,
+            "draw_claim_enabled": config.runtime.draw_claim_enabled,
             "opening_level": config.opening_level.value,
         },
     )

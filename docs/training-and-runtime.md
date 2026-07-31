@@ -510,8 +510,8 @@ When it is the bot's turn:
    cache later only if measured runtime performance requires it. `anthro eval
    inference` is the measurement that answers that, and it reports latency
    against history depth, which is where recomputation shows up.
-4. Mask illegal moves while preserving enabled non-move actions such as
-   resignation.
+4. Mask illegal moves while preserving the enabled terminal actions the
+   position allows.
 5. Sample a valid action using temperature.
 6. If timing is enabled, condition the time head on the sampled action and
    sample move time from that action-conditional time distribution.
@@ -524,7 +524,8 @@ When it is the bot's turn:
 The runtime must:
 
 - never submit illegal moves;
-- support resignation as a valid game-ending action when enabled;
+- support resignation and draw claims as valid game-ending actions when
+  enabled;
 - support untimed play;
 - respect clocks when timing is enabled;
 - sample timing plausibly rather than always moving at fixed intervals when
@@ -537,9 +538,9 @@ this boundary. A game session owns exact board state and full move history,
 accepts observed legal moves from either player, applies Anthro's target rating
 only to its current decision context, masks and samples model-runner logits,
 and updates the game with the selected valid action. Strict code-owned settings
-define rating, temperature, the random-seed policy, and whether resignation is
-enabled. Timing and preference settings remain future additions rather than
-placeholder inputs or fabricated clock values.
+define rating, temperature, the random-seed policy, and whether each terminal
+action is enabled. Timing and preference settings remain future additions
+rather than placeholder inputs or fabricated clock values.
 
 A session can also score an enabled action without deciding anything, leaving the
 board and the random stream untouched. That is one call rather than a second

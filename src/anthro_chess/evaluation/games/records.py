@@ -33,8 +33,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
     MOVE_ACTION_COUNT,
-    RESIGNATION_ACTION_ID,
     decode_move,
+    is_terminal_action,
 )
 from anthro_chess.evaluation.results.records import (
     CheckpointReference,
@@ -68,6 +68,10 @@ class GameTermination(StrEnum):
     limit that stops an unfinished game. Both are distinguished from a rule
     ending because a suite that adjudicates half its games is reporting
     something different from one that plays them out.
+
+    A claimed draw keeps the rule that made it claimable rather than becoming a
+    category of its own, so a seat's claim and a harness claim of the same
+    position are counted as the same ending.
     """
 
     CHECKMATE = "checkmate"
@@ -82,7 +86,12 @@ class GameTermination(StrEnum):
 
     @property
     def claimed(self) -> bool:
-        """Return whether this ending needed a player to claim a draw."""
+        """Return whether this ending needed a player to claim a draw.
+
+        Who claimed is a separate question: a seat choosing the draw-claim
+        action and the harness settling the same position both land here, and
+        ``GameOutcome.adjudicated`` is what tells them apart.
+        """
 
         return self in _CLAIMED_TERMINATIONS
 
@@ -230,13 +239,13 @@ class GameRecord(GameRecordModel):
     def _validate_history(self) -> GameRecord:
         if self.prefix_plies > len(self.action_ids):
             raise ValueError("a prefix cannot be longer than the game it starts")
-        resignations = [
+        terminal = [
             index
             for index, action_id in enumerate(self.action_ids)
-            if action_id == RESIGNATION_ACTION_ID
+            if is_terminal_action(action_id)
         ]
-        if resignations and resignations != [len(self.action_ids) - 1]:
-            raise ValueError("a resignation can only be a game's final action")
+        if terminal and terminal != [len(self.action_ids) - 1]:
+            raise ValueError("a terminal action can only be a game's final action")
         expected_plies = list(range(self.prefix_plies, len(self.action_ids)))
         if [decision.ply_index for decision in self.decisions] != expected_plies:
             raise ValueError("decisions must cover every ply past the prefix, in order")
@@ -259,7 +268,7 @@ class GameRecord(GameRecordModel):
 
     @property
     def move_action_ids(self) -> tuple[int, ...]:
-        """Return the move actions only, dropping a terminal resignation."""
+        """Return the move actions only, dropping any terminal action."""
 
         return tuple(
             action_id for action_id in self.action_ids if action_id < MOVE_ACTION_COUNT
@@ -398,12 +407,12 @@ def _slot_at(root: chess.Board, ply_index: int) -> chess.Color:
 def _replay(board: chess.Board, action_ids: Sequence[int]) -> None:
     """Apply a recorded action sequence to ``board``, rejecting illegal play.
 
-    A terminal resignation ends the replay: it is an action rather than a move,
-    so it leaves the position where the last move left it.
+    A terminal action ends the replay: it is an action rather than a move, so
+    it leaves the position where the last move left it.
     """
 
     for ply_index, action_id in enumerate(action_ids):
-        if action_id == RESIGNATION_ACTION_ID:
+        if is_terminal_action(action_id):
             return
         move = decode_move(action_id)
         if move not in board.legal_moves:

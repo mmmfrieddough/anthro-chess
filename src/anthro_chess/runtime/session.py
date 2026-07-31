@@ -14,6 +14,7 @@ from torch import Tensor
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
     RESIGNATION_ACTION_ID,
     decode_move,
     legal_action_ids,
@@ -72,7 +73,19 @@ class ResignationAction:
     action_id: int = RESIGNATION_ACTION_ID
 
 
-GameAction: TypeAlias = MoveAction | ResignationAction
+@dataclass(frozen=True)
+class DrawClaimAction:
+    """A learned draw claim selected and applied by the session.
+
+    Only offered where exact chess logic already allows the claim, so applying
+    one ends the game as a draw without the session deciding anything the rules
+    did not.
+    """
+
+    action_id: int = DRAW_CLAIM_ACTION_ID
+
+
+GameAction: TypeAlias = MoveAction | ResignationAction | DrawClaimAction
 
 
 @dataclass(frozen=True)
@@ -187,6 +200,7 @@ class GameSession:
         self._generator = torch.Generator(device="cpu")
         self._history = DecisionHistory()
         self._resigned_by: chess.Color | None = None
+        self._claimed_draw_by: chess.Color | None = None
         self._resolved_seed = 0
         self.reset(initial_fen=initial_fen, moves=moves)
 
@@ -227,10 +241,26 @@ class GameSession:
         return self._resigned_by
 
     @property
-    def is_terminal(self) -> bool:
-        """Return whether no further session actions are valid."""
+    def claimed_draw_by(self) -> chess.Color | None:
+        """Return the color that claimed a draw through this session, if any."""
 
-        return self._resigned_by is not None or self._board.is_game_over()
+        return self._claimed_draw_by
+
+    @property
+    def is_terminal(self) -> bool:
+        """Return whether no further session actions are valid.
+
+        A game ends on a rule outcome or on either terminal action a seat
+        selected. ``is_game_over`` is left claim-free on purpose: a claimable
+        position is playable until somebody claims it, and claiming is the
+        model's decision rather than the session's.
+        """
+
+        return (
+            self._resigned_by is not None
+            or self._claimed_draw_by is not None
+            or self._board.is_game_over()
+        )
 
     def reset(
         self,
@@ -252,6 +282,7 @@ class GameSession:
             raise SessionStateError(str(error)) from error
         self._history = history
         self._resigned_by = None
+        self._claimed_draw_by = None
         self._begin_random_stream()
         logger.debug(
             "Reset game session with %s observed plies",
@@ -285,6 +316,7 @@ class GameSession:
         replaced = not (same_root and reused == current_plies)
 
         self._resigned_by = None
+        self._claimed_draw_by = None
         logger.debug(
             "Synced position: %s, reused %s of %s plies",
             "replaced" if replaced else "append-only",
@@ -372,6 +404,11 @@ class GameSession:
             logger.debug("Selected resignation action")
             return ActionDecision(action=ResignationAction(), policy=policy)
 
+        if action_id == DRAW_CLAIM_ACTION_ID:
+            self._claimed_draw_by = self._board.turn
+            logger.debug("Selected draw-claim action")
+            return ActionDecision(action=DrawClaimAction(), policy=policy)
+
         move = decode_move(action_id)
         if move not in self._board.legal_moves:
             raise ActionSelectionError(
@@ -425,6 +462,7 @@ class GameSession:
         enabled_ids = legal_action_ids(
             self._board,
             include_resignation=self.config.resignation_enabled,
+            include_draw_claim=self.config.draw_claim_enabled,
         )
         return validated, enabled_ids
 

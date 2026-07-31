@@ -235,8 +235,8 @@ better control surface if UCI GUI options are too limited.
 
 ## Non-Move Game Actions
 
-The core Anthro runtime may support resignation and draw claims as learned game
-actions.
+The core Anthro runtime supports resignation and draw claims as learned game
+actions, each behind its own runtime setting and both off by default.
 
 Standard UCI carries neither. Every `go` command is expected to end with a
 `bestmove` response, and the protocol has no engine-to-GUI command for
@@ -245,9 +245,10 @@ narrowing relative to the older Chess Engine Communication Protocol, which does
 give the engine `resign` and `offer draw`; UCI moved those decisions to the GUI.
 Extension proposals exist but are not portable.
 
-UCI mode should therefore disable non-move actions by default, or handle them
-only through a host-specific extension. Native Anthro interfaces may expose them
-directly.
+Portable UCI mode therefore rejects a configuration that enables either action
+rather than disabling it silently, and refuses to answer a terminal action as
+though it were a move. A host-specific extension or a native Anthro interface
+may expose them directly.
 
 The cost of disabling differs between the two. Suppressing resignation changes
 observable behavior, because the bot plays on in positions where a human would

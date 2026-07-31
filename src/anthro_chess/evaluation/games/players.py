@@ -24,7 +24,7 @@ import chess
 from chess import engine as chess_engine
 from torch import Tensor
 
-from anthro_chess.chess import RESIGNATION_ACTION_ID, encode_move, legal_action_ids
+from anthro_chess.chess import encode_move, legal_action_ids
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.games.records import DecisionPolicy, SeatRecord
 from anthro_chess.evaluation.results.records import CheckpointReference
@@ -33,7 +33,6 @@ from anthro_chess.runtime import (
     BatchedActionModelRunner,
     DecisionRuntimeError,
     GameSession,
-    MoveAction,
     RuntimeConfig,
 )
 
@@ -244,13 +243,8 @@ class ModelSeat:
             decision = self._session.decide_from_logits(logits)
         except DecisionRuntimeError as error:
             raise PlayerError(f"model seat cannot decide: {error}") from error
-        action_id = (
-            decision.action.action_id
-            if isinstance(decision.action, MoveAction)
-            else RESIGNATION_ACTION_ID
-        )
         return SeatDecision(
-            action_id=action_id,
+            action_id=decision.action.action_id,
             policy=DecisionPolicy.from_selection(decision.policy),
         )
 
@@ -262,8 +256,9 @@ class RandomPlayer:
     """A player choosing uniformly among the position's legal moves.
 
     This is the control arm for robustness work rather than a strength
-    baseline. It never resigns, because a random resignation would end games
-    at a rate that has nothing to do with the position.
+    baseline. It never takes a terminal action, because randomly resigning or
+    claiming would end games at a rate that has nothing to do with the
+    position.
     """
 
     def __init__(self, *, label: str = "uniform-random") -> None:

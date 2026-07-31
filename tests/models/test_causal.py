@@ -73,7 +73,11 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     assert batch.inputs.target_rating.present[0].tolist() == [True, False, True]
     assert batch.inputs.target_rating.values[0].tolist() == [1500, 0, 1500]
     assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
-    assert tuple(batch.legal_action_ids[0][0]) == legal_action_ids(initial_board)
+    assert tuple(batch.legal_action_ids[0][0]) == legal_action_ids(
+        initial_board,
+        include_resignation=True,
+        include_draw_claim=True,
+    )
     assert batch.game_ids[0].tolist() == [100, 100, 100]
     assert batch.ply_indices[0].tolist() == [0, 1, 2]
     assert batch.attention_mask[1].tolist() == [True, False, False]

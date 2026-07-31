@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
     RESIGNATION_ACTION_ID,
     encode_move,
 )
@@ -20,6 +21,7 @@ from anthro_chess.data import DecisionContext, build_decision_context
 from anthro_chess.data import encoding as encoding_module
 from anthro_chess.runtime import (
     ActionSelectionError,
+    DrawClaimAction,
     GameSession,
     MoveAction,
     ResignationAction,
@@ -110,6 +112,86 @@ def test_enabled_resignation_is_preserved_and_ends_the_session() -> None:
     assert session.move_history == ()
     with pytest.raises(SessionStateError, match="terminal"):
         session.choose_action()
+
+
+def test_an_enabled_draw_claim_needs_the_rules_to_allow_it() -> None:
+    """The dial cannot make an unclaimable position claimable."""
+
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[DRAW_CLAIM_ACTION_ID] = 100.0
+    logits[encode_move(chess.Move.from_uci("g1f3"))] = 10.0
+    session = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=0.0, draw_claim_enabled=True),
+    )
+
+    action = session.choose_action()
+
+    assert isinstance(action, MoveAction)
+    assert action.move == chess.Move.from_uci("g1f3")
+    assert session.claimed_draw_by is None
+
+
+def test_an_available_draw_claim_is_selectable_and_ends_the_session() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[DRAW_CLAIM_ACTION_ID] = 10.0
+    session = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=0.0, draw_claim_enabled=True),
+        moves=_repeated_position_moves(),
+    )
+
+    action = session.choose_action()
+
+    assert action == DrawClaimAction()
+    assert session.claimed_draw_by == chess.WHITE
+    assert session.is_terminal
+    # A claim moves nothing, so the game keeps exactly the plies it had.
+    assert len(session.move_history) == len(_repeated_position_moves())
+    with pytest.raises(SessionStateError, match="terminal"):
+        session.choose_action()
+
+
+def test_a_claimable_position_stays_playable_until_somebody_claims_it() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[encode_move(chess.Move.from_uci("d2d4"))] = 10.0
+    session = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=0.0, draw_claim_enabled=True),
+        moves=_repeated_position_moves(),
+    )
+
+    assert not session.is_terminal
+
+    action = session.choose_action()
+
+    assert isinstance(action, MoveAction)
+    assert not session.is_terminal
+
+
+def test_a_new_game_clears_a_claimed_draw() -> None:
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[DRAW_CLAIM_ACTION_ID] = 10.0
+    session = GameSession(
+        StubRunner(logits),
+        config=RuntimeConfig(temperature=0.0, draw_claim_enabled=True),
+        moves=_repeated_position_moves(),
+    )
+    session.choose_action()
+
+    session.reset()
+
+    assert session.claimed_draw_by is None
+    assert not session.is_terminal
+
+
+def _repeated_position_moves() -> tuple[chess.Move, ...]:
+    """Return moves reaching the starting position for the third time."""
+
+    return tuple(
+        chess.Move.from_uci(text)
+        for text in ("g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8")
+    )
 
 
 def test_seeded_sampling_is_repeatable_and_reset_restarts_the_stream() -> None:

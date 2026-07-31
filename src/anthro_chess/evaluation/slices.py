@@ -14,6 +14,7 @@ from enum import StrEnum
 
 import chess
 
+from anthro_chess.chess import is_terminal_action
 from anthro_chess.data import BOARD_SQUARE_COUNT, BoardEncoding, PlyEncoding
 
 SLICE_SCHEME_VERSION = 1
@@ -488,13 +489,21 @@ def position_slices(
     ply: PlyEncoding,
     rating_bands: Sequence[RatingBand] = DEFAULT_RATING_BANDS,
 ) -> PositionSlices:
-    """Return every derived slice label for one encoded ply."""
+    """Return every derived slice label for one encoded ply.
 
+    The move count is the position's branching factor, so the terminal actions
+    an encoding also enables are left out: they are available in every position
+    and would shift every bucket by a constant.
+    """
+
+    legal_moves = sum(
+        1 for action_id in ply.legal_action_ids if not is_terminal_action(action_id)
+    )
     return PositionSlices(
         phase=game_phase(ply.board.piece_ids, ply.board.fullmove_number),
         color=board_color(ply.board),
-        legal_move_count=len(ply.legal_action_ids),
-        legal_move_count_bucket=legal_move_count_bucket(len(ply.legal_action_ids)),
+        legal_move_count=legal_moves,
+        legal_move_count_bucket=legal_move_count_bucket(legal_moves),
         rating_band=rating_band_name(ply.target_rating, rating_bands),
     )
 

@@ -10,7 +10,12 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 import zstandard
 
-from anthro_chess.chess import decode_move
+from anthro_chess.chess import (
+    DRAW_CLAIM_ACTION_ID,
+    RESIGNATION_ACTION_ID,
+    decode_move,
+    is_terminal_action,
+)
 from anthro_chess.config import load_config
 from anthro_chess.data import (
     DataPreparationError,
@@ -490,6 +495,129 @@ def test_the_abandonment_threshold_is_configurable(tmp_path: Path) -> None:
     coverage = _read_json(result.manifest_path)["coverage"]["termination"]
     assert coverage["category_games"]["abandonment"] == 0
     assert coverage["category_games"]["clock_expiry"] == 2
+
+
+def _claimed_draw_corpus() -> str:
+    return (
+        # Eight reversible plies return the starting position for a third time,
+        # so the player to move can claim without announcing anything.
+        _ended_game(
+            site="claimed-on-turn",
+            result="1/2-1/2",
+            movetext="1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8",
+            termination="Normal",
+        )
+        # One ply earlier the claim exists only alongside the move that would
+        # repeat the position, which the claim action cannot express.
+        + _ended_game(
+            site="claimed-with-announced-move",
+            result="1/2-1/2",
+            movetext="1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1",
+            termination="Normal",
+        )
+    )
+
+
+def test_appends_a_terminal_action_for_a_decision_made_on_the_players_turn(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    resigned = rows["resigned-on-turn"]
+    assert resigned["terminal_action_status"] == "appended"
+    assert resigned["action_ids"][-1] == RESIGNATION_ACTION_ID
+    # The ply count stays the move count, so a terminal action never changes a
+    # game's length or the prefixes taken from it.
+    assert resigned["ply_count"] == 3
+    assert len(resigned["action_ids"]) == 4
+    # The per-ply columns stay aligned with the actions, with no invented clock.
+    for column in ("clock_remaining_ms", "clock_status", "clock_precision_ms"):
+        assert len(resigned[column]) == 4
+    assert resigned["clock_remaining_ms"][-1] is None
+    assert resigned["clock_status"][-1] == "unavailable"
+    assert resigned["clock_precision_ms"][-1] is None
+
+
+def test_omits_a_terminal_action_the_player_could_not_have_chosen(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    off_turn = rows["resigned-off-turn"]
+    assert off_turn["terminal_action_status"] == "omitted_opponent_to_move"
+    assert len(off_turn["action_ids"]) == off_turn["ply_count"] == 2
+    assert all(not is_terminal_action(action) for action in off_turn["action_ids"])
+    # An ending nobody decided is a different statement from an omission.
+    assert rows["mated"]["terminal_action_status"] == "not_applicable"
+    assert rows["flagged"]["terminal_action_status"] == "not_applicable"
+
+
+def test_appends_a_draw_claim_only_where_the_final_position_allows_one(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "claims.pgn"
+    input_path.write_text(_claimed_draw_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = {
+        row["source_game_key"]: row
+        for row in pq.read_table(result.normalized_path).to_pylist()
+    }
+    claimed = rows["claimed-on-turn"]
+    assert claimed["termination_category"] == "threefold_repetition"
+    assert claimed["terminal_action_status"] == "appended"
+    assert claimed["action_ids"][-1] == DRAW_CLAIM_ACTION_ID
+    assert claimed["ply_count"] == 8
+
+    announced = rows["claimed-with-announced-move"]
+    assert announced["termination_category"] == "threefold_repetition"
+    assert announced["terminal_action_status"] == "omitted_claim_unavailable"
+    assert len(announced["action_ids"]) == announced["ply_count"] == 7
+
+
+def test_reports_terminal_action_composition_beside_the_endings(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "endings.pgn"
+    input_path.write_text(_ending_corpus(), encoding="utf-8")
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    coverage = _read_json(result.manifest_path)["coverage"]["termination"]
+    assert coverage["terminal_action_games"] == {
+        "appended": 1,
+        "not_applicable": 4,
+        "omitted_opponent_to_move": 1,
+        "omitted_claim_unavailable": 0,
+    }
+    # Clock coverage still describes the moves the source reported, so the
+    # appended action's empty observation is not counted as a source gap.
+    clock_statuses = _read_json(result.manifest_path)["coverage"]["clock"][
+        "status_plies"
+    ]
+    assert (
+        sum(clock_statuses.values())
+        == _read_json(result.manifest_path)["games"]["plies"]["total"]
+    )
 
 
 def test_derives_an_ending_from_the_position_when_the_source_is_silent(

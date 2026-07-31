@@ -475,9 +475,27 @@ whether the ending was attributable to the side to move. Terminal actions
 belong in the action sequence when the game ended through a player's decision
 and that player held the move. Resignations made on the opponent's clock, which
 some platforms allow, have no decision point to attach to and are excluded from
-the action sequence while the game's moves are kept. Endings no player decided
-are distinguished from decisions made off turn, so the exclusion is auditable
-rather than silent.
+the action sequence while the game's moves are kept. A claimed draw is excluded
+for a second reason as well: the derivation accepts a claim the rules allow
+only alongside an announced move, which the claim action cannot express, so the
+action is appended only when the final position is claimable on its own. Each
+game records whether a terminal action was appended and, when it was not, why,
+so every exclusion is auditable rather than silent. Endings no player decided
+stay distinct from decisions made off turn.
+
+A terminal action is an action but not a ply. The stored ply count is the move
+count, so appending one never changes a game's length, its ply filters, or the
+prefix depth a benchmark takes from it. The per-ply columns stay aligned
+one-to-one with the action sequence, so a trailing terminal action carries an
+explicitly unavailable clock observation rather than a synthesized one, and
+coverage over what the source reported counts move plies only.
+
+Per-ply encoding scores a terminal action at the position the last move left,
+against the actions that position enabled: its legal moves, resignation, and a
+draw claim where the rules already allow one. Terminal actions are enabled at
+every step rather than only where one was taken, because a player could always
+have resigned; a model putting probability on resigning mid-game is making an
+available choice rather than an illegal one.
 
 Abandonment and clock expiry are not resignations and must not be relabelled as
 such, even where clock traces make abandonment identifiable. Abandonment keeps

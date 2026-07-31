@@ -155,6 +155,16 @@ Draw claims will be heavily outnumbered in training. A model that rarely claims
 in timed play is behaving like the humans in the corpus; the untimed
 non-termination rate is the reading that matters.
 
+Implementing the claim narrowed what "claim availability" means. FIDE also lets
+a player claim alongside an announced move that would create the repetition or
+fifty-move condition, and the derivation over final positions accepts endings
+of that shape. The action carries no move, so it can only represent the
+condition the current position already satisfies. Claims of the announced-move
+form are therefore recorded as an ending whose terminal action was omitted, and
+the mask never offers a claim in a position where the claim would need a move
+to go with it. Measured over 40,000 real April 2017 blitz games, that form was
+11 of 575 claimed draws.
+
 ## Reopening
 
 Reopen the abandonment decision if a source that distinguishes abandonment from

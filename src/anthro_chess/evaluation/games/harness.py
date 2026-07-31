@@ -24,7 +24,13 @@ from typing import Annotated, Any
 import chess
 from pydantic import Field, StrictBool, StrictInt
 
-from anthro_chess.chess import RESIGNATION_ACTION_ID, decode_move
+from anthro_chess.chess import (
+    DRAW_CLAIM_ACTION_ID,
+    RESIGNATION_ACTION_ID,
+    decode_move,
+    draw_claim_available,
+    is_terminal_action,
+)
 from anthro_chess.config import ConfigModel
 from anthro_chess.evaluation.games.players import (
     BatchingGamePlayer,
@@ -82,8 +88,8 @@ class StartPosition:
         except ValueError as error:
             raise GenerationError(f"invalid initial position: {error}") from error
         for ply_index, action_id in enumerate(self.prefix_action_ids):
-            if action_id == RESIGNATION_ACTION_ID:
-                raise GenerationError("a prefix cannot contain a resignation")
+            if is_terminal_action(action_id):
+                raise GenerationError("a prefix cannot contain a terminal action")
             move = decode_move(action_id)
             if move not in board.legal_moves:
                 raise GenerationError(
@@ -154,9 +160,10 @@ class GenerationConfig(ConfigModel):
     #: with black would otherwise show up as a property of the matchup.
     swap_colors: StrictBool = True
     #: Whether the harness claims a draw the rules make claimable. Off by
-    #: default: the model has no draw-claim action, so claiming for it would
-    #: report the harness's policy as the model's behavior. Games still end on
-    #: their own through the fivefold and seventy-five-move rules.
+    #: default: claiming for a seat would report the harness's policy as the
+    #: model's behavior, and the seats have a draw-claim action of their own to
+    #: use or decline. Games still end on their own through the fivefold and
+    #: seventy-five-move rules.
     claim_draws: StrictBool = False
     #: How many games are played at once. Concurrent games are advanced in
     #: lock step so one player's pending decisions can be resolved together;
@@ -430,6 +437,9 @@ def _apply(pending: _PendingDecision, decision: SeatDecision) -> None:
             adjudicated=False,
         )
         return
+    if decision.action_id == DRAW_CLAIM_ACTION_ID:
+        run.outcome = _claim_outcome(state.board, pending.slot)
+        return
     move = decode_move(decision.action_id)
     if move not in state.board.legal_moves:
         raise PlayerError(
@@ -437,6 +447,27 @@ def _apply(pending: _PendingDecision, decision: SeatDecision) -> None:
             "position it was asked about"
         )
     state.board.push(move)
+
+
+def _claim_outcome(board: chess.Board, slot: PlayerSlot) -> GameOutcome:
+    """Return the ending a seat's draw claim produced.
+
+    The claim keeps the rule that made it claimable, so a claimed repetition is
+    counted as a repetition however it was settled. It is not adjudicated: the
+    seat chose it, which is the whole difference from the harness claiming on
+    the seats' behalf.
+    """
+
+    if not draw_claim_available(board):
+        raise PlayerError(
+            f"seat {slot} claimed a draw in a position the rules do not allow one in"
+        )
+    termination = (
+        GameTermination.THREEFOLD_REPETITION
+        if board.is_repetition(3)
+        else GameTermination.FIFTY_MOVES
+    )
+    return GameOutcome(result="1/2-1/2", termination=termination, adjudicated=False)
 
 
 def _finished_record(run: _GameRun) -> GameRecord:

@@ -25,6 +25,7 @@ from anthro_chess.data import (
     collate_sequences,
     derive_termination,
     encode_game,
+    terminal_action_for,
 )
 from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import (
@@ -97,16 +98,30 @@ def _normalized_row(
     moves = OPENING_MOVES[:plies] if moves is None else moves
     status = "present"
     clock_trace = [290_000] * len(moves) if clocks else [None] * len(moves)
-    # Derive the ending the same way preparation would, so a fixture row never
-    # carries a category its own result and moves could not produce.
+    clock_statuses = [status if clocks else "unavailable"] * len(moves)
+    clock_precisions: list[int | None] = [100 if clocks else None] * len(moves)
+    # Derive the ending and its terminal action the same way preparation would,
+    # so a fixture row never carries a category its own result and moves could
+    # not produce, or an action sequence preparation would not have written.
+    final_board = _final_board(moves, initial_position)
     termination = derive_termination(
         result=result,
         source_termination="normal",
-        final_board=_final_board(moves, initial_position),
+        final_board=final_board,
         clock_remaining_ms=clock_trace,
         time_initial_ms=300_000,
         abandonment_clock_share=TerminationConfig().abandonment_clock_share,
     )
+    action_ids = list(_action_ids(moves))
+    terminal_action_id, terminal_action_status = terminal_action_for(
+        termination,
+        final_board,
+    )
+    if terminal_action_id is not None:
+        action_ids.append(terminal_action_id)
+        clock_trace = [*clock_trace, None]
+        clock_statuses.append("unavailable")
+        clock_precisions.append(None)
     return {
         "schema_version": SCHEMA_VERSION,
         "game_id": game_id,
@@ -119,8 +134,9 @@ def _normalized_row(
         "termination_status": status,
         "termination_category": termination.category.value,
         "termination_by_side_to_move": termination.by_side_to_move,
+        "terminal_action_status": terminal_action_status.value,
         "ply_count": len(moves),
-        "action_ids": list(_action_ids(moves)),
+        "action_ids": action_ids,
         "white_source_rating": rating,
         "white_source_rating_status": status if rating else "unavailable",
         "black_source_rating": rating,
@@ -136,8 +152,8 @@ def _normalized_row(
         "time_increment_ms": 0,
         "time_increment_status": status,
         "clock_remaining_ms": clock_trace,
-        "clock_status": [status if clocks else "unavailable"] * len(moves),
-        "clock_precision_ms": [100 if clocks else None] * len(moves),
+        "clock_status": clock_statuses,
+        "clock_precision_ms": clock_precisions,
         "split": split,
     }
 
