@@ -228,6 +228,34 @@ Keep issue metadata current when GitHub tooling is available, including labels,
 milestone, dependencies, sub-issue state, and newly discovered execution or
 verification requirements.
 
+## Taking A Shakedown Reading
+
+A new or materially changed benchmark is verified against real checkpoints
+before its pull request is ready, not only against fixtures.
+`docs/evaluation.md` owns what a shakedown reading is and why; this section
+owns when one is required and how a session without checkpoints routes it.
+
+It applies to a change that adds a benchmark, changes how an existing metric is
+computed, or changes what a benchmark selects to measure over. It does not apply
+to reporting, storage, or CLI plumbing that moves no measured quantity, and a
+change whose whole effect is on the store's layering is verified against the
+store instead.
+
+Run the benchmark on two checkpoints far apart in one training run, with a
+reduced view and `--no-record`, and report in the pull request what was
+expected, what was read, and whether they agreed. A disagreement is a finding to
+write up rather than a run to repeat until it looks better.
+
+A session with no checkpoints or normalized corpus on its machine cannot take
+the reading, and this does not block implementation. Route it the way a pending
+GPU check is routed: complete the implementation, open the pull request with the
+pending reading named prominently, including the exact command and what the
+expected direction is, and leave the reading as part of local review.
+
+Shakedown readings are never appended to the committed results store. Committing
+a benchmark result is a separate decision about project history and is made
+where that history is designated, not as a side effect of landing a benchmark.
+
 ## Offering A Real GUI Check
 
 Some changes are only convincing in a real chess GUI. Automated coverage proves
@@ -318,3 +346,4 @@ Before substantive changes:
 6. Update affected docs when the change alters durable intent.
 7. Add a decision record only when the rationale has lasting value.
 8. Offer a real GUI check when the change alters what a GUI observes.
+9. Take a shakedown reading when the change adds or alters a benchmark.
