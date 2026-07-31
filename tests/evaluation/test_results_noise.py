@@ -18,20 +18,29 @@ from anthro_chess.evaluation.noise import (
     characterize_sampling_noise,
 )
 from anthro_chess.evaluation.results import (
+    PROCESS_REPLICATE_METHOD,
     BridgeIndex,
     DataComponent,
+    ExecutionRecord,
     FloorEntry,
+    NoiseCharacterization,
     NoiseCharacterizationError,
     NoiseFloorIndex,
     ResultsStore,
     ResultsStoreError,
     build_bridge,
     build_characterization,
+    execution_reference,
     floor_from_dispersion,
     games_to_resolve,
+    process_dispersion,
+    process_replicate_floors,
     replicate_dispersion,
     replicate_floors,
     series_fingerprint,
+)
+from anthro_chess.evaluation.results.metrics import (
+    INFERENCE_MOVE_LATENCY_BY_PERCENTILE,
 )
 
 Digest = Callable[..., DataComponent]
@@ -39,6 +48,7 @@ Digest = Callable[..., DataComponent]
 RECORDED_AT = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 METRIC = "held_out.move_loss"
 OTHER_METRIC = "legality.mask_penalty"
+EFFICIENCY_METRIC = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
 
 
 def _totals(values: list[float], *, positions: int = 4) -> tuple[GameTotals, ...]:
@@ -451,3 +461,198 @@ def test_characterizing_sampling_noise_produces_a_recordable_record(
     entry = characterization.entry(METRIC)
     assert entry is not None
     assert entry.sampling_units == 4
+
+
+def _execution_scope(*, device_name: str = "fixture-laptop") -> ExecutionRecord:
+    """Return one machine's execution record for the efficiency workload."""
+
+    return execution_reference(
+        device="cpu",
+        device_name=device_name,
+        precision="float32",
+        torch_version="2.7.0",
+        platform_key="Fixture-x86",
+        platform="fixture-1.2.3",
+        cpu_threads=8,
+        workload={"latency_reference_plies": 40},
+    )
+
+
+def _execution_characterization(
+    *,
+    device_name: str = "fixture-laptop",
+    floor: float = 0.4,
+) -> NoiseCharacterization:
+    execution = _execution_scope(device_name=device_name)
+    return build_characterization(
+        kind="execution",
+        method=PROCESS_REPLICATE_METHOD,
+        replicates=6,
+        processes=3,
+        source="three processes on this machine",
+        execution=execution,
+        floors=[
+            FloorEntry(
+                metric=EFFICIENCY_METRIC,
+                fingerprint=series_fingerprint(
+                    EFFICIENCY_METRIC,
+                    None,
+                    execution.workload_component(),
+                ),
+                floor=floor,
+                dispersion=floor / 2,
+                within_process_dispersion=floor / 8,
+            )
+        ],
+        recorded_at=RECORDED_AT,
+    )
+
+
+def _efficiency_entry(floor: float = 0.4) -> FloorEntry:
+    """Return one efficiency floor already on its own workload-scoped series."""
+
+    return FloorEntry(
+        metric=EFFICIENCY_METRIC,
+        fingerprint=series_fingerprint(
+            EFFICIENCY_METRIC,
+            None,
+            _execution_scope().workload_component(),
+        ),
+        floor=floor,
+        dispersion=floor / 2,
+    )
+
+
+def test_an_execution_floor_must_record_the_machine_it_describes() -> None:
+    """Without it the floor would be applied to every machine that ran the series."""
+
+    with pytest.raises(NoiseCharacterizationError, match="machine and a workload"):
+        build_characterization(
+            kind="execution",
+            method=PROCESS_REPLICATE_METHOD,
+            replicates=6,
+            processes=3,
+            source="three processes",
+            floors=[_efficiency_entry()],
+            recorded_at=RECORDED_AT,
+        )
+
+
+def test_a_floor_that_does_not_depend_on_the_machine_carries_no_scope() -> None:
+    with pytest.raises(NoiseCharacterizationError, match="no execution scope"):
+        build_characterization(
+            kind="training",
+            method="independent-replicates",
+            replicates=3,
+            source="three seeds",
+            execution=_execution_scope(),
+            floors=[_efficiency_entry()],
+            recorded_at=RECORDED_AT,
+        )
+
+
+def test_an_execution_floor_applies_where_it_was_measured() -> None:
+    characterization = _execution_characterization()
+    index = NoiseFloorIndex([characterization])
+    execution = _execution_scope()
+    fingerprint = series_fingerprint(
+        EFFICIENCY_METRIC,
+        None,
+        execution.workload_component(),
+    )
+
+    found = index.floors(
+        EFFICIENCY_METRIC,
+        fingerprint,
+        executions=(execution, execution),
+    )
+
+    assert [floor.kind for floor in found] == ["execution"]
+    assert found[0].value == pytest.approx(0.4)
+
+
+def test_an_execution_floor_does_not_travel_to_another_machine() -> None:
+    """Decision 0018 keeps the machine out of the series; the noise is the machine.
+
+    The series is deliberately continuous across hardware so long-run drift
+    stays answerable, which means the fingerprint alone cannot stop a laptop's
+    floor from qualifying a workstation's delta. Reporting the noise as unknown
+    there is the honest answer.
+    """
+
+    index = NoiseFloorIndex([_execution_characterization(device_name="laptop")])
+    elsewhere = _execution_scope(device_name="workstation")
+    fingerprint = series_fingerprint(
+        EFFICIENCY_METRIC,
+        None,
+        elsewhere.workload_component(),
+    )
+
+    assert index.floors(EFFICIENCY_METRIC, fingerprint) == ()
+    assert (
+        index.floors(
+            EFFICIENCY_METRIC,
+            fingerprint,
+            executions=(elsewhere, elsewhere),
+        )
+        == ()
+    )
+
+
+def test_a_delta_spanning_two_machines_has_no_execution_floor() -> None:
+    index = NoiseFloorIndex([_execution_characterization(device_name="laptop")])
+    here = _execution_scope(device_name="laptop")
+    there = _execution_scope(device_name="workstation")
+    fingerprint = series_fingerprint(
+        EFFICIENCY_METRIC,
+        None,
+        here.workload_component(),
+    )
+
+    assert index.floors(EFFICIENCY_METRIC, fingerprint, executions=(here, here))
+    assert index.floors(EFFICIENCY_METRIC, fingerprint, executions=(here, there)) == ()
+
+
+def test_execution_dispersion_needs_more_than_one_process() -> None:
+    with pytest.raises(NoiseCharacterizationError, match="at least two processes"):
+        process_dispersion([[10.0, 10.2, 10.1]])
+
+
+def test_execution_dispersion_separates_the_process_from_the_repeat() -> None:
+    """The total is what a report compares; the within is where the noise lives."""
+
+    dispersion = process_dispersion([[10.0, 10.2], [12.0, 12.2]])
+
+    assert dispersion.within is not None
+    assert dispersion.within == pytest.approx(0.2 / math.sqrt(2))
+    assert dispersion.total == pytest.approx(
+        replicate_dispersion([10.0, 10.2, 12.0, 12.2])
+    )
+    assert dispersion.total > dispersion.within
+
+
+def test_execution_floors_land_on_the_series_they_qualify() -> None:
+    execution = _execution_scope()
+    fingerprint = series_fingerprint(
+        EFFICIENCY_METRIC,
+        None,
+        execution.workload_component(),
+    )
+
+    (entry,) = process_replicate_floors(
+        {EFFICIENCY_METRIC: [[10.0, 10.2], [12.0, 12.2]]},
+        fingerprints={EFFICIENCY_METRIC: fingerprint},
+    )
+
+    assert entry.fingerprint == fingerprint
+    assert entry.floor == pytest.approx(
+        floor_from_dispersion(replicate_dispersion([10.0, 10.2, 12.0, 12.2]))
+    )
+
+
+def test_a_floor_with_no_series_named_for_it_is_refused() -> None:
+    with pytest.raises(NoiseCharacterizationError, match="no series fingerprint"):
+        process_replicate_floors(
+            {EFFICIENCY_METRIC: [[10.0], [12.0]]},
+            fingerprints={},
+        )
