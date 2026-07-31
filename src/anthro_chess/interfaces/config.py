@@ -46,6 +46,8 @@ class UciConfig(ConfigModel):
             raise ValueError("UCI temperature must use increments of 0.01")
         if self.runtime.resignation_enabled:
             raise ValueError("portable UCI mode does not support resignation")
+        if self.runtime.draw_claim_enabled:
+            raise ValueError("portable UCI mode does not support draw claims")
         seed = self.runtime.seed
         if seed is not None and not 0 <= seed <= UCI_MAX_SEED:
             raise ValueError(f"UCI seed must be between 0 and {UCI_MAX_SEED}")

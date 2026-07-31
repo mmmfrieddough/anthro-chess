@@ -25,6 +25,7 @@ from anthro_chess.application_logging import (
 )
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
     action_vocabulary_identity,
     encode_move,
 )
@@ -349,6 +350,31 @@ def test_terminal_position_under_infinite_search_also_waits_for_stop() -> None:
     assert _bestmoves(output) == ["0000"]
 
 
+def test_a_terminal_action_is_refused_rather_than_answered_as_a_move() -> None:
+    """The config forbids terminal actions, so this guards the protocol itself.
+
+    A runtime configured elsewhere and handed to the engine must not have a
+    claim silently reported as a move; UCI has no response that means one.
+    """
+
+    logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+    logits[DRAW_CLAIM_ACTION_ID] = 10.0
+    engine = UciEngine(
+        lambda: StubRunner(logits),
+        UciConfig(runtime=RuntimeConfig(temperature=0.0)),
+    )
+    engine._runtime_config = RuntimeConfig(
+        temperature=0.0,
+        draw_claim_enabled=True,
+    )
+    repetition = "position startpos moves g1f3 g8f6 f3g1 f6g8 g1f3 g8f6 f3g1 f6g8"
+
+    output, error = _run(engine, f"isready\n{repetition}\ngo\nquit\n")
+
+    assert _bestmoves(output) == []
+    assert "cannot represent the terminal action" in error
+
+
 def test_inference_failure_reports_critical_error_and_exits_without_bestmove() -> None:
     engine = UciEngine(lambda: FailingRunner(), UciConfig())
     output = io.StringIO()
@@ -376,6 +402,8 @@ def test_uci_config_rejects_unrepresentable_or_resigning_runtime() -> None:
         UciConfig(runtime=RuntimeConfig(temperature=0.755))
     with pytest.raises(ValidationError, match="does not support resignation"):
         UciConfig(runtime=RuntimeConfig(resignation_enabled=True))
+    with pytest.raises(ValidationError, match="does not support draw claims"):
+        UciConfig(runtime=RuntimeConfig(draw_claim_enabled=True))
     with pytest.raises(ValidationError, match="UCI seed must be between"):
         UciConfig(runtime=RuntimeConfig(seed=2**31))
     assert UciConfig(runtime=RuntimeConfig(seed=None)).runtime.seed is None
@@ -698,6 +726,7 @@ def test_debug_game_events_reconstruct_positions_boundaries_and_decisions() -> N
         "configured_seed": 123,
         "resolved_seed": 123,
         "resignation_enabled": False,
+        "draw_claim_enabled": False,
         "target_rating": 2500,
         "temperature": 0.0,
     }

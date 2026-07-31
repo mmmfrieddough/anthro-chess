@@ -1,7 +1,20 @@
+import chess
 import pytest
 import torch
 from torch.nn import functional as F
 
+from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
+    RESIGNATION_ACTION_ID,
+    encode_move,
+)
+from anthro_chess.data import (
+    GameEncodingInput,
+    SequenceExample,
+    collate_sequences,
+    encode_game,
+)
+from anthro_chess.models import MoveModelBatch
 from anthro_chess.training import masked_action_cross_entropy
 
 
@@ -41,6 +54,50 @@ def test_padded_logits_and_targets_cannot_change_action_loss() -> None:
     actual = masked_action_cross_entropy(changed_logits, changed_targets, mask)
 
     torch.testing.assert_close(actual, expected)
+
+
+def test_a_terminal_target_is_supervised_like_any_other_action() -> None:
+    """A game ending in a decision must reach the loss, mask included.
+
+    The batch boundary rejects a target its timestep does not enable, so this
+    also pins that the training mask offers the terminal action at the step it
+    was taken.
+    """
+
+    moves = ("e2e4", "e7e5", "g1f3")
+    action_ids = tuple(encode_move(chess.Move.from_uci(move)) for move in moves)
+    plies = encode_game(
+        GameEncodingInput(
+            game_id=1,
+            ruleset="standard",
+            initial_position=chess.STARTING_FEN,
+            action_ids=(*action_ids, RESIGNATION_ACTION_ID),
+            white_normalized_rating=1500,
+            black_normalized_rating=1500,
+            time_initial_ms=None,
+            time_increment_ms=None,
+            clock_remaining_ms=(None,) * (len(moves) + 1),
+        )
+    )
+    batch = MoveModelBatch.from_sequence_batch(
+        collate_sequences([SequenceExample(0, 1, 0, plies)])
+    )
+
+    assert batch.action_targets[0, -1].item() == RESIGNATION_ACTION_ID
+    assert bool(batch.action_loss_mask[0, -1])
+    assert RESIGNATION_ACTION_ID in batch.legal_action_ids[0][-1]
+
+    logits = torch.zeros((1, len(plies), ACTION_VOCABULARY_SIZE), requires_grad=True)
+    loss = masked_action_cross_entropy(
+        logits, batch.action_targets, batch.action_loss_mask
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert logits.grad is not None
+    # The terminal step contributes a gradient, so it is trained rather than
+    # merely tolerated.
+    assert torch.any(logits.grad[0, -1] != 0.0)
 
 
 def test_action_loss_rejects_empty_or_misaligned_masks() -> None:

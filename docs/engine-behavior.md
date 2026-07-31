@@ -26,7 +26,7 @@ The model outputs a policy over a fixed action vocabulary. Runtime then:
 
 1. computes legal moves from exact chess state;
 2. masks illegal move logits;
-3. keeps any enabled non-move game actions, such as resignation, available;
+3. keeps the enabled terminal actions the position allows available;
 4. samples a valid action using the configured temperature.
 
 The sampled policy should reflect the human-game distribution represented by
@@ -42,9 +42,13 @@ enlarge the training signal.
 Claiming a draw by repetition or the fifty-move rule is a separate learned
 action, not a variant of resignation and not the same thing as offering a draw.
 Claim availability is an exact function of board and history, so it masks like
-any other action and adds no game state outside the board. Human players in fast
-games frequently decline available claims, so a model that rarely claims under a
-clock is imitating the corpus correctly. The behavior matters most in untimed
+any other action and adds no game state outside the board. It is the condition
+the current position already satisfies rather than one an announced move would
+create: the rules allow claiming alongside such a move, but the action carries
+no move, so offering it there would offer something the model cannot mean. A
+claimable position stays playable until somebody claims it. Human players in
+fast games frequently decline available claims, so a model that rarely claims
+under a clock is imitating the corpus correctly. The behavior matters most in untimed
 play, which has no other terminator: a model that reaches a claimable dead
 position needs a way to end the game that is not a hardcoded move limit.
 

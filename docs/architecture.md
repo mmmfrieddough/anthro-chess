@@ -243,8 +243,9 @@ current architecture.
 ## Action Output
 
 The action head should output logits over a fixed action vocabulary. Most
-actions are UCI-style chess moves. The vocabulary should also include a
-resignation action.
+actions are UCI-style chess moves. The vocabulary also includes two terminal
+actions, resignation and a draw claim, which end a game instead of changing the
+position.
 
 Before sampling, the runtime must mask all illegal moves using exact chess
 logic. If the sampled action is a move, it must always be legal in the current
@@ -256,10 +257,13 @@ enabled by the application or benchmark context.
 
 The two are masked differently. Resignation is always available to the side to
 move, so enabling it is purely a runtime policy. A draw claim is available only
-when the repetition or fifty-move condition already holds, which exact chess
-logic computes from the board and history. Neither introduces game state outside
-the board, which is why offering and accepting draws is excluded: a pending
-offer would.
+when the repetition or fifty-move condition already holds in the position
+itself, which exact chess logic computes from the board and history. The rules
+also allow claiming alongside an announced move that would create the
+condition; that form is deliberately outside the action, which carries no move,
+so enabling a claim never offers one the action could not honestly express.
+Neither introduces game state outside the board, which is why offering and
+accepting draws is excluded: a pending offer would.
 
 Outside protocols may support only part of the action vocabulary. For example,
 standard UCI requires a `bestmove` response and provides no portable

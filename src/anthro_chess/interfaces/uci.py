@@ -379,7 +379,10 @@ class UciEngine:
         except Exception as error:
             raise UciInferenceError(f"move generation failed: {error}") from error
         if not isinstance(action, MoveAction):
-            raise UciProtocolError("portable UCI mode cannot represent resignation")
+            raise UciProtocolError(
+                "portable UCI mode cannot represent the terminal action "
+                f"{action.action_id}"
+            )
         self._log_game_event(
             "decision",
             action_id=action.action_id,
@@ -419,6 +422,7 @@ class UciEngine:
             "target_rating": self._runtime_config.target_rating,
             "temperature": self._runtime_config.temperature,
             "resignation_enabled": self._runtime_config.resignation_enabled,
+            "draw_claim_enabled": self._runtime_config.draw_claim_enabled,
             "configured_seed": self._runtime_config.seed,
             "resolved_seed": None if session is None else session.resolved_seed,
         }

@@ -21,6 +21,12 @@ from enum import StrEnum
 
 import chess
 
+from anthro_chess.chess import (
+    DRAW_CLAIM_ACTION_ID,
+    RESIGNATION_ACTION_ID,
+    draw_claim_available,
+)
+
 _DRAW_RESULT = "1/2-1/2"
 _LOSER_COLORS: dict[str, chess.Color] = {"1-0": chess.BLACK, "0-1": chess.WHITE}
 
@@ -57,6 +63,31 @@ class TerminationCategory(StrEnum):
 
 
 TERMINATION_CATEGORIES = tuple(category.value for category in TerminationCategory)
+
+
+class TerminalActionStatus(StrEnum):
+    """Whether a game's action sequence carries a terminal action, and why not.
+
+    Every omission names its reason, so a game whose ending was a player's
+    decision but whose sequence stops at the last move is auditable rather than
+    silently short.
+    """
+
+    APPENDED = "appended"
+    NOT_APPLICABLE = "not_applicable"
+    OMITTED_OPPONENT_TO_MOVE = "omitted_opponent_to_move"
+    OMITTED_CLAIM_UNAVAILABLE = "omitted_claim_unavailable"
+
+
+TERMINAL_ACTION_STATUSES = tuple(status.value for status in TerminalActionStatus)
+
+#: The terminal action each player-decided ending is expressed by. Endings no
+#: player decided are absent, so they never reach the attribution test.
+_TERMINAL_ACTIONS: dict[TerminationCategory, int] = {
+    TerminationCategory.RESIGNATION: RESIGNATION_ACTION_ID,
+    TerminationCategory.THREEFOLD_REPETITION: DRAW_CLAIM_ACTION_ID,
+    TerminationCategory.FIFTY_MOVES: DRAW_CLAIM_ACTION_ID,
+}
 
 _RULE_CATEGORIES = {
     chess.Termination.CHECKMATE: TerminationCategory.CHECKMATE,
@@ -135,6 +166,29 @@ def derive_termination(
     if source_termination == _NORMAL_TERMINATION:
         return _derive_normal(result=result, final_board=final_board)
     return _UNKNOWN
+
+
+def terminal_action_for(
+    termination: DerivedTermination,
+    final_board: chess.Board,
+) -> tuple[int | None, TerminalActionStatus]:
+    """Return the terminal action one ending earns, and why it does or not.
+
+    A terminal action is a decision the player to move made, so an ending
+    decided on the opponent's clock has no decision point to attach it to. A
+    claimed draw additionally has to be claimable in the final position itself:
+    the derivation accepts a claim the rules only allow alongside an announced
+    move, and the claim action carries no move.
+    """
+
+    action_id = _TERMINAL_ACTIONS.get(termination.category)
+    if action_id is None:
+        return None, TerminalActionStatus.NOT_APPLICABLE
+    if not termination.by_side_to_move:
+        return None, TerminalActionStatus.OMITTED_OPPONENT_TO_MOVE
+    if action_id == DRAW_CLAIM_ACTION_ID and not draw_claim_available(final_board):
+        return None, TerminalActionStatus.OMITTED_CLAIM_UNAVAILABLE
+    return action_id, TerminalActionStatus.APPENDED
 
 
 def _derive_normal(*, result: str, final_board: chess.Board) -> DerivedTermination:

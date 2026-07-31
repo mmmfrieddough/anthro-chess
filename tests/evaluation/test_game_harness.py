@@ -8,6 +8,7 @@ import torch
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
     RESIGNATION_ACTION_ID,
     encode_move,
 )
@@ -34,6 +35,12 @@ from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 FOOLS_MATE_FEN = "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2"
 #: Position after 1. f3 e5 2. g4 Qh4#, which is already over.
 FINISHED_FEN = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+#: Eight reversible plies returning the starting position for a third time, so
+#: the seat to move can claim a draw without announcing anything.
+_REPEATED_POSITION_PREFIX = tuple(
+    encode_move(chess.Move.from_uci(uci))
+    for uci in ("g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8")
+)
 
 
 @dataclass
@@ -102,6 +109,7 @@ def _model(
     label: str = "model",
     runner: ActionModelRunner | None = None,
     resignation: bool = False,
+    draw_claim: bool = False,
 ) -> ModelPlayer:
     return ModelPlayer(
         runner or TrajectoryRunner(),
@@ -110,6 +118,7 @@ def _model(
             target_rating=rating,
             temperature=temperature,
             resignation_enabled=resignation,
+            draw_claim_enabled=draw_claim,
         ),
     )
 
@@ -268,6 +277,53 @@ def test_a_resignation_ends_the_game_and_decides_it() -> None:
     assert record.action_ids == (RESIGNATION_ACTION_ID,)
     assert record.outcome.termination is GameTermination.RESIGNATION
     assert record.outcome.result == "0-1"
+
+
+def test_a_seat_claim_ends_the_game_as_the_rule_that_allowed_it() -> None:
+    """A claimed draw is the same ending however it was settled.
+
+    What changes is who settled it: the seat chose the claim, so the record
+    must not report the harness adjudicating on its behalf.
+    """
+
+    claimer = _model(
+        runner=PreferenceRunner(DRAW_CLAIM_ACTION_ID),
+        temperature=0.0,
+        draw_claim=True,
+        label="claimer",
+    )
+
+    (record,) = _play(
+        claimer,
+        _model(label="other"),
+        positions=(StartPosition(prefix_action_ids=_REPEATED_POSITION_PREFIX),),
+    )
+
+    assert record.action_ids[-1] == DRAW_CLAIM_ACTION_ID
+    assert record.generated_plies == 1
+    assert record.outcome.termination is GameTermination.THREEFOLD_REPETITION
+    assert record.outcome.result == "1/2-1/2"
+    assert not record.outcome.adjudicated
+
+
+def test_a_claimable_position_is_played_on_when_no_seat_claims_it() -> None:
+    records = _play(
+        _model(),
+        _model(label="other"),
+        positions=(StartPosition(prefix_action_ids=_REPEATED_POSITION_PREFIX),),
+        maximum_generated_plies=2,
+    )
+
+    (record,) = records
+    assert record.outcome.termination is GameTermination.PLY_LIMIT
+    assert DRAW_CLAIM_ACTION_ID not in record.action_ids
+
+
+def test_a_prefix_cannot_carry_a_terminal_action() -> None:
+    position = StartPosition(prefix_action_ids=(DRAW_CLAIM_ACTION_ID,))
+
+    with pytest.raises(GenerationError, match="terminal action"):
+        position.board()
 
 
 def test_each_decision_carries_the_policy_the_runtime_sampled_from() -> None:

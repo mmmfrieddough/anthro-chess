@@ -290,6 +290,7 @@ def _runtime_config(payload: dict[str, Any]) -> RuntimeConfig:
             temperature=runtime.get("temperature", 1.0),
             seed=runtime.get("resolved_seed"),
             resignation_enabled=bool(runtime.get("resignation_enabled", False)),
+            draw_claim_enabled=bool(runtime.get("draw_claim_enabled", False)),
         )
     except ValueError as error:
         raise ReconstructionError(

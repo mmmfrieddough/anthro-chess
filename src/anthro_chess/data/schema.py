@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Literal, cast
 if TYPE_CHECKING:
     from pyarrow import Schema  # type: ignore[import-untyped]
 
-SCHEMA_VERSION = 1
-PREPROCESSING_VERSION = 4
+SCHEMA_VERSION = 2
+PREPROCESSING_VERSION = 5
 
 FieldStatus = Literal["present", "unavailable", "rejected"]
 
@@ -22,7 +22,17 @@ SPLIT_NAMES: tuple[SplitName, ...] = ("train", "validation", "test")
 
 
 class NormalizedColumn(StrEnum):
-    """Stable column names in normalized game artifacts."""
+    """Stable column names in normalized game artifacts.
+
+    ``action_ids`` carries the game's moves and, when the ending was a player's
+    decision made on their own turn, one trailing terminal action.
+    ``ply_count`` counts moves only, so a terminal action never changes a
+    game's length, its ply filters, or its prefix depth. The per-ply clock
+    columns stay aligned one-to-one with ``action_ids``, so a trailing terminal
+    action carries an unavailable clock observation rather than a synthesized
+    one. ``terminal_action_status`` records whether that action was appended
+    and, when it was not, why.
+    """
 
     SCHEMA_VERSION = "schema_version"
     GAME_ID = "game_id"
@@ -35,6 +45,7 @@ class NormalizedColumn(StrEnum):
     TERMINATION_STATUS = "termination_status"
     TERMINATION_CATEGORY = "termination_category"
     TERMINATION_BY_SIDE_TO_MOVE = "termination_by_side_to_move"
+    TERMINAL_ACTION_STATUS = "terminal_action_status"
     PLY_COUNT = "ply_count"
     ACTION_IDS = "action_ids"
     WHITE_SOURCE_RATING = "white_source_rating"
@@ -81,6 +92,7 @@ def normalized_parquet_schema() -> Schema:
                 pa.field(column.TERMINATION_STATUS, pa.string(), nullable=False),
                 pa.field(column.TERMINATION_CATEGORY, pa.string(), nullable=False),
                 pa.field(column.TERMINATION_BY_SIDE_TO_MOVE, pa.bool_()),
+                pa.field(column.TERMINAL_ACTION_STATUS, pa.string(), nullable=False),
                 pa.field(column.PLY_COUNT, pa.int32(), nullable=False),
                 pa.field(column.ACTION_IDS, pa.list_(pa.uint16()), nullable=False),
                 pa.field(column.WHITE_SOURCE_RATING, pa.int32()),

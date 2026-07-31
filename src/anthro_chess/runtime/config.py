@@ -23,3 +23,8 @@ class RuntimeConfig(ConfigModel):
     # game reproducible for debugging and benchmarks.
     seed: RandomSeed | None = None
     resignation_enabled: StrictBool = False
+    # Enabling the claim only offers it where exact chess logic already allows
+    # one; the dial cannot make an unclaimable position claimable. Off by
+    # default like resignation, so a benchmark turns terminal behavior on
+    # deliberately rather than inheriting it.
+    draw_claim_enabled: StrictBool = False

@@ -6,7 +6,11 @@ from dataclasses import replace
 import chess
 import pytest
 
-from anthro_chess.chess import RESIGNATION_ACTION_ID, encode_move
+from anthro_chess.chess import (
+    DRAW_CLAIM_ACTION_ID,
+    RESIGNATION_ACTION_ID,
+    encode_move,
+)
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     DecisionHistory,
@@ -99,17 +103,17 @@ def test_identity_and_records_are_stable_and_json_serializable() -> None:
 
     assert identity == {
         "name": "anthro-per-ply",
-        "version": 3,
+        "version": 4,
         "schema_sha256": (
-            "a8170a23da62322ba50886c1b2d32b7a5a2c0e4d6dee2629641a823f59cc033e"
+            "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9"
         ),
         "board_square_count": 64,
         "action_vocabulary": {
             "name": "anthro-standard-actions",
-            "version": 1,
-            "size": 1969,
+            "version": 2,
+            "size": 1970,
             "sha256": (
-                "f95e6069227ad773de35c12f9601d89b622da0539d7793ff88232aff368a48d6"
+                "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab"
             ),
         },
     }
@@ -147,17 +151,80 @@ def test_rejects_illegal_or_misaligned_game_sequences() -> None:
         )
 
 
-def test_rejects_invalid_initial_positions_and_non_move_actions() -> None:
+def test_rejects_invalid_initial_positions_and_misplaced_terminal_actions() -> None:
     invalid_position = replace(_game(("e2e4",)), initial_position="not a position")
     with pytest.raises(EncodingError, match="invalid initial position"):
         encode_game(invalid_position)
 
-    non_move = replace(
-        _game(("e2e4",)),
-        action_ids=(RESIGNATION_ACTION_ID,),
+    mid_game_terminal = replace(
+        _game(("e2e4", "e7e5")),
+        action_ids=(RESIGNATION_ACTION_ID, *_action_ids(("e2e4",))),
     )
-    with pytest.raises(EncodingError, match="is not a board move"):
-        encode_game(non_move)
+    with pytest.raises(EncodingError, match="terminal action at ply 0"):
+        encode_game(mid_game_terminal)
+
+
+def test_every_step_enables_the_terminal_actions_the_rules_allow() -> None:
+    """The enabled set is what the player could choose, not only what they did."""
+
+    plies = encode_game(_game(("e2e4", "e7e5")))
+
+    for ply in plies:
+        assert RESIGNATION_ACTION_ID in ply.legal_action_ids
+        assert DRAW_CLAIM_ACTION_ID not in ply.legal_action_ids
+        assert ply.target_action_id in ply.legal_action_ids
+
+
+def test_a_trailing_resignation_is_a_step_that_moves_nothing() -> None:
+    moves = ("e2e4", "e7e5", "g1f3")
+    game = replace(
+        _game(moves),
+        action_ids=(*_action_ids(moves), RESIGNATION_ACTION_ID),
+        clock_remaining_ms=(59_000, 59_000, 59_000, None),
+    )
+
+    plies = encode_game(game)
+
+    assert len(plies) == len(moves) + 1
+    resignation = plies[-1]
+    assert resignation.ply_index == len(moves)
+    assert resignation.target_action_id == RESIGNATION_ACTION_ID
+    assert RESIGNATION_ACTION_ID in resignation.legal_action_ids
+    assert resignation.target_clock_after_move_ms is None
+    # The board is the one the last move left, read by the player who resigned.
+    assert resignation.board.piece_ids[chess.F3] == chess.KNIGHT
+    assert resignation.board.side_to_move == 1
+    assert resignation.previous_action_id == plies[-2].target_action_id
+
+
+def test_a_trailing_draw_claim_is_enabled_only_where_the_rules_allow_it() -> None:
+    shuffle = ("g1f3", "g8f6", "f3g1", "f6g8") * 2
+    claimable = replace(
+        _game(shuffle),
+        action_ids=(*_action_ids(shuffle), DRAW_CLAIM_ACTION_ID),
+        clock_remaining_ms=(*(59_000 for _ in shuffle), None),
+    )
+
+    plies = encode_game(claimable)
+
+    claim = plies[-1]
+    assert claim.target_action_id == DRAW_CLAIM_ACTION_ID
+    assert DRAW_CLAIM_ACTION_ID in claim.legal_action_ids
+    # The claim becomes available exactly where the position repeats a third
+    # time, which is the final step and no earlier one.
+    assert [
+        index
+        for index, ply in enumerate(plies)
+        if DRAW_CLAIM_ACTION_ID in ply.legal_action_ids
+    ] == [len(shuffle)]
+
+    unclaimable = replace(
+        _game(("e2e4", "e7e5")),
+        action_ids=(*_action_ids(("e2e4", "e7e5")), DRAW_CLAIM_ACTION_ID),
+        clock_remaining_ms=(59_000, 59_000, None),
+    )
+    with pytest.raises(EncodingError, match="ply 2 is illegal"):
+        encode_game(unclaimable)
 
 
 def test_game_input_rejects_unsupported_or_empty_sequences() -> None:

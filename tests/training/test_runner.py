@@ -15,6 +15,7 @@ from tensorboard.backend.event_processing.event_accumulator import (  # type: ig
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
+from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.evaluation.results.budget import build_budget_report
 from anthro_chess.training import (
@@ -75,7 +76,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     assert run_record["resolved_config"] == resolved.as_record()
     assert run_record["seed"] == 23
     assert run_record["code"]["package_version"]
-    assert run_record["data"]["train"]["manifest"]["schema_version"] == 1
+    assert run_record["data"]["train"]["manifest"]["schema_version"] == SCHEMA_VERSION
     assert run_record["data"]["train"]["manifest_sha256"]
     assert run_record["action_vocabulary"] == run_record["model"]["action_vocabulary"]
     assert run_record["encoding"] == run_record["model"]["encoding"]

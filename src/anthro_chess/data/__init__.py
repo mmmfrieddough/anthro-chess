@@ -48,10 +48,13 @@ from anthro_chess.data.prepare import (
     prepare_pgn,
 )
 from anthro_chess.data.termination import (
+    TERMINAL_ACTION_STATUSES,
     TERMINATION_CATEGORIES,
     DerivedTermination,
+    TerminalActionStatus,
     TerminationCategory,
     derive_termination,
+    terminal_action_for,
 )
 
 __all__ = [
@@ -62,6 +65,7 @@ __all__ = [
     "ENCODING_SCHEMA_SHA256",
     "ENCODING_VERSION",
     "LOADER_STATE_VERSION",
+    "TERMINAL_ACTION_STATUSES",
     "TERMINATION_CATEGORIES",
     "BoardEncoding",
     "DecisionContext",
@@ -88,6 +92,7 @@ __all__ = [
     "SequenceLoaderState",
     "SourceConfig",
     "SplitConfig",
+    "TerminalActionStatus",
     "TerminationCategory",
     "TerminationConfig",
     "acquire_archive",
@@ -98,4 +103,5 @@ __all__ = [
     "encode_game",
     "encoding_identity",
     "prepare_pgn",
+    "terminal_action_for",
 ]

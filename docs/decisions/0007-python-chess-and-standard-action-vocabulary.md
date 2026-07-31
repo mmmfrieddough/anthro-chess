@@ -15,8 +15,9 @@ domain model in parallel Anthro-owned types, would add code without improving
 the model-facing contract.
 
 The initial move model also needs one fixed action vocabulary. That vocabulary
-must represent every standard board move, promotions, and resignation while
-remaining stable across data manifests, checkpoints, evaluation, and runtime.
+must represent every standard board move, promotions, and the terminal actions
+a game can end on, while remaining stable across data manifests, checkpoints,
+evaluation, and runtime.
 
 ## Decision
 
@@ -29,9 +30,9 @@ Anthro Chess owns one generated, versioned standard-chess action vocabulary.
 Board moves are identified by their `python-chess` move value: from-square,
 to-square, and optional promotion. The ordered vocabulary includes every
 geometrically possible queen-like or knight-like square pair, all standard
-promotion variants, and a distinct resignation id. Castling uses the standard
-king move. The exact size and digest are exposed by the codec identity and
-protected by tests.
+promotion variants, and a distinct id for each terminal action. Castling uses
+the standard king move. The exact size and digest are exposed by the codec
+identity and protected by tests.
 
 The action ids, not Python objects or UCI strings, are the persisted
 model-facing and normalized-data contract. UCI strings are used only to define
@@ -42,7 +43,7 @@ interface and debugging tools.
 
 Anthro-owned chess code stays limited to the compatibility boundary the model
 actually needs: move/action-id conversion, legal action ids, the separate
-resignation id, and vocabulary identity. Consumers use the mature rules
+terminal action ids, and vocabulary identity. Consumers use the mature rules
 library directly instead of maintaining duplicate representations and
 translations.
 
