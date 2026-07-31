@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         CheckpointEvaluationResult,
         DecisionDecomposition,
         InferenceBenchmarkResult,
+        LadderBenchmarkConfig,
         LadderBenchmarkResult,
         PoolConfig,
         PuzzleBenchmarkConfig,
@@ -1549,10 +1550,13 @@ def _run_eval_ladder(arguments: argparse.Namespace) -> int:
     )
 
     try:
-        resolved = load_config(
-            LadderBenchmarkConfig,
-            path=arguments.config,
-            overrides=arguments.set,
+        resolved = _resolve_ladder_roots(
+            load_config(
+                LadderBenchmarkConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            ),
+            arguments.set,
         )
         store = (
             None
@@ -2499,6 +2503,38 @@ def _resolve_pool_roots(
         return resolved
     return ResolvedConfig(
         value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
+
+
+def _resolve_ladder_roots(
+    resolved: ResolvedConfig[LadderBenchmarkConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[LadderBenchmarkConfig]:
+    """Resolve the checked-in relative opening pool beneath the shared data root.
+
+    The shipped selection names its pool the way every other checked-in artifact
+    path is named, so it has to be rooted the same way `anthro eval run` roots
+    its own pool. Without this the shipped configuration only works from a
+    directory that happens to hold an `artifacts/` tree.
+    """
+
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+
+    config = resolved.value
+    pool = config.openings.pool
+    if (
+        pool is None
+        or pool.is_absolute()
+        or "openings.pool" in {item.partition("=")[0] for item in overrides}
+    ):
+        return resolved
+    rooted = _rooted_artifact_path(_environment_root("ANTHRO_CHESS_DATA_ROOT"), pool)
+    return ResolvedConfig(
+        value=config.model_copy(
+            update={"openings": config.openings.model_copy(update={"pool": rooted})}
+        ),
         provenance=resolved.provenance,
     )
 

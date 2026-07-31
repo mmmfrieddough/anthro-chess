@@ -917,6 +917,32 @@ def test_eval_ladder_reports_a_configuration_error_without_a_traceback(
     assert "anthro eval ladder:" in capsys.readouterr().err
 
 
+def test_eval_ladder_roots_its_checked_in_opening_pool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shipped selection names its pool the way every artifact path is named."""
+
+    from anthro_chess.evaluation import LadderBenchmarkConfig
+    from anthro_chess.interfaces.cli import _resolve_ladder_roots
+
+    data_root = tmp_path / "datasets"
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    resolved = ResolvedConfig(
+        value=LadderBenchmarkConfig.model_validate(
+            {"openings": {"pool": "artifacts/example-pool"}}
+        ),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+    rooted = _resolve_ladder_roots(resolved, [])
+
+    assert rooted.value.openings.pool == data_root / "example-pool"
+    # An explicit override is the caller's own path and is left alone.
+    overridden = _resolve_ladder_roots(resolved, ["openings.pool=/somewhere/else"])
+    assert overridden.value.openings.pool == Path("artifacts/example-pool")
+
+
 def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
     tmp_path: Path,
 ) -> None:
