@@ -37,9 +37,11 @@ from anthro_chess.data.schema import (
     SplitName,
 )
 from anthro_chess.data.termination import (
+    TERMINAL_ACTION_STATUSES,
     TERMINATION_CATEGORIES,
     DerivedTermination,
     derive_termination,
+    terminal_action_for,
 )
 
 _STATUS_PRESENT: FieldStatus = "present"
@@ -220,6 +222,7 @@ def prepare_pgn(
     rating_values: list[int] = []
     termination_category_counts: Counter[str] = Counter()
     termination_attribution_counts: Counter[str] = Counter()
+    terminal_action_status_counts: Counter[str] = Counter()
     abandonment_judged_games = 0
     total_plies = 0
     minimum_plies: int | None = None
@@ -266,7 +269,12 @@ def prepare_pgn(
                     clock_statuses = parsed.record[NormalizedColumn.CLOCK_STATUS]
                     if not isinstance(clock_statuses, list):
                         raise TypeError("normalized clock statuses must be a list")
-                    clock_status_counts.update(str(status) for status in clock_statuses)
+                    # Clock coverage describes the moves a source reported, so
+                    # a trailing terminal action's empty observation is left
+                    # out rather than counted as a source gap.
+                    clock_status_counts.update(
+                        str(status) for status in clock_statuses[:ply_count]
+                    )
                     clock_precisions = parsed.record[
                         NormalizedColumn.CLOCK_PRECISION_MS
                     ]
@@ -274,13 +282,16 @@ def prepare_pgn(
                         raise TypeError("normalized clock precisions must be a list")
                     clock_precision_counts.update(
                         precision
-                        for precision in clock_precisions
+                        for precision in clock_precisions[:ply_count]
                         if isinstance(precision, int)
                     )
                     assert parsed.termination is not None
                     termination_category_counts[parsed.termination.category.value] += 1
                     termination_attribution_counts[
                         _ATTRIBUTION_LABELS[parsed.termination.by_side_to_move]
+                    ] += 1
+                    terminal_action_status_counts[
+                        str(parsed.record[NormalizedColumn.TERMINAL_ACTION_STATUS])
                     ] += 1
                     if parsed.termination.losing_clock_share is not None:
                         abandonment_judged_games += 1
@@ -435,6 +446,10 @@ def prepare_pgn(
                     label: termination_attribution_counts[label]
                     for label in _ATTRIBUTION_LABELS.values()
                 },
+                "terminal_action_games": {
+                    status: terminal_action_status_counts[status]
+                    for status in TERMINAL_ACTION_STATUSES
+                },
                 "abandonment": {
                     "clock_share_threshold": (
                         resolved_config.value.termination.abandonment_clock_share
@@ -564,6 +579,19 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
         time_initial_ms=time_initial.value,
         abandonment_clock_share=config.termination.abandonment_clock_share,
     )
+    ply_count = len(actions)
+    terminal_action_id, terminal_action_status = terminal_action_for(
+        derived_termination,
+        board,
+    )
+    if terminal_action_id is not None:
+        # The per-ply columns stay aligned with the action sequence, and no
+        # source reports a clock for an ending, so the terminal action's
+        # observation is explicitly unavailable rather than invented.
+        actions.append(terminal_action_id)
+        clock_values.append(None)
+        clock_statuses.append(_STATUS_UNAVAILABLE)
+        clock_precisions.append(None)
     game_id = _game_id(config.source.id, source_game_key)
     split = _split_name(
         game_id,
@@ -602,7 +630,8 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
             NormalizedColumn.TERMINATION_BY_SIDE_TO_MOVE: (
                 derived_termination.by_side_to_move
             ),
-            NormalizedColumn.PLY_COUNT: len(actions),
+            NormalizedColumn.TERMINAL_ACTION_STATUS: terminal_action_status.value,
+            NormalizedColumn.PLY_COUNT: ply_count,
             NormalizedColumn.ACTION_IDS: actions,
             NormalizedColumn.WHITE_SOURCE_RATING: white_rating.value,
             NormalizedColumn.WHITE_SOURCE_RATING_STATUS: white_rating.status,

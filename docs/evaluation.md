@@ -1471,15 +1471,15 @@ exact tie could in principle fall the other way; none did in the measured
 suites.
 
 Endings are recorded precisely enough to tell them apart. Rule endings come
-from the chess layer, a learned resignation and the ply limit that stops an
-unfinished game are the harness's own, and a claimed draw is marked as
-adjudicated while the seats have no draw-claim action. The harness does not
-claim draws by default: claiming on the model's behalf would report the
-harness's policy as the model's behavior, and games still end on their own
-through the fivefold and seventy-five-move rules. Once the action vocabulary
-carries a draw claim, claimed draws become a model ending rather than an
-adjudicated one, and the adjudication path stays only as the fallback for seats
-that cannot claim.
+from the chess layer, while the learned terminal actions and the ply limit that
+stops an unfinished game are decided elsewhere. A claimed draw keeps the rule
+that made it claimable rather than becoming a category of its own; whether a
+seat claimed it or the harness settled it is what the record's adjudication
+flag says. The harness does not claim draws by default: claiming on the model's
+behalf would report the harness's policy as the model's behavior, the seats
+have a draw-claim action of their own to use or decline, and games still end on
+their own through the fivefold and seventy-five-move rules. The adjudication
+path remains as the fallback for seats that cannot claim.
 
 Analysis functions consume retained records rather than re-running games, so a
 new distribution feature is recomputed over games already on disk instead of by

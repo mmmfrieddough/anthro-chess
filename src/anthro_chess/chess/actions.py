@@ -7,7 +7,7 @@ from hashlib import sha256
 import chess
 
 ACTION_VOCABULARY_NAME = "anthro-standard-actions"
-ACTION_VOCABULARY_VERSION = 1
+ACTION_VOCABULARY_VERSION = 2
 
 
 def _standard_moves() -> tuple[chess.Move, ...]:
@@ -45,9 +45,16 @@ _MOVE_TO_ACTION_ID = {move: action_id for action_id, move in enumerate(_MOVES)}
 
 MOVE_ACTION_COUNT = len(_MOVES)
 RESIGNATION_ACTION_ID = MOVE_ACTION_COUNT
-ACTION_VOCABULARY_SIZE = MOVE_ACTION_COUNT + 1
+DRAW_CLAIM_ACTION_ID = MOVE_ACTION_COUNT + 1
+#: The actions that end a game instead of changing the position, in ascending
+#: id order. They sit above every move id, so a terminal action is exactly an
+#: action id at or past :data:`MOVE_ACTION_COUNT`.
+TERMINAL_ACTION_IDS = (RESIGNATION_ACTION_ID, DRAW_CLAIM_ACTION_ID)
+ACTION_VOCABULARY_SIZE = MOVE_ACTION_COUNT + len(TERMINAL_ACTION_IDS)
 ACTION_VOCABULARY_SHA256 = sha256(
-    "\n".join((*[move.uci() for move in _MOVES], "resign")).encode("ascii")
+    "\n".join((*[move.uci() for move in _MOVES], "resign", "claim-draw")).encode(
+        "ascii"
+    )
 ).hexdigest()
 
 
@@ -83,12 +90,43 @@ def decode_move(action_id: int) -> chess.Move:
     return _MOVES[action_id]
 
 
+def is_terminal_action(action_id: int) -> bool:
+    """Return whether an action ends the game rather than moving a piece."""
+
+    return action_id >= MOVE_ACTION_COUNT
+
+
+def draw_claim_available(board: chess.Board) -> bool:
+    """Return whether the player to move may claim a draw right now.
+
+    Deliberately narrower than ``python-chess``'s ``can_claim_draw``, which
+    also reports a claim that becomes available only after announcing a
+    particular move. The draw-claim action carries no move, so the condition it
+    can honestly represent is the one the current position already satisfies:
+    the position has repeated three times, or the fifty-move clock is full and
+    the game is not already over by another rule.
+    """
+
+    return board.is_repetition(3) or board.is_fifty_moves()
+
+
 def legal_action_ids(
-    board: chess.Board, *, include_resignation: bool = False
+    board: chess.Board,
+    *,
+    include_resignation: bool = False,
+    include_draw_claim: bool = False,
 ) -> tuple[int, ...]:
-    """Return the action ids enabled by the board and runtime policy."""
+    """Return the action ids enabled by the board and runtime policy.
+
+    Resignation is available in any position, so the caller's policy alone
+    decides it. A draw claim is offered only when the caller enables it *and*
+    exact chess logic says the claim exists; nothing here lets a policy enable
+    a claim the rules do not support.
+    """
 
     action_ids = sorted(encode_move(move) for move in board.legal_moves)
     if include_resignation:
         action_ids.append(RESIGNATION_ACTION_ID)
+    if include_draw_claim and draw_claim_available(board):
+        action_ids.append(DRAW_CLAIM_ACTION_ID)
     return tuple(action_ids)

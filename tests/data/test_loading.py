@@ -17,6 +17,7 @@ from anthro_chess.data import (
     SequenceLoaderConfig,
     prepare_pgn,
 )
+from anthro_chess.data.schema import SCHEMA_VERSION
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -276,7 +277,7 @@ def _row(
     game_id: int,
     moves: tuple[str, ...],
     *,
-    schema_version: int = 1,
+    schema_version: int = SCHEMA_VERSION,
 ) -> dict[str, Any]:
     return {
         "schema_version": schema_version,
