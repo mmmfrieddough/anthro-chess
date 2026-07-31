@@ -1753,6 +1753,183 @@ GENERATED_PLAY_EXACT_REPERTOIRE_WAYPOINT_MASS = _curve_metric(
 )
 
 
+def _ladder_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one self-play rating-ladder metric.
+
+    Rating behavior rather than generated play, because the games are the
+    instrument rather than the subject: what is reported is where the
+    configured dial landed, not what the play looked like. Every value is
+    estimated from games the benchmark played, so the declared workload — the
+    grid, the reference temperature, and the generation recipe — is an input to
+    the value and joins series identity.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=RATING_BEHAVIOR_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            execution_sensitive=True,
+        )
+    )
+
+
+#: Most of the ladder is informational, and deliberately so. A self-play ladder
+#: is internally consistent by construction, so a fitted rating and a slope
+#: describe the transfer function rather than grade it; only ordering and the
+#: distance from the configured scale carry a direction the project is willing
+#: to name.
+LADDER_FITTED_RATING = _ladder_metric(
+    "ladder.fitted_rating",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Empirical rating fitted for one seat of the ladder, on the joint "
+        "internal scale anchored at the reference temperature. Informational: "
+        "a seat configured low is meant to read low."
+    ),
+)
+
+LADDER_SCORE_RATE = _ladder_metric(
+    "ladder.score_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Points per game one seat scored across its matches, counting a draw "
+        "as a half. The raw observation the fit reads."
+    ),
+)
+
+LADDER_PREFERRED_SELECTION_RATE = _ladder_metric(
+    "ladder.preferred_selection_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of one seat's decisions where the draw took an action the model "
+        "ranked first. Part of the error profile read beside strength: a "
+        "temperature that preserves average score while moving this has changed "
+        "the shape of the mistakes rather than their number."
+    ),
+)
+
+LADDER_POLICY_REGRET = _ladder_metric(
+    "ladder.policy_regret",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Untempered probability one seat's selections gave up, over all of its "
+        "decisions. Moves with temperature by construction, so it describes the "
+        "dial rather than grading the model."
+    ),
+)
+
+LADDER_DEPARTURE_POLICY_REGRET = _ladder_metric(
+    "ladder.departure_policy_regret",
+    MetricDirection.INFORMATIONAL,
+    (
+        "The same regret over the decisions that departed from the model's "
+        "preference. Reported apart from the pooled figure because a small "
+        "pooled value can mean either rare departures or near ties."
+    ),
+)
+
+LADDER_SELECTED_RANK = _ladder_metric(
+    "ladder.selected_rank",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean untempered rank of the action one seat played. Rank and "
+        "probability are both reported, since rank two can carry nearly the "
+        "preferred action's probability or almost none of it."
+    ),
+)
+
+LADDER_RATING_ORDER_ACCURACY = _ladder_metric(
+    "ladder.rating_order_accuracy",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Pairwise accuracy with which a higher configured rating produces a "
+        "higher fitted rating at one temperature. Ties score a half."
+    ),
+)
+
+LADDER_ADJACENT_RATING_ORDER_ACCURACY = _ladder_metric(
+    "ladder.adjacent_rating_order_accuracy",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "The same accuracy over adjacent configured ratings only. Harder than "
+        "the pairwise figure and the one that localizes where the relationship "
+        "degrades, since a distant pair can order correctly while every "
+        "neighbouring pair is indistinguishable."
+    ),
+)
+
+LADDER_RATING_ERROR = _ladder_metric(
+    "ladder.rating_ladder_error",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean absolute distance in rating points between fitted and configured "
+        "rating at one temperature, after anchoring. A compressed ladder reads "
+        "high here even when its ordering is perfect."
+    ),
+)
+
+LADDER_FITTED_RATING_SLOPE = _ladder_metric(
+    "ladder.fitted_rating_slope",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Least-squares slope of fitted against configured rating at one "
+        "temperature. One is a reference shape rather than a target: a slope "
+        "below it usually points at uneven rating coverage in the training "
+        "data, whose expected response is better data rather than a mapping "
+        "applied at the configuration boundary."
+    ),
+)
+
+LADDER_FITTED_RATING_SPAN = _ladder_metric(
+    "ladder.fitted_rating_span",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Fitted rating points between the strongest and weakest configured "
+        "seat at one temperature. Near zero is the degenerate ladder, which is "
+        "a reportable outcome rather than a failed measurement."
+    ),
+)
+
+LADDER_TEMPERATURE_RESPONSE = _ladder_metric(
+    "ladder.temperature_strength_response",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Fitted rating points gained per unit of sampling temperature, "
+        "averaged over the configured ratings. Expected to be negative, since "
+        "sampling a weak move loses more than sampling a strong one gains."
+    ),
+)
+
+LADDER_ABLATED_TEMPERATURE_RESPONSE = _ladder_metric(
+    "ladder.ablated_temperature_strength_response",
+    MetricDirection.INFORMATIONAL,
+    (
+        "The same response measured with rating conditioning ablated, on the "
+        "same joint scale. The control the conditioned response is read "
+        "against."
+    ),
+)
+
+LADDER_TEMPERATURE_RESPONSE_ATTENUATION = _ladder_metric(
+    "ladder.temperature_response_attenuation",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of the ablated temperature response the conditioned arm avoids: "
+        "one minus the ratio of the two. Positive means rating conditioning "
+        "resists part of the drift. An observation about the model rather than "
+        "a property the project promises, so it declares no direction."
+    ),
+)
+
+
 TRAINING_HEALTH_GRADIENT_NORM = register_metric(
     MetricDefinition(
         identifier="training_health.gradient_norm",

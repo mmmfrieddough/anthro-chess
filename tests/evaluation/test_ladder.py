@@ -1,0 +1,648 @@
+"""What a rating ladder measures, and what it reports when it cannot."""
+
+from __future__ import annotations
+
+import itertools
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import pytest
+import torch
+from pydantic import ValidationError
+
+from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
+    RESIGNATION_ACTION_ID,
+)
+from anthro_chess.config import ConfigProvenance, ResolvedConfig
+from anthro_chess.data import DecisionContext
+from anthro_chess.evaluation.dependency import ConditioningKind
+from anthro_chess.evaluation.ladder import (
+    LADDER_KIND,
+    LadderBenchmarkConfig,
+    LadderBenchmarkError,
+    LadderBenchmarkResult,
+    LadderPairing,
+    SeatConditioning,
+    SeatKey,
+    benchmark_ladder,
+    fit_ratings,
+    seat_keys,
+)
+from anthro_chess.evaluation.results import (
+    CheckpointReference,
+    DetailStore,
+    ResultEnvelope,
+    ResultsStore,
+)
+from anthro_chess.evaluation.results.metrics import (
+    LADDER_ABLATED_TEMPERATURE_RESPONSE,
+    LADDER_ADJACENT_RATING_ORDER_ACCURACY,
+    LADDER_DEPARTURE_POLICY_REGRET,
+    LADDER_FITTED_RATING,
+    LADDER_FITTED_RATING_SLOPE,
+    LADDER_FITTED_RATING_SPAN,
+    LADDER_POLICY_REGRET,
+    LADDER_PREFERRED_SELECTION_RATE,
+    LADDER_RATING_ERROR,
+    LADDER_RATING_ORDER_ACCURACY,
+    LADDER_SCORE_RATE,
+    LADDER_SELECTED_RANK,
+    LADDER_TEMPERATURE_RESPONSE,
+    RATING_BEHAVIOR_FAMILY,
+    MetricDefinition,
+    registered_metrics,
+)
+from anthro_chess.runtime import RuntimeConfig
+
+CHECKPOINT = CheckpointReference(label="fixture-checkpoint", step=1)
+
+
+@dataclass
+class GradedRunner:
+    """A stand-in policy whose willingness to resign falls with its rating.
+
+    Real chess strength cannot be faked in a fixture, and a ladder does not
+    need it to be: what it needs is seats that are genuinely orderable by their
+    results. Resignation is the lever, because it is the one action that ends a
+    game inside a short ply limit. A seat configured low rates every move below
+    resigning and gives up sooner, so it loses more, and both dials reach the
+    outcome through the ordinary sampling path rather than through anything
+    this benchmark knows about.
+
+    The direction temperature moves the fixture in is an artifact of that lever
+    rather than a prediction, so the tests read that a response was measured
+    and never that it has a particular sign.
+    """
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        rating = 1000 if context.target_rating is None else context.target_rating
+        logits = torch.full((ACTION_VOCABULARY_SIZE,), (rating - 2000) / 500.0)
+        logits[RESIGNATION_ACTION_ID] = 0.0
+        return logits
+
+
+@dataclass
+class NeverEndingRunner:
+    """A stand-in policy that plays on and never resigns.
+
+    Every game it plays reaches the ply limit, so nothing it plays is scored.
+    That is the input a ladder cannot fit, as opposed to one it fits badly.
+    """
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+        logits[RESIGNATION_ACTION_ID] = -30.0
+        return logits
+
+
+_BASE_GRID: dict[str, Any] = {
+    "target_ratings": (1200, 2000),
+    "temperatures": (1.0,),
+    "reference_temperature": 1.0,
+    "seeds": (0, 1),
+}
+_BASE_GENERATION: dict[str, Any] = {
+    "games_per_position": 4,
+    "maximum_generated_plies": 20,
+    "swap_colors": True,
+}
+
+
+def _config(**overrides: Any) -> ResolvedConfig[LadderBenchmarkConfig]:
+    """Return a resolved ladder small enough for the CPU test suite.
+
+    Nested overrides merge into the small defaults, so a test naming one field
+    of the grid does not silently inherit the production game counts.
+    """
+
+    fields: dict[str, Any] = {
+        # Resignation is what ends a fixture game, so it is enabled here even
+        # though the shipped selection leaves it off.
+        "runtime": RuntimeConfig(resignation_enabled=True),
+    }
+    fields["grid"] = {**_BASE_GRID, **overrides.pop("grid", {})}
+    fields["generation"] = {**_BASE_GENERATION, **overrides.pop("generation", {})}
+    fields.update(overrides)
+    return ResolvedConfig(
+        value=LadderBenchmarkConfig.model_validate(fields),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+
+def _run(
+    config: ResolvedConfig[LadderBenchmarkConfig],
+    *,
+    runner: Any | None = None,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> LadderBenchmarkResult:
+    return benchmark_ladder(
+        config,
+        runner=runner or GradedRunner(),
+        checkpoint=CHECKPOINT,
+        store=store,
+        detail=detail,
+    )
+
+
+def _seats(*, ratings: tuple[int, ...], temperature: float) -> tuple[SeatKey, ...]:
+    return tuple(
+        SeatKey(SeatConditioning.CONDITIONED, rating, temperature) for rating in ratings
+    )
+
+
+def _round_robin(
+    seats: tuple[SeatKey, ...],
+    strengths: dict[SeatKey, float],
+    *,
+    games: int = 400,
+) -> tuple[LadderPairing, ...]:
+    """Return exact expected results for a ladder of known true ratings."""
+
+    pairings = []
+    for first, second in itertools.combinations(seats, 2):
+        expected = 1.0 / (
+            1.0 + 10.0 ** ((strengths[second] - strengths[first]) / 400.0)
+        )
+        pairings.append(
+            LadderPairing(
+                first=first,
+                second=second,
+                games=games,
+                first_points=round(expected * games),
+            )
+        )
+    return tuple(pairings)
+
+
+def test_grid_schedules_every_seat_and_one_ablated_arm_per_temperature() -> None:
+    config = LadderBenchmarkConfig.model_validate(
+        {
+            "grid": {
+                "target_ratings": (1200, 1800),
+                "temperatures": (0.0, 1.0),
+                "reference_temperature": 1.0,
+            }
+        }
+    )
+
+    seats = seat_keys(config)
+
+    assert [seat.label for seat in seats] == [
+        "1200@t0",
+        "1800@t0",
+        "1200@t1",
+        "1800@t1",
+        "ablated@t0",
+        "ablated@t1",
+    ]
+    assert [
+        seat.target_rating
+        for seat in seats
+        if seat.conditioning is SeatConditioning.ABLATED
+    ] == [None, None]
+
+
+def test_disabled_ablation_fields_no_control_arm() -> None:
+    config = LadderBenchmarkConfig.model_validate(
+        {"grid": {"target_ratings": (1200, 1800)}, "ablation": {"enabled": False}}
+    )
+
+    assert all(
+        seat.conditioning is SeatConditioning.CONDITIONED for seat in seat_keys(config)
+    )
+
+
+def test_reference_temperature_must_be_on_the_grid() -> None:
+    with pytest.raises(ValidationError, match="reference_temperature"):
+        LadderBenchmarkConfig.model_validate(
+            {"grid": {"temperatures": (0.5, 1.0), "reference_temperature": 0.7}}
+        )
+
+
+def test_a_ladder_needs_two_configured_ratings() -> None:
+    with pytest.raises(ValidationError, match="two configured ratings"):
+        LadderBenchmarkConfig.model_validate({"grid": {"target_ratings": (1500,)}})
+
+
+def test_fit_recovers_the_ratings_that_generated_the_results() -> None:
+    """The fit is checked against a ladder whose true ratings are known."""
+
+    seats = _seats(ratings=(1200, 1500, 1800, 2100), temperature=1.0)
+    strengths = {seat: float(seat.target_rating or 0) for seat in seats}
+
+    fit = fit_ratings(
+        seats,
+        _round_robin(seats, strengths),
+        anchor_seats=seats,
+        anchor_rating=1650.0,
+    )
+
+    assert fit.converged
+    assert not fit.clamped
+    for seat in seats:
+        assert fit.rating(seat) == pytest.approx(strengths[seat], abs=5.0)
+
+
+def test_an_indistinguishable_ladder_is_reported_rather_than_failed() -> None:
+    """A flat ladder is a reading about the checkpoint, not a broken fit."""
+
+    seats = _seats(ratings=(1200, 1500, 1800), temperature=1.0)
+    strengths = dict.fromkeys(seats, 1500.0)
+
+    fit = fit_ratings(
+        seats,
+        _round_robin(seats, strengths),
+        anchor_seats=seats,
+        anchor_rating=1500.0,
+    )
+
+    assert fit.converged
+    spread = max(fit.ratings.values()) - min(fit.ratings.values())
+    assert spread == pytest.approx(0.0, abs=1.0)
+
+
+def test_a_seat_that_never_loses_is_clamped_and_named() -> None:
+    """An unbounded maximum likelihood becomes a declared extreme."""
+
+    seats = _seats(ratings=(1200, 1500, 1800), temperature=1.0)
+    perfect = seats[-1]
+    pairings = tuple(
+        LadderPairing(
+            first=first,
+            second=second,
+            games=20,
+            first_points=0.0 if second == perfect else 10.0,
+        )
+        for first, second in itertools.combinations(seats, 2)
+    )
+
+    fit = fit_ratings(
+        seats,
+        pairings,
+        anchor_seats=seats,
+        anchor_rating=1500.0,
+        maximum_spread=800.0,
+    )
+
+    assert fit.clamped == (perfect,)
+    assert fit.rating(perfect) is not None
+
+
+def test_a_fit_that_runs_out_of_iterations_still_reports() -> None:
+    seats = _seats(ratings=(1200, 2100), temperature=1.0)
+    strengths = {seat: float(seat.target_rating or 0) for seat in seats}
+
+    fit = fit_ratings(
+        seats,
+        _round_robin(seats, strengths),
+        anchor_seats=seats,
+        anchor_rating=1650.0,
+        maximum_iterations=1,
+    )
+
+    assert not fit.converged
+    assert fit.iterations == 1
+    assert set(fit.ratings) == set(seats)
+
+
+def test_a_ladder_with_no_scored_game_is_a_generation_failure() -> None:
+    """No result at all is different from a fit that resolved nothing."""
+
+    with pytest.raises(LadderBenchmarkError, match="generation failure"):
+        _run(
+            _config(generation={"maximum_generated_plies": 4}),
+            runner=NeverEndingRunner(),
+        )
+
+
+def test_every_pair_of_seats_meets_and_both_colors_are_played() -> None:
+    result = _run(_config())
+
+    seats = result.seats
+    assert len(seats) == 3  # two configured ratings plus one ablated seat
+    assert len(result.pairings) == 3
+    assert {(pairing.first, pairing.second) for pairing in result.pairings} == set(
+        itertools.combinations([seat.key for seat in seats], 2)
+    )
+    # Every seat's games are the ones its own pairings scored, and no game is
+    # counted for a seat that did not play it.
+    for seat in seats:
+        assert seat.games == sum(
+            pairing.games
+            for pairing in result.pairings
+            if seat.key in (pairing.first, pairing.second)
+        )
+    assert result.games > 0
+
+
+def test_the_ladder_orders_configured_ratings_and_reports_its_shape() -> None:
+    result = _run(_config())
+
+    reading = result.reading(1.0)
+    assert reading.ratings == (1200, 2000)
+    assert reading.order_accuracy == 1.0
+    assert reading.adjacent_order_accuracy == 1.0
+    assert reading.slope > 0.0
+    assert reading.span > 0.0
+    assert not reading.inversions
+    assert reading.ladder_error >= 0.0
+
+
+def test_a_temperature_response_needs_more_than_one_temperature() -> None:
+    result = _run(_config())
+
+    assert result.response is None
+    assert "temperature-response" in result.unavailable
+
+
+def test_temperature_response_is_measured_against_an_ablated_control() -> None:
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.7, 1.0),
+                "reference_temperature": 1.0,
+            }
+        )
+    )
+
+    response = result.response
+    assert response is not None
+    assert response.temperatures == (0.7, 1.0)
+    assert [rating for rating, _ in response.per_rating] == [1200, 2000]
+    # Both arms come out of one fit, so the ablated response is on the same
+    # scale as the conditioned one rather than on a scale of its own.
+    assert response.ablated_response is not None
+    assert response.attenuation is not None or (
+        response.attenuation_unavailable is not None
+    )
+
+
+def test_disabling_ablation_leaves_the_response_uncontrolled() -> None:
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.7, 1.0),
+                "reference_temperature": 1.0,
+            },
+            ablation={"enabled": False},
+        )
+    )
+
+    response = result.response
+    assert response is not None
+    assert response.ablated_response is None
+    assert response.attenuation is None
+    assert "ablation was disabled" in (response.attenuation_unavailable or "")
+    assert "temperature-response-attenuation" in result.unavailable
+
+
+def test_the_fit_is_anchored_on_the_reference_temperature_row() -> None:
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.7, 1.0),
+                "reference_temperature": 1.0,
+            }
+        )
+    )
+
+    assert result.fit.anchor_basis == "reference-temperature"
+    anchored = [
+        result.seat(SeatKey(SeatConditioning.CONDITIONED, rating, 1.0)).fitted_rating
+        for rating in (1200, 2000)
+    ]
+    assert sum(value or 0.0 for value in anchored) / len(anchored) == pytest.approx(
+        1600.0, abs=1e-6
+    )
+
+
+def test_the_error_profile_is_reported_beside_each_seat_strength() -> None:
+    result = _run(_config())
+
+    for seat in result.seats:
+        profile = seat.decisions
+        assert profile is not None
+        assert profile.decisions > 0
+        assert 0.0 <= profile.preferred_selection_rate <= 1.0
+        assert profile.selected_rank >= 1.0
+
+
+def test_a_suite_reproduces_from_its_seeds() -> None:
+    first = _run(_config())
+    second = _run(_config())
+
+    assert [pairing.as_record() for pairing in first.pairings] == [
+        pairing.as_record() for pairing in second.pairings
+    ]
+    assert [seat.fitted_rating for seat in first.seats] == [
+        seat.fitted_rating for seat in second.seats
+    ]
+
+
+def test_recorded_results_carry_one_series_per_unit(tmp_path: Path) -> None:
+    store = ResultsStore(tmp_path / "store")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _run(_config(), store=store, detail=detail)
+
+    envelopes = result.envelopes
+    # One per seat, one per temperature row, and none for the response, which a
+    # single-temperature grid cannot measure.
+    assert len(envelopes) == len(result.seats) + len(result.readings)
+    assert all(envelope.kind == LADDER_KIND for envelope in envelopes)
+    assert all(envelope.execution is not None for envelope in envelopes)
+    assert len(result.recorded_paths) == len(envelopes)
+    assert len(result.detail_paths) == len(envelopes)
+    for envelope in envelopes:
+        envelope.verify()
+
+    seat_envelope = _envelope_with(envelopes, LADDER_FITTED_RATING)
+    reading_envelope = _envelope_with(envelopes, LADDER_RATING_ORDER_ACCURACY)
+    assert seat_envelope.execution is not None
+    assert reading_envelope.execution is not None
+    # A seat and the row it belongs to measure different quantities, so they
+    # must not share a series.
+    assert (
+        seat_envelope.execution.workload_sha256
+        != reading_envelope.execution.workload_sha256
+    )
+    assert {measurement.metric for measurement in reading_envelope.measurements} == {
+        LADDER_RATING_ORDER_ACCURACY.identifier,
+        LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier,
+        LADDER_RATING_ERROR.identifier,
+        LADDER_FITTED_RATING_SLOPE.identifier,
+        LADDER_FITTED_RATING_SPAN.identifier,
+    }
+    assert {
+        LADDER_SCORE_RATE.identifier,
+        LADDER_PREFERRED_SELECTION_RATE.identifier,
+        LADDER_POLICY_REGRET.identifier,
+        LADDER_SELECTED_RANK.identifier,
+    } <= {measurement.metric for measurement in seat_envelope.measurements}
+
+
+def test_two_seats_of_one_row_are_different_series(tmp_path: Path) -> None:
+    result = _run(
+        _config(),
+        store=ResultsStore(tmp_path / "store"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    fingerprints = {
+        measurement.fingerprint
+        for envelope in result.envelopes
+        for measurement in envelope.measurements
+        if measurement.metric == LADDER_FITTED_RATING.identifier
+    }
+
+    assert len(fingerprints) == len(result.seats)
+
+
+def test_the_response_is_recorded_as_its_own_series(tmp_path: Path) -> None:
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.7, 1.0),
+                "reference_temperature": 1.0,
+            }
+        ),
+        store=ResultsStore(tmp_path / "store"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    envelope = _envelope_with(result.envelopes, LADDER_TEMPERATURE_RESPONSE)
+    metrics = {measurement.metric for measurement in envelope.measurements}
+
+    assert LADDER_ABLATED_TEMPERATURE_RESPONSE.identifier in metrics
+    assert envelope.execution is not None
+    # The response spans the grid, so its workload names both axes rather than
+    # a single temperature.
+    workload = envelope.execution.workload
+    assert workload["temperatures"] == [0.7, 1.0]
+    assert "temperature" not in workload
+
+
+def test_every_result_declares_the_reference_temperature(tmp_path: Path) -> None:
+    """A calibration figure that does not say what it was measured at is unreadable."""
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.7, 1.0),
+                "reference_temperature": 1.0,
+            }
+        ),
+        store=ResultsStore(tmp_path / "store"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    for envelope in result.envelopes:
+        assert envelope.execution is not None
+        assert envelope.execution.workload["reference_temperature"] == 1.0
+
+
+def test_a_seat_names_its_treatment_in_the_shared_conditioning_vocabulary(
+    tmp_path: Path,
+) -> None:
+    """The ablated arm and a dependency test's absent arm are one treatment."""
+
+    result = _run(
+        _config(),
+        store=ResultsStore(tmp_path / "store"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    treatments = {seat.execution.workload["conditioning_kind"] for seat in result.seats}
+
+    assert treatments == {ConditioningKind.TRUE.value, ConditioningKind.ABSENT.value}
+
+
+def test_retained_games_are_written_once_under_the_seat_that_held_white(
+    tmp_path: Path,
+) -> None:
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _run(
+        _config(),
+        store=ResultsStore(tmp_path / "store"),
+        detail=detail,
+    )
+
+    written = [
+        json.loads(path.read_text(encoding="utf-8")) for path in result.detail_paths
+    ]
+    game_ids = [
+        game["game_id"]
+        for payload in written
+        for game in payload.get("games_detail", [])
+    ]
+
+    assert len(game_ids) == len(set(game_ids))
+    assert len(game_ids) == result.games + result.unfinished
+
+
+def test_a_grid_change_ends_every_seat_series(tmp_path: Path) -> None:
+    """A seat's fitted rating is an output of the whole fit, not of its games."""
+
+    narrow = _run(
+        _config(),
+        store=ResultsStore(tmp_path / "narrow"),
+        detail=DetailStore(tmp_path / "narrow-detail"),
+    )
+    wide = _run(
+        _config(grid={"target_ratings": (1200, 1600, 2000)}),
+        store=ResultsStore(tmp_path / "wide"),
+        detail=DetailStore(tmp_path / "wide-detail"),
+    )
+
+    seat = SeatKey(SeatConditioning.CONDITIONED, 1200, 1.0)
+    assert _fingerprint(narrow, seat) != _fingerprint(wide, seat)
+
+
+def test_every_ladder_metric_is_registered_in_the_rating_behavior_family() -> None:
+    identifiers = {
+        definition.identifier
+        for definition in registered_metrics(RATING_BEHAVIOR_FAMILY.identifier)
+    }
+
+    assert {
+        LADDER_FITTED_RATING.identifier,
+        LADDER_RATING_ORDER_ACCURACY.identifier,
+        LADDER_TEMPERATURE_RESPONSE.identifier,
+        LADDER_DEPARTURE_POLICY_REGRET.identifier,
+    } <= identifiers
+
+
+def _envelope_with(
+    envelopes: tuple[ResultEnvelope, ...],
+    definition: MetricDefinition,
+) -> ResultEnvelope:
+    for envelope in envelopes:
+        if any(
+            measurement.metric == definition.identifier
+            for measurement in envelope.measurements
+        ):
+            return envelope
+    raise AssertionError(f"no result reported {definition.identifier}")
+
+
+def _fingerprint(result: LadderBenchmarkResult, seat: SeatKey) -> str:
+    measured = result.seat(seat)
+    for envelope in result.envelopes:
+        if envelope.execution is None:
+            continue
+        if envelope.execution.workload_sha256 != measured.execution.workload_sha256:
+            continue
+        for measurement in envelope.measurements:
+            if measurement.metric == LADDER_FITTED_RATING.identifier:
+                return measurement.fingerprint
+    raise AssertionError(f"no fitted rating was recorded for {seat.label}")

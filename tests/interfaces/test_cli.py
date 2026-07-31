@@ -900,6 +900,83 @@ def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None
     assert max(len(line) for line in rendered.splitlines()) <= 120
 
 
+def test_eval_ladder_reports_a_configuration_error_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A reference temperature off the grid is a configuration error."""
+
+    config = tmp_path / "ladder.toml"
+    config.write_text(
+        "[grid]\ntemperatures = [0.5, 1.0]\nreference_temperature = 0.7\n",
+        encoding="utf-8",
+    )
+
+    assert main(["eval", "ladder", "--config", str(config), "--no-record"]) == 2
+
+    assert "anthro eval ladder:" in capsys.readouterr().err
+
+
+def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
+    tmp_path: Path,
+) -> None:
+    """The text view has to show ordering, shape, and the profile beside it."""
+
+    import torch
+
+    from anthro_chess.chess import ACTION_VOCABULARY_SIZE, RESIGNATION_ACTION_ID
+    from anthro_chess.data import DecisionContext
+    from anthro_chess.evaluation import LadderBenchmarkConfig, benchmark_ladder
+    from anthro_chess.evaluation.results import CheckpointReference
+    from anthro_chess.interfaces.cli import _render_ladder
+
+    class Runner:
+        def predict(self, context: DecisionContext) -> torch.Tensor:
+            rating = context.target_rating or 1000
+            logits = torch.full((ACTION_VOCABULARY_SIZE,), (rating - 2000) / 500.0)
+            logits[RESIGNATION_ACTION_ID] = 0.0
+            return logits
+
+    resolved = ResolvedConfig(
+        value=LadderBenchmarkConfig.model_validate(
+            {
+                "runtime": {"resignation_enabled": True},
+                "grid": {
+                    "target_ratings": (1200, 2000),
+                    "temperatures": (1.0,),
+                    "reference_temperature": 1.0,
+                    "seeds": (0, 1),
+                },
+                "generation": {
+                    "games_per_position": 4,
+                    "maximum_generated_plies": 20,
+                },
+            }
+        ),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+    result = benchmark_ladder(
+        resolved,
+        runner=Runner(),
+        checkpoint=CheckpointReference(label="fixture-checkpoint", step=1),
+    )
+
+    rendered = _render_ladder(result)
+
+    assert "Ladder at temperature=1" in rendered
+    assert "configured" in rendered
+    assert "ordering       " in rendered
+    assert "transfer       slope" in rendered
+    # Strength and error profile share one table on purpose: a temperature that
+    # holds the score rate while moving the profile has changed the shape of
+    # the mistakes, and neither column shows that alone.
+    assert "preferred" in rendered
+    assert "1200@t1" in rendered
+    assert "ablated@t1" in rendered
+    assert "Recorded: nothing" in rendered
+    assert max(len(line) for line in rendered.splitlines()) <= 120
+
+
 def test_eval_decisions_reports_an_unreadable_payload(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
