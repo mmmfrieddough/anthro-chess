@@ -338,6 +338,7 @@ split = "train"
         resolved: ResolvedConfig[TrainingConfig],
         *,
         store: object = None,
+        detail: object = None,
     ) -> TrainingResult:
         assert resolved.value.steps == 2
         return TrainingResult(
@@ -392,6 +393,7 @@ split = "train"
         resolved: ResolvedConfig[TrainingConfig],
         *,
         store: object = None,
+        detail: object = None,
     ) -> TrainingResult:
         assert resolved.value.output_directory == run_root / "example-run"
         assert resolved.value.train.normalized == data_root / "example-data/normalized"
@@ -440,6 +442,7 @@ split = "train"
         resolved: ResolvedConfig[TrainingConfig],
         *,
         store: object = None,
+        detail: object = None,
     ) -> TrainingResult:
         assert resolved.value.output_directory == explicit_output
         assert resolved.value.train.normalized == explicit_normalized
@@ -609,6 +612,126 @@ def test_eval_metrics_lists_the_registry(
     assert {"training-health", "legality", "rating-behavior", "generated-play"} <= (
         families
     )
+    efficiency = next(
+        family
+        for family in registry["families"]
+        if family["identifier"] == "training-efficiency"
+    )
+    assert efficiency["metrics"]
+    assert all(metric["execution_sensitive"] for metric in efficiency["metrics"])
+
+
+def test_eval_budget_reports_quality_against_the_training_budget(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_budget_store(tmp_path / "results")
+    monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "results"))
+
+    assert main(["eval", "budget", "--positions", "2000", "--format", "json"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["metric"] == "held_out.move_loss"
+    assert [point["processed_positions"] for point in report["points"]] == [1000, 2000]
+    assert report["answers"][0]["point"]["checkpoint"] == "run-step-00000200"
+
+
+def test_eval_budget_reports_a_join_it_cannot_make_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "empty"))
+
+    assert main(["eval", "budget"]) == 2
+
+    assert "anthro eval budget:" in capsys.readouterr().err
+
+
+def _write_budget_store(root: Path) -> None:
+    """Record two checkpoints that each carry a budget point and a quality one."""
+
+    from datetime import UTC, datetime
+
+    from anthro_chess.evaluation.results import (
+        BenchmarkReference,
+        CheckpointReference,
+        ResultsStore,
+        build_result,
+        dataset_reference,
+        execution_reference,
+        measurement,
+        projection_content_digest,
+    )
+    from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
+
+    rows = [
+        {
+            "game_id": game_id,
+            "ruleset": "standard",
+            "initial_position": "startpos",
+            "action_ids": [1, 2, 3],
+            "white_normalized_rating": 1500,
+            "black_normalized_rating": 1500,
+        }
+        for game_id in (1, 2)
+    ]
+    component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
+    execution = execution_reference(
+        device="cpu",
+        device_name="fixture-cpu",
+        precision="float32",
+        torch_version="2.7.0",
+        platform_key="Linux-x86_64",
+        platform="Linux-6.1-x86_64",
+        workload={"benchmark_version": 1},
+    )
+    store = ResultsStore(root)
+    for step, positions, seconds, loss in (
+        (100, 1000, 10.0, 4.0),
+        (200, 2000, 20.0, 3.1),
+    ):
+        label = f"run-step-{step:08d}"
+        recorded_at = datetime(2026, 7, 30, 12, step // 100, tzinfo=UTC)
+        store.append(
+            build_result(
+                kind="training-efficiency",
+                benchmark=BenchmarkReference(name="training-efficiency", version=1),
+                checkpoint=CheckpointReference(label=label, step=step),
+                execution=execution,
+                measurements=[
+                    measurement(
+                        "training.processed_positions",
+                        float(positions),
+                        workload=execution.workload_component(),
+                    ),
+                    measurement(
+                        "training.training_seconds",
+                        seconds,
+                        workload=execution.workload_component(),
+                    ),
+                ],
+                recorded_at=recorded_at,
+            )
+        )
+        store.append(
+            build_result(
+                kind="held-out-preview",
+                benchmark=BenchmarkReference(name="held-out-preview", version=1),
+                checkpoint=CheckpointReference(label=label, step=step),
+                data=dataset_reference(
+                    pool_id="fixture-pool",
+                    pool_version=1,
+                    view="preview",
+                    selected_games=component.games,
+                    game_ids_sha256="a" * 64,
+                    components=[component],
+                ),
+                measurements=[measurement("held_out.move_loss", loss, data=component)],
+                recorded_at=recorded_at,
+            )
+        )
 
 
 def test_eval_decisions_reads_a_stored_payload_and_writes_the_detail(

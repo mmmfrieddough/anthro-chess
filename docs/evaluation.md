@@ -93,18 +93,26 @@ statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
 
 Efficiency and generated-play metrics carry one further component: the
-**declared workload**, the settings that decide what was measured. Change the
-ply depth a latency figure is taken at, or the temperature a rollout is played
-at, and the number measures a different quantity, so that belongs in identity
-just as scored content does. Sample counts do not: generating more games, like
-scoring more, estimates the same quantity more precisely. The **machine**
-deliberately does not either. A cross-machine latency delta is interpretable
-rather than meaningless — it is just attributable to the environment rather than
-to the model — so it is attributed by a report instead of ending a series.
-`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule and
-`docs/decisions/0020-declared-settings-scope-generated-series.md` extends it to
-generated play, including why a rollout's human prefixes are provenance rather
-than a data component.
+**declared workload**, the settings whose change would make a delta
+meaningless. Change the ply depth a latency figure is taken at, or the
+temperature a rollout is played at, and the number measures a different
+quantity, so that belongs in identity just as scored content does. Sample
+counts do not: generating more games, like scoring more, estimates the same
+quantity more precisely.
+
+Everything else a result was measured under is a **coordinate**: recorded,
+diffed, and named by a report, but never digested. The machine is one, and so
+is anything a reader might want to subtract across — a training run's model
+architecture, batch, and corpus are coordinates for exactly that reason. A
+delta across them is interpretable rather than meaningless, so a report
+attributes it instead of ending a series.
+
+`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule,
+`0020-declared-settings-scope-generated-series.md` extends it to generated
+play, including why a rollout's human prefixes are provenance rather than a
+data component, and
+`0021-efficiency-identity-excludes-compared-conditions.md` draws the line
+between identity and coordinates.
 
 ### Where The Store Lives
 
@@ -135,6 +143,10 @@ to play with; see inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
 the external puzzle-rating response described in the rating section.
+`anthro eval budget` reports held-out quality against the training budget that
+bought it, joining two families rather than defining a third; see training
+efficiency below. Training efficiency itself has no command, because it is
+measured by `anthro train` while the run happens.
 
 ### The Checkpoint Evaluation Runner
 
@@ -1616,6 +1628,97 @@ rate: generated untimed games that reach a claimable dead position and never
 end. That is the failure the claim action exists to prevent. Correctness gates
 should also cover constructed claimable-threefold and automatic-draw sequences,
 so claim availability and claim handling are exact rather than sampled.
+
+## Training Efficiency
+
+What a training configuration costs to run. Unlike every other family here,
+this one cannot be measured after the fact: a finished run cannot be re-timed,
+so the instrumentation lives inside the training loop and the result is scoped
+to a **run** rather than to a checkpoint. That is also why it is not part of
+the end-of-run checkpoint suite.
+
+The headline is **active non-padding positions per second**. Padding is kept
+out of the numerator because a configuration that pads more is not learning
+faster, and the realized padding fraction is reported beside the headline
+rather than folded into it, so a throughput change caused by batch composition
+is distinguishable from one caused by execution speed. Wall-clock training
+time, total processed positions, and peak device memory are reported alongside.
+
+Two exclusions decide whether the number means anything.
+
+**Warmup is excluded**, because the first steps pay for lazy kernel compilation
+and allocator growth. Those are real costs and they are reported, but they are
+startup costs; leaving them in would make a short run look slower than a long
+one for reasons unrelated to the configuration. A run that never leaves warmup
+reports no throughput rather than a figure taken from it.
+
+**Overhead is identified rather than averaged away.** Startup, checkpoint
+writes, cadence evaluation, final validation, and the run's own instrumentation
+are each timed and each subtracted, and the share of the run spent outside
+training is reported as its own metric. A run that evaluates itself every ten
+steps is not slower at training, and a number saying otherwise would make the
+cadence look like a regression.
+
+**Almost nothing breaks the series**, and that is the point. The model
+architecture, the dataset, the loader configuration, the effective batch and
+accumulation, the determinism setting, and the machine are all recorded as
+coordinates rather than as identity, so a report subtracts across them and
+names whichever moved. Only the benchmark version identifies the series,
+because only a changed definition makes the delta mean nothing.
+
+That follows from the rule in `docs/design-principles.md`: a coordinate you
+might want to measure the difference across cannot be part of identity.
+Freezing the model into identity would refuse the family's headline question —
+what did this change cost us — which is what
+`docs/decisions/0021-efficiency-identity-excludes-compared-conditions.md`
+records, refining 0018's inference-shaped wording.
+
+A condition change is therefore reported as `confounded` with the moved
+coordinate named, not as a refusal. It is the confounder most likely to pass
+unnoticed, because a regenerated corpus changes neither the machine nor the
+checkpoint label while changing positions per second.
+
+The realized sequence-length distribution is not a coordinate either — that is
+an outcome of those choices rather than an input — and is reported as
+measurements instead.
+
+The environment pivot works here by pinning the declared conditions rather than
+the parameter digest. Training the same configuration on two machines produces
+two different sets of weights, so pinning parameters would make "did the new
+machine help" unaskable rather than rigorous; the architecture and corpus are
+what has to hold still.
+
+`anthro_chess.training.efficiency` owns the exact metrics, defaults, and
+workload fields. `docs/training-and-runtime.md` owns the deferred read-back the
+measurement depends on, including why the measurement's unit is a logging
+interval rather than a step.
+
+### Quality Against Budget
+
+A throughput ranking is not an efficiency verdict. A step that runs twice as
+fast while learning less per position is a regression that every efficiency
+metric in isolation reports as a win. The question worth asking is what
+held-out quality a run reached for a given number of processed positions or a
+given amount of wall clock.
+
+That spans two families, so it is a **report joining them** rather than a third
+family duplicating both: `training-efficiency` supplies the budget axes and
+`held-out-prediction` supplies the quality. It needs no benchmark of its own —
+the points already exist, written by the run as it trained and by the cadence
+readings taken beside them — and the join is by checkpoint label, which is why
+every reading of the same parameters has to agree on that name.
+
+A budget answer reports the best **recorded** point within the budget rather
+than an interpolation, because the curve between two cadence readings was not
+measured. Two refusals keep the curve honest: every point's quality must sit on
+one series, so a view or pool change cannot masquerade as learning, and every
+point's efficiency must sit on one declared workload, so a batch-size change
+cannot masquerade as a faster machine. An environment change is not a refusal —
+it is recorded per point and surfaced, matching decision 0018's posture
+everywhere else.
+
+`anthro eval budget` reads it; `anthro_chess.evaluation.results.budget` owns
+the join and its comparability rules.
 
 ## Inference Efficiency
 

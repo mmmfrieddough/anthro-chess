@@ -1543,6 +1543,114 @@ GENERATED_PLAY_RATING_VARIATION: Mapping[str, MetricDefinition] = {
 }
 
 
+def _training_efficiency_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one training-efficiency metric.
+
+    These share the inference family's cost and sensitivity: their value is the
+    execution rather than a property of the data, so they carry no projection
+    and their declared workload joins series identity.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=TRAINING_EFFICIENCY_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.MEASURED_EXECUTION,
+            execution_sensitive=True,
+        )
+    )
+
+
+TRAINING_ACTIVE_POSITIONS_PER_SECOND = _training_efficiency_metric(
+    "training.active_positions_per_second",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Active non-padding positions trained on per second of steady-state "
+        "training, with warmup and identified overhead excluded. Padding is "
+        "left out of the numerator because a configuration that pads more is "
+        "not learning faster."
+    ),
+)
+
+TRAINING_STEP_SECONDS = _training_efficiency_metric(
+    "training.step_seconds",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean steady-state seconds per optimizer step. Reported beside "
+        "throughput because the two move apart whenever the effective batch "
+        "or the padding fraction changes."
+    ),
+)
+
+TRAINING_PROCESSED_POSITIONS = _training_efficiency_metric(
+    "training.processed_positions",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Active positions the run trained on in total. This is how large the "
+        "run was rather than how well it did, and it is the budget axis a "
+        "quality-versus-time report reads."
+    ),
+)
+
+TRAINING_SECONDS = _training_efficiency_metric(
+    "training.training_seconds",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Wall-clock seconds spent in optimizer steps, identified overhead "
+        "removed. Informational because a longer run is not a worse one; it is "
+        "the other budget axis rather than a quantity to minimize."
+    ),
+)
+
+TRAINING_ACTIVE_POSITION_FRACTION = _training_efficiency_metric(
+    "training.active_position_fraction",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of the padded batch extent that carried a position to learn "
+        "from. Explains a throughput change that came from batch composition "
+        "rather than from execution speed."
+    ),
+)
+
+TRAINING_OVERHEAD_FRACTION = _training_efficiency_metric(
+    "training.overhead_fraction",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of the run's wall clock spent outside measured training: "
+        "startup, checkpoint writes, cadence evaluation, final validation, and "
+        "instrumentation. Informational because evaluating more often is a "
+        "deliberate choice rather than a regression."
+    ),
+)
+
+TRAINING_PEAK_DEVICE_MEMORY_BYTES = _training_efficiency_metric(
+    "training.peak_device_memory_bytes",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Peak bytes reserved from the device driver during the run. Reserved "
+        "rather than allocated, because cached free blocks still decide "
+        "whether a larger configuration fits."
+    ),
+)
+
+TRAINING_STEP_SYNC_COST_SECONDS = _training_efficiency_metric(
+    "training.step_sync_cost_seconds",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Added seconds per optimizer step when per-micro-batch device "
+        "synchronization is not deferred to the logging interval, measured by "
+        "interleaving both arms through the same window."
+    ),
+)
+
+
 TRAINING_HEALTH_GRADIENT_NORM = register_metric(
     MetricDefinition(
         identifier="training_health.gradient_norm",

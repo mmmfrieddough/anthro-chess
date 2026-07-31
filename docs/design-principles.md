@@ -52,6 +52,42 @@ same staging.
 The cost is sequencing discipline and sometimes an extra step. That is usually
 cheaper than being unable to attribute an improvement.
 
+## Design A Measurement From Its Comparisons
+
+Write down the comparisons a metric family exists to answer before choosing
+what identifies its series. Deriving the identity first and checking it against
+tests written to match it will confirm whatever was assumed.
+
+The rule that falls out of doing this, and the one worth checking field by
+field:
+
+> A coordinate you might want to measure the difference across cannot be part
+> of identity. Identity is only for changes that make the difference
+> *meaningless*, never for changes that make it *interesting*.
+
+Comparing held-out move loss over two different evaluation pools produces a
+number with no interpretation, so the pool belongs in identity. Comparing
+training throughput over two model sizes produces exactly the number somebody
+wanted, so the model must not. Both follow from the same test, which is why it
+is worth stating once rather than re-deriving per family.
+
+The failure mode this prevents is subtle, because it arrives as a plausible
+definition rather than as an obvious mistake. "The workload is what decided the
+work" is a correct description of inference efficiency's identity and a
+destructive one for training efficiency, where the settings that decide the
+work — model, batch, corpus — are precisely the ones a reader wants to subtract
+across. A rule that tracks its purpose in one family can stop tracking it in the
+next, and only the list of intended comparisons catches that.
+
+Fragmenting a series is not a safe default. It looks conservative and it
+silently destroys long-run questions, leaving a scatter of short lines where a
+trend should be. Prefer computing the delta and labelling what moved.
+
+`docs/decisions/0013-benchmark-result-comparability.md`,
+`0018-workload-scoped-efficiency-series.md`, and
+`0021-efficiency-identity-excludes-compared-conditions.md` apply this to the
+results store.
+
 ## Build The Bot
 
 This is not primarily a research project. The documentation should support

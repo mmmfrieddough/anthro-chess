@@ -32,7 +32,13 @@ def test_cpu_proof_prepares_trains_validates_checkpoints_and_resumes(
         == 0
     )
 
+    # Every run records what it cost, so the proof has to name a store or it
+    # would append to the repository's committed history on each test run.
     common_overrides = [
+        "--store",
+        str(tmp_path / "results"),
+        "--detail-root",
+        str(tmp_path / "detail"),
         "--set",
         f"output_directory={json.dumps(str(run_root))}",
         "--set",
@@ -92,6 +98,25 @@ def test_cpu_proof_prepares_trains_validates_checkpoints_and_resumes(
     assert validation["ratings"]["rated_position_count"] > 0
     assert validation["legality"]["mask_penalty"] >= 0.0
     assert checkpoint["global_step"] == 6
+    # A resumed run keeps counting the positions the checkpoint already paid
+    # for, so the budget axis a quality-versus-time report reads is the whole
+    # run rather than the segment since the restart.
+    efficiency = resumed_record["efficiency"]
+    assert (
+        efficiency["processed_positions"]
+        == (resumed_record["optimization"]["processed_positions"])
+    )
+    assert (
+        efficiency["processed_positions"]
+        > (initial_record["efficiency"]["processed_positions"])
+    )
+    assert efficiency["coordinates"]["model_sha256"]
+    assert efficiency["coordinates"]["dataset_sha256"]
+    assert efficiency["run_seconds"] > efficiency["training_seconds"] > 0.0
+    assert efficiency["overhead"]["startup_seconds"] > 0.0
+    assert len(efficiency["recorded"]) == 1
+    assert len(efficiency["detail"]) == 1
+    assert Path(efficiency["detail"][0]).is_file()
     assert checkpoint["metadata"]["action_vocabulary"]["sha256"]
     assert checkpoint["metadata"]["encoding"]["schema_sha256"]
     assert checkpoint["metadata"]["data"]["train"]["manifest_sha256"]

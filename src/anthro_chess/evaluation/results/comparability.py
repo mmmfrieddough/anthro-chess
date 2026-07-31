@@ -206,17 +206,23 @@ class AxisChange(StrEnum):
 
 @dataclass(frozen=True)
 class Attribution:
-    """Which of a comparison's three coordinates moved.
+    """Which of a comparison's coordinates moved.
 
-    An efficiency delta is only a statement about the model when the
-    environment held still. Reporting the three axes separately is what lets a
-    reader — or an agent — tell "my change made this slower" from "I measured
-    it on a different machine".
+    An efficiency delta is only a statement about the model when everything
+    else held still. Reporting the axes separately is what lets a reader — or
+    an agent — tell "my change made this slower" from "I measured it on a
+    different machine" or "the corpus was regenerated underneath it".
+
+    ``conditions`` covers benchmark-declared coordinates such as the model
+    architecture, the effective batch, and the training corpus. They move the
+    number without changing what it measures, so they confound a comparison
+    rather than invalidating it.
     """
 
     model: AxisChange
     environment: AxisChange
     workload: AxisChange
+    conditions: AxisChange = AxisChange.UNKNOWN
 
     @property
     def attributable_to_model(self) -> bool:
@@ -225,6 +231,7 @@ class Attribution:
         return (
             self.environment is AxisChange.UNCHANGED
             and self.workload is AxisChange.UNCHANGED
+            and self.conditions is not AxisChange.CHANGED
         )
 
     def as_record(self) -> dict[str, str]:
@@ -234,6 +241,7 @@ class Attribution:
             "model": self.model.value,
             "environment": self.environment.value,
             "workload": self.workload.value,
+            "conditions": self.conditions.value,
         }
 
 
@@ -250,6 +258,33 @@ def attribute(baseline: ResultEnvelope, current: ResultEnvelope) -> Attribution:
             None if baseline.execution is None else baseline.execution.workload_sha256,
             None if current.execution is None else current.execution.workload_sha256,
         ),
+        conditions=_conditions_axis(baseline, current),
+    )
+
+
+def condition_differences(
+    baseline: ResultEnvelope,
+    current: ResultEnvelope,
+) -> tuple[ProvenanceDifference, ...]:
+    """Report which declared coordinates differ between two results.
+
+    These are the settings a benchmark chose to keep out of series identity
+    because a delta across them is interesting rather than meaningless. Naming
+    them is what stops a corpus regeneration from reading as a slowdown.
+    """
+
+    if baseline.execution is None or current.execution is None:
+        return ()
+    before = baseline.execution.declared_coordinates()
+    after = current.execution.declared_coordinates()
+    return tuple(
+        ProvenanceDifference(
+            field=field,
+            baseline=before.get(field),
+            current=after.get(field),
+        )
+        for field in sorted({*before, *after})
+        if before.get(field) != after.get(field)
     )
 
 
@@ -281,6 +316,22 @@ def _environment_axis(baseline: ResultEnvelope, current: ResultEnvelope) -> Axis
     if baseline.execution.environment() != current.execution.environment():
         return AxisChange.CHANGED
     return AxisChange.UNCHANGED
+
+
+def _conditions_axis(baseline: ResultEnvelope, current: ResultEnvelope) -> AxisChange:
+    """Return whether the declared coordinates moved.
+
+    A benchmark that declares none has nothing to say here, which is reported
+    as unknown rather than as an unverifiable claim that they held still.
+    """
+
+    if baseline.execution is None or current.execution is None:
+        return AxisChange.UNKNOWN
+    before = baseline.execution.declared_coordinates()
+    after = current.execution.declared_coordinates()
+    if not before and not after:
+        return AxisChange.UNKNOWN
+    return AxisChange.CHANGED if before != after else AxisChange.UNCHANGED
 
 
 def _axis(baseline: str | None, current: str | None) -> AxisChange:

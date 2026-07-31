@@ -12,6 +12,7 @@ from anthro_chess.data import SequenceDataConfig
 from anthro_chess.models import MoveModelConfig
 from anthro_chess.training.cadence import TrainingEvaluationConfig
 from anthro_chess.training.devices import DeviceSelection
+from anthro_chess.training.efficiency import TrainingEfficiencyConfig
 
 
 class TrainingConfig(ConfigModel):
@@ -31,6 +32,7 @@ class TrainingConfig(ConfigModel):
     profile_phases: StrictBool = False
     model: MoveModelConfig = MoveModelConfig()
     evaluation: TrainingEvaluationConfig = TrainingEvaluationConfig()
+    efficiency: TrainingEfficiencyConfig = TrainingEfficiencyConfig()
     train: SequenceDataConfig
     validation: SequenceDataConfig | None = None
 
