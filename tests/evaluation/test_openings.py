@@ -314,8 +314,13 @@ def test_classification_is_deterministic_and_needs_no_network(
         first = classify_moves(moves(NAJDORF_ENGLISH_ATTACK))
         load_book.cache_clear()
         second = classify_moves(moves(NAJDORF_ENGLISH_ATTACK))
-    finally:
+    except BaseException:
+        # Only on the failing path: a book left half-built by an exception is
+        # not one later tests should inherit. On the passing path the cache
+        # holds the book this test just proved is the same one, and clearing it
+        # would charge the next caller a full rebuild to arrive back here.
         load_book.cache_clear()
+        raise
 
     assert first == second
 

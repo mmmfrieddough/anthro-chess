@@ -36,6 +36,11 @@ uv run mypy src tests
 uv run pytest
 ```
 
+Continuous integration runs that last command as `uv run pytest -n auto`, which
+shards the suite across the runner's cores. The same flag works locally and is
+worth using for a full run, but it starts a worker process per core, so leave it
+off when running a handful of tests or a debugger.
+
 Coverage and the complete pre-commit suite are available on demand:
 
 ```console

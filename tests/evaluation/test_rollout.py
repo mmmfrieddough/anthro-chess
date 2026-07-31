@@ -55,6 +55,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.rollout import (
     ROLLOUT_KIND,
+    RepertoireWalkConfig,
     RolloutArm,
     RolloutBenchmarkConfig,
     RolloutBenchmarkError,
@@ -107,6 +108,17 @@ _BASE_GENERATION: dict[str, Any] = {
     "maximum_generated_plies": 6,
     "swap_colors": False,
 }
+#: The walk enumerates rather than samples, so its cost is set by the shape of
+#: the policy it walks, not by a sample size. The declared threshold is
+#: affordable against a trained checkpoint because a trained policy concentrates
+#: its mass; the stubs here spread it over every legal move, so the declared
+#: value explores a tree no checkpoint would produce. Shrinking it changes what
+#: these tests pay, not what they read: under a stub policy the walk prunes its
+#: whole mass and quotes a distance of one at either setting. The depth still
+#: reaches where the book names a destination rather than a waypoint, without
+#: which the reading is skipped outright. The declared values themselves are
+#: pinned by ``test_the_declared_walk_shape_is_the_one_a_suite_runs``.
+_BASE_WALK: dict[str, Any] = {"plies": 5, "threshold": 0.01}
 
 
 def _config(**overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
@@ -122,6 +134,7 @@ def _config(**overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
     fields["reference"] = {"enabled": False, **overrides.pop("reference", {})}
     fields["grid"] = {**_BASE_GRID, **overrides.pop("grid", {})}
     fields["generation"] = {**_BASE_GENERATION, **overrides.pop("generation", {})}
+    fields["walk"] = {**_BASE_WALK, **overrides.pop("walk", {})}
     fields.update(overrides)
     return ResolvedConfig(
         value=RolloutBenchmarkConfig.model_validate(fields),
@@ -277,6 +290,22 @@ def test_the_declared_bandwidth_is_one_frozen_value() -> None:
         assert spec.quantity is quantity.kind
         # The evaluation points are the ratings played, not a declared grid.
         assert spec.grid == (1200.0, 1800.0)
+
+
+def test_the_declared_walk_shape_is_the_one_a_suite_runs() -> None:
+    """The walk's depth and threshold scope its series, like the bandwidth.
+
+    Pinned here because the suites above run a cheaper walk: a stub policy
+    spreads its mass over every legal move, so the declared threshold explores a
+    tree no trained checkpoint would. That keeps the tests affordable but leaves
+    nothing else asserting what a real run walks.
+    """
+
+    declared = RepertoireWalkConfig()
+
+    assert declared.enabled
+    assert declared.plies == 8
+    assert declared.threshold == 0.001
 
 
 def test_every_generated_play_metric_is_reported_by_the_benchmark(

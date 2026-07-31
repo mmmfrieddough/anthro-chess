@@ -44,7 +44,11 @@ jobs:
         run: uv run mypy src tests
 
       - name: Test
-        run: uv run pytest
+        # Sharded across the runner's cores. The suite is order-independent and
+        # has no long pole, so the wall time is set by the core count rather
+        # than by any one test; ``auto`` takes whatever the runner provides
+        # instead of pinning a number to today's runner size.
+        run: uv run pytest -n auto
 
       - name: Build distributions
         run: uv build
