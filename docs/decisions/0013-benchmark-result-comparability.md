@@ -122,6 +122,29 @@ for. Its per-axis statistical power is fixed permanently at designation, so each
 axis needs enough games at that moment, sized from measured sampling noise rather
 than guessed.
 
+### Before The Core Is Designated, Nothing Is Protected
+
+Everything above describes how history is kept once there is history to keep.
+There is none yet, and there will not be until the first generation is cut and
+the core designated, which is stage 4 work in `docs/planning/roadmap.md`.
+
+Until then the results store holds no reading any decision rests on, and the
+checkpoints that exist are proof-scale. A change that breaks every series in
+the project therefore costs nothing. Bumping the preprocessing version,
+changing the action vocabulary, redefining a metric, and regenerating the
+corpus are all ordinary changes during this period. **No work should be
+deferred, resequenced, or bundled in order to avoid breaking a series, and no
+issue should carry that as a reason.** The one argument that survives is
+compute: an expensive corpus regeneration is worth batching so it is paid once
+rather than three times, which is a cost claim about wall clock and not a
+comparability claim.
+
+This does not relax the machinery. Fingerprints are still computed, breaks
+still register automatically, and reports and charts still render a seam as a
+seam. The harness has to be correct before the first reading anyone trusts it
+for, and the only way to arrive there is to build it as though history already
+mattered. What is suspended is the caution, not the mechanism.
+
 ### Anchor Checkpoints
 
 A small set of checkpoints is retained as anchors and re-scored whenever a

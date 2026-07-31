@@ -103,6 +103,17 @@ Basic validation metrics should exist during the minimal training loop, but
 this stage should make evaluation coherent enough to compare model versions
 without relying on subjective playtesting.
 
+This stage builds the instrument; it does not yet take readings anyone acts on.
+Model iteration starts in stage 4, so no benchmark history accumulated here is
+protected and no checkpoint produced here is worth preserving. Breaking a
+comparability series, bumping the preprocessing version, changing the action
+vocabulary, and regenerating the corpus are all free during this stage, and
+work should not be deferred or resequenced to avoid them. Batching an expensive
+corpus regeneration is still worthwhile, but that is an argument about compute
+rather than about history. The comparability machinery itself is built to full
+strength anyway, because it has to be trustworthy before the first reading that
+matters. See `docs/decisions/0013-benchmark-result-comparability.md`.
+
 This stage also establishes the evaluation-data contract the later benchmarks
 share: a `test` partition training never consumes, one frozen pool drawn from
 it, and derived views each benchmark selects through. Game-level opening
@@ -148,9 +159,9 @@ How games end becomes measurable in this stage. Deriving termination categories
 during preprocessing turns resignation from an unreachable vocabulary slot into
 a learned action with real labels, and adds a draw-claim action so untimed games
 have a terminator that is not a hardcoded move limit. Both change the action
-vocabulary identity, so they land as one bump that regenerates the corpus and
-starts a new comparability series; the sequencing exists to pay that cost once.
-See `docs/decisions/0017-derived-termination-and-terminal-actions.md`.
+vocabulary identity, so they land as one bump rather than two, to pay the
+corpus regeneration once. See
+`docs/decisions/0017-derived-termination-and-terminal-actions.md`.
 
 This stage should establish whether the model uses its conditioning inputs,
 whether behavior shifts across settings, and what strength those settings
