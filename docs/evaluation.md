@@ -20,9 +20,9 @@ important tradeoffs, such as improving move loss while hurting rating
 calibration or timing.
 
 Families cover training health, held-out prediction, legality, correctness,
-rating behavior, generated play, decision decomposition, timing, training
-efficiency, inference efficiency, and later additions such as move-time
-coherence, human-likeness, and preference controls. The metric registry in
+rating behavior, generated play, game termination, decision decomposition,
+timing, training efficiency, inference efficiency, and later additions such as
+move-time coherence, human-likeness, and preference controls. The metric registry in
 `anthro_chess.evaluation.results` owns the exact family and metric identifiers,
 their declared directions, and their definition versions; `anthro eval metrics`
 prints them.
@@ -156,7 +156,9 @@ model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
 the external puzzle-rating response described in the rating section, and
 `anthro eval ladder` measures the self-play rating ladder and its temperature
-response described beside it. `anthro eval budget` reports held-out quality
+response described beside it. `anthro eval termination` measures how a
+checkpoint ends games against the human termination mix; see game termination
+below. `anthro eval budget` reports held-out quality
 against the training budget that bought it, joining two families rather than
 defining a third; see training efficiency below. Training efficiency itself has no command, because it is
 measured by `anthro train` while the run happens.
@@ -895,10 +897,14 @@ counting would admit every capture of a defended piece, which is not a gain at
 all. The resolution uses exact legal move generation rather than a bitboard
 approximation, so pins, discovered attacks, and a king that cannot recapture
 into check are handled by the chess layer instead of by a second implementation
-of the rules. That is a deterministic, identically applied criterion rather than
-a sound one, which is what the reporting rule above requires. It is also far
-more common than the decidable predicates, so it is the one that carries useful
-statistics onto the perturbed arms of the novelty sweep.
+of the rules. It prices pieces from the same shared table the resignation
+guardrail reads, so a pawn is worth the same on both sides of either
+comparison; the king's ordering price is applied on top and belongs to choosing
+an attacker rather than to any valuation. That is a deterministic, identically
+applied criterion rather than a sound one, which is what the reporting rule
+above requires. It is also far more common than the decidable predicates, so it
+is the one that carries useful statistics onto the perturbed arms of the
+novelty sweep.
 
 ## Decision Decomposition
 
@@ -1881,7 +1887,11 @@ should be reported explicitly rather than inferred from a distribution distance.
 Judging whether a resignation was premature needs a position-quality signal.
 Material balance is the dependency-free proxy and is enough to catch the
 egregious cases; an engine-derived signal would be sharper and is subject to the
-engine-dependency decision recorded elsewhere in this document.
+engine-dependency decision recorded elsewhere in this document. Because the
+proxy is heuristic rather than decidable, the model's premature rate is reported
+beside the same rate computed over the human reference, following the rule the
+adjudicated decisions above already state: a heuristic predicate is read against
+a reference, never as an absolute.
 
 Draw claims are rare enough in human data that a distribution comparison carries
 little information. The reading that matters is the untimed non-termination
@@ -1889,6 +1899,57 @@ rate: generated untimed games that reach a claimable dead position and never
 end. That is the failure the claim action exists to prevent. Correctness gates
 should also cover constructed claimable-threefold and automatic-draw sequences,
 so claim availability and claim handling are exact rather than sampled.
+
+### The Implemented Family
+
+`anthro_chess.evaluation.termination` implements this and `anthro eval
+termination` is its reading surface. It produces three kinds of record, because
+it measures three kinds of thing. A **generated reading** spans one
+temperature's whole rating grid and carries the deficit and the guardrails. A
+**mix** additionally names the human time-control class it was compared
+against, since two classes are two questions rather than two samples of one. The
+**held-out resignation** reading generated nothing, so it is scoped by the human
+content it scored rather than by a generation recipe, which is also what makes
+it the one reading here cheap enough to take often.
+
+The two sides are counted over one vocabulary formed as the union of the derived
+human categories and the harness's own. The ply limit is the model-only bucket
+that mirrors abandonment, kept visible for the same reason: a generated game the
+harness stopped has no human counterpart, and folding it into a comparable
+category would move mass a checkpoint cannot move.
+
+The generated side is untimed, because the harness plays no clock. A
+time-control class therefore slices the *reference*, which is the useful
+direction anyway: the question is which human population a checkpoint's endings
+resemble. A class no reference game belongs to reports as unavailable rather
+than as a distance over nothing.
+
+The mix distance **saturates while the model produces none of the human
+categories**, and a reader tracking it early will otherwise mistake that for a
+broken instrument. A total-variation distance is the mass that has to move for
+the two distributions to agree, so a model producing zero of some set of human
+endings cannot score below the human mass on that set, whatever it does with
+its own. The first shakedown reading sat exactly there: across five checkpoints
+of one run the model ended games only by resigning or by hitting the ply limit,
+producing none of the eight other human categories, which carry 0.626 of human
+mass — and the distance read 0.626 at every checkpoint, to sixteen significant
+figures.
+
+That is the correct answer rather than a defect, and the number is not stuck:
+moving one percent of the model's mass onto checkmate moves the distance by
+exactly one percent. It unpins the moment a checkpoint checkmates anyone. Until
+then the composition change that *is* happening shows up in the category
+drill-down and in the rating-variation metric rather than in the headline, which
+is the reason the distance is read with its drill-down rather than on its own.
+
+Every reading with no population behind it reports an explicit unavailable with
+its reason rather than a zero. This matters most where a zero is a plausible
+measurement: a model that never resigned has no median deficit, and writing zero
+there would read as resigning while exactly level. The same shape covers a pool
+holding no game that carries a terminal action, which is what a corpus prepared
+before the terminal actions existed looks like from here once it is compatible
+enough to load at all — an incompatible one is refused by the pool loader and
+the model runner on vocabulary identity, well before any metric is computed.
 
 ## Training Efficiency
 

@@ -442,6 +442,28 @@ MOVE_TIMING_PROJECTION = register_projection(
     )
 )
 
+#: The held-out resignation reading consumes the same trajectory content move
+#: prediction does, plus the derived termination columns. Those decide which
+#: plies are positives: a game's terminal action is only in the action sequence
+#: when the derivation attributed the ending to the side to move, so a
+#: re-derivation that moved a game between categories or changed why a terminal
+#: action was omitted changes what this metric was computed over.
+TERMINATION_PREDICTION_PROJECTION = register_projection(
+    DataProjection(
+        name="termination_prediction",
+        version=1,
+        columns=(
+            NormalizedColumn.ACTION_IDS.value,
+            NormalizedColumn.BLACK_NORMALIZED_RATING.value,
+            NormalizedColumn.INITIAL_POSITION.value,
+            NormalizedColumn.RULESET.value,
+            NormalizedColumn.TERMINAL_ACTION_STATUS.value,
+            NormalizedColumn.TERMINATION_CATEGORY.value,
+            NormalizedColumn.WHITE_NORMALIZED_RATING.value,
+        ),
+    )
+)
+
 PUZZLE_RESPONSE_PROJECTION = register_projection(
     DataProjection(
         name="puzzle_response",
@@ -558,6 +580,24 @@ GENERATED_PLAY_FAMILY = register_family(
         summary=(
             "What whole generated games look like, beyond what per-position "
             "prediction metrics can show."
+        ),
+    )
+)
+
+#: Split from generated play rather than folded into it, because the two are
+#: read on different terms. A generated-play metric describes the moves; this
+#: one describes the decision to stop making them, which the model chooses and
+#: which no aggregate over moves can surface. It also spans both sides of the
+#: pool: the mix and the deficit are read on games the model played, while the
+#: resignation prediction is read on games humans played.
+GAME_TERMINATION_FAMILY = register_family(
+    MetricFamily(
+        identifier="game-termination",
+        title="Game termination",
+        summary=(
+            "How games end, read against the human termination mix rather than "
+            "against a target rate. Premature resignation is the product-"
+            "critical failure here and is invisible to every other family."
         ),
     )
 )
@@ -1772,6 +1812,204 @@ GENERATED_PLAY_RATING_VARIATION: Mapping[str, MetricDefinition] = {
     )
     for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
 }
+
+
+def _termination_generated_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one termination metric read off games the model played.
+
+    These share generated play's cost and workload sensitivity for the same
+    reason its own metrics do: whether a seat may resign at all, and the dials
+    it played under, decide what the number measures.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=GAME_TERMINATION_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            execution_sensitive=True,
+        )
+    )
+
+
+def _termination_held_out_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one termination metric read off games humans played.
+
+    A deterministic pass over a fixed view rather than a rollout, so it is
+    scoped by the content it scored instead of by a generation recipe. That is
+    what makes it cheap enough to read at a training cadence while the mix and
+    the deficit are not.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=GAME_TERMINATION_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.SINGLE_PASS,
+            projection=TERMINATION_PREDICTION_PROJECTION.name,
+        )
+    )
+
+
+#: The termination mix is one categorical curve comparison, so it reports the
+#: same three readings every other human-reference comparison does rather than
+#: inventing a shape of its own.
+TERMINATION_MIX_CONDITIONAL_DISTANCE = _termination_generated_metric(
+    "termination.mix_conditional_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean distance between the generated and human termination-category "
+        "curves over the rating points the model supports. Categories the "
+        "model cannot produce stay in the comparison as their own buckets, so "
+        "part of this distance is a floor no checkpoint can close."
+    ),
+)
+
+TERMINATION_MIX_POOLED_DISTANCE = _termination_generated_metric(
+    "termination.mix_pooled_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Distance between the rating-free generated and human termination "
+        "mixes. A model can end games the way the average human does while "
+        "matching no particular rating, which the conditional reading catches "
+        "and this one cannot."
+    ),
+)
+
+TERMINATION_MIX_RATING_VARIATION = _termination_generated_metric(
+    "termination.mix_rating_variation",
+    MetricDirection.INFORMATIONAL,
+    (
+        "How much the generated termination mix moves across the rating range. "
+        "Read against the level a model with no rating response would show, "
+        "not maximized."
+    ),
+)
+
+#: Cheap and free of rollouts: the policy already assigns terminal-action mass
+#: at every scored position, so both halves come out of one pass over frozen
+#: human games.
+TERMINATION_RESIGNATION_MASS_AT_RESIGNATION = _termination_held_out_metric(
+    "termination.resignation_mass_at_resignation",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Mean raw probability the policy assigns the resignation action at the "
+        "ply where the human actually resigned. The human's own action is the "
+        "target here, which is why this one has a direction at all."
+    ),
+)
+
+TERMINATION_RESIGNATION_MASS_AT_MOVES = _termination_held_out_metric(
+    "termination.resignation_mass_at_moves",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Mean raw probability the policy assigns the resignation action at "
+        "plies where the human moved instead. The false-positive half: a model "
+        "that resigns everywhere scores well on the other reading alone."
+    ),
+)
+
+TERMINATION_RESIGNATION_MASS_SEPARATION = _termination_held_out_metric(
+    "termination.resignation_mass_separation",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "How much more resignation mass the policy places where humans "
+        "resigned than where they moved. Neither half means much alone: both "
+        "rise together on a model that has simply learned the action exists."
+    ),
+)
+
+TERMINATION_RESIGNATION_DEFICIT_MEDIAN = _termination_generated_metric(
+    "termination.resignation_deficit_median",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Median material the model was behind, in pawns, at the positions it "
+        "resigned from. Informational because the human median is the "
+        "reference rather than any number this project would name."
+    ),
+)
+
+TERMINATION_RESIGNATION_DEFICIT_DISTANCE = _termination_generated_metric(
+    "termination.resignation_deficit_distance",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Distance between the model and human distributions of material "
+        "deficit at resignation, averaged over the matched rating bands both "
+        "sides populate."
+    ),
+)
+
+TERMINATION_RESIGNATION_DEFICIT_GAP = _termination_generated_metric(
+    "termination.resignation_deficit_gap",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Model median deficit at resignation minus the human median for the "
+        "same rating bands. Signed, because resigning too early and resigning "
+        "too late are different findings that an absolute distance merges."
+    ),
+)
+
+#: The guardrails. Reported as their own metrics rather than inferred from the
+#: mix distance, because their failure modes are not symmetric and a
+#: distributional distance averages exactly that asymmetry away.
+TERMINATION_PREMATURE_RESIGNATION_RATE = _termination_generated_metric(
+    "termination.premature_resignation_rate",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Share of the model's resignations taken from positions it was not "
+        "behind in on material. The product-critical failure: worse than never "
+        "resigning, and invisible to every other benchmark. Material balance is "
+        "a heuristic proxy, so read it against the human rate beside it rather "
+        "than as an absolute."
+    ),
+)
+
+TERMINATION_PREMATURE_RESIGNATION_HUMAN_RATE = _termination_generated_metric(
+    "termination.premature_resignation_human_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "The same rate computed over human resignations in the reference. The "
+        "proxy's noise lands on both sides identically, which is what makes the "
+        "model rate readable despite the proxy admitting unsound positions."
+    ),
+)
+
+TERMINATION_SILENT_TERMINAL_ACTIONS = _termination_generated_metric(
+    "termination.silent_terminal_actions",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "How many enabled terminal actions the suite never once selected. The "
+        "opposite failure to premature resignation: an action the runtime "
+        "offers and the model never uses is a capability that exists only on "
+        "paper. Counted over enabled actions alone, so a disabled action is "
+        "absent from the reading rather than silently passing it."
+    ),
+)
+
+TERMINATION_UNTIMED_NON_TERMINATION_RATE = _termination_generated_metric(
+    "termination.untimed_non_termination_rate",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Share of generated games that reached a claimable dead position and "
+        "still never ended. The failure the draw-claim action exists to "
+        "prevent: with no clock to resolve it, a model that shuffles in a drawn "
+        "position and declines to claim has no way to finish the game."
+    ),
+)
 
 
 def _training_efficiency_metric(

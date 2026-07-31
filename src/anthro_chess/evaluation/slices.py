@@ -161,18 +161,12 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
 #: winning. One pawn is the smallest gain worth calling a gain.
 MATERIAL_GAIN_THRESHOLD = 1
 
-#: Piece values the exchange resolution reads. The king is priced far above
-#: every other piece so it recaptures last, which is the conventional way to
-#: keep it out of a swap-off it would never enter. That pricing is specific to
-#: choosing an attacker and is deliberately not the one a material balance uses.
-_PIECE_VALUES: Mapping[int, int] = {
-    chess.PAWN: 1,
-    chess.KNIGHT: 3,
-    chess.BISHOP: 3,
-    chess.ROOK: 5,
-    chess.QUEEN: 9,
-    chess.KING: 1000,
-}
+#: What the king is worth when choosing which attacker recaptures. Priced far
+#: above every other piece so it recaptures last, which is the conventional way
+#: to keep it out of a swap-off it would never enter. This is an ordering
+#: device rather than a valuation, which is why it does not belong in
+#: ``MATERIAL_VALUES``: a balance that priced the king would be nonsense.
+_EXCHANGE_KING_VALUE = 1000
 
 
 #: Half-open legal-move-count intervals. Legality metrics vary strongly with
@@ -498,6 +492,22 @@ def _material_winning_moves(
     )
 
 
+def _exchange_value(piece_type: int | None) -> int:
+    """Return one piece's worth inside an exchange resolution.
+
+    Reads the shared material table so a pawn is worth the same here as in a
+    balance, with the king's ordering price applied on top. An empty square
+    resolves to a pawn, which only arises for an en-passant capture whose
+    target square holds nothing.
+    """
+
+    if piece_type is None:
+        return MATERIAL_VALUES[chess.PAWN]
+    if piece_type == chess.KING:
+        return _EXCHANGE_KING_VALUE
+    return MATERIAL_VALUES[piece_type]
+
+
 def _exchange_gain(board: chess.Board, move: chess.Move) -> int:
     """Return the material one capture nets once the exchange is played out.
 
@@ -510,13 +520,13 @@ def _exchange_gain(board: chess.Board, move: chess.Move) -> int:
     """
 
     captured = (
-        _PIECE_VALUES[chess.PAWN]
+        MATERIAL_VALUES[chess.PAWN]
         if board.is_en_passant(move)
-        else _PIECE_VALUES[board.piece_type_at(move.to_square) or chess.PAWN]
+        else _exchange_value(board.piece_type_at(move.to_square))
     )
     board.push(move)
     try:
-        at_risk = _PIECE_VALUES[board.piece_type_at(move.to_square) or chess.PAWN]
+        at_risk = _exchange_value(board.piece_type_at(move.to_square))
         return captured - _continue_exchange(board, move.to_square, at_risk)
     finally:
         board.pop()
@@ -540,36 +550,55 @@ def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -
     move = min(
         captures,
         key=lambda candidate: (
-            _PIECE_VALUES[board.piece_type_at(candidate.from_square) or chess.PAWN],
+            _exchange_value(board.piece_type_at(candidate.from_square)),
             candidate.uci(),
         ),
     )
     board.push(move)
     try:
-        next_at_risk = _PIECE_VALUES[board.piece_type_at(square) or chess.PAWN]
+        next_at_risk = _exchange_value(board.piece_type_at(square))
         return max(0, at_risk - _continue_exchange(board, square, next_at_risk))
     finally:
         board.pop()
 
 
-def _material_balance_for_side_to_move(board: chess.Board) -> int:
-    values = {
-        chess.PAWN: 1,
-        chess.KNIGHT: 3,
-        chess.BISHOP: 3,
-        chess.ROOK: 5,
-        chess.QUEEN: 9,
-        chess.KING: 0,
-    }
+#: Conventional pawn values for the material proxy. Deliberately the textbook
+#: numbers rather than tuned ones: the proxy's job is to be identical on both
+#: sides of a human-referenced comparison, and a tuned table would make it a
+#: position evaluation this project has declined to own.
+MATERIAL_VALUES: Mapping[int, int] = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+    chess.KING: 0,
+}
+
+
+def material_balance(board: chess.Board, color: chess.Color) -> int:
+    """Return ``color``'s material advantage in pawns, negative when behind.
+
+    One definition, shared by every reading that needs a dependency-free
+    position-quality signal. Both the stalemate-resource predicate and the
+    termination benchmark's premature-resignation guardrail read it, and a
+    guardrail comparing a model against humans is only meaningful when the same
+    arithmetic ran on both sides.
+    """
+
     own = sum(
-        len(board.pieces(piece_type, board.turn)) * value
-        for piece_type, value in values.items()
+        len(board.pieces(piece_type, color)) * value
+        for piece_type, value in MATERIAL_VALUES.items()
     )
     opponent = sum(
-        len(board.pieces(piece_type, not board.turn)) * value
-        for piece_type, value in values.items()
+        len(board.pieces(piece_type, not color)) * value
+        for piece_type, value in MATERIAL_VALUES.items()
     )
     return own - opponent
+
+
+def _material_balance_for_side_to_move(board: chess.Board) -> int:
+    return material_balance(board, board.turn)
 
 
 def _move_action_id(move: chess.Move) -> int:

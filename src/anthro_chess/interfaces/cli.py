@@ -34,9 +34,12 @@ if TYPE_CHECKING:
         PuzzleBenchmarkResult,
         RolloutBenchmarkConfig,
         RolloutBenchmarkResult,
+        TerminationBenchmarkConfig,
+        TerminationBenchmarkResult,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
     from anthro_chess.evaluation.rollout import RolloutReading
+    from anthro_chess.evaluation.termination import Guardrails
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -419,6 +422,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     rollout_parser.set_defaults(handler=_run_eval_rollout)
+
+    termination_parser = eval_commands.add_parser(
+        "termination",
+        help=(
+            "Measure how a checkpoint ends games against the human termination "
+            "mix, with the premature-resignation guardrails."
+        ),
+    )
+    termination_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML game-termination selection.",
+    )
+    termination_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(termination_parser)
+    termination_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    termination_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Measure and print without writing to the store. This is what a "
+            "shakedown reading uses: real evidence about the benchmark that "
+            "does not belong in the committed history."
+        ),
+    )
+    termination_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    termination_parser.set_defaults(handler=_run_eval_termination)
 
     ladder_parser = eval_commands.add_parser(
         "ladder",
@@ -1718,6 +1768,164 @@ def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
     ]
 
 
+def _run_eval_termination(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        TerminationBenchmarkConfig,
+        TerminationBenchmarkError,
+        benchmark_termination,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = _resolve_termination_roots(
+            load_config(
+                TerminationBenchmarkConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            ),
+            arguments.set,
+        )
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_termination(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, TerminationBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval termination: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_termination(result), end="")
+    return 0
+
+
+def _render_termination(result: TerminationBenchmarkResult) -> str:
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        f"Games: {result.games} generated against {result.reference_games} human "
+        f"reference game(s)",
+    ]
+    for reading in result.generated:
+        guardrails = reading.guardrails
+        deficit = reading.deficit
+        lines.extend(
+            [
+                "",
+                f"{reading.label}  "
+                f"(series workload {reading.execution.workload_sha256[:12]})",
+                f"  games          {reading.games} across ratings "
+                f"{', '.join(str(rating) for rating in reading.ratings)}",
+                f"  terminations   {_counts(reading.category_counts)}",
+                f"  resignations   {guardrails.resignations} "
+                f"({_optional_rate(guardrails.premature_rate)} premature, "
+                f"human {_optional_rate(guardrails.human_premature_rate)})",
+                f"  deficit        median "
+                f"{_optional_value(deficit.model_median)} pawns vs human "
+                f"{_optional_value(deficit.human_median)} "
+                f"(distance {_optional_value(deficit.distance, '.4f')})",
+                f"  silent actions {_silent_actions(guardrails)}",
+                f"  never ended    {guardrails.claimable_unfinished_games} claimable "
+                f"({_optional_rate(guardrails.untimed_non_termination_rate)})",
+            ]
+        )
+        for name, reason in sorted(reading.unavailable.items()):
+            lines.append(f"  unavailable    {name}: {reason}")
+    for mix in result.mixes:
+        comparison = mix.comparison
+        floor = (
+            "-"
+            if comparison.floors is None
+            else f"{comparison.floors.conditional.value:.4f}"
+        )
+        lines.extend(
+            [
+                "",
+                f"Termination mix — {mix.label}  "
+                f"(series {mix.execution.workload_sha256[:12]})",
+                f"  {mix.model_games} generated vs {mix.human_games} human game(s)",
+                f"  conditional {comparison.conditional_distance:.4f} "
+                f"(floor {floor})  pooled {comparison.pooled_distance:.4f}  "
+                f"reads as {comparison.response.value}",
+            ]
+        )
+        for share in comparison.category_shares()[:6]:
+            lines.append(
+                f"    {share.category:<24}human {share.human:.3f}  "
+                f"model {share.model:.3f}  delta {share.delta:+.3f}"
+            )
+    held_out = result.held_out
+    if held_out is not None:
+        lines.extend(
+            [
+                "",
+                "Held-out resignation prediction",
+                f"  {held_out.games} game(s), {held_out.resignation_plies} "
+                f"resignation ply/plies, {held_out.move_plies} move ply/plies",
+                f"  mass at resignation "
+                f"{_optional_value(held_out.mass_at_resignation, '.5f')}  "
+                f"at moves {_optional_value(held_out.mass_at_moves, '.5f')}  "
+                f"separation {_optional_value(held_out.separation, '.5f')}",
+            ]
+        )
+        for name, reason in sorted(held_out.unavailable.items()):
+            lines.append(f"  unavailable    {name}: {reason}")
+    for name, reason in sorted(result.unavailable.items()):
+        lines.append(f"Unavailable: {name}: {reason}")
+    if result.recorded_paths:
+        lines.append("")
+        lines.append(f"Recorded {len(result.recorded_paths)} result(s)")
+    return "\n".join(lines) + "\n"
+
+
+def _silent_actions(guardrails: Guardrails) -> str:
+    """Return a readable summary of which enabled actions went unused."""
+
+    from anthro_chess.chess import DRAW_CLAIM_ACTION_ID, RESIGNATION_ACTION_ID
+
+    if not guardrails.enabled_terminal_actions:
+        return "no terminal action was enabled"
+    if not guardrails.silent_terminal_actions:
+        return f"none of {len(guardrails.enabled_terminal_actions)} enabled"
+    names = {RESIGNATION_ACTION_ID: "resignation", DRAW_CLAIM_ACTION_ID: "draw claim"}
+    unused = ", ".join(
+        names.get(action_id, str(action_id))
+        for action_id in guardrails.silent_terminal_actions
+    )
+    return f"{unused} never selected"
+
+
+def _optional_rate(value: float | None) -> str:
+    """Return a percentage, or a dash when there was nothing to divide."""
+
+    return "-" if value is None else f"{value:.1%}"
+
+
+def _optional_value(value: float | None, spec: str = ".2f") -> str:
+    """Return a formatted number, or a dash when the reading is unavailable."""
+
+    return "-" if value is None else format(value, spec)
+
+
 def _run_eval_ladder(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.evaluation import (
@@ -2712,6 +2920,33 @@ def _resolve_rollout_roots(
     config = resolved.value
     override_keys = {item.partition("=")[0] for item in overrides}
     if config.pool is None or config.pool.is_absolute() or "pool" in override_keys:
+        return resolved
+    rooted = _rooted_artifact_path(
+        _environment_root("ANTHRO_CHESS_DATA_ROOT"),
+        config.pool,
+    )
+    return ResolvedConfig(
+        value=config.model_copy(update={"pool": rooted}),
+        provenance=resolved.provenance,
+    )
+
+
+def _resolve_termination_roots(
+    resolved: ResolvedConfig[TerminationBenchmarkConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[TerminationBenchmarkConfig]:
+    """Resolve the checked-in relative evaluation pool beneath the data root.
+
+    Same treatment the rollout selection gets, and for the same reason: the
+    shipped selection names its pool the way every other checked-in artifact
+    path is named, so it has to be rooted the same way.
+    """
+
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+    config = resolved.value
+    override_keys = {item.partition("=")[0] for item in overrides}
+    if config.pool.is_absolute() or "pool" in override_keys:
         return resolved
     rooted = _rooted_artifact_path(
         _environment_root("ANTHRO_CHESS_DATA_ROOT"),
