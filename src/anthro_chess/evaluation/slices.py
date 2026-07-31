@@ -439,24 +439,43 @@ def _moves_avoiding_reply(
     return tuple(safe)
 
 
-def _material_balance_for_side_to_move(board: chess.Board) -> int:
-    values = {
-        chess.PAWN: 1,
-        chess.KNIGHT: 3,
-        chess.BISHOP: 3,
-        chess.ROOK: 5,
-        chess.QUEEN: 9,
-        chess.KING: 0,
-    }
+#: Conventional pawn values for the material proxy. Deliberately the textbook
+#: numbers rather than tuned ones: the proxy's job is to be identical on both
+#: sides of a human-referenced comparison, and a tuned table would make it a
+#: position evaluation this project has declined to own.
+MATERIAL_VALUES: Mapping[int, int] = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+    chess.KING: 0,
+}
+
+
+def material_balance(board: chess.Board, color: chess.Color) -> int:
+    """Return ``color``'s material advantage in pawns, negative when behind.
+
+    One definition, shared by every reading that needs a dependency-free
+    position-quality signal. Both the stalemate-resource predicate and the
+    termination benchmark's premature-resignation guardrail read it, and a
+    guardrail comparing a model against humans is only meaningful when the same
+    arithmetic ran on both sides.
+    """
+
     own = sum(
-        len(board.pieces(piece_type, board.turn)) * value
-        for piece_type, value in values.items()
+        len(board.pieces(piece_type, color)) * value
+        for piece_type, value in MATERIAL_VALUES.items()
     )
     opponent = sum(
-        len(board.pieces(piece_type, not board.turn)) * value
-        for piece_type, value in values.items()
+        len(board.pieces(piece_type, not color)) * value
+        for piece_type, value in MATERIAL_VALUES.items()
     )
     return own - opponent
+
+
+def _material_balance_for_side_to_move(board: chess.Board) -> int:
+    return material_balance(board, board.turn)
 
 
 def _move_action_id(move: chess.Move) -> int:

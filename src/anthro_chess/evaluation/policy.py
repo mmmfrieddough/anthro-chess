@@ -19,7 +19,12 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from anthro_chess.chess import ACTION_VOCABULARY_SIZE, MOVE_ACTION_COUNT
+from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
+    MOVE_ACTION_COUNT,
+    RESIGNATION_ACTION_ID,
+)
 from anthro_chess.models import MoveModelBatch
 
 POLICY_SCORING_VERSION = 1
@@ -100,6 +105,44 @@ class ActionSetPolicy:
     name: str
     selected_action_id: int
     raw_probability_mass: float
+
+
+@dataclass(frozen=True)
+class TerminalActionPolicy:
+    """What the model says about ending the game at one scored position.
+
+    Terminal actions are enabled at every ply the encoder produces, so this is
+    defined everywhere rather than only where a game actually ended. That is
+    the point: the interesting half of a resignation reading is the mass the
+    policy spends on resigning at the thousands of plies where nobody did.
+
+    ``draw_claim_mass`` is ``None`` where exact chess logic offered no claim,
+    which is not the same as a zero. A claim the rules never made available is
+    absent from the decision rather than an option the model declined.
+    """
+
+    game_id: int
+    ply_index: int
+    target_action_id: int
+    resignation_mass: float
+    draw_claim_mass: float | None
+
+    @property
+    def target_is_terminal(self) -> bool:
+        """Return whether the action actually taken here ended the game."""
+
+        return self.target_action_id >= MOVE_ACTION_COUNT
+
+    def as_record(self) -> dict[str, object]:
+        """Return the detail-tier record for one scored decision."""
+
+        return {
+            "game_id": self.game_id,
+            "ply_index": self.ply_index,
+            "target_action_id": self.target_action_id,
+            "resignation_mass": self.resignation_mass,
+            "draw_claim_mass": self.draw_claim_mass,
+        }
 
 
 @dataclass(frozen=True)
@@ -233,6 +276,44 @@ def score_action_sets(
                     raw_probability_mass=mass,
                 )
             )
+    return tuple(scored)
+
+
+def score_terminal_actions(
+    logits: Tensor,
+    batch: MoveModelBatch,
+) -> tuple[TerminalActionPolicy, ...]:
+    """Return the raw terminal-action mass at every scored decision.
+
+    Raw rather than legal-masked, deliberately. The runtime samples from the
+    masked policy, but a resignation reading is about how much the model wants
+    to resign rather than about what the mask left it, and masking would rescale
+    the quantity by whatever legality problem the checkpoint happens to have.
+    """
+
+    active = _active_batch(logits, batch)
+    if not active.legal_rows:
+        return ()
+
+    probabilities = torch.softmax(active.logits, dim=-1)
+    scored: list[TerminalActionPolicy] = []
+    for offset, legal_actions in enumerate(active.legal_rows):
+        legal = frozenset(legal_actions)
+        scored.append(
+            TerminalActionPolicy(
+                game_id=active.game_ids[offset],
+                ply_index=active.ply_indices[offset],
+                target_action_id=active.targets[offset],
+                resignation_mass=float(
+                    probabilities[offset, RESIGNATION_ACTION_ID].item()
+                ),
+                draw_claim_mass=(
+                    float(probabilities[offset, DRAW_CLAIM_ACTION_ID].item())
+                    if DRAW_CLAIM_ACTION_ID in legal
+                    else None
+                ),
+            )
+        )
     return tuple(scored)
 
 
