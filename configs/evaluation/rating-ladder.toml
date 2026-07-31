@@ -1,0 +1,91 @@
+# The self-play rating ladder, and what temperature costs on it.
+#
+# Model selection is deliberately absent: with no explicit checkpoint or run,
+# `anthro eval ladder` uses the machine-local default selection beneath
+# ANTHRO_CHESS_RUN_ROOT, the same record the playable engine reads. Override it
+# for one run with, for example:
+#
+#   anthro eval ladder --config <this file> --set model.run_path='"blitz-v3"'
+#
+# Every seat plays every other seat, and one joint Bradley-Terry fit places
+# them all on one internal scale. That is what makes the temperature response
+# and its ablated control comparable: two separate fits would share no origin.
+#
+# Values that decide *what* is measured are part of series identity: the rating
+# grid, the temperature grid, the reference temperature, whether the ablated
+# arm is fielded, the opening source, `fit.maximum_spread`,
+# `generation.maximum_generated_plies`, `generation.swap_colors`,
+# `generation.claim_draws`, and `runtime.resignation_enabled`. Values that
+# decide only how precisely are not: `grid.seeds`,
+# `generation.games_per_position`, and `generation.concurrency` can all be
+# raised without ending a series.
+#
+# Cost scales with the square of the seat count. Four ratings at three
+# temperatures plus three ablated seats is fifteen seats and one hundred and
+# five pairings, so raise the grid deliberately rather than by habit.
+
+[runtime]
+# Rating, temperature, and seed are supplied per seat and per game, so setting
+# them here would be overridden. Resignation stays off: a seat that resigns
+# ends a game on a model action rather than on the board, which would put the
+# resignation policy into the fitted rating.
+resignation_enabled = false
+
+[grid]
+# Ratings spanning the range the corpus actually covers, so a transfer function
+# has somewhere to show up.
+target_ratings = [1200, 1500, 1800, 2100]
+# Three points is the fewest that shows a temperature response as a shape
+# rather than as a line through two points. Zero is included deliberately: it
+# is the degenerate sampling case, and the openings below are what keep its
+# games from all being the same game.
+temperatures = [0.0, 0.7, 1.0]
+# Every calibration figure is declared against this temperature, and the joint
+# fit is anchored on its conditioned row.
+reference_temperature = 1.0
+seeds = [0, 1, 2]
+
+[ablation]
+# One seat per temperature with no rating conditioning at all, fielded in the
+# same round robin. Without it the temperature response has no control and the
+# attenuation cannot be computed.
+enabled = true
+
+[openings]
+# Frozen human openings rather than the standard position. Two deterministic
+# seats replay one game however many times they are asked, so a ladder that
+# includes low temperatures needs its variety to come from the position source
+# instead of from sampling.
+pool = "artifacts/lichess-blitz-2017-04-test"
+plies = 8
+
+[openings.view]
+name = "ladder-openings"
+# Sixteen openings, played from both sides by every pairing. More openings buy
+# precision; they are a sample size rather than a measurement setting.
+maximum_games = 16
+
+[generation]
+# Long enough for a real game to finish and short enough that two seats
+# shuffling in a drawn endgame do not run the suite for hours. A game that hits
+# the limit has no result and informs no pairwise comparison; it is counted
+# rather than adjudicated into a draw.
+maximum_generated_plies = 300
+games_per_position = 1
+swap_colors = true
+# The model has no draw-claim action, so claiming for it would report the
+# harness's policy as the seats' behavior.
+claim_draws = false
+concurrency = 8
+
+[fit]
+# How far a seat may sit from the anchor. A seat that won or lost every game
+# has no finite maximum-likelihood rating, so this turns a runaway fit into a
+# reportable extreme. It joins series identity because it can change a value.
+maximum_spread = 1200.0
+
+[detail]
+# Whole games, machine-local. Each is written once, under the seat that held
+# white, so a later analysis pass can recompute features without replaying the
+# ladder.
+retain_games = true

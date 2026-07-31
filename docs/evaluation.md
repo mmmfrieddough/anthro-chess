@@ -154,10 +154,11 @@ games an axis needs. `anthro eval inference` measures what a checkpoint costs
 to play with; see inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
-the external puzzle-rating response described in the rating section.
-`anthro eval budget` reports held-out quality against the training budget that
-bought it, joining two families rather than defining a third; see training
-efficiency below. Training efficiency itself has no command, because it is
+the external puzzle-rating response described in the rating section, and
+`anthro eval ladder` measures the self-play rating ladder and its temperature
+response described beside it. `anthro eval budget` reports held-out quality
+against the training budget that bought it, joining two families rather than
+defining a third; see training efficiency below. Training efficiency itself has no command, because it is
 measured by `anthro train` while the run happens.
 
 `anthro eval tensorboard OUTPUT` regenerates a disposable chart view of the
@@ -1053,6 +1054,60 @@ Errors introduced by sampling are spread across the policy rather than
 concentrated where a human of that rating would err, so matching average
 strength at an unusual temperature is not the same as playing at that rating.
 Strength and error-profile metrics should be read together.
+
+### The Implemented Ladder
+
+`anthro_chess.evaluation.ladder` implements this as one round robin and one
+fit, and `anthro eval ladder` is its reading surface. The unit that competes is
+a **seat**: a conditioning and a temperature. Every seat plays every other, and
+a single Bradley-Terry fit places them all on one internal scale.
+
+One joint fit rather than one per temperature is the load-bearing choice. A fit
+of this kind is invariant to shifting every rating in it by a constant, so two
+independently fitted rows share no origin and their difference is arithmetic
+rather than a measurement. Fitting the whole surface at once is therefore what
+makes the temperature response — and the ablated comparison it is read
+against — a quantity at all. The rating response is read along one axis of that
+surface and the temperature response along the other.
+
+The ablated control arm is the same model with **no target rating supplied**,
+which is the `absent` treatment the dependency tests already define, applied to
+whole games. It joins the same round robin for the same reason the temperatures
+do. Read it with that treatment's caveat: a corpus that never contained
+rating-absent positions makes this partly a reading about input presence rather
+than input value, so a large ablated effect is not on its own evidence about
+how much the model uses the rating *value*.
+
+The absolute level enters in exactly one place, the anchor, which pins the mean
+fitted rating of the conditioned seats at the reference temperature to the mean
+of their configured ratings. Everything else the benchmark reports — ordering,
+slope, span, ladder error at the reference row, and both temperature
+responses — is invariant to it. Rows away from the reference temperature carry
+the offset temperature imposed on them, which is the reading rather than a
+distortion of it.
+
+Ordering is reported twice, over all pairs and over adjacent configured ratings
+alone, because a ladder can order distant pairs perfectly while every
+neighbouring pair is indistinguishable. The adjacent pairs the fit did not order
+are retained, which is what localizes where the relationship degrades rather
+than only reporting that it does.
+
+Two states are results rather than errors. A fit that does not converge, and a
+seat that won or lost every game and therefore has no finite maximum-likelihood
+rating, are both reported with the state named and the affected seats listed. A
+flat ladder on an early checkpoint is information about the model, not a fault
+in the instrument. What the benchmark cannot do is fit a ladder with no scored
+game at all: a game that reaches the ply limit has no result and informs no
+comparison, so it is counted rather than adjudicated into a draw, and a suite
+where nothing finished fails loudly as a generation problem.
+
+Each seat's own error profile is recorded beside its strength, computed through
+the shared decision decomposition rather than a private one, since that layer
+already groups decisions by the dials they were made under and a ladder's seats
+are exactly those groups.
+
+`docs/decisions/0022-one-joint-rating-ladder-fit.md` owns the joint-fit rule,
+why the ablated arm sits inside it, and what the round robin costs.
 
 Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
 of Anthro target ratings against one or more fixed external engine

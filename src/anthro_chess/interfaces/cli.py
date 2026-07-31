@@ -26,6 +26,8 @@ if TYPE_CHECKING:
         CheckpointEvaluationResult,
         DecisionDecomposition,
         InferenceBenchmarkResult,
+        LadderBenchmarkConfig,
+        LadderBenchmarkResult,
         PoolConfig,
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkResult,
@@ -369,6 +371,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     rollout_parser.set_defaults(handler=_run_eval_rollout)
+
+    ladder_parser = eval_commands.add_parser(
+        "ladder",
+        help=(
+            "Play a self-play rating ladder and report the transfer function "
+            "from configured to fitted rating, plus its temperature response."
+        ),
+    )
+    ladder_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML rating-ladder selection.",
+    )
+    ladder_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(ladder_parser)
+    ladder_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    ladder_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Play and print without writing to the store. Use this for an "
+            "exploratory ladder, which is real but does not belong in the "
+            "committed history."
+        ),
+    )
+    ladder_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    ladder_parser.set_defaults(handler=_run_eval_ladder)
 
     bandwidth_parser = eval_commands.add_parser(
         "curve-bandwidth",
@@ -1504,6 +1553,194 @@ def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
     ]
 
 
+def _run_eval_ladder(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        LadderBenchmarkConfig,
+        LadderBenchmarkError,
+        benchmark_ladder,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = _resolve_ladder_roots(
+            load_config(
+                LadderBenchmarkConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            ),
+            arguments.set,
+        )
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_ladder(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, LadderBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval ladder: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_ladder(result), end="")
+    return 0
+
+
+def _render_ladder(result: LadderBenchmarkResult) -> str:
+    fit = result.fit
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        (
+            f"Games: {result.games} scored across {len(result.pairings)} "
+            f"pairing(s), {result.unfinished} unfinished at the ply limit"
+        ),
+        (
+            f"Fit: {'converged' if fit.converged else 'did not converge'} after "
+            f"{fit.iterations} iteration(s), anchored at {fit.anchor_rating:.0f} "
+            f"on the {fit.anchor_basis} basis"
+        ),
+    ]
+    if fit.clamped:
+        lines.append(
+            "  clamped        "
+            + ", ".join(seat.label for seat in fit.clamped)
+            + " (won or lost every game, so the fit has no finite estimate)"
+        )
+    if fit.unscored:
+        lines.append(
+            "  unplaced       "
+            + ", ".join(seat.label for seat in fit.unscored)
+            + " (no scored game)"
+        )
+    for reading in result.readings:
+        lines.extend(
+            [
+                "",
+                f"Ladder at {reading.label}  "
+                f"(series {reading.execution.workload_sha256[:12]})",
+                f"    {'configured':>10}{'fitted':>10}{'error':>9}",
+            ]
+        )
+        lines.extend(
+            f"    {rating:>10}{fitted:>10.0f}{fitted - rating:>+9.0f}"
+            for rating, fitted in zip(reading.ratings, reading.fitted, strict=True)
+        )
+        lines.extend(
+            [
+                (
+                    f"  ordering       {reading.order_accuracy:.3f} pairwise, "
+                    f"{reading.adjacent_order_accuracy:.3f} adjacent"
+                ),
+                (
+                    f"  transfer       slope {reading.slope:.3f}, span "
+                    f"{reading.span:.0f}, ladder error {reading.ladder_error:.1f}"
+                ),
+            ]
+        )
+        if reading.inversions:
+            lines.append(
+                "  degrades at    "
+                + ", ".join(f"{lower}-{upper}" for lower, upper in reading.inversions)
+            )
+    lines.extend(_render_ladder_seats(result))
+    lines.extend(_render_temperature_response(result))
+    if result.unavailable:
+        lines.append("")
+        lines.extend(
+            f"Unavailable: {name}: {reason}"
+            for name, reason in sorted(result.unavailable.items())
+        )
+    if result.recorded_paths:
+        lines.extend(
+            ["", f"Recorded: {len(result.recorded_paths)} result(s) to the store"]
+        )
+    else:
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _render_ladder_seats(result: LadderBenchmarkResult) -> list[str]:
+    """Show each seat's score beside its error profile.
+
+    Strength and error profile are printed together on purpose: a temperature
+    that preserves the score rate while moving the preferred-selection rate has
+    changed the shape of the mistakes rather than their number, and that is
+    invisible in either column alone.
+    """
+
+    lines = [
+        "",
+        "Seats",
+        f"    {'seat':<16}{'games':>7}{'score':>8}{'fitted':>9}"
+        f"{'preferred':>11}{'regret':>9}{'rank':>7}",
+    ]
+    for seat in result.seats:
+        profile = seat.decisions
+        lines.append(
+            f"    {seat.label:<16}{seat.games:>7}{seat.score_rate:>8.3f}"
+            + (
+                f"{seat.fitted_rating:>9.0f}"
+                if seat.fitted_rating is not None
+                else f"{'-':>9}"
+            )
+            + (
+                f"{profile.preferred_selection_rate:>11.3f}"
+                f"{profile.policy_regret:>9.3f}{profile.selected_rank:>7.2f}"
+                if profile is not None
+                else f"{'-':>11}{'-':>9}{'-':>7}"
+            )
+        )
+    return lines
+
+
+def _render_temperature_response(result: LadderBenchmarkResult) -> list[str]:
+    """Report what temperature cost, and how much conditioning resisted it."""
+
+    response = result.response
+    if response is None:
+        return []
+    lines = [
+        "",
+        f"Temperature response  (series {response.execution.workload_sha256[:12]})",
+        (
+            f"  conditioned    {response.conditioned_response:+.1f} rating points "
+            "per unit temperature"
+        ),
+    ]
+    if response.ablated_response is not None:
+        lines.append(f"  ablated        {response.ablated_response:+.1f}")
+    if response.attenuation is not None:
+        lines.append(
+            f"  attenuation    {response.attenuation:+.3f} of the ablated drift avoided"
+        )
+    elif response.attenuation_unavailable is not None:
+        lines.append(
+            f"  attenuation    unavailable: {response.attenuation_unavailable}"
+        )
+    lines.extend(
+        f"    rating {rating:<6}{value:+.1f}" for rating, value in response.per_rating
+    )
+    return lines
+
+
 def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
     from anthro_chess.data.artifacts import read_normalized_rows
     from anthro_chess.evaluation import EvaluationPoolError, ViewConfig, load_pool
@@ -2351,6 +2588,38 @@ def _resolve_pool_roots(
         return resolved
     return ResolvedConfig(
         value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
+
+
+def _resolve_ladder_roots(
+    resolved: ResolvedConfig[LadderBenchmarkConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[LadderBenchmarkConfig]:
+    """Resolve the checked-in relative opening pool beneath the shared data root.
+
+    The shipped selection names its pool the way every other checked-in artifact
+    path is named, so it has to be rooted the same way `anthro eval run` roots
+    its own pool. Without this the shipped configuration only works from a
+    directory that happens to hold an `artifacts/` tree.
+    """
+
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+
+    config = resolved.value
+    pool = config.openings.pool
+    if (
+        pool is None
+        or pool.is_absolute()
+        or "openings.pool" in {item.partition("=")[0] for item in overrides}
+    ):
+        return resolved
+    rooted = _rooted_artifact_path(_environment_root("ANTHRO_CHESS_DATA_ROOT"), pool)
+    return ResolvedConfig(
+        value=config.model_copy(
+            update={"openings": config.openings.model_copy(update={"pool": rooted})}
+        ),
         provenance=resolved.provenance,
     )
 
