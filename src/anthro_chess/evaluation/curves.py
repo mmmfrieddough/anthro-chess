@@ -62,6 +62,7 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     Measurement,
     NoiseFloor,
+    WorkloadComponent,
     measurement,
 )
 from anthro_chess.evaluation.results.noise import (
@@ -568,12 +569,18 @@ class CurveComparison:
         metrics: CurveMetrics,
         *,
         data: DataComponent | None = None,
+        workload: WorkloadComponent | None = None,
     ) -> tuple[Measurement, ...]:
         """Return the scalar measurements the committed summary tier records.
 
         Each distance carries the floor estimated for it, so a report reads the
         floor from the measurement rather than looking one up for a series that
         cannot have a series-wide floor in the first place.
+
+        A comparison whose model side was generated rather than scored passes a
+        workload instead of a data component: what identifies that series is the
+        recipe the games were played under, per decision 0020. The comparison
+        itself does not care which, so it forwards whichever it is given.
         """
 
         games = self.human_games + self.model_games
@@ -602,6 +609,7 @@ class CurveComparison:
                 metric,
                 value,
                 data=data,
+                workload=workload,
                 sample_size=games,
                 noise_floor=floor,
             )

@@ -1452,6 +1452,97 @@ GENERATED_PLAY_DISTINCT_GAME_FRACTION = _generated_play_metric(
 )
 
 
+#: Quantities compared against matched human play. Kept as plain strings here
+#: because the registry is the bottom of the import graph; the evaluation layer
+#: owns the enum and asserts the two agree.
+GENERATED_PLAY_COMPARED_QUANTITIES: tuple[str, ...] = (
+    "game-length",
+    "result",
+    "repetition",
+    "cycle",
+    "opening",
+    "move-diversity",
+)
+
+
+def _curve_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one human-reference curve metric for generated play."""
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=GENERATED_PLAY_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            execution_sensitive=True,
+        )
+    )
+
+
+def _quantity_slug(quantity: str) -> str:
+    """Return the metric-identifier form of a compared quantity's name."""
+
+    return quantity.replace("-", "_")
+
+
+#: The distances that say whether generated play looks human. Unlike the raw
+#: rollout scalars these have a direction: closer to matched human play is
+#: better, which is the project's stated goal rather than an invented target.
+#: Read them against the reference levels each comparison estimates for itself,
+#: since two finite samples of one population never agree exactly.
+GENERATED_PLAY_CONDITIONAL_DISTANCE: Mapping[str, MetricDefinition] = {
+    quantity: _curve_metric(
+        f"generated_play.{_quantity_slug(quantity)}_conditional_distance",
+        MetricDirection.LOWER_IS_BETTER,
+        (
+            f"Mean distance between the generated and human {quantity} curves "
+            "over the rating points the model supports. The rating-conditional "
+            "reading: whether the model plays like humans of the rating it was "
+            "told to play at."
+        ),
+    )
+    for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
+}
+
+GENERATED_PLAY_POOLED_DISTANCE: Mapping[str, MetricDefinition] = {
+    quantity: _curve_metric(
+        f"generated_play.{_quantity_slug(quantity)}_pooled_distance",
+        MetricDirection.LOWER_IS_BETTER,
+        (
+            f"Distance between the rating-free generated and human {quantity} "
+            "distributions. Separate from the conditional reading because a "
+            "model can match humans on average while matching none of them at "
+            "any particular rating."
+        ),
+    )
+    for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
+}
+
+#: Informational rather than directional, and deliberately so: a flat curve
+#: only means something beside the human curve it is supposed to follow. A
+#: model whose pooled distribution matches while this sits at the no-response
+#: null has learned the average human and is ignoring its rating input, which
+#: is the behavioral form of a rating-dependency test.
+GENERATED_PLAY_RATING_VARIATION: Mapping[str, MetricDefinition] = {
+    quantity: _curve_metric(
+        f"generated_play.{_quantity_slug(quantity)}_rating_variation",
+        MetricDirection.INFORMATIONAL,
+        (
+            f"How much the generated {quantity} curve moves across the rating "
+            "range, as the mean distance of its points from its own average. "
+            "Read against the level a model with no rating response would show."
+        ),
+    )
+    for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
+}
+
+
 TRAINING_HEALTH_GRADIENT_NORM = register_metric(
     MetricDefinition(
         identifier="training_health.gradient_norm",

@@ -368,6 +368,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rollout_parser.set_defaults(handler=_run_eval_rollout)
 
+    bandwidth_parser = eval_commands.add_parser(
+        "curve-bandwidth",
+        help=(
+            "Select each generated-play curve's bandwidth from the human "
+            "reference. An offline step whose output is declared in code."
+        ),
+    )
+    bandwidth_parser.add_argument(
+        "pool",
+        type=Path,
+        help="Frozen evaluation pool the human reference is read from.",
+    )
+    bandwidth_parser.add_argument(
+        "--maximum-games",
+        type=int,
+        help=(
+            "Subsample the reference to this many games. Selection is over the "
+            "whole reference by default, which is what a declared bandwidth "
+            "should be chosen from."
+        ),
+    )
+    bandwidth_parser.add_argument(
+        "--maximum-rating-gap",
+        type=int,
+        default=200,
+        help="Widest rating gap a reference game may have (default: %(default)s).",
+    )
+    bandwidth_parser.add_argument(
+        "--candidates",
+        type=int,
+        nargs="+",
+        default=(64, 128, 256, 512, 1024, 2048, 4000, 6000),
+        help=(
+            "Candidate neighbour counts to score. The default reaches well past "
+            "the declared bandwidth on purpose: a candidate set that stops at "
+            "the optimum cannot show whether the optimum is interior."
+        ),
+    )
+    bandwidth_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    bandwidth_parser.set_defaults(handler=_run_eval_curve_bandwidth)
+
     decisions_parser = eval_commands.add_parser(
         "decisions",
         help=(
@@ -1187,6 +1233,7 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
 
 def _render_rollout(result: RolloutBenchmarkResult) -> str:
     from anthro_chess.evaluation.games import GameTermination
+    from anthro_chess.evaluation.reference import CURVE_RATING_GRID
 
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
@@ -1233,6 +1280,49 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 f"  openings       {_counts(distribution.opening_counts, limit=5)}",
             ]
         )
+    for reading in result.readings:
+        lines.extend(
+            [
+                "",
+                f"Against matched human play — {reading.label}  "
+                f"(series {reading.execution.workload_sha256[:12]})",
+                (
+                    f"  {reading.model_games} generated game(s) across ratings "
+                    f"{', '.join(str(rating) for rating in reading.ratings)} "
+                    f"vs {reading.human_games} human game(s)"
+                ),
+                (
+                    f"  {'quantity':<16}{'conditional':>13}{'floor':>10}"
+                    f"{'pooled':>10}{'points':>9}{'reads as':>22}"
+                ),
+            ]
+        )
+        for quantity, comparison in reading.comparisons.items():
+            floor = (
+                "-"
+                if comparison.floors is None
+                else f"{comparison.floors.conditional.value:.4f}"
+            )
+            supported = len(comparison.points) - comparison.unsupported_points
+            lines.append(
+                f"  {quantity.value:<16}"
+                f"{comparison.conditional_distance:>13.4f}"
+                f"{floor:>10}"
+                f"{comparison.pooled_distance:>10.4f}"
+                f"{f'{supported}/{len(comparison.points)}':>9}"
+                f"{comparison.response.value:>22}"
+            )
+        unsupported = max(
+            comparison.unsupported_points for comparison in reading.comparisons.values()
+        )
+        if unsupported:
+            # The conditional distance averages the points the model reached, so
+            # a sparse rating grid narrows what it covers rather than biasing it.
+            # Saying so beats letting a reader assume the whole range was read.
+            lines.append(
+                f"  {unsupported} of {len(CURVE_RATING_GRID)} rating point(s) had "
+                "no generated game nearby; widen the rating grid to cover them"
+            )
     if result.recorded_paths:
         lines.extend(
             ["", f"Recorded: {len(result.recorded_paths)} result(s)"],
@@ -1241,6 +1331,85 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
+
+
+def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
+    from anthro_chess.data.artifacts import read_normalized_rows
+    from anthro_chess.evaluation import EvaluationPoolError, ViewConfig, load_pool
+    from anthro_chess.evaluation.reference import (
+        ReferenceConfig,
+        ReferenceError,
+        human_reference,
+        select_bandwidths,
+    )
+    from anthro_chess.evaluation.views import apply_view
+
+    try:
+        pool = load_pool(arguments.pool)
+        selection = apply_view(
+            pool.games,
+            ViewConfig(
+                name="curve-bandwidth",
+                maximum_games=arguments.maximum_games,
+                require_ratings=True,
+            ),
+        )
+        wanted = set(selection.game_ids)
+        rows = [
+            row
+            for row in read_normalized_rows(pool.games_path)
+            if int(row["game_id"]) in wanted
+        ]
+        reference = human_reference(
+            rows,
+            ReferenceConfig(maximum_rating_gap=arguments.maximum_rating_gap),
+        )
+        selections = select_bandwidths(
+            reference,
+            candidates=tuple(arguments.candidates),
+        )
+    except (EvaluationPoolError, ReferenceError, ValueError) as error:
+        print(f"anthro eval curve-bandwidth: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(
+            json.dumps(
+                {
+                    "reference": reference.as_record(),
+                    "selections": {
+                        quantity.value: chosen.as_record()
+                        for quantity, chosen in selections.items()
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    lines = [
+        f"Human reference: {len(reference.games)} game(s)",
+        f"Excluded: {_counts(reference.excluded)}",
+        "",
+        "Declare these in DECLARED_NEIGHBOURS and freeze them:",
+    ]
+    for quantity, chosen in selections.items():
+        lines.append(
+            f"  {quantity.value:<16} neighbours={chosen.neighbours:<6} "
+            f"error={chosen.error:.6g}  (from {chosen.observations} observations)"
+        )
+        # The whole scored curve, because an optimum sitting on the largest
+        # candidate is a boundary artifact rather than a selection, and only
+        # the neighbouring errors show which it is.
+        lines.append(
+            "      "
+            + "  ".join(
+                f"{neighbours}:{error:.6g}" for neighbours, error in chosen.candidates
+            )
+        )
+    print("\n".join(lines))
+    return 0
 
 
 def _counts(counts: Mapping[str, int], *, limit: int | None = None) -> str:

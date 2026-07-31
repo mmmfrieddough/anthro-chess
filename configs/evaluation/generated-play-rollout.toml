@@ -19,12 +19,16 @@
 # only way to narrow them. The counts below are a routine reading; a headline
 # reading wants considerably more games per cell.
 #
-# The human-prefix arm needs a frozen pool, so it is left out of this selection.
-# Enable it alongside a pool with:
+# The human-prefix arm is left out of this selection: repertoire and opening
+# readings are only statements about the model on the standard-start arm, since
+# a prefix decides the opening before the model moves. Add it with:
 #
 #   --set arms='["standard-start", "human-prefix"]'
-#   --set prefix.pool='"artifacts/lichess-blitz-2017-04-test"'
 arms = ["standard-start"]
+
+# The pool supplies both the human reference every curve is compared against and
+# the openings the human-prefix arm continues.
+pool = "artifacts/lichess-blitz-2017-04-test"
 
 [runtime]
 # Rating, temperature, and seed are supplied per cell and per game, so setting
@@ -33,12 +37,14 @@ arms = ["standard-start"]
 resignation_enabled = false
 
 [grid]
-# Three ratings spanning the range the corpus actually covers, so a rating
-# response has somewhere to show up. Temperature is a separate axis because it
+# Ratings spanning the range the corpus actually covers, so a rating response
+# has somewhere to show up. More points than three: the curve comparison
+# estimates the model at every grid rating, and a point with no generated game
+# nearby drops out of the conditional reading rather than being interpolated. Temperature is a separate axis because it
 # is a separate dial; zero is included deliberately as the degenerate case that
 # makes every game from a position identical, which is what a collapsed
 # distinct-game fraction should be read against.
-target_ratings = [1100, 1500, 1900]
+target_ratings = [1100, 1300, 1500, 1700, 1900, 2100]
 temperatures = [0.0, 0.7, 1.0]
 seeds = [0, 1, 2, 3, 4]
 
@@ -53,6 +59,25 @@ swap_colors = true
 # through the fivefold and seventy-five-move rules.
 claim_draws = false
 concurrency = 8
+
+[reference]
+# Compare generated play against matched human play. This is what turns the
+# rollout scalars into a statement about human-likeness: a smaller distance to
+# humans of the same rating is better, which the raw scalars cannot say.
+enabled = true
+# A game whose players are far apart is a mismatch rather than a game at the
+# average of its two ratings, so it is excluded from the reference.
+maximum_rating_gap = 200
+# Resamples behind every distance's floor and reference level. A sample count,
+# so raising it narrows the floors without ending a series.
+resamples = 200
+
+[reference.view]
+# As much matched human play as can be afforded: the reference forces the
+# bandwidth and the floors at every evaluation point, so it is the one view
+# that should not be shrunk casually.
+name = "rollout-reference"
+require_ratings = true
 
 [detail]
 # Whole games, machine-local. Every later distribution feature is recomputed

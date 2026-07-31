@@ -22,6 +22,12 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.games import GameTermination
+from anthro_chess.evaluation.reference import (
+    CURVE_RATING_GRID,
+    DECLARED_NEIGHBOURS,
+    ComparedQuantity,
+    curve_spec,
+)
 from anthro_chess.evaluation.results import (
     CheckpointReference,
     DetailStore,
@@ -29,6 +35,7 @@ from anthro_chess.evaluation.results import (
     ResultsStore,
 )
 from anthro_chess.evaluation.results.metrics import (
+    GENERATED_PLAY_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
     GENERATED_PLAY_FAMILY,
@@ -104,6 +111,9 @@ def _config(**overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
     """
 
     fields: dict[str, Any] = {"runtime": RuntimeConfig()}
+    # Off unless a test asks: these exercise the matrix, and a comparison needs
+    # a human reference far larger than a fixture pool can hold.
+    fields["reference"] = {"enabled": False, **overrides.pop("reference", {})}
     fields["grid"] = {**_BASE_GRID, **overrides.pop("grid", {})}
     fields["generation"] = {**_BASE_GENERATION, **overrides.pop("generation", {})}
     fields.update(overrides)
@@ -127,6 +137,19 @@ def _run(
         store=store,
         detail=detail,
     )
+
+
+def _curve_envelope(result: RolloutBenchmarkResult) -> ResultEnvelope:
+    """Return the envelope carrying one reading's distances."""
+
+    (reading,) = result.readings
+    for envelope in result.envelopes:
+        if (
+            envelope.execution is not None
+            and envelope.execution.workload_sha256 == reading.execution.workload_sha256
+        ):
+            return envelope
+    raise AssertionError("no envelope was recorded for the curve reading")
 
 
 def _sample(envelope: ResultEnvelope, metric: MetricDefinition) -> int | None:
@@ -170,18 +193,309 @@ def pool(
     return output
 
 
-def test_every_generated_play_metric_is_reported_by_the_benchmark() -> None:
+@pytest.fixture
+def reference_pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a pool with enough rated games to estimate a curve from.
+
+    Ratings are spread across the grid on purpose: a reference bunched at one
+    rating would have nothing to say about how behavior varies with it, which
+    is the whole point of the conditional reading.
+    """
+
+    rows = [
+        normalized_row(
+            index,
+            split="test",
+            plies=4 + (index % 5) * 2,
+            rating=1100 + (index % 12) * 100,
+            result=("1-0", "0-1", "1/2-1/2")[index % 3],
+        )
+        for index in range(1, 61)
+    ]
+    normalized, manifest = write_corpus(tmp_path / "reference-corpus", rows)
+    output = tmp_path / "reference-pool"
+    freeze_pool(
+        ResolvedConfig(
+            value=PoolConfig.model_validate(
+                {
+                    "pool_id": "fixture-reference",
+                    "normalized": str(normalized),
+                    "manifest": str(manifest),
+                }
+            ),
+            provenance=ConfigProvenance(source=None, overrides=()),
+        ),
+        output,
+    )
+    return output
+
+
+@pytest.fixture
+def small_bandwidth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shrink the declared bandwidth so a fixture reference can support it.
+
+    The declared value is chosen from tens of thousands of real games and a
+    fixture cannot hold that many. Shrinking it here keeps these tests about the
+    wiring; the declared constant itself is asserted separately and exercised by
+    a real run.
+    """
+
+    for quantity in ComparedQuantity:
+        monkeypatch.setitem(DECLARED_NEIGHBOURS, quantity, 4)
+
+
+def _compared(pool: Path, **overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
+    """Return a suite that compares its generated play against human play."""
+
+    reference = {"enabled": True, "resamples": 8, **overrides.pop("reference", {})}
+    return _config(pool=str(pool), reference=reference, **overrides)
+
+
+def test_the_declared_bandwidth_is_one_frozen_value() -> None:
+    """Re-selecting per run would measure two checkpoints differently.
+
+    Pinned as a test because the constant is a benchmark-version commitment
+    rather than a tuning knob: changing it ends every curve series, so it should
+    not be possible to change quietly.
+    """
+
+    assert set(DECLARED_NEIGHBOURS) == set(ComparedQuantity)
+    assert set(DECLARED_NEIGHBOURS.values()) == {1024}
+    for quantity in ComparedQuantity:
+        spec = curve_spec(quantity)
+        assert spec.neighbours == 1024
+        assert spec.grid == CURVE_RATING_GRID
+        assert spec.quantity is quantity.kind
+
+
+def test_every_generated_play_metric_is_reported_by_the_benchmark(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
     """A registered metric no benchmark writes is a series that never starts."""
 
-    result = _run(_config())
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+        )
+    )
 
-    (envelope,) = result.envelopes
-    reported = {item.metric for item in envelope.measurements}
+    reported = {
+        item.metric for envelope in result.envelopes for item in envelope.measurements
+    }
     registered = {
         metric.identifier
         for metric in registered_metrics(GENERATED_PLAY_FAMILY.identifier)
     }
     assert reported == registered
+
+
+def test_a_curve_reading_spans_the_rating_grid_rather_than_one_cell(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A curve's axis is the rating, so a single cell has no curve at all."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1600, 2000), "temperatures": (0.7, 1.0)},
+        )
+    )
+
+    assert len(result.cells) == 6
+    # One reading per arm and temperature, each spanning all three ratings.
+    assert len(result.readings) == 2
+    for reading in result.readings:
+        assert reading.ratings == (1200, 1600, 2000)
+        assert reading.model_games == 3
+    assert {reading.temperature for reading in result.readings} == {0.7, 1.0}
+
+
+def test_a_curve_reading_is_its_own_series_apart_from_the_cells(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A distance and a raw scalar are different quantities, so different series."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    cell_workloads = {cell.execution.workload_sha256 for cell in result.cells}
+    assert reading.execution.workload_sha256 not in cell_workloads
+    # The grid is the axis, so it replaces the single rating a cell declares.
+    assert reading.execution.workload["target_ratings"] == [1200, 1800]
+    assert "target_rating" not in reading.execution.workload
+
+
+def test_the_declared_curve_shape_scopes_the_comparison_series(
+    reference_pool: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two bandwidths estimate different quantities, however alike they look.
+
+    This is why the bandwidth is declared and frozen rather than configured: if
+    it did not scope the series, a checkpoint measured at one smoothing would be
+    plotted against one measured at another.
+    """
+
+    workloads = []
+    for neighbours in (4, 6):
+        for quantity in ComparedQuantity:
+            monkeypatch.setitem(DECLARED_NEIGHBOURS, quantity, neighbours)
+        result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+        workloads.append(result.readings[0].execution.workload_sha256)
+
+    assert workloads[0] != workloads[1]
+
+
+def test_a_temperature_change_starts_a_new_curve_series(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Temperature is a separate dial, not a point on the rating axis."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "temperatures": (0.5, 1.0)},
+        )
+    )
+
+    assert len({r.execution.workload_sha256 for r in result.readings}) == 2
+
+
+def test_every_compared_quantity_is_measured_against_the_human_reference(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A quantity with no comparison is a claim about human-likeness never made."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    assert set(reading.comparisons) == set(ComparedQuantity)
+    for quantity, comparison in reading.comparisons.items():
+        assert comparison.spec.quantity is quantity.kind
+        assert comparison.human_games == reading.human_games
+        assert comparison.model_games == reading.model_games
+
+
+def test_a_distance_carries_the_floor_it_has_to_clear(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A distance shown without its floor invites reading noise as a finding."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    envelope = _curve_envelope(result)
+    for quantity in ComparedQuantity:
+        conditional = envelope.measurement(
+            GENERATED_PLAY_CONDITIONAL_DISTANCE[quantity.value].identifier
+        )
+        assert conditional is not None
+        assert conditional.value >= 0.0
+        assert conditional.noise_floor is not None
+        assert conditional.noise_floor.kind == "data-sampling"
+
+
+def test_a_model_matching_the_reference_reads_closer_than_one_that_does_not(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The distance has to actually rank two checkpoints, or it says nothing.
+
+    This is the property that makes the family directional: unlike a draw rate,
+    a smaller distance to matched human play is unambiguously better, and that
+    only holds if a worse model measures further away.
+    """
+
+    close = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            generation={"maximum_generated_plies": 8},
+        )
+    )
+    # A model stopped after two plies produces games nothing like the human
+    # ones, which have to read as further away on length.
+    far = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            generation={"maximum_generated_plies": 2},
+        )
+    )
+
+    metric = ComparedQuantity.GAME_LENGTH
+    assert (
+        far.readings[0].comparisons[metric].pooled_distance
+        > close.readings[0].comparisons[metric].pooled_distance
+    )
+
+
+def test_the_comparison_needs_a_pool_to_read_its_reference_from() -> None:
+    """A comparison with no human side is a verdict with nothing behind it."""
+
+    with pytest.raises(ValidationError, match="needs pool"):
+        _config(reference={"enabled": True})
+
+
+def test_curve_points_stay_in_the_detail_tier(
+    tmp_path: Path,
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Points are data a later chart queries, not a number for the summary."""
+
+    result = _run(
+        _compared(reference_pool, grid={"target_ratings": (1200, 1800)}),
+        store=ResultsStore(tmp_path / "results"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    envelope = _curve_envelope(result)
+    assert envelope.detail is not None
+    payload = json.loads(
+        next(path for path in result.detail_paths if "curves" in path.name).read_text()
+    )
+    assert set(payload["comparisons"]) == {q.value for q in ComparedQuantity}
+    length = payload["comparisons"][ComparedQuantity.GAME_LENGTH.value]
+    assert len(length["points"]) == len(CURVE_RATING_GRID)
+    assert length["response"] in {
+        "matches",
+        "average_human",
+        "divergent_response",
+        "mismatch",
+        "unknown",
+    }
+    assert payload["reference"]["games"] > 0
+
+
+def test_the_reference_excludes_lopsided_games_and_says_so(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A mismatch belongs to neither player's rating, so it is not averaged in."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            reference={"enabled": True, "resamples": 8, "maximum_rating_gap": 0},
+        )
+    )
+
+    assert result.reference is not None
+    assert result.reference.games
+    record = result.reference.as_record()
+    assert record["rating_range"][0] <= record["rating_range"][1]
 
 
 def test_the_matrix_produces_one_result_per_cell() -> None:
@@ -449,7 +763,8 @@ def test_prefix_continuations_start_from_the_human_games(pool: Path) -> None:
     result = _run(
         _config(
             arms=(RolloutArm.HUMAN_PREFIX,),
-            prefix={"pool": str(pool), "plies": 4},
+            pool=str(pool),
+            prefix={"plies": 4},
         )
     )
 
@@ -475,13 +790,15 @@ def test_prefix_depth_and_pool_identity_scope_the_series(pool: Path) -> None:
     shallow = _run(
         _config(
             arms=(RolloutArm.HUMAN_PREFIX,),
-            prefix={"pool": str(pool), "plies": 4},
+            pool=str(pool),
+            prefix={"plies": 4},
         )
     )
     deeper = _run(
         _config(
             arms=(RolloutArm.HUMAN_PREFIX,),
-            prefix={"pool": str(pool), "plies": 6},
+            pool=str(pool),
+            prefix={"plies": 6},
         )
     )
 
@@ -501,7 +818,8 @@ def test_the_two_arms_are_separate_series_over_one_run(pool: Path) -> None:
     result = _run(
         _config(
             arms=(RolloutArm.STANDARD_START, RolloutArm.HUMAN_PREFIX),
-            prefix={"pool": str(pool), "plies": 4},
+            pool=str(pool),
+            prefix={"plies": 4},
         )
     )
 
@@ -522,7 +840,8 @@ def test_the_prefix_arm_records_its_human_games_as_provenance(pool: Path) -> Non
     result = _run(
         _config(
             arms=(RolloutArm.STANDARD_START, RolloutArm.HUMAN_PREFIX),
-            prefix={"pool": str(pool), "plies": 4},
+            pool=str(pool),
+            prefix={"plies": 4},
         )
     )
 
@@ -546,7 +865,8 @@ def test_the_prefix_view_excludes_games_shorter_than_the_prefix(pool: Path) -> N
     result = _run(
         _config(
             arms=(RolloutArm.HUMAN_PREFIX,),
-            prefix={"pool": str(pool), "plies": 10},
+            pool=str(pool),
+            prefix={"plies": 10},
         )
     )
 
@@ -560,7 +880,8 @@ def test_a_prefix_deeper_than_every_game_fails_rather_than_measuring_nothing(
 ) -> None:
     result = _config(
         arms=(RolloutArm.HUMAN_PREFIX,),
-        prefix={"pool": str(pool), "plies": 40},
+        pool=str(pool),
+        prefix={"plies": 40},
     )
 
     with pytest.raises(RolloutBenchmarkError, match="selected no games"):
@@ -570,7 +891,7 @@ def test_a_prefix_deeper_than_every_game_fails_rather_than_measuring_nothing(
 def test_the_prefix_arm_needs_a_pool() -> None:
     """A missing pool is a configuration error, not a silently skipped arm."""
 
-    with pytest.raises(ValidationError, match="prefix.pool"):
+    with pytest.raises(ValidationError, match="needs pool"):
         _config(arms=(RolloutArm.HUMAN_PREFIX,))
 
 

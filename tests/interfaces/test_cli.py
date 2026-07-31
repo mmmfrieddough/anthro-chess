@@ -729,6 +729,9 @@ def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None
     resolved = ResolvedConfig(
         value=RolloutBenchmarkConfig.model_validate(
             {
+                # The renderer's cell section is what this covers, so the
+                # comparison stays off rather than dragging a pool in.
+                "reference": {"enabled": False},
                 "grid": {
                     "target_ratings": (1200, 1800),
                     "temperatures": (1.0,),

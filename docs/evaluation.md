@@ -1438,11 +1438,50 @@ interaction is the measurement target. The reusable core should cover:
   from a stable behavioral pattern.
 
 `anthro_chess.evaluation.rollout` implements that core and owns the matrix, the
-metric set it reports, and the artifact it writes. The unit is the **cell**: one
-arm at one rating and one temperature. A cell is a series and a stored result,
-and the seeds inside it are replicates whose spread is that cell's evaluation
-noise, so they are kept apart in the artifact rather than only pooled. Both arms
-run in one pass over one checkpoint so they share a grid and a seed derivation.
+metric set it reports, and the artifact it writes. It produces two units, and
+the distinction matters. A **cell** is one arm at one rating and one temperature,
+and carries the raw rollout scalars; the seeds inside it are replicates whose
+spread is that cell's evaluation noise, so they are kept apart in the artifact
+rather than only pooled. A **reading** spans one arm's whole rating grid at one
+temperature and carries the distances against matched human play. Both arms run
+in one pass over one checkpoint so they share a grid and a seed derivation.
+
+The reading is the unit because the rating grid is the curve's axis: a single
+cell has one rating and therefore no curve at all. Temperature stays fixed
+across a reading rather than being a second axis, since mixing two temperatures
+into one curve would report a sampling setting as a rating effect.
+
+`anthro_chess.evaluation.reference` owns the human side and the quantity
+definitions both sides are read through. One definition per quantity is the
+point: a game length measured one way on generated games and another way on
+human games yields a distance that is partly an artifact of the two
+implementations. Human games are reduced straight from the frozen pool rather
+than reconstructed into game records, because a human game has no seat
+configuration, no seed, and no ending the harness vocabulary can express —
+"lost on time" is not a rule outcome — so building a record would mean inventing
+all three. The shared trajectory analysis is what makes that unnecessary.
+
+Reference games are placed at the mean of the two players' ratings, and a game
+whose players are far apart is excluded rather than averaged into the middle: it
+is a mismatch rather than a game at the average of its two ratings, and its
+length and result belong to neither player's level.
+
+The declared bandwidth is one value for every quantity rather than one each.
+Selected over thousands of matched-rating games of the frozen blitz pool, only
+game length, opening, and move diversity have an interior cross-validation
+optimum; result and cycle improve monotonically to the largest candidate,
+because human result and cycle behavior barely varies with rating. Freezing
+those at the boundary would make the neighbourhood most of the reference at
+every point, which is a global average wearing the shape of a curve, and would
+collapse the conditional reading into the pooled one it is meant to be read
+against. The shared value is game length's own optimum and costs every other
+quantity under a quarter of a percent against its own best error, which is
+inside the noise of those optima.
+
+A sparse rating grid leaves evaluation points with no generated game nearby.
+Those drop out of the conditional reading rather than being interpolated, and
+the count of unsupported points is reported, because a distance averaged over a
+third of the grid should not read like one averaged over all of it.
 
 The two arms are not interchangeable for every reading. On the prefix arm the
 opening distribution belongs to the view rather than to the model, because the

@@ -51,6 +51,16 @@ source carries the prefix depth and the pool, view, and game-id digest the
 prefixes were projected from, so continuing a different set of openings or a
 different depth is a different series.
 
+A human-reference curve reading carries the same workload with one substitution
+and one addition. The single conditioning rating is replaced by the whole rating
+grid, because for a curve the grid is the axis rather than a setting held fixed.
+And the declared curve shape joins it — the evaluation grid and the frozen
+bandwidth — since a distance estimated at one smoothing and one estimated at
+another are not the same quantity. That is the same reasoning that makes the
+bandwidth a declared constant rather than configuration: it belongs to the
+benchmark version, so changing it ends every curve series deliberately rather
+than silently.
+
 ### What Is Not
 
 Seed count, games per position, and concurrency. Generating more games estimates
@@ -96,11 +106,19 @@ and then records the run gets a new series rather than a continued one. That is
 the correct outcome and the reason the exploratory path can skip recording
 entirely.
 
-Most generated-play metrics are informational by construction. Human games are
-the reference for whether generated play looks human, so declaring a direction
-would assert a target the project has deliberately declined to hardcode. The
-exception is the unfinished-game rate, which is a defect rather than a behavior:
-an adjudicated game has no result or termination to compare against anything.
+The raw rollout scalars are informational by construction. Human games are the
+reference for whether generated play looks human, so declaring a direction on a
+draw rate or a game length would assert a target the project has deliberately
+declined to hardcode. One exception is the unfinished-game rate, which is a
+defect rather than a behavior: an adjudicated game has no result or termination
+to compare against anything.
+
+The distances against matched human play are the other exception, and they are
+where the family gets its direction. Closer to humans of the same rating is
+better, which is the project's stated goal rather than an invented target, so
+those metrics are the ones that rank two checkpoints. That is also why the raw
+scalars are worth recording anyway: a distance says a checkpoint is unlike
+humans, and only the scalars beside it say in which direction it erred.
 
 ## References
 

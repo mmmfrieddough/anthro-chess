@@ -38,18 +38,33 @@ efficiency. Metrics reach the committed tier; the games themselves are bulk
 diagnostics and stay in the machine-local detail tier, where a later analysis
 pass can recompute new features over them without replaying anything.
 
-Human-reference comparison is deliberately not here. Whether a repetition rate
-or a game length is *human* is a curve comparison against matched human play,
-which needs a bandwidth selected from the real corpus and declared, and it is
-tracked separately. What this benchmark establishes is the generated side of
-that comparison, measured reproducibly.
+A run produces two kinds of record, because it measures two kinds of thing. A
+**cell** is one point of the matrix and carries the raw rollout scalars: how
+long its games ran, how they ended, how much they repeated. A **reading** spans
+one arm's whole rating grid at one temperature and carries the distances against
+matched human play.
+
+The reading is what makes any of this a verdict. A draw rate or a game length
+has no right value the project is willing to name, so those scalars stay
+informational; the distance to humans of the same rating does have a direction,
+because playing like a human is the goal. The comparison uses the shape in
+``anthro_chess.evaluation.curves``, whose bandwidth is selected once from the
+real corpus and frozen in ``anthro_chess.evaluation.reference`` rather than
+chosen per run — re-selecting it would mean two checkpoints were measured
+differently.
+
+The grid is the curve's axis, which is why a reading is not per cell: a single
+cell has one rating and therefore no curve. It also means a sparse rating grid
+leaves evaluation points with no generated game nearby; those drop out of the
+conditional reading rather than being interpolated, and the count is reported so
+a narrow reading is not mistaken for a complete one.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -61,6 +76,12 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.evaluation.curves import (
+    CurveComparison,
+    CurveComparisonError,
+    CurveMetrics,
+    compare_curves,
+)
 from anthro_chess.evaluation.execution import execution_record
 from anthro_chess.evaluation.games import (
     GAME_ANALYSIS_VERSION,
@@ -91,6 +112,20 @@ from anthro_chess.evaluation.pool import (
     FrozenPool,
     load_pool,
 )
+from anthro_chess.evaluation.reference import (
+    CURVE_RATING_GRID,
+    CURVE_SPEC_VERSION,
+    DECLARED_NEIGHBOURS,
+    ComparableGame,
+    ComparedQuantity,
+    HumanReference,
+    ReferenceConfig,
+    ReferenceError,
+    curve_spec,
+    generated_games,
+    human_reference,
+    iter_quantities,
+)
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -114,6 +149,7 @@ from anthro_chess.evaluation.results.fingerprints import (
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
+    GENERATED_PLAY_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
     GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION,
@@ -121,6 +157,8 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_MEAN_FIRST_REPETITION_PLY,
     GENERATED_PLAY_MEAN_GAME_PLIES,
     GENERATED_PLAY_MEAN_GENERATED_PLIES,
+    GENERATED_PLAY_POOLED_DISTANCE,
+    GENERATED_PLAY_RATING_VARIATION,
     GENERATED_PLAY_REPEATED_POSITION_GAME_RATE,
     GENERATED_PLAY_RESIGNATION_RATE,
     GENERATED_PLAY_THREEFOLD_CLAIMABLE_GAME_RATE,
@@ -206,14 +244,23 @@ class RolloutGridConfig(ConfigModel):
 class RolloutPrefixConfig(ConfigModel):
     """Where frozen human prefixes come from, and how deep they run."""
 
-    #: A frozen evaluation pool directory. Absent means the human-prefix arm is
-    #: unavailable, which is a configuration error rather than a silent skip.
-    pool: Path | None = None
     view: ViewConfig = ViewConfig(name="rollout-prefix", maximum_games=32)
     #: How many plies of each source game are replayed before the seats decide.
     #: Twelve is a real opening rather than a first move, and shallow enough
     #: that a mid-training checkpoint still has a game to play.
     plies: Annotated[StrictInt, Field(ge=1)] = 12
+
+
+class RolloutReferenceConfig(ReferenceConfig):
+    """Which human games the comparison is measured against, and how many.
+
+    A separate view from the prefix one because the two want opposite things.
+    Prefixes are a handful of openings to continue; the reference is as much
+    matched human play as can be afforded, since it forces the bandwidth and
+    the noise floors at every evaluation point.
+    """
+
+    view: ViewConfig = ViewConfig(name="rollout-reference", require_ratings=True)
 
 
 class RolloutDetailConfig(ConfigModel):
@@ -241,7 +288,13 @@ class RolloutBenchmarkConfig(ConfigModel):
     grid: RolloutGridConfig = RolloutGridConfig()
     generation: GenerationConfig = GenerationConfig()
     arms: tuple[RolloutArm, ...] = (RolloutArm.STANDARD_START,)
+    #: A frozen evaluation pool. The human-prefix arm reads its openings from
+    #: it and the human-reference comparison reads its reference from it, so
+    #: either one without a pool is a configuration error rather than a silent
+    #: skip.
+    pool: Path | None = None
     prefix: RolloutPrefixConfig = RolloutPrefixConfig()
+    reference: RolloutReferenceConfig = RolloutReferenceConfig()
     #: Granularity the opening distribution is aggregated at. Family groups
     #: transpositions together, which literal move prefixes cannot.
     opening_level: OpeningLevel = OpeningLevel.FAMILY
@@ -253,11 +306,19 @@ class RolloutBenchmarkConfig(ConfigModel):
             raise ValueError("a rollout suite needs at least one arm")
         if len(set(self.arms)) != len(self.arms):
             raise ValueError("a rollout suite must not repeat an arm")
-        if RolloutArm.HUMAN_PREFIX in self.arms and self.prefix.pool is None:
-            raise ValueError(
-                "the human-prefix arm needs prefix.pool to point at a frozen "
-                "evaluation pool"
-            )
+        if self.pool is None:
+            if RolloutArm.HUMAN_PREFIX in self.arms:
+                raise ValueError(
+                    "the human-prefix arm needs pool to point at a frozen "
+                    "evaluation pool"
+                )
+            if self.reference.enabled:
+                raise ValueError(
+                    "comparing generated play against human play needs pool to "
+                    "point at a frozen evaluation pool; set "
+                    "reference.enabled to false to record the rollout scalars "
+                    "alone"
+                )
         return self
 
 
@@ -277,6 +338,10 @@ class RolloutCell:
     #: The cell's reading, pooled over every seed.
     distribution: GameDistribution
     execution: ExecutionRecord
+    #: Per-game features, always kept: the human-reference curve reads one
+    #: observation per game from them, so discarding them would make the
+    #: comparison depend on whether whole games happened to be retained.
+    features: tuple[GameFeatures, ...] = field(default=(), repr=False)
     #: The games behind the reading, retained only when the detail tier is
     #: keeping them. Bulk diagnostics: they never reach the committed summary,
     #: and every later distribution feature is recomputed from them rather than
@@ -312,6 +377,50 @@ class RolloutCell:
 
 
 @dataclass(frozen=True)
+class RolloutReading:
+    """One arm's whole rating grid, compared against matched human play.
+
+    The unit is deliberately not the cell. A curve's axis *is* the rating, so a
+    single cell has one x value and no curve at all; the reading spans every
+    rating of one arm at one temperature. Temperature stays fixed across it
+    because it is a separate dial rather than a point on this axis, and mixing
+    two temperatures into one curve would report the sampling setting as a
+    rating effect.
+    """
+
+    arm: RolloutArm
+    temperature: float
+    ratings: tuple[int, ...]
+    model_games: int
+    human_games: int
+    comparisons: dict[ComparedQuantity, CurveComparison]
+    execution: ExecutionRecord
+
+    @property
+    def label(self) -> str:
+        """Return a short human label for this reading."""
+
+        return f"{self.arm.value} temperature={self.temperature:g}"
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the curve payload stored in the detail tier."""
+
+        return {
+            "arm": self.arm.value,
+            "temperature": self.temperature,
+            "ratings": list(self.ratings),
+            "model_games": self.model_games,
+            "human_games": self.human_games,
+            "workload_sha256": self.execution.workload_sha256,
+            "workload": dict(self.execution.workload),
+            "comparisons": {
+                quantity.value: comparison.as_detail_record()
+                for quantity, comparison in self.comparisons.items()
+            },
+        }
+
+
+@dataclass(frozen=True)
 class RolloutBenchmarkResult:
     """Everything one rollout suite measured, and where it was written."""
 
@@ -320,6 +429,10 @@ class RolloutBenchmarkResult:
     #: The prefix view a human-prefix arm selected, absent when no arm used one.
     view: ViewSelection | None
     dataset: DatasetReference | None
+    #: One per arm and temperature, absent when no human reference was read.
+    readings: tuple[RolloutReading, ...] = ()
+    reference: HumanReference | None = None
+    reference_view: ViewSelection | None = None
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
@@ -359,8 +472,26 @@ class RolloutBenchmarkResult:
             ),
             "games": self.games,
             "cells": [cell.as_record() for cell in self.cells],
+            "reference": (
+                None if self.reference is None else self.reference.as_record()
+            ),
+            "reference_view": (
+                None if self.reference_view is None else self.reference_view.as_record()
+            ),
+            "readings": [reading.as_record() for reading in self.readings],
             "recorded": [str(path) for path in self.recorded_paths],
         }
+
+    def reading(self, arm: RolloutArm, temperature: float) -> RolloutReading:
+        """Return one arm's curve reading at one temperature."""
+
+        for candidate in self.readings:
+            if candidate.arm is arm and candidate.temperature == temperature:
+                return candidate
+        raise RolloutBenchmarkError(
+            f"no curve reading was measured for {arm.value} at temperature "
+            f"{temperature:g}"
+        )
 
 
 @dataclass(frozen=True)
@@ -393,9 +524,9 @@ def benchmark_rollout(
     """
 
     config = resolved_config.value
-    loaded, reference = _resolve_model(config, runner, checkpoint, run_root)
+    loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
     book = _load_book()
-    sources, view, dataset = _position_sources(config)
+    sources, view, dataset = _position_sources(config, book=book)
 
     cells: list[RolloutCell] = []
     for source in sources:
@@ -405,7 +536,7 @@ def benchmark_rollout(
                     _measure_cell(
                         config,
                         loaded,
-                        reference,
+                        identity,
                         source,
                         book=book,
                         target_rating=target_rating,
@@ -413,11 +544,26 @@ def benchmark_rollout(
                     )
                 )
 
+    reference: HumanReference | None = None
+    reference_view: ViewSelection | None = None
+    readings: tuple[RolloutReading, ...] = ()
+    if config.reference.enabled:
+        reference, reference_view = _load_reference(config, book=book)
+        readings = _curve_readings(
+            config,
+            cells,
+            reference,
+            device=_device(loaded),
+        )
+
     result = RolloutBenchmarkResult(
-        checkpoint=reference,
+        checkpoint=identity,
         cells=tuple(cells),
         view=view,
         dataset=dataset,
+        readings=readings,
+        reference=reference,
+        reference_view=reference_view,
     )
     return _record(result, resolved_config, store=store, detail=detail)
 
@@ -465,6 +611,7 @@ def _measure_cell(
         per_seed=tuple(per_seed),
         distribution=summarize_games(features, level=config.opening_level),
         execution=_execution_record(config, runner, source, target_rating, temperature),
+        features=tuple(features),
         records=tuple(records),
     )
     logger.info(
@@ -497,6 +644,8 @@ def _generate(
 
 def _position_sources(
     config: RolloutBenchmarkConfig,
+    *,
+    book: OpeningBook | None,
 ) -> tuple[
     tuple[_PositionSource, ...],
     ViewSelection | None,
@@ -517,7 +666,7 @@ def _position_sources(
                 )
             )
             continue
-        positions, view, dataset = _load_prefix_positions(config)
+        positions, view, dataset = _load_prefix_positions(config, book=book)
         sources.append(
             _PositionSource(
                 arm=arm,
@@ -537,15 +686,12 @@ def _position_sources(
 
 def _load_prefix_positions(
     config: RolloutBenchmarkConfig,
+    *,
+    book: OpeningBook | None,
 ) -> tuple[tuple[StartPosition, ...], ViewSelection, DatasetReference]:
     """Project the selected pool games onto the roots the seats continue from."""
 
-    if config.prefix.pool is None:  # pragma: no cover - validated on the config
-        raise RolloutBenchmarkError("the human-prefix arm needs a frozen pool")
-    try:
-        pool = load_pool(config.prefix.pool)
-    except EvaluationPoolError as error:
-        raise RolloutBenchmarkError(str(error)) from error
+    pool = _load_pool(config)
     # The prefix depth is this benchmark's dial rather than the pool's, so it
     # is pushed into the view: a game shorter than the prefix is excluded by
     # the same mechanism that excludes every other ineligible game, and the
@@ -584,6 +730,160 @@ def _load_prefix_positions(
     except GenerationError as error:
         raise RolloutBenchmarkError(str(error)) from error
     return positions, selection, _dataset_reference(pool, selection, rows)
+
+
+def _load_pool(config: RolloutBenchmarkConfig) -> FrozenPool:
+    """Load the frozen pool both the prefix arm and the reference read from."""
+
+    if config.pool is None:  # pragma: no cover - validated on the config
+        raise RolloutBenchmarkError("this suite needs a frozen evaluation pool")
+    try:
+        return load_pool(config.pool)
+    except EvaluationPoolError as error:
+        raise RolloutBenchmarkError(str(error)) from error
+
+
+def _load_reference(
+    config: RolloutBenchmarkConfig,
+    *,
+    book: OpeningBook | None,
+) -> tuple[HumanReference, ViewSelection]:
+    """Read the matched human play every curve is compared against."""
+
+    pool = _load_pool(config)
+    selection = apply_view(pool.games, config.reference.view)
+    if not selection.game_ids:
+        raise RolloutBenchmarkError(
+            f"view {config.reference.view.name!r} selected no human games to "
+            "compare against"
+        )
+    wanted = set(selection.game_ids)
+    try:
+        rows = [
+            row
+            for row in read_normalized_rows(pool.games_path)
+            if int(row[NormalizedColumn.GAME_ID]) in wanted
+        ]
+    except DataLoadingError as error:
+        raise RolloutBenchmarkError(str(error)) from error
+    try:
+        reference = human_reference(rows, config.reference, book=book)
+    except ReferenceError as error:
+        raise RolloutBenchmarkError(str(error)) from error
+    return reference, selection
+
+
+def _curve_readings(
+    config: RolloutBenchmarkConfig,
+    cells: Sequence[RolloutCell],
+    reference: HumanReference,
+    *,
+    device: torch.device,
+) -> tuple[RolloutReading, ...]:
+    """Compare each arm's rating grid against matched human play.
+
+    One reading per arm and temperature, because the curve's axis is the rating
+    and temperature is a separate dial rather than a point on it.
+    """
+
+    readings: list[RolloutReading] = []
+    for arm in config.arms:
+        for temperature in config.grid.temperatures:
+            selected = [
+                cell
+                for cell in cells
+                if cell.arm is arm and cell.temperature == temperature
+            ]
+            if not selected:  # pragma: no cover - the matrix is complete
+                continue
+            readings.append(
+                _curve_reading(
+                    config, arm, temperature, selected, reference, device=device
+                )
+            )
+    return tuple(readings)
+
+
+def _curve_reading(
+    config: RolloutBenchmarkConfig,
+    arm: RolloutArm,
+    temperature: float,
+    cells: Sequence[RolloutCell],
+    reference: HumanReference,
+    *,
+    device: torch.device,
+) -> RolloutReading:
+    """Compare one arm's whole rating grid at one temperature."""
+
+    model: list[ComparableGame] = []
+    for cell in cells:
+        model.extend(generated_games(cell.features, rating=cell.target_rating))
+    comparisons: dict[ComparedQuantity, CurveComparison] = {}
+    for quantity in iter_quantities():
+        spec = curve_spec(quantity)
+        human = reference.observations(quantity, level=config.opening_level)
+        generated = tuple(
+            game.observation(quantity, level=config.opening_level) for game in model
+        )
+        try:
+            comparisons[quantity] = compare_curves(
+                spec=spec,
+                human=human,
+                model=generated,
+                resamples=config.reference.resamples,
+                seed=config.reference.seed,
+            )
+        except CurveComparisonError as error:
+            raise RolloutBenchmarkError(
+                f"cannot compare {quantity.value} against human play: {error}"
+            ) from error
+    ratings = tuple(sorted(cell.target_rating for cell in cells))
+    return RolloutReading(
+        arm=arm,
+        temperature=temperature,
+        ratings=ratings,
+        model_games=len(model),
+        human_games=len(reference.games),
+        comparisons=comparisons,
+        execution=_reading_execution_record(
+            config, cells, temperature, ratings, device=device
+        ),
+    )
+
+
+def _reading_execution_record(
+    config: RolloutBenchmarkConfig,
+    cells: Sequence[RolloutCell],
+    temperature: float,
+    ratings: Sequence[int],
+    *,
+    device: torch.device,
+) -> ExecutionRecord:
+    """Declare what one curve reading measured.
+
+    A curve's workload is a cell's with the single rating replaced by the whole
+    grid, because the grid is the axis rather than a setting held fixed. The
+    curve shape joins it too: a distance estimated at one bandwidth and one at
+    another are not the same quantity, which is exactly why the bandwidth is
+    declared and frozen rather than configured.
+    """
+
+    workload = dict(cells[0].execution.workload)
+    workload.pop("target_rating", None)
+    workload.update(
+        {
+            "target_ratings": list(ratings),
+            "temperature": temperature,
+            "curve_spec_version": CURVE_SPEC_VERSION,
+            "curve_grid": list(CURVE_RATING_GRID),
+            "curve_neighbours": {
+                quantity.value: DECLARED_NEIGHBOURS[quantity]
+                for quantity in iter_quantities()
+            },
+            "reference_maximum_rating_gap": config.reference.maximum_rating_gap,
+        }
+    )
+    return execution_record(device, workload)
 
 
 def _prefix_row(row: Mapping[str, Any], plies: int) -> dict[str, Any]:
@@ -671,7 +971,14 @@ def _record(
     store: ResultsStore | None,
     detail: DetailStore | None,
 ) -> RolloutBenchmarkResult:
-    """Write one envelope per cell, with the cell's games behind a reference."""
+    """Write one envelope per cell, plus one per curve reading.
+
+    Two kinds of record from one run, because they are two units. A cell is one
+    point of the matrix and carries the raw rollout scalars; a reading spans one
+    arm's whole rating grid and carries the distances against human play. They
+    have different workloads and so different series, which is why neither can
+    stand in for the other.
+    """
 
     configuration = configuration_reference(
         resolved_config.as_record(),
@@ -683,10 +990,14 @@ def _record(
     envelopes: list[ResultEnvelope] = []
     try:
         for cell in result.cells:
-            reference = _write_detail(
+            detail_reference = _write_detail(
                 detail,
                 checkpoint=result.checkpoint,
-                cell=cell,
+                slug=(
+                    f"{cell.arm.value}-r{cell.target_rating}-t{_slug(cell.temperature)}"
+                ),
+                description=f"Generated-play rollout cell: {cell.label}",
+                payload=_cell_payload(cell),
                 recorded_at=recorded_at,
                 paths=detail_paths,
             )
@@ -705,7 +1016,33 @@ def _record(
                     else None,
                     execution=cell.execution,
                     measurements=_measurements(cell),
-                    detail=reference,
+                    detail=detail_reference,
+                    recorded_at=recorded_at,
+                )
+            )
+        for reading in result.readings:
+            detail_reference = _write_detail(
+                detail,
+                checkpoint=result.checkpoint,
+                slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
+                description=f"Human-reference curves: {reading.label}",
+                payload=_reading_payload(result, reading),
+                recorded_at=recorded_at,
+                paths=detail_paths,
+            )
+            envelopes.append(
+                build_result(
+                    kind=ROLLOUT_KIND,
+                    benchmark=ROLLOUT_BENCHMARK,
+                    checkpoint=result.checkpoint,
+                    configuration=configuration,
+                    # The reference view is provenance here for the same reason
+                    # the prefix view is on a cell: the human games shaped what
+                    # was compared against, and the workload carries identity.
+                    data=result.dataset,
+                    execution=reading.execution,
+                    measurements=_curve_measurements(reading),
+                    detail=detail_reference,
                     recorded_at=recorded_at,
                 )
             )
@@ -719,11 +1056,8 @@ def _record(
         except (ResultRecordError, ResultsStoreError) as error:
             raise RolloutBenchmarkError(str(error)) from error
 
-    return RolloutBenchmarkResult(
-        checkpoint=result.checkpoint,
-        cells=result.cells,
-        view=result.view,
-        dataset=result.dataset,
+    return replace(
+        result,
         envelopes=tuple(envelopes),
         recorded_paths=tuple(recorded_paths),
         detail_paths=tuple(detail_paths),
@@ -829,33 +1163,89 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
     )
 
 
+def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
+    """Return one reading's committed distances.
+
+    The comparison builds these itself, floors included, because the floor for
+    a distance is estimated as the distance is computed rather than looked up
+    from a series-wide characterization it cannot have.
+    """
+
+    workload = reading.execution.workload_component()
+    measurements: list[Measurement] = []
+    for quantity, comparison in reading.comparisons.items():
+        measurements.extend(
+            comparison.measurements(
+                CurveMetrics(
+                    conditional=GENERATED_PLAY_CONDITIONAL_DISTANCE[
+                        quantity.value
+                    ].identifier,
+                    pooled=GENERATED_PLAY_POOLED_DISTANCE[quantity.value].identifier,
+                    model_variation=GENERATED_PLAY_RATING_VARIATION[
+                        quantity.value
+                    ].identifier,
+                ),
+                workload=workload,
+            )
+        )
+    return tuple(measurements)
+
+
 def _write_detail(
     detail: DetailStore | None,
     *,
     checkpoint: CheckpointReference,
-    cell: RolloutCell,
+    slug: str,
+    description: str,
+    payload: Mapping[str, Any],
     recorded_at: datetime,
     paths: list[Path],
 ) -> DetailReference | None:
-    """Write one cell's diagnostics, games included when they were retained."""
+    """Write one bulk payload and return its summary-tier reference."""
 
     if detail is None:
         return None
-    payload = cell.as_record()
-    payload["games_detail"] = [record.as_record() for record in cell.records]
     stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    slug = (
-        f"{cell.arm.value}-r{cell.target_rating}-"
-        f"t{str(cell.temperature).replace('.', '_')}"
-    )
     relative = Path(ROLLOUT_KIND) / checkpoint.label / f"{stamp}-{slug}.json"
-    reference = detail.write(
-        relative,
-        payload,
-        description=f"Generated-play rollout cell: {cell.label}",
-    )
+    reference = detail.write(relative, dict(payload), description=description)
     paths.append(detail.root / relative)
     return reference
+
+
+def _cell_payload(cell: RolloutCell) -> dict[str, Any]:
+    """Return one cell's diagnostics, games included when they were retained."""
+
+    payload = cell.as_record()
+    payload["games_detail"] = [record.as_record() for record in cell.records]
+    payload["features"] = [feature.as_record() for feature in cell.features]
+    return payload
+
+
+def _reading_payload(
+    result: RolloutBenchmarkResult,
+    reading: RolloutReading,
+) -> dict[str, Any]:
+    """Return one curve reading's points and the reference behind them.
+
+    Curve points are stored as data rather than as a rendered image, so drawing
+    several checkpoints against one human reference later is a query over
+    payloads that already exist.
+    """
+
+    payload = reading.as_record()
+    payload["reference"] = (
+        None if result.reference is None else result.reference.as_record()
+    )
+    payload["reference_view"] = (
+        None if result.reference_view is None else result.reference_view.as_record()
+    )
+    return payload
+
+
+def _slug(value: float) -> str:
+    """Return a filename-safe form of a temperature."""
+
+    return str(value).replace(".", "_")
 
 
 def _resolve_model(
@@ -960,5 +1350,7 @@ __all__ = [
     "RolloutDetailConfig",
     "RolloutGridConfig",
     "RolloutPrefixConfig",
+    "RolloutReading",
+    "RolloutReferenceConfig",
     "benchmark_rollout",
 ]

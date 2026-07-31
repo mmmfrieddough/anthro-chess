@@ -20,7 +20,7 @@ from typing import Any
 
 import chess
 
-from anthro_chess.chess import decode_move
+from anthro_chess.chess import MOVE_ACTION_COUNT, decode_move
 from anthro_chess.evaluation.games.records import (
     GameRecord,
     GameResult,
@@ -79,21 +79,22 @@ class RepetitionDiagnostics:
 
 
 @dataclass(frozen=True)
-class GameFeatures:
-    """The distribution features one game contributes."""
+class TrajectoryFeatures:
+    """What a root position and the moves played from it are worth measuring.
 
-    game_id: str
+    Everything here is a pure function of the game as played, so a human game
+    read out of the pool and a game the harness generated produce these the
+    same way. That is what makes the human-reference comparison a comparison of
+    one quantity rather than of two similarly named ones.
+    """
+
     #: Digest of the root position and the moves played from it, which is what
-    #: identifies a *trajectory*. Deliberately not the game id: that is derived
+    #: identifies a *trajectory*. Deliberately not a record id: that is derived
     #: from the whole record, seed and seat configuration included, so two
     #: replicates that played the identical game carry different ids. Counting
     #: ids would report every suite as fully diverse.
     trajectory_sha256: str
     ply_count: int
-    generated_plies: int
-    result: GameResult
-    termination: GameTermination
-    adjudicated: bool
     opening: OpeningLabel
     repetition: RepetitionDiagnostics
     #: Distinct moves as a share of moves played. A game that shuffles two
@@ -102,16 +103,11 @@ class GameFeatures:
     distinct_move_fraction: float
 
     def as_record(self) -> dict[str, Any]:
-        """Return the per-game record stored in the detail tier."""
+        """Return the stored form of one trajectory's features."""
 
         return {
-            "game_id": self.game_id,
             "trajectory_sha256": self.trajectory_sha256,
             "ply_count": self.ply_count,
-            "generated_plies": self.generated_plies,
-            "result": self.result,
-            "termination": self.termination.value,
-            "adjudicated": self.adjudicated,
             "opening": self.opening.as_record(),
             "repetition": {
                 "first_repetition_ply": self.repetition.first_repetition_ply,
@@ -121,6 +117,64 @@ class GameFeatures:
                 "cycle_ply_fraction": self.repetition.cycle_ply_fraction,
             },
             "distinct_move_fraction": self.distinct_move_fraction,
+        }
+
+
+@dataclass(frozen=True)
+class GameFeatures:
+    """The distribution features one recorded game contributes.
+
+    A trajectory plus the things only a played record knows: who played it, how
+    much of it a seat chose, and how it ended.
+    """
+
+    game_id: str
+    trajectory: TrajectoryFeatures
+    generated_plies: int
+    result: GameResult
+    termination: GameTermination
+    adjudicated: bool
+
+    @property
+    def trajectory_sha256(self) -> str:
+        """Return the digest identifying the game this record played."""
+
+        return self.trajectory.trajectory_sha256
+
+    @property
+    def ply_count(self) -> int:
+        """Return how many moves the game contains."""
+
+        return self.trajectory.ply_count
+
+    @property
+    def opening(self) -> OpeningLabel:
+        """Return the opening this game was classified as."""
+
+        return self.trajectory.opening
+
+    @property
+    def repetition(self) -> RepetitionDiagnostics:
+        """Return how much of this game revisited positions."""
+
+        return self.trajectory.repetition
+
+    @property
+    def distinct_move_fraction(self) -> float:
+        """Return distinct moves as a share of moves played."""
+
+        return self.trajectory.distinct_move_fraction
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the per-game record stored in the detail tier."""
+
+        return {
+            "game_id": self.game_id,
+            "generated_plies": self.generated_plies,
+            "result": self.result,
+            "termination": self.termination.value,
+            "adjudicated": self.adjudicated,
+            **self.trajectory.as_record(),
         }
 
 
@@ -181,6 +235,38 @@ class GameDistribution:
         }
 
 
+def analyze_trajectory(
+    initial_position: str,
+    action_ids: Sequence[int],
+    *,
+    book: OpeningBook | None = None,
+) -> TrajectoryFeatures:
+    """Return the features derivable from a root and the moves played from it.
+
+    This is the half a human game and a generated game genuinely share. A human
+    game has no seat configuration, no seed, and no ending this format's
+    vocabulary can express — "lost on time" is not a rule outcome — so
+    reconstructing one as a full record would mean inventing those. Splitting
+    the computation here is what lets the human reference be measured by
+    exactly the same code without fabricating anything.
+    """
+
+    moves = tuple(
+        action_id for action_id in action_ids if action_id < MOVE_ACTION_COUNT
+    )
+    return TrajectoryFeatures(
+        trajectory_sha256=_trajectory_sha256(initial_position, action_ids),
+        ply_count=len(moves),
+        opening=classify_action_ids(
+            tuple(action_ids),
+            initial_position=initial_position,
+            book=book,
+        ),
+        repetition=_repetition_diagnostics(initial_position, moves),
+        distinct_move_fraction=_fraction(len(set(moves)), len(moves)),
+    )
+
+
 def analyze_game(
     record: GameRecord,
     *,
@@ -188,22 +274,18 @@ def analyze_game(
 ) -> GameFeatures:
     """Return the distribution features of one recorded game."""
 
-    moves = record.move_action_ids
+    trajectory = analyze_trajectory(
+        record.initial_position,
+        record.action_ids,
+        book=book,
+    )
     return GameFeatures(
         game_id=record.game_id,
-        trajectory_sha256=_trajectory_sha256(record),
-        ply_count=record.ply_count,
+        trajectory=trajectory,
         generated_plies=record.generated_plies,
         result=record.outcome.result,
         termination=record.outcome.termination,
         adjudicated=record.outcome.adjudicated,
-        opening=classify_action_ids(
-            record.action_ids,
-            initial_position=record.initial_position,
-            book=book,
-        ),
-        repetition=_repetition_diagnostics(record),
-        distinct_move_fraction=_fraction(len(set(moves)), len(moves)),
     )
 
 
@@ -273,19 +355,22 @@ def summarize_games(
     )
 
 
-def _trajectory_sha256(record: GameRecord) -> str:
-    """Digest the game a record played, ignoring how it came to be played.
+def _trajectory_sha256(initial_position: str, action_ids: Sequence[int]) -> str:
+    """Digest the game that was played, ignoring how it came to be played.
 
     Root position and actions only. Two seeds that produced the identical game
     have to collide here, which is the whole point: that collision is how a
     collapsed suite becomes visible.
     """
 
-    payload = canonical_json([record.initial_position, list(record.action_ids)])
+    payload = canonical_json([initial_position, list(action_ids)])
     return sha256(payload).hexdigest()
 
 
-def _repetition_diagnostics(record: GameRecord) -> RepetitionDiagnostics:
+def _repetition_diagnostics(
+    initial_position: str,
+    moves: Sequence[int],
+) -> RepetitionDiagnostics:
     """Count position recurrences by replaying the game once.
 
     Positions are keyed by EPD, which is what the repetition rules compare:
@@ -295,12 +380,11 @@ def _repetition_diagnostics(record: GameRecord) -> RepetitionDiagnostics:
     at every occurrence.
     """
 
-    board = chess.Board(record.initial_position)
+    board = chess.Board(initial_position)
     occurrences: dict[str, int] = {board.epd(): 1}
     first_repetition: int | None = None
     threefold: int | None = None
     repeated_plies = 0
-    moves = record.move_action_ids
     for ply_index, action_id in enumerate(moves):
         board.push(decode_move(action_id))
         key = board.epd()
