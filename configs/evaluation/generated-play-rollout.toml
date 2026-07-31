@@ -54,9 +54,9 @@ seeds = [0, 1, 2, 3, 4]
 maximum_generated_plies = 300
 games_per_position = 4
 swap_colors = true
-# The model has no draw-claim action, so claiming for it would report the
-# harness's policy as the model's behavior. Games still end on their own
-# through the fivefold and seventy-five-move rules.
+# The seats have a draw-claim action of their own, so claiming for them would
+# report the harness's policy as the model's behavior. Games still end on their
+# own through the fivefold and seventy-five-move rules.
 claim_draws = false
 concurrency = 8
 
