@@ -563,6 +563,12 @@ def test_eval_report_emits_machine_readable_output(
     report = json.loads(capsys.readouterr().out)
     assert report["current"]["label"] == "checkpoint-b"
     assert report["baseline"]["label"] == "checkpoint-a"
+    # Rows hang off the series they were measured on rather than off the family
+    # directly, so a benchmark writing one result per matrix cell cannot have
+    # its cells collapse into one row.
+    assert any(
+        group["metrics"] for family in report["families"] for group in family["series"]
+    )
 
 
 def test_eval_report_resolves_its_store_from_the_environment(

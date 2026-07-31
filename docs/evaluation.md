@@ -136,7 +136,19 @@ root resolves from `ANTHRO_CHESS_RESULT_DETAIL_ROOT`, or beneath
 
 `anthro eval report` is the reading surface: a compact delta view by default,
 with slices, provenance, per-series history, and machine-readable output behind
-explicit options. `anthro eval bridge` records, lists, and revokes bridges.
+explicit options.
+
+A report's row is one **series**, not one metric. A benchmark that varies a
+dial across a matrix writes one result per cell, so a checkpoint holds several
+readings of one metric that differ only by declared workload; showing the most
+recent would present one arbitrary cell as the checkpoint's value and hide the
+rest. Rows are grouped by workload and labelled with the fields that actually
+tell the cells apart. The exception is a family measured under one workload
+before a change and one after, which pairs, so the report names the workload
+change instead of showing two half-rows that never say why. A metric declaring
+no workload can still land on more than one series when the inputs underneath
+it move, and there the most recent reading is shown together with how many
+series stand behind it. `anthro eval bridge` records, lists, and revokes bridges.
 `anthro eval noise` characterizes floors, lists them, and answers how many
 games an axis needs. `anthro eval inference` measures what a checkpoint costs
 to play with; see inference efficiency below. `anthro eval decisions` separates

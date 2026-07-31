@@ -13,15 +13,17 @@ measured".
 
 from __future__ import annotations
 
+import json
 import math
 import textwrap
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
 from anthro_chess.evaluation.results.comparability import (
+    UNSCOPED_WORKLOAD,
     Attribution,
     AxisChange,
     BridgeIndex,
@@ -30,8 +32,9 @@ from anthro_chess.evaluation.results.comparability import (
     attribute,
     condition_differences,
     environment_differences,
-    latest_measurement,
+    measurements_by_workload,
     provenance_differences,
+    recorded_series,
 )
 from anthro_chess.evaluation.results.metrics import (
     MetricDefinition,
@@ -66,6 +69,16 @@ MAXIMUM_LINE_WIDTH = 120
 #: its whole row out of alignment, so the registry is held to it rather than
 #: the table growing to fit one name.
 METRIC_COLUMN_WIDTH = 38
+
+#: How much of one workload value a series label shows. The label exists to
+#: tell two cells of a matrix apart, and the whole value is in the envelope for
+#: the reader who needs it.
+WORKLOAD_VALUE_WIDTH = 28
+
+#: Series label for the group of a family's metrics that declare no workload.
+#: Only reachable where a family mixes workload-scoped metrics with metrics
+#: whose value does not depend on execution.
+UNSCOPED_SERIES_LABEL = "no declared workload"
 
 
 class ReportError(ValueError):
@@ -151,6 +164,9 @@ class MetricDelta:
     #: architecture or the training corpus. These confound a delta rather than
     #: invalidating it, so they are named beside the number, not instead of it.
     conditions: tuple[ProvenanceDifference, ...] = ()
+    #: The series this row reports, so automation reading the rows of a matrix
+    #: benchmark can tell them apart without reconstructing the grouping.
+    series: str | None = None
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable row."""
@@ -158,6 +174,7 @@ class MetricDelta:
         return {
             "metric": self.metric,
             "family": self.family,
+            "series": self.series,
             "direction": self.direction.value,
             "baseline": self.baseline,
             "current": self.current,
@@ -175,39 +192,68 @@ class MetricDelta:
             "attribution": (
                 None if self.attribution is None else self.attribution.as_record()
             ),
-            "environment_differences": [
-                {
-                    "field": difference.field,
-                    "baseline": difference.baseline,
-                    "current": difference.current,
-                }
-                for difference in self.environment
+            "environment_differences": _difference_records(self.environment),
+            "condition_differences": _difference_records(self.conditions),
+        }
+
+
+@dataclass(frozen=True)
+class SeriesGroup:
+    """One declared workload's rows within a family.
+
+    A benchmark that varies a dial across a matrix writes one result per cell,
+    and every cell is its own series. Grouping the rows by the workload they
+    were measured under is what keeps a matrix readable: the dial is stated
+    once above the rows it applies to, rather than one cell being shown as
+    though it were the checkpoint's value.
+    """
+
+    #: The declared workload's digest, or ``None`` where the metrics in this
+    #: group declare no workload.
+    workload: str | None
+    #: How this group differs from the others in its family, or ``None`` when
+    #: it is the only one and there is nothing to tell apart.
+    label: str | None
+    metrics: tuple[MetricDelta, ...]
+    #: The workload fields that differ across the family's groups, which is
+    #: what ``label`` renders.
+    coordinates: tuple[tuple[str, str], ...] = ()
+    #: Execution differences shared by every row in this group. Rendered once
+    #: as a header rather than repeated per row, because execution is a
+    #: property of the result the whole group was recorded in.
+    environment: tuple[ProvenanceDifference, ...] = ()
+    #: Declared-coordinate differences, shared by the group for the same
+    #: reason.
+    conditions: tuple[ProvenanceDifference, ...] = ()
+
+    def as_record(self) -> dict[str, object]:
+        """Return the machine-readable group section."""
+
+        return {
+            "workload": self.workload,
+            "label": self.label,
+            "coordinates": [
+                {"field": field, "value": value} for field, value in self.coordinates
             ],
-            "condition_differences": [
-                {
-                    "field": difference.field,
-                    "baseline": difference.baseline,
-                    "current": difference.current,
-                }
-                for difference in self.conditions
-            ],
+            "environment_differences": _difference_records(self.environment),
+            "condition_differences": _difference_records(self.conditions),
+            "metrics": [metric.as_record() for metric in self.metrics],
         }
 
 
 @dataclass(frozen=True)
 class FamilyReport:
-    """One family's rows, or the reason it has none."""
+    """One family's rows, grouped by series, or the reason it has none."""
 
     family: MetricFamily
-    metrics: tuple[MetricDelta, ...]
+    series: tuple[SeriesGroup, ...]
     absence: str | None
-    #: Execution differences shared by every row in this family. Rendered once
-    #: as a header rather than repeated per row, because execution is a
-    #: property of the result the whole family was recorded in.
-    environment: tuple[ProvenanceDifference, ...] = ()
-    #: Declared-coordinate differences, shared by the family for the same
-    #: reason.
-    conditions: tuple[ProvenanceDifference, ...] = ()
+
+    @property
+    def metrics(self) -> tuple[MetricDelta, ...]:
+        """Return every row in the family, across its series."""
+
+        return tuple(row for group in self.series for row in group.metrics)
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable family section."""
@@ -216,23 +262,7 @@ class FamilyReport:
             "family": self.family.identifier,
             "title": self.family.title,
             "absence": self.absence,
-            "environment_differences": [
-                {
-                    "field": difference.field,
-                    "baseline": difference.baseline,
-                    "current": difference.current,
-                }
-                for difference in self.environment
-            ],
-            "condition_differences": [
-                {
-                    "field": difference.field,
-                    "baseline": difference.baseline,
-                    "current": difference.current,
-                }
-                for difference in self.conditions
-            ],
-            "metrics": [metric.as_record() for metric in self.metrics],
+            "series": [group.as_record() for group in self.series],
         }
 
 
@@ -272,14 +302,7 @@ class DeltaReport:
             "baseline": None if self.baseline is None else self.baseline.as_record(),
             "current": self.current.as_record(),
             "families": [family.as_record() for family in self.families],
-            "provenance": [
-                {
-                    "field": difference.field,
-                    "baseline": difference.baseline,
-                    "current": difference.current,
-                }
-                for difference in self.provenance
-            ],
+            "provenance": _difference_records(self.provenance),
         }
 
 
@@ -606,12 +629,14 @@ def render_report(report: DeltaReport) -> str:
         if family.absence == UNREGISTERED_FAMILY_ABSENCE:
             unregistered.append(family.family.identifier)
             continue
-        lines.append(_render_family_header(family))
+        lines.append(family.family.identifier)
         if family.absence is not None:
             lines.append(f"  absent: {family.absence}")
             continue
-        for metric in family.metrics:
-            lines.append(_render_metric(metric))
+        for group in family.series:
+            lines.extend(_render_group_header(group))
+            for metric in group.metrics:
+                lines.append(_render_metric(metric))
     if unregistered:
         lines.extend(
             textwrap.wrap(
@@ -624,18 +649,21 @@ def render_report(report: DeltaReport) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_family_header(family: FamilyReport) -> str:
-    """Name the family, and the execution change every row in it shares.
+def _render_group_header(group: SeriesGroup) -> list[str]:
+    """Name the series, and the execution change every row in it shares.
 
     Execution belongs to the result rather than to a metric, so repeating it
     on seven rows would say the same thing seven times in the width the
-    numbers need.
+    numbers need. The series line is absent when the family has one group, so
+    an ordinary single-envelope benchmark renders exactly as it always did.
     """
 
-    lines = [family.family.identifier]
+    entries: list[str] = []
+    if group.label is not None:
+        entries.append(f"  [series: {group.label}]")
     for label, differences in (
-        ("environment changed", family.environment),
-        ("conditions changed", family.conditions),
+        ("environment changed", group.environment),
+        ("conditions changed", group.conditions),
     ):
         if not differences:
             continue
@@ -644,17 +672,17 @@ def _render_family_header(family: FamilyReport) -> str:
             f"{_short(difference.current)}"
             for difference in differences
         )
-        lines.append(f"  [{label}: {changes}]")
-    return "\n".join(
+        entries.append(f"  [{label}: {changes}]")
+    return [
         line
-        for entry in lines
+        for entry in entries
         for line in textwrap.wrap(
             entry,
             width=MAXIMUM_LINE_WIDTH,
             subsequent_indent="   ",
         )
         or [entry]
-    )
+    ]
 
 
 def _confounded_legend(report: DeltaReport) -> list[str]:
@@ -867,47 +895,253 @@ def _family_report(
     if not definitions:
         return FamilyReport(
             family=family,
-            metrics=(),
+            series=(),
             absence=UNREGISTERED_FAMILY_ABSENCE,
         )
 
-    rows: list[MetricDelta] = []
-    environment: tuple[ProvenanceDifference, ...] = ()
-    conditions: tuple[ProvenanceDifference, ...] = ()
-    for definition in definitions:
-        current = latest_measurement(current_results, definition.identifier)
-        baseline = latest_measurement(baseline_results, definition.identifier)
-        if current is None and baseline is None:
-            continue
-        row = _metric_delta(
-            definition,
-            baseline=baseline,
-            current=current,
-            bridges=bridges,
-            floors=floors,
-            comparison_floors=comparison_floors,
-            current_label=current_label,
-            baseline_label=baseline_label,
-            pivot=pivot,
+    current_readings = {
+        definition.identifier: measurements_by_workload(
+            current_results,
+            definition.identifier,
+            workload_scoped=definition.execution_sensitive,
         )
-        if row.environment:
-            environment = row.environment
-        if row.conditions:
-            conditions = row.conditions
-        rows.append(row)
-    if not rows:
+        for definition in definitions
+    }
+    baseline_readings = {
+        definition.identifier: measurements_by_workload(
+            baseline_results,
+            definition.identifier,
+            workload_scoped=definition.execution_sensitive,
+        )
+        for definition in definitions
+    }
+
+    pairings = _group_pairings(current_readings, baseline_readings)
+    workloads = _group_workloads(pairings, current_readings, baseline_readings)
+    labels = _series_labels(workloads)
+    groups: list[SeriesGroup] = []
+    for key in _ordered_groups(labels):
+        rows: list[MetricDelta] = []
+        environment: tuple[ProvenanceDifference, ...] = ()
+        conditions: tuple[ProvenanceDifference, ...] = ()
+        for definition in definitions:
+            current = current_readings[definition.identifier].get(key)
+            baseline = baseline_readings[definition.identifier].get(pairings[key])
+            if current is None and baseline is None:
+                continue
+            row = _metric_delta(
+                definition,
+                baseline=baseline,
+                current=current,
+                bridges=bridges,
+                floors=floors,
+                comparison_floors=comparison_floors,
+                current_label=current_label,
+                baseline_label=baseline_label,
+                pivot=pivot,
+                hidden_series=_hidden_series(
+                    current_results,
+                    definition,
+                    bridges,
+                ),
+            )
+            if row.environment:
+                environment = row.environment
+            if row.conditions:
+                conditions = row.conditions
+            rows.append(row)
+        if not rows:
+            continue
+        groups.append(
+            SeriesGroup(
+                workload=None if key == UNSCOPED_WORKLOAD else key,
+                # One group has nothing to be told apart from, so the family
+                # renders exactly as it did before any benchmark wrote a matrix.
+                label=labels[key] if len(labels) > 1 else None,
+                metrics=tuple(rows),
+                coordinates=workloads.get(key, ()),
+                environment=environment,
+                conditions=conditions,
+            )
+        )
+    if not groups:
         return FamilyReport(
             family=family,
-            metrics=(),
+            series=(),
             absence=f"no result recorded for {current_label}",
         )
-    return FamilyReport(
-        family=family,
-        metrics=tuple(rows),
-        absence=None,
-        environment=environment,
-        conditions=conditions,
-    )
+    return FamilyReport(family=family, series=tuple(groups), absence=None)
+
+
+Readings = Mapping[str, Mapping[str, tuple[ResultEnvelope, Measurement]]]
+
+
+def _hidden_series(
+    results: Sequence[ResultEnvelope],
+    definition: MetricDefinition,
+    bridges: BridgeIndex,
+) -> int:
+    """Return how many series one checkpoint recorded a metric on.
+
+    Only a metric that stayed in one group can be hiding a second series behind
+    the reading shown, since a workload-scoped one has already been split into
+    a group per series.
+    """
+
+    if definition.execution_sensitive:
+        return 1
+    return len(recorded_series(results, definition.identifier, bridges))
+
+
+def _group_pairings(
+    current_readings: Readings,
+    baseline_readings: Readings,
+) -> dict[str, str]:
+    """Return each group of a family, and the baseline workload it reads.
+
+    Normally a workload identifies itself on both sides and the pairing is the
+    identity. The exception is the family measured under one workload before a
+    change and one after: pairing those two is what lets the report say the
+    declared workload moved, rather than reporting two half-rows that never
+    name the cause. It is only applied where exactly one workload is unmatched
+    on each side, since anything looser would be guessing which cell of a
+    matrix succeeded which.
+    """
+
+    current_keys = _workload_keys(current_readings)
+    baseline_keys = _workload_keys(baseline_readings)
+    shared = current_keys & baseline_keys
+    current_only = sorted(current_keys - shared)
+    baseline_only = sorted(baseline_keys - shared)
+    if len(current_only) == 1 and len(baseline_only) == 1:
+        return {key: key for key in sorted(shared)} | {
+            current_only[0]: baseline_only[0]
+        }
+    return {key: key for key in sorted(current_keys | baseline_keys)}
+
+
+def _workload_keys(readings: Readings) -> set[str]:
+    return {key for by_workload in readings.values() for key in by_workload}
+
+
+def _group_workloads(
+    pairings: Mapping[str, str],
+    current_readings: Readings,
+    baseline_readings: Readings,
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Return the flattened declared workload behind each group of a family.
+
+    The current side is preferred where both recorded a group, so the label a
+    reader sees names the run they are asking about.
+    """
+
+    recorded: dict[str, tuple[tuple[str, str], ...]] = {}
+    for readings in (baseline_readings, current_readings):
+        for by_workload in readings.values():
+            for key, (envelope, _) in by_workload.items():
+                execution = envelope.execution
+                if key == UNSCOPED_WORKLOAD or execution is None:
+                    recorded[key] = ()
+                    continue
+                recorded[key] = _flatten(execution.workload)
+    return {
+        key: recorded.get(key, recorded.get(baseline_key, ()))
+        for key, baseline_key in pairings.items()
+    }
+
+
+def _series_labels(
+    workloads: Mapping[str, tuple[tuple[str, str], ...]],
+) -> dict[str, str]:
+    """Name each group by the workload fields that actually tell them apart.
+
+    Rendering the whole declared workload would put a dozen fields above every
+    cell of a matrix that varies two of them. Only the fields that differ carry
+    information, so only those are shown; the envelope keeps the rest.
+    """
+
+    scoped = {key: dict(fields) for key, fields in workloads.items() if key}
+    fields = sorted({field for entry in scoped.values() for field in entry})
+    differing = [
+        field
+        for field in fields
+        if len({entry.get(field) for entry in scoped.values()}) > 1
+    ]
+    labels: dict[str, str] = {}
+    for key in workloads:
+        if key == UNSCOPED_WORKLOAD:
+            labels[key] = UNSCOPED_SERIES_LABEL
+            continue
+        entry = scoped[key]
+        rendered = " ".join(
+            f"{field}={_clip(entry.get(field, '-'))}" for field in differing
+        )
+        # Two workloads with the same fields cannot share a digest, so an empty
+        # label means the only difference is in a field one of them omits
+        # entirely. The digest prefix is then the honest discriminator.
+        labels[key] = rendered or f"workload {key[:12]}"
+    return labels
+
+
+def _ordered_groups(labels: Mapping[str, str]) -> tuple[str, ...]:
+    """Order a family's groups so a report does not depend on record order."""
+
+    return tuple(sorted(labels, key=lambda key: (labels[key], key)))
+
+
+def _flatten(workload: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    """Render a declared workload as comparable dotted scalar fields.
+
+    Flattened rather than compared whole, because a nested position source that
+    differs in one field would otherwise label a group with the entire mapping.
+    """
+
+    flattened: list[tuple[str, str]] = []
+
+    def walk(prefix: str, value: object) -> None:
+        if isinstance(value, Mapping):
+            for key in sorted(value, key=str):
+                walk(f"{prefix}.{key}" if prefix else str(key), value[key])
+            return
+        flattened.append((prefix, _workload_value(value)))
+
+    walk("", workload)
+    return tuple(flattened)
+
+
+def _workload_value(value: object) -> str:
+    """Render one workload field as a string two groups can be compared on."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool) or value is None:
+        return json.dumps(value)
+    if isinstance(value, int | float):
+        return f"{value:g}"
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _clip(value: str) -> str:
+    """Shorten one workload value to the width a series label allows."""
+
+    if len(value) <= WORKLOAD_VALUE_WIDTH:
+        return value
+    return f"{value[: WORKLOAD_VALUE_WIDTH - 1]}…"
+
+
+def _difference_records(
+    differences: Sequence[ProvenanceDifference],
+) -> list[dict[str, str | None]]:
+    """Return the machine-readable form of a provenance difference list."""
+
+    return [
+        {
+            "field": difference.field,
+            "baseline": difference.baseline,
+            "current": difference.current,
+        }
+        for difference in differences
+    ]
 
 
 def _metric_delta(
@@ -921,14 +1155,17 @@ def _metric_delta(
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
+    hidden_series: int = 1,
 ) -> MetricDelta:
     if current is None:
+        assert baseline is not None  # the caller skips a metric with neither
         return _incomparable_delta(
             definition,
-            baseline=None if baseline is None else baseline[1].value,
+            baseline=baseline[1].value,
             current=None,
             comparability=Comparability.INCOMPARABLE,
             note=f"not measured for {current_label}",
+            series=bridges.series(baseline[1].fingerprint),
         )
     if baseline is None:
         return _incomparable_delta(
@@ -936,11 +1173,13 @@ def _metric_delta(
             baseline=None,
             current=current[1].value,
             comparability=Comparability.INCOMPARABLE,
-            note=(
+            note=_note(
                 "no baseline recorded"
                 if baseline_label is None
-                else f"not measured for {baseline_label}"
+                else f"not measured for {baseline_label}",
+                hidden_series,
             ),
+            series=bridges.series(current[1].fingerprint),
         )
 
     baseline_envelope, baseline_measurement = baseline
@@ -963,13 +1202,15 @@ def _metric_delta(
             baseline=baseline_measurement.value,
             current=current_measurement.value,
             comparability=comparison.comparability,
-            note=(
+            note=_note(
                 "different measurement; the declared workload changed"
                 if attribution is not None
                 and attribution.workload is AxisChange.CHANGED
-                else "incomparable; these results are not on the same series"
+                else "incomparable; these results are not on the same series",
+                hidden_series,
             ),
             attribution=attribution,
+            series=bridges.series(current_measurement.fingerprint),
         )
 
     conditions = (
@@ -1017,12 +1258,37 @@ def _metric_delta(
         attribution=attribution,
         environment=environment,
         conditions=conditions,
+        series=bridges.series(current_measurement.fingerprint),
         note=(
-            "bridged series seam"
+            _note("bridged series seam", hidden_series)
             if comparison.comparability is Comparability.BRIDGED
-            else None
+            else _hidden_note(hidden_series)
         ),
     )
+
+
+def _hidden_note(hidden_series: int) -> str | None:
+    """Say when the row shown is one of several series recorded.
+
+    A metric that declares no workload still ends up on more than one series
+    when the inputs underneath it change — a regenerated pool is the usual
+    cause. There is nothing to compare across those series, so the most recent
+    is the right one to show; what would be wrong is showing it as though it
+    were the only one.
+    """
+
+    if hidden_series <= 1:
+        return None
+    return (
+        f"{hidden_series} series recorded for this checkpoint; showing the most recent"
+    )
+
+
+def _note(note: str, hidden_series: int) -> str:
+    """Annotate a note the caller already has with the hidden-series warning."""
+
+    hidden = _hidden_note(hidden_series)
+    return note if hidden is None else f"{note}; {hidden}"
 
 
 def _incomparable_delta(
@@ -1032,6 +1298,7 @@ def _incomparable_delta(
     current: float | None,
     comparability: Comparability,
     note: str,
+    series: str | None = None,
     attribution: Attribution | None = None,
 ) -> MetricDelta:
     """Return a row with no delta, and therefore nothing to judge against noise.
@@ -1058,6 +1325,7 @@ def _incomparable_delta(
         bridges=(),
         note=note,
         attribution=attribution,
+        series=series,
     )
 
 
