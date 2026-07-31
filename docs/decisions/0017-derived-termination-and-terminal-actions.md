@@ -124,17 +124,22 @@ documented host-layer policy over a model action.
 
 **Land terminal-action vocabulary changes in one version bump.** The action
 vocabulary identity is stamped into both data and model artifacts, so each
-change to it invalidates existing artifacts and interrupts benchmark
-comparability. Resignation labelling and the claim action are therefore one
-vocabulary change rather than two.
+change to it invalidates existing artifacts and forces a corpus regeneration.
+Resignation labelling and the claim action are therefore one vocabulary change
+rather than two, so that regeneration is paid once. This is a compute argument;
+the comparability break it also causes is free until the core is designated,
+per `0013-benchmark-result-comparability.md`.
 
 ## Consequences
 
 The preprocessing version advances and the baseline corpus is regenerated. The
 action vocabulary identity changes, which invalidates existing checkpoints and
 starts a new comparability series under
-`0013-benchmark-result-comparability.md`. That cost is the reason the two
-vocabulary changes are batched.
+`0013-benchmark-result-comparability.md`. The regeneration cost is the reason
+the two vocabulary changes are batched. The series break is not a reason to
+defer either of them: no protected history exists before the core is
+designated, and the proof-scale checkpoints this invalidates are not worth
+keeping.
 
 Resignation becomes a measurable behavior rather than an unreachable slot, and
 it needs benchmarks before it is enabled by default. Premature resignation is a
