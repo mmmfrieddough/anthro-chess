@@ -189,6 +189,10 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
         },
         "8/8/8/r7/8/8/Q7/5k1K w - - 0 1": {
             PositionPredicate.STALEMATE_REPLY: 19,
+            # Qxa5 wins the undefended rook, so the heuristic predicate fires
+            # here too. It is far more common than the decidable ones, which is
+            # why it exists.
+            PositionPredicate.MATERIAL_GAIN: 1,
         },
         "R5k1/5p1p/6p1/8/8/8/8/6K1 b - - 0 1": {
             PositionPredicate.ONLY_MOVE: 1,
@@ -202,10 +206,14 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
             for predicate, match in observed.items()
         } == expected, fen
 
-    assert all(
-        definition.classification is PredicateClass.DECIDABLE
-        for definition in PREDICATE_REGISTRY.values()
-    )
+    # Classification carries real weight in a report: a decidable predicate has
+    # an answer exact chess logic supplies outright, while a heuristic one is
+    # readable only against a reference. Material gain is the only heuristic.
+    assert {
+        predicate: definition.classification
+        for predicate, definition in PREDICATE_REGISTRY.items()
+        if definition.classification is PredicateClass.HEURISTIC
+    } == {PositionPredicate.MATERIAL_GAIN: PredicateClass.HEURISTIC}
     assert ADJUDICATED_PREDICATE_NAMES == tuple(
         sorted(predicate.value for predicate in PREDICATE_REGISTRY)
     )

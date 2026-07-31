@@ -1,0 +1,31 @@
+# Capability retention under a controlled novelty dose.
+#
+# Perturbed continuations are derived from the frozen pool through the shared
+# view layer. Only the opponent's moves are replaced, and only from the onset
+# ply onward; the player's continuation is the human's own, replayed while it
+# stays legal. See `docs/evaluation.md` for what survives out of distribution
+# and why the perturbed arms are read as retention rather than as rates.
+#
+# The model selection is deliberately absent: with no explicit checkpoint or
+# run, `anthro eval novelty` uses the machine-local default selection beneath
+# ANTHRO_CHESS_RUN_ROOT.
+pool = "artifacts/lichess-blitz-2017-04-test"
+
+[view]
+# Games have to be long enough for the window to open and run, so this view
+# filters on length. Subsampling keeps a sweep affordable without shrinking the
+# pool the reading is defined over.
+name = "novelty"
+minimum_plies = 40
+maximum_games = 400
+
+[perturbation]
+# Dose zero is the control arm and is required. The sweep is denser at the low
+# end because that is where the curve is expected to be non-monotonic: a small
+# perturbation takes the model off book without yet giving away material.
+doses = [0.0, 0.0625, 0.125, 0.25, 0.5, 1.0]
+onset_plies = 16
+window_moves = 8
+
+[loader]
+batch_size = 8

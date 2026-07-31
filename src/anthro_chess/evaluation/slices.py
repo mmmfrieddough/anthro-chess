@@ -98,6 +98,7 @@ class PositionPredicate(StrEnum):
     STALEMATE_AVAILABLE = "stalemate_available"
     STALEMATE_REPLY = "stalemate_reply"
     ONLY_MOVE = "only_move"
+    MATERIAL_GAIN = "material_gain"
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,26 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
         classification=PredicateClass.DECIDABLE,
         summary="The side to move has exactly one legal move.",
     ),
+    PositionPredicate.MATERIAL_GAIN: PredicateDefinition(
+        predicate=PositionPredicate.MATERIAL_GAIN,
+        classification=PredicateClass.HEURISTIC,
+        summary=(
+            "A capture wins material through the full exchange on its square; "
+            "successful moves are those captures."
+        ),
+    ),
 }
+
+#: Material threshold a capture's exchange sequence has to clear to count as
+#: winning. One pawn is the smallest gain worth calling a gain.
+MATERIAL_GAIN_THRESHOLD = 1
+
+#: What the king is worth when choosing which attacker recaptures. Priced far
+#: above every other piece so it recaptures last, which is the conventional way
+#: to keep it out of a swap-off it would never enter. This is an ordering
+#: device rather than a valuation, which is why it does not belong in
+#: ``MATERIAL_VALUES``: a balance that priced the king would be nonsense.
+_EXCHANGE_KING_VALUE = 1000
 
 
 #: Half-open legal-move-count intervals. Legality metrics vary strongly with
@@ -356,6 +376,13 @@ def match_position_predicates(
     opponent do immediately if the side to move passed? A successful action is
     then one that removes every such immediate reply. Null moves are used only
     to derive a label; they are never exposed as model actions.
+
+    Material gain is the one heuristic predicate here, and it resolves the
+    exchange rather than counting the captured piece. Plain counting would
+    admit every capture of a defended piece, which is not a gain at all; the
+    exchange sequence is still deterministic and identically applied to both
+    sides, which is what a human-referenced predicate needs. It is not a claim
+    that the capture is objectively best.
     """
 
     moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
@@ -381,6 +408,13 @@ def match_position_predicates(
         matches[PositionPredicate.STALEMATE_AVAILABLE] = PredicateMatch(
             predicate=PositionPredicate.STALEMATE_AVAILABLE,
             successful_action_ids=frozenset(action_ids[move] for move in stalemates),
+        )
+
+    winning = _material_winning_moves(board, moves)
+    if winning:
+        matches[PositionPredicate.MATERIAL_GAIN] = PredicateMatch(
+            predicate=PositionPredicate.MATERIAL_GAIN,
+            successful_action_ids=frozenset(action_ids[move] for move in winning),
         )
 
     if board.is_check():
@@ -437,6 +471,95 @@ def _moves_avoiding_reply(
         if not terminal_replies:
             safe.append(move)
     return tuple(safe)
+
+
+def _material_winning_moves(
+    board: chess.Board,
+    legal_moves: Sequence[chess.Move],
+) -> tuple[chess.Move, ...]:
+    """Return the captures whose exchange sequence nets material.
+
+    Only captures are considered. A quiet move that wins material needs an
+    evaluation function to recognize, which is the dependency this project
+    keeps out of benchmark time.
+    """
+
+    return tuple(
+        move
+        for move in legal_moves
+        if board.is_capture(move)
+        and _exchange_gain(board, move) >= MATERIAL_GAIN_THRESHOLD
+    )
+
+
+def _exchange_value(piece_type: int | None) -> int:
+    """Return one piece's worth inside an exchange resolution.
+
+    Reads the shared material table so a pawn is worth the same here as in a
+    balance, with the king's ordering price applied on top. An empty square
+    resolves to a pawn, which only arises for an en-passant capture whose
+    target square holds nothing.
+    """
+
+    if piece_type is None:
+        return MATERIAL_VALUES[chess.PAWN]
+    if piece_type == chess.KING:
+        return _EXCHANGE_KING_VALUE
+    return MATERIAL_VALUES[piece_type]
+
+
+def _exchange_gain(board: chess.Board, move: chess.Move) -> int:
+    """Return the material one capture nets once the exchange is played out.
+
+    The exchange is resolved through exact legal move generation rather than
+    through a bitboard approximation, so pins, discovered attacks, and the
+    king's inability to recapture into check are handled by the chess layer
+    instead of by a second implementation of the rules. It costs a handful of
+    pushes per capture, which is why predicates belong to the positions a
+    benchmark actually scores.
+    """
+
+    captured = (
+        MATERIAL_VALUES[chess.PAWN]
+        if board.is_en_passant(move)
+        else _exchange_value(board.piece_type_at(move.to_square))
+    )
+    board.push(move)
+    try:
+        at_risk = _exchange_value(board.piece_type_at(move.to_square))
+        return captured - _continue_exchange(board, move.to_square, at_risk)
+    finally:
+        board.pop()
+
+
+def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -> int:
+    """Return what the side to move wins by recapturing on ``square``.
+
+    Standing pat is always available, so a side never continues into a loss.
+    The least valuable attacker recaptures, with the move's own notation
+    breaking ties so the resolution is deterministic.
+    """
+
+    captures = [
+        move
+        for move in board.legal_moves
+        if move.to_square == square and board.is_capture(move)
+    ]
+    if not captures:
+        return 0
+    move = min(
+        captures,
+        key=lambda candidate: (
+            _exchange_value(board.piece_type_at(candidate.from_square)),
+            candidate.uci(),
+        ),
+    )
+    board.push(move)
+    try:
+        next_at_risk = _exchange_value(board.piece_type_at(square))
+        return max(0, at_risk - _continue_exchange(board, square, next_at_risk))
+    finally:
+        board.pop()
 
 
 #: Conventional pawn values for the material proxy. Deliberately the textbook

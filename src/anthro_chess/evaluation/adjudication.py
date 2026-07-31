@@ -16,6 +16,7 @@ from anthro_chess.evaluation.noise import GameTotals, MetricTotal
 from anthro_chess.evaluation.policy import ActionSetPolicy
 from anthro_chess.evaluation.results import DataComponent, Measurement, measurement
 from anthro_chess.evaluation.results.metrics import (
+    ADJUDICATED_BEST_RANK,
     ADJUDICATED_HUMAN_GAP,
     ADJUDICATED_HUMAN_RATE,
     ADJUDICATED_POLICY_MASS,
@@ -43,6 +44,9 @@ class AdjudicatedPosition:
     human_success: bool
     model_success: bool
     policy_mass: float
+    #: ``None`` when no legal action handles the predicate, which is a real
+    #: state: a threatened mate nothing prevents offers nothing to rank.
+    best_rank: int | None
 
 
 @dataclass(frozen=True)
@@ -53,10 +57,17 @@ class PredicateReport:
     classification: PredicateClass
     overall: PointReferenceComparison
     rating_bands: Mapping[str, PointReferenceComparison]
+    #: ``None`` when no opportunity offered a rankable action.
+    mean_best_rank: float | None
+    #: How many opportunities contributed a rank. Below ``overall.opportunities``
+    #: exactly when some offered no successful action to rank.
+    rankable_opportunities: int
 
     def as_record(self) -> dict[str, object]:
         return {
             "classification": self.classification.value,
+            "mean_best_rank": self.mean_best_rank,
+            "rankable_opportunities": self.rankable_opportunities,
             "overall": self.overall.as_record(),
             "rating_bands": {
                 name: summary.as_record()
@@ -91,6 +102,7 @@ class AdjudicationReport:
                     "human_success": position.human_success,
                     "model_success": position.model_success,
                     "policy_mass": position.policy_mass,
+                    "best_rank": position.best_rank,
                 }
                 for position in self.positions
             ],
@@ -117,6 +129,15 @@ class AdjudicationReport:
                         value,
                         data=component,
                         sample_size=summary.opportunities,
+                    )
+                )
+            if report.mean_best_rank is not None:
+                values.append(
+                    measurement(
+                        ADJUDICATED_BEST_RANK[name].identifier,
+                        report.mean_best_rank,
+                        data=component,
+                        sample_size=report.rankable_opportunities,
                     )
                 )
         return tuple(values)
@@ -158,6 +179,12 @@ class AdjudicationReport:
                     total=selected - human,
                     positions=count,
                 )
+                ranks = [item.best_rank for item in group if item.best_rank is not None]
+                if ranks:
+                    metrics[ADJUDICATED_BEST_RANK[name].identifier] = MetricTotal(
+                        total=float(sum(ranks)),
+                        positions=len(ranks),
+                    )
             totals.append(GameTotals(game_id=game_id, metrics=metrics))
         return tuple(totals)
 
@@ -192,6 +219,7 @@ def build_adjudication_report(
                         score.selected_action_id in match.successful_action_ids
                     ),
                     policy_mass=score.raw_probability_mass,
+                    best_rank=score.best_rank,
                 )
             )
     if not positions:
@@ -206,11 +234,14 @@ def build_adjudication_report(
             band: _compare(item for item in matching if item.rating_band == band)
             for band in sorted({item.rating_band for item in matching})
         }
+        ranks = [item.best_rank for item in matching if item.best_rank is not None]
         reports[predicate] = PredicateReport(
             predicate=predicate,
             classification=PREDICATE_REGISTRY[predicate].classification,
             overall=_compare(matching),
             rating_bands=bands,
+            mean_best_rank=(sum(ranks) / len(ranks) if ranks else None),
+            rankable_opportunities=len(ranks),
         )
     return AdjudicationReport(
         positions=tuple(

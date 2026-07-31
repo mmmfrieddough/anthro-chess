@@ -98,13 +98,22 @@ class PositionPolicy:
 
 @dataclass(frozen=True)
 class ActionSetPolicy:
-    """What the model says about one named subset of legal actions."""
+    """What the model says about one named subset of legal actions.
+
+    ``best_rank`` is where the set's strongest member sits in the legal-masked
+    ordering the runtime samples from. Mass alone cannot tell a near miss from
+    an absence: a set holding the second choice and one holding the twentieth
+    can carry the same small probability. It is ``None`` for an empty set,
+    which is a real state rather than a defect — a threatened mate no legal
+    move prevents has no successful action to rank.
+    """
 
     game_id: int
     ply_index: int
     name: str
     selected_action_id: int
     raw_probability_mass: float
+    best_rank: int | None
 
 
 @dataclass(frozen=True)
@@ -255,18 +264,13 @@ def score_action_sets(
                 raise ValueError(
                     f"action set {name!r} contains an action that is not legal at {key}"
                 )
-            mass = (
-                float(
-                    probabilities[
-                        offset,
-                        torch.tensor(actions, dtype=torch.long),
-                    ]
-                    .sum()
-                    .item()
-                )
-                if actions
-                else 0.0
-            )
+            mass = 0.0
+            best_rank: int | None = None
+            if actions:
+                indices = torch.tensor(actions, dtype=torch.long)
+                mass = float(probabilities[offset, indices].sum().item())
+                best_logit = masked[offset, indices].amax()
+                best_rank = int((masked[offset] > best_logit).sum().item()) + 1
             scored.append(
                 ActionSetPolicy(
                     game_id=key[0],
@@ -274,6 +278,7 @@ def score_action_sets(
                     name=name,
                     selected_action_id=int(selected[offset]),
                     raw_probability_mass=mass,
+                    best_rank=best_rank,
                 )
             )
     return tuple(scored)

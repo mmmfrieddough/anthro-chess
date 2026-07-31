@@ -7,14 +7,17 @@ checker, and every fixture here is used from more than one package anyway.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import chess
 import pytest
+import torch
 
 from anthro_chess.chess import action_vocabulary_identity, encode_move
 from anthro_chess.data import (
@@ -25,6 +28,7 @@ from anthro_chess.data import (
     collate_sequences,
     derive_termination,
     encode_game,
+    encoding_identity,
     terminal_action_for,
 )
 from anthro_chess.data.artifacts import file_sha256
@@ -48,6 +52,8 @@ from anthro_chess.evaluation.results import (
     restore_registry,
 )
 from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
+from anthro_chess.models import CausalMoveModel, MoveModelConfig
+from anthro_chess.training.checkpoints import save_training_checkpoint
 
 OPENING_MOVES = (
     "e2e4",
@@ -388,3 +394,112 @@ def recorded_result(
         )
 
     return build
+
+
+@pytest.fixture
+def training_run() -> Callable[..., Path]:
+    """Return a factory writing a retained run and its checkpoint."""
+
+    return write_training_run
+
+
+def write_training_run(
+    path: Path,
+    *,
+    normalized: Path,
+    manifest: Path,
+    seed: int = 23,
+) -> Path:
+    """Write a retained run whose provenance names its training corpus."""
+
+    torch.manual_seed(seed)
+    path.mkdir(parents=True, exist_ok=True)
+    config = MoveModelConfig(
+        piece_embedding_dim=2,
+        action_embedding_dim=2,
+        model_dim=4,
+        attention_heads=1,
+        transformer_layers=1,
+        feedforward_dim=8,
+        dropout=0.0,
+    )
+    model = CausalMoveModel(config)
+    model_identity = model.identity()
+    shard = normalized / "games.parquet"
+    manifest_record = json.loads(manifest.read_text(encoding="utf-8"))
+    data_record = {
+        "train": {
+            "manifest_path": str(manifest.resolve()),
+            "manifest_sha256": sha256(manifest.read_bytes()).hexdigest(),
+            "manifest": manifest_record,
+            "normalized_paths": [str(shard.resolve())],
+            "dataset_sha256": "0" * 64,
+            "loader_configuration_sha256": "1" * 64,
+        },
+        "validation": None,
+    }
+    resolved_config = {
+        "config": {
+            "model": config.model_dump(mode="json"),
+            "train": {
+                "normalized": str(normalized),
+                "manifest": str(manifest),
+                "loader": {"split": "train", "batch_size": 2},
+            },
+        },
+        "provenance": {"source": None, "overrides": []},
+    }
+    execution = {
+        "device": "cpu",
+        "backend": "cpu",
+        "precision": "float32",
+        "parameter_dtype": "float32",
+        "determinism": "strict",
+        "gradient_accumulation_steps": 1,
+        "phase_profiling": False,
+    }
+    metadata = {
+        "resolved_config": copy.deepcopy(resolved_config),
+        "code": {"package_version": "test", "git_revision": "test"},
+        "data": copy.deepcopy(data_record),
+        "model": copy.deepcopy(model_identity),
+        "action_vocabulary": action_vocabulary_identity(),
+        "encoding": encoding_identity(),
+        "execution": copy.deepcopy(execution),
+    }
+    checkpoint = path / "checkpoints" / "step-00000001.pt"
+    save_training_checkpoint(
+        checkpoint,
+        global_step=1,
+        counters={"processed_positions": 64},
+        model_state=model.state_dict(),
+        optimizer_state={},
+        scheduler_state=None,
+        scaler_state=None,
+        loader_state={},
+        compatibility={
+            "training_config": {},
+            "data": {},
+            "model": copy.deepcopy(model_identity),
+            "action_vocabulary": action_vocabulary_identity(),
+            "encoding": encoding_identity(),
+        },
+        metadata=metadata,
+        device="cpu",
+    )
+    (path / "run.json").write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "resolved_config": copy.deepcopy(resolved_config),
+                "model": copy.deepcopy(model_identity),
+                "action_vocabulary": action_vocabulary_identity(),
+                "encoding": encoding_identity(),
+                "execution": copy.deepcopy(execution),
+                "optimization": {"processed_positions": 64},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return checkpoint

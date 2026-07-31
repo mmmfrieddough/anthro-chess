@@ -238,6 +238,8 @@ uv run anthro eval prepare-puzzles \
   --config configs/evaluation/lichess-puzzles-v1.toml
 uv run anthro eval puzzles \
   --config configs/evaluation/puzzle-rating-response.toml --no-record
+uv run anthro eval novelty \
+  --config configs/evaluation/novelty-dose-response.toml --no-record
 ```
 
 The default report is a compact delta view by family and metric, with the

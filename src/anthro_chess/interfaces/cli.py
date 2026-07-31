@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         InferenceBenchmarkResult,
         LadderBenchmarkConfig,
         LadderBenchmarkResult,
+        NoveltyBenchmarkResult,
         PoolConfig,
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkResult,
@@ -283,6 +284,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     puzzles_parser.set_defaults(handler=_run_eval_puzzles)
+
+    novelty_parser = eval_commands.add_parser(
+        "novelty",
+        help=(
+            "Measure what a checkpoint retains under a controlled dose of "
+            "perturbation-derived novelty."
+        ),
+    )
+    novelty_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML novelty dose-response selection.",
+    )
+    novelty_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(novelty_parser)
+    novelty_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    novelty_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Compute and print without writing to the store. This is what a "
+            "shakedown reading uses: evidence about the instrument rather than "
+            "about the model."
+        ),
+    )
+    novelty_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    novelty_parser.set_defaults(handler=_run_eval_novelty)
 
     inference_parser = eval_commands.add_parser(
         "inference",
@@ -1189,6 +1237,123 @@ def _run_eval_puzzles(arguments: argparse.Namespace) -> int:
         return 0
     print(_render_puzzles(result), end="")
     return 0
+
+
+def _run_eval_novelty(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        NoveltyBenchmarkConfig,
+        NoveltyBenchmarkError,
+        benchmark_novelty,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = load_config(
+            NoveltyBenchmarkConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_novelty(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, NoveltyBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval novelty: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_novelty(result), end="")
+    return 0
+
+
+def _render_novelty(result: NoveltyBenchmarkResult) -> str:
+    control = result.control
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        (
+            f"Pool: {result.dataset.pool_id} v{result.dataset.pool_version} "
+            f"view {result.view.name!r} ({result.view.selected_games} game(s))"
+        ),
+        "",
+        "Dose response (retention is against this checkpoint's own control):",
+    ]
+    for arm in result.arms:
+        overall = arm.slices.overall
+        # Paired on position: the control is read over the plies this arm
+        # reached, so a truncated arm is not compared against positions it
+        # never saw.
+        keys = arm.measured_keys
+        reference = control.paired_legality(keys)
+        observed = arm.paired_legality(keys)
+        lines.append(
+            f"  dose={arm.dose:<6.3f} realized={arm.realized_dose:.3f}  "
+            f"positions={arm.scored_positions:<6} "
+            f"truncated={arm.truncated_games:<5} "
+            f"legal_mass={overall.legal_mass:.4f} "
+            f"retention={_render_ratio(observed.legal_mass, reference.legal_mass)} "
+            f"mask_penalty={overall.mask_penalty:.4f}"
+        )
+    lines.append("")
+    lines.append("Predicate retention by dose:")
+    for arm in result.arms:
+        keys = arm.measured_keys
+        for predicate, reading in sorted(
+            arm.predicates.items(), key=lambda item: item[0].value
+        ):
+            paired = control.paired_predicate(predicate, keys)
+            rank = (
+                "-"
+                if reading.mean_best_rank is None
+                else f"{reading.mean_best_rank:.2f}"
+            )
+            retention = (
+                _MISSING_RATIO
+                if paired is None
+                else _render_ratio(reading.selected_rate, paired.selected_rate)
+            )
+            lines.append(
+                f"  dose={arm.dose:<6.3f} {predicate.value:<20} "
+                f"n={reading.opportunities:<6} "
+                f"rate={reading.selected_rate:.4f} "
+                f"retention={retention} "
+                f"mass={reading.policy_mass:.4f} rank={rank}"
+            )
+    if result.recorded_paths:
+        lines.append("")
+        lines.append(f"Recorded {len(result.recorded_paths)} result file(s).")
+    return "\n".join(lines) + "\n"
+
+
+#: Placeholder for a retention with no reference to divide by, kept the same
+#: width as a rendered ratio so the columns stay readable.
+_MISSING_RATIO = "     -"
+
+
+def _render_ratio(value: float, reference: float) -> str:
+    """Render a retention ratio, naming an absent reference rather than faking one."""
+
+    return _MISSING_RATIO if reference == 0.0 else f"{value / reference:.4f}"
 
 
 def _render_puzzles(result: PuzzleBenchmarkResult) -> str:

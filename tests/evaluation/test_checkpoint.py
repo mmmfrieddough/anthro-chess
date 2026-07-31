@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import copy
-import json
 from collections.abc import Callable
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
 
-from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import encoding_identity
 from anthro_chess.evaluation import (
     CheckpointEvaluationConfig,
     CheckpointEvaluationError,
@@ -37,8 +32,6 @@ from anthro_chess.evaluation.slices import (
     PositionPredicate,
 )
 from anthro_chess.interfaces.cli import main
-from anthro_chess.models import CausalMoveModel, MoveModelConfig
-from anthro_chess.training.checkpoints import save_training_checkpoint
 
 #: A middlegame position where the side to move has a promotion available and
 #: the shared opening line never reaches, so the rule-case slices are exercised
@@ -90,10 +83,13 @@ def corpus(
 def test_evaluation_records_sliced_results_over_the_frozen_pool(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
@@ -107,10 +103,21 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     kinds = {envelope.kind for envelope in recorded}
     held_out = next(item for item in recorded if item.kind == HELD_OUT_KIND)
     metrics = {item.metric: item for item in held_out.measurements}
-    assert kinds == {HELD_OUT_KIND, DEPENDENCY_KIND}
-    # Two result envelopes plus the data-sampling floors bootstrapped from the
-    # same pass, all committed.
-    assert len(result.recorded_paths) == 3
+    # Material gain is the one predicate common enough to fire on ordinary
+    # play, so an adjudication record appears where no forced outcome would
+    # have produced one.
+    assert kinds == {HELD_OUT_KIND, DEPENDENCY_KIND, ADJUDICATION_KIND}
+    adjudicated = next(item for item in recorded if item.kind == ADJUDICATION_KIND)
+    assert {item.metric for item in adjudicated.measurements} >= {
+        "adjudicated.material_gain_human_rate",
+        "adjudicated.material_gain_selected_rate",
+        "adjudicated.material_gain_best_rank",
+    }
+    assert result.adjudication is not None
+    assert PositionPredicate.MATERIAL_GAIN in result.adjudication.predicates
+    # Three result envelopes plus the data-sampling floors bootstrapped from
+    # the same pass, all committed.
+    assert len(result.recorded_paths) == 4
     assert result.checkpoint.step == 1
     assert result.checkpoint.parameter_sha256 is not None
     assert result.dataset.pool_id == "fixture-test"
@@ -152,10 +159,13 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
 def test_repeated_evaluation_reproduces_every_measurement(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
 
     first = evaluate_checkpoint(_config(pool, checkpoint))
     second = evaluate_checkpoint(_config(pool, checkpoint))
@@ -174,6 +184,7 @@ def test_evaluation_records_human_referenced_forced_outcomes(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     forced_fen = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
     normalized, manifest = write_corpus(
@@ -197,7 +208,9 @@ def test_evaluation_records_human_referenced_forced_outcomes(
         ],
     )
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
@@ -229,10 +242,13 @@ def test_evaluation_records_human_referenced_forced_outcomes(
 def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
     store = ResultsStore(tmp_path / "results")
 
     result = evaluate_checkpoint(_config(pool, checkpoint), store=store)
@@ -241,13 +257,20 @@ def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
     assert noise is not None
     assert noise.kind == "data-sampling"
 
-    held_out = next(item for item in result.envelopes if item.kind == HELD_OUT_KIND)
-    reported = {item.metric: item.fingerprint for item in held_out.measurements}
+    # One pass bootstraps the held-out and adjudicated series together, so the
+    # floors are checked against everything that pass recorded rather than
+    # against one envelope of it.
+    reported = {
+        item.metric: item.fingerprint
+        for envelope in result.envelopes
+        for item in envelope.measurements
+    }
     floors = {entry.metric: entry for entry in noise.floors}
     # A floor is only readable beside the value it qualifies, so every floor
     # has to land on the same series as the measurement it describes.
     assert set(floors) <= set(reported)
     assert "held_out.move_loss" in floors
+    assert "adjudicated.material_gain_selected_rate" in floors
     for metric, entry in floors.items():
         assert entry.fingerprint == reported[metric]
         assert entry.sampling_units == result.view.selected_games
@@ -258,10 +281,13 @@ def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
 def test_a_noise_floor_is_reproducible_and_can_be_declined(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
 
     first = evaluate_checkpoint(_config(pool, checkpoint))
     second = evaluate_checkpoint(_config(pool, checkpoint))
@@ -278,10 +304,13 @@ def test_a_noise_floor_is_reproducible_and_can_be_declined(
 def test_dependency_tests_report_degradation_without_a_verdict(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
 
     result = evaluate_checkpoint(_config(pool, checkpoint))
 
@@ -321,10 +350,13 @@ def test_dependency_tests_report_degradation_without_a_verdict(
 def test_absent_conditioning_changes_what_the_model_is_shown(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
 
     result = evaluate_checkpoint(_config(pool, checkpoint))
 
@@ -340,10 +372,13 @@ def test_absent_conditioning_changes_what_the_model_is_shown(
 def test_a_prefix_view_scores_fewer_plies_and_starts_its_own_series(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
 
     full = evaluate_checkpoint(_config(pool, checkpoint))
     prefix = evaluate_checkpoint(
@@ -369,6 +404,7 @@ def test_leakage_check_refuses_a_checkpoint_trained_on_pool_games(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     rows = [
         normalized_row(1, split="train", plies=8),
@@ -381,7 +417,7 @@ def test_leakage_check_refuses_a_checkpoint_trained_on_pool_games(
         normalized_row(2, split="train", plies=8),
     ]
     leaked_normalized, leaked_manifest = write_corpus(tmp_path / "leaked", leaked)
-    checkpoint = _write_run(
+    checkpoint = training_run(
         tmp_path / "run",
         normalized=leaked_normalized,
         manifest=leaked_manifest,
@@ -395,6 +431,7 @@ def test_leakage_compares_content_when_the_corpora_differ(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = write_corpus(
         tmp_path / "corpus",
@@ -422,12 +459,12 @@ def test_leakage_compares_content_when_the_corpora_differ(
         ],
         source_id="disjoint",
     )
-    overlapping_checkpoint = _write_run(
+    overlapping_checkpoint = training_run(
         tmp_path / "overlapping",
         normalized=renumbered,
         manifest=renumbered_manifest,
     )
-    clean_checkpoint = _write_run(
+    clean_checkpoint = training_run(
         tmp_path / "clean",
         normalized=disjoint,
         manifest=disjoint_manifest,
@@ -445,10 +482,13 @@ def test_leakage_compares_content_when_the_corpora_differ(
 def test_leakage_check_reports_a_training_corpus_this_machine_cannot_read(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
     payload["metadata"]["data"]["train"]["normalized_paths"] = [
         str(tmp_path / "moved" / "games.parquet")
@@ -462,10 +502,13 @@ def test_leakage_check_reports_a_training_corpus_this_machine_cannot_read(
 def test_evaluation_rejects_an_incompatible_checkpoint(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
     payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
     payload["metadata"]["encoding"] = {"name": "other-encoding"}
     torch.save(payload, checkpoint)
@@ -478,10 +521,13 @@ def test_cli_runs_an_evaluation_without_recording_it(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
     capsys: pytest.CaptureFixture[str],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = _write_run(tmp_path / "run", normalized=normalized, manifest=manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
     config_path = tmp_path / "evaluation.toml"
     config_path.write_text(
         "\n".join(
@@ -514,6 +560,7 @@ def test_cli_reports_a_leaking_checkpoint_as_a_failure(
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
     capsys: pytest.CaptureFixture[str],
+    training_run: Callable[..., Path],
 ) -> None:
     normalized, manifest = write_corpus(
         tmp_path / "corpus",
@@ -530,7 +577,7 @@ def test_cli_reports_a_leaking_checkpoint_as_a_failure(
             normalized_row(2, split="train", plies=8),
         ],
     )
-    checkpoint = _write_run(
+    checkpoint = training_run(
         tmp_path / "run",
         normalized=leaked,
         manifest=leaked_manifest,
@@ -589,105 +636,3 @@ def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
         output,
     )
     return output
-
-
-def _write_run(
-    path: Path,
-    *,
-    normalized: Path,
-    manifest: Path,
-    seed: int = 23,
-) -> Path:
-    """Write a retained run whose provenance names its training corpus."""
-
-    torch.manual_seed(seed)
-    path.mkdir(parents=True, exist_ok=True)
-    config = MoveModelConfig(
-        piece_embedding_dim=2,
-        action_embedding_dim=2,
-        model_dim=4,
-        attention_heads=1,
-        transformer_layers=1,
-        feedforward_dim=8,
-        dropout=0.0,
-    )
-    model = CausalMoveModel(config)
-    model_identity = model.identity()
-    shard = normalized / "games.parquet"
-    manifest_record = json.loads(manifest.read_text(encoding="utf-8"))
-    data_record = {
-        "train": {
-            "manifest_path": str(manifest.resolve()),
-            "manifest_sha256": sha256(manifest.read_bytes()).hexdigest(),
-            "manifest": manifest_record,
-            "normalized_paths": [str(shard.resolve())],
-            "dataset_sha256": "0" * 64,
-            "loader_configuration_sha256": "1" * 64,
-        },
-        "validation": None,
-    }
-    resolved_config = {
-        "config": {
-            "model": config.model_dump(mode="json"),
-            "train": {
-                "normalized": str(normalized),
-                "manifest": str(manifest),
-                "loader": {"split": "train", "batch_size": 2},
-            },
-        },
-        "provenance": {"source": None, "overrides": []},
-    }
-    execution = {
-        "device": "cpu",
-        "backend": "cpu",
-        "precision": "float32",
-        "parameter_dtype": "float32",
-        "determinism": "strict",
-        "gradient_accumulation_steps": 1,
-        "phase_profiling": False,
-    }
-    metadata = {
-        "resolved_config": copy.deepcopy(resolved_config),
-        "code": {"package_version": "test", "git_revision": "test"},
-        "data": copy.deepcopy(data_record),
-        "model": copy.deepcopy(model_identity),
-        "action_vocabulary": action_vocabulary_identity(),
-        "encoding": encoding_identity(),
-        "execution": copy.deepcopy(execution),
-    }
-    checkpoint = path / "checkpoints" / "step-00000001.pt"
-    save_training_checkpoint(
-        checkpoint,
-        global_step=1,
-        counters={"processed_positions": 64},
-        model_state=model.state_dict(),
-        optimizer_state={},
-        scheduler_state=None,
-        scaler_state=None,
-        loader_state={},
-        compatibility={
-            "training_config": {},
-            "data": {},
-            "model": copy.deepcopy(model_identity),
-            "action_vocabulary": action_vocabulary_identity(),
-            "encoding": encoding_identity(),
-        },
-        metadata=metadata,
-        device="cpu",
-    )
-    (path / "run.json").write_text(
-        json.dumps(
-            {
-                "version": 3,
-                "resolved_config": copy.deepcopy(resolved_config),
-                "model": copy.deepcopy(model_identity),
-                "action_vocabulary": action_vocabulary_identity(),
-                "encoding": encoding_identity(),
-                "execution": copy.deepcopy(execution),
-                "optimization": {"processed_positions": 64},
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return checkpoint
