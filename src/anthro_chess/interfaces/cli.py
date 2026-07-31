@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         PoolConfig,
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkResult,
+        RolloutBenchmarkConfig,
         RolloutBenchmarkResult,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
@@ -1304,10 +1305,13 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
     )
 
     try:
-        resolved = load_config(
-            RolloutBenchmarkConfig,
-            path=arguments.config,
-            overrides=arguments.set,
+        resolved = _resolve_rollout_roots(
+            load_config(
+                RolloutBenchmarkConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            ),
+            arguments.set,
         )
         store = (
             None
@@ -2469,6 +2473,34 @@ def _resolve_puzzle_roots(
         return resolved
     return ResolvedConfig(
         value=config.model_copy(update=update),
+        provenance=resolved.provenance,
+    )
+
+
+def _resolve_rollout_roots(
+    resolved: ResolvedConfig[RolloutBenchmarkConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[RolloutBenchmarkConfig]:
+    """Resolve the checked-in relative evaluation pool beneath the data root.
+
+    The shipped selection names its pool the way every other checked-in artifact
+    path is named, so it is rooted the same way `anthro eval run` roots its own.
+    Without this the shipped configuration only resolves from a directory that
+    happens to hold an `artifacts/` tree.
+    """
+
+    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
+        return resolved
+    config = resolved.value
+    override_keys = {item.partition("=")[0] for item in overrides}
+    if config.pool is None or config.pool.is_absolute() or "pool" in override_keys:
+        return resolved
+    rooted = _rooted_artifact_path(
+        _environment_root("ANTHRO_CHESS_DATA_ROOT"),
+        config.pool,
+    )
+    return ResolvedConfig(
+        value=config.model_copy(update={"pool": rooted}),
         provenance=resolved.provenance,
     )
 
