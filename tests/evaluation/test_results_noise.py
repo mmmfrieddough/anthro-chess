@@ -18,6 +18,8 @@ from anthro_chess.evaluation.noise import (
     characterize_sampling_noise,
 )
 from anthro_chess.evaluation.results import (
+    DEFAULT_CONFIDENCE,
+    DEFAULT_COVERAGE,
     PROCESS_REPLICATE_METHOD,
     BridgeIndex,
     DataComponent,
@@ -30,6 +32,7 @@ from anthro_chess.evaluation.results import (
     ResultsStoreError,
     build_bridge,
     build_characterization,
+    dispersion_bound,
     execution_reference,
     floor_from_dispersion,
     games_to_resolve,
@@ -69,6 +72,8 @@ def _entry(
     metric: str = METRIC,
     floor: float = 0.1,
     dispersion: float = 0.05,
+    dispersion_bound: float | None = None,
+    degrees_of_freedom: int = 5,
     sampling_units: int | None = None,
 ) -> FloorEntry:
     return FloorEntry(
@@ -76,18 +81,64 @@ def _entry(
         fingerprint=series_fingerprint(metric, component),
         floor=floor,
         dispersion=dispersion,
+        dispersion_bound=dispersion if dispersion_bound is None else dispersion_bound,
+        degrees_of_freedom=degrees_of_freedom,
         sampling_units=sampling_units,
     )
 
 
 def test_a_floor_is_the_delta_two_independent_measurements_produce() -> None:
     # A floor has to be comparable to a reported delta, and the difference of
-    # two independent measurements is wider than either one by sqrt(2).
-    assert floor_from_dispersion(0.1, coverage=1.0) == pytest.approx(math.sqrt(2) * 0.1)
-    assert floor_from_dispersion(0.0) == 0.0
-    assert floor_from_dispersion(0.1, coverage=2.0) == pytest.approx(
-        2 * floor_from_dispersion(0.1, coverage=1.0)
+    # two independent measurements is wider than either one by sqrt(2). Held at
+    # a confidence of one half, where the chi-squared bound is close enough to
+    # the estimate to leave the sqrt(2) visible on its own.
+    bound = dispersion_bound(0.1, degrees_of_freedom=200, confidence=0.5)
+    assert floor_from_dispersion(
+        0.1, degrees_of_freedom=200, coverage=1.0, confidence=0.5
+    ) == pytest.approx(math.sqrt(2) * bound)
+    assert floor_from_dispersion(0.0, degrees_of_freedom=5) == 0.0
+    single = floor_from_dispersion(0.1, degrees_of_freedom=5, coverage=1.0)
+    doubled = floor_from_dispersion(0.1, degrees_of_freedom=5, coverage=2.0)
+    assert doubled == pytest.approx(2 * single)
+
+
+def test_a_floor_is_built_from_a_bound_rather_than_the_measured_dispersion() -> None:
+    # The measured dispersion sits in the middle of its own sampling
+    # distribution, so a floor built directly on it is too narrow about half
+    # the time. Every floor is built from an upper limit instead.
+    assert floor_from_dispersion(0.1, degrees_of_freedom=5) > 1.96 * math.sqrt(2) * 0.1
+
+
+def test_a_thinner_estimate_is_bounded_further_from_what_it_measured() -> None:
+    # Fewer replicates do not make a spread smaller, only less certain, so the
+    # bound has to widen as the degrees of freedom fall. This is what makes
+    # more replicates the only honest way to narrow a floor.
+    bounds = [dispersion_bound(1.0, degrees_of_freedom=df) for df in (2, 5, 9, 29)]
+
+    assert bounds == sorted(bounds, reverse=True)
+    assert all(bound > 1.0 for bound in bounds)
+
+
+def test_the_dispersion_bound_matches_the_chi_squared_limit() -> None:
+    # Checked against published chi-squared quantiles rather than against the
+    # implementation, since the whole value of the bound is that it is the
+    # right number and not merely a consistently larger one.
+    assert dispersion_bound(1.0, degrees_of_freedom=5) == pytest.approx(
+        math.sqrt(5 / 1.1454763), rel=1e-6
     )
+    assert dispersion_bound(1.0, degrees_of_freedom=9) == pytest.approx(
+        math.sqrt(9 / 3.3251129), rel=1e-6
+    )
+    assert dispersion_bound(1.0, degrees_of_freedom=5, confidence=0.9) == pytest.approx(
+        math.sqrt(5 / 1.6103080), rel=1e-6
+    )
+
+
+def test_a_bound_needs_a_spread_to_bound() -> None:
+    with pytest.raises(NoiseCharacterizationError, match="degree of freedom"):
+        dispersion_bound(0.1, degrees_of_freedom=0)
+    with pytest.raises(NoiseCharacterizationError, match="between zero and one"):
+        dispersion_bound(0.1, degrees_of_freedom=5, confidence=1.0)
 
 
 def test_one_replicate_cannot_produce_a_floor() -> None:
@@ -122,6 +173,49 @@ def test_bootstrap_resamples_games_rather_than_positions(
     assert identical[0].floor == 0.0
     assert spread[0].floor > 0.0
     assert spread[0].sampling_units == 20
+
+
+def test_a_bootstrap_bound_rests_on_the_games_rather_than_the_resamples(
+    move_prediction_component: Digest,
+) -> None:
+    # Resamples are drawn for free from the same games, so counting them as
+    # replicates would buy near-certainty about the dispersion by raising a
+    # number the caller chose. Only more games may narrow the bound.
+    component = move_prediction_component()
+    totals = _totals([1.0, 2.0, 3.0, 4.0] * 5)
+
+    few = bootstrap_floors(totals, component=component, seed=7, resamples=200)
+    many = bootstrap_floors(totals, component=component, seed=7, resamples=2_000)
+    wider = bootstrap_floors(
+        _totals([1.0, 2.0, 3.0, 4.0] * 20),
+        component=component,
+        seed=7,
+        resamples=200,
+    )
+
+    assert few[0].degrees_of_freedom == 19
+    assert many[0].degrees_of_freedom == 19
+    assert wider[0].degrees_of_freedom == 79
+    assert wider[0].floor < few[0].floor
+
+
+def test_a_same_weights_delta_stays_inside_a_bounded_floor() -> None:
+    # The case that motivated the bound, with the dispersions three separate
+    # characterizations of one checkpoint's p50 latency actually produced at
+    # six readings across three processes, against the value twelve readings
+    # put the truth near. The unluckiest of the three understates the spread by
+    # a third, and a floor built straight on it is narrower than the delta that
+    # same machine produces with nothing changed.
+    truth = 0.21
+    measured = (0.14, 0.29, 0.72)
+    honest = 1.96 * math.sqrt(2) * truth
+
+    for estimate in measured:
+        naive = 1.96 * math.sqrt(2) * estimate
+        bounded = floor_from_dispersion(estimate, degrees_of_freedom=5)
+        assert bounded >= honest
+        if estimate < truth:
+            assert naive < honest
 
 
 def test_bootstrap_output_is_deterministic_for_one_seed(
@@ -458,9 +552,35 @@ def test_characterizing_sampling_noise_produces_a_recordable_record(
     assert characterization.kind == "data-sampling"
     assert characterization.method == "bootstrap-over-games"
     assert characterization.replicates == 200
+    assert characterization.confidence == DEFAULT_CONFIDENCE
     entry = characterization.entry(METRIC)
     assert entry is not None
     assert entry.sampling_units == 4
+    # Both quantities are kept: the measured spread describes the sample, and
+    # the bound is what the floor was actually built from.
+    assert entry.dispersion_bound > entry.dispersion
+    assert entry.floor == pytest.approx(
+        DEFAULT_COVERAGE * math.sqrt(2) * entry.dispersion_bound
+    )
+
+
+def test_a_bound_below_the_dispersion_it_bounds_is_refused(
+    move_prediction_component: Digest,
+) -> None:
+    # A stored bound is only meaningful if it is conservative. Writing one
+    # under the dispersion would record a floor claiming a confidence its own
+    # inputs contradict.
+    component = move_prediction_component()
+
+    with pytest.raises(ValueError, match="not a conservative limit"):
+        FloorEntry(
+            metric=METRIC,
+            fingerprint=series_fingerprint(METRIC, component),
+            floor=0.4,
+            dispersion=0.2,
+            dispersion_bound=0.1,
+            degrees_of_freedom=5,
+        )
 
 
 def _execution_scope(*, device_name: str = "fixture-laptop") -> ExecutionRecord:
@@ -501,6 +621,8 @@ def _execution_characterization(
                 ),
                 floor=floor,
                 dispersion=floor / 2,
+                dispersion_bound=floor / 2,
+                degrees_of_freedom=2,
                 within_process_dispersion=floor / 8,
             )
         ],
@@ -520,6 +642,8 @@ def _efficiency_entry(floor: float = 0.4) -> FloorEntry:
         ),
         floor=floor,
         dispersion=floor / 2,
+        dispersion_bound=floor / 2,
+        degrees_of_freedom=2,
     )
 
 
@@ -645,8 +769,14 @@ def test_execution_floors_land_on_the_series_they_qualify() -> None:
     )
 
     assert entry.fingerprint == fingerprint
+    # Four readings, but two processes: the process is the independent
+    # replicate, so the bound rests on one degree of freedom rather than three.
+    assert entry.degrees_of_freedom == 1
     assert entry.floor == pytest.approx(
-        floor_from_dispersion(replicate_dispersion([10.0, 10.2, 12.0, 12.2]))
+        floor_from_dispersion(
+            replicate_dispersion([10.0, 10.2, 12.0, 12.2]),
+            degrees_of_freedom=1,
+        )
     )
 
 

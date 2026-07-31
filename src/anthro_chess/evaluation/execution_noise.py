@@ -62,12 +62,17 @@ from anthro_chess.evaluation.results import (
     process_replicate_floors,
     series_fingerprint,
 )
-from anthro_chess.evaluation.results.noise import DEFAULT_COVERAGE
+from anthro_chess.evaluation.results.noise import DEFAULT_CONFIDENCE, DEFAULT_COVERAGE
 
-#: Processes to spread the replicates across. Three is the smallest count that
-#: distinguishes a spread from a pair of readings that happened to differ,
-#: while still costing three model loads rather than ten.
-DEFAULT_PROCESSES = 3
+#: Processes to spread the replicates across. The process is the independent
+#: replicate a floor's dispersion bound counts, so this is the one lever that
+#: narrows a floor honestly rather than by assuming the spread is better known
+#: than it is. Three processes leave two degrees of freedom, where the bound
+#: sits more than four times above the measured dispersion and every floor is
+#: too wide to resolve anything; six leave five, where it sits about twice
+#: above. Past that the curve flattens — twelve processes would buy another
+#: quarter for twice the model loads — so this is where the cost stops paying.
+DEFAULT_PROCESSES = 6
 
 #: Readings per process. Two is enough to see whether repeating in process
 #: reproduces the spread; more of them buys precision in the diagnostic rather
@@ -221,9 +226,17 @@ def characterize_execution_noise(
     processes: int = DEFAULT_PROCESSES,
     source: str,
     coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
     recorded_at: datetime | None = None,
 ) -> NoiseCharacterization:
-    """Return the recordable execution floor for one machine and workload."""
+    """Return the recordable execution floor for one machine and workload.
+
+    Fewer processes do not produce a narrower floor here, only a less certain
+    one: the dispersion bound widens as the degrees of freedom fall, so cutting
+    the count trades measurement time for a floor that resolves less. Two
+    processes are permitted because a coarse floor beats none, but they leave
+    one degree of freedom and a floor an order of magnitude above the spread.
+    """
 
     if processes < 2:
         raise ExecutionNoiseError(
@@ -243,6 +256,7 @@ def characterize_execution_noise(
                 for metric in replicates
             },
             coverage=coverage,
+            confidence=confidence,
         )
         return build_characterization(
             kind="execution",
@@ -250,6 +264,7 @@ def characterize_execution_noise(
             replicates=sum(len(sample.readings) for sample in samples),
             processes=len(samples),
             coverage=coverage,
+            confidence=confidence,
             source=source,
             execution=execution,
             floors=floors,

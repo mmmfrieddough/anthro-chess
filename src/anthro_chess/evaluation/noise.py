@@ -33,12 +33,13 @@ from anthro_chess.evaluation.results import (
 )
 from anthro_chess.evaluation.results.noise import (
     BOOTSTRAP_METHOD,
+    DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
     FloorEntry,
     NoiseCharacterization,
     NoiseCharacterizationError,
+    bounded_floor,
     build_characterization,
-    floor_from_dispersion,
 )
 
 #: Enough resamples for a stable dispersion without making a cheap estimate
@@ -54,6 +55,7 @@ class NoiseConfig(ConfigModel):
     resamples: int = Field(default=DEFAULT_RESAMPLES, ge=100)
     seed: int = Field(default=0, ge=0)
     coverage: float = Field(default=DEFAULT_COVERAGE, gt=0.0)
+    confidence: float = Field(default=DEFAULT_CONFIDENCE, gt=0.0, lt=1.0)
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,7 @@ def bootstrap_floors(
     seed: int,
     resamples: int = DEFAULT_RESAMPLES,
     coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
     workload: WorkloadComponent | None = None,
 ) -> tuple[FloorEntry, ...]:
     """Return one data-sampling floor per metric the scored games support.
@@ -93,6 +96,14 @@ def bootstrap_floors(
     reported as zero. That happens for a rule case rare enough that resamples
     frequently contain none of it, and a floor of zero there would license
     every delta as a finding.
+
+    The **games** are what the dispersion bound's degrees of freedom count, not
+    the resamples. A bootstrap draws as many resamples as it is asked for, but
+    every one of them is drawn from the same games, so more of them buy a
+    steadier reading of a spread that is already pinned down by the sample in
+    hand. Counting them as independent replicates would claim near-certainty
+    about the dispersion from a number the caller chose for free, which is
+    precisely the false precision the bound is here to remove.
 
     ``workload`` is required by a benchmark whose metrics are execution-
     sensitive, because a floor has to be stored under the same fingerprint as
@@ -124,6 +135,7 @@ def bootstrap_floors(
             counts[row, column] = contribution.positions
 
     replicates = _bootstrap_replicates(sums, counts, seed=seed, resamples=resamples)
+    freedom = len(totals) - 1
     entries: list[FloorEntry] = []
     for column, metric in enumerate(metrics):
         values = replicates[:, column]
@@ -131,12 +143,20 @@ def bootstrap_floors(
         if observed.size < 2:
             continue
         dispersion = float(np.std(observed, ddof=1))
+        bound, floor = bounded_floor(
+            dispersion,
+            degrees_of_freedom=freedom,
+            coverage=coverage,
+            confidence=confidence,
+        )
         entries.append(
             FloorEntry(
                 metric=metric,
                 fingerprint=series_fingerprint(metric, component, workload),
-                floor=floor_from_dispersion(dispersion, coverage=coverage),
+                floor=floor,
                 dispersion=dispersion,
+                dispersion_bound=bound,
+                degrees_of_freedom=freedom,
                 sampling_units=len(totals),
             )
         )
@@ -165,6 +185,7 @@ def characterize_sampling_noise(
         seed=config.seed,
         resamples=config.resamples,
         coverage=config.coverage,
+        confidence=config.confidence,
         workload=workload,
     )
     if not entries:
@@ -174,6 +195,7 @@ def characterize_sampling_noise(
         method=BOOTSTRAP_METHOD,
         replicates=config.resamples,
         coverage=config.coverage,
+        confidence=config.confidence,
         source=source,
         floors=entries,
         recorded_at=recorded_at,

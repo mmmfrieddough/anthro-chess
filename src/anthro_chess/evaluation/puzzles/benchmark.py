@@ -920,6 +920,7 @@ def _paired_contributions(
         resamples=config.resamples,
         seed=config.seed,
         coverage=config.coverage,
+        confidence=config.confidence,
     ).as_record()
 
 

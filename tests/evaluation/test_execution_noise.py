@@ -31,6 +31,7 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     ExecutionRecord,
     ResultsStore,
+    dispersion_bound,
     execution_reference,
     series_fingerprint,
 )
@@ -118,6 +119,60 @@ def test_the_floor_spans_processes_rather_than_repeats_within_one() -> None:
     assert entry.within_process_dispersion == pytest.approx(0.1 / 2**0.5, rel=1e-6)
     assert entry.dispersion > 10 * entry.within_process_dispersion
     assert entry.floor > entry.dispersion
+
+
+def test_the_bound_counts_processes_rather_than_readings() -> None:
+    """Readings inside one process are not independent evidence about spread.
+
+    They widen the dispersion, which is why they are taken, but two of them
+    share an allocator, a warm file cache and a compiled kernel. Counting them
+    as replicates would claim the estimate is firmer than the design supports
+    and narrow the bound on the strength of a repeat that cost nothing.
+    """
+
+    samples = [
+        _sample([{LATENCY: 10.0}, {LATENCY: 10.1}]),
+        _sample([{LATENCY: 12.0}, {LATENCY: 12.1}]),
+        _sample([{LATENCY: 14.0}, {LATENCY: 14.1}]),
+    ]
+
+    characterization = characterize_execution_noise(
+        _sampler(samples),
+        processes=3,
+        source="fixture replicates",
+        recorded_at=RECORDED_AT,
+    )
+
+    (entry,) = characterization.floors
+    assert characterization.replicates == 6
+    assert entry.degrees_of_freedom == 2
+    assert entry.dispersion_bound == pytest.approx(
+        dispersion_bound(entry.dispersion, degrees_of_freedom=2)
+    )
+
+
+def test_more_processes_narrow_the_floor_a_thin_estimate_widens() -> None:
+    """The process count is the only honest lever on a floor's width.
+
+    The same spread measured across more processes supports a tighter bound,
+    so the floor falls without anything about the machine having changed. This
+    is what the default process count is chosen against.
+    """
+
+    readings = (10.0, 12.0, 14.0, 10.0, 12.0, 14.0)
+    floors = []
+    for processes in (3, 6):
+        samples = [_sample([{LATENCY: readings[index]}]) for index in range(processes)]
+        characterization = characterize_execution_noise(
+            _sampler(samples),
+            processes=processes,
+            source="fixture replicates",
+            recorded_at=RECORDED_AT,
+        )
+        (entry,) = characterization.floors
+        floors.append(entry.floor)
+
+    assert floors[1] < floors[0]
 
 
 def test_a_cold_start_keeps_only_the_first_reading_of_each_process() -> None:

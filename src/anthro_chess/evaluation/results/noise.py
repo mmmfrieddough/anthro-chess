@@ -15,6 +15,25 @@ the dispersion of one of them, so a floor is that difference at a declared
 normal coverage. The result is directly comparable to a reported delta, which
 is what a report needs and what a raw standard deviation is not.
 
+The dispersion a floor is built from is never the measured one. A dispersion
+read off a handful of replicates is a point estimate sitting in the middle of
+its own sampling distribution, so about half the time it lands below the spread
+it is supposed to describe, and a floor built on it is too narrow exactly when
+being too narrow matters. A floor that understates the noise licenses noise as
+a finding, which is the failure floors exist to prevent, so this module builds
+every floor from a **conservative upper confidence limit** on the dispersion
+instead — the chi-squared bound for the degrees of freedom actually behind the
+estimate.
+
+That makes a floor a tolerance bound rather than an interval, and the two
+factors it carries answer two different questions. ``coverage`` says what
+proportion of same-weights deltas the floor covers when the dispersion is
+known. ``confidence`` says how sure the bound is that the dispersion is not
+larger than assumed. They multiply, and the resulting claim is: with
+``confidence``, this floor covers ``coverage`` of the deltas that noise alone
+produces. Widening either one widens the floor; only more replicates narrow it
+honestly.
+
 Floors are stored beside the results they qualify, keyed by the same series
 fingerprint as any other measurement. That is deliberate: when the pool, the
 view, or a metric definition moves, the floor stops matching and the report
@@ -55,13 +74,20 @@ from anthro_chess.evaluation.results.records import (
     canonical_json,
 )
 
+#: Version 3 replaced the point-estimate dispersion in a floor with a
+#: conservative upper bound, and records the confidence that bound carries.
 #: Version 2 added the execution scope an execution floor is only valid within.
-CHARACTERIZATION_VERSION = 2
+CHARACTERIZATION_VERSION = 3
 
 #: Two-sided normal coverage for a 95% interval. A floor is a claim about how
 #: far apart two measurements land when nothing changed, so it needs a stated
 #: confidence rather than a bare standard deviation.
 DEFAULT_COVERAGE = 1.96
+
+#: One-sided confidence carried by the bound on the dispersion. Matched to the
+#: coverage factor's 95% because a floor that is conservative about the spread
+#: and lax about how well the spread is known is only conservative on paper.
+DEFAULT_CONFIDENCE = 0.95
 
 #: How a dispersion was estimated. The method is recorded because the three
 #: noise kinds are not interchangeable and neither are their estimators.
@@ -80,7 +106,23 @@ class FloorEntry(ResultModel):
     metric: str = Field(min_length=1)
     fingerprint: Sha256Hex
     floor: float = Field(ge=0.0)
+    #: The measured spread. Kept beside the bound because the two answer
+    #: different questions: this one describes the machine or the sample as it
+    #: was observed, and is what a later characterization is compared against.
     dispersion: float = Field(ge=0.0)
+    #: The conservative upper limit on ``dispersion`` that ``floor`` was
+    #: actually built from. Storing it rather than only the floor keeps how
+    #: much of a wide floor is spread and how much is ignorance visible: a
+    #: bound far above the dispersion means the estimate is thin, which more
+    #: replicates fix, while the two close together means the noise is real.
+    dispersion_bound: float = Field(ge=0.0)
+    #: Independent replicates behind ``dispersion``, less one. This is what
+    #: sets how far the bound sits above the estimate, and it counts genuinely
+    #: independent units rather than numbers: bootstrap resamples of one sample
+    #: and repeated readings inside one process are not independent replicates,
+    #: and counting them here would restore the false precision the bound
+    #: exists to remove.
+    degrees_of_freedom: int = Field(ge=1)
     #: How many independent sampling units the dispersion was measured over,
     #: when the floor scales with that count. Set for data-sampling floors,
     #: where it is the number of games and is what makes the sizing question
@@ -97,12 +139,21 @@ class FloorEntry(ResultModel):
 
     @model_validator(mode="after")
     def _validate_values(self) -> FloorEntry:
-        if not math.isfinite(self.floor) or not math.isfinite(self.dispersion):
+        if (
+            not math.isfinite(self.floor)
+            or not math.isfinite(self.dispersion)
+            or not math.isfinite(self.dispersion_bound)
+        ):
             raise ValueError(f"floor for {self.metric} must be a finite number")
         if self.within_process_dispersion is not None and not math.isfinite(
             self.within_process_dispersion
         ):
             raise ValueError(f"floor for {self.metric} must be a finite number")
+        if self.dispersion_bound < self.dispersion:
+            raise ValueError(
+                f"the bound for {self.metric} is below the dispersion it "
+                "bounds, so it is not a conservative limit"
+            )
         return self
 
 
@@ -121,6 +172,10 @@ class NoiseCharacterization(ResultModel):
     method: Identifier
     replicates: int = Field(ge=2)
     coverage: float = Field(gt=0.0)
+    #: One-sided confidence the dispersion bound behind every floor carries.
+    #: Declared once per pass, like coverage, because a characterization that
+    #: mixed confidences across its metrics would have no single meaning.
+    confidence: float = Field(gt=0.0, lt=1.0)
     source: str = Field(min_length=1)
     environment: EnvironmentRecord
     #: How many separate processes the replicates were spread across. Recorded
@@ -281,25 +336,190 @@ class NoiseFloorIndex:
         )
 
 
-def floor_from_dispersion(
+def dispersion_bound(
     dispersion: float,
     *,
-    coverage: float = DEFAULT_COVERAGE,
+    degrees_of_freedom: int,
+    confidence: float = DEFAULT_CONFIDENCE,
 ) -> float:
-    """Return the delta that noise alone produces, at a declared coverage.
+    """Return a conservative upper confidence limit on an estimated dispersion.
 
-    Two independent measurements of an unchanged quantity differ with a
-    standard deviation of ``sqrt(2)`` times the dispersion of either one, so
-    this is the difference a reader should expect to see when nothing changed.
+    A sample standard deviation ``s`` measured over ``degrees_of_freedom + 1``
+    independent replicates of a normal quantity satisfies
+    ``degrees_of_freedom * s**2 / sigma**2 ~ chi2(degrees_of_freedom)``, which
+    inverts into an upper limit on the true ``sigma``. The limit is what a
+    floor should be built from, because the estimate itself is below the truth
+    about half the time and a floor is only useful when it errs the other way.
+
+    The limit is punishing at small replicate counts, and honestly so: two
+    replicates say almost nothing about a spread, and the arithmetic here is
+    what makes that visible instead of letting a confident-looking floor come
+    out of a measurement that could not support one. Adding replicates is the
+    only way to narrow it.
     """
 
     if dispersion < 0.0 or not math.isfinite(dispersion):
         raise NoiseCharacterizationError(
             "a dispersion must be a finite, non-negative number"
         )
+    if degrees_of_freedom < 1:
+        raise NoiseCharacterizationError(
+            "bounding a dispersion needs at least one degree of freedom; a "
+            "single replicate observes no spread to bound"
+        )
+    if not 0.0 < confidence < 1.0:
+        raise NoiseCharacterizationError(
+            "the confidence a dispersion bound carries must lie strictly "
+            "between zero and one"
+        )
+    quantile = _chi_squared_quantile(1.0 - confidence, degrees_of_freedom)
+    return dispersion * math.sqrt(degrees_of_freedom / quantile)
+
+
+def floor_from_dispersion(
+    dispersion: float,
+    *,
+    degrees_of_freedom: int,
+    coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
+) -> float:
+    """Return the delta that noise alone produces, at a declared coverage.
+
+    Two independent measurements of an unchanged quantity differ with a
+    standard deviation of ``sqrt(2)`` times the dispersion of either one, so
+    this is the difference a reader should expect to see when nothing changed.
+
+    ``dispersion`` is bounded before it is used, so the returned floor covers
+    ``coverage`` of those differences with ``confidence`` rather than covering
+    it on average across characterizations. ``degrees_of_freedom`` is required
+    rather than defaulted because there is no safe value for it: a caller that
+    does not know how many independent replicates its estimate rests on cannot
+    know how far to trust it either.
+    """
+
+    _, floor = bounded_floor(
+        dispersion,
+        degrees_of_freedom=degrees_of_freedom,
+        coverage=coverage,
+        confidence=confidence,
+    )
+    return floor
+
+
+def bounded_floor(
+    dispersion: float,
+    *,
+    degrees_of_freedom: int,
+    coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
+) -> tuple[float, float]:
+    """Return the bound a floor was built from, and the floor.
+
+    Every estimator records both, so returning them together keeps the stored
+    bound and the stored floor from drifting apart through two call sites that
+    could disagree about which arguments produced which.
+    """
+
     if coverage <= 0.0 or not math.isfinite(coverage):
         raise NoiseCharacterizationError("coverage must be a finite, positive factor")
-    return coverage * math.sqrt(2.0) * dispersion
+    bound = dispersion_bound(
+        dispersion,
+        degrees_of_freedom=degrees_of_freedom,
+        confidence=confidence,
+    )
+    return bound, coverage * math.sqrt(2.0) * bound
+
+
+#: Convergence controls for the incomplete gamma function the chi-squared
+#: quantile inverts. The project depends on neither SciPy nor NumPy in this
+#: layer — the results package is importable from a bare install — so the
+#: quantile is computed here rather than imported.
+_GAMMA_ITERATIONS = 300
+_GAMMA_EPSILON = 1e-14
+_BISECTION_ITERATIONS = 200
+_TINY = 1e-300
+
+
+def _chi_squared_quantile(probability: float, degrees_of_freedom: int) -> float:
+    """Return the chi-squared value with ``probability`` mass below it.
+
+    Bisected on the regularized lower incomplete gamma rather than solved in
+    closed form, because there is no closed form. The result is only ever read
+    at a handful of degrees of freedom per characterization, so the cost of
+    bisecting to machine precision is irrelevant next to being right at the
+    small counts where the bound matters most.
+    """
+
+    shape = degrees_of_freedom / 2.0
+    high = max(1.0, shape)
+    for _ in range(_BISECTION_ITERATIONS):
+        if _regularized_lower_gamma(shape, high) >= probability:
+            break
+        high *= 2.0
+    else:  # pragma: no cover - unreachable for a probability below one
+        raise NoiseCharacterizationError(
+            "the chi-squared quantile could not be bracketed"
+        )
+    low = 0.0
+    for _ in range(_BISECTION_ITERATIONS):
+        middle = 0.5 * (low + high)
+        if middle <= low or middle >= high:
+            break
+        if _regularized_lower_gamma(shape, middle) < probability:
+            low = middle
+        else:
+            high = middle
+    return 2.0 * high
+
+
+def _regularized_lower_gamma(shape: float, x: float) -> float:
+    """Return ``P(shape, x)``, the regularized lower incomplete gamma."""
+
+    if x <= 0.0:
+        return 0.0
+    scale = math.exp(-x + shape * math.log(x) - math.lgamma(shape))
+    if x < shape + 1.0:
+        return _gamma_series(shape, x) * scale
+    return 1.0 - _gamma_continued_fraction(shape, x) * scale
+
+
+def _gamma_series(shape: float, x: float) -> float:
+    """Return the series expansion that converges fastest below the mode."""
+
+    term = 1.0 / shape
+    total = term
+    denominator = shape
+    for _ in range(_GAMMA_ITERATIONS):
+        denominator += 1.0
+        term *= x / denominator
+        total += term
+        if abs(term) < abs(total) * _GAMMA_EPSILON:
+            break
+    return total
+
+
+def _gamma_continued_fraction(shape: float, x: float) -> float:
+    """Return the continued fraction that converges fastest above the mode."""
+
+    b = x + 1.0 - shape
+    c = 1.0 / _TINY
+    d = 1.0 / b if abs(b) > _TINY else 1.0 / _TINY
+    h = d
+    for index in range(1, _GAMMA_ITERATIONS + 1):
+        numerator = -index * (index - shape)
+        b += 2.0
+        d = numerator * d + b
+        if abs(d) < _TINY:
+            d = _TINY
+        c = b + numerator / c
+        if abs(c) < _TINY:
+            c = _TINY
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < _GAMMA_EPSILON:
+            break
+    return h
 
 
 def environment_key(execution: ExecutionRecord | None) -> str:
@@ -381,6 +601,7 @@ def process_replicate_floors(
     *,
     fingerprints: Mapping[str, str],
     coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
 ) -> tuple[FloorEntry, ...]:
     """Return one execution floor per metric from its repeated measurements.
 
@@ -388,6 +609,15 @@ def process_replicate_floors(
     replicate of an execution floor is the same series by construction — the
     same checkpoint under the same declared workload — so the fingerprint is
     supplied once per metric rather than carried on each reading.
+
+    The **process** is the independent replicate here, so the degrees of
+    freedom behind the bound come from the process count and not from the
+    reading count. Two readings inside one process share an allocator, a warm
+    file cache and a compiled kernel; they widen the dispersion the floor is
+    built from, which is why they are taken, but treating them as independent
+    would claim the estimate is firmer than the design can support. That is the
+    same reason the within-process share is reported beside the floor rather
+    than folded into it.
     """
 
     entries: list[FloorEntry] = []
@@ -397,13 +627,23 @@ def process_replicate_floors(
             raise NoiseCharacterizationError(
                 f"no series fingerprint was supplied for {metric}"
             )
-        dispersion = process_dispersion(replicates[metric])
+        groups = replicates[metric]
+        dispersion = process_dispersion(groups)
+        freedom = len(groups) - 1
+        bound, floor = bounded_floor(
+            dispersion.total,
+            degrees_of_freedom=freedom,
+            coverage=coverage,
+            confidence=confidence,
+        )
         entries.append(
             FloorEntry(
                 metric=metric,
                 fingerprint=fingerprint,
-                floor=floor_from_dispersion(dispersion.total, coverage=coverage),
+                floor=floor,
                 dispersion=dispersion.total,
+                dispersion_bound=bound,
+                degrees_of_freedom=freedom,
                 within_process_dispersion=dispersion.within,
             )
         )
@@ -416,6 +656,13 @@ def games_to_resolve(entry: FloorEntry, effect: float) -> int:
     A sampling floor shrinks with the square root of the games behind it, so
     the count an axis needs is computable from one measured floor rather than
     guessed. This is what sizes a pool generation.
+
+    The answer errs high, and deliberately. The floor it extrapolates from
+    carries a dispersion bound sized for the degrees of freedom available now,
+    and a larger pool would carry more of those and a tighter bound, so the
+    projected floor is the widest one the larger pool could produce rather than
+    the one it will. Erring the other way would size a pool that turns out not
+    to resolve the effect it was cut for.
     """
 
     if entry.sampling_units is None:
@@ -439,6 +686,7 @@ def build_characterization(
     source: str,
     floors: Sequence[FloorEntry],
     coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
     environment: EnvironmentRecord | None = None,
     execution: ExecutionRecord | None = None,
     processes: int | None = None,
@@ -456,6 +704,7 @@ def build_characterization(
             method=method,
             replicates=replicates,
             coverage=coverage,
+            confidence=confidence,
             source=source,
             environment=environment or EnvironmentRecord.capture(),
             processes=processes,
@@ -479,6 +728,7 @@ def replicate_floors(
     values_by_metric: Mapping[str, Sequence[tuple[str, float]]],
     *,
     coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
 ) -> tuple[FloorEntry, ...]:
     """Return one floor per metric from its recorded replicate measurements.
 
@@ -491,12 +741,21 @@ def replicate_floors(
     for metric in sorted(values_by_metric):
         replicates = values_by_metric[metric]
         dispersion = replicate_dispersion([value for _, value in replicates])
+        freedom = len(replicates) - 1
+        bound, floor = bounded_floor(
+            dispersion,
+            degrees_of_freedom=freedom,
+            coverage=coverage,
+            confidence=confidence,
+        )
         entries.append(
             FloorEntry(
                 metric=metric,
                 fingerprint=replicates[-1][0],
-                floor=floor_from_dispersion(dispersion, coverage=coverage),
+                floor=floor,
                 dispersion=dispersion,
+                dispersion_bound=bound,
+                degrees_of_freedom=freedom,
             )
         )
     return tuple(entries)
@@ -505,6 +764,7 @@ def replicate_floors(
 __all__ = [
     "BOOTSTRAP_METHOD",
     "CHARACTERIZATION_VERSION",
+    "DEFAULT_CONFIDENCE",
     "DEFAULT_COVERAGE",
     "PROCESS_REPLICATE_METHOD",
     "REPLICATE_METHOD",
@@ -513,7 +773,9 @@ __all__ = [
     "NoiseCharacterizationError",
     "NoiseFloorIndex",
     "ProcessDispersion",
+    "bounded_floor",
     "build_characterization",
+    "dispersion_bound",
     "environment_key",
     "floor_from_dispersion",
     "games_to_resolve",

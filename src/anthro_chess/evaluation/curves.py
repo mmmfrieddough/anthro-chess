@@ -70,6 +70,7 @@ from anthro_chess.evaluation.results import (
     measurement,
 )
 from anthro_chess.evaluation.results.noise import (
+    DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
     floor_from_dispersion,
 )
@@ -767,6 +768,7 @@ def compare_curves(
     resamples: int = DEFAULT_RESAMPLES,
     seed: int = 0,
     coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
     floor_kind: NoiseFloorKind = "evaluation",
     references: bool = True,
 ) -> CurveComparison:
@@ -818,6 +820,7 @@ def compare_curves(
         resamples=resamples,
         generator=generator,
         coverage=coverage,
+        confidence=confidence,
         floor_kind=floor_kind,
         references=references,
     )
@@ -1292,6 +1295,7 @@ def _resample(
     resamples: int,
     generator: np.random.Generator,
     coverage: float,
+    confidence: float,
     floor_kind: NoiseFloorKind,
     references: bool = True,
 ) -> tuple[CurveFloors | None, CurveReferences | None]:
@@ -1318,7 +1322,7 @@ def _resample(
     license every delta as a finding.
     """
 
-    if resamples < 2:
+    if resamples < 2 or model.size < 2:
         return None, None
     human_weights = generator.multinomial(
         human.size, np.full(human.size, 1.0 / human.size), size=resamples
@@ -1341,6 +1345,10 @@ def _resample(
 
     floors: list[NoiseFloor] = []
     source = f"{spec.name} v{spec.version} {CURVE_BOOTSTRAP_METHOD}"
+    # The generated games are the independent replicates behind these floors.
+    # The resample count only says how finely their spread was read, so it is
+    # the model side's size that decides how far the bound sits above it.
+    freedom = int(model.size) - 1
     for values in (
         model_only.conditional,
         model_only.pooled,
@@ -1352,7 +1360,10 @@ def _resample(
         floors.append(
             NoiseFloor(
                 value=floor_from_dispersion(
-                    float(np.std(observed, ddof=1)), coverage=coverage
+                    float(np.std(observed, ddof=1)),
+                    degrees_of_freedom=freedom,
+                    coverage=coverage,
+                    confidence=confidence,
                 ),
                 kind=floor_kind,
                 source=source,

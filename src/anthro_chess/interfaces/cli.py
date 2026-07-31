@@ -37,7 +37,11 @@ if TYPE_CHECKING:
         TerminationBenchmarkConfig,
         TerminationBenchmarkResult,
     )
-    from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
+    from anthro_chess.evaluation.results import (
+        BridgeIndex,
+        NoiseCharacterization,
+        ResultEnvelope,
+    )
     from anthro_chess.evaluation.rollout import RolloutReading
     from anthro_chess.evaluation.termination import Guardrails
     from anthro_chess.training import TrainingConfig
@@ -824,6 +828,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Normal coverage factor for the floor. Defaults to the two-sided "
             "95 percent factor."
+        ),
+    )
+    noise_characterize_parser.add_argument(
+        "--confidence",
+        type=float,
+        help=(
+            "How sure the floor is that the dispersion is no larger than it "
+            "assumes. A measured dispersion is a point estimate that lands "
+            "below the truth about half the time, so the floor is built from a "
+            "chi-squared upper limit at this confidence instead. Defaults to "
+            "95 percent."
         ),
     )
     noise_characterize_parser.set_defaults(handler=_run_eval_noise_characterize)
@@ -2492,6 +2507,7 @@ def _run_eval_tensorboard(arguments: argparse.Namespace) -> int:
 
 def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
+        DEFAULT_CONFIDENCE,
         DEFAULT_COVERAGE,
         REPLICATE_METHOD,
         BridgeIndex,
@@ -2546,21 +2562,23 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+        coverage = (
+            DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
+        )
+        confidence = (
+            DEFAULT_CONFIDENCE if arguments.confidence is None else arguments.confidence
+        )
         characterization = build_characterization(
             kind=arguments.kind,
             method=REPLICATE_METHOD,
             replicates=len(labels),
-            coverage=(
-                DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
-            ),
+            coverage=coverage,
+            confidence=confidence,
             source=arguments.source,
             floors=replicate_floors(
                 replicates,
-                coverage=(
-                    DEFAULT_COVERAGE
-                    if arguments.coverage is None
-                    else arguments.coverage
-                ),
+                coverage=coverage,
+                confidence=confidence,
             ),
         )
         path = store.append_characterization(characterization)
@@ -2576,16 +2594,49 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
         f"Characterized {arguments.kind} noise over {len(labels)} replicate(s) "
         f"for {len(characterization.floors)} metric(s)."
     )
+    print(_confidence_note(characterization))
     width = metric_column_width(
         [entry.metric for entry in characterization.floors]
         + [metric for metric, _ in skipped]
     )
     for entry in characterization.floors:
-        print(f"  {entry.metric:<{width}} floor {entry.floor:.6g}")
+        print(
+            f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
+            f"dispersion {entry.dispersion:.6g} "
+            f"bounded at {entry.dispersion_bound:.6g}"
+        )
     for metric, reason in skipped:
         print(f"  {metric:<{width}} skipped: {reason}")
     print(f"Recorded: {path}")
     return 0
+
+
+def _confidence_note(characterization: NoiseCharacterization) -> str:
+    """Say what the recorded floors claim, and how much ignorance widened them.
+
+    Printed because the gap between the measured dispersion and the bound the
+    floor was built from is the actionable part of a characterization: a wide
+    gap says the floor is wide for lack of replicates, which more of them fix,
+    and a narrow one says the machine really is that noisy.
+    """
+
+    freedoms = sorted({entry.degrees_of_freedom for entry in characterization.floors})
+    span = f"{freedoms[0]}" if len(freedoms) == 1 else f"{freedoms[0]}-{freedoms[-1]}"
+    inflation = sorted(
+        entry.dispersion_bound / entry.dispersion
+        for entry in characterization.floors
+        if entry.dispersion > 0.0
+    )
+    widened = ""
+    if inflation:
+        low, high = inflation[0], inflation[-1]
+        factor = f"{low:.2f}x" if low == high else f"{low:.2f}x-{high:.2f}x"
+        widened = f", which widens the measured dispersion by {factor}"
+    return (
+        f"Floors cover {characterization.coverage:.6g} sigma of a same-weights "
+        f"delta, with {characterization.confidence:.0%} confidence in the "
+        f"dispersion from {span} degree(s) of freedom{widened}."
+    )
 
 
 def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int:
@@ -2604,6 +2655,7 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
         subprocess_sampler,
     )
     from anthro_chess.evaluation.results import (
+        DEFAULT_CONFIDENCE,
         DEFAULT_COVERAGE,
         NoiseCharacterizationError,
         ResultsStore,
@@ -2640,6 +2692,9 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
     )
     repeats = DEFAULT_REPEATS if arguments.repeats is None else arguments.repeats
     coverage = DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
+    confidence = (
+        DEFAULT_CONFIDENCE if arguments.confidence is None else arguments.confidence
+    )
     try:
         store = ResultsStore(resolve_store_root(arguments.store))
         characterization = characterize_execution_noise(
@@ -2651,6 +2706,7 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
             processes=processes,
             source=arguments.source,
             coverage=coverage,
+            confidence=confidence,
         )
         path = store.append_characterization(characterization)
     except (
@@ -2669,6 +2725,7 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
         f"{len(characterization.floors)} metric(s)."
     )
     print(f"Valid on: {execution.environment_label()}")
+    print(_confidence_note(characterization))
     width = metric_column_width(entry.metric for entry in characterization.floors)
     for entry in characterization.floors:
         within = (
@@ -2678,7 +2735,8 @@ def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int
         )
         print(
             f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
-            f"dispersion {entry.dispersion:.6g}{within}"
+            f"dispersion {entry.dispersion:.6g} "
+            f"bounded at {entry.dispersion_bound:.6g}{within}"
         )
     print(f"Recorded: {path}")
     return 0
@@ -2813,6 +2871,8 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
         print(
             f"{record.recorded_at.date().isoformat()}  {record.kind}  "
             f"{record.method}  {record.replicates} replicate(s){processes}  "
+            f"coverage {record.coverage:.6g}  "
+            f"confidence {record.confidence:.0%}  "
             f"{record.source}"
         )
         if record.execution is not None:
@@ -2830,7 +2890,9 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
             )
             print(
                 f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
-                f"dispersion {entry.dispersion:.6g}{units}{within}"
+                f"dispersion {entry.dispersion:.6g} "
+                f"bounded at {entry.dispersion_bound:.6g} "
+                f"(df {entry.degrees_of_freedom}){units}{within}"
             )
     return 0
 
