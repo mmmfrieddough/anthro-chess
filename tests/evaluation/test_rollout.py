@@ -23,7 +23,6 @@ from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.reference import (
-    CURVE_RATING_GRID,
     DECLARED_NEIGHBOURS,
     ComparedQuantity,
     curve_spec,
@@ -266,10 +265,11 @@ def test_the_declared_bandwidth_is_one_frozen_value() -> None:
     assert set(DECLARED_NEIGHBOURS) == set(ComparedQuantity)
     assert set(DECLARED_NEIGHBOURS.values()) == {1024}
     for quantity in ComparedQuantity:
-        spec = curve_spec(quantity)
+        spec = curve_spec(quantity, (1200, 1800))
         assert spec.neighbours == 1024
-        assert spec.grid == CURVE_RATING_GRID
         assert spec.quantity is quantity.kind
+        # The evaluation points are the ratings played, not a declared grid.
+        assert spec.grid == (1200.0, 1800.0)
 
 
 def test_every_generated_play_metric_is_reported_by_the_benchmark(
@@ -390,7 +390,12 @@ def test_a_distance_carries_the_floor_it_has_to_clear(
     reference_pool: Path,
     small_bandwidth: None,
 ) -> None:
-    """A distance shown without its floor invites reading noise as a finding."""
+    """A distance shown without its floor invites reading noise as a finding.
+
+    The floor is evaluation noise rather than data-sampling noise, because what
+    it qualifies is a delta between two checkpoints measured against the same
+    human reference: re-measuring means generating another draw of games.
+    """
 
     result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
 
@@ -402,7 +407,84 @@ def test_a_distance_carries_the_floor_it_has_to_clear(
         assert conditional is not None
         assert conditional.value >= 0.0
         assert conditional.noise_floor is not None
-        assert conditional.noise_floor.kind == "data-sampling"
+        assert conditional.noise_floor.kind == "evaluation"
+
+
+def test_the_seeds_re_measure_each_distance_independently(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The bootstrap floor is an estimate; the seeds are the thing itself.
+
+    Recording both is what makes the floor checkable. A bootstrap can only
+    reshuffle the games one run produced, so it can understate the spread a
+    genuinely fresh draw would show.
+    """
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1, 2)},
+        )
+    )
+
+    (reading,) = result.readings
+    assert set(reading.seed_spread) == set(ComparedQuantity)
+    for spread in reading.seed_spread.values():
+        assert [seed for seed, _ in spread.distances] == [0, 1, 2]
+        assert spread.floor is not None and spread.floor >= 0.0
+
+
+def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A floor has to be estimated at the sample size the reading was taken at.
+
+    Each seed plays a fraction of the suite's games, so the spread across seeds
+    measures the noise of a much smaller reading and runs roughly the square
+    root of the seed count too wide. The bootstrap resamples the games this
+    reading actually generated, which is the right size, so it is what gets
+    committed and the seeds stay a diagnostic.
+    """
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1, 2)},
+        )
+    )
+
+    (reading,) = result.readings
+    envelope = _curve_envelope(result)
+    for quantity, comparison in reading.comparisons.items():
+        item = envelope.measurement(
+            GENERATED_PLAY_CONDITIONAL_DISTANCE[quantity.value].identifier
+        )
+        assert item is not None and item.noise_floor is not None
+        assert comparison.floors is not None
+        assert item.noise_floor.value == pytest.approx(
+            comparison.floors.conditional.value
+        )
+
+
+def test_two_seeds_report_their_distances_without_inventing_a_floor(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A floor from two replicates would license almost any delta."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1)},
+        )
+    )
+
+    (reading,) = result.readings
+    for spread in reading.seed_spread.values():
+        assert len(spread.distances) == 2
+        assert spread.floor is None
 
 
 def test_a_model_matching_the_reference_reads_closer_than_one_that_does_not(
@@ -467,7 +549,7 @@ def test_curve_points_stay_in_the_detail_tier(
     )
     assert set(payload["comparisons"]) == {q.value for q in ComparedQuantity}
     length = payload["comparisons"][ComparedQuantity.GAME_LENGTH.value]
-    assert len(length["points"]) == len(CURVE_RATING_GRID)
+    assert [point["rating"] for point in length["points"]] == [1200.0, 1800.0]
     assert length["response"] in {
         "matches",
         "average_human",

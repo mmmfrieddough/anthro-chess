@@ -244,18 +244,39 @@ Reports should annotate every change with the noise floor it did or did not
 clear, and a delta inside the floor should be visible but marked rather than
 hidden, so a consistent small regression is not lost.
 
-Three sources of noise are distinct, and conflating them is the usual mistake:
+Three sources of noise are distinct, and conflating them is the usual mistake.
+Each one licenses a different comparison, so the useful way to name them is by
+the question they answer rather than by how they are computed:
 
-- **evaluation noise**: the same checkpoint re-measured on the same data.
-  Deterministic offline metrics over a frozen pool have none; rollout metrics
-  have a lot, driven by seeds.
+- **evaluation noise**: the same checkpoint re-measured. This is the floor that
+  qualifies a **delta between two checkpoints**, which is the project's central
+  comparison. Deterministic offline metrics over a frozen pool have none;
+  rollout metrics have a lot, driven by seeds.
 - **data-sampling noise**: how much the metric would move on a different draw of
-  the same size from the same population. Estimable by bootstrapping from a
-  single run, so it costs nothing, and it is what says whether a pool or a view
-  is large enough.
+  the same size from the same population. It sizes a **view or a pool** and does
+  *not* qualify a checkpoint delta. Estimable by bootstrapping from a single
+  run, so it costs nothing.
 - **training noise**: the same configuration trained from a different seed. This
-  is the floor that decides whether a *model change* is real, and it is the
-  expensive one, since it needs several training runs.
+  qualifies a **configuration change** rather than a checkpoint delta, and it is
+  the expensive one, since it needs several training runs.
+
+The first two coincide for generated play, and that is worth stating plainly
+because the definitions above read as if they never could. A rollout has no
+fixed data to re-measure on — the games *are* the draw — so bootstrapping the
+generated games and re-running under another seed estimate the same quantity.
+That is why a generated-play floor is evaluation noise even though it is
+computed by a bootstrap, and why rollout metrics need no separate expensive
+characterization.
+
+A floor that qualifies a delta must exclude anything the two sides of that delta
+share. Two checkpoints are compared against the *same fixed* human reference, so
+the reference's own sampling error is common-mode and cancels; including it can
+only inflate the floor and hide real movement. Only the side being compared is
+resampled. How much this matters depends on how thin the reference is relative
+to the bandwidth: on a reference of a few hundred games it widened floors
+noticeably, while at the declared bandwidth over the frozen blitz pool the
+difference was under a percent. It is excluded because it is not part of the
+question, rather than because it is always large.
 
 All three reduce to one reportable quantity: the spread of the metric across
 replicates of that noise source. A **floor** is that spread expressed as a
@@ -1451,6 +1472,17 @@ cell has one rating and therefore no curve at all. Temperature stays fixed
 across a reading rather than being a second axis, since mixing two temperatures
 into one curve would report a sampling setting as a rating effect.
 
+The curve is evaluated at exactly the conditioning ratings the suite played,
+rather than at a separately declared grid. Generated games are produced on
+demand and none is committed, so there is no reason to estimate the comparison
+where the model was never asked to play: such a point has a human curve and
+nothing to compare it against. A declared grid would also be a second list that
+has to agree with the configured ratings with nothing forcing it to. The points
+are still part of series identity, since the distance is a mean over them, and
+they reach the fingerprint through the rating grid the workload already carries.
+Want a finer curve, play more ratings. The **bandwidth** stays declared and
+frozen, because it is the smoothing rather than the points.
+
 `anthro_chess.evaluation.reference` owns the human side and the quantity
 definitions both sides are read through. One definition per quantity is the
 point: a game length measured one way on generated games and another way on
@@ -1465,6 +1497,17 @@ Reference games are placed at the mean of the two players' ratings, and a game
 whose players are far apart is excluded rather than averaged into the middle: it
 is a mismatch rather than a game at the average of its two ratings, and its
 length and result belong to neither player's level.
+
+The floor is the comparison's own bootstrap over the games it generated. The
+per-seed distances are recorded beside it as a diagnostic and are deliberately
+*not* used as a floor: each seed plays only its share of the suite's games, so a
+per-seed reading is a smaller-sample one — noisier, and biased away from the
+reference, since a distributional distance estimated from few games per rating
+point reads high. Comparing that spread against the pooled reading's floor
+compares two sample sizes and makes the bootstrap look roughly the square root
+of the seed count too narrow. Checked against forty independent draws at a fixed
+size, the bootstrap reproduces the true spread to within a few percent, which is
+what a floor has to do.
 
 The declared bandwidth is one value for every quantity rather than one each.
 Selected over thousands of matched-rating games of the frozen blitz pool, only

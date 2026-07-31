@@ -1233,7 +1233,6 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
 
 def _render_rollout(result: RolloutBenchmarkResult) -> str:
     from anthro_chess.evaluation.games import GameTermination
-    from anthro_chess.evaluation.reference import CURVE_RATING_GRID
 
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
@@ -1293,7 +1292,7 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 ),
                 (
                     f"  {'quantity':<16}{'conditional':>13}{'floor':>10}"
-                    f"{'pooled':>10}{'points':>9}{'reads as':>22}"
+                    f"{'seed range':>22}{'pooled':>10}{'reads as':>18}"
                 ),
             ]
         )
@@ -1303,25 +1302,32 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 if comparison.floors is None
                 else f"{comparison.floors.conditional.value:.4f}"
             )
-            supported = len(comparison.points) - comparison.unsupported_points
+            spread = reading.seed_spread.get(quantity)
+            seeded = (
+                "-"
+                if spread is None or spread.floor is None
+                else (f"{spread.floor:.4f}")
+            )
             lines.append(
                 f"  {quantity.value:<16}"
                 f"{comparison.conditional_distance:>13.4f}"
                 f"{floor:>10}"
+                f"{seeded:>10}"
                 f"{comparison.pooled_distance:>10.4f}"
-                f"{f'{supported}/{len(comparison.points)}':>9}"
                 f"{comparison.response.value:>22}"
             )
-        unsupported = max(
-            comparison.unsupported_points for comparison in reading.comparisons.values()
+        replicates = max(
+            (len(spread.distances) for spread in reading.seed_spread.values()),
+            default=0,
         )
-        if unsupported:
-            # The conditional distance averages the points the model reached, so
-            # a sparse rating grid narrows what it covers rather than biasing it.
-            # Saying so beats letting a reader assume the whole range was read.
+        if replicates > 1:
+            # The seed range is a diagnostic, not a second floor: each seed
+            # played a fraction of the games, so its reading is noisier and
+            # biased high, and comparing its spread to the floor would compare
+            # two different sample sizes.
             lines.append(
-                f"  {unsupported} of {len(CURVE_RATING_GRID)} rating point(s) had "
-                "no generated game nearby; widen the rating grid to cover them"
+                f"  floor qualifies a delta; seed range is each of {replicates} "
+                f"seeds read alone on {1 / replicates:.0%} of the games"
             )
     if result.recorded_paths:
         lines.extend(

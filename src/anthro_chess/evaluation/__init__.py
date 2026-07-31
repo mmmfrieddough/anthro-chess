@@ -144,7 +144,6 @@ if TYPE_CHECKING:
         reconstruct_uci_games,
     )
     from anthro_chess.evaluation.reference import (
-        CURVE_RATING_GRID,
         CURVE_SPEC_VERSION,
         DECLARED_NEIGHBOURS,
         REFERENCE_VERSION,
@@ -191,7 +190,6 @@ _LAZY_EXPORTS = {
     "decision_measurements": "decisions",
     "score_played_decisions": "decisions",
     "summarize_decisions": "decisions",
-    "CURVE_RATING_GRID": "reference",
     "CURVE_SPEC_VERSION": "reference",
     "DECLARED_NEIGHBOURS": "reference",
     "REFERENCE_VERSION": "reference",
@@ -368,7 +366,6 @@ __all__ = [
     "PositionSlices",
     "RatingBand",
     "RatingSliceMetrics",
-    "CURVE_RATING_GRID",
     "CURVE_SPEC_VERSION",
     "DECLARED_NEIGHBOURS",
     "REFERENCE_VERSION",

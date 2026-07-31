@@ -42,7 +42,6 @@ from anthro_chess.evaluation.curves import (
     CurveQuantity,
     CurveSpec,
     Observation,
-    rating_grid,
     select_neighbours,
 )
 from anthro_chess.evaluation.games import (
@@ -288,15 +287,8 @@ def _comparable_game(
 
 
 #: Version of the declared curve shape. Bumping it ends every generated-play
-#: curve series, so it changes only when the grid or a bandwidth does.
+#: curve series, so it changes only when the bandwidth does.
 CURVE_SPEC_VERSION = 1
-
-#: Rating points every curve is evaluated at. Chosen to span where the corpus
-#: actually has games rather than the full range a rating can take: on the
-#: frozen blitz pool the first and ninety-ninth percentiles of game rating sit
-#: near 1024 and 2264, so estimating out at 600 or 2800 would report a curve
-#: from a handful of games and a distance dominated by that thinness.
-CURVE_RATING_GRID = rating_grid(1100.0, 2200.0, 12)
 
 #: Bandwidth selected once from the human reference by cross-validation and then
 #: frozen, per `docs/evaluation.md`. Re-selecting per run would mean two
@@ -324,19 +316,44 @@ DECLARED_NEIGHBOURS: Mapping[ComparedQuantity, int] = {
 }
 
 
-def curve_spec(quantity: ComparedQuantity) -> CurveSpec:
-    """Return the frozen, declared shape of one quantity's comparison."""
+def curve_spec(
+    quantity: ComparedQuantity,
+    ratings: Sequence[float],
+) -> CurveSpec:
+    """Return one quantity's comparison shape, evaluated where the model played.
+
+    The evaluation points are the conditioning ratings the suite actually
+    generated games at, rather than a separately declared grid. Generated games
+    are produced on demand and none of them is committed, so there is no reason
+    to estimate the comparison anywhere the model was not asked to play: such a
+    point has a human curve and nothing to compare it against, and it would
+    drop out of the reading anyway. A declared grid would also be a second list
+    that has to agree with the configured ratings and nothing forcing it to.
+
+    The points are still part of series identity, because the distance is a
+    mean over them. They reach the fingerprint through the reading's declared
+    workload, which already carries the rating grid, so nothing extra is needed
+    here. The **bandwidth** stays declared and frozen: it is the smoothing
+    rather than the points, and re-selecting it per run would mean two
+    checkpoints were measured differently.
+    """
 
     try:
         neighbours = DECLARED_NEIGHBOURS[quantity]
     except KeyError:  # pragma: no cover - the mapping covers the enum
         raise ReferenceError(f"no bandwidth is declared for {quantity}") from None
+    points = tuple(sorted(float(rating) for rating in dict.fromkeys(ratings)))
+    if len(points) < 2:
+        raise ReferenceError(
+            "a curve needs at least two conditioning ratings to be estimated "
+            "over; a suite that played one rating has a point, not a curve"
+        )
     return CurveSpec(
         name=f"generated-play-{quantity.value}",
         version=CURVE_SPEC_VERSION,
         quantity=quantity.kind,
         neighbours=neighbours,
-        grid=CURVE_RATING_GRID,
+        grid=points,
     )
 
 
@@ -371,7 +388,6 @@ def iter_quantities() -> Iterator[ComparedQuantity]:
 
 
 __all__ = [
-    "CURVE_RATING_GRID",
     "CURVE_SPEC_VERSION",
     "DECLARED_NEIGHBOURS",
     "REFERENCE_VERSION",

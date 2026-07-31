@@ -502,10 +502,35 @@ def test_a_comparison_carries_the_floor_its_own_distances_are_read_against() -> 
         comparison.floors.pooled,
         comparison.floors.model_variation,
     ):
-        assert floor.kind == "data-sampling"
+        assert floor.kind == "evaluation"
         assert floor.value > 0.0
         assert floor.source is not None
         assert SCALAR_SPEC.name in floor.source
+
+
+def test_the_reference_size_does_not_move_the_floor() -> None:
+    """A floor qualifies a delta, and both checkpoints share one reference.
+
+    Two checkpoints are compared against the identical human games, so the
+    reference's own sampling error is common-mode and cancels in their
+    difference. Letting it into the floor would inflate every one of them and
+    hide real movement, so a reference four times the size must leave the floor
+    essentially where it was — only the generated side may move it.
+    """
+
+    model = _generated(
+        lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0)
+    )
+    small = _compare(model, human=_human_reference(games=250))
+    large = _compare(model, human=_human_reference(games=1000))
+
+    assert small.floors is not None
+    assert large.floors is not None
+    # Not identical: a different reference shifts the bandwidth and so the
+    # curve itself. But the floor must not scale with reference size.
+    assert large.floors.conditional.value == pytest.approx(
+        small.floors.conditional.value, rel=0.5
+    )
 
 
 def test_a_floor_shrinks_as_the_games_behind_it_grow() -> None:
@@ -576,7 +601,7 @@ def test_measurements_carry_their_floor_into_the_summary_tier(
     assert measurements[2].value == pytest.approx(comparison.model_variation)
     for entry in measurements:
         assert entry.noise_floor is not None
-        assert entry.noise_floor.kind == "data-sampling"
+        assert entry.noise_floor.kind == "evaluation"
         assert entry.sample_size == comparison.human_games + comparison.model_games
 
 
@@ -619,7 +644,7 @@ def test_curve_points_are_stored_as_data_for_the_detail_tier() -> None:
     assert encoded["references"]["flat"] == pytest.approx(
         comparison.references.flat if comparison.references else None
     )
-    assert encoded["floors"]["conditional"]["kind"] == "data-sampling"
+    assert encoded["floors"]["conditional"]["kind"] == "evaluation"
     assert encoded["human_games"] == comparison.human_games
     assert encoded["pooled"]["human"]["games"] > 0
 

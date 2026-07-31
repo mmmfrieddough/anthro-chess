@@ -68,6 +68,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from statistics import stdev
 from typing import Annotated, Any
 
 import torch
@@ -113,7 +114,6 @@ from anthro_chess.evaluation.pool import (
     load_pool,
 )
 from anthro_chess.evaluation.reference import (
-    CURVE_RATING_GRID,
     CURVE_SPEC_VERSION,
     DECLARED_NEIGHBOURS,
     ComparableGame,
@@ -166,6 +166,7 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_WHITE_SCORE,
     MOVE_PREDICTION_PROJECTION,
 )
+from anthro_chess.evaluation.results.noise import floor_from_dispersion
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
 from anthro_chess.inference.runner import ModelRunnerError
@@ -342,6 +343,14 @@ class RolloutCell:
     #: observation per game from them, so discarding them would make the
     #: comparison depend on whether whole games happened to be retained.
     features: tuple[GameFeatures, ...] = field(default=(), repr=False)
+    #: The same features grouped by the seed that produced them. A curve's
+    #: floor is estimated by bootstrapping the generated games; the spread of
+    #: the distance across independent seeds is the quantity that bootstrap
+    #: approximates, so keeping the grouping lets the two be compared instead
+    #: of the estimate being trusted on its own.
+    features_by_seed: tuple[tuple[int, tuple[GameFeatures, ...]], ...] = field(
+        default=(), repr=False
+    )
     #: The games behind the reading, retained only when the detail tier is
     #: keeping them. Bulk diagnostics: they never reach the committed summary,
     #: and every later distribution feature is recomputed from them rather than
@@ -377,6 +386,66 @@ class RolloutCell:
 
 
 @dataclass(frozen=True)
+class SeedSpread:
+    """One quantity's distance measured independently at each seed.
+
+    Independent replicates of the same measurement, which is the definition of
+    evaluation noise. Two seeds are enough to report the values and too few to
+    derive a floor from, so the floor is absent below three rather than
+    invented.
+
+    Recorded as a diagnostic rather than used as a floor, and the distinction
+    matters. Each seed plays only its share of the suite's games, so a per-seed
+    distance is a smaller-sample reading: it is both noisier than the pooled one
+    and biased away from the reference, since a distributional distance
+    estimated from few games per rating point reads high. Comparing this spread
+    against the pooled reading's bootstrap floor compares two different sample
+    sizes and makes the bootstrap look about the square root of the seed count
+    too narrow.
+
+    What it is good for is showing whether the seeds disagree wildly, which no
+    single-run estimate can reveal, and it is the raw material for a proper
+    like-for-like check.
+    """
+
+    distances: tuple[tuple[int, float], ...]
+    pooled: tuple[tuple[int, float], ...] = ()
+
+    @property
+    def floor(self) -> float | None:
+        """Return the delta floor the observed conditional spread implies."""
+
+        return self._floor(self.distances)
+
+    @property
+    def pooled_floor(self) -> float | None:
+        """Return the delta floor the observed pooled spread implies."""
+
+        return self._floor(self.pooled)
+
+    @staticmethod
+    def _floor(values: Sequence[tuple[int, float]]) -> float | None:
+        if len(values) < 3:
+            return None
+        return floor_from_dispersion(stdev([value for _, value in values]))
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one quantity's seed spread."""
+
+        return {
+            "distances": [
+                {"seed": seed, "conditional_distance": value}
+                for seed, value in self.distances
+            ],
+            "pooled": [
+                {"seed": seed, "pooled_distance": value} for seed, value in self.pooled
+            ],
+            "floor": self.floor,
+            "pooled_floor": self.pooled_floor,
+        }
+
+
+@dataclass(frozen=True)
 class RolloutReading:
     """One arm's whole rating grid, compared against matched human play.
 
@@ -395,6 +464,11 @@ class RolloutReading:
     human_games: int
     comparisons: dict[ComparedQuantity, CurveComparison]
     execution: ExecutionRecord
+    #: Each seed's own conditional distance per quantity, and the floor that
+    #: spread implies. The bootstrap floor carried on every measurement is an
+    #: estimate of this quantity; recording both is what makes it checkable
+    #: rather than trusted.
+    seed_spread: dict[ComparedQuantity, SeedSpread] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -413,6 +487,10 @@ class RolloutReading:
             "human_games": self.human_games,
             "workload_sha256": self.execution.workload_sha256,
             "workload": dict(self.execution.workload),
+            "seed_spread": {
+                quantity.value: spread.as_record()
+                for quantity, spread in self.seed_spread.items()
+            },
             "comparisons": {
                 quantity.value: comparison.as_detail_record()
                 for quantity, comparison in self.comparisons.items()
@@ -591,6 +669,7 @@ def _measure_cell(
     )
     features: list[GameFeatures] = []
     per_seed: list[tuple[int, GameDistribution]] = []
+    by_seed: list[tuple[int, tuple[GameFeatures, ...]]] = []
     records: list[GameRecord] = []
     for seed in config.grid.seeds:
         generation = config.generation.model_copy(update={"seed": seed})
@@ -599,6 +678,7 @@ def _measure_cell(
         per_seed.append(
             (seed, summarize_games(seed_features, level=config.opening_level))
         )
+        by_seed.append((seed, seed_features))
         features.extend(seed_features)
         if config.detail.retain_games:
             records.extend(played)
@@ -612,6 +692,7 @@ def _measure_cell(
         distribution=summarize_games(features, level=config.opening_level),
         execution=_execution_record(config, runner, source, target_rating, temperature),
         features=tuple(features),
+        features_by_seed=tuple(by_seed),
         records=tuple(records),
     )
     logger.info(
@@ -818,9 +899,13 @@ def _curve_reading(
     model: list[ComparableGame] = []
     for cell in cells:
         model.extend(generated_games(cell.features, rating=cell.target_rating))
+    ratings = tuple(sorted({cell.target_rating for cell in cells}))
     comparisons: dict[ComparedQuantity, CurveComparison] = {}
     for quantity in iter_quantities():
-        spec = curve_spec(quantity)
+        try:
+            spec = curve_spec(quantity, ratings)
+        except ReferenceError as error:
+            raise RolloutBenchmarkError(str(error)) from error
         human = reference.observations(quantity, level=config.opening_level)
         generated = tuple(
             game.observation(quantity, level=config.opening_level) for game in model
@@ -837,7 +922,6 @@ def _curve_reading(
             raise RolloutBenchmarkError(
                 f"cannot compare {quantity.value} against human play: {error}"
             ) from error
-    ratings = tuple(sorted(cell.target_rating for cell in cells))
     return RolloutReading(
         arm=arm,
         temperature=temperature,
@@ -845,10 +929,67 @@ def _curve_reading(
         model_games=len(model),
         human_games=len(reference.games),
         comparisons=comparisons,
+        seed_spread=_seed_spread(config, cells, reference, ratings),
         execution=_reading_execution_record(
             config, cells, temperature, ratings, device=device
         ),
     )
+
+
+def _seed_spread(
+    config: RolloutBenchmarkConfig,
+    cells: Sequence[RolloutCell],
+    reference: HumanReference,
+    ratings: Sequence[int],
+) -> dict[ComparedQuantity, SeedSpread]:
+    """Re-measure each quantity from each seed's games alone.
+
+    The seeds are independent replicates of the same measurement, so the spread
+    of a distance across them is evaluation noise directly rather than an
+    estimate of it. Resampling is switched off here: only the point estimate is
+    wanted, and paying for floors on every seed would multiply the cost of the
+    reading for nothing.
+    """
+
+    seeds = sorted({seed for cell in cells for seed, _ in cell.features_by_seed})
+    if len(seeds) < 2:
+        return {}
+    spreads: dict[ComparedQuantity, list[tuple[int, float]]] = {
+        quantity: [] for quantity in iter_quantities()
+    }
+    pooled: dict[ComparedQuantity, list[tuple[int, float]]] = {
+        quantity: [] for quantity in iter_quantities()
+    }
+    for seed in seeds:
+        games: list[ComparableGame] = []
+        for cell in cells:
+            for candidate, features in cell.features_by_seed:
+                if candidate == seed:
+                    games.extend(generated_games(features, rating=cell.target_rating))
+        if not games:  # pragma: no cover - every cell plays every seed
+            continue
+        for quantity in iter_quantities():
+            try:
+                comparison = compare_curves(
+                    spec=curve_spec(quantity, ratings),
+                    human=reference.observations(quantity, level=config.opening_level),
+                    model=tuple(
+                        game.observation(quantity, level=config.opening_level)
+                        for game in games
+                    ),
+                    resamples=0,
+                )
+            except (CurveComparisonError, ReferenceError):
+                # One seed too thin to estimate is a reason to report fewer
+                # replicates, not to fail the reading the seeds support.
+                continue
+            spreads[quantity].append((seed, comparison.conditional_distance))
+            pooled[quantity].append((seed, comparison.pooled_distance))
+    return {
+        quantity: SeedSpread(distances=tuple(values), pooled=tuple(pooled[quantity]))
+        for quantity, values in spreads.items()
+        if values
+    }
 
 
 def _reading_execution_record(
@@ -875,7 +1016,6 @@ def _reading_execution_record(
             "target_ratings": list(ratings),
             "temperature": temperature,
             "curve_spec_version": CURVE_SPEC_VERSION,
-            "curve_grid": list(CURVE_RATING_GRID),
             "curve_neighbours": {
                 quantity.value: DECLARED_NEIGHBOURS[quantity]
                 for quantity in iter_quantities()
@@ -1164,11 +1304,16 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
 
 
 def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
-    """Return one reading's committed distances.
+    """Return one reading's committed distances, each with the floor to beat.
 
-    The comparison builds these itself, floors included, because the floor for
-    a distance is estimated as the distance is computed rather than looked up
-    from a series-wide characterization it cannot have.
+    The floor is the comparison's own bootstrap over the games this reading
+    generated, and deliberately not the spread across seeds. Both estimate
+    evaluation noise, but only the bootstrap estimates it *at the sample size
+    the reading was taken at*: each seed plays a fraction of the games, so the
+    spread across seeds measures the noise of a much smaller reading and runs
+    roughly the square root of the seed count too wide. Measured against forty
+    independent draws, the bootstrap reproduces the true spread to within a few
+    percent at fixed size, so the seeds stay a diagnostic rather than a floor.
     """
 
     workload = reading.execution.workload_component()
