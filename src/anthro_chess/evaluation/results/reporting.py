@@ -28,6 +28,7 @@ from anthro_chess.evaluation.results.comparability import (
     Comparability,
     ProvenanceDifference,
     attribute,
+    condition_differences,
     environment_differences,
     latest_measurement,
     provenance_differences,
@@ -146,6 +147,10 @@ class MetricDelta:
     attribution: Attribution | None = None
     #: The execution coordinates that differ, when the environment moved.
     environment: tuple[ProvenanceDifference, ...] = ()
+    #: The benchmark-declared coordinates that differ, such as the model
+    #: architecture or the training corpus. These confound a delta rather than
+    #: invalidating it, so they are named beside the number, not instead of it.
+    conditions: tuple[ProvenanceDifference, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable row."""
@@ -178,6 +183,14 @@ class MetricDelta:
                 }
                 for difference in self.environment
             ],
+            "condition_differences": [
+                {
+                    "field": difference.field,
+                    "baseline": difference.baseline,
+                    "current": difference.current,
+                }
+                for difference in self.conditions
+            ],
         }
 
 
@@ -192,6 +205,9 @@ class FamilyReport:
     #: as a header rather than repeated per row, because execution is a
     #: property of the result the whole family was recorded in.
     environment: tuple[ProvenanceDifference, ...] = ()
+    #: Declared-coordinate differences, shared by the family for the same
+    #: reason.
+    conditions: tuple[ProvenanceDifference, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable family section."""
@@ -207,6 +223,14 @@ class FamilyReport:
                     "current": difference.current,
                 }
                 for difference in self.environment
+            ],
+            "condition_differences": [
+                {
+                    "field": difference.field,
+                    "baseline": difference.baseline,
+                    "current": difference.current,
+                }
+                for difference in self.conditions
             ],
             "metrics": [metric.as_record() for metric in self.metrics],
         }
@@ -608,31 +632,56 @@ def _render_family_header(family: FamilyReport) -> str:
     numbers need.
     """
 
-    if not family.environment:
-        return family.family.identifier
-    changes = "; ".join(
-        f"{difference.field} {difference.baseline} \u2192 {difference.current}"
-        for difference in family.environment
+    lines = [family.family.identifier]
+    for label, differences in (
+        ("environment changed", family.environment),
+        ("conditions changed", family.conditions),
+    ):
+        if not differences:
+            continue
+        changes = "; ".join(
+            f"{difference.field} {_short(difference.baseline)} \u2192 "
+            f"{_short(difference.current)}"
+            for difference in differences
+        )
+        lines.append(f"  [{label}: {changes}]")
+    return "\n".join(
+        line
+        for entry in lines
+        for line in textwrap.wrap(
+            entry,
+            width=MAXIMUM_LINE_WIDTH,
+            subsequent_indent="   ",
+        )
+        or [entry]
     )
-    return f"{family.family.identifier}  [environment changed: {changes}]"
 
 
 def _confounded_legend(report: DeltaReport) -> list[str]:
-    """Explain the confounded verdict, when any row carries one."""
+    """Explain the confounded verdict, naming what actually moved."""
 
-    if not any(
-        metric.movement is Movement.CONFOUNDED
+    confounded = [
+        metric
         for family in report.families
         for metric in family.metrics
-    ):
+        if metric.movement is Movement.CONFOUNDED
+    ]
+    if not confounded:
         return []
-    varied = (
-        "the environment moved as well, so it is not a verdict on the model"
-        if report.pivot is ReportPivot.CHECKPOINT
-        else "the model moved as well, so it is not a verdict on the environment"
-    )
+    moved: list[str] = []
+    if any(metric.conditions for metric in confounded):
+        moved.append("the declared conditions")
+    if any(metric.environment for metric in confounded):
+        moved.append("the environment")
+    if not moved:
+        moved.append(
+            "the environment" if report.pivot is ReportPivot.CHECKPOINT else "the model"
+        )
+    subject = "model" if report.pivot is ReportPivot.CHECKPOINT else "environment"
     return textwrap.wrap(
-        f"confound: the delta is real and interpretable, but {varied}.",
+        f"confound: the delta is real and interpretable, but "
+        f"{' and '.join(moved)} moved as well, so it is not a verdict on the "
+        f"{subject}.",
         width=MAXIMUM_LINE_WIDTH,
         subsequent_indent="  ",
     )
@@ -756,6 +805,21 @@ def _render_noise(metric: MetricDelta) -> str:
     return f"{metric.noise.value} ({kind})"
 
 
+def _short(value: str | None) -> str:
+    """Render a coordinate value, abbreviating a digest to a readable prefix.
+
+    A model or dataset coordinate is a full hex digest. Printed whole it pushes
+    the line that explains a confound past any terminal, so the prefix stands
+    in; the machine-readable record keeps the full value.
+    """
+
+    if value is None:
+        return "-"
+    if len(value) == 64 and all(character in "0123456789abcdef" for character in value):
+        return value[:12]
+    return value
+
+
 def _format(value: float | None, *, signed: bool = False) -> str:
     if value is None:
         return "-"
@@ -809,6 +873,7 @@ def _family_report(
 
     rows: list[MetricDelta] = []
     environment: tuple[ProvenanceDifference, ...] = ()
+    conditions: tuple[ProvenanceDifference, ...] = ()
     for definition in definitions:
         current = latest_measurement(current_results, definition.identifier)
         baseline = latest_measurement(baseline_results, definition.identifier)
@@ -827,6 +892,8 @@ def _family_report(
         )
         if row.environment:
             environment = row.environment
+        if row.conditions:
+            conditions = row.conditions
         rows.append(row)
     if not rows:
         return FamilyReport(
@@ -839,6 +906,7 @@ def _family_report(
         metrics=tuple(rows),
         absence=None,
         environment=environment,
+        conditions=conditions,
     )
 
 
@@ -904,6 +972,11 @@ def _metric_delta(
             attribution=attribution,
         )
 
+    conditions = (
+        condition_differences(baseline_envelope, current_envelope)
+        if definition.execution_sensitive
+        else ()
+    )
     delta = current_measurement.value - baseline_measurement.value
     comparison_floor = (
         None
@@ -943,6 +1016,7 @@ def _metric_delta(
         bridges=tuple(bridge.bridge_id for bridge in comparison.bridges),
         attribution=attribution,
         environment=environment,
+        conditions=conditions,
         note=(
             "bridged series seam"
             if comparison.comparability is Comparability.BRIDGED
@@ -999,16 +1073,36 @@ def _pivoted_movement(
     movement makes that unanswerable. The environment pivot asks whether the
     *environment* is faster with the model pinned, so there the environment
     moving is the point and the model moving is what would confound it.
+
+    Declared conditions confound either pivot. A corpus regenerated underneath
+    a comparison moves the number without answering either question, and it is
+    the confounder most likely to pass unnoticed, because nothing about the
+    machine or the checkpoint label changed.
     """
 
     if attribution is None:
         return _movement(definition.direction, delta)
-    confounder = (
-        attribution.environment
-        if pivot is ReportPivot.CHECKPOINT
+    if pivot is ReportPivot.CHECKPOINT:
+        # The environment has to have provably held still; an unverifiable
+        # claim of sameness is exactly what must not pass. A condition change
+        # confounds too, and is the one most likely to go unnoticed.
+        if attribution.environment is not AxisChange.UNCHANGED:
+            return Movement.CONFOUNDED
+        if attribution.conditions is AxisChange.CHANGED:
+            return Movement.CONFOUNDED
+        return _movement(definition.direction, delta)
+
+    # The environment pivot asks whether the machine got faster, so what has to
+    # hold still is the thing being measured on it. Where a benchmark declares
+    # its conditions those are that thing, because two runs of one training
+    # configuration never share weights and pinning on the parameter digest
+    # would make the question unanswerable rather than rigorous.
+    held = (
+        attribution.conditions
+        if attribution.conditions is not AxisChange.UNKNOWN
         else attribution.model
     )
-    if confounder is not AxisChange.UNCHANGED:
+    if held is not AxisChange.UNCHANGED:
         return Movement.CONFOUNDED
     return _movement(definition.direction, delta)
 
@@ -1125,7 +1219,38 @@ def _latest_multi_environment(results: Sequence[ResultEnvelope]) -> str:
 
 
 def _require_one_model(results: Sequence[ResultEnvelope], label: str) -> None:
-    """Reject a comparison whose two sides are not the same weights."""
+    """Reject a comparison whose two sides are not the same model.
+
+    Pinned by ``parameter_sha256`` where the benchmark scores one checkpoint on
+    two machines, because a reused label would otherwise turn a model change
+    into an apparent hardware win.
+
+    A benchmark that declares conditions pins on those instead. Training
+    efficiency is the case: the same configuration trained on two machines
+    produces two different sets of weights, so requiring identical parameters
+    would make the environment question unaskable rather than rigorous. The
+    declared architecture and corpus are what has to hold still there, and they
+    are checked exactly as strictly.
+    """
+
+    declared = [
+        envelope.execution.declared_coordinates()
+        for envelope in results
+        if envelope.execution is not None and envelope.execution.coordinates
+    ]
+    if declared:
+        if len(declared) != len(results):
+            raise ReportError(
+                f"checkpoint {label!r} mixes results that declare conditions "
+                "with results that do not, so an environment comparison cannot "
+                "prove they were measured under the same ones"
+            )
+        if any(entry != declared[0] for entry in declared[1:]):
+            raise ReportError(
+                f"checkpoint {label!r} covers more than one set of declared "
+                "conditions; an environment comparison needs them held fixed"
+            )
+        return
 
     digests = {envelope.checkpoint.parameter_sha256 for envelope in results}
     if None in digests:

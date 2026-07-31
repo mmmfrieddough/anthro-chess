@@ -93,18 +93,26 @@ statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
 
 Efficiency and generated-play metrics carry one further component: the
-**declared workload**, the settings that decide what was measured. Change the
-ply depth a latency figure is taken at, or the temperature a rollout is played
-at, and the number measures a different quantity, so that belongs in identity
-just as scored content does. Sample counts do not: generating more games, like
-scoring more, estimates the same quantity more precisely. The **machine**
-deliberately does not either. A cross-machine latency delta is interpretable
-rather than meaningless — it is just attributable to the environment rather than
-to the model — so it is attributed by a report instead of ending a series.
-`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule and
-`docs/decisions/0020-declared-settings-scope-generated-series.md` extends it to
-generated play, including why a rollout's human prefixes are provenance rather
-than a data component.
+**declared workload**, the settings whose change would make a delta
+meaningless. Change the ply depth a latency figure is taken at, or the
+temperature a rollout is played at, and the number measures a different
+quantity, so that belongs in identity just as scored content does. Sample
+counts do not: generating more games, like scoring more, estimates the same
+quantity more precisely.
+
+Everything else a result was measured under is a **coordinate**: recorded,
+diffed, and named by a report, but never digested. The machine is one, and so
+is anything a reader might want to subtract across — a training run's model
+architecture, batch, and corpus are coordinates for exactly that reason. A
+delta across them is interpretable rather than meaningless, so a report
+attributes it instead of ending a series.
+
+`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule,
+`0020-declared-settings-scope-generated-series.md` extends it to generated
+play, including why a rollout's human prefixes are provenance rather than a
+data component, and
+`0021-efficiency-identity-excludes-compared-conditions.md` draws the line
+between identity and coordinates.
 
 ### Where The Store Lives
 
@@ -1651,20 +1659,34 @@ training is reported as its own metric. A run that evaluates itself every ten
 steps is not slower at training, and a number saying otherwise would make the
 cadence look like a regression.
 
-The declared workload is what decided the work: the dataset selection, the
-loader configuration, the model architecture, the effective batch and
-accumulation, whether determinism is strict, and whether phase profiling
-inserted its own synchronizations. The realized sequence-length distribution is
-deliberately not in it — that is an outcome of those choices rather than an
-input — and is reported as measurements instead.
+**Almost nothing breaks the series**, and that is the point. The model
+architecture, the dataset, the loader configuration, the effective batch and
+accumulation, the determinism setting, and the machine are all recorded as
+coordinates rather than as identity, so a report subtracts across them and
+names whichever moved. Only the benchmark version identifies the series,
+because only a changed definition makes the delta mean nothing.
 
-One consequence of decision 0018 is specific to this family. The environment
-pivot pins the model by parameter digest and varies the machine, which training
-efficiency cannot generally reach: training the same configuration on two
-machines produces two different sets of weights, so there is no pinned model to
-compare. The continuous per-workload history is what answers whether a
-configuration got slower, and the budget report below is what relates it to
-quality.
+That follows from the rule in `docs/design-principles.md`: a coordinate you
+might want to measure the difference across cannot be part of identity.
+Freezing the model into identity would refuse the family's headline question —
+what did this change cost us — which is what
+`docs/decisions/0021-efficiency-identity-excludes-compared-conditions.md`
+records, refining 0018's inference-shaped wording.
+
+A condition change is therefore reported as `confounded` with the moved
+coordinate named, not as a refusal. It is the confounder most likely to pass
+unnoticed, because a regenerated corpus changes neither the machine nor the
+checkpoint label while changing positions per second.
+
+The realized sequence-length distribution is not a coordinate either — that is
+an outcome of those choices rather than an input — and is reported as
+measurements instead.
+
+The environment pivot works here by pinning the declared conditions rather than
+the parameter digest. Training the same configuration on two machines produces
+two different sets of weights, so pinning parameters would make "did the new
+machine help" unaskable rather than rigorous; the architecture and corpus are
+what has to hold still.
 
 `anthro_chess.training.efficiency` owns the exact metrics, defaults, and
 workload fields. `docs/training-and-runtime.md` owns the deferred read-back the

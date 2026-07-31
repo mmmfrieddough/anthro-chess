@@ -4,17 +4,28 @@ from __future__ import annotations
 
 import platform
 from datetime import UTC, datetime
+from hashlib import sha256
 
 import pytest
 import torch
 
 from anthro_chess.evaluation.results import (
+    AxisChange,
+    BridgeIndex,
     CheckpointReference,
+    Comparability,
     ExecutionRecord,
+    Movement,
+    ReportError,
+    ResultEnvelope,
     ResultRecordError,
     ResultsStore,
+    build_delta_report,
+    build_environment_report,
+    build_history,
     metric_definition,
     registered_metrics,
+    render_report,
 )
 from anthro_chess.training.efficiency import (
     TRAINING_EFFICIENCY_KIND,
@@ -25,6 +36,7 @@ from anthro_chess.training.efficiency import (
     TrainingEfficiencyMonitor,
     TrainingEfficiencySummary,
     build_efficiency_result,
+    coordinate_record,
     efficiency_measurements,
     execution_record,
     record_efficiency,
@@ -37,7 +49,7 @@ CPU = torch.device("cpu")
 MODEL_IDENTITY = {"name": "fixture-model", "version": 1}
 
 
-def _workload(**overrides: object) -> dict[str, object]:
+def _coordinates(**overrides: object) -> dict[str, object]:
     record: dict[str, object] = {
         "dataset_sha256": "a" * 64,
         "loader_configuration_sha256": "b" * 64,
@@ -48,11 +60,11 @@ def _workload(**overrides: object) -> dict[str, object]:
         "profile_phases": False,
     }
     record.update(overrides)
-    return workload_record(**record)  # type: ignore[arg-type]
+    return coordinate_record(**record)  # type: ignore[arg-type]
 
 
 def _execution(**overrides: object) -> ExecutionRecord:
-    return execution_record(_workload(**overrides), device=CPU, precision="float32")
+    return execution_record(_coordinates(**overrides), device=CPU, precision="float32")
 
 
 def _summary(**overrides: object) -> TrainingEfficiencySummary:
@@ -412,15 +424,17 @@ def test_measurements_carry_the_workload_fingerprint() -> None:
         "training.peak_device_memory_bytes",
         "training.step_sync_cost_seconds",
     }
+    # A different model, batch, and corpus stay on the same series, because
+    # subtracting across them is the comparison this family exists for.
     other = execution_record(
-        _workload(batch_size=8),
+        _coordinates(batch_size=64, dataset_sha256="f" * 64),
         device=CPU,
         precision="float32",
     )
     changed = efficiency_measurements(_summary(), other)
     by_metric = {value.metric: value.fingerprint for value in values}
     for value in changed:
-        assert value.fingerprint != by_metric[value.metric]
+        assert value.fingerprint == by_metric[value.metric]
 
 
 def test_an_unmeasurable_quantity_is_omitted_rather_than_reported_as_zero() -> None:
@@ -462,15 +476,29 @@ def test_a_run_too_short_to_reach_steady_state_still_records_its_budget() -> Non
     }
 
 
-def test_the_workload_digests_what_decided_the_work() -> None:
-    record = _workload()
+def test_series_identity_holds_only_the_benchmark_version() -> None:
+    """Anything a reader might subtract across must stay out of identity.
 
-    assert record["effective_batch_size"] == 8
-    assert record["determinism"] == "relaxed"
-    assert "warmup_steps" not in record
-    assert "steps" not in record
-    # The architecture decides the work; the weights do not.
-    assert record["model_sha256"] != MODEL_IDENTITY
+    The family exists to answer what a model or setup change cost, so freezing
+    the model, the batch, or the corpus into the fingerprint would refuse its
+    headline question.
+    """
+
+    assert workload_record() == {"benchmark_version": 1}
+
+
+def test_the_conditions_are_recorded_without_reaching_the_digest() -> None:
+    execution = _execution()
+
+    assert execution.coordinates["effective_batch_size"] == 8
+    assert execution.coordinates["determinism"] == "relaxed"
+    # The architecture is a coordinate, digested only into its own field.
+    assert execution.coordinates["model_sha256"] != MODEL_IDENTITY
+    assert "warmup_steps" not in execution.coordinates
+    assert "steps" not in execution.coordinates
+    # None of it reaches series identity.
+    assert execution.workload == {"benchmark_version": 1}
+    assert execution.workload_sha256 == _execution(batch_size=64).workload_sha256
 
 
 def test_the_environment_is_recorded_outside_series_identity() -> None:
@@ -543,6 +571,189 @@ def test_a_store_rejection_surfaces_as_an_efficiency_error(tmp_path: object) -> 
             execution=_execution(),
             store=store,
         )
+
+
+def _recorded(label: str, at: datetime, **coordinates: object) -> ResultEnvelope:
+    return build_efficiency_result(
+        _summary(),
+        checkpoint=CheckpointReference(
+            label=label,
+            step=100,
+            parameter_sha256=sha256(label.encode()).hexdigest(),
+        ),
+        execution=_execution(**coordinates),
+        recorded_at=at,
+    )
+
+
+def test_a_model_change_is_compared_and_attributed_rather_than_refused() -> None:
+    """The family's headline question, which freezing the model would refuse."""
+
+    before = _recorded("before", datetime(2026, 7, 1, tzinfo=UTC))
+    after = _recorded(
+        "after",
+        datetime(2026, 7, 8, tzinfo=UTC),
+        model_identity={"name": "fixture-model", "version": 2},
+    )
+
+    report = build_delta_report(
+        [before, after],
+        BridgeIndex(),
+        metrics=["training.active_positions_per_second"],
+    )
+    row = report.families[0].metrics[0]
+
+    assert row.comparability is Comparability.SAME_SERIES
+    assert row.delta == pytest.approx(0.0)
+    assert row.movement is Movement.CONFOUNDED
+    assert row.attribution is not None
+    assert row.attribution.conditions is AxisChange.CHANGED
+    assert [difference.field for difference in row.conditions] == ["model_sha256"]
+    rendered = render_report(report)
+    assert "conditions changed: model_sha256" in rendered
+    assert "the declared conditions moved as well" in rendered
+
+
+def test_a_regenerated_corpus_is_named_rather_than_read_as_a_slowdown() -> None:
+    """The confounder that changes neither machine nor checkpoint label."""
+
+    before = _recorded("before", datetime(2026, 7, 1, tzinfo=UTC))
+    after = _recorded(
+        "after",
+        datetime(2026, 7, 8, tzinfo=UTC),
+        dataset_sha256="f" * 64,
+    )
+
+    row = (
+        build_delta_report(
+            [before, after],
+            BridgeIndex(),
+            metrics=["training.active_positions_per_second"],
+        )
+        .families[0]
+        .metrics[0]
+    )
+
+    assert row.delta is not None
+    assert row.movement is Movement.CONFOUNDED
+    assert [difference.field for difference in row.conditions] == ["dataset_sha256"]
+
+
+def test_an_unchanged_setup_still_reads_as_a_verdict() -> None:
+    """Confounding has to be earned, or every row would carry the label.
+
+    Two runs of one configuration on one machine differ only in their weights,
+    which is the axis the checkpoint pivot varies on purpose.
+    """
+
+    before = _recorded("before", datetime(2026, 7, 1, tzinfo=UTC))
+    after = build_efficiency_result(
+        _summary(window_active_positions=1600),
+        checkpoint=CheckpointReference(
+            label="after",
+            step=100,
+            parameter_sha256=sha256(b"after").hexdigest(),
+        ),
+        execution=_execution(),
+        recorded_at=datetime(2026, 7, 8, tzinfo=UTC),
+    )
+
+    row = (
+        build_delta_report(
+            [before, after],
+            BridgeIndex(),
+            metrics=["training.active_positions_per_second"],
+        )
+        .families[0]
+        .metrics[0]
+    )
+
+    assert row.attribution is not None
+    assert row.attribution.conditions is AxisChange.UNCHANGED
+    assert row.attribution.environment is AxisChange.UNCHANGED
+    assert row.movement is Movement.BETTER
+    assert row.conditions == ()
+
+
+def test_the_environment_pivot_pins_conditions_rather_than_weights() -> None:
+    """Two machines never share weights, so pinning them would forbid the ask."""
+
+    laptop = _recorded("run-step-00000100", datetime(2026, 7, 1, tzinfo=UTC))
+    workstation = build_efficiency_result(
+        _summary(window_active_positions=3200),
+        checkpoint=CheckpointReference(
+            label="run-step-00000100",
+            step=100,
+            # A second run of the same configuration: same architecture and
+            # corpus, necessarily different weights.
+            parameter_sha256=sha256(b"other-weights").hexdigest(),
+        ),
+        execution=execution_record(
+            _coordinates(),
+            device=torch.device("cpu"),
+            precision="float32",
+        ).model_copy(update={"device_name": "workstation"}),
+        recorded_at=datetime(2026, 7, 8, tzinfo=UTC),
+    )
+
+    row = (
+        build_environment_report(
+            [laptop, workstation],
+            BridgeIndex(),
+            metrics=["training.active_positions_per_second"],
+        )
+        .families[0]
+        .metrics[0]
+    )
+
+    assert row.delta is not None
+    # The conditions held, so this is a verdict on the machine despite the
+    # weights differing.
+    assert row.movement is Movement.BETTER
+
+
+def test_the_environment_pivot_refuses_a_changed_configuration() -> None:
+    """Pinning on conditions has to be as strict as pinning on parameters."""
+
+    laptop = _recorded("run-step-00000100", datetime(2026, 7, 1, tzinfo=UTC))
+    workstation = build_efficiency_result(
+        _summary(),
+        checkpoint=laptop.checkpoint,
+        execution=execution_record(
+            _coordinates(batch_size=64),
+            device=torch.device("cpu"),
+            precision="float32",
+        ).model_copy(update={"device_name": "workstation"}),
+        recorded_at=datetime(2026, 7, 8, tzinfo=UTC),
+    )
+
+    with pytest.raises(ReportError, match="declared conditions"):
+        build_environment_report([laptop, workstation], BridgeIndex())
+
+
+def test_long_run_history_stays_one_line_across_setup_changes() -> None:
+    """The question a fragmented series destroys: are we drifting slower?"""
+
+    points = [
+        _recorded("first", datetime(2026, 7, 1, tzinfo=UTC)),
+        _recorded(
+            "second",
+            datetime(2026, 7, 8, tzinfo=UTC),
+            model_identity={"name": "fixture-model", "version": 2},
+        ),
+        _recorded("third", datetime(2026, 7, 15, tzinfo=UTC), batch_size=64),
+        _recorded("fourth", datetime(2026, 7, 22, tzinfo=UTC), dataset_sha256="f" * 64),
+    ]
+
+    history = build_history(
+        points,
+        BridgeIndex(),
+        "training.active_positions_per_second",
+    )
+
+    assert len(history.points) == 4
+    assert not any(point.starts_new_series for point in history.points)
+    assert len({point.series for point in history.points}) == 1
 
 
 def test_the_rendered_summary_names_each_overhead_bucket() -> None:

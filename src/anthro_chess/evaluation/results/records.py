@@ -39,7 +39,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
-ENVELOPE_VERSION = 2
+ENVELOPE_VERSION = 3
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -196,17 +196,28 @@ ENVIRONMENT_FIELDS: tuple[str, ...] = (
 
 
 class ExecutionRecord(ResultModel):
-    """The device, precision, and workload a workload-scoped result was taken on.
+    """The conditions a workload-scoped result was measured under.
 
-    Two halves with different jobs. The **workload** says what was measured and
-    is part of series identity, so a reader can recompute the series
-    fingerprint from this record alone. The **environment** says where it ran
-    and is not: it is coordinates a report attributes a delta to, rather than
-    something that ends a series.
+    Three parts with different jobs, and the split between the first two is the
+    whole design.
 
-    ``workload`` is kept in full beside its digest because "why is this slower"
-    is unanswerable from a hash, and because it is a handful of scalars rather
-    than a diagnostic payload.
+    The **workload** says what was timed and is part of series identity, so a
+    reader can recompute an efficiency series fingerprint from this record
+    alone. Only settings that make a delta *meaningless* belong here.
+
+    The **coordinates** are settings that change the number without changing
+    what it measures. A bigger model trains fewer positions per second, and
+    that difference is the answer to a question rather than a category error,
+    so it must stay subtractable. Coordinates are recorded and diffed, never
+    digested.
+
+    The **environment** — device, precision, Torch version, platform — is
+    coordinates too, kept as named fields because every efficiency benchmark
+    has the same ones.
+
+    Both mappings are kept in full beside the digest, because "why is this
+    slower" is unanswerable from a hash, and because they are a handful of
+    scalars rather than a diagnostic payload.
     """
 
     device: str = Field(min_length=1)
@@ -222,6 +233,9 @@ class ExecutionRecord(ResultModel):
     cpu_threads: int | None = Field(default=None, ge=1)
     workload: dict[str, Any] = Field(default_factory=dict)
     workload_sha256: Sha256Hex
+    #: Deliberately absent from every digest. A benchmark whose conditions are
+    #: worth comparing across puts them here rather than in ``workload``.
+    coordinates: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_workload_digest(self) -> ExecutionRecord:
@@ -244,11 +258,19 @@ class ExecutionRecord(ResultModel):
         return WorkloadComponent(sha256=self.workload_sha256)
 
     def environment(self) -> dict[str, str | None]:
-        """Return the coordinates a report compares to attribute a delta."""
+        """Return the machine coordinates a report attributes a delta to."""
 
         return {
             field: _environment_value(getattr(self, field))
             for field in ENVIRONMENT_FIELDS
+        }
+
+    def declared_coordinates(self) -> dict[str, str | None]:
+        """Return the benchmark-declared coordinates, rendered comparably."""
+
+        return {
+            key: _environment_value(value)
+            for key, value in sorted(self.coordinates.items())
         }
 
     def environment_label(self) -> str:
@@ -597,13 +619,15 @@ def execution_reference(
     platform_key: str,
     platform: str,
     workload: Mapping[str, Any],
+    coordinates: Mapping[str, Any] | None = None,
     cpu_threads: int | None = None,
 ) -> ExecutionRecord:
     """Return the execution record for one efficiency benchmark's conditions.
 
     The workload digest is computed here rather than by each caller, so two
     benchmarks declaring the same workload cannot end up on different series
-    through a difference in how they hashed it.
+    through a difference in how they hashed it. ``coordinates`` never reaches
+    the digest, which is the point of passing it separately.
     """
 
     return ExecutionRecord(
@@ -616,6 +640,7 @@ def execution_reference(
         cpu_threads=cpu_threads,
         workload=dict(workload),
         workload_sha256=workload_digest(workload),
+        coordinates=dict(coordinates or {}),
     )
 
 

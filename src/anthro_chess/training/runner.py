@@ -68,8 +68,8 @@ from anthro_chess.training.efficiency import (
     TrainingEfficiencyError,
     TrainingEfficiencyMonitor,
     TrainingEfficiencySummary,
+    coordinate_record,
     record_efficiency,
-    workload_record,
     write_efficiency_detail,
 )
 from anthro_chess.training.efficiency import (
@@ -322,7 +322,7 @@ def run_training(
         efficiency_recorder = _EfficiencyRecorder(
             monitor=efficiency_monitor,
             execution=efficiency_execution_record(
-                workload_record(
+                coordinate_record(
                     dataset_sha256=str(train.provenance["dataset_sha256"]),
                     loader_configuration_sha256=str(
                         train.provenance["loader_configuration_sha256"]
@@ -453,7 +453,7 @@ def run_training(
             },
             "efficiency": {
                 **efficiency_summary.as_record(),
-                "workload_sha256": efficiency_recorder.execution.workload_sha256,
+                "coordinates": efficiency_recorder.execution.coordinates,
                 "recorded": [str(path) for path in efficiency_paths],
                 "detail": [str(path) for path in efficiency_detail_paths],
             },

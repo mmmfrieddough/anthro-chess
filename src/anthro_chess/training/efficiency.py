@@ -23,23 +23,19 @@ allocator growth. They are real costs, but they are startup costs, and leaving
 them in the window would make a short run look slower than a long one for
 reasons that have nothing to do with the configuration.
 
-The declared workload names what decided the work: the dataset selection, the
-loader configuration, the model architecture, the effective batch, whether
-determinism is strict, and whether phase profiling inserted its own
-synchronizations. The realized sequence-length distribution is not in the
-digest, because it is an outcome of those choices rather than an input; it is
-reported as measurements so a reader can see what the declared workload
-actually produced.
+**Almost nothing breaks the series.** The whole point of this family is to
+answer what a model change, a batch change, or a year of drift cost, so the
+model architecture, the effective batch, the corpus, the determinism setting,
+and the machine are all recorded as *coordinates* rather than as identity. A
+report subtracts across them and names whichever moved. Only the benchmark
+version identifies the series, because only a changed definition makes the
+delta mean nothing. See
+``docs/decisions/0021-efficiency-identity-excludes-compared-conditions.md``,
+which refines ``0018-workload-scoped-efficiency-series.md``.
 
-Series identity and environment attribution follow
-``docs/decisions/0018-workload-scoped-efficiency-series.md``. One consequence
-is specific to this family: the environment pivot, which pins the model by
-parameter digest and varies the machine, is not generally reachable here.
-Training the same configuration on two machines produces two different sets of
-weights, so there is no pinned model to compare. The continuous per-workload
-history is the reading that answers "did this get slower", and the budget
-report in ``anthro_chess.evaluation.results.budget`` is what relates it to
-quality.
+The realized sequence-length distribution is not a coordinate either, because
+it is an outcome of those choices rather than an input; it is reported as
+measurements so a reader can see what the declared conditions produced.
 """
 
 from __future__ import annotations
@@ -683,7 +679,25 @@ def driver_allocated_memory_bytes(device: torch.device) -> int | None:
     return None
 
 
-def workload_record(
+def workload_record() -> dict[str, Any]:
+    """Return the declared workload a training-efficiency series is named by.
+
+    Almost nothing, and deliberately. Active positions per second is the same
+    quantity whether the model is large or small, the batch wide or narrow, the
+    corpus old or regenerated, and the machine fast or slow. Every one of those
+    deltas is interpretable, and most of them are the reason to measure at all,
+    so freezing any of them into identity would refuse the comparisons this
+    family exists to serve.
+
+    Only a change to what the number *means* belongs here, which is the
+    benchmark version. See
+    ``docs/decisions/0021-efficiency-identity-excludes-compared-conditions.md``.
+    """
+
+    return {"benchmark_version": TRAINING_EFFICIENCY_VERSION}
+
+
+def coordinate_record(
     *,
     dataset_sha256: str,
     loader_configuration_sha256: str,
@@ -693,16 +707,15 @@ def workload_record(
     determinism: str,
     profile_phases: bool,
 ) -> dict[str, Any]:
-    """Return the declared workload an efficiency series is identified by.
+    """Return the conditions a run was measured under, for attribution.
 
-    What decided the work, and nothing that decided only how precisely it was
-    measured. Warmup length, probe cadence, and step count are all deliberately
-    absent for the reason decision 0018 keeps sample counts out: measuring more
-    estimates the same quantity rather than a different one.
+    These move the number without changing what it measures, so they are
+    recorded and diffed rather than digested. A report names whichever of them
+    moved, which is what stops a regenerated corpus from reading as a training
+    slowdown.
     """
 
     return {
-        "benchmark_version": TRAINING_EFFICIENCY_VERSION,
         "dataset_sha256": dataset_sha256,
         "loader_configuration_sha256": loader_configuration_sha256,
         "model_sha256": sha256(canonical_json(dict(model_identity))).hexdigest(),
@@ -715,12 +728,12 @@ def workload_record(
 
 
 def execution_record(
-    workload: Mapping[str, Any],
+    coordinates: Mapping[str, Any],
     *,
     device: torch.device,
     precision: str,
 ) -> ExecutionRecord:
-    """Capture where a run was measured, beside what it declared it measured."""
+    """Capture what a run was measured under, split by what identifies it."""
 
     return execution_reference(
         device=device.type,
@@ -730,7 +743,8 @@ def execution_record(
         platform_key=platform_key(),
         platform=platform.platform(),
         cpu_threads=torch.get_num_threads() if device.type == "cpu" else None,
-        workload=workload,
+        workload=workload_record(),
+        coordinates=coordinates,
     )
 
 
@@ -963,6 +977,7 @@ __all__: Sequence[str] = [
     "TrainingEfficiencySummary",
     "allocated_memory_bytes",
     "build_efficiency_result",
+    "coordinate_record",
     "device_name",
     "driver_allocated_memory_bytes",
     "efficiency_measurements",

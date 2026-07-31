@@ -240,6 +240,9 @@ def test_an_agent_reading_the_record_cannot_mistake_a_machine_for_progress() -> 
         "model": "changed",
         "environment": "changed",
         "workload": "unchanged",
+        # Inference declares no coordinates: its whole workload is identity,
+        # so there is nothing to hold still beside it.
+        "conditions": "unknown",
     }
     assert row["environment_differences"] == [
         {"field": "device_name", "baseline": "laptop", "current": "workstation"}

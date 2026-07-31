@@ -110,7 +110,8 @@ def test_cpu_proof_prepares_trains_validates_checkpoints_and_resumes(
         efficiency["processed_positions"]
         > (initial_record["efficiency"]["processed_positions"])
     )
-    assert efficiency["workload_sha256"]
+    assert efficiency["coordinates"]["model_sha256"]
+    assert efficiency["coordinates"]["dataset_sha256"]
     assert efficiency["run_seconds"] > efficiency["training_seconds"] > 0.0
     assert efficiency["overhead"]["startup_seconds"] > 0.0
     assert len(efficiency["recorded"]) == 1
