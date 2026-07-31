@@ -103,16 +103,27 @@ That selection also forces **retention to be paired on position**: the control
 is read over the plies the perturbed arm actually reached, never over every ply
 it had. The first shakedown reading of this benchmark was taken with the
 unpaired ratio and the difference was not cosmetic — legality appeared to
-improve under perturbation by seven to ten percent at both an early and a late
-checkpoint, because the surviving positions were systematically easier than the
-ones the control also held. Pairing moved the same readings to roughly one.
+*improve* under perturbation, by three to ten percent depending on how far the
+checkpoint had trained, because the surviving positions were systematically
+easier than the ones the control also held. The artifact inverted the sign at
+every checkpoint measured. Pairing moved the same readings to at or just below
+one.
 
 Legality turns out to be nearly flat in the dose on real checkpoints, which is
 consistent with the motivating evidence rather than a disappointment: the
 observed failure was a missed material win at a position whose raw-logit
 legality was unremarkable. Legality is what still *has* a ground truth out of
 distribution, not what the damage shows up in. The predicate readings are where
-the dose response actually lives.
+the dose response actually lives, and they move a great deal: across one
+training run the material-gain retention at full dose went from nothing to most
+of the unperturbed rate.
+
+The dose response is **not monotonic**, which the expected shape predicted in
+advance and the reading confirms. On a trained checkpoint the intermediate dose
+retains less than the full dose. A small perturbation takes the model off book
+without yet giving away material, so it loses learned guidance and gains
+nothing; a large one hands over enough material that the remaining decisions are
+easy. A dip in the middle is the reading, not an anomaly.
 
 A rollout companion is still wanted and is not covered here. It plays whole
 games against a random opponent, where the model genuinely does choose its own

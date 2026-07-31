@@ -1075,12 +1075,12 @@ reader to infer from differing sample sizes.
 **Retention is paired on position**, and this is not a refinement. A perturbed
 arm scores a subset of the control's positions, so reading its mean against the
 control's mean over everything reports the composition difference as a novelty
-effect. On a shakedown reading the artifact was large enough to invert the
-answer: legality appeared to *improve* under perturbation, by seven to ten
-percent at both an early and a late checkpoint. Restricting the control to the
-plies the arm actually reached moved the same readings to roughly one, which is
-the honest result. Every retention here reads the control over the arm's own
-positions.
+effect. On a shakedown reading the artifact inverted the answer at every
+checkpoint measured: legality appeared to *improve* under perturbation, by three
+to ten percent depending on how far the checkpoint had trained. Restricting the
+control to the plies the arm actually reached moved the same readings to at or
+just below one, which is the honest result. Every retention here reads the
+control over the arm's own positions.
 
 The material-gain probe is not a private criterion here. It is a heuristic entry
 in the shared predicate registry, so the same pass scores it on every arm and it
