@@ -35,10 +35,14 @@ difference as a distance.
 
 Every distance comes back with two things to read it against, and they are not
 interchangeable. A floor says how far the number moves between two runs when
-nothing changed, which qualifies a delta between checkpoints. A reference level
-says what it reads at when there is nothing to find, which is what a distance
-needs on its own: two finite samples of one population never agree exactly, and
-a sampled curve is never exactly flat.
+nothing changed, which qualifies a delta between checkpoints; it resamples the
+model side alone, since two checkpoints share one fixed human reference and its
+sampling error cancels in their difference. A reference level says what the
+distance reads at when there is nothing to find, which is what a single reading
+needs on its own; that is an absolute statement rather than a difference, so the
+human side's own sampling error belongs in it and it keeps the paired
+resampling. Two finite samples of one population never agree exactly, and a
+sampled curve is never exactly flat.
 
 Curve points are data, not pictures. They go to the machine-local detail tier,
 so overlaying several checkpoints against the human reference is a query rather
@@ -62,12 +66,14 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     Measurement,
     NoiseFloor,
+    WorkloadComponent,
     measurement,
 )
 from anthro_chess.evaluation.results.noise import (
     DEFAULT_COVERAGE,
     floor_from_dispersion,
 )
+from anthro_chess.evaluation.results.records import NoiseFloorKind
 
 CURVE_COMPARISON_VERSION = 1
 
@@ -75,7 +81,7 @@ CURVE_COMPARISON_VERSION = 1
 #: has a floor that is a function of its own configuration rather than of a
 #: series, so it is estimated here and carried with the measurement instead of
 #: being characterized separately and looked up.
-CURVE_BOOTSTRAP_METHOD = "bootstrap-over-games"
+CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-games"
 
 #: Resamples behind a comparison's own floor. Lower than a scalar metric's
 #: bootstrap because one resample here re-estimates whole curves rather than
@@ -406,7 +412,19 @@ class CurveOverlay:
 
 @dataclass(frozen=True)
 class CurveFloors:
-    """A comparison's own data-sampling floors, estimated as it was computed."""
+    """A comparison's own floors, estimated as the comparison was computed.
+
+    These qualify a **delta between two measurements** — normally two
+    checkpoints read against the same human reference. Only the model side is
+    resampled, because both checkpoints face the identical reference and its
+    sampling error cancels in their difference; including it would inflate every
+    floor and hide real movement.
+
+    A distributional distance has no series-wide floor to look up, because its
+    floor depends on how many games this particular reading generated. So it is
+    estimated here and carried on the measurement rather than characterized
+    once and stored separately.
+    """
 
     conditional: NoiseFloor
     pooled: NoiseFloor
@@ -568,12 +586,18 @@ class CurveComparison:
         metrics: CurveMetrics,
         *,
         data: DataComponent | None = None,
+        workload: WorkloadComponent | None = None,
     ) -> tuple[Measurement, ...]:
         """Return the scalar measurements the committed summary tier records.
 
         Each distance carries the floor estimated for it, so a report reads the
         floor from the measurement rather than looking one up for a series that
         cannot have a series-wide floor in the first place.
+
+        A comparison whose model side was generated rather than scored passes a
+        workload instead of a data component: what identifies that series is the
+        recipe the games were played under, per decision 0020. The comparison
+        itself does not care which, so it forwards whichever it is given.
         """
 
         games = self.human_games + self.model_games
@@ -602,6 +626,7 @@ class CurveComparison:
                 metric,
                 value,
                 data=data,
+                workload=workload,
                 sample_size=games,
                 noise_floor=floor,
             )
@@ -670,6 +695,7 @@ def compare_curves(
     resamples: int = DEFAULT_RESAMPLES,
     seed: int = 0,
     coverage: float = DEFAULT_COVERAGE,
+    floor_kind: NoiseFloorKind = "evaluation",
 ) -> CurveComparison:
     """Compare a generated curve against the human reference it should match.
 
@@ -677,6 +703,13 @@ def compare_curves(
     and the generated side is estimated at exactly that bandwidth, so the
     smoothing bias in the two curves cancels in their difference instead of
     accumulating in it.
+
+    ``floor_kind`` says what re-measuring this comparison's model side would
+    mean. The default suits a generated model side, where another run draws
+    fresh games and the spread across those draws is evaluation noise. A caller
+    whose model side is a deterministic pass over fixed inputs should say so,
+    since re-measuring it changes nothing and its floor describes the input
+    draw instead.
     """
 
     if len(human) < spec.neighbours:
@@ -707,6 +740,7 @@ def compare_curves(
         resamples=resamples,
         generator=generator,
         coverage=coverage,
+        floor_kind=floor_kind,
     )
 
     points = tuple(
@@ -1085,13 +1119,29 @@ def _resample(
     resamples: int,
     generator: np.random.Generator,
     coverage: float,
+    floor_kind: NoiseFloorKind,
 ) -> tuple[CurveFloors | None, CurveReferences | None]:
     """Estimate this comparison's own floors and null levels in one pass.
 
-    Both sides are resampled, because either one landing a different draw of
-    the same size moves the distance. ``None`` means nothing could be
-    estimated, which is a reportable state rather than an error: a floor
-    invented from too few replicates would license every delta as a finding.
+    The two are estimated differently on purpose, because they answer different
+    questions.
+
+    A **floor** qualifies a delta between two measurements — in practice, two
+    checkpoints. Both are compared against the *same fixed* human reference, so
+    human sampling error is common-mode and cancels in their difference:
+    including it would inflate every floor and hide real movement. Only the
+    model side is resampled, which is why the floor is evaluation noise rather
+    than data-sampling noise. For a generated model side the two coincide
+    anyway, since a fresh draw of games is exactly what another seed produces.
+
+    A **reference** says what the distance would read at with nothing to find,
+    which is an absolute statement about one reading rather than a difference.
+    There the human side's own sampling error genuinely belongs, so it keeps
+    the paired resampling.
+
+    ``None`` means nothing could be estimated, which is a reportable state
+    rather than an error: a floor invented from too few replicates would
+    license every delta as a finding.
     """
 
     if resamples < 2:
@@ -1102,11 +1152,24 @@ def _resample(
     model_weights = generator.multinomial(
         model.size, np.full(model.size, 1.0 / model.size), size=resamples
     ).astype(np.float64)
-    reading = _read(spec, human, model, human_weights, model_weights)
+    paired = _read(spec, human, model, human_weights, model_weights)
+    # The human reference held exactly as measured, so this varies only in
+    # which games the model produced.
+    model_only = _read(
+        spec,
+        human,
+        model,
+        np.ones((resamples, human.size), dtype=np.float64),
+        model_weights,
+    )
 
     floors: list[NoiseFloor] = []
     source = f"{spec.name} v{spec.version} {CURVE_BOOTSTRAP_METHOD}"
-    for values in (reading.conditional, reading.pooled, reading.model_variation):
+    for values in (
+        model_only.conditional,
+        model_only.pooled,
+        model_only.model_variation,
+    ):
         observed = values[np.isfinite(values)]
         if observed.size < 2:
             return None, None
@@ -1115,7 +1178,7 @@ def _resample(
                 value=floor_from_dispersion(
                     float(np.std(observed, ddof=1)), coverage=coverage
                 ),
-                kind="data-sampling",
+                kind=floor_kind,
                 source=source,
             )
         )
@@ -1123,7 +1186,7 @@ def _resample(
     references = _references(
         spec,
         point,
-        reading,
+        paired,
         model,
         resamples=resamples,
         generator=generator,

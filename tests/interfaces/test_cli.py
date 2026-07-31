@@ -5,7 +5,7 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from anthro_chess import __version__
-from anthro_chess.config import ResolvedConfig
+from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import AcquisitionResult, PreparationResult
 from anthro_chess.evaluation import MoveValidationMetrics
 from anthro_chess.interfaces.cli import main
@@ -694,6 +694,74 @@ def test_eval_decisions_reads_a_stored_payload_and_writes_the_detail(
     detail = json.loads(output.read_text(encoding="utf-8"))
     assert detail["overall"]["departures"] == 1
     assert [entry["selected_rank"] for entry in detail["samples"]] == [1, 4]
+
+
+def test_eval_rollout_reports_a_configuration_error_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The prefix arm without a pool is a configuration error, not a skip."""
+
+    config = tmp_path / "rollout.toml"
+    config.write_text('arms = ["human-prefix"]\n', encoding="utf-8")
+
+    assert main(["eval", "rollout", "--config", str(config), "--no-record"]) == 2
+
+    assert "anthro eval rollout:" in capsys.readouterr().err
+
+
+def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None:
+    """The text view has to name each cell's series and what it played."""
+
+    import torch
+
+    from anthro_chess.chess import ACTION_VOCABULARY_SIZE
+    from anthro_chess.data import DecisionContext
+    from anthro_chess.evaluation import RolloutBenchmarkConfig, benchmark_rollout
+    from anthro_chess.evaluation.results import CheckpointReference
+    from anthro_chess.interfaces.cli import _render_rollout
+
+    class Runner:
+        def predict(self, context: DecisionContext) -> torch.Tensor:
+            generator = torch.Generator().manual_seed(len(context.plies))
+            return torch.randn(ACTION_VOCABULARY_SIZE, generator=generator)
+
+    resolved = ResolvedConfig(
+        value=RolloutBenchmarkConfig.model_validate(
+            {
+                # The renderer's cell section is what this covers, so the
+                # comparison stays off rather than dragging a pool in.
+                "reference": {"enabled": False},
+                "grid": {
+                    "target_ratings": (1200, 1800),
+                    "temperatures": (1.0,),
+                    "seeds": (0,),
+                },
+                "generation": {
+                    "games_per_position": 1,
+                    "maximum_generated_plies": 4,
+                    "swap_colors": False,
+                },
+            }
+        ),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+    result = benchmark_rollout(
+        resolved,
+        runner=Runner(),
+        checkpoint=CheckpointReference(label="fixture-checkpoint", step=1),
+    )
+
+    rendered = _render_rollout(result)
+
+    assert "Games: 2 across 2 matrix cell(s)" in rendered
+    assert "standard-start rating=1200 temperature=1" in rendered
+    assert "standard-start rating=1800 temperature=1" in rendered
+    assert "series workload" in rendered
+    # One game per cell, cut off at the four-ply limit this fixture declares.
+    assert rendered.count("unfinished     1 at the ply limit") == 2
+    assert "Recorded: nothing" in rendered
+    assert max(len(line) for line in rendered.splitlines()) <= 120
 
 
 def test_eval_decisions_reports_an_unreadable_payload(

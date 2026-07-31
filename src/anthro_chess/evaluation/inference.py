@@ -23,7 +23,6 @@ generation for no gain in what it measures.
 from __future__ import annotations
 
 import logging
-import platform
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -39,6 +38,10 @@ from torch import Tensor
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DecisionContext, EncodingError, build_decision_context
+from anthro_chess.evaluation.execution import (
+    execution_record,
+    synchronize,
+)
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -54,7 +57,6 @@ from anthro_chess.evaluation.results import (
     build_result,
     configuration_reference,
     default_checkpoint_label,
-    execution_reference,
     measurement,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -77,12 +79,6 @@ INFERENCE_BENCHMARK = BenchmarkReference(
     name="inference-efficiency",
     version=INFERENCE_BENCHMARK_VERSION,
 )
-
-#: Parameter precision the runtime loads. Recorded rather than configured,
-#: because the runner rejects a checkpoint that is not float32 today; when a
-#: precision dial arrives it becomes an input to this value rather than a new
-#: execution coordinate.
-MEASURED_PRECISION = "float32"
 
 SampleT = TypeVar("SampleT")
 
@@ -282,7 +278,7 @@ def benchmark_inference(
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
     except ModelRunnerError as error:
         raise InferenceBenchmarkError(str(error)) from error
-    _synchronize(runner.device)
+    synchronize(runner.device)
     model_load_seconds = time.perf_counter() - started
 
     histories = _HistoryFactory()
@@ -463,7 +459,7 @@ def _time_first_decision(
     _reset(session, history)
     started = time.perf_counter()
     _decide(session)
-    _synchronize(device)
+    synchronize(device)
     return time.perf_counter() - started
 
 
@@ -480,7 +476,7 @@ def _measure_latency(
     for offset in range(config.warmup_decisions):
         _reset(session, histories.history(config.seed, history_plies, offset))
         _decide(session)
-        _synchronize(device)
+        synchronize(device)
 
     durations: list[float] = []
     encode_durations: list[float] = []
@@ -494,7 +490,7 @@ def _measure_latency(
         _reset(session, history)
         started = time.perf_counter()
         _decide(session)
-        _synchronize(device)
+        synchronize(device)
         durations.append((time.perf_counter() - started) * 1000.0)
         encoded, model_seconds = _stage_times(
             runner,
@@ -555,7 +551,7 @@ def _stage_times(
         runner.predict(context)
     except ModelRunnerError as error:  # pragma: no cover - the session ran it
         raise InferenceBenchmarkError(str(error)) from error
-    _synchronize(runner.device)
+    synchronize(runner.device)
     return encode_seconds, time.perf_counter() - model_started
 
 
@@ -570,12 +566,12 @@ def _measure_throughput(
     batch = _build_batch(runner, config, histories, batch_size)
     for _ in range(config.warmup_batches):
         runner.action_logits(batch)
-    _synchronize(runner.device)
+    synchronize(runner.device)
 
     started = time.perf_counter()
     for _ in range(config.batches):
         runner.action_logits(batch)
-    _synchronize(runner.device)
+    synchronize(runner.device)
     elapsed = time.perf_counter() - started
     if elapsed <= 0.0:  # pragma: no cover - a clock this coarse is unusable
         raise InferenceBenchmarkError(
@@ -691,15 +687,9 @@ def _execution_record(
 ) -> ExecutionRecord:
     """Capture the device, precision, and declared workload identity."""
 
-    return execution_reference(
-        device=device.type,
-        device_name=_device_name(device),
-        precision=MEASURED_PRECISION,
-        torch_version=torch.__version__,
-        platform_key=_platform_key(),
-        platform=platform.platform(),
-        cpu_threads=torch.get_num_threads() if device.type == "cpu" else None,
-        workload={
+    return execution_record(
+        device,
+        {
             "benchmark_version": INFERENCE_BENCHMARK_VERSION,
             "latency_reference_plies": config.latency.reference_plies,
             "latency_seed": config.latency.seed,
@@ -710,41 +700,6 @@ def _execution_record(
             "temperature": config.runtime.temperature,
         },
     )
-
-
-def _platform_key() -> str:
-    """Return the coarse machine identity an environment comparison keys on.
-
-    Deliberately not the full platform string. That carries the OS patch
-    level, so keying on it would mark every delta as confounded after a point
-    release that changed no hardware.
-    """
-
-    return f"{platform.system() or 'unknown'}-{platform.machine() or 'unknown'}"
-
-
-def _device_name(device: torch.device) -> str:
-    """Return a stable name for the device a measurement ran on."""
-
-    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
-        return torch.cuda.get_device_name(device)
-    machine = platform.machine() or "unknown"
-    processor = platform.processor() or machine
-    return processor if device.type == "cpu" else f"{machine}-{device.type}"
-
-
-def _synchronize(device: torch.device) -> None:
-    """Wait for queued device work, so a timer measures it rather than a queue.
-
-    Accelerator calls are asynchronous. Without this, every measured window
-    would time the enqueue and attribute the real work to whichever window
-    happened to block next.
-    """
-
-    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
-        torch.cuda.synchronize()
-    elif device.type == "mps":  # pragma: no cover - no MPS in the CPU suite
-        torch.mps.synchronize()
 
 
 def _reset(session: GameSession, history: Sequence[chess.Move]) -> None:

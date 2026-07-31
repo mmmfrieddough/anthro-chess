@@ -78,7 +78,13 @@ class MetricCost(StrEnum):
 
     @property
     def reads_data(self) -> bool:
-        """Return whether one reading consumes a projection of the pool."""
+        """Return whether one reading consumes a projection of the pool.
+
+        Generating is the one cost this cannot answer on its own: a generated
+        reading may score decisions at pool positions or play whole games from
+        the standard start. Such a metric declares which by naming a projection
+        or not, so treat this as the default rather than the rule.
+        """
 
         return self not in _NO_DATA_COSTS
 
@@ -132,6 +138,25 @@ _VIEW_PASSES: Mapping[MetricCost, int | None] = {
 #: Costs that consume no projection of the evaluation pool.
 _NO_DATA_COSTS = frozenset({MetricCost.FREE, MetricCost.MEASURED_EXECUTION})
 
+#: Costs that may consume a projection but need not. Generating is the only
+#: one, because it covers two genuinely different readings: generating
+#: decisions at positions a human reached, which does read pool content, and
+#: playing whole games from the standard start, which reads none. A rollout's
+#: human prefixes are an input to generation rather than the content the metric
+#: was computed over, so a data component would misdescribe it, and the
+#: declared generation recipe identifies the series instead.
+_OPTIONAL_DATA_COSTS = frozenset({MetricCost.GENERATED})
+
+#: Costs whose declared settings are realized inputs to the measured value, so
+#: a metric declaring one may carry a workload component. Timing execution and
+#: generating games are the two: a latency figure means nothing without the ply
+#: depth it was taken at, and a rollout figure means nothing without the rating
+#: and temperature it was played at. See
+#: ``docs/decisions/0020-declared-settings-scope-generated-series.md``.
+_WORKLOAD_SCOPED_COSTS = frozenset(
+    {MetricCost.MEASURED_EXECUTION, MetricCost.GENERATED}
+)
+
 
 @dataclass(frozen=True)
 class MetricDefinition:
@@ -149,10 +174,12 @@ class MetricDefinition:
     #: every change in evaluation inputs.
     projection: str | None = None
     #: Whether the conditions the measurement ran under are inputs to its
-    #: value. True only for efficiency metrics. It has two consequences: the
-    #: declared workload joins series identity, because a different workload
-    #: measures a different quantity; and the environment is recorded so a
-    #: report can attribute a delta rather than credit it to the model.
+    #: value. True for efficiency metrics, whose declared workload says what was
+    #: timed, and for generated-play metrics, whose declared workload says what
+    #: was played. It has two consequences: the declared workload joins series
+    #: identity, because a different workload measures a different quantity; and
+    #: the environment is recorded so a report can attribute a delta rather than
+    #: credit it to the model.
     execution_sensitive: bool = False
 
 
@@ -227,18 +254,21 @@ def register_metric(metric: MetricDefinition) -> MetricDefinition:
             f"metric {metric.identifier!r} must declare a definition version "
             "of 1 or more"
         )
-    if metric.cost.reads_data != (metric.projection is not None):
+    if metric.cost not in _OPTIONAL_DATA_COSTS and metric.cost.reads_data != (
+        metric.projection is not None
+    ):
         raise MetricRegistryError(
             f"metric {metric.identifier!r} declares cost {metric.cost.value!r} "
             f"with projection {metric.projection!r}; a metric that passes over "
             "no view reads no data, and one that reads data has to name the "
             "projection it reads"
         )
-    if metric.execution_sensitive and metric.cost is not MetricCost.MEASURED_EXECUTION:
+    if metric.execution_sensitive and metric.cost not in _WORKLOAD_SCOPED_COSTS:
         raise MetricRegistryError(
             f"metric {metric.identifier!r} is execution-sensitive but declares "
-            f"cost {metric.cost.value!r}; the device and workload are realized "
-            "inputs only to a metric whose measurement is the execution itself"
+            f"cost {metric.cost.value!r}; the declared workload is a realized "
+            "input only to a metric that times its own execution or generates "
+            "the games it reads"
         )
     existing = _METRICS.get(metric.identifier)
     if existing is not None and existing != metric:
@@ -1276,6 +1306,241 @@ INFERENCE_FIRST_DECISION_SECONDS = _inference_metric(
         "measured here."
     ),
 )
+
+
+def _generated_play_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one generated-play metric.
+
+    Every metric here is estimated from games the benchmark played, so they
+    share a cost and a workload sensitivity. Declaring them once keeps a later
+    addition from quietly landing as a series that ignores the rating and
+    temperature it was played at.
+    """
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=GENERATED_PLAY_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            execution_sensitive=True,
+        )
+    )
+
+
+#: Most of this family is informational by construction. Human games are the
+#: reference for whether generated play looks human, so a direction here would
+#: assert a target the project has deliberately declined to hardcode: fewer
+#: draws is not better, and neither is a longer game. The two exceptions are
+#: defects rather than behaviors.
+GENERATED_PLAY_MEAN_GAME_PLIES = _generated_play_metric(
+    "generated_play.mean_game_plies",
+    MetricDirection.INFORMATIONAL,
+    "Mean moves per generated game, counting any replayed prefix.",
+)
+
+GENERATED_PLAY_MEAN_GENERATED_PLIES = _generated_play_metric(
+    "generated_play.mean_generated_plies",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean moves a seat actually chose per game. Separate from total length "
+        "because a prefix continuation's total is mostly the prefix."
+    ),
+)
+
+GENERATED_PLAY_WHITE_SCORE = _generated_play_metric(
+    "generated_play.white_score",
+    MetricDirection.INFORMATIONAL,
+    (
+        "White's score per game, counting a draw as a half. Under self-play "
+        "this is the color reading: one configuration in both seats should "
+        "land near the human white score rather than at one extreme."
+    ),
+)
+
+GENERATED_PLAY_DECISIVE_GAME_RATE = _generated_play_metric(
+    "generated_play.decisive_game_rate",
+    MetricDirection.INFORMATIONAL,
+    "Share of finished games that ended with a winner rather than a draw.",
+)
+
+GENERATED_PLAY_UNFINISHED_GAME_RATE = _generated_play_metric(
+    "generated_play.unfinished_game_rate",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Share of games the ply limit stopped before the rules ended them. "
+        "Unlike the rest of this family this is a defect rather than a "
+        "behavior: an unfinished game has no result or termination to compare "
+        "against anything, so a high rate is the benchmark failing to observe "
+        "endings at all."
+    ),
+)
+
+GENERATED_PLAY_RESIGNATION_RATE = _generated_play_metric(
+    "generated_play.resignation_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of games a seat ended by choosing the resignation action. Zero "
+        "by construction when the runtime has resignation disabled."
+    ),
+)
+
+GENERATED_PLAY_REPEATED_POSITION_GAME_RATE = _generated_play_metric(
+    "generated_play.repeated_position_game_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of games that reached any position more than once. Reported for "
+        "every game rather than only for repetition draws, because a model "
+        "that shuffles and then moves on never terminates by repetition."
+    ),
+)
+
+GENERATED_PLAY_THREEFOLD_CLAIMABLE_GAME_RATE = _generated_play_metric(
+    "generated_play.threefold_claimable_game_rate",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of games in which a threefold draw became claimable, whether or "
+        "not the harness claimed it."
+    ),
+)
+
+GENERATED_PLAY_MEAN_FIRST_REPETITION_PLY = _generated_play_metric(
+    "generated_play.mean_first_repetition_ply",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Mean ply at which recurrence first appeared, averaged over the games "
+        "that repeated at all. Says when a cycle started rather than how often "
+        "one did, which is the rate above."
+    ),
+)
+
+GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION = _generated_play_metric(
+    "generated_play.mean_cycle_ply_fraction",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Share of the plies from first recurrence onward that were themselves "
+        "recurrences, averaged over the games that repeated. Separates a game "
+        "that touched a position twice and moved on from one that stayed in a "
+        "cycle."
+    ),
+)
+
+GENERATED_PLAY_MEAN_DISTINCT_MOVE_FRACTION = _generated_play_metric(
+    "generated_play.mean_distinct_move_fraction",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Distinct moves as a share of moves played, averaged over games. Moves "
+        "before either side reaches a repetition threshold."
+    ),
+)
+
+GENERATED_PLAY_DISTINCT_GAME_FRACTION = _generated_play_metric(
+    "generated_play.distinct_game_fraction",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Distinct move sequences as a share of games. A suite whose games are "
+        "one trajectory reads one here, which is the signature of a collapsed "
+        "policy — or simply of temperature zero, which is why this is read "
+        "beside the temperature its series is scoped to rather than maximized."
+    ),
+)
+
+
+#: Quantities compared against matched human play. Kept as plain strings here
+#: because the registry is the bottom of the import graph; the evaluation layer
+#: owns the enum and asserts the two agree.
+GENERATED_PLAY_COMPARED_QUANTITIES: tuple[str, ...] = (
+    "game-length",
+    "result",
+    "repetition",
+    "cycle",
+    "opening",
+    "move-diversity",
+)
+
+
+def _curve_metric(
+    identifier: str,
+    direction: MetricDirection,
+    summary: str,
+) -> MetricDefinition:
+    """Register one human-reference curve metric for generated play."""
+
+    return register_metric(
+        MetricDefinition(
+            identifier=identifier,
+            family=GENERATED_PLAY_FAMILY.identifier,
+            direction=direction,
+            definition_version=1,
+            summary=summary,
+            cost=MetricCost.GENERATED,
+            execution_sensitive=True,
+        )
+    )
+
+
+def _quantity_slug(quantity: str) -> str:
+    """Return the metric-identifier form of a compared quantity's name."""
+
+    return quantity.replace("-", "_")
+
+
+#: The distances that say whether generated play looks human. Unlike the raw
+#: rollout scalars these have a direction: closer to matched human play is
+#: better, which is the project's stated goal rather than an invented target.
+#: Read them against the reference levels each comparison estimates for itself,
+#: since two finite samples of one population never agree exactly.
+GENERATED_PLAY_CONDITIONAL_DISTANCE: Mapping[str, MetricDefinition] = {
+    quantity: _curve_metric(
+        f"generated_play.{_quantity_slug(quantity)}_conditional_distance",
+        MetricDirection.LOWER_IS_BETTER,
+        (
+            f"Mean distance between the generated and human {quantity} curves "
+            "over the rating points the model supports. The rating-conditional "
+            "reading: whether the model plays like humans of the rating it was "
+            "told to play at."
+        ),
+    )
+    for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
+}
+
+GENERATED_PLAY_POOLED_DISTANCE: Mapping[str, MetricDefinition] = {
+    quantity: _curve_metric(
+        f"generated_play.{_quantity_slug(quantity)}_pooled_distance",
+        MetricDirection.LOWER_IS_BETTER,
+        (
+            f"Distance between the rating-free generated and human {quantity} "
+            "distributions. Separate from the conditional reading because a "
+            "model can match humans on average while matching none of them at "
+            "any particular rating."
+        ),
+    )
+    for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
+}
+
+#: Informational rather than directional, and deliberately so: a flat curve
+#: only means something beside the human curve it is supposed to follow. A
+#: model whose pooled distribution matches while this sits at the no-response
+#: null has learned the average human and is ignoring its rating input, which
+#: is the behavioral form of a rating-dependency test.
+GENERATED_PLAY_RATING_VARIATION: Mapping[str, MetricDefinition] = {
+    quantity: _curve_metric(
+        f"generated_play.{_quantity_slug(quantity)}_rating_variation",
+        MetricDirection.INFORMATIONAL,
+        (
+            f"How much the generated {quantity} curve moves across the rating "
+            "range, as the mean distance of its points from its own average. "
+            "Read against the level a model with no rating response would show."
+        ),
+    )
+    for quantity in GENERATED_PLAY_COMPARED_QUANTITIES
+}
 
 
 TRAINING_HEALTH_GRADIENT_NORM = register_metric(

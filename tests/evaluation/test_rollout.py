@@ -1,0 +1,1043 @@
+"""What a rollout suite measures, and what makes two cells comparable."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import chess
+import pytest
+import torch
+from pydantic import ValidationError
+
+from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
+    RESIGNATION_ACTION_ID,
+    encode_move,
+)
+from anthro_chess.config import ConfigProvenance, ResolvedConfig
+from anthro_chess.data import DecisionContext
+from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation.games import GameTermination
+from anthro_chess.evaluation.reference import (
+    DECLARED_NEIGHBOURS,
+    ComparedQuantity,
+    curve_spec,
+)
+from anthro_chess.evaluation.results import (
+    CheckpointReference,
+    DetailStore,
+    ResultEnvelope,
+    ResultsStore,
+)
+from anthro_chess.evaluation.results.metrics import (
+    GENERATED_PLAY_CONDITIONAL_DISTANCE,
+    GENERATED_PLAY_DECISIVE_GAME_RATE,
+    GENERATED_PLAY_DISTINCT_GAME_FRACTION,
+    GENERATED_PLAY_FAMILY,
+    GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION,
+    GENERATED_PLAY_MEAN_GAME_PLIES,
+    GENERATED_PLAY_RESIGNATION_RATE,
+    GENERATED_PLAY_UNFINISHED_GAME_RATE,
+    GENERATED_PLAY_WHITE_SCORE,
+    MetricDefinition,
+    registered_metrics,
+)
+from anthro_chess.evaluation.rollout import (
+    ROLLOUT_KIND,
+    RolloutArm,
+    RolloutBenchmarkConfig,
+    RolloutBenchmarkError,
+    RolloutBenchmarkResult,
+    benchmark_rollout,
+)
+from anthro_chess.runtime import RuntimeConfig
+
+CHECKPOINT = CheckpointReference(label="fixture-checkpoint", step=1)
+
+
+@dataclass
+class TrajectoryRunner:
+    """A stand-in policy that depends only on trajectory length and rating.
+
+    Deterministic given its inputs, so a suite's reproducibility is a property
+    of the harness and the seeds rather than of a lucky model.
+    """
+
+    calls: int = 0
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        self.calls += 1
+        generator = torch.Generator().manual_seed(
+            len(context.plies) * 1000 + (context.target_rating or 0)
+        )
+        return torch.randn(ACTION_VOCABULARY_SIZE, generator=generator)
+
+
+@dataclass
+class ResigningRunner:
+    """A stand-in policy that always prefers to resign."""
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        logits = torch.zeros(ACTION_VOCABULARY_SIZE)
+        logits[RESIGNATION_ACTION_ID] = 20.0
+        return logits
+
+
+#: One game of six plies per cell unless a test asks for more. Every count here
+#: is a sample size rather than a measurement setting, so shrinking them for the
+#: CPU suite leaves the measured quantities alone.
+_BASE_GRID: dict[str, Any] = {
+    "target_ratings": (1200,),
+    "temperatures": (1.0,),
+    "seeds": (0,),
+}
+_BASE_GENERATION: dict[str, Any] = {
+    "games_per_position": 1,
+    "maximum_generated_plies": 6,
+    "swap_colors": False,
+}
+
+
+def _config(**overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
+    """Return a resolved suite small enough for the CPU test suite.
+
+    Nested overrides merge into the small defaults, so a test naming one field
+    of the grid does not silently inherit the production game counts.
+    """
+
+    fields: dict[str, Any] = {"runtime": RuntimeConfig()}
+    # Off unless a test asks: these exercise the matrix, and a comparison needs
+    # a human reference far larger than a fixture pool can hold.
+    fields["reference"] = {"enabled": False, **overrides.pop("reference", {})}
+    fields["grid"] = {**_BASE_GRID, **overrides.pop("grid", {})}
+    fields["generation"] = {**_BASE_GENERATION, **overrides.pop("generation", {})}
+    fields.update(overrides)
+    return ResolvedConfig(
+        value=RolloutBenchmarkConfig.model_validate(fields),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+
+def _run(
+    config: ResolvedConfig[RolloutBenchmarkConfig],
+    *,
+    runner: Any | None = None,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> RolloutBenchmarkResult:
+    return benchmark_rollout(
+        config,
+        runner=runner or TrajectoryRunner(),
+        checkpoint=CHECKPOINT,
+        store=store,
+        detail=detail,
+    )
+
+
+def _curve_envelope(result: RolloutBenchmarkResult) -> ResultEnvelope:
+    """Return the envelope carrying one reading's distances."""
+
+    (reading,) = result.readings
+    for envelope in result.envelopes:
+        if (
+            envelope.execution is not None
+            and envelope.execution.workload_sha256 == reading.execution.workload_sha256
+        ):
+            return envelope
+    raise AssertionError("no envelope was recorded for the curve reading")
+
+
+def _sample(envelope: ResultEnvelope, metric: MetricDefinition) -> int | None:
+    """Return one metric's recorded sample size."""
+
+    found = envelope.measurement(metric.identifier)
+    assert found is not None
+    return found.sample_size
+
+
+@pytest.fixture
+def pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a tiny pool whose test games are long enough to prefix."""
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [
+            normalized_row(1, split="train"),
+            normalized_row(2, split="test", plies=8),
+            normalized_row(3, split="test", plies=10, result="0-1"),
+        ],
+    )
+    output = tmp_path / "pool"
+    freeze_pool(
+        ResolvedConfig(
+            value=PoolConfig.model_validate(
+                {
+                    "pool_id": "fixture-test",
+                    "normalized": str(normalized),
+                    "manifest": str(manifest),
+                }
+            ),
+            provenance=ConfigProvenance(source=None, overrides=()),
+        ),
+        output,
+    )
+    return output
+
+
+@pytest.fixture
+def reference_pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a pool with enough rated games to estimate a curve from.
+
+    Ratings are spread across the grid on purpose: a reference bunched at one
+    rating would have nothing to say about how behavior varies with it, which
+    is the whole point of the conditional reading.
+    """
+
+    rows = [
+        normalized_row(
+            index,
+            split="test",
+            plies=4 + (index % 5) * 2,
+            rating=1100 + (index % 12) * 100,
+            result=("1-0", "0-1", "1/2-1/2")[index % 3],
+        )
+        for index in range(1, 61)
+    ]
+    normalized, manifest = write_corpus(tmp_path / "reference-corpus", rows)
+    output = tmp_path / "reference-pool"
+    freeze_pool(
+        ResolvedConfig(
+            value=PoolConfig.model_validate(
+                {
+                    "pool_id": "fixture-reference",
+                    "normalized": str(normalized),
+                    "manifest": str(manifest),
+                }
+            ),
+            provenance=ConfigProvenance(source=None, overrides=()),
+        ),
+        output,
+    )
+    return output
+
+
+@pytest.fixture
+def small_bandwidth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shrink the declared bandwidth so a fixture reference can support it.
+
+    The declared value is chosen from tens of thousands of real games and a
+    fixture cannot hold that many. Shrinking it here keeps these tests about the
+    wiring; the declared constant itself is asserted separately and exercised by
+    a real run.
+    """
+
+    for quantity in ComparedQuantity:
+        monkeypatch.setitem(DECLARED_NEIGHBOURS, quantity, 4)
+
+
+def _compared(pool: Path, **overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
+    """Return a suite that compares its generated play against human play."""
+
+    reference = {"enabled": True, "resamples": 8, **overrides.pop("reference", {})}
+    return _config(pool=str(pool), reference=reference, **overrides)
+
+
+def test_the_declared_bandwidth_is_one_frozen_value() -> None:
+    """Re-selecting per run would measure two checkpoints differently.
+
+    Pinned as a test because the constant is a benchmark-version commitment
+    rather than a tuning knob: changing it ends every curve series, so it should
+    not be possible to change quietly.
+    """
+
+    assert set(DECLARED_NEIGHBOURS) == set(ComparedQuantity)
+    assert set(DECLARED_NEIGHBOURS.values()) == {1024}
+    for quantity in ComparedQuantity:
+        spec = curve_spec(quantity, (1200, 1800))
+        assert spec.neighbours == 1024
+        assert spec.quantity is quantity.kind
+        # The evaluation points are the ratings played, not a declared grid.
+        assert spec.grid == (1200.0, 1800.0)
+
+
+def test_every_generated_play_metric_is_reported_by_the_benchmark(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A registered metric no benchmark writes is a series that never starts."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+        )
+    )
+
+    reported = {
+        item.metric for envelope in result.envelopes for item in envelope.measurements
+    }
+    registered = {
+        metric.identifier
+        for metric in registered_metrics(GENERATED_PLAY_FAMILY.identifier)
+    }
+    assert reported == registered
+
+
+def test_a_curve_reading_spans_the_rating_grid_rather_than_one_cell(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A curve's axis is the rating, so a single cell has no curve at all."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1600, 2000), "temperatures": (0.7, 1.0)},
+        )
+    )
+
+    assert len(result.cells) == 6
+    # One reading per arm and temperature, each spanning all three ratings.
+    assert len(result.readings) == 2
+    for reading in result.readings:
+        assert reading.ratings == (1200, 1600, 2000)
+        assert reading.model_games == 3
+    assert {reading.temperature for reading in result.readings} == {0.7, 1.0}
+
+
+def test_a_curve_reading_is_its_own_series_apart_from_the_cells(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A distance and a raw scalar are different quantities, so different series."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    cell_workloads = {cell.execution.workload_sha256 for cell in result.cells}
+    assert reading.execution.workload_sha256 not in cell_workloads
+    # The grid is the axis, so it replaces the single rating a cell declares.
+    assert reading.execution.workload["target_ratings"] == [1200, 1800]
+    assert "target_rating" not in reading.execution.workload
+
+
+def test_the_declared_curve_shape_scopes_the_comparison_series(
+    reference_pool: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two bandwidths estimate different quantities, however alike they look.
+
+    This is why the bandwidth is declared and frozen rather than configured: if
+    it did not scope the series, a checkpoint measured at one smoothing would be
+    plotted against one measured at another.
+    """
+
+    workloads = []
+    for neighbours in (4, 6):
+        for quantity in ComparedQuantity:
+            monkeypatch.setitem(DECLARED_NEIGHBOURS, quantity, neighbours)
+        result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+        workloads.append(result.readings[0].execution.workload_sha256)
+
+    assert workloads[0] != workloads[1]
+
+
+def test_a_temperature_change_starts_a_new_curve_series(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Temperature is a separate dial, not a point on the rating axis."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "temperatures": (0.5, 1.0)},
+        )
+    )
+
+    assert len({r.execution.workload_sha256 for r in result.readings}) == 2
+
+
+def test_every_compared_quantity_is_measured_against_the_human_reference(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A quantity with no comparison is a claim about human-likeness never made."""
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    assert set(reading.comparisons) == set(ComparedQuantity)
+    for quantity, comparison in reading.comparisons.items():
+        assert comparison.spec.quantity is quantity.kind
+        assert comparison.human_games == reading.human_games
+        assert comparison.model_games == reading.model_games
+
+
+def test_a_distance_carries_the_floor_it_has_to_clear(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A distance shown without its floor invites reading noise as a finding.
+
+    The floor is evaluation noise rather than data-sampling noise, because what
+    it qualifies is a delta between two checkpoints measured against the same
+    human reference: re-measuring means generating another draw of games.
+    """
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    envelope = _curve_envelope(result)
+    for quantity in ComparedQuantity:
+        conditional = envelope.measurement(
+            GENERATED_PLAY_CONDITIONAL_DISTANCE[quantity.value].identifier
+        )
+        assert conditional is not None
+        assert conditional.value >= 0.0
+        assert conditional.noise_floor is not None
+        assert conditional.noise_floor.kind == "evaluation"
+
+
+def test_the_seeds_re_measure_each_distance_independently(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The bootstrap floor is an estimate; the seeds are the thing itself.
+
+    Recording both is what makes the floor checkable. A bootstrap can only
+    reshuffle the games one run produced, so it can understate the spread a
+    genuinely fresh draw would show.
+    """
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1, 2)},
+        )
+    )
+
+    (reading,) = result.readings
+    assert set(reading.seed_spread) == set(ComparedQuantity)
+    for spread in reading.seed_spread.values():
+        assert [seed for seed, _ in spread.distances] == [0, 1, 2]
+        assert spread.floor is not None and spread.floor >= 0.0
+
+
+def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A floor has to be estimated at the sample size the reading was taken at.
+
+    Each seed plays a fraction of the suite's games, so the spread across seeds
+    measures the noise of a much smaller reading and runs roughly the square
+    root of the seed count too wide. The bootstrap resamples the games this
+    reading actually generated, which is the right size, so it is what gets
+    committed and the seeds stay a diagnostic.
+    """
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1, 2)},
+        )
+    )
+
+    (reading,) = result.readings
+    envelope = _curve_envelope(result)
+    for quantity, comparison in reading.comparisons.items():
+        item = envelope.measurement(
+            GENERATED_PLAY_CONDITIONAL_DISTANCE[quantity.value].identifier
+        )
+        assert item is not None and item.noise_floor is not None
+        assert comparison.floors is not None
+        assert item.noise_floor.value == pytest.approx(
+            comparison.floors.conditional.value
+        )
+
+
+def test_two_seeds_report_their_distances_without_inventing_a_floor(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A floor from two replicates would license almost any delta."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1)},
+        )
+    )
+
+    (reading,) = result.readings
+    for spread in reading.seed_spread.values():
+        assert len(spread.distances) == 2
+        assert spread.floor is None
+
+
+def test_a_model_matching_the_reference_reads_closer_than_one_that_does_not(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The distance has to actually rank two checkpoints, or it says nothing.
+
+    This is the property that makes the family directional: unlike a draw rate,
+    a smaller distance to matched human play is unambiguously better, and that
+    only holds if a worse model measures further away.
+    """
+
+    close = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            generation={"maximum_generated_plies": 8},
+        )
+    )
+    # A model stopped after two plies produces games nothing like the human
+    # ones, which have to read as further away on length.
+    far = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            generation={"maximum_generated_plies": 2},
+        )
+    )
+
+    metric = ComparedQuantity.GAME_LENGTH
+    assert (
+        far.readings[0].comparisons[metric].pooled_distance
+        > close.readings[0].comparisons[metric].pooled_distance
+    )
+
+
+def test_the_comparison_needs_a_pool_to_read_its_reference_from() -> None:
+    """A comparison with no human side is a verdict with nothing behind it."""
+
+    with pytest.raises(ValidationError, match="needs pool"):
+        _config(reference={"enabled": True})
+
+
+def test_curve_points_stay_in_the_detail_tier(
+    tmp_path: Path,
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Points are data a later chart queries, not a number for the summary."""
+
+    result = _run(
+        _compared(reference_pool, grid={"target_ratings": (1200, 1800)}),
+        store=ResultsStore(tmp_path / "results"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    envelope = _curve_envelope(result)
+    assert envelope.detail is not None
+    payload = json.loads(
+        next(path for path in result.detail_paths if "curves" in path.name).read_text()
+    )
+    assert set(payload["comparisons"]) == {q.value for q in ComparedQuantity}
+    length = payload["comparisons"][ComparedQuantity.GAME_LENGTH.value]
+    assert [point["rating"] for point in length["points"]] == [1200.0, 1800.0]
+    assert length["response"] in {
+        "matches",
+        "average_human",
+        "divergent_response",
+        "mismatch",
+        "unknown",
+    }
+    assert payload["reference"]["games"] > 0
+
+
+def test_the_reference_excludes_lopsided_games_and_says_so(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A mismatch belongs to neither player's rating, so it is not averaged in."""
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            reference={"enabled": True, "resamples": 8, "maximum_rating_gap": 0},
+        )
+    )
+
+    assert result.reference is not None
+    assert result.reference.games
+    record = result.reference.as_record()
+    assert record["rating_range"][0] <= record["rating_range"][1]
+
+
+def test_the_matrix_produces_one_result_per_cell() -> None:
+    """Each cell is its own measurement, so each gets its own envelope."""
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1000, 1800),
+                "temperatures": (0.5, 1.0),
+                "seeds": (0,),
+            }
+        )
+    )
+
+    assert len(result.cells) == 4
+    assert len(result.envelopes) == 4
+    assert {
+        (cell.arm, cell.target_rating, cell.temperature) for cell in result.cells
+    } == {
+        (RolloutArm.STANDARD_START, 1000, 0.5),
+        (RolloutArm.STANDARD_START, 1000, 1.0),
+        (RolloutArm.STANDARD_START, 1800, 0.5),
+        (RolloutArm.STANDARD_START, 1800, 1.0),
+    }
+
+
+def test_a_dial_change_starts_a_new_series_and_a_seed_change_does_not() -> None:
+    """Rating and temperature decide what was measured; seeds decide precision.
+
+    This is the whole comparability contract for this benchmark. If seeds
+    entered identity, adding replicates to narrow a noisy metric would silently
+    abandon its history; if the dials did not, two temperatures would be plotted
+    as though one had improved on the other.
+    """
+
+    graded = _run(
+        _config(
+            grid={
+                "target_ratings": (1000, 1800),
+                "temperatures": (0.5, 1.0),
+                "seeds": (0,),
+            }
+        )
+    )
+    fingerprints = {
+        cell.execution.workload_sha256: (cell.target_rating, cell.temperature)
+        for cell in graded.cells
+    }
+    assert len(fingerprints) == 4
+
+    one_seed = _run(_config(grid={"seeds": (0,)}))
+    three_seeds = _run(_config(grid={"seeds": (0, 1, 2)}))
+    assert (
+        one_seed.cells[0].execution.workload_sha256
+        == three_seeds.cells[0].execution.workload_sha256
+    )
+    assert three_seeds.games > one_seed.games
+
+
+def test_a_ply_limit_change_starts_a_new_series() -> None:
+    """A game cut off at six plies is not the same quantity as one at sixty."""
+
+    short = _run(_config(generation={"maximum_generated_plies": 6}))
+    longer = _run(_config(generation={"maximum_generated_plies": 8}))
+
+    assert (
+        short.cells[0].execution.workload_sha256
+        != longer.cells[0].execution.workload_sha256
+    )
+
+
+def test_concurrency_does_not_start_a_new_series() -> None:
+    """Batching is a throughput setting, so it must not end a series."""
+
+    sequential = _run(_config(generation={"maximum_generated_plies": 6}))
+    batched = _run(_config(generation={"maximum_generated_plies": 6, "concurrency": 4}))
+
+    assert (
+        sequential.cells[0].execution.workload_sha256
+        == batched.cells[0].execution.workload_sha256
+    )
+
+
+def test_explicit_seeds_reproduce_the_same_games() -> None:
+    """A recorded seed has to reproduce its suite, or nothing else is checkable."""
+
+    first = _run(_config(grid={"seeds": (0, 1)}))
+    second = _run(_config(grid={"seeds": (0, 1)}))
+
+    assert [record.game_id for record in first.cells[0].records] == [
+        record.game_id for record in second.cells[0].records
+    ]
+    assert first.cells[0].distribution.as_record() == (
+        second.cells[0].distribution.as_record()
+    )
+
+
+def test_a_different_seed_produces_a_different_suite() -> None:
+    """Reproducibility must not come from the seed being ignored."""
+
+    baseline = _run(_config(grid={"seeds": (0,)}))
+    other = _run(_config(grid={"seeds": (7,)}))
+
+    assert [record.game_id for record in baseline.cells[0].records] != [
+        record.game_id for record in other.cells[0].records
+    ]
+
+
+def test_seeds_are_kept_apart_so_their_spread_stays_readable() -> None:
+    """Pooling the cell must not lose the per-seed readings behind it.
+
+    The spread across seeds is this benchmark's evaluation noise, and it is
+    unrecoverable from a pooled number alone.
+    """
+
+    result = _run(_config(grid={"seeds": (0, 1, 2)}))
+
+    cell = result.cells[0]
+    assert [seed for seed, _ in cell.per_seed] == [0, 1, 2]
+    assert cell.distribution.games == sum(
+        distribution.games for _, distribution in cell.per_seed
+    )
+
+
+def test_the_ply_limit_is_reported_as_unfinished_rather_than_as_a_result() -> None:
+    """An adjudicated game has no result, so it must not read as a draw."""
+
+    result = _run(_config(generation={"maximum_generated_plies": 2}))
+
+    cell = result.cells[0]
+    assert cell.distribution.termination_counts == {GameTermination.PLY_LIMIT.value: 1}
+    assert cell.distribution.result_counts == {"*": 1}
+    envelope = result.envelopes[0]
+    unfinished = envelope.measurement(GENERATED_PLAY_UNFINISHED_GAME_RATE.identifier)
+    assert unfinished is not None
+    assert unfinished.value == pytest.approx(1.0)
+    # With nothing finished there is no white score to report, and inventing a
+    # half would read as a balanced suite.
+    white = envelope.measurement(GENERATED_PLAY_WHITE_SCORE.identifier)
+    assert white is not None
+    assert white.value == pytest.approx(0.0)
+
+
+def test_a_metric_averaged_over_a_subset_reports_that_subset_as_its_sample() -> None:
+    """Sample size is per metric, because three of them average over a subset.
+
+    Reporting the suite's game count for a cycle depth estimated from the games
+    that repeated would overstate its precision to every reader, the noise-floor
+    layer included. An empty subset reports no sample size rather than one.
+    """
+
+    result = _run(
+        _config(generation={"games_per_position": 2, "maximum_generated_plies": 6})
+    )
+
+    (envelope,) = result.envelopes
+    distribution = result.cells[0].distribution
+    assert distribution.games == 2
+    # Nothing repeated and nothing finished inside six plies, so both subsets
+    # are empty and neither reports a sample size it does not have.
+    assert distribution.repeated_games == 0
+    assert _sample(envelope, GENERATED_PLAY_MEAN_CYCLE_PLY_FRACTION) is None
+    assert _sample(envelope, GENERATED_PLAY_DECISIVE_GAME_RATE) is None
+    # A rate over every game keeps the suite's count.
+    assert _sample(envelope, GENERATED_PLAY_UNFINISHED_GAME_RATE) == 2
+    assert _sample(envelope, GENERATED_PLAY_MEAN_GAME_PLIES) == 2
+
+
+def test_a_finished_game_counts_toward_the_rates_computed_over_results() -> None:
+    """The denominator for a decisive rate is the games that produced a result."""
+
+    result = _run(
+        _config(runtime=RuntimeConfig(resignation_enabled=True)),
+        runner=ResigningRunner(),
+    )
+
+    (envelope,) = result.envelopes
+    assert _sample(envelope, GENERATED_PLAY_DECISIVE_GAME_RATE) == 1
+    decisive = envelope.measurement(GENERATED_PLAY_DECISIVE_GAME_RATE.identifier)
+    assert decisive is not None
+    # A resignation is a decided game, so it is decisive rather than unfinished.
+    assert decisive.value == pytest.approx(1.0)
+
+
+def test_a_resigning_model_is_recorded_as_resigning() -> None:
+    """Resignation is a model ending, so it needs its own visible rate."""
+
+    result = _run(
+        _config(runtime=RuntimeConfig(resignation_enabled=True)),
+        runner=ResigningRunner(),
+    )
+
+    cell = result.cells[0]
+    assert cell.distribution.termination_counts == {
+        GameTermination.RESIGNATION.value: 1
+    }
+    rate = result.envelopes[0].measurement(GENERATED_PLAY_RESIGNATION_RATE.identifier)
+    assert rate is not None
+    assert rate.value == pytest.approx(1.0)
+
+
+def test_resignation_enablement_starts_a_new_series() -> None:
+    """Whether the model may resign changes what every ending means."""
+
+    disabled = _run(_config(runtime=RuntimeConfig(resignation_enabled=False)))
+    enabled = _run(_config(runtime=RuntimeConfig(resignation_enabled=True)))
+
+    assert (
+        disabled.cells[0].execution.workload_sha256
+        != enabled.cells[0].execution.workload_sha256
+    )
+
+
+def test_temperature_zero_collapses_the_suite_to_one_trajectory() -> None:
+    """The diversity metric has to be able to see a collapsed policy.
+
+    Greedy selection makes every game from one position identical, which is the
+    failure mode a single-seed rollout cannot distinguish from stable behavior.
+    """
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200,),
+                "temperatures": (0.0,),
+                "seeds": (0, 1, 2),
+            },
+            generation={"games_per_position": 2, "maximum_generated_plies": 6},
+        )
+    )
+
+    fraction = result.envelopes[0].measurement(
+        GENERATED_PLAY_DISTINCT_GAME_FRACTION.identifier
+    )
+    assert fraction is not None
+    assert result.cells[0].distribution.games == 6
+    assert fraction.value == pytest.approx(1.0 / 6.0)
+
+
+def test_multiple_games_aggregate_into_one_cell_reading() -> None:
+    """A cell's reading is over every game it played, not the last one."""
+
+    result = _run(
+        _config(
+            generation={
+                "games_per_position": 3,
+                "maximum_generated_plies": 6,
+                "swap_colors": True,
+            }
+        )
+    )
+
+    cell = result.cells[0]
+    assert cell.distribution.games == 6
+    mean = result.envelopes[0].measurement(GENERATED_PLAY_MEAN_GAME_PLIES.identifier)
+    assert mean is not None
+    assert mean.value == pytest.approx(cell.distribution.mean_ply_count)
+    assert mean.sample_size == 6
+
+
+def test_prefix_continuations_start_from_the_human_games(pool: Path) -> None:
+    """A prefix arm has to actually replay the pool's openings."""
+
+    result = _run(
+        _config(
+            arms=(RolloutArm.HUMAN_PREFIX,),
+            pool=str(pool),
+            prefix={"plies": 4},
+        )
+    )
+
+    cell = result.cells[0]
+    assert cell.arm is RolloutArm.HUMAN_PREFIX
+    assert cell.positions == 2
+    for record in cell.records:
+        assert record.prefix_plies == 4
+        assert record.source_game_id in {2, 3}
+        board = chess.Board()
+        for move_text in ("e2e4", "e7e5", "g1f3", "b8c6"):
+            move = chess.Move.from_uci(move_text)
+            assert record.action_ids[board.ply()] == encode_move(move)
+            board.push(move)
+        # The decisions start where the prefix stops, so a continuation is
+        # measured on what the model added rather than on the human opening.
+        assert record.decisions[0].ply_index == 4
+
+
+def test_prefix_depth_and_pool_identity_scope_the_series(pool: Path) -> None:
+    """Continuing a different opening, or a different depth, is a new quantity."""
+
+    shallow = _run(
+        _config(
+            arms=(RolloutArm.HUMAN_PREFIX,),
+            pool=str(pool),
+            prefix={"plies": 4},
+        )
+    )
+    deeper = _run(
+        _config(
+            arms=(RolloutArm.HUMAN_PREFIX,),
+            pool=str(pool),
+            prefix={"plies": 6},
+        )
+    )
+
+    assert (
+        shallow.cells[0].execution.workload_sha256
+        != deeper.cells[0].execution.workload_sha256
+    )
+    workload = shallow.cells[0].execution.workload["positions"]
+    assert workload["prefix_plies"] == 4
+    assert workload["pool_id"] == "fixture-test"
+    assert workload["game_ids_sha256"]
+
+
+def test_the_two_arms_are_separate_series_over_one_run(pool: Path) -> None:
+    """One run, two position sources, two series rather than a blended one."""
+
+    result = _run(
+        _config(
+            arms=(RolloutArm.STANDARD_START, RolloutArm.HUMAN_PREFIX),
+            pool=str(pool),
+            prefix={"plies": 4},
+        )
+    )
+
+    assert {cell.arm for cell in result.cells} == {
+        RolloutArm.STANDARD_START,
+        RolloutArm.HUMAN_PREFIX,
+    }
+    assert len({cell.execution.workload_sha256 for cell in result.cells}) == 2
+
+
+def test_the_prefix_arm_records_its_human_games_as_provenance(pool: Path) -> None:
+    """A reader has to be able to tell which openings a rollout continued.
+
+    The digest is provenance rather than identity: a generated-play metric
+    declares no projection, so this never enters a fingerprint.
+    """
+
+    result = _run(
+        _config(
+            arms=(RolloutArm.STANDARD_START, RolloutArm.HUMAN_PREFIX),
+            pool=str(pool),
+            prefix={"plies": 4},
+        )
+    )
+
+    assert result.dataset is not None
+    assert result.dataset.selected_games == 2
+    by_arm = {
+        envelope.execution.workload["positions"]["kind"]: envelope
+        for envelope in result.envelopes
+        if envelope.execution is not None
+    }
+    assert by_arm[RolloutArm.HUMAN_PREFIX.value].data is not None
+    assert by_arm[RolloutArm.STANDARD_START.value].data is None
+    for envelope in result.envelopes:
+        for item in envelope.measurements:
+            assert item.fingerprint == envelope.expected_fingerprint(item.metric)
+
+
+def test_the_prefix_view_excludes_games_shorter_than_the_prefix(pool: Path) -> None:
+    """A truncated prefix is a different measurement, so it is excluded loudly."""
+
+    result = _run(
+        _config(
+            arms=(RolloutArm.HUMAN_PREFIX,),
+            pool=str(pool),
+            prefix={"plies": 10},
+        )
+    )
+
+    assert result.view is not None
+    assert result.view.selected_games == 1
+    assert result.view.excluded_games == {"shorter_than_prefix": 1}
+
+
+def test_a_prefix_deeper_than_every_game_fails_rather_than_measuring_nothing(
+    pool: Path,
+) -> None:
+    result = _config(
+        arms=(RolloutArm.HUMAN_PREFIX,),
+        pool=str(pool),
+        prefix={"plies": 40},
+    )
+
+    with pytest.raises(RolloutBenchmarkError, match="selected no games"):
+        _run(result)
+
+
+def test_the_prefix_arm_needs_a_pool() -> None:
+    """A missing pool is a configuration error, not a silently skipped arm."""
+
+    with pytest.raises(ValidationError, match="needs pool"):
+        _config(arms=(RolloutArm.HUMAN_PREFIX,))
+
+
+def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
+    """Records are bulk diagnostics: referenced from the summary, never in it."""
+
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _run(
+        _config(generation={"games_per_position": 2, "maximum_generated_plies": 6}),
+        store=store,
+        detail=detail,
+    )
+
+    (envelope,) = result.envelopes
+    assert envelope.kind == ROLLOUT_KIND
+    assert envelope.detail is not None
+    assert envelope.execution is not None
+    (path,) = result.detail_paths
+    payload = json.loads(path.read_text())
+    assert len(payload["games_detail"]) == 2
+    assert payload["workload_sha256"] == envelope.execution.workload_sha256
+    # The committed record carries scalars and a reference, nothing bulk.
+    committed = json.loads(result.recorded_paths[0].read_text())
+    assert "games_detail" not in json.dumps(committed)
+
+
+def test_retaining_games_can_be_turned_off(tmp_path: Path) -> None:
+    """A long suite must be runnable without keeping every game on disk."""
+
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _run(
+        _config(detail={"retain_games": False}),
+        store=ResultsStore(tmp_path / "results"),
+        detail=detail,
+    )
+
+    assert result.cells[0].records == ()
+    payload = json.loads(result.detail_paths[0].read_text())
+    assert payload["games_detail"] == []
+    assert payload["distribution"]["games"] == 1
+
+
+def test_recording_can_be_skipped_entirely() -> None:
+    """An exploratory reading is real but does not belong in the history."""
+
+    result = _run(_config())
+
+    assert result.envelopes
+    assert result.recorded_paths == ()
+    assert result.detail_paths == ()
+
+
+def test_a_supplied_runner_needs_a_checkpoint_reference() -> None:
+    """A result with no checkpoint identity cannot be compared to anything."""
+
+    with pytest.raises(RolloutBenchmarkError, match="checkpoint reference"):
+        benchmark_rollout(_config(), runner=TrajectoryRunner())
+
+
+def test_a_grid_axis_cannot_be_empty_or_repeat_a_value() -> None:
+    with pytest.raises(ValidationError, match="at least one target_ratings"):
+        _config(grid={"target_ratings": ()})
+    with pytest.raises(ValidationError, match="must not repeat a seeds"):
+        _config(grid={"seeds": (0, 0)})

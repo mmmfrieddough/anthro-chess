@@ -46,6 +46,21 @@ filters, and expected generated identity for `anthro eval prepare-puzzles`.
 Puzzle records remain under `ANTHRO_CHESS_DATA_ROOT`; only the recipe and
 expected identity are committed.
 
+It also contains the generated-play rollout selection for `anthro eval rollout`,
+which declares the matrix a suite plays rather than naming a checkpoint. Values
+that decide what is measured — the arms, the rating and temperature grids, the
+ply limit, the color and draw-claim settings — are part of series identity, so
+changing one starts a new series. The seed list, games per position, resample
+count, and concurrency are sample and throughput settings and can be raised
+freely.
+
+The same selection names the pool the human reference is read from. That
+comparison is what turns the rollout scalars into a statement about
+human-likeness, so it is on by default and a suite without a pool has to say so
+explicitly. The curve bandwidth is deliberately not configurable: it is selected
+once from the corpus with `anthro eval curve-bandwidth` and frozen in code,
+because re-selecting it per run would measure two checkpoints differently.
+
 Add a focused `runtime/` subdirectory when the corresponding command exists. Do
 not add speculative example files for commands that have not been implemented.
 

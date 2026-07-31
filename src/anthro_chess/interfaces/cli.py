@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         PoolConfig,
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkResult,
+        RolloutBenchmarkResult,
     )
     from anthro_chess.evaluation.results import BridgeIndex, ResultEnvelope
     from anthro_chess.training import TrainingConfig
@@ -319,6 +320,99 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: %(default)s).",
     )
     inference_parser.set_defaults(handler=_run_eval_inference)
+
+    rollout_parser = eval_commands.add_parser(
+        "rollout",
+        help=(
+            "Play a declared matrix of generated games and report what whole "
+            "games look like."
+        ),
+    )
+    rollout_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML rollout-benchmark selection.",
+    )
+    rollout_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    _add_store_argument(rollout_parser)
+    rollout_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    rollout_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Play and print without writing to the store. Use this for an "
+            "exploratory reading at one temperature, which is real but does "
+            "not belong in the committed history."
+        ),
+    )
+    rollout_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    rollout_parser.set_defaults(handler=_run_eval_rollout)
+
+    bandwidth_parser = eval_commands.add_parser(
+        "curve-bandwidth",
+        help=(
+            "Select each generated-play curve's bandwidth from the human "
+            "reference. An offline step whose output is declared in code."
+        ),
+    )
+    bandwidth_parser.add_argument(
+        "pool",
+        type=Path,
+        help="Frozen evaluation pool the human reference is read from.",
+    )
+    bandwidth_parser.add_argument(
+        "--maximum-games",
+        type=int,
+        help=(
+            "Subsample the reference to this many games. Selection is over the "
+            "whole reference by default, which is what a declared bandwidth "
+            "should be chosen from."
+        ),
+    )
+    bandwidth_parser.add_argument(
+        "--maximum-rating-gap",
+        type=int,
+        default=200,
+        help="Widest rating gap a reference game may have (default: %(default)s).",
+    )
+    bandwidth_parser.add_argument(
+        "--candidates",
+        type=int,
+        nargs="+",
+        default=(64, 128, 256, 512, 1024, 2048, 4000, 6000),
+        help=(
+            "Candidate neighbour counts to score. The default reaches well past "
+            "the declared bandwidth on purpose: a candidate set that stops at "
+            "the optimum cannot show whether the optimum is interior."
+        ),
+    )
+    bandwidth_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    bandwidth_parser.set_defaults(handler=_run_eval_curve_bandwidth)
 
     decisions_parser = eval_commands.add_parser(
         "decisions",
@@ -1087,6 +1181,251 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
+
+
+def _run_eval_rollout(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation import (
+        RolloutBenchmarkConfig,
+        RolloutBenchmarkError,
+        benchmark_rollout,
+    )
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    try:
+        resolved = load_config(
+            RolloutBenchmarkConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        store = (
+            None
+            if arguments.no_record
+            else ResultsStore(resolve_store_root(arguments.store))
+        )
+        detail = (
+            None
+            if arguments.no_record
+            else DetailStore(resolve_detail_root(arguments.detail_root))
+        )
+        result = benchmark_rollout(
+            resolved,
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+        )
+    except (ConfigError, RolloutBenchmarkError, ResultsStoreError) as error:
+        print(f"anthro eval rollout: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
+        return 0
+    print(_render_rollout(result), end="")
+    return 0
+
+
+def _render_rollout(result: RolloutBenchmarkResult) -> str:
+    from anthro_chess.evaluation.games import GameTermination
+
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        f"Games: {result.games} across {len(result.cells)} matrix cell(s)",
+    ]
+    if result.view is not None:
+        record = result.view.as_record()
+        lines.append(
+            f"Prefix view: {result.view.name} "
+            f"({result.view.selected_games} of {result.view.eligible_games} "
+            f"eligible game(s), prefix {record['prefix_plies']} plies)"
+        )
+    for cell in result.cells:
+        distribution = cell.distribution
+        unfinished = distribution.termination_counts.get(
+            GameTermination.PLY_LIMIT.value, 0
+        )
+        lines.extend(
+            [
+                "",
+                f"{cell.label}  "
+                f"(series workload {cell.execution.workload_sha256[:12]})",
+                (
+                    f"  games          {distribution.games} from "
+                    f"{cell.positions} position(s) over {len(cell.seeds)} seed(s)"
+                ),
+                (
+                    f"  length         mean {distribution.mean_ply_count:.1f} plies "
+                    f"({distribution.mean_generated_plies:.1f} generated)"
+                ),
+                f"  results        {_counts(distribution.result_counts)}",
+                f"  terminations   {_counts(distribution.termination_counts)}",
+                f"  unfinished     {unfinished} at the ply limit",
+                (
+                    f"  repetition     {distribution.repeated_games} repeated, "
+                    f"{distribution.threefold_claimable_games} threefold-claimable, "
+                    f"cycle fraction {distribution.mean_cycle_ply_fraction:.3f}"
+                ),
+                (
+                    f"  diversity      {distribution.distinct_game_fraction:.3f} "
+                    f"distinct games, {distribution.mean_distinct_move_fraction:.3f} "
+                    "distinct moves"
+                ),
+                f"  openings       {_counts(distribution.opening_counts, limit=5)}",
+            ]
+        )
+    for reading in result.readings:
+        lines.extend(
+            [
+                "",
+                f"Against matched human play — {reading.label}  "
+                f"(series {reading.execution.workload_sha256[:12]})",
+                (
+                    f"  {reading.model_games} generated game(s) across ratings "
+                    f"{', '.join(str(rating) for rating in reading.ratings)} "
+                    f"vs {reading.human_games} human game(s)"
+                ),
+                (
+                    f"  {'quantity':<16}{'conditional':>13}{'floor':>10}"
+                    f"{'seed range':>22}{'pooled':>10}{'reads as':>18}"
+                ),
+            ]
+        )
+        for quantity, comparison in reading.comparisons.items():
+            floor = (
+                "-"
+                if comparison.floors is None
+                else f"{comparison.floors.conditional.value:.4f}"
+            )
+            spread = reading.seed_spread.get(quantity)
+            seeded = (
+                "-"
+                if spread is None or spread.floor is None
+                else (f"{spread.floor:.4f}")
+            )
+            lines.append(
+                f"  {quantity.value:<16}"
+                f"{comparison.conditional_distance:>13.4f}"
+                f"{floor:>10}"
+                f"{seeded:>10}"
+                f"{comparison.pooled_distance:>10.4f}"
+                f"{comparison.response.value:>22}"
+            )
+        replicates = max(
+            (len(spread.distances) for spread in reading.seed_spread.values()),
+            default=0,
+        )
+        if replicates > 1:
+            # The seed range is a diagnostic, not a second floor: each seed
+            # played a fraction of the games, so its reading is noisier and
+            # biased high, and comparing its spread to the floor would compare
+            # two different sample sizes.
+            lines.append(
+                f"  floor qualifies a delta; seed range is each of {replicates} "
+                f"seeds read alone on {1 / replicates:.0%} of the games"
+            )
+    if result.recorded_paths:
+        lines.extend(
+            ["", f"Recorded: {len(result.recorded_paths)} result(s)"],
+        )
+        lines.extend(f"  {path}" for path in result.recorded_paths)
+    else:
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    return "\n".join(lines) + "\n"
+
+
+def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
+    from anthro_chess.data.artifacts import read_normalized_rows
+    from anthro_chess.evaluation import EvaluationPoolError, ViewConfig, load_pool
+    from anthro_chess.evaluation.reference import (
+        ReferenceConfig,
+        ReferenceError,
+        human_reference,
+        select_bandwidths,
+    )
+    from anthro_chess.evaluation.views import apply_view
+
+    try:
+        pool = load_pool(arguments.pool)
+        selection = apply_view(
+            pool.games,
+            ViewConfig(
+                name="curve-bandwidth",
+                maximum_games=arguments.maximum_games,
+                require_ratings=True,
+            ),
+        )
+        wanted = set(selection.game_ids)
+        rows = [
+            row
+            for row in read_normalized_rows(pool.games_path)
+            if int(row["game_id"]) in wanted
+        ]
+        reference = human_reference(
+            rows,
+            ReferenceConfig(maximum_rating_gap=arguments.maximum_rating_gap),
+        )
+        selections = select_bandwidths(
+            reference,
+            candidates=tuple(arguments.candidates),
+        )
+    except (EvaluationPoolError, ReferenceError, ValueError) as error:
+        print(f"anthro eval curve-bandwidth: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(
+            json.dumps(
+                {
+                    "reference": reference.as_record(),
+                    "selections": {
+                        quantity.value: chosen.as_record()
+                        for quantity, chosen in selections.items()
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    lines = [
+        f"Human reference: {len(reference.games)} game(s)",
+        f"Excluded: {_counts(reference.excluded)}",
+        "",
+        "Declare these in DECLARED_NEIGHBOURS and freeze them:",
+    ]
+    for quantity, chosen in selections.items():
+        lines.append(
+            f"  {quantity.value:<16} neighbours={chosen.neighbours:<6} "
+            f"error={chosen.error:.6g}  (from {chosen.observations} observations)"
+        )
+        # The whole scored curve, because an optimum sitting on the largest
+        # candidate is a boundary artifact rather than a selection, and only
+        # the neighbouring errors show which it is.
+        lines.append(
+            "      "
+            + "  ".join(
+                f"{neighbours}:{error:.6g}" for neighbours, error in chosen.candidates
+            )
+        )
+    print("\n".join(lines))
+    return 0
+
+
+def _counts(counts: Mapping[str, int], *, limit: int | None = None) -> str:
+    """Render a count mapping most-frequent first, truncated when asked."""
+
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    shown = ordered if limit is None else ordered[:limit]
+    rendered = ", ".join(f"{name}={count}" for name, count in shown)
+    remaining = len(ordered) - len(shown)
+    return f"{rendered} (+{remaining} more)" if remaining else rendered or "none"
 
 
 def _run_eval_decisions(arguments: argparse.Namespace) -> int:

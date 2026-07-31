@@ -11,10 +11,11 @@ versions, file layout, and command shape, so a refactor or a new flag leaves
 every series intact while a change to what was measured breaks one
 automatically.
 
-Efficiency metrics add one more realized input: the **declared workload**. A
-latency figure taken at forty plies and one taken at eighty measure different
-quantities, exactly as two different pools do, so the workload digest belongs
-in identity and those metrics carry a :class:`WorkloadComponent`.
+Efficiency and generated-play metrics add one more realized input: the
+**declared workload**. A latency figure taken at forty plies and one taken at
+eighty measure different quantities, exactly as two different pools do, and so
+do rollouts played at two temperatures, so the workload digest belongs in
+identity and those metrics carry a :class:`WorkloadComponent`.
 
 The machine deliberately does not. A cross-machine latency delta is not
 meaningless — it is perfectly interpretable, just attributable to the
@@ -93,17 +94,18 @@ class DataComponent:
 
 @dataclass(frozen=True)
 class WorkloadComponent:
-    """The declared-workload half of an efficiency metric's fingerprint.
+    """The declared-settings half of a workload-scoped metric's fingerprint.
 
-    A workload says *what* was timed: the ply depth a latency figure was taken
-    at, the batch size a throughput figure was declared for. Change it and the
-    number measures a different quantity, which is the same test that puts
-    scored content into identity.
+    A workload says *what* was measured under which declared conditions: the
+    ply depth a latency figure was taken at, the batch size a throughput figure
+    was declared for, the rating and temperature a rollout figure was played
+    at. Change it and the number measures a different quantity, which is the
+    same test that puts scored content into identity.
 
     How many samples were taken is deliberately absent. Measuring more
-    decisions estimates the same quantity more precisely, in the same way that
-    scoring more games does, so sample counts stay provenance rather than
-    identity.
+    decisions, or generating more games, estimates the same quantity more
+    precisely, in the same way that scoring more games does, so sample counts
+    stay provenance rather than identity.
     """
 
     sha256: str
@@ -123,11 +125,11 @@ class WorkloadComponent:
 
 
 def workload_digest(workload: Mapping[str, Any]) -> str:
-    """Digest the declared workload of an efficiency benchmark.
+    """Digest the declared workload of a workload-scoped benchmark.
 
-    A benchmark passes only the settings that decide what was timed. Passing
-    its whole configuration would put warmup counts and output paths into
-    series identity and break the series on every unrelated flag.
+    A benchmark passes only the settings that decide what was measured. Passing
+    its whole configuration would put warmup counts, concurrency, and output
+    paths into series identity and break the series on every unrelated flag.
     """
 
     return _canonical_digest(

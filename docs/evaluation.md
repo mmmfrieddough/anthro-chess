@@ -92,14 +92,19 @@ restructuring. Metrics with no data dependency, such as optimizer and parameter
 statistics, carry no data component in their fingerprint and are therefore
 immune to changes in evaluation inputs.
 
-Efficiency metrics carry one further component: the **declared workload**, the
-settings that decide what was timed. Change the ply depth a latency figure is
-taken at and the number measures a different quantity, so that belongs in
-identity just as scored content does. The **machine** deliberately does not. A
-cross-machine latency delta is interpretable rather than meaningless — it is
-just attributable to the environment rather than to the model — so it is
-attributed by a report instead of ending a series.
-`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule.
+Efficiency and generated-play metrics carry one further component: the
+**declared workload**, the settings that decide what was measured. Change the
+ply depth a latency figure is taken at, or the temperature a rollout is played
+at, and the number measures a different quantity, so that belongs in identity
+just as scored content does. Sample counts do not: generating more games, like
+scoring more, estimates the same quantity more precisely. The **machine**
+deliberately does not either. A cross-machine latency delta is interpretable
+rather than meaningless — it is just attributable to the environment rather than
+to the model — so it is attributed by a report instead of ending a series.
+`docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule and
+`docs/decisions/0020-declared-settings-scope-generated-series.md` extends it to
+generated play, including why a rollout's human prefixes are provenance rather
+than a data component.
 
 ### Where The Store Lives
 
@@ -239,18 +244,39 @@ Reports should annotate every change with the noise floor it did or did not
 clear, and a delta inside the floor should be visible but marked rather than
 hidden, so a consistent small regression is not lost.
 
-Three sources of noise are distinct, and conflating them is the usual mistake:
+Three sources of noise are distinct, and conflating them is the usual mistake.
+Each one licenses a different comparison, so the useful way to name them is by
+the question they answer rather than by how they are computed:
 
-- **evaluation noise**: the same checkpoint re-measured on the same data.
-  Deterministic offline metrics over a frozen pool have none; rollout metrics
-  have a lot, driven by seeds.
+- **evaluation noise**: the same checkpoint re-measured. This is the floor that
+  qualifies a **delta between two checkpoints**, which is the project's central
+  comparison. Deterministic offline metrics over a frozen pool have none;
+  rollout metrics have a lot, driven by seeds.
 - **data-sampling noise**: how much the metric would move on a different draw of
-  the same size from the same population. Estimable by bootstrapping from a
-  single run, so it costs nothing, and it is what says whether a pool or a view
-  is large enough.
+  the same size from the same population. It sizes a **view or a pool** and does
+  *not* qualify a checkpoint delta. Estimable by bootstrapping from a single
+  run, so it costs nothing.
 - **training noise**: the same configuration trained from a different seed. This
-  is the floor that decides whether a *model change* is real, and it is the
-  expensive one, since it needs several training runs.
+  qualifies a **configuration change** rather than a checkpoint delta, and it is
+  the expensive one, since it needs several training runs.
+
+The first two coincide for generated play, and that is worth stating plainly
+because the definitions above read as if they never could. A rollout has no
+fixed data to re-measure on — the games *are* the draw — so bootstrapping the
+generated games and re-running under another seed estimate the same quantity.
+That is why a generated-play floor is evaluation noise even though it is
+computed by a bootstrap, and why rollout metrics need no separate expensive
+characterization.
+
+A floor that qualifies a delta must exclude anything the two sides of that delta
+share. Two checkpoints are compared against the *same fixed* human reference, so
+the reference's own sampling error is common-mode and cancels; including it can
+only inflate the floor and hide real movement. Only the side being compared is
+resampled. How much this matters depends on how thin the reference is relative
+to the bandwidth: on a reference of a few hundred games it widened floors
+noticeably, while at the declared bandwidth over the frozen blitz pool the
+difference was under a percent. It is excluded because it is not part of the
+question, rather than because it is always large.
 
 All three reduce to one reportable quantity: the spread of the metric across
 replicates of that noise source. A **floor** is that spread expressed as a
@@ -402,8 +428,8 @@ were shrunk. Optimizer and parameter statistics have no data dependency at all.
 A model's exact policy at a fixed position is one forward pass, so distribution
 comparisons over early-game positions are exactly computable rather than
 estimated from rollouts. These belong at frequent cadences without any loss of
-precision. Rollout metrics are the opposite: irreducibly sampled, with view size
-as the only dial.
+precision. Rollout metrics are the opposite: irreducibly sampled, with the
+number of games generated as the only dial.
 
 View size should be declared explicitly rather than resolved from a compute or
 time budget. An adaptive budget would make the same cadence resolve differently
@@ -1431,6 +1457,102 @@ interaction is the measurement target. The reusable core should cover:
 - rating and temperature grids as independent controls;
 - enough games per configuration to distinguish one deterministic trajectory
   from a stable behavioral pattern.
+
+`anthro_chess.evaluation.rollout` implements that core and owns the matrix, the
+metric set it reports, and the artifact it writes. It produces two units, and
+the distinction matters. A **cell** is one arm at one rating and one temperature,
+and carries the raw rollout scalars; the seeds inside it are replicates whose
+spread is that cell's evaluation noise, so they are kept apart in the artifact
+rather than only pooled. A **reading** spans one arm's whole rating grid at one
+temperature and carries the distances against matched human play. Both arms run
+in one pass over one checkpoint so they share a grid and a seed derivation.
+
+The reading is the unit because the rating grid is the curve's axis: a single
+cell has one rating and therefore no curve at all. Temperature stays fixed
+across a reading rather than being a second axis, since mixing two temperatures
+into one curve would report a sampling setting as a rating effect.
+
+The curve is evaluated at exactly the conditioning ratings the suite played,
+rather than at a separately declared grid. Generated games are produced on
+demand and none is committed, so there is no reason to estimate the comparison
+where the model was never asked to play: such a point has a human curve and
+nothing to compare it against. A declared grid would also be a second list that
+has to agree with the configured ratings with nothing forcing it to. The points
+are still part of series identity, since the distance is a mean over them, and
+they reach the fingerprint through the rating grid the workload already carries.
+Want a finer curve, play more ratings. The **bandwidth** stays declared and
+frozen, because it is the smoothing rather than the points.
+
+`anthro_chess.evaluation.reference` owns the human side and the quantity
+definitions both sides are read through. One definition per quantity is the
+point: a game length measured one way on generated games and another way on
+human games yields a distance that is partly an artifact of the two
+implementations. Human games are reduced straight from the frozen pool rather
+than reconstructed into game records, because a human game has no seat
+configuration, no seed, and no ending the harness vocabulary can express —
+"lost on time" is not a rule outcome — so building a record would mean inventing
+all three. The shared trajectory analysis is what makes that unnecessary.
+
+Reference games are placed at the mean of the two players' ratings, and a game
+whose players are far apart is excluded rather than averaged into the middle: it
+is a mismatch rather than a game at the average of its two ratings, and its
+length and result belong to neither player's level.
+
+The floor is the comparison's own bootstrap over the games it generated. The
+per-seed distances are recorded beside it as a diagnostic and are deliberately
+*not* used as a floor: each seed plays only its share of the suite's games, so a
+per-seed reading is a smaller-sample one — noisier, and biased away from the
+reference, since a distributional distance estimated from few games per rating
+point reads high. Comparing that spread against the pooled reading's floor
+compares two sample sizes and makes the bootstrap look roughly the square root
+of the seed count too narrow. Checked against forty independent draws at a fixed
+size, the bootstrap reproduces the true spread to within a few percent, which is
+what a floor has to do.
+
+The declared bandwidth is one value for every quantity rather than one each.
+Selected over thousands of matched-rating games of the frozen blitz pool, only
+game length, opening, and move diversity have an interior cross-validation
+optimum; result and cycle improve monotonically to the largest candidate,
+because human result and cycle behavior barely varies with rating. Freezing
+those at the boundary would make the neighbourhood most of the reference at
+every point, which is a global average wearing the shape of a curve, and would
+collapse the conditional reading into the pooled one it is meant to be read
+against. The shared value is game length's own optimum and costs every other
+quantity under a quarter of a percent against its own best error, which is
+inside the noise of those optima.
+
+A sparse rating grid leaves evaluation points with no generated game nearby.
+Those drop out of the conditional reading rather than being interpolated, and
+the count of unsupported points is reported, because a distance averaged over a
+third of the grid should not read like one averaged over all of it.
+
+**The unfinished rate gates two of the quantities.** Game length and result are
+only about the model when the model's games actually end. Measured on the proof
+run, 72% of generated games hit the ply limit while 0.075% of human games in the
+same pool exceed it, which makes the result distance mostly a statement that the
+model does not finish, and makes the mean length a censored lower bound rather
+than an estimate. Neither is a defect in the comparison — the ply limit is in
+the declared workload and the unfinished rate is reported beside the distances —
+but the two should be read together, and a high unfinished rate means those two
+distances are measuring the ply limit rather than the checkpoint. Repetition,
+cycle, opening, and move diversity are computed from the play itself and stay
+interpretable regardless.
+
+The two arms are not interchangeable for every reading. On the prefix arm the
+opening distribution belongs to the view rather than to the model, because the
+prefix decided the opening before the model moved; measured on a real
+checkpoint, the prefix arm reports the identical opening counts at every rating.
+Repertoire is a statement about the model only on the standard-start arm, and
+the prefix arm's opening labels exist to slice its other readings rather than to
+be read as choices.
+
+Diversity is measured over *trajectories* rather than over record identities. A
+record's identity is derived from the whole record, seed included, so two
+replicates that played the identical game carry different ids; counting ids
+would report a suite collapsed onto one trajectory as fully diverse, which is
+the failure the measurement exists to catch. Temperature zero collapses it by
+construction, which is why the reading is scoped to the temperature it was
+played at rather than treated as something to maximize.
 
 Repetition needs both correctness tests and quality benchmarks. Correctness
 tests should use constructed move sequences with known non-repeating,
