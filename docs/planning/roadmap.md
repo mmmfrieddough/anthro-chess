@@ -217,16 +217,29 @@ that scale against a fixed external engine reference. It follows rather than
 leads because it needs an external binary and because an anchor is only useful
 once ordering already exists.
 
-Optional timing behavior comes last in this stage, after the move-only path is
-useful on its own. Timing diagnostics arrive with it.
+Timing is not one piece of work, and its parts have different deadlines. They
+are split across this stage and the next rather than staged together.
 
-Conditioning the policy on time control is a smaller, separable piece of that
-work, and it should land immediately before move-time prediction rather than
-earlier. It is what releases the training selection to widen across speeds, so
-staging it that way gives the change a before-and-after reading instead of
-bundling it with the timing feature. The corpus, the pool, and benchmark slicing
-widen across speeds well ahead of it; only training selection waits. See
-`docs/data.md` and `docs/design-principles.md`.
+**Timed-game breadth belongs to this stage and cannot slip.** Time control and
+timing-data presence are among the axes the corpus widens across, and the
+evaluation core is designated from the result. A core holding no timed games
+across speeds could never measure timing behavior, for the life of the project,
+so this half is irreversible and lands with the breadth pass rather than with
+the feature it serves. Benchmarks slice by speed from that point on.
+
+**Conditioning the policy on time control comes last in this stage**, after the
+move-only path is useful on its own. It is what releases training selection to
+widen across speeds, and staging it after the corpus, the pool, and benchmark
+slicing have already widened gives the change a before-and-after reading instead
+of bundling it with the timing feature. See `docs/data.md` and
+`docs/design-principles.md`, which uses this case as its worked example of the
+pattern.
+
+**The move-time head itself moves to stage 5.** It is a second output head, a
+second masked loss, its own diagnostics, and clock handling at the UCI boundary
+— a feature rather than a scaling step. `docs/data.md` also places useful timing
+conditioning at a corpus scale beyond where this stage's depth pass lands.
+Timing diagnostics arrive with it.
 
 Corpus-scale training should replace fixture-oriented eager per-ply
 materialization with bounded-memory shard-backed loading before attempting full
@@ -238,8 +251,17 @@ diagnostics available when a regression or surprising result appears.
 
 ### 5. Late Controllability
 
-Add learned preference controls after the model, runtime, and evaluation stack
-are clearly working.
+Add the move-time head and learned preference controls after the model, runtime,
+and evaluation stack are clearly working.
+
+Move-time prediction arrives here rather than with the scaling work. By this
+point the corpus, the evaluation core, and benchmark slicing already cover
+timing, and the policy already conditions on time control, so what remains is
+the feature itself: an action-conditioned time head, a masked timing objective
+for the games that carry usable clocks, the timing diagnostics, and clock
+handling at the UCI boundary. See `docs/architecture.md` and
+`docs/decisions/0003-action-conditioned-timing.md`. It precedes timing-style
+preference controls, which have nothing to steer until it exists.
 
 Preference controls for openings, style, timing style, player-inspired
 tendencies, and other human-play concepts are important to the end state, but
