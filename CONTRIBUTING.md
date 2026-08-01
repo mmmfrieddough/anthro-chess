@@ -85,9 +85,13 @@ uv run pytest --cov
 uv run pre-commit run --all-files
 ```
 
-The default test run is the fast CPU-only suite. Tests that require unusual
-resources must use the markers defined in `pyproject.toml`, such as `slow`,
-`gpu`, `network`, or `integration`, so callers can select them explicitly.
+The default run collects the whole suite. Markers do not remove tests from it;
+they let a caller select or exclude a group explicitly, as in
+`uv run pytest -m "not gpu"`. A test needing a resource the machine may not have
+must carry the matching marker from `pyproject.toml` and must also skip itself
+when that resource is absent. A machine without the resource therefore gets a
+fast CPU-only run by default, while a machine that has it exercises those tests
+too.
 
 Add focused tests for behavior changes. Documentation-only changes do not need
 artificial tests, but commands and links should be checked against the current
