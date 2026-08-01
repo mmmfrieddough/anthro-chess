@@ -39,21 +39,16 @@ status; and keep roadmap changes under `docs/planning/`.
 
 When choosing the next issue, select only a `type: task` issue in the active
 milestone that is attached to its tracker and has no open blockers. Treat any
-issue missing that metadata as intake awaiting maintainer triage. Also respect
-the execution capabilities declared for the session: a session without the
-specified GPU environment must exclude `execution: gpu-required` issues, while
-`verification: gpu-required` issues remain eligible for implementation and use
-the documented handoff when GPU verification remains.
+issue missing that metadata as intake awaiting maintainer triage. An issue
+labeled `execution: gpu-required` needs the GPU environment its body specifies.
+One labeled `verification: gpu-required` can be implemented without that
+environment and uses the documented handoff when the GPU check remains.
 
 A request to work on an issue is authorization to carry it through to a
 ready-for-review pull request that closes the issue on merge. The pull request
 is the maintainer's review boundary and is not merged by the agent. Several
 sessions often run against this repository at once, so the issue is claimed in
 GitHub while it is being worked on.
-
-Treat an explicit execution-surface or hardware capability declaration supplied
-by the dispatcher or environment as authoritative instead of guessing from the
-operating system or available commands.
 
 When a change alters what a chess GUI observes, offer a real GUI check without
 being asked: point the maintainer's GUI at the working checkout with
