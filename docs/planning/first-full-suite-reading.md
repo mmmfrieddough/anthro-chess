@@ -114,7 +114,68 @@ as a mismatch. Whether those are genuine absences of sampling variation or
 floors that could not be computed is not distinguishable from the output.
 
 Filed as #172 (the floor column), #173 (the missing puzzle resolution), and #175
-(a saturated arm reading like a measurement, and the zero floors).
+(a saturated arm reading like a measurement, and the zero floors). The ladder
+adds a fourth instance, recorded under "The rating dial does not control
+strength": its headline quantities read as noise while the quantity that
+discriminates is absent from them.
+
+### The rating dial does not control strength
+
+The ladder was run at its declared size — 15 seats, 105 pairings, 10,080 games
+per checkpoint — with:
+
+```console
+anthro eval ladder --config configs/evaluation/rating-ladder.toml \
+  --set 'model.checkpoint_path="<run>/checkpoints/step-<step>.pt"' --no-record
+```
+
+It cost **2.01 h and 1.83 h**, 3.84 hours for both checkpoints.
+
+At step 8000, temperature 1.0:
+
+| configured | fitted |
+| --- | --- |
+| 1200 | 1652 |
+| 1500 | 1647 |
+| 1800 | 1657 |
+| 2100 | 1645 |
+
+Every seat lands within a **12-Elo span across a 900-Elo configured range**. The
+transfer slope is −0.003, and pairwise ordering is 0.333, which is what chance
+looks like on four seats. The same holds at every temperature and at both
+checkpoints:
+
+| | step 100 | step 8000 |
+| --- | --- | --- |
+| span, t=0 | 17 | 10 |
+| slope, t=0 | 0.008 | −0.002 |
+| ordering, t=0 | 0.667 | 0.500 |
+| ladder error | 338.0 | 301.3 |
+
+Only ordering, slope, and span are comparable across checkpoints; a seat's
+absolute fitted number is set by an anchor and is not.
+
+The ablation arm is what makes this precise. Removing rating conditioning
+entirely moves self-play strength by **−41.8 Elo**, while moving the dial across
+its whole 900-Elo range moves it by about 10. The conditioning input is
+connected to something; that something is not strength. `attenuation` reads
++0.003 of the ablated drift avoided.
+
+This is the same result the puzzle benchmark and the rating-dependency test
+report from two other directions: conditioning is used — anchor policy
+divergence rose from 0.000658 to 0.019841 — and what it is used for is not
+playing strength. On the evidence here it is largely repertoire and phase
+behaviour, which is where the model's competence is concentrated.
+
+Filed as #177. This bears directly on the project's premise that behaviour is
+controllable through a target-rating dial, so it is a finding about the product
+and not only about the instrument.
+
+One instrument observation alongside it: the ladder's headline quantities read
+as noise at both checkpoints, while the quantity that did discriminate is not
+among them — scored games rose from 3,405 to 5,273 of 10,080, so the trained
+checkpoint reaches a decisive result far more often. Between 47% and 66% of
+games hit the ply limit, which is where most of the benchmark's cost goes.
 
 ### Puzzle rating response reads inverted
 
@@ -156,10 +217,9 @@ worth fixing is that the output does not say the reading is saturated.
 
 ## What This Reading Cannot Settle
 
-**The ladder was not read.** It is excluded from the reduced sweep because its
-cost is a seat grid rather than a sample size, and it has never run at its
-declared size. A full run on both checkpoints was started when this document was
-written; if it completes, this section is amended with the result.
+**The ladder was read separately, and is reported above.** It is excluded from
+the reduced sweep because its cost is a seat grid rather than a sample size, so
+it was run at its declared size on both checkpoints outside the sweep.
 
 **The generated-play side is thin.** Rollout and termination read 24 to 36 games
 at one seed. Both open findings above are on that side, which is where more
@@ -190,5 +250,11 @@ throughput curve straightened from 58/85/93/98 across batch sizes 1 through 16
 to 493/1,258/3,018/5,056.
 
 The practical consequence for planning is that generated-game cost fell from
-roughly 15–18 seconds per game to about 1.8, which is what makes a full ladder
-an overnight run rather than a multi-day one.
+roughly 15–18 seconds per game to about 0.7, which is what took the full ladder
+from an estimated two days per checkpoint to a measured two hours.
+
+Three cost estimates were made in the course of this work and all three were
+high, by factors of roughly 5, 2.6, and 2.6. Each was extrapolated from a small
+sample, and small samples understate throughput here because concurrency
+amortizes better at scale. Extrapolated benchmark costs in this repository should
+be treated as upper bounds until measured.
