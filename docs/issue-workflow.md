@@ -42,14 +42,10 @@ following are true in live GitHub metadata:
 The active milestone is the current roadmap stage represented by the live
 milestone and tracker state.
 
-Selection is also constrained by the execution capabilities declared for the
-session. A session without the GPU environment specified by an issue must
-exclude issues labeled `execution: gpu-required`. Issues labeled
-`verification: gpu-required` remain eligible because their implementation can
-be completed without a GPU. The dispatcher or execution environment should
-declare the session's surface and hardware capabilities explicitly; the
-implementation session should treat that declaration as authoritative rather
-than inferring capabilities from incidental host details.
+Selection is also constrained by the hardware an issue requires. An issue
+labeled `execution: gpu-required` is not available where the GPU environment its
+body specifies is not. An issue labeled `verification: gpu-required` stays
+available, because its implementation can be completed without a GPU.
 
 Public issue forms are intake, not an implementation queue. They must not
 automatically assign `type: task`, a milestone, a tracker relationship, or a
