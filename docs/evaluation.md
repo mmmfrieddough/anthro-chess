@@ -398,13 +398,22 @@ three or four replicates say very little about a spread. It also means adding
 replicates is the only way to narrow a floor without weakening what it claims,
 which is what the characterization defaults are chosen against.
 
-One thing the bound does not cover. It describes how well the spread *within* a
-characterization is known, and a report compares readings taken later, when the
-machine is in a different thermal and contention state than it was during
-characterization. That between-session drift is a different quantity, nothing
-here estimates it, and no arithmetic on the characterization's own replicates
-can. A floor should therefore be re-characterized when the machine's conditions
-have plainly moved, rather than treated as a constant of the hardware.
+One thing the bound does not cover, and it is the larger term. The bound
+describes how well the spread *within* a characterization is known. A report
+compares readings taken later, when the machine is in a different thermal and
+contention state, and no arithmetic on the characterization's own replicates can
+reach that drift.
+
+Measured rather than assumed: one configuration characterized and then read back
+on a quiet machine had 3.8% of its same-weights deltas clear their floors, and
+the identical configuration after an hour of sustained benchmarking had 15.9%.
+Machine state moved the result four times further than replacing the point
+estimate with its bound did, and it moved the median and mean latency series as
+much as the tail. So an execution floor is re-characterized when conditions have
+plainly moved rather than treated as a constant of the hardware, and whether
+storing one for later lookup is the right shape at all is an open question
+rather than a settled design.
+`docs/decisions/0026-conservative-dispersion-bounds.md` holds the evidence.
 
 The estimators differ even though the reported quantity does not. Data-sampling
 noise is bootstrapped by resampling the **games** a run scored, since positions

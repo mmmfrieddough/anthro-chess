@@ -82,10 +82,11 @@ is the intended effect and not a regression.
 
 Some series will not resolve at their current sample counts, and the widened
 floor makes that legible rather than causing it. `inference.move_latency_p99_ms`
-at thirty decisions is close to a max-of-thirty and already carried a floor of
-17.6 ms on a 27 ms value; the bound does not change what that series can answer,
-only how obvious it is that it cannot answer it. What sample count makes a p99
-resolvable is a benchmark-configuration question, tracked separately.
+at thirty decisions is close to a max-of-thirty, so its sampling distribution is
+a skewed extreme-order statistic while every factor here — the normal coverage
+quantile and the chi-squared bound alike — assumes it is not. The bound does not
+change what that series can answer, only how obvious it is that it cannot answer
+it, and more samples are not obviously the fix.
 
 The recorded gap between a dispersion and its bound is now actionable
 information: a wide gap says a floor is wide for lack of replicates, which more
@@ -98,16 +99,56 @@ now while a larger pool would carry more of them and a tighter bound. Erring the
 other way would size a pool that turns out not to resolve the effect it was cut
 for.
 
-The bound says nothing about **non-stationarity**, which is a real and separate
-limitation. It describes how well the spread within one characterization is
-known; a report compares readings taken later, when the machine's thermal and
-contention state has moved. No arithmetic on a characterization's own replicates
-can reach that, so a floor is re-characterized when conditions plainly change
-rather than treated as a constant of the hardware.
-
 `CHARACTERIZATION_VERSION` and the paired-contribution payload version both
 rise. Nothing in the committed results store held a characterization, so no
 recorded reading is invalidated.
+
+## What The Shakedown Found
+
+The reading that accepted this change also found the limit of it, and the second
+result is the more useful one.
+
+Ten readings of one checkpoint give forty-five same-weights pairs per metric —
+every pair a delta the floor claims to cover, with nothing changed between them.
+Across seven metrics that is 315 pairs, and a floor at 95% coverage should be
+cleared by about 5% of them. Measured on one checkpoint of
+`training-blitz-30k-v4`, six processes, thirty decisions:
+
+| machine state | bounded floor | point-estimate floor |
+| --- | --- | --- |
+| quiet | 12/315 (3.8%) | 37/315 (11.7%) |
+| after an hour of sustained benchmarking | 50/315 (15.9%) | 77/315 (24.4%) |
+
+The bound does what this decision claims: it cuts false findings by two to three
+times in both states, and in a quiet one it lands inside the coverage budget.
+
+**Machine state moves the result four times further than the estimator does.**
+Same configuration, same checkpoint, same decision count, same six processes —
+only the thermal and contention state differed. Nor is this confined to the
+tail: `move_latency_p50_ms` and `move_latency_mean_ms` both cleared 0/45 quiet
+and 12/45 and 15/45 hot. It is a property of applying a floor across a change in
+machine state, not of any one metric.
+
+The mechanism is visible in the numbers. The hot characterization measured a
+*tighter* p99 dispersion than the quiet one, 0.516 ms against 0.886 ms, and then
+its readings varied by up to 11.9 ms. The characterization window was calm and
+the window the readings landed in was not, so the floor described an interval of
+time rather than a machine.
+
+**This is non-stationarity, and no arithmetic on a characterization's own
+replicates can reach it.** The bound describes how well the spread within one
+characterization is known. It cannot describe drift between that characterization
+and a reading taken later, which is the larger term. A floor is therefore
+re-characterized when conditions plainly change rather than treated as a
+constant of the hardware — and whether a stored, looked-up execution floor is
+the right shape at all is a real question this evidence opens rather than
+settles. It is tracked separately, and answering it would likely remove code.
+
+An honest caveat on the process count: raising it buys precision on the smaller
+of the two error terms. The arithmetic case stands on its own — at three
+processes the bound sits 4.4 times above the measured dispersion and no floor
+resolves anything — but nobody should expect more processes to fix what the
+table above shows.
 
 ## Alternatives Considered
 
