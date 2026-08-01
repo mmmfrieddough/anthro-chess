@@ -176,8 +176,9 @@ before-and-after picture to be judged against.
 
 ## Selecting Within A Corpus
 
-Training selection should be able to filter within one broad corpus rather than
-relying on preparation-time filters to produce a narrower one.
+Training selection filters within one broad corpus rather than relying on
+preparation-time filters to produce a narrower one. It is a load-time property
+of a run, not a property of the prepared artifact.
 
 This is what makes the value of data measurable. Comparing a model trained on one
 speed against a model trained on several requires both to be scored against one
@@ -193,6 +194,26 @@ more informative for planning acquisition than any single comparison.
 A model trained on a narrow selection will score poorly on the axes it never saw.
 That is the measurement working rather than a regression, which is why these
 comparisons need the axis slice and not only the aggregate.
+
+The selection filters on the axes worth comparing models across, currently time
+control and rating, and subsamples by ranking on a digest of the game id. That
+rank is what makes a fraction reproducible on any machine and makes a smaller
+fraction a subset of a larger one, so a data-scaling curve is a series of
+nested selections rather than unrelated samples. A selection that matches no
+games fails rather than starting a run on nothing.
+
+Each run records the selection it resolved, not only the one it requested: the
+counts it kept, why it excluded the rest, and a digest of the selected game ids.
+The digest is what lets a later run confirm it reproduced the same games rather
+than only the same configuration, and it is what tells two runs over one corpus
+apart in the results store, where a result reaches its run through the
+checkpoint's run id. Exact field names, axes, and defaults live in
+`anthro_chess.data` rather than here.
+
+Ply-count, result, and opening filters are deliberately absent. Benchmarks
+measure the model's own distribution over those, so narrowing training on them
+distorts the very quantity being read; unlike the axes above, that distortion is
+not a comparison anyone wants to make.
 
 See `docs/decisions/0013-benchmark-result-comparability.md`.
 

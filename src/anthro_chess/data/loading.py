@@ -12,9 +12,10 @@ from typing import Any, TypeAlias, overload
 
 from anthro_chess.data.artifacts import (
     DataLoadingError,
+    game_ids_sha256,
     read_normalized_rows,
 )
-from anthro_chess.data.config import SequenceLoaderConfig
+from anthro_chess.data.config import SelectionConfig, SequenceLoaderConfig
 from anthro_chess.data.encoding import (
     BOARD_SQUARE_COUNT,
     GameEncodingInput,
@@ -24,7 +25,18 @@ from anthro_chess.data.encoding import (
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
 LOADER_STATE_VERSION = 4
+SELECTION_SPEC_VERSION = 1
 logger = logging.getLogger(__name__)
+#: The columns a selection filters on. Reading only these keeps the pass that
+#: resolves which games to keep far cheaper than the pass that encodes them.
+_SELECTION_COLUMNS = (
+    NormalizedColumn.GAME_ID,
+    NormalizedColumn.WHITE_NORMALIZED_RATING,
+    NormalizedColumn.BLACK_NORMALIZED_RATING,
+    NormalizedColumn.TIME_INITIAL_MS,
+    NormalizedColumn.TIME_INCREMENT_MS,
+    NormalizedColumn.SPLIT,
+)
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
     NormalizedColumn.GAME_ID,
@@ -121,6 +133,40 @@ class SequenceBatch:
 
 
 @dataclass(frozen=True)
+class SelectionResolution:
+    """Which games a load-time selection kept, and how to reproduce that set.
+
+    ``game_ids_sha256`` is what makes the record reproducible rather than
+    merely descriptive: a later run over the same corpus with the same spec
+    resolves the same digest, and a corpus that has since grown resolves a
+    different one.
+    """
+
+    spec: dict[str, object]
+    game_ids: tuple[int, ...]
+    eligible_games: int
+    excluded_games: dict[str, int]
+
+    @property
+    def selected_games(self) -> int:
+        """Return how many games survived filtering and subsampling."""
+
+        return len(self.game_ids)
+
+    def as_record(self) -> dict[str, object]:
+        """Return the resolved-selection record stored in run artifacts."""
+
+        return {
+            "version": SELECTION_SPEC_VERSION,
+            "spec": dict(sorted(self.spec.items())),
+            "eligible_games": self.eligible_games,
+            "selected_games": self.selected_games,
+            "excluded_games": dict(sorted(self.excluded_games.items())),
+            "game_ids_sha256": game_ids_sha256(self.game_ids),
+        }
+
+
+@dataclass(frozen=True)
 class SequenceLoaderState:
     """Serializable exact next-batch cursor for one deterministic loader epoch."""
 
@@ -169,6 +215,8 @@ class SequenceDataset(Sequence[SequenceExample]):
         identity_sha256: str,
         split: str = "train",
         chunk_length: int | None = None,
+        selection: SelectionConfig | None = None,
+        resolution: SelectionResolution | None = None,
     ) -> None:
         if not examples:
             raise DataLoadingError("no normalized games matched the loader selection")
@@ -176,6 +224,14 @@ class SequenceDataset(Sequence[SequenceExample]):
         self.identity_sha256 = identity_sha256
         self.split = split
         self.chunk_length = chunk_length
+        self.selection = SelectionConfig() if selection is None else selection
+        # A dataset built directly from examples never ran a resolution pass,
+        # so it reports the games it holds rather than claiming it filtered.
+        self.resolution = (
+            resolution
+            if resolution is not None
+            else _resolution_for_examples(self._examples, self.selection)
+        )
 
     def __len__(self) -> int:
         return len(self._examples)
@@ -198,20 +254,34 @@ class SequenceDataset(Sequence[SequenceExample]):
         *,
         split: str,
         chunk_length: int | None = None,
+        selection: SelectionConfig | None = None,
     ) -> SequenceDataset:
-        """Load, validate, encode, and optionally chunk normalized games."""
+        """Load, validate, encode, and optionally chunk normalized games.
 
+        Resolving the selection first means only the selected games are
+        encoded, which is where nearly all of the load cost is.
+        """
+
+        selection = SelectionConfig() if selection is None else selection
         normalized_paths = _normalize_paths(paths)
         logger.info(
             "Loading normalized %s split from %s shard(s)",
             split,
             len(normalized_paths),
         )
+        resolution = _resolve_selection(
+            normalized_paths,
+            split=split,
+            selection=selection,
+        )
+        selected = frozenset(resolution.game_ids)
         examples: list[SequenceExample] = []
         identity_records: list[dict[str, object]] = []
         for shard_index, path in enumerate(normalized_paths):
             for row in read_normalized_rows(path, _LOADER_COLUMNS):
                 if row[NormalizedColumn.SPLIT] != split:
+                    continue
+                if row[NormalizedColumn.GAME_ID] not in selected:
                     continue
                 game = _game_from_row(row, path)
                 plies = encode_game(game)
@@ -245,8 +315,10 @@ class SequenceDataset(Sequence[SequenceExample]):
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         logger.info(
-            "Loaded %s sequence example(s) for the %s split",
+            "Loaded %s sequence example(s) from %s of %s eligible %s game(s)",
             len(examples),
+            resolution.selected_games,
+            resolution.eligible_games,
             split,
         )
         return cls(
@@ -254,6 +326,8 @@ class SequenceDataset(Sequence[SequenceExample]):
             identity_sha256=identity_sha256,
             split=split,
             chunk_length=chunk_length,
+            selection=selection,
+            resolution=resolution,
         )
 
 
@@ -270,6 +344,10 @@ class SequenceDataLoader(Iterator[SequenceBatch]):
         if config.chunk_length != dataset.chunk_length:
             raise DataLoadingError(
                 "loader chunk_length does not match the sequence dataset"
+            )
+        if config.selection != dataset.selection:
+            raise DataLoadingError(
+                "loader selection does not match the sequence dataset"
             )
         self.dataset = dataset
         self.config = config
@@ -341,6 +419,7 @@ class SequenceDataLoader(Iterator[SequenceBatch]):
                 paths,
                 split=config.split,
                 chunk_length=config.chunk_length,
+                selection=config.selection,
             ),
             config,
         )
@@ -455,6 +534,123 @@ def _normalize_paths(
     if missing:
         raise DataLoadingError(f"normalized Parquet file does not exist: {missing[0]}")
     return tuple(sorted(normalized, key=lambda path: str(path.resolve())))
+
+
+def _resolve_selection(
+    paths: Sequence[Path],
+    *,
+    split: str,
+    selection: SelectionConfig,
+) -> SelectionResolution:
+    """Decide which games in one split the configured selection keeps."""
+
+    eligible: list[int] = []
+    excluded: dict[str, int] = {}
+    for path in paths:
+        for row in read_normalized_rows(path, _SELECTION_COLUMNS):
+            if row[NormalizedColumn.SPLIT] != split:
+                continue
+            reason = _exclusion_reason(row, selection)
+            if reason is None:
+                eligible.append(row[NormalizedColumn.GAME_ID])
+            else:
+                excluded[reason] = excluded.get(reason, 0) + 1
+
+    ordered = sorted(eligible, key=lambda game_id: _rank_key(selection.seed, game_id))
+    kept = len(ordered)
+    if selection.fraction is not None:
+        # Floor rather than round up: a fraction small enough to select nothing
+        # should fail as an empty selection instead of quietly training on one
+        # game.
+        kept = int(len(ordered) * selection.fraction)
+    if selection.maximum_games is not None:
+        kept = min(kept, selection.maximum_games)
+
+    return SelectionResolution(
+        spec=selection.model_dump(mode="json"),
+        game_ids=tuple(sorted(ordered[:kept])),
+        eligible_games=len(eligible),
+        excluded_games=excluded,
+    )
+
+
+def _resolution_for_examples(
+    examples: Sequence[SequenceExample],
+    selection: SelectionConfig,
+) -> SelectionResolution:
+    game_ids = tuple(sorted({example.game_id for example in examples}))
+    return SelectionResolution(
+        spec=selection.model_dump(mode="json"),
+        game_ids=game_ids,
+        eligible_games=len(game_ids),
+        excluded_games={},
+    )
+
+
+def _exclusion_reason(row: Mapping[str, Any], selection: SelectionConfig) -> str | None:
+    time_initial = row[NormalizedColumn.TIME_INITIAL_MS]
+    time_increment = row[NormalizedColumn.TIME_INCREMENT_MS]
+    ratings = (
+        row[NormalizedColumn.WHITE_NORMALIZED_RATING],
+        row[NormalizedColumn.BLACK_NORMALIZED_RATING],
+    )
+    bounds_time_initial = (
+        selection.minimum_time_initial_ms is not None
+        or selection.maximum_time_initial_ms is not None
+    )
+    bounds_time_increment = (
+        selection.minimum_time_increment_ms is not None
+        or selection.maximum_time_increment_ms is not None
+    )
+    bounds_rating = (
+        selection.minimum_rating is not None or selection.maximum_rating is not None
+    )
+
+    if (bounds_time_initial and time_initial is None) or (
+        bounds_time_increment and time_increment is None
+    ):
+        return "missing_time_control"
+    if (selection.require_ratings or bounds_rating) and any(
+        rating is None for rating in ratings
+    ):
+        return "missing_ratings"
+
+    checks: tuple[tuple[str, int | None, int | None, int | None], ...] = (
+        (
+            "time_initial",
+            time_initial,
+            selection.minimum_time_initial_ms,
+            selection.maximum_time_initial_ms,
+        ),
+        (
+            "time_increment",
+            time_increment,
+            selection.minimum_time_increment_ms,
+            selection.maximum_time_increment_ms,
+        ),
+    )
+    for name, value, minimum, maximum in checks:
+        if value is None:
+            continue
+        if minimum is not None and value < minimum:
+            return f"below_minimum_{name}"
+        if maximum is not None and value > maximum:
+            return f"above_maximum_{name}"
+
+    for rating in ratings:
+        if rating is None:
+            continue
+        if selection.minimum_rating is not None and rating < selection.minimum_rating:
+            return "below_minimum_rating"
+        if selection.maximum_rating is not None and rating > selection.maximum_rating:
+            return "above_maximum_rating"
+    return None
+
+
+def _rank_key(seed: str, game_id: int) -> bytes:
+    """Rank uniformly by game id so a subsample stays representative."""
+
+    return sha256(f"{seed}\0{game_id}".encode()).digest()
 
 
 def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:

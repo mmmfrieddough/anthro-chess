@@ -37,6 +37,18 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def game_ids_sha256(game_ids: Sequence[int]) -> str:
+    """Return the order-independent identity digest for a set of game ids.
+
+    Both a frozen evaluation pool and a load-time training selection identify
+    themselves by which games they hold, so they share one digest rather than
+    two that could drift apart.
+    """
+
+    joined = ",".join(str(game_id) for game_id in sorted(game_ids))
+    return sha256(joined.encode()).hexdigest()
+
+
 def normalized_shard_paths(path: Path) -> tuple[Path, ...]:
     """Resolve a normalized selection that is either one shard or a directory."""
 

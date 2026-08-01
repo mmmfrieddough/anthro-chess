@@ -1003,6 +1003,11 @@ def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
             "normalized_paths": [str(path.resolve()) for path in paths],
             "dataset_sha256": loader.dataset.identity_sha256,
             "loader_configuration_sha256": loader.configuration_sha256,
+            # The resolved selection, not only the requested one: two runs
+            # differing only in what they trained on are told apart here, and
+            # the digest is what lets a later run confirm it reproduced the
+            # same games rather than merely the same configuration.
+            "selection": loader.dataset.resolution.as_record(),
         },
     )
 

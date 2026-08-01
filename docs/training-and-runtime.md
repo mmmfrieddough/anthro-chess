@@ -328,6 +328,11 @@ comparison, resume, provenance, and later runtime selection. A model runner can
 accept an explicit compatible checkpoint path beneath this root without copying
 it or requiring an external model registry.
 
+The run record carries the training selection the run resolved as well as the
+corpus it read, because two runs over one corpus can differ only in what they
+selected from it. `docs/data.md` owns what that selection is and why it is a
+load-time dial.
+
 The metrics stream carries more than one kind of record, each labelled, because
 a cadence reading and an optimizer step do not arrive on the same schedule and
 should not be forced into one row. A reader selects the kind it wants rather
