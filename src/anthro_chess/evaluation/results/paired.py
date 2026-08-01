@@ -17,6 +17,10 @@ from typing import Any
 import numpy as np
 from pydantic import Field, model_validator
 
+from anthro_chess.evaluation.results.noise import (
+    DEFAULT_CONFIDENCE,
+    dispersion_bound,
+)
 from anthro_chess.evaluation.results.records import (
     Identifier,
     NoiseFloor,
@@ -28,7 +32,8 @@ from anthro_chess.evaluation.results.store import (
     ResultsStoreError,
 )
 
-PAIRED_CONTRIBUTIONS_VERSION = 1
+#: Version 2 added the confidence the floor's dispersion bound carries.
+PAIRED_CONTRIBUTIONS_VERSION = 2
 PAIRED_CONTRIBUTIONS_KEY = "paired_contributions"
 
 
@@ -44,6 +49,7 @@ class PairedContributions(ResultModel):
     resamples: int = Field(ge=100)
     seed: int = Field(ge=0)
     coverage: float = Field(gt=0.0)
+    confidence: float = Field(default=DEFAULT_CONFIDENCE, gt=0.0, lt=1.0)
 
     @model_validator(mode="after")
     def _validate_alignment(self) -> PairedContributions:
@@ -93,6 +99,7 @@ def paired_contributions(
     resamples: int,
     seed: int,
     coverage: float,
+    confidence: float = DEFAULT_CONFIDENCE,
 ) -> PairedContributions:
     """Build validated aligned values for one deterministic benchmark result."""
 
@@ -108,6 +115,7 @@ def paired_contributions(
         resamples=resamples,
         seed=seed,
         coverage=coverage,
+        confidence=confidence,
     )
 
 
@@ -148,6 +156,7 @@ class PairedFloorIndex:
             or left.resamples != right.resamples
             or left.seed != right.seed
             or left.coverage != right.coverage
+            or left.confidence != right.confidence
         ):
             return {}
 
@@ -186,9 +195,21 @@ class PairedFloorIndex:
             resamples=left.resamples,
         )
         dispersions = np.std(replicates, axis=0, ddof=1)
+        # The matched units are the independent replicates, not the resamples
+        # drawn from them. There is no sqrt(2) here either: this bootstrap
+        # resamples the delta itself, so the spread it reports is already the
+        # spread of a difference rather than of one side of one.
+        freedom = len(left.unit_ids) - 1
         return {
             metric: NoiseFloor(
-                value=float(left.coverage * dispersion),
+                value=float(
+                    left.coverage
+                    * dispersion_bound(
+                        float(dispersion),
+                        degrees_of_freedom=freedom,
+                        confidence=left.confidence,
+                    )
+                ),
                 kind="data-sampling",
                 source=(
                     f"{left.resamples} "

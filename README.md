@@ -86,7 +86,7 @@ in the same process when the GUI first synchronizes with `isready`:
 
 ```console
 uv run anthro-uci \
-  --set 'model.checkpoint_path="/absolute/run/checkpoints/step-00000001.pt"' \
+  --set 'model.checkpoint_path="/absolute/run/checkpoints/<checkpoint>.pt"' \
   --set 'model.device="cpu"'
 ```
 

@@ -18,9 +18,8 @@ uv sync --locked
 export ANTHRO_UCI_EXECUTABLE="$PWD/.venv/bin/anthro-uci"
 ```
 
-Set `ANTHRO_CHESS_RUN_ROOT` to the machine-local directory containing complete
-training runs. The current Playable Proof checkpoint is retained in
-`decision-conditioned-rating-proof-v3`:
+Set `ANTHRO_CHESS_RUN_ROOT` to the machine-local directory holding complete
+training runs, as described in `CONTRIBUTING.md`:
 
 ```console
 export ANTHRO_CHESS_RUN_ROOT="/absolute/path/to/anthro-chess/runs"
@@ -29,6 +28,14 @@ export ANTHRO_CHESS_RUN_ROOT="/absolute/path/to/anthro-chess/runs"
 The run directory must contain its `run.json`, checkpoint directory, and
 compatibility metadata. Do not copy out only the weight file.
 
+Which run to play is a machine-local decision rather than a documented one.
+The engine validates a checkpoint against the current action vocabulary and
+encoding and refuses an incompatible one, so a run trained before either was
+last bumped is no longer playable and naming one here would go stale on the
+next bump. The run root's default model selection record answers the question
+instead: when it names a run, the engine needs no model arguments at all, and
+otherwise every command below takes an explicit selection.
+
 For a persistent setup, save a strict configuration file outside the
 repository. The GUI launcher reads it from `gui.toml` in the state directory
 described under [Connect A Chess GUI](#connect-a-chess-gui); any other location
@@ -36,7 +43,7 @@ works for direct invocation:
 
 ```toml
 [model]
-checkpoint_path = "/absolute/run/checkpoints/step-00002000.pt"
+checkpoint_path = "/absolute/run/checkpoints/<checkpoint>.pt"
 device = "cpu"
 ```
 
@@ -66,21 +73,33 @@ resolve beneath `ANTHRO_CHESS_RUN_ROOT`.
 
 ## CPU Command-Line Smoke
 
-Run the installed executable from a directory unrelated to the repository:
+Run the installed executable from a directory unrelated to the repository. With
+a default model selection recorded in the run root, the engine needs no model
+arguments:
 
 ```console
 cd /tmp
 printf 'uci\nisready\nposition startpos\ngo\nquit\n' |
+  "$ANTHRO_UCI_EXECUTABLE" --set 'model.device="cpu"'
+```
+
+To smoke a particular run instead, name it. A relative run path resolves
+beneath `ANTHRO_CHESS_RUN_ROOT`, and omitting `model.checkpoint` takes the
+run's latest:
+
+```console
+printf 'uci\nisready\nposition startpos\ngo\nquit\n' |
   "$ANTHRO_UCI_EXECUTABLE" \
-    --set 'model.run_path="decision-conditioned-rating-proof-v3"' \
-    --set 'model.checkpoint="step-00002000.pt"' \
+    --set 'model.run_path="<run>"' \
     --set 'model.device="cpu"'
 ```
 
 A successful smoke prints engine identification, `uciok`, `readyok`, and one
 legal `bestmove`. Model initialization diagnostics go to the configured
 application log, not standard output. This smoke proves the direct CPU path and
-checkpoint compatibility; it does not assert playing strength.
+checkpoint compatibility; it does not assert playing strength. A checkpoint the
+current build cannot load fails here with a compatibility message, which is the
+cheapest way to find out that a run predates a vocabulary or encoding bump.
 
 ## Connect A Chess GUI
 

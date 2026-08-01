@@ -503,7 +503,14 @@ class SeedSpread:
     def _floor(values: Sequence[tuple[int, float]]) -> float | None:
         if len(values) < 3:
             return None
-        return floor_from_dispersion(stdev([value for _, value in values]))
+        # The seeds are the replicates, so a suite run at the usual handful of
+        # them leaves few degrees of freedom and a wide bound. That is the
+        # honest reading of a spread measured this thinly, and it is another
+        # reason this stays a diagnostic rather than a floor a report applies.
+        return floor_from_dispersion(
+            stdev([value for _, value in values]),
+            degrees_of_freedom=len(values) - 1,
+        )
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one quantity's seed spread."""

@@ -842,6 +842,8 @@ def _execution_floor(
                 ),
                 floor=floor,
                 dispersion=floor / 2,
+                dispersion_bound=floor / 2,
+                degrees_of_freedom=2,
             )
         ],
         recorded_at=datetime(2026, 7, 1, tzinfo=UTC),

@@ -1190,6 +1190,8 @@ def _record_sampling_floor(store_root: Path, *, floor: float, games: int) -> Non
                     fingerprint=series_fingerprint("held_out.move_loss", component),
                     floor=floor,
                     dispersion=floor / 2.0,
+                    dispersion_bound=floor / 2.0,
+                    degrees_of_freedom=games - 1,
                     sampling_units=games,
                 )
             ],

@@ -368,6 +368,53 @@ differences. One coverage factor is declared per characterization, and
 `anthro_chess.evaluation.results` owns the arithmetic, stored inputs, and
 lookup.
 
+### The Spread A Floor Is Built From
+
+A measured spread is an estimate, and a floor built directly on it is too
+narrow about half the time — which is exactly when being too narrow does
+damage, because a floor exists to stop noise from reading as a finding. So the
+spread is not used as measured. Every floor is built from a conservative upper
+limit on it, the chi-squared bound for the degrees of freedom actually behind
+the estimate, and both quantities are stored: the measured spread describes the
+machine or the sample, and the bound is what qualifies a delta.
+
+That makes a floor a tolerance bound, carrying two declared numbers that answer
+two different questions. **Coverage** says what proportion of same-weights
+deltas the floor covers if the spread were known exactly. **Confidence** says
+how sure the bound is that the spread is no larger than assumed. They multiply.
+
+What counts as a degree of freedom is the independent replicate, not the
+number of values in hand, and the distinction decides whether the bound means
+anything. Bootstrap resamples are drawn from one sample, so the **games** are
+the replicates and the resample count is not; readings repeated inside one
+process share a warm allocator and a compiled kernel, so the **processes** are
+the replicates and the readings are not. Counting either of the cheap numbers
+would buy apparent certainty about the spread for free, which is the failure
+the bound exists to remove. `docs/decisions/0026-conservative-dispersion-bounds.md`
+owns this rule.
+
+The bound is severe at small replicate counts and that is the honest reading:
+three or four replicates say very little about a spread. It also means adding
+replicates is the only way to narrow a floor without weakening what it claims,
+which is what the characterization defaults are chosen against.
+
+One thing the bound does not cover, and it is the larger term. The bound
+describes how well the spread *within* a characterization is known. A report
+compares readings taken later, when the machine is in a different thermal and
+contention state, and no arithmetic on the characterization's own replicates can
+reach that drift.
+
+Measured rather than assumed: one configuration characterized and then read back
+on a quiet machine had 3.8% of its same-weights deltas clear their floors, and
+the identical configuration after an hour of sustained benchmarking had 15.9%.
+Machine state moved the result four times further than replacing the point
+estimate with its bound did, and it moved the median and mean latency series as
+much as the tail. So an execution floor is re-characterized when conditions have
+plainly moved rather than treated as a constant of the hardware, and whether
+storing one for later lookup is the right shape at all is an open question
+rather than a settled design.
+`docs/decisions/0026-conservative-dispersion-bounds.md` holds the evidence.
+
 The estimators differ even though the reported quantity does not. Data-sampling
 noise is bootstrapped by resampling the **games** a run scored, since positions
 within one game are far from independent and resampling them would report a
@@ -400,6 +447,12 @@ what they add is the answer to whether that cheaper form of replication would
 have sufficed on this device; that share is reported beside the floor rather
 than folded into it. Cold-start metrics take one reading per process, because a
 reload inside a warm process is not a second cold start.
+
+The process count is therefore what the floor's dispersion bound rests on, and
+it is the one setting that trades measurement time for resolving power. Cutting
+it does not produce a narrower floor, only a less certain one. The default is
+set where the bound stops improving quickly enough to be worth another model
+load, and the code owns the exact value.
 
 The floor is a property of a machine and a workload rather than of a checkpoint.
 Decision 0018 deliberately keeps the machine out of an efficiency series so that

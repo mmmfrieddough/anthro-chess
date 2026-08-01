@@ -386,11 +386,17 @@ def test_a_paired_floor_replaces_independent_sampling_floors(
     )
     detail = DetailStore(tmp_path / "detail")
 
+    # Enough units to support a floor. The paired bootstrap's dispersion is
+    # bounded for the units behind it, so a two-unit payload would produce a
+    # floor an order of magnitude above the delta no matter how well the two
+    # sides agreed, and would be testing the bound rather than the pairing.
+    units = tuple(f"game-{index}" for index in range(40))
+
     def retained(values: list[float]) -> dict[str, object]:
         return {
             PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
                 unit="fixture-game",
-                unit_ids=("a", "b"),
+                unit_ids=units,
                 metrics={"held_out.move_loss": values},
                 resamples=1_000,
                 seed=0,
@@ -398,11 +404,19 @@ def test_a_paired_floor_replaces_independent_sampling_floors(
             ).as_record()
         }
 
+    # The two checkpoints differ by the same small amount on every unit, which
+    # is the case a paired floor exists to see: the spread across units is
+    # large and common to both, and the spread of their difference is not.
+    # Centred so the retained values reproduce the recorded means of 3.5 and
+    # 3.3, which the store checks before it will bootstrap them.
+    offsets = [0.05 * (index - (len(units) - 1) / 2) for index in range(len(units))]
+    baseline_values = [3.5 + offset for offset in offsets]
+    current_values = [value - 0.2 for value in baseline_values]
     baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained([3.0, 4.0]))}
+        update={"detail": detail.write("baseline.json", retained(baseline_values))}
     )
     current = current.model_copy(
-        update={"detail": detail.write("current.json", retained([2.9, 3.7]))}
+        update={"detail": detail.write("current.json", retained(current_values))}
     )
 
     report = build_delta_report(
@@ -518,6 +532,8 @@ def test_a_characterized_floor_applies_without_being_attached_to_the_result(
                         ),
                         floor=0.5,
                         dispersion=0.18,
+                        dispersion_bound=0.18,
+                        degrees_of_freedom=199,
                         sampling_units=200,
                     )
                 ],
@@ -556,6 +572,8 @@ def test_a_delta_is_judged_against_the_widest_floor_that_applies(
                         fingerprint=fingerprint,
                         floor=0.05,
                         dispersion=0.02,
+                        dispersion_bound=0.02,
+                        degrees_of_freedom=199,
                         sampling_units=200,
                     )
                 ],
@@ -572,6 +590,8 @@ def test_a_delta_is_judged_against_the_widest_floor_that_applies(
                         fingerprint=fingerprint,
                         floor=0.4,
                         dispersion=0.14,
+                        dispersion_bound=0.14,
+                        degrees_of_freedom=3,
                     )
                 ],
                 recorded_at=BASELINE_AT,
@@ -626,6 +646,8 @@ def test_a_delta_inside_its_floor_is_shown_rather_than_hidden(
                         ),
                         floor=10.0,
                         dispersion=3.6,
+                        dispersion_bound=3.6,
+                        degrees_of_freedom=2,
                     )
                 ],
                 recorded_at=BASELINE_AT,

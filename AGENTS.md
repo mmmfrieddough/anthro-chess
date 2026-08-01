@@ -69,8 +69,14 @@ read. Fixtures cannot show that a benchmark measures anything. See
 `docs/issue-workflow.md` for when this applies and `docs/evaluation.md` for
 what the reading is and is not.
 
-Local setup, dependency installation, and the verification commands are in
-`CONTRIBUTING.md`.
+Corpora and training runs live outside the worktree, beneath
+`ANTHRO_CHESS_DATA_ROOT` and `ANTHRO_CHESS_RUN_ROOT`. Check those roots before
+concluding that this machine has no corpus or no checkpoints; an empty worktree
+is not evidence, because unset roots and a machine with no artifacts look
+identical from inside the repository.
+
+Local setup, dependency installation, the artifact roots, and the verification
+commands are in `CONTRIBUTING.md`.
 
 The design docs are living documents. Treat them as the current best intent,
 not as immutable requirements. If implementation work changes the project

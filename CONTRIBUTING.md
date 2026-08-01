@@ -23,6 +23,43 @@ Optional lightweight commit hooks can be installed with:
 uv run pre-commit install
 ```
 
+## Corpora And Training Runs
+
+Corpora and training runs are far too large for the repository, so they live
+outside every worktree and are shared across all of them through a matched pair
+of environment variables:
+
+- `ANTHRO_CHESS_DATA_ROOT` — corpora, frozen evaluation pools, puzzle records;
+- `ANTHRO_CHESS_RUN_ROOT` — training runs, each holding its run record,
+  metrics, and checkpoints.
+
+Set both or neither. They are two halves of one setup: evaluation reads a
+checkpoint from one and a pool from the other, so a machine with only one
+configured can run neither training nor evaluation end to end.
+`README.md` has the export lines and
+[`docs/training-and-runtime.md`](docs/training-and-runtime.md) owns the layout
+beneath them and the precedence rules.
+
+Both are optional, and that is the part worth knowing before you draw a
+conclusion from an empty directory. Unset, checked-in relative paths resolve
+inside the worktree — correct for a fresh clone, and indistinguishable from a
+machine that genuinely has no artifacts. The run root is the quieter of the
+two: a data command fails loudly when its root is missing, while a missing run
+root silently falls back to worktree-relative paths.
+
+**So a checkout with no `artifacts/` or `runs/` directory proves nothing, and
+neither does searching the repository and its worktrees.** Ask the roots
+instead:
+
+```console
+env | grep ANTHRO_CHESS
+ls "${ANTHRO_CHESS_DATA_ROOT:?}"
+ls "${ANTHRO_CHESS_RUN_ROOT:?}"/*/checkpoints/*.pt | tail
+```
+
+This matters most before concluding that a shakedown reading cannot be taken
+here; `docs/issue-workflow.md` describes when one is required.
+
 ## Quality Checks
 
 Run the same core checks used by continuous integration before opening a pull
