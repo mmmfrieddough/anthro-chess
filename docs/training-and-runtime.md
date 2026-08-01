@@ -375,6 +375,16 @@ reported. On one Apple Silicon MPS run it was worth about 1.5 ms of a 39.8 ms
 step without gradient accumulation, and nothing measurable at four accumulation
 micro-batches, where the device is busy enough that the host never gets ahead.
 
+The same rule governs the offline scoring pass and the per-move inference path,
+and there it is not a tradeoff at all. Batch validation, the finite-logit
+checks, and each position's identity and conditioning are all questions whose
+answers arrive in a transfer those paths were already making, so asking the
+device separately buys nothing and blocks the queue once per check, per
+position, or per generated move. Every one of them is read across in a batched
+transfer instead, with no check weakened. This is invisible on CPU, where a
+synchronization costs nothing, so it is enforced by tests that fail when a
+device tensor is evaluated in boolean context rather than left to review.
+
 Bulk benchmark diagnostics are machine-local for the same reason and default
 beneath this root. `ANTHRO_CHESS_RESULT_DETAIL_ROOT` overrides that location
 when detail should live elsewhere. Committed benchmark summaries are separate

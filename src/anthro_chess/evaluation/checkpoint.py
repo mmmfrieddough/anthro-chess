@@ -868,15 +868,29 @@ def _shuffled_ratings(
 
 
 def _batch_keys(batch: MoveModelBatch) -> tuple[PositionKey, ...]:
-    active = (
-        torch.nonzero(batch.action_loss_mask, as_tuple=False).detach().cpu().tolist()
+    """Return the identity of every enabled position, in one device read."""
+
+    # Game ids stay in their own unsigned dtype; see ``_active_batch``.
+    game_ids = batch.game_ids.detach().cpu().tolist()
+    enabled, ply_indices = (
+        torch.stack(
+            (
+                batch.action_loss_mask.to(dtype=torch.long),
+                batch.ply_indices.to(dtype=torch.long),
+            )
+        )
+        .detach()
+        .cpu()
+        .tolist()
     )
     return tuple(
         (
-            int(batch.game_ids[batch_index, sequence_index].item()),
-            int(batch.ply_indices[batch_index, sequence_index].item()),
+            game_ids[batch_index][sequence_index],
+            ply_indices[batch_index][sequence_index],
         )
-        for batch_index, sequence_index in active
+        for batch_index, row in enumerate(enabled)
+        for sequence_index, active in enumerate(row)
+        if active
     )
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -590,3 +591,72 @@ def write_training_run(
         encoding="utf-8",
     )
     return checkpoint
+
+
+class BlockingReadTensor(torch.Tensor):
+    """Stands in for a tensor whose value only a blocking read can answer.
+
+    Asking a real device tensor for a Python value drains its command queue
+    before anything else proceeds, and on a CPU-only test run that stall is
+    invisible: every check passes and every timing looks the same. This makes
+    it loud instead. A boolean context or a scalar read fails outright, while
+    moving the tensor to the host first yields an ordinary tensor that answers
+    freely, which is the transfer the hot paths are supposed to be reading
+    their answers out of.
+    """
+
+    @classmethod
+    def __torch_function__(
+        cls,
+        func: Any,
+        types: Any,
+        args: Any = (),
+        kwargs: Any = None,
+    ) -> Any:
+        resolved = kwargs or {}
+        result = super().__torch_function__(func, types, args, resolved)
+        if not isinstance(result, torch.Tensor):
+            return result
+        if _transfers_to_host(func, args, resolved):
+            return torch.Tensor.as_subclass(result, torch.Tensor)
+        return result
+
+    def __bool__(self) -> bool:
+        raise AssertionError("a device tensor was evaluated in boolean context")
+
+    def item(self) -> Any:
+        raise AssertionError("a device tensor was read one scalar at a time")
+
+
+def _transfers_to_host(func: Any, args: Any, kwargs: Any) -> bool:
+    """Return whether this call is the explicit host read that answers freely."""
+
+    if func is torch.Tensor.cpu:
+        return True
+    if func is not torch.Tensor.to:
+        return False
+    return any(
+        getattr(value, "type", str(value)) == "cpu"
+        for value in (*args[1:], *kwargs.values())
+    )
+
+
+def _device_read_trap(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return torch.Tensor.as_subclass(value, BlockingReadTensor)
+    if is_dataclass(value) and not isinstance(value, type):
+        return replace(
+            value,
+            **{
+                field.name: _device_read_trap(getattr(value, field.name))
+                for field in fields(value)
+            },
+        )
+    return value
+
+
+@pytest.fixture
+def device_read_trap() -> Callable[[Any], Any]:
+    """Return a factory rebuilding a batch out of blocking-read tensors."""
+
+    return _device_read_trap

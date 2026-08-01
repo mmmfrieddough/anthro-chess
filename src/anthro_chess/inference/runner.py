@@ -165,9 +165,12 @@ class CheckpointModelRunner:
             raise ModelRunnerError(f"model inference failed: {error}") from error
         if logits.shape != (len(contexts), ACTION_VOCABULARY_SIZE):
             raise ModelRunnerError("model returned an invalid action-logit shape")
-        if not torch.isfinite(logits).all():
-            raise ModelRunnerError("model returned non-finite action logits")
+        # Checked on the host copy the caller was getting anyway. Asking the
+        # device instead would block on the whole queued forward pass once per
+        # generated move, for an answer this transfer already brings back.
         resolved = logits.detach().to(device="cpu", dtype=torch.float32).clone()
+        if not torch.isfinite(resolved).all():
+            raise ModelRunnerError("model returned non-finite action logits")
         return tuple(cast(Tensor, row) for row in resolved.unbind(0))
 
 

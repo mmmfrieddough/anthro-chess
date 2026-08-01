@@ -1,0 +1,197 @@
+"""Tests for the alignment contract every model batch is validated against."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any
+
+import pytest
+import torch
+
+from anthro_chess.chess import ACTION_VOCABULARY_SIZE
+from anthro_chess.data import SequenceBatch
+from anthro_chess.models import MoveModelBatch
+from anthro_chess.models.batching import OptionalTensor
+
+
+def _batch(sequence_batch: Callable[..., SequenceBatch]) -> MoveModelBatch:
+    return MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+    )
+
+
+def _with_inputs(batch: MoveModelBatch, **overrides: Any) -> MoveModelBatch:
+    return replace(batch, inputs=replace(batch.inputs, **overrides))
+
+
+def _corrupted(batch: MoveModelBatch, field: str, value: int) -> MoveModelBatch:
+    """Return the batch with one entry of an ordinary input tensor rewritten."""
+
+    original: torch.Tensor = getattr(batch.inputs, field)
+    replacement = original.clone()
+    replacement.view(-1)[0] = value
+    return _with_inputs(batch, **{field: replacement})
+
+
+def _corrupted_optional(
+    batch: MoveModelBatch,
+    field: str,
+    value: int,
+) -> MoveModelBatch:
+    """Return the batch with one *present* entry of a nullable input rewritten."""
+
+    original: OptionalTensor = getattr(batch.inputs, field)
+    values = original.values.clone()
+    present = torch.ones_like(original.present)
+    values.view(-1)[0] = value
+    return _with_inputs(
+        batch,
+        **{field: OptionalTensor(values=values, present=present)},
+    )
+
+
+def test_a_valid_batch_is_accepted(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    _batch(sequence_batch).validate()
+
+
+@pytest.mark.parametrize(
+    ("corrupt", "message"),
+    [
+        pytest.param(
+            lambda batch: replace(
+                batch,
+                causal_attention_mask=torch.ones_like(batch.causal_attention_mask),
+            ),
+            "causal attention mask cannot expose future timesteps",
+            id="future-timesteps",
+        ),
+        pytest.param(
+            lambda batch: replace(
+                batch,
+                action_loss_mask=torch.ones_like(batch.action_loss_mask),
+                attention_mask=torch.zeros_like(batch.attention_mask),
+            ),
+            "action loss cannot include padded timesteps",
+            id="padded-loss",
+        ),
+        pytest.param(
+            lambda batch: _corrupted(batch, "piece_ids", 13),
+            "piece ids are outside the board encoding",
+            id="piece-id",
+        ),
+        pytest.param(
+            lambda batch: _corrupted(batch, "side_to_move", 2),
+            "side-to-move ids are outside the board encoding",
+            id="side-to-move",
+        ),
+        pytest.param(
+            lambda batch: _corrupted(batch, "castling_rights", 16),
+            "castling rights are outside the board encoding",
+            id="castling-rights",
+        ),
+        pytest.param(
+            lambda batch: _corrupted_optional(batch, "en_passant_square", 64),
+            "en-passant squares are outside the board encoding",
+            id="en-passant",
+        ),
+        pytest.param(
+            lambda batch: _corrupted_optional(
+                batch,
+                "previous_action_id",
+                ACTION_VOCABULARY_SIZE,
+            ),
+            "previous action is outside the action vocabulary",
+            id="previous-action",
+        ),
+        pytest.param(
+            lambda batch: _corrupted_optional(batch, "target_rating", -1),
+            "target ratings must be nonnegative",
+            id="negative-rating",
+        ),
+    ],
+)
+def test_out_of_range_values_are_rejected_by_name(
+    sequence_batch: Callable[..., SequenceBatch],
+    corrupt: Callable[[MoveModelBatch], MoveModelBatch],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        corrupt(_batch(sequence_batch)).validate()
+
+
+def test_an_active_target_outside_the_vocabulary_is_rejected(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    batch = _batch(sequence_batch)
+    targets = batch.action_targets.clone()
+    targets[batch.action_loss_mask] = ACTION_VOCABULARY_SIZE
+
+    with pytest.raises(ValueError, match="active action target is outside"):
+        replace(batch, action_targets=targets).validate()
+
+
+def test_an_inactive_target_outside_the_vocabulary_is_ignored(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Only enabled timesteps carry a target; padding is not held to one."""
+
+    batch = _batch(sequence_batch)
+    targets = batch.action_targets.clone()
+    targets[~batch.action_loss_mask] = ACTION_VOCABULARY_SIZE
+
+    replace(batch, action_targets=targets).validate()
+
+
+def test_an_active_target_that_is_not_legal_is_rejected(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    batch = _batch(sequence_batch)
+    legal = batch.legal_action_ids[0][0]
+    substitute = next(
+        action for action in range(ACTION_VOCABULARY_SIZE) if action not in legal
+    )
+    targets = batch.action_targets.clone()
+    targets[0, 0] = substitute
+
+    with pytest.raises(ValueError, match="active target must be legal"):
+        replace(batch, action_targets=targets).validate()
+
+
+def test_misaligned_legal_actions_are_rejected(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    batch = _batch(sequence_batch)
+
+    with pytest.raises(ValueError, match="legal actions must align"):
+        replace(batch, legal_action_ids=batch.legal_action_ids[:0]).validate()
+
+
+def test_validation_never_asks_the_device_for_a_scalar(
+    sequence_batch: Callable[..., SequenceBatch],
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """Every reduction is read back together rather than one question at a time.
+
+    A validation that queries the device per check, or worse per timestep,
+    passes on CPU while stalling a real accelerator once per query. Nothing
+    about the result would say so, which is why this asserts on the access
+    pattern rather than on the verdict.
+    """
+
+    device_read_trap(_batch(sequence_batch)).validate()
+
+
+def test_the_trap_still_reports_a_real_violation(
+    sequence_batch: Callable[..., SequenceBatch],
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """The sync-free path must reject what the blocking one rejected."""
+
+    batch = _batch(sequence_batch)
+    corrupted = _corrupted(batch, "piece_ids", 13)
+
+    with pytest.raises(ValueError, match="piece ids are outside"):
+        device_read_trap(corrupted).validate()

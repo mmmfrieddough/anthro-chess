@@ -362,51 +362,111 @@ class MoveModelBatch:
             sequence_length,
         ):
             raise ValueError("causal attention mask must be sequence by sequence")
-        if torch.any(torch.triu(self.causal_attention_mask, diagonal=1)):
-            raise ValueError("causal attention mask cannot expose future timesteps")
-        if torch.any(self.action_loss_mask & ~self.attention_mask):
-            raise ValueError("action loss cannot include padded timesteps")
-        if torch.any(self.inputs.piece_ids < 0) or torch.any(
-            self.inputs.piece_ids >= 13
-        ):
-            raise ValueError("piece ids are outside the board encoding")
-        if torch.any(self.inputs.side_to_move < 0) or torch.any(
-            self.inputs.side_to_move >= 2
-        ):
-            raise ValueError("side-to-move ids are outside the board encoding")
-        if torch.any(self.inputs.castling_rights < 0) or torch.any(
-            self.inputs.castling_rights >= 16
-        ):
-            raise ValueError("castling rights are outside the board encoding")
-        en_passant = self.inputs.en_passant_square
-        if torch.any(en_passant.values[en_passant.present] < 0) or torch.any(
-            en_passant.values[en_passant.present] >= 64
-        ):
-            raise ValueError("en-passant squares are outside the board encoding")
-        previous_actions = self.inputs.previous_action_id
-        if torch.any(
-            previous_actions.values[previous_actions.present] < 0
-        ) or torch.any(
-            previous_actions.values[previous_actions.present] >= ACTION_VOCABULARY_SIZE
-        ):
-            raise ValueError("previous action is outside the action vocabulary")
-        active_targets = self.action_targets[self.action_loss_mask]
-        if torch.any(active_targets < 0) or torch.any(
-            active_targets >= ACTION_VOCABULARY_SIZE
-        ):
-            raise ValueError("active action target is outside the action vocabulary")
-        ratings = self.inputs.target_rating
-        if torch.any(ratings.values[ratings.present] < 0):
-            raise ValueError("target ratings must be nonnegative")
+        self._reject_invalid_values()
         if len(self.legal_action_ids) != expected_shape[0] or any(
             len(row) != expected_shape[1] for row in self.legal_action_ids
         ):
             raise ValueError("legal actions must align with model timesteps")
+        self._reject_illegal_active_targets()
+
+    def _reject_invalid_values(self) -> None:
+        """Raise for any out-of-range value, reading the device exactly once.
+
+        Every check is a whole-tensor reduction, so asking each one separately
+        would evaluate a device tensor in boolean context and drain the command
+        queue between them. The reductions are queued together and read back in
+        one transfer instead; the first failure still names itself.
+        """
+
+        en_passant = self.inputs.en_passant_square
+        previous_actions = self.inputs.previous_action_id
+        ratings = self.inputs.target_rating
+        checks: tuple[tuple[str, Tensor], ...] = (
+            (
+                "causal attention mask cannot expose future timesteps",
+                torch.any(torch.triu(self.causal_attention_mask, diagonal=1)),
+            ),
+            (
+                "action loss cannot include padded timesteps",
+                torch.any(self.action_loss_mask & ~self.attention_mask),
+            ),
+            (
+                "piece ids are outside the board encoding",
+                torch.any((self.inputs.piece_ids < 0) | (self.inputs.piece_ids >= 13)),
+            ),
+            (
+                "side-to-move ids are outside the board encoding",
+                torch.any(
+                    (self.inputs.side_to_move < 0) | (self.inputs.side_to_move >= 2)
+                ),
+            ),
+            (
+                "castling rights are outside the board encoding",
+                torch.any(
+                    (self.inputs.castling_rights < 0)
+                    | (self.inputs.castling_rights >= 16)
+                ),
+            ),
+            (
+                "en-passant squares are outside the board encoding",
+                torch.any(
+                    en_passant.present
+                    & ((en_passant.values < 0) | (en_passant.values >= 64))
+                ),
+            ),
+            (
+                "previous action is outside the action vocabulary",
+                torch.any(
+                    previous_actions.present
+                    & (
+                        (previous_actions.values < 0)
+                        | (previous_actions.values >= ACTION_VOCABULARY_SIZE)
+                    )
+                ),
+            ),
+            (
+                "active action target is outside the action vocabulary",
+                torch.any(
+                    self.action_loss_mask
+                    & (
+                        (self.action_targets < 0)
+                        | (self.action_targets >= ACTION_VOCABULARY_SIZE)
+                    )
+                ),
+            ),
+            (
+                "target ratings must be nonnegative",
+                torch.any(ratings.present & (ratings.values < 0)),
+            ),
+        )
+        rejected = torch.stack([flag for _, flag in checks]).detach().cpu().tolist()
+        for (message, _), failed in zip(checks, rejected, strict=True):
+            if failed:
+                raise ValueError(message)
+
+    def _reject_illegal_active_targets(self) -> None:
+        """Raise when an enabled target is not legal at its own timestep.
+
+        Legal actions are a host-side structure, so this comparison happens on
+        the host either way. Both tensors are read across in one transfer so
+        that it costs one device read rather than one per timestep.
+        """
+
+        targets, enabled = (
+            torch.stack(
+                (
+                    self.action_targets.to(dtype=torch.long),
+                    self.action_loss_mask.to(dtype=torch.long),
+                )
+            )
+            .detach()
+            .cpu()
+            .tolist()
+        )
         for batch_index, row in enumerate(self.legal_action_ids):
             for sequence_index, legal_actions in enumerate(row):
                 if (
-                    self.action_loss_mask[batch_index, sequence_index]
-                    and int(self.action_targets[batch_index, sequence_index].item())
-                    not in legal_actions
+                    enabled[batch_index][sequence_index]
+                    and targets[batch_index][sequence_index] not in legal_actions
                 ):
                     raise ValueError("active target must be legal at its timestep")

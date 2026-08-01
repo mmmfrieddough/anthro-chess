@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 
 import pytest
 import torch
@@ -144,6 +145,105 @@ def test_scoring_rejects_legal_actions_that_do_not_align(
 
     with pytest.raises(ValueError, match="sorted and unique"):
         score_positions(logits, misaligned)
+
+
+def test_scoring_preserves_a_game_id_past_the_signed_maximum(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Game ids are unsigned 64-bit hashes, and most of them exceed a long.
+
+    Reading them through any signed representation wraps the upper half of the
+    range onto negative values. Nothing downstream notices until aggregation
+    fails to find a scored position's slice, so the fixture ids -- which are
+    small -- cannot stand in for this.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), None, None)))
+    identifier = 2**64 - 1234567
+    batch = replace(
+        batch,
+        game_ids=torch.full_like(batch.game_ids, identifier, dtype=torch.uint64),
+    )
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+
+    (position,) = score_positions(logits, batch)
+
+    assert position.game_id == identifier
+
+
+@pytest.mark.parametrize("corruption", [math.inf, -math.inf, math.nan])
+def test_scoring_rejects_non_finite_logits_at_an_enabled_position(
+    sequence_batch: Callable[..., SequenceBatch],
+    corruption: float,
+) -> None:
+    batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), None, None)))
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+    logits[0, 0, 0] = corruption
+
+    with pytest.raises(ValueError, match="enabled action logits must all be finite"):
+        score_positions(logits, batch)
+
+
+def test_scoring_ignores_non_finite_logits_where_no_action_is_scored(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """The check covers the rows the pass reads, which is where it can matter.
+
+    Padding past the end of a shorter history carries whatever the model
+    emitted there and is never scored, so holding it to the same standard
+    would reject batches the benchmark handles correctly.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4",), None, None), (("d2d4", "d7d5"), None, None))
+    )
+    disabled = torch.nonzero(~batch.action_loss_mask, as_tuple=False).tolist()
+    assert disabled
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+    for batch_index, sequence_index in disabled:
+        logits[batch_index, sequence_index, 0] = math.inf
+
+    scored = score_positions(logits, batch)
+
+    assert len(scored) == int(batch.action_loss_mask.sum().item())
+
+
+def test_scoring_never_asks_the_device_for_a_scalar(
+    sequence_batch: Callable[..., SequenceBatch],
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """Every per-position quantity comes off one gather and one metadata read.
+
+    Reading identity or conditioning a position at a time, or checking the
+    logits on the device rather than on the copy already being made, blocks
+    the queue once per position. On CPU that is free and invisible, so this
+    asserts on the access pattern instead of on the numbers.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+    )
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+
+    scored = score_positions(device_read_trap(logits), device_read_trap(batch))
+
+    assert [position.as_record() for position in scored] == [
+        position.as_record() for position in score_positions(logits, batch)
+    ]
+
+
+def test_the_trap_still_reports_non_finite_logits(
+    sequence_batch: Callable[..., SequenceBatch],
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """The host-side check must reject what the device-side one rejected."""
+
+    batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), None, None)))
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+    logits[0, 0, 0] = math.inf
+
+    with pytest.raises(ValueError, match="finite"):
+        score_positions(device_read_trap(logits), device_read_trap(batch))
 
 
 def _first_illegal_action(legal_actions: tuple[int, ...]) -> int:

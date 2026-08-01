@@ -4,7 +4,10 @@ import copy
 import json
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import chess
 import pytest
@@ -159,6 +162,61 @@ def test_a_batched_prediction_serves_every_pending_decision_in_one_pass(
         assert batched.shape == (ACTION_VOCABULARY_SIZE,)
         torch.testing.assert_close(batched, alone, rtol=1e-5, atol=1e-5)
     assert not torch.equal(together[0], together[1])
+
+
+def test_a_prediction_batch_rejects_non_finite_logits(tmp_path: Path) -> None:
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(
+            checkpoint_path=_write_run(tmp_path / "run", seed=13), device="cpu"
+        )
+    )
+    context = build_decision_context(chess.Board(), (), target_rating=1650)
+
+    with _replaced_logits(runner, lambda logits: logits * torch.inf):
+        with pytest.raises(ModelRunnerError, match="non-finite action logits"):
+            runner.predict_batch((context,))
+
+
+def test_a_prediction_batch_never_asks_the_device_for_a_scalar(
+    tmp_path: Path,
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """The finite check reads the host copy the caller was already getting.
+
+    Asking the device instead blocks on the whole queued forward pass once per
+    generated move, which the rollout, ladder, and termination benchmarks pay
+    for at every ply. A CPU run cannot show that, so this asserts that nothing
+    reaches back across the boundary.
+    """
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(
+            checkpoint_path=_write_run(tmp_path / "run", seed=13), device="cpu"
+        )
+    )
+    context = build_decision_context(chess.Board(), (), target_rating=1650)
+    (expected,) = runner.predict_batch((context,))
+
+    with _replaced_logits(runner, device_read_trap):
+        (trapped,) = runner.predict_batch((context,))
+
+    torch.testing.assert_close(trapped, expected, rtol=0.0, atol=0.0)
+
+
+@contextmanager
+def _replaced_logits(
+    runner: CheckpointModelRunner,
+    transform: Callable[[Any], Any],
+) -> Iterator[None]:
+    """Substitute what the model hands back, leaving the runner path intact."""
+
+    handle = runner._model.register_forward_hook(  # noqa: SLF001
+        lambda _module, _arguments, output: transform(output)
+    )
+    try:
+        yield
+    finally:
+        handle.remove()
 
 
 def test_a_prediction_batch_cannot_be_empty(tmp_path: Path) -> None:
