@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -1919,6 +1919,154 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
     return 0
 
 
+#: Column widths for the rollout comparison table. The conditional and pooled
+#: arms are rendered identically so a reader can tell at a glance that a column
+#: under one arm's rule belongs to that arm and to nothing else.
+_ROLLOUT_MINIMUM_QUANTITY_WIDTH = 16
+_ROLLOUT_CELL_WIDTHS = (10, 9, 9, 9)
+_ROLLOUT_ARM_WIDTH = sum(_ROLLOUT_CELL_WIDTHS)
+_ROLLOUT_VERDICT_WIDTH = 19
+_ROLLOUT_ARM_HEADER = "".join(
+    f"{name:>{width}}"
+    for name, width in zip(
+        ("distance", "null", "floor", "seed"), _ROLLOUT_CELL_WIDTHS, strict=True
+    )
+)
+
+
+def _rollout_arm_rule(name: str) -> str:
+    """Return the rule that spans one arm's columns, and only that arm's.
+
+    The leading space keeps the two arms' rules from joining into one, which
+    would undo the grouping the rule exists to show.
+    """
+
+    return " " + f" {name} ".center(_ROLLOUT_ARM_WIDTH - 1, "-")
+
+
+def _rollout_quantity_width(readings: Iterable[RolloutReading]) -> int:
+    """Return the quantity column shared by every table in one rollout.
+
+    Sized across the whole result rather than per reading, so two readings of
+    the same suite print the same table rather than two that merely resemble
+    each other. The names run to twenty-odd characters and a column narrower
+    than the longest pushes that whole row out from under its own headings,
+    which is the defect this table is being fixed for.
+    """
+
+    longest = max(
+        (
+            len(quantity.value)
+            for reading in readings
+            for quantity in reading.comparisons
+        ),
+        default=0,
+    )
+    return max(longest + 1, _ROLLOUT_MINIMUM_QUANTITY_WIDTH)
+
+
+def _rollout_arm(
+    distance: float,
+    *,
+    null: float | None,
+    floor: float | None,
+    seed: float | None,
+) -> str:
+    """Render one arm of a curve comparison beside its own three qualifiers.
+
+    An arm is self-contained on purpose. The distance, the null level its
+    verdict is judged against, its delta floor, and its seed diagnostic are all
+    properties of the same reading, and every one of them exists separately for
+    the conditional and the pooled arm.
+    """
+
+    cells = (
+        format(distance, ".4f"),
+        _optional_value(null, ".4f"),
+        _optional_value(floor, ".4f"),
+        _optional_value(seed, ".4f"),
+    )
+    return "".join(
+        f"{cell:>{width}}"
+        for cell, width in zip(cells, _ROLLOUT_CELL_WIDTHS, strict=True)
+    )
+
+
+def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
+    """Return one reading's comparison table, each arm beside its own numbers.
+
+    Every quantity is read twice, rating-conditionally and pooled, and each of
+    those readings has its own null level, its own delta floor, and its own seed
+    spread. Rendering one arm's qualifier next to the other arm's distance is
+    how the first full suite reading came to record a correct verdict as a
+    contradiction, so the two arms are laid out as separate blocks under their
+    own rules and share nothing but the quantity that names the row.
+    """
+
+    if not reading.comparisons:
+        # Headings over nothing read as a table that found nothing rather than
+        # one that was never filled. The unavailable lines say which quantities.
+        return []
+    lines = [
+        (
+            f"  {'':<{width}}"
+            f"{_rollout_arm_rule('conditional')}"
+            f"{_rollout_arm_rule('pooled')}"
+        ),
+        (
+            f"  {'quantity':<{width}}"
+            f"{_ROLLOUT_ARM_HEADER}{_ROLLOUT_ARM_HEADER}"
+            f"{'reads as':>{_ROLLOUT_VERDICT_WIDTH}}"
+        ),
+    ]
+    for quantity, comparison in reading.comparisons.items():
+        spread = reading.seed_spread.get(quantity)
+        references = comparison.references
+        floors = comparison.floors
+        lines.append(
+            f"  {quantity.value:<{width}}"
+            + _rollout_arm(
+                comparison.conditional_distance,
+                null=None if references is None else references.conditional,
+                floor=None if floors is None else floors.conditional.value,
+                seed=None if spread is None else spread.floor,
+            )
+            + _rollout_arm(
+                comparison.pooled_distance,
+                null=None if references is None else references.pooled,
+                floor=None if floors is None else floors.pooled.value,
+                seed=None if spread is None else spread.pooled_floor,
+            )
+            + f"{comparison.response.value:>{_ROLLOUT_VERDICT_WIDTH}}"
+        )
+    # Which column answers which question. A distance read on its own is judged
+    # against its null; a distance read against another checkpoint is judged
+    # against its floor.
+    lines.extend(
+        [
+            "  null:  what a model that already matched would still read at,"
+            " and what 'reads as' judges against",
+            "  floor: how far this distance moves between runs, for reading"
+            " it against another checkpoint",
+        ]
+    )
+    replicates = max(
+        (len(spread.distances) for spread in reading.seed_spread.values()),
+        default=0,
+    )
+    if replicates > 1:
+        # The seed spread is a diagnostic, not a third floor: each seed played a
+        # fraction of the games, so its reading is noisier and biased high, and
+        # comparing its spread to the floor would compare two different sample
+        # sizes.
+        lines.append(
+            f"  seed:  each of {replicates} seeds read alone on "
+            f"{1 / replicates:.0%} of the games, as a diagnostic rather "
+            "than a floor"
+        )
+    return lines
+
+
 def _render_rollout(result: RolloutBenchmarkResult) -> str:
     from anthro_chess.evaluation.games import GameTermination
 
@@ -1978,6 +2126,7 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 ),
             ]
         )
+    width = _rollout_quantity_width(result.readings)
     for reading in result.readings:
         lines.extend(
             [
@@ -1989,45 +2138,9 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                     f"{', '.join(str(rating) for rating in reading.ratings)} "
                     f"vs {reading.human_games} human game(s)"
                 ),
-                (
-                    f"  {'quantity':<16}{'conditional':>13}{'floor':>10}"
-                    f"{'seed range':>22}{'pooled':>10}{'reads as':>18}"
-                ),
             ]
         )
-        for quantity, comparison in reading.comparisons.items():
-            floor = (
-                "-"
-                if comparison.floors is None
-                else f"{comparison.floors.conditional.value:.4f}"
-            )
-            spread = reading.seed_spread.get(quantity)
-            seeded = (
-                "-"
-                if spread is None or spread.floor is None
-                else (f"{spread.floor:.4f}")
-            )
-            lines.append(
-                f"  {quantity.value:<16}"
-                f"{comparison.conditional_distance:>13.4f}"
-                f"{floor:>10}"
-                f"{seeded:>10}"
-                f"{comparison.pooled_distance:>10.4f}"
-                f"{comparison.response.value:>22}"
-            )
-        replicates = max(
-            (len(spread.distances) for spread in reading.seed_spread.values()),
-            default=0,
-        )
-        if replicates > 1:
-            # The seed range is a diagnostic, not a second floor: each seed
-            # played a fraction of the games, so its reading is noisier and
-            # biased high, and comparing its spread to the floor would compare
-            # two different sample sizes.
-            lines.append(
-                f"  floor qualifies a delta; seed range is each of {replicates} "
-                f"seeds read alone on {1 / replicates:.0%} of the games"
-            )
+        lines.extend(_render_comparison_table(reading, width))
         lines.extend(_render_unavailable(reading))
         lines.extend(_render_repertoire_drilldown(reading))
         lines.extend(_render_exact_repertoire(reading))
@@ -2168,6 +2281,22 @@ def _run_eval_termination(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _termination_arm(
+    name: str,
+    distance: float,
+    *,
+    null: float | None,
+    floor: float | None,
+) -> str:
+    """Render one arm of the termination mix beside its own qualifiers."""
+
+    return (
+        f"  {name:<11} {distance:.4f}  "
+        f"null {_optional_value(null, '.4f')}  "
+        f"floor {_optional_value(floor, '.4f')}"
+    )
+
+
 def _render_termination(result: TerminationBenchmarkResult) -> str:
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
@@ -2201,20 +2330,31 @@ def _render_termination(result: TerminationBenchmarkResult) -> str:
             lines.append(f"  unavailable    {name}: {reason}")
     for mix in result.mixes:
         comparison = mix.comparison
-        floor = (
-            "-"
-            if comparison.floors is None
-            else f"{comparison.floors.conditional.value:.4f}"
-        )
+        references = comparison.references
+        floors = comparison.floors
+        # One line per arm rather than one line for both. The verdict is
+        # computed from each distance against its own null, so a layout that
+        # puts one arm's qualifier beside the other arm's distance invites the
+        # misreading #172 records.
         lines.extend(
             [
                 "",
                 f"Termination mix — {mix.label}  "
                 f"(series {mix.execution.workload_sha256[:12]})",
                 f"  {mix.model_games} generated vs {mix.human_games} human game(s)",
-                f"  conditional {comparison.conditional_distance:.4f} "
-                f"(floor {floor})  pooled {comparison.pooled_distance:.4f}  "
-                f"reads as {comparison.response.value}",
+                _termination_arm(
+                    "conditional",
+                    comparison.conditional_distance,
+                    null=None if references is None else references.conditional,
+                    floor=None if floors is None else floors.conditional.value,
+                ),
+                _termination_arm(
+                    "pooled",
+                    comparison.pooled_distance,
+                    null=None if references is None else references.pooled,
+                    floor=None if floors is None else floors.pooled.value,
+                ),
+                f"  reads as    {comparison.response.value}",
             ]
         )
         for share in comparison.category_shares()[:6]:

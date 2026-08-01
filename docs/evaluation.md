@@ -375,6 +375,12 @@ a curve is never exactly flat. Both come from the comparison's own resampling,
 and both travel with the result, since neither is a property of a series that
 could be characterized once and looked up.
 
+The conditional and the pooled reading each have their own level and their own
+floor, so a report shows both per reading rather than sharing one across the
+pair. A level or a floor rendered beside the other reading's distance is read as
+though it belonged to it, which is how the first full suite reading drew a wrong
+conclusion from a verdict that was correct.
+
 `anthro_chess.evaluation.curves` implements this shape and owns the estimator,
 the declared bandwidth and its offline selection, the distance reduction, and
 the artifact each benchmark writes: curve points as data in the detail tier,
