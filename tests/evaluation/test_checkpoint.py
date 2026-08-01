@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from anthro_chess.evaluation.checkpoint import (
     ADJUDICATION_KIND,
     DEPENDENCY_KIND,
     HELD_OUT_KIND,
+    _batch_keys,
 )
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.results import DetailStore, ResultsStore
@@ -32,6 +34,7 @@ from anthro_chess.evaluation.slices import (
     PositionPredicate,
 )
 from anthro_chess.interfaces.cli import main
+from anthro_chess.models import MoveModelBatch
 
 #: A middlegame position where the side to move has a promotion available and
 #: the shared opening line never reaches, so the rule-case slices are exercised
@@ -593,6 +596,39 @@ def test_cli_reports_a_leaking_checkpoint_as_a_failure(
 
     assert status == 2
     assert "anthro eval run:" in capsys.readouterr().err
+
+
+def test_position_keys_are_read_off_the_device_in_one_pass(
+    sequence_batch: Callable[..., Any],
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """The dependency pass identifies a whole batch without a scalar read.
+
+    It keys three conditioning treatments per batch, so asking the device for
+    each game id and ply index separately costs a stall per position per arm.
+    CPU hides that, which is why this asserts on the access pattern.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+    )
+
+    assert _batch_keys(device_read_trap(batch)) == _batch_keys(batch)
+
+
+def test_position_keys_preserve_a_game_id_past_the_signed_maximum(
+    sequence_batch: Callable[..., Any],
+) -> None:
+    """The unsigned id has to survive the read; see the scoring path's own test."""
+
+    batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), None, None)))
+    identifier = 2**64 - 1234567
+    widened = replace(
+        batch,
+        game_ids=torch.full_like(batch.game_ids, identifier, dtype=torch.uint64),
+    )
+
+    assert _batch_keys(widened) == ((identifier, 0),)
 
 
 def _config(

@@ -372,35 +372,61 @@ def _logit(probability: float) -> float:
 
 
 def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
-    batch.validate()
-    _validate_logits(logits, batch)
+    """Gather the enabled rows onto the host in two device reads.
 
-    active_indices = (
-        torch.nonzero(batch.action_loss_mask, as_tuple=False).detach().cpu().tolist()
-    )
+    Every quantity below is derived from the same batch, so asking the device
+    for each one separately would drain its command queue once per question
+    while the answers all arrive from one pass. The active logits come across
+    as a block, and the alignment metadata comes across stacked, which is also
+    what lets the finite check read the copy that was already being made
+    instead of paying for a synchronization of its own.
+    """
+
+    batch.validate()
+    _validate_logit_shape(logits, batch)
+
     active_logits = (
         logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
     )
-    targets = tuple(
-        int(value)
-        for value in batch.action_targets[batch.action_loss_mask]
-        .detach()
-        .cpu()
-        .tolist()
-    )
+    if not torch.all(torch.isfinite(active_logits)):
+        raise ValueError("enabled action logits must all be finite")
 
-    rating_values = (
-        batch.inputs.target_rating.values[batch.action_loss_mask]
+    # Game ids stay in their own dtype. They are unsigned 64-bit hashes, and
+    # folding them into the stack below would wrap every id past the signed
+    # maximum onto a negative one that matches no scored position.
+    game_id_rows = batch.game_ids.detach().cpu().tolist()
+    enabled, target_rows, ply_index_rows, rating_rows, present_rows = (
+        torch.stack(
+            (
+                batch.action_loss_mask.to(dtype=torch.long),
+                batch.action_targets.to(dtype=torch.long),
+                batch.ply_indices.to(dtype=torch.long),
+                batch.inputs.target_rating.values.to(dtype=torch.long),
+                batch.inputs.target_rating.present.to(dtype=torch.long),
+            )
+        )
         .detach()
         .cpu()
         .tolist()
     )
-    rating_present = (
-        batch.inputs.target_rating.present[batch.action_loss_mask]
-        .detach()
-        .cpu()
-        .tolist()
+    active_indices = tuple(
+        (batch_index, sequence_index)
+        for batch_index, row in enumerate(enabled)
+        for sequence_index, active in enumerate(row)
+        if active
     )
+    targets = tuple(
+        target_rows[batch_index][sequence_index]
+        for batch_index, sequence_index in active_indices
+    )
+    rating_values = [
+        rating_rows[batch_index][sequence_index]
+        for batch_index, sequence_index in active_indices
+    ]
+    rating_present = [
+        bool(present_rows[batch_index][sequence_index])
+        for batch_index, sequence_index in active_indices
+    ]
     if any(
         present and value < 0
         for value, present in zip(rating_values, rating_present, strict=True)
@@ -418,8 +444,8 @@ def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
         legal_actions = batch.legal_action_ids[batch_index][sequence_index]
         _validate_legal_actions(legal_actions, target)
         legal_rows.append(legal_actions)
-        game_ids.append(int(batch.game_ids[batch_index, sequence_index].item()))
-        ply_indices.append(int(batch.ply_indices[batch_index, sequence_index].item()))
+        game_ids.append(game_id_rows[batch_index][sequence_index])
+        ply_indices.append(ply_index_rows[batch_index][sequence_index])
 
     legal_mask = torch.zeros_like(active_logits, dtype=torch.bool)
     for offset, legal_actions in enumerate(legal_rows):
@@ -433,13 +459,13 @@ def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
         game_ids=tuple(game_ids),
         ply_indices=tuple(ply_indices),
         ratings=tuple(
-            int(value) if present else None
+            value if present else None
             for value, present in zip(rating_values, rating_present, strict=True)
         ),
     )
 
 
-def _validate_logits(logits: Tensor, batch: MoveModelBatch) -> None:
+def _validate_logit_shape(logits: Tensor, batch: MoveModelBatch) -> None:
     expected_shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
     if logits.shape != expected_shape:
         raise ValueError(
@@ -447,8 +473,6 @@ def _validate_logits(logits: Tensor, batch: MoveModelBatch) -> None:
         )
     if not logits.is_floating_point():
         raise ValueError("action logits must use a floating-point dtype")
-    if not torch.all(torch.isfinite(logits[batch.action_loss_mask])):
-        raise ValueError("enabled action logits must all be finite")
 
 
 def _validate_legal_actions(legal_actions: tuple[int, ...], target: int) -> None:

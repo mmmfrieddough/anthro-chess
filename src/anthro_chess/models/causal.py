@@ -141,9 +141,13 @@ class CausalMoveModel(nn.Module):
         )
 
     def forward(self, batch: MoveModelBatch) -> Tensor:
-        """Return raw action logits shaped batch by sequence by vocabulary."""
+        """Return raw action logits shaped batch by sequence by vocabulary.
 
-        batch.validate()
+        Validation belongs to :meth:`encode_history`, which every path here
+        goes through. Repeating it would read the device a second time for an
+        answer it already has.
+        """
+
         hidden = self.encode_history(batch)
         conditioned = self.rating_conditioner(hidden, batch.inputs.target_rating)
         logits = self.action_head(conditioned)
