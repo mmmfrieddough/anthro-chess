@@ -195,6 +195,24 @@ and reproducible runs, and improve runtime reliability. Iterating here is the
 point of having built the harness first, and it should continue until the
 benchmark surfaces stop moving.
 
+Training moves to a multi-GPU CUDA host in this stage, and using every card on a
+long run is the ordinary execution path rather than an optimization to justify
+later. Single-device CUDA still lands first, because it is the foundation the
+distributed path shares and the baseline its scaling efficiency is read against,
+but distribution does not wait for a demonstrated single-device limit. Short
+independent jobs may still take one card each; that is a scheduling choice.
+Distribution replicates the model rather than sharding it, so it buys throughput
+and not capacity, and the per-card memory ceiling still bounds how large a model
+this stage can select.
+
+Before capacity is scaled, the current architecture should be trained until its
+held-out metrics plateau. Every checkpoint the project has read so far stopped
+on a step bound while still improving, so which resource is binding — capacity,
+data, or budget — is not yet known. A budget answer costs one run at the current
+size; a capacity answer costs several runs at larger sizes against a fixed
+memory ceiling. Establishing the plateau first is both the cheaper question and
+the control that makes the capacity comparison readable.
+
 The data work has an order that later comparisons depend on. Training selection
 becomes a filterable dial over one broad corpus first, so the value of adding a
 data source can be measured against a single evaluation reference instead of
@@ -210,6 +228,13 @@ This ordering is why the core is not frozen during stage 3. A reference
 designated against the narrow first corpus could never measure the axes added
 later, and there is almost no benchmark history to protect before this stage
 begins.
+
+Decisions that would remove games from the corpus belong before the widening
+rather than after it. Expansion has to preserve containment, so a rejection
+filter introduced later cannot be applied to a corpus an evaluation core has
+already been designated from. Whether engine-assisted filtering acts on the
+corpus or only on training selection is therefore settled ahead of the breadth
+pass, even though implementing it may not be.
 
 The transfer function from configured rating to played strength and its
 temperature response are measured in stage 3, so what remains here is anchoring
