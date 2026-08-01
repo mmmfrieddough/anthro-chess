@@ -1,0 +1,300 @@
+"""Load-time selection within one prepared corpus.
+
+Selection is what makes the value of data measurable: two runs that differ only
+in what they trained on can be scored against one evaluation reference, which
+preparing two narrower corpora can never do. These tests cover the axes, the
+subsample dial, and the recorded identity that lets a later run confirm it
+selected the same games.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from anthro_chess.data import (
+    DataLoadingError,
+    SelectionConfig,
+    SequenceDataLoader,
+    SequenceDataset,
+    SequenceLoaderConfig,
+)
+
+BLITZ_MS = 300_000
+BULLET_MS = 60_000
+
+
+def test_filters_within_one_corpus_by_time_control(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [
+            (1, BULLET_MS, 1500),
+            (2, BLITZ_MS, 1500),
+            (3, BLITZ_MS, 1500),
+        ],
+    )
+
+    dataset = SequenceDataset.from_parquet(
+        games,
+        split="train",
+        selection=SelectionConfig(minimum_time_initial_ms=BLITZ_MS),
+    )
+
+    assert dataset.resolution.game_ids == (2, 3)
+    assert dataset.resolution.excluded_games == {"below_minimum_time_initial": 1}
+
+
+def test_rating_band_requires_both_players_inside_it(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [
+        normalized_row(1, split="train", ratings=(1500, 1520)),
+        normalized_row(2, split="train", ratings=(1500, 2400)),
+        normalized_row(3, split="train", ratings=(1500, None)),
+    ]
+    normalized_directory, _ = write_corpus(tmp_path, rows)
+
+    dataset = SequenceDataset.from_parquet(
+        normalized_directory / "games.parquet",
+        split="train",
+        selection=SelectionConfig(minimum_rating=1400, maximum_rating=1600),
+    )
+
+    assert dataset.resolution.game_ids == (1,)
+    assert dataset.resolution.excluded_games == {
+        "above_maximum_rating": 1,
+        "missing_ratings": 1,
+    }
+
+
+def test_a_missing_axis_value_is_excluded_rather_than_treated_as_zero(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [
+        normalized_row(1, split="train", time_initial_ms=None),
+        normalized_row(2, split="train", time_initial_ms=BLITZ_MS),
+    ]
+    normalized_directory, _ = write_corpus(tmp_path, rows)
+
+    dataset = SequenceDataset.from_parquet(
+        normalized_directory / "games.parquet",
+        split="train",
+        selection=SelectionConfig(minimum_time_initial_ms=0),
+    )
+
+    assert dataset.resolution.game_ids == (2,)
+    assert dataset.resolution.excluded_games == {"missing_time_control": 1}
+
+
+def test_subsampling_is_deterministic_and_a_smaller_dial_is_a_subset(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 11)],
+    )
+
+    half = _selected(games, SelectionConfig(fraction=0.5))
+    half_again = _selected(games, SelectionConfig(fraction=0.5))
+    fifth = _selected(games, SelectionConfig(fraction=0.2))
+    whole = _selected(games, SelectionConfig(fraction=1.0))
+
+    assert len(half) == 5
+    assert len(fifth) == 2
+    assert len(whole) == 10
+    # Reproducible on any machine, and nested, because the rank is a digest of
+    # the game id rather than a shuffle of whatever order the shards held.
+    assert half == half_again
+    assert set(fifth) < set(half) < set(whole)
+
+
+def test_maximum_games_caps_a_selection_after_filtering(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 11)],
+    )
+
+    capped = _selected(games, SelectionConfig(maximum_games=3))
+    halved_then_capped = _selected(
+        games, SelectionConfig(fraction=0.5, maximum_games=3)
+    )
+
+    assert len(capped) == 3
+    assert capped == halved_then_capped
+
+
+def test_a_selection_matching_nothing_fails_instead_of_training_on_nothing(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(tmp_path, normalized_row, write_corpus, [(1, BLITZ_MS, 1500)])
+
+    with pytest.raises(DataLoadingError, match="no normalized games matched"):
+        SequenceDataset.from_parquet(
+            games,
+            split="train",
+            selection=SelectionConfig(minimum_rating=3000),
+        )
+
+
+def test_a_selection_never_reaches_outside_the_split_it_loads(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [
+        normalized_row(1, split="train"),
+        normalized_row(2, split="validation"),
+        normalized_row(3, split="test"),
+    ]
+    normalized_directory, _ = write_corpus(tmp_path, rows)
+
+    dataset = SequenceDataset.from_parquet(
+        normalized_directory / "games.parquet",
+        split="train",
+        selection=SelectionConfig(fraction=1.0),
+    )
+
+    assert dataset.resolution.game_ids == (1,)
+    assert dataset.resolution.eligible_games == 1
+
+
+def test_the_resolved_selection_reproduces_the_same_games_by_identity(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 9)],
+    )
+    selection = SelectionConfig(fraction=0.5)
+
+    first = SequenceDataset.from_parquet(games, split="train", selection=selection)
+    second = SequenceDataset.from_parquet(games, split="train", selection=selection)
+    narrower = SequenceDataset.from_parquet(
+        games,
+        split="train",
+        selection=SelectionConfig(fraction=0.25),
+    )
+
+    record = first.resolution.as_record()
+    assert record["spec"] == selection.model_dump(mode="json")
+    assert record["eligible_games"] == 8
+    assert record["selected_games"] == 4
+    assert record["excluded_games"] == {}
+    assert record == second.resolution.as_record()
+    # Two selections over one corpus stay distinguishable by what they realized,
+    # not only by the configuration that asked for it.
+    assert (
+        record["game_ids_sha256"] != narrower.resolution.as_record()["game_ids_sha256"]
+    )
+    assert first.identity_sha256 == second.identity_sha256
+    assert first.identity_sha256 != narrower.identity_sha256
+
+
+def test_a_loader_rejects_a_dataset_built_for_a_different_selection(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 5)],
+    )
+    dataset = SequenceDataset.from_parquet(
+        games,
+        split="train",
+        selection=SelectionConfig(fraction=0.5),
+    )
+
+    with pytest.raises(DataLoadingError, match="loader selection does not match"):
+        SequenceDataLoader(
+            dataset,
+            SequenceLoaderConfig(
+                split="train",
+                batch_size=1,
+                selection=SelectionConfig(fraction=0.25),
+            ),
+        )
+
+
+def test_a_changed_selection_changes_the_loader_configuration_identity(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 5)],
+    )
+    broad = SequenceLoaderConfig(split="train", batch_size=1, shuffle=False)
+    narrow = broad.model_copy(update={"selection": SelectionConfig(fraction=0.5)})
+
+    assert (
+        SequenceDataLoader.from_parquet(games, broad).configuration_sha256
+        != SequenceDataLoader.from_parquet(games, narrow).configuration_sha256
+    )
+
+
+def test_selection_bounds_must_be_ordered() -> None:
+    with pytest.raises(ValueError, match="maximum_rating must not be below"):
+        SelectionConfig(minimum_rating=1800, maximum_rating=1200)
+
+
+def _corpus(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    games: list[tuple[int, int, int]],
+) -> Path:
+    rows = [
+        normalized_row(
+            game_id,
+            split="train",
+            time_initial_ms=time_initial_ms,
+            rating=rating,
+        )
+        for game_id, time_initial_ms, rating in games
+    ]
+    normalized_directory, _ = write_corpus(tmp_path, rows)
+    return normalized_directory / "games.parquet"
+
+
+def _selected(games: Path, selection: SelectionConfig) -> tuple[int, ...]:
+    dataset = SequenceDataset.from_parquet(
+        games,
+        split="train",
+        selection=selection,
+    )
+    return dataset.resolution.game_ids

@@ -122,10 +122,63 @@ class PrepareConfig(ConfigModel):
     output: OutputConfig = OutputConfig()
 
 
+class SelectionConfig(ConfigModel):
+    """Load-time selection within one prepared corpus.
+
+    Filtering here is not the same operation as filtering during preparation.
+    Preparation runs before split assignment, so a filter there removes games
+    from every split at once and shifts the training data and the evaluation
+    reference in the same direction, where no benchmark can detect it.
+    Selection runs after, touches only the split being loaded, and therefore
+    stays visible as a mismatch against a clean reference.
+
+    The axes are the ones worth comparing models across: time control and
+    rating. The rating bounds read the normalized rating and require it from
+    both players, because a game whose rating is unknown cannot be placed in a
+    band. Subsampling ranks by a digest of the game id, so a fraction selects
+    the same games on any machine and a smaller fraction is a subset of a
+    larger one.
+    """
+
+    minimum_time_initial_ms: int | None = Field(default=None, ge=0)
+    maximum_time_initial_ms: int | None = Field(default=None, ge=0)
+    minimum_time_increment_ms: int | None = Field(default=None, ge=0)
+    maximum_time_increment_ms: int | None = Field(default=None, ge=0)
+    minimum_rating: int | None = Field(default=None, ge=0)
+    maximum_rating: int | None = Field(default=None, ge=0)
+    require_ratings: StrictBool = False
+    fraction: float | None = Field(default=None, gt=0.0, le=1.0)
+    maximum_games: int | None = Field(default=None, ge=1)
+    seed: str = Field(default="anthro-training-selection-v1", min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> SelectionConfig:
+        bounds = (
+            (
+                "time_initial_ms",
+                self.minimum_time_initial_ms,
+                self.maximum_time_initial_ms,
+            ),
+            (
+                "time_increment_ms",
+                self.minimum_time_increment_ms,
+                self.maximum_time_increment_ms,
+            ),
+            ("rating", self.minimum_rating, self.maximum_rating),
+        )
+        for name, minimum, maximum in bounds:
+            if minimum is not None and maximum is not None and maximum < minimum:
+                raise ValueError(
+                    f"selection maximum_{name} must not be below minimum_{name}"
+                )
+        return self
+
+
 class SequenceLoaderConfig(ConfigModel):
     """Deterministic batching choices for normalized game sequences."""
 
     split: SplitName = "train"
+    selection: SelectionConfig = SelectionConfig()
     batch_size: int = Field(default=8, ge=1)
     length_bucket_width: int | None = Field(default=32, ge=1)
     chunk_length: int | None = Field(default=None, ge=1)

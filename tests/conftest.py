@@ -91,6 +91,9 @@ def _normalized_row(
     split: str = "test",
     plies: int = 6,
     rating: int | None = 1500,
+    ratings: tuple[int | None, int | None] | None = None,
+    time_initial_ms: int | None = 300_000,
+    time_increment_ms: int | None = 0,
     clocks: bool = True,
     result: str = "1-0",
     moves: tuple[str, ...] | None = None,
@@ -100,9 +103,13 @@ def _normalized_row(
 
     Explicit ``moves`` and ``initial_position`` let a fixture reach positions
     the shared opening line never visits, such as an available promotion.
+    ``ratings`` overrides ``rating`` per player, and the time-control fields
+    vary independently, so a fixture corpus can span the axes a load-time
+    selection filters on.
     """
 
     moves = OPENING_MOVES[:plies] if moves is None else moves
+    white_rating, black_rating = (rating, rating) if ratings is None else ratings
     status = "present"
     clock_trace = [290_000] * len(moves) if clocks else [None] * len(moves)
     clock_statuses = [status if clocks else "unavailable"] * len(moves)
@@ -116,7 +123,7 @@ def _normalized_row(
         source_termination="normal",
         final_board=final_board,
         clock_remaining_ms=clock_trace,
-        time_initial_ms=300_000,
+        time_initial_ms=time_initial_ms,
         abandonment_clock_share=TerminationConfig().abandonment_clock_share,
     )
     action_ids = list(_action_ids(moves))
@@ -144,20 +151,22 @@ def _normalized_row(
         "terminal_action_status": terminal_action_status.value,
         "ply_count": len(moves),
         "action_ids": action_ids,
-        "white_source_rating": rating,
-        "white_source_rating_status": status if rating else "unavailable",
-        "black_source_rating": rating,
-        "black_source_rating_status": status if rating else "unavailable",
+        "white_source_rating": white_rating,
+        "white_source_rating_status": status if white_rating else "unavailable",
+        "black_source_rating": black_rating,
+        "black_source_rating_status": status if black_rating else "unavailable",
         "source_rating_namespace": "fixture_blitz",
         "source_rating_system": "glicko2",
-        "white_normalized_rating": rating,
-        "white_normalized_rating_status": status if rating else "unavailable",
-        "black_normalized_rating": rating,
-        "black_normalized_rating_status": status if rating else "unavailable",
-        "time_initial_ms": 300_000,
-        "time_initial_status": status,
-        "time_increment_ms": 0,
-        "time_increment_status": status,
+        "white_normalized_rating": white_rating,
+        "white_normalized_rating_status": status if white_rating else "unavailable",
+        "black_normalized_rating": black_rating,
+        "black_normalized_rating_status": status if black_rating else "unavailable",
+        "time_initial_ms": time_initial_ms,
+        "time_initial_status": status if time_initial_ms is not None else "unavailable",
+        "time_increment_ms": time_increment_ms,
+        "time_increment_status": (
+            status if time_increment_ms is not None else "unavailable"
+        ),
         "clock_remaining_ms": clock_trace,
         "clock_status": clock_statuses,
         "clock_precision_ms": clock_precisions,

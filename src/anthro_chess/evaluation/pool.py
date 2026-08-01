@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -24,6 +24,7 @@ from anthro_chess.data import encoding_identity
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
+    game_ids_sha256,
     normalized_shard_paths,
     read_normalized_rows,
     validate_manifest_compatibility,
@@ -45,13 +46,6 @@ logger = logging.getLogger(__name__)
 
 class EvaluationPoolError(ValueError):
     """Raised when a pool cannot be built from or loaded for a selection."""
-
-
-def game_ids_sha256(game_ids: Sequence[int]) -> str:
-    """Return the order-independent identity digest for a set of game ids."""
-
-    joined = ",".join(str(game_id) for game_id in sorted(game_ids))
-    return sha256(joined.encode()).hexdigest()
 
 
 class PoolConfig(ConfigModel):

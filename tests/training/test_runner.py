@@ -421,6 +421,102 @@ def test_runner_rejects_manifest_and_normalized_data_mismatch(
         run_training(load_config(TrainingConfig, path=config_path))
 
 
+def test_two_selections_of_one_corpus_are_told_apart_by_the_run_record(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The comparison this dial exists for: one corpus, two training runs.
+
+    Both runs read the same manifest, so a later benchmark scores them against
+    one reference. What separates them is the realized selection recorded in
+    each run, which is what a reader traces a result back to.
+    """
+
+    rows = [
+        normalized_row(game_id, split="train", plies=6, time_initial_ms=60_000)
+        for game_id in range(1, 5)
+    ]
+    rows.extend(
+        normalized_row(game_id, split="train", plies=6, time_initial_ms=300_000)
+        for game_id in range(5, 9)
+    )
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+
+    broad = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "broad",
+                normalized=normalized,
+                manifest=manifest,
+                output=tmp_path / "runs" / "broad",
+                validation=False,
+            ),
+        )
+    )
+    narrow = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "narrow",
+                normalized=normalized,
+                manifest=manifest,
+                output=tmp_path / "runs" / "narrow",
+                validation=False,
+                train_selection=(
+                    "\n[train.loader.selection]\nminimum_time_initial_ms = 300000\n"
+                ),
+            ),
+        )
+    )
+
+    broad_data = json.loads(broad.run_path.read_text(encoding="utf-8"))["data"]["train"]
+    narrow_data = json.loads(narrow.run_path.read_text(encoding="utf-8"))["data"][
+        "train"
+    ]
+
+    assert broad_data["manifest_sha256"] == narrow_data["manifest_sha256"]
+    assert broad_data["selection"]["selected_games"] == 8
+    assert broad_data["selection"]["excluded_games"] == {}
+    assert narrow_data["selection"]["selected_games"] == 4
+    assert narrow_data["selection"]["excluded_games"] == {
+        "below_minimum_time_initial": 4
+    }
+    assert narrow_data["selection"]["spec"]["minimum_time_initial_ms"] == 300_000
+    assert (
+        broad_data["selection"]["game_ids_sha256"]
+        != narrow_data["selection"]["game_ids_sha256"]
+    )
+    assert broad_data["dataset_sha256"] != narrow_data["dataset_sha256"]
+
+
+def test_a_selection_cannot_reach_the_held_out_test_split(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [normalized_row(game_id, split="test", plies=6) for game_id in range(1, 5)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        output=tmp_path / "run",
+        validation=False,
+        train_selection="\n[train.loader.selection]\nfraction = 1.0\n",
+    )
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'split = "train"', 'split = "test"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must not use the held-out test split"):
+        load_config(TrainingConfig, path=config_path)
+
+
 def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     tmp_path: Path,
 ) -> None:
@@ -878,6 +974,7 @@ def _write_training_config(
     precision: str = "float32",
     determinism: str = "strict",
     extra: str = "",
+    train_selection: str = "",
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "training.toml"
@@ -929,7 +1026,7 @@ manifest = {json.dumps(str(manifest))}
 split = "train"
 batch_size = 1
 shuffle = {str(shuffle).lower()}
-{validation_selection}
+{train_selection}{validation_selection}
 """,
         encoding="utf-8",
     )
