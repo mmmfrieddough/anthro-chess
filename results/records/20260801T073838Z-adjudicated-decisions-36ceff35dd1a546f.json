@@ -1,0 +1,252 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "adjudicated-decisions",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "training-blitz-30k-v4-step-00008000",
+    "parameter_sha256": "909b7eafc39c47583c505e1d88355ee7612e56a81af6e1d038be4505ebcd1d2f",
+    "run_id": "training-blitz-30k-v4",
+    "step": 8000
+  },
+  "configuration": {
+    "overrides": [
+      "model.checkpoint_path=\"/Users/pspagnardi/.local/share/anthro-chess/runs/training-blitz-30k-v4/checkpoints/step-00008000.pt\"",
+      "view.maximum_games=400"
+    ],
+    "sha256": "bd9d56c8f4d37cffcdc663c56608400078258d253f7de43b8dd0276b62966a2d",
+    "source": "/Users/pspagnardi/Documents/Repositories/anthro-chess/configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "7e5aaa5ca860e7402889260960b4250663b074d11217ee14550f7ea4fd536697",
+        "games": 400,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "a25b5cf89791bc311aad722839a60ffb85947f58affca0b24ea73142cd5508cb",
+    "pool_id": "lichess-blitz-2017-04-test",
+    "pool_version": 1,
+    "selected_games": 400,
+    "view": "canonical"
+  },
+  "detail": {
+    "bytes": 2334686,
+    "description": "Per-predicate human and model rates with rating-band drill-down and opportunity counts.",
+    "path": "adjudicated-decisions/training-blitz-30k-v4-step-00008000/20260801T073838Z.json",
+    "sha256": "861a548c26ae802c8c334407f464d0b720f25994fb81bc4226b58ced48a77db2"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9",
+    "version": 4
+  },
+  "envelope_version": 3,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "31dd4e06f0664f03a8f3892d09f565564b2338f6",
+    "package_version": "0.1.0",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python_version": "3.11.15"
+  },
+  "execution": null,
+  "kind": "adjudicated-decisions",
+  "measurements": [
+    {
+      "fingerprint": "74a97ebdef6ae4f6039fbd01621a2dd42d8d636bbf333f610983d1cac5d9ca4f",
+      "metric": "adjudicated.mate_available_best_rank",
+      "noise_floor": null,
+      "sample_size": 150,
+      "value": 14.34
+    },
+    {
+      "fingerprint": "bb8f9d9c5096eb7eb85375c67ac688ca87aa89ddde0eb0d634e6be54c514fea9",
+      "metric": "adjudicated.mate_available_human_gap",
+      "noise_floor": null,
+      "sample_size": 150,
+      "value": -0.6133333333333333
+    },
+    {
+      "fingerprint": "39743cdaba85243d94ca10c1aa50f183d56d23c23318dc12186d6309599f022a",
+      "metric": "adjudicated.mate_available_human_rate",
+      "noise_floor": null,
+      "sample_size": 150,
+      "value": 0.6733333333333333
+    },
+    {
+      "fingerprint": "47549a7c534ad2b2b4cdd68214b758e20fce5ebcddb8feb0ae60fd7aa75676fa",
+      "metric": "adjudicated.mate_available_policy_mass",
+      "noise_floor": null,
+      "sample_size": 150,
+      "value": 0.025883773285087935
+    },
+    {
+      "fingerprint": "e1f64fd8750f4889682c13b170fa8f792da32c68810e7ae43e1d390010b5ec36",
+      "metric": "adjudicated.mate_available_selected_rate",
+      "noise_floor": null,
+      "sample_size": 150,
+      "value": 0.06
+    },
+    {
+      "fingerprint": "4823bef8db3a6c36acabda0f7bdc5ffb4d85c9ae81a103cabc8432736e873df9",
+      "metric": "adjudicated.mate_threatened_best_rank",
+      "noise_floor": null,
+      "sample_size": 248,
+      "value": 2.7903225806451615
+    },
+    {
+      "fingerprint": "9b5baee379ac0f026bd8162620fc04cba0d32269e9ca6bcde1f7fdbf4bac1f3d",
+      "metric": "adjudicated.mate_threatened_human_gap",
+      "noise_floor": null,
+      "sample_size": 266,
+      "value": -0.3007518796992481
+    },
+    {
+      "fingerprint": "8332309da9dc5795da908d933e8f1855c5755eff49d17fb35aab115ae21ed495",
+      "metric": "adjudicated.mate_threatened_human_rate",
+      "noise_floor": null,
+      "sample_size": 266,
+      "value": 0.7368421052631579
+    },
+    {
+      "fingerprint": "532d26c5090229d6e0ac5cbd4c5c835f9c1e8e602725e64c100f5ab7b503b24b",
+      "metric": "adjudicated.mate_threatened_policy_mass",
+      "noise_floor": null,
+      "sample_size": 266,
+      "value": 0.17593222670522066
+    },
+    {
+      "fingerprint": "7b9cdf67c4cf079b384e3c4ad88202e2f1cca22291232f3cc70dea5c471fbba3",
+      "metric": "adjudicated.mate_threatened_selected_rate",
+      "noise_floor": null,
+      "sample_size": 266,
+      "value": 0.43609022556390975
+    },
+    {
+      "fingerprint": "8945a9df40b5bc105e2068f5de3d720a37c6e5a86608c9c8b918502f31c84c22",
+      "metric": "adjudicated.material_gain_best_rank",
+      "noise_floor": null,
+      "sample_size": 6885,
+      "value": 7.965432098765432
+    },
+    {
+      "fingerprint": "ac1cf453bd28882f9d1e4b5ca1b2f58481ad443daf3874aa33158c75d739bcbc",
+      "metric": "adjudicated.material_gain_human_gap",
+      "noise_floor": null,
+      "sample_size": 6885,
+      "value": -0.3038489469862019
+    },
+    {
+      "fingerprint": "76ba06db52a4d670a40234ce59c023cc569bca6aa6206c480c2ab7d971e0e989",
+      "metric": "adjudicated.material_gain_human_rate",
+      "noise_floor": null,
+      "sample_size": 6885,
+      "value": 0.6376180101670298
+    },
+    {
+      "fingerprint": "79f1fc18be46c199638c919754c04284de17a2827397ab8753cc5d0459329032",
+      "metric": "adjudicated.material_gain_policy_mass",
+      "noise_floor": null,
+      "sample_size": 6885,
+      "value": 0.1555335174221899
+    },
+    {
+      "fingerprint": "9758dc9b10f27daa6b7a00a9c7dcea2519ad0508b70b7f70fd03c40619fb230f",
+      "metric": "adjudicated.material_gain_selected_rate",
+      "noise_floor": null,
+      "sample_size": 6885,
+      "value": 0.3337690631808279
+    },
+    {
+      "fingerprint": "38308da17961dd9e0b81714db8905f6bfd9791da713fc46c0bfb65e68f600621",
+      "metric": "adjudicated.only_move_best_rank",
+      "noise_floor": null,
+      "sample_size": 256,
+      "value": 1.37109375
+    },
+    {
+      "fingerprint": "e5bb7328a94dc1dcd5579a6b53014d3a0c4ac8fb977d91424845d7e0dea52d04",
+      "metric": "adjudicated.only_move_human_gap",
+      "noise_floor": null,
+      "sample_size": 256,
+      "value": -0.34375
+    },
+    {
+      "fingerprint": "94e091312d036e4206c69732cd5ca46ca6dfbed293646845346207f1dc5e5750",
+      "metric": "adjudicated.only_move_human_rate",
+      "noise_floor": null,
+      "sample_size": 256,
+      "value": 0.97265625
+    },
+    {
+      "fingerprint": "db650f6c45e86246f91e3e459d093f28fb281e66418d8850da9facb89bed5631",
+      "metric": "adjudicated.only_move_policy_mass",
+      "noise_floor": null,
+      "sample_size": 256,
+      "value": 0.07343595768686
+    },
+    {
+      "fingerprint": "dcbea97c8ea34f75a89ada87b87c789504b4d78c6abd4899b5648de6d6fb75c4",
+      "metric": "adjudicated.only_move_selected_rate",
+      "noise_floor": null,
+      "sample_size": 256,
+      "value": 0.62890625
+    },
+    {
+      "fingerprint": "a01608072c18382ae85cae9f8d9f04c2917a1552aec47d08c4c72238571ab115",
+      "metric": "adjudicated.stalemate_available_best_rank",
+      "noise_floor": null,
+      "sample_size": 32,
+      "value": 12.875
+    },
+    {
+      "fingerprint": "6dbde035a1654c56b0bbace24ae3c3c34d35ae586bc42fb6e6fdd0ef92b6bdbe",
+      "metric": "adjudicated.stalemate_available_human_gap",
+      "noise_floor": null,
+      "sample_size": 32,
+      "value": 0.1875
+    },
+    {
+      "fingerprint": "52da40cc56158415ff140abf65e95ddf28c15645c3ba6e2decfa6c763543287e",
+      "metric": "adjudicated.stalemate_available_human_rate",
+      "noise_floor": null,
+      "sample_size": 32,
+      "value": 0.03125
+    },
+    {
+      "fingerprint": "d925cc5956ebbe0160679e6f1f5458bb02d253763dff75458fb036238e800425",
+      "metric": "adjudicated.stalemate_available_policy_mass",
+      "noise_floor": null,
+      "sample_size": 32,
+      "value": 0.08080558739470864
+    },
+    {
+      "fingerprint": "a9895b5c4c70e899816099f5b848fcfb35d86cda76997f9da6fd87a1122ac0bd",
+      "metric": "adjudicated.stalemate_available_selected_rate",
+      "noise_floor": null,
+      "sample_size": 32,
+      "value": 0.21875
+    }
+  ],
+  "recorded_at": "2026-08-01T07:38:38.083420Z",
+  "result_id": "36ceff35dd1a546f"
+}
