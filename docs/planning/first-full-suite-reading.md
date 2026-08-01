@@ -155,11 +155,19 @@ checkpoints:
 Only ordering, slope, and span are comparable across checkpoints; a seat's
 absolute fitted number is set by an anchor and is not.
 
-The ablation arm is what makes this precise. Removing rating conditioning
-entirely moves self-play strength by **−41.8 Elo**, while moving the dial across
-its whole 900-Elo range moves it by about 10. The conditioning input is
-connected to something; that something is not strength. `attenuation` reads
-+0.003 of the ablated drift avoided.
+The ablation arm is what makes this precise. Taking the ablated seat against the
+mean of the conditioned seats at the same temperature, removing rating
+conditioning costs about **38 Elo** — 1659 against 1697 at temperature 0, 1649
+against 1686 at 0.7, and 1611 against 1650 at 1.0. So conditioning is worth
+roughly 38 Elo of strength while moving the dial across its whole 900-Elo range
+is worth about 10. The input is connected to something; that something is not
+the dial's position.
+
+The temperature response is a separate reading and says something further:
+conditioned seats lose 41.7 rating points per unit temperature and ablated seats
+lose 41.8, with `attenuation` at +0.003 of the ablated drift avoided. Rating
+conditioning provides essentially no protection against temperature-induced
+strength loss.
 
 This is the same result the puzzle benchmark and the rating-dependency test
 report from two other directions: conditioning is used — anchor policy
