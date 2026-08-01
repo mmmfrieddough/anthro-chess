@@ -1,0 +1,126 @@
+{
+  "action_vocabulary": {
+    "name": "anthro-standard-actions",
+    "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+    "size": 1970,
+    "version": 2
+  },
+  "benchmark": {
+    "name": "rating-dependency",
+    "version": 1
+  },
+  "checkpoint": {
+    "label": "training-blitz-30k-v4-step-00000100",
+    "parameter_sha256": "da1697571bc9a83225806b0407ccb6400699343fbf89670759395d303be105dd",
+    "run_id": "training-blitz-30k-v4",
+    "step": 100
+  },
+  "configuration": {
+    "overrides": [
+      "model.checkpoint_path=\"/Users/pspagnardi/.local/share/anthro-chess/runs/training-blitz-30k-v4/checkpoints/step-00000100.pt\"",
+      "view.maximum_games=400"
+    ],
+    "sha256": "6c1e8990e9a66d7c35ab6d2fffe7e612dc1ee20a8dab95df6182b1ffa3c144aa",
+    "source": "/Users/pspagnardi/Documents/Repositories/anthro-chess/configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
+  },
+  "data": {
+    "components": [
+      {
+        "content_sha256": "7e5aaa5ca860e7402889260960b4250663b074d11217ee14550f7ea4fd536697",
+        "games": 400,
+        "projection": "move_prediction",
+        "projection_version": 1
+      }
+    ],
+    "game_ids_sha256": "a25b5cf89791bc311aad722839a60ffb85947f58affca0b24ea73142cd5508cb",
+    "pool_id": "lichess-blitz-2017-04-test",
+    "pool_version": 1,
+    "selected_games": 400,
+    "view": "canonical"
+  },
+  "detail": {
+    "bytes": 6526,
+    "description": "Cross-conditioning and within-game dependency tables.",
+    "path": "rating-dependency/training-blitz-30k-v4-step-00000100/20260801T073755Z.json",
+    "sha256": "74be09d9e89bb15d2452de4ab9a0a5bdd68f5920645636229a7dfdcd42040963"
+  },
+  "encoding": {
+    "action_vocabulary": {
+      "name": "anthro-standard-actions",
+      "sha256": "4335db3058aad53dc1a4a873a21cc48e2db4d3e6aff003887260e831d3f677ab",
+      "size": 1970,
+      "version": 2
+    },
+    "board_square_count": 64,
+    "name": "anthro-per-ply",
+    "schema_sha256": "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9",
+    "version": 4
+  },
+  "envelope_version": 3,
+  "environment": {
+    "dependencies": {
+      "chess": "1.11.2",
+      "pyarrow": "21.0.0",
+      "torch": "2.13.0"
+    },
+    "git_revision": "31dd4e06f0664f03a8f3892d09f565564b2338f6",
+    "package_version": "0.1.0",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python_version": "3.11.15"
+  },
+  "execution": null,
+  "kind": "rating-dependency",
+  "measurements": [
+    {
+      "fingerprint": "f1f7df8d9093c1fc272262383d818b747d91c6aad929b952252988bf34c2b807",
+      "metric": "dependency.rating_absent_degradation",
+      "noise_floor": null,
+      "sample_size": 28668,
+      "value": 0.3152388599534568
+    },
+    {
+      "fingerprint": "7afa844b4d328c532d99f3bf979fb5ce6c38ac34ac5e377304367a96db8b14be",
+      "metric": "dependency.rating_anchor_policy_divergence",
+      "noise_floor": null,
+      "sample_size": 28668,
+      "value": 0.0006580912103868761
+    },
+    {
+      "fingerprint": "1f372bbbb0904643ff607fc871aea379b5813381d1050787ad4613c108b1f688",
+      "metric": "dependency.rating_anchor_top1_agreement",
+      "noise_floor": null,
+      "sample_size": 28668,
+      "value": 0.9825938328449839
+    },
+    {
+      "fingerprint": "c05d468f6f4acc02e19308df9d4c2eb3422152c7e7e962841e099f498e8f02dd",
+      "metric": "dependency.rating_constant_degradation",
+      "noise_floor": null,
+      "sample_size": 28668,
+      "value": -0.0003162147698096973
+    },
+    {
+      "fingerprint": "faf7baf19a657760fcb81eef96f391515c48d53f012074f3b0cb5570caef8c2f",
+      "metric": "dependency.rating_cross_conditioning_match_rate",
+      "noise_floor": null,
+      "sample_size": 4,
+      "value": 0.25
+    },
+    {
+      "fingerprint": "3400324c615d898eb9dc530375f39c7857433e0fbf7ec69bf49e6338d82e9d71",
+      "metric": "dependency.rating_shuffled_degradation",
+      "noise_floor": null,
+      "sample_size": 28668,
+      "value": -5.041762895174884e-05
+    },
+    {
+      "fingerprint": "c76945641a2d36760dbb1ba81dae324c4b8fb8bfc4cce646c044cfdce3e660e2",
+      "metric": "dependency.rating_within_game_response",
+      "noise_floor": null,
+      "sample_size": 24668,
+      "value": -4.490386458187479e-05
+    }
+  ],
+  "recorded_at": "2026-08-01T07:37:55.982882Z",
+  "result_id": "52e89c516f92b40f"
+}
