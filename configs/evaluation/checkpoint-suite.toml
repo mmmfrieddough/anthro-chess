@@ -1,0 +1,133 @@
+# Every benchmark in the harness, against one checkpoint, from one command.
+#
+# This is the default way a new checkpoint is evaluated. It composes the
+# per-benchmark selections beside it rather than restating any of their
+# settings: each step names a file, and the sweep supplies only the checkpoint,
+# the order, whether the reading is committed, and how much data a reduced
+# sweep reads.
+#
+# The model selection is deliberately absent, so the sweep uses the same
+# machine-local default checkpoint the playable engine reads. Override it for
+# one run with, for example:
+#
+#   anthro eval suite --config <this file> \
+#     --set model.run_path='"training-blitz-30k-v4"' \
+#     --set model.checkpoint='"step-00008000.pt"'
+#
+# The reduced sweep is the default and the full sweep is `--full`. Reductions
+# below touch sample counts only — view sizes, seeds, games per position,
+# resamples, and measured decisions. None of them moves a grid, a dose, a
+# temperature, or a ply limit, because those decide *what* is measured and a
+# sweep that changed them would report a different quantity rather than the
+# same one less precisely. A smaller view is still its own data component and
+# therefore its own series, so a reduced sweep is not a partial down payment on
+# a full one.
+#
+# Measured on Apple Silicon MPS against training-blitz-30k-v4 step 8000, the
+# reduced sweep costs about half an hour, and the two long poles are the
+# checkpoint reading and the puzzle response. The per-step figures are recorded
+# beside each step below so a later change can be judged against them; they are
+# costs on one machine rather than measurements of the model, and they will go
+# stale as the corpus and the checkpoint move.
+name = "checkpoint"
+
+# Cheapest first, so a broken checkpoint selection fails in seconds rather than
+# after the first pool pass. Ordering beyond that is the declaration order here,
+# except where a step's inputs force it.
+
+[benchmarks.inference]
+# What the checkpoint costs to play with. Reads no pool, and its cold-start
+# reading wants a process that has not already loaded the model, which is why
+# it runs before anything else.
+config = "configs/evaluation/inference-efficiency.toml"
+reduced = [
+  "latency.decisions=10",
+  "latency.sweep_plies=[0, 40, 80]",
+  "throughput.batches=4",
+  "throughput.sweep_batch_sizes=[1, 8]",
+]
+
+[benchmarks.run]
+# The canonical held-out reading, and the reduced sweep's longest step at about
+# eight minutes on 400 games. The view is not the whole story: the rating
+# dependency test scores the same games again under each corrupted and each
+# fixed conditioning, so this step pays roughly nine passes over whatever the
+# view selects. The passes stay — dropping one would drop a measurement rather
+# than shrink it — so the view is what carries the reduction.
+config = "configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
+reduced = ["view.maximum_games=400"]
+
+[benchmarks.novelty]
+# Capability retention across the dose axis. Every dose is kept: a dose is a
+# declared workload, so dropping one drops a measurement rather than shrinking
+# it. The view behind every arm is what shrinks.
+config = "configs/evaluation/novelty-dose-response.toml"
+reduced = ["view.maximum_games=100"]
+
+[benchmarks.puzzles]
+# Rating response against the owned calibrated puzzle set, and the second of
+# the reduced sweep's two long poles at about fifteen minutes.
+#
+# It is unreduced, and not by choice: the benchmark has no subsample dial, and
+# its rating grid is the measurement rather than a sample size, so there is
+# nothing here that can honestly be shrunk. Fifteen minutes is therefore the
+# floor of any reduced sweep that includes it. Adding a puzzle subsample would
+# change what the benchmark selects to measure over, which is a benchmark
+# change with its own shakedown reading rather than a suite setting.
+config = "configs/evaluation/puzzle-rating-response.toml"
+
+[benchmarks.rollout]
+# The first generating step, and the one whose games the decomposition below
+# reads. Seeds and games per position are sample counts; the rating and
+# temperature grids are not and are left alone.
+config = "configs/evaluation/generated-play-rollout.toml"
+reduced = [
+  "grid.seeds=[0]",
+  "generation.games_per_position=1",
+  "reference.resamples=50",
+  "reference.view.maximum_games=2000",
+]
+
+[benchmarks.decisions]
+# Model error against sampling error, over the games the rollout just played.
+# It runs after the rollout because it reads that payload, which the sweep
+# enforces rather than trusting to declaration order.
+#
+# Not recorded, and not by choice of this file: decision decomposition has no
+# result kind, because a decomposition is read per cell of the dials it was
+# made under and the project has not designated which cell a committed series
+# would follow.
+record = false
+
+[benchmarks.termination]
+# How the checkpoint ends games, against the human termination mix. The
+# held-out half is one pass over frozen games; the generated half plays the
+# rating grid, so seeds and games per position are what shrink.
+config = "configs/evaluation/game-termination.toml"
+reduced = [
+  "grid.seeds=[0]",
+  "generation.games_per_position=2",
+  "held_out.view.maximum_games=128",
+  "reference.resamples=50",
+  "reference.view.maximum_games=2000",
+]
+
+[benchmarks.ladder]
+# Full sweeps only, and this is the one step with no affordable reduction.
+#
+# Its cost is quadratic in its seat count, and the seat count is the
+# measurement: four ratings at three temperatures plus three ablated seats is
+# fifteen seats and one hundred and five pairings. Seeds and openings are the
+# only sample sizes it has, and both are already at their floor once a single
+# opening is played from each side — which still leaves two hundred and ten
+# games. Measured at roughly eighteen seconds a game, that is over an hour, and
+# the shipped grid at one seed and four openings is eight hundred and forty
+# games, or around four hours.
+#
+# So a nominally reduced ladder would be a reduced sweep nobody could run.
+# Shrinking the seat grid instead would measure a different ladder, and one
+# fitted on a different set of seats cannot be read against this one at all,
+# since the fit places every seat on one internal scale.
+config = "configs/evaluation/rating-ladder.toml"
+scales = ["full"]
+reduced = ["grid.seeds=[0]", "openings.view.maximum_games=4"]

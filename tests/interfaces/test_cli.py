@@ -1549,3 +1549,184 @@ def test_eval_noise_characterize_reads_other_kinds_from_the_store(
         == 2
     )
     assert "reads replicates the store already holds" in capsys.readouterr().err
+
+
+def test_eval_suite_plans_the_shipped_selection_without_running_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The shipped sweep has to resolve, in order, against the real files."""
+
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+
+    assert (
+        main(
+            [
+                "eval",
+                "suite",
+                "--config",
+                "configs/evaluation/checkpoint-suite.toml",
+                "--plan",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    plan = json.loads(capsys.readouterr().out)
+    names = [step["benchmark"] for step in plan["steps"]]
+    assert plan["scale"] == "reduced"
+    # Decision decomposition reads the games the rollout played, so it can
+    # never be planned ahead of it.
+    assert names.index("decisions") > names.index("rollout")
+    # The ladder sits out the reduced sweep: its cost is a seat grid rather
+    # than a sample size, so it has no reduction that is both honest and
+    # affordable. Every other benchmark is here.
+    assert set(names) == {
+        "inference",
+        "run",
+        "novelty",
+        "puzzles",
+        "rollout",
+        "decisions",
+        "termination",
+    }
+    decisions = next(step for step in plan["steps"] if step["benchmark"] == "decisions")
+    assert decisions["record"] is False
+    assert decisions["reads_games_from"] == "rollout"
+
+
+def test_eval_suite_full_scale_is_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A sweep measured in hours is not a default anyone would run."""
+
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+    arguments = [
+        "eval",
+        "suite",
+        "--config",
+        "configs/evaluation/checkpoint-suite.toml",
+        "--plan",
+        "--format",
+        "json",
+    ]
+
+    assert main(arguments) == 0
+    reduced = json.loads(capsys.readouterr().out)
+    assert main([*arguments, "--full"]) == 0
+    full = json.loads(capsys.readouterr().out)
+
+    assert (reduced["scale"], full["scale"]) == ("reduced", "full")
+    reduced_run = next(s for s in reduced["steps"] if s["benchmark"] == "run")
+    full_run = next(s for s in full["steps"] if s["benchmark"] == "run")
+    assert "view.maximum_games=400" in reduced_run["overrides"]
+    assert full_run["overrides"] == []
+    # The full sweep also carries the steps that have no honest reduction.
+    reduced_names = {step["benchmark"] for step in reduced["steps"]}
+    full_names = {step["benchmark"] for step in full["steps"]}
+    assert reduced_names < full_names
+    # Two scales are two series, so a resume can never cross between them.
+    assert reduced["plan_sha256"] != full["plan_sha256"]
+
+
+def test_eval_suite_threads_one_checkpoint_through_every_benchmark(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+
+    assert (
+        main(
+            [
+                "eval",
+                "suite",
+                "--config",
+                "configs/evaluation/checkpoint-suite.toml",
+                "--set",
+                'model.run_path="training-blitz-30k-v4"',
+                "--set",
+                'model.checkpoint="step-00008000.pt"',
+                "--plan",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    plan = json.loads(capsys.readouterr().out)
+    configured = [step for step in plan["steps"] if step["benchmark"] != "decisions"]
+    assert configured
+    for step in configured:
+        assert 'model.run_path="training-blitz-30k-v4"' in step["overrides"]
+        assert 'model.checkpoint="step-00008000.pt"' in step["overrides"]
+
+
+def test_eval_suite_reports_a_configuration_error_without_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = tmp_path / "suite.toml"
+    config.write_text(
+        '[benchmarks.nonsense]\nconfig = "missing.toml"\n', encoding="utf-8"
+    )
+
+    assert main(["eval", "suite", "--config", str(config), "--plan"]) == 2
+
+    assert "anthro eval suite: unknown benchmark" in capsys.readouterr().err
+
+
+def test_eval_suite_needs_somewhere_to_keep_its_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Resume depends on the ledger, so a missing home fails loudly."""
+
+    monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT", raising=False)
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+    config = tmp_path / "suite.toml"
+    config.write_text(
+        "[benchmarks.inference]\n"
+        'config = "configs/evaluation/inference-efficiency.toml"\n',
+        encoding="utf-8",
+    )
+
+    assert main(["eval", "suite", "--config", str(config), "--no-record"]) == 2
+
+    assert "--sweep-root" in capsys.readouterr().err
+
+
+def test_eval_suite_runs_the_ladder_only_at_full_scale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Measured at roughly four hours reduced, it is a full-sweep step."""
+
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+
+    assert (
+        main(
+            [
+                "eval",
+                "suite",
+                "--config",
+                "configs/evaluation/checkpoint-suite.toml",
+                "--plan",
+                "--full",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    plan = json.loads(capsys.readouterr().out)
+    assert "ladder" in {step["benchmark"] for step in plan["steps"]}
