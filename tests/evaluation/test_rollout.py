@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -518,6 +519,99 @@ def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(
         assert item.noise_floor.value == pytest.approx(
             comparison.floors.conditional.value
         )
+
+
+def _comparison_table(rendered: str) -> tuple[str, dict[str, str]]:
+    """Return the comparison table's heading line and its rows by quantity."""
+
+    lines = rendered.splitlines()
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip().startswith("quantity ")
+    )
+    rows = {}
+    for line in lines[start + 1 :]:
+        if line.strip().startswith("null:"):
+            break
+        rows[line.split()[0]] = line
+    return lines[start], rows
+
+
+def test_the_comparison_table_qualifies_each_arm_with_its_own_numbers(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A qualifier beside the wrong distance is read as if it belonged to it.
+
+    The first full suite reading drew a wrong conclusion from this table with
+    the source available: the conditional delta floor sat next to the pooled
+    distance, and the null level the verdict is actually computed against was
+    not in the output at all. So every arm now carries its own distance, null,
+    floor, and seed spread, and nothing is shared between the two.
+    """
+
+    from anthro_chess.interfaces.cli import _render_rollout
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "seeds": (0, 1, 2)},
+        )
+    )
+
+    _, rows = _comparison_table(_render_rollout(result))
+    (reading,) = result.readings
+    assert set(rows) == {quantity.value for quantity in reading.comparisons}
+    for quantity, comparison in reading.comparisons.items():
+        assert comparison.references is not None
+        assert comparison.floors is not None
+        spread = reading.seed_spread[quantity]
+        assert spread.floor is not None and spread.pooled_floor is not None
+        assert rows[quantity.value].split() == [
+            quantity.value,
+            f"{comparison.conditional_distance:.4f}",
+            f"{comparison.references.conditional:.4f}",
+            f"{comparison.floors.conditional.value:.4f}",
+            f"{spread.floor:.4f}",
+            f"{comparison.pooled_distance:.4f}",
+            f"{comparison.references.pooled:.4f}",
+            f"{comparison.floors.pooled.value:.4f}",
+            f"{spread.pooled_floor:.4f}",
+            comparison.response.value,
+        ]
+
+
+def test_the_comparison_table_lines_its_rows_up_under_its_own_headings(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A heading its values do not sit under names the wrong column.
+
+    The table that produced the misreading was also misaligned: its heading row
+    and its value rows were built from different widths, so the last four
+    headings stood over a neighbouring column's numbers. The quantity column is
+    sized from the names present for the same reason — the longest runs to
+    twenty-odd characters and a fixed column pushes that row out on its own.
+    """
+
+    from anthro_chess.interfaces.cli import _render_rollout
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    heading, rows = _comparison_table(_render_rollout(result))
+    columns = [match.end() for match in re.finditer(r"\S+", heading)]
+    assert rows
+    for row in rows.values():
+        # The first column is left-aligned, so its values share a start rather
+        # than an end; every column right of it is compared where it ends. The
+        # verdict is checked on its own because "reads as" is two heading words
+        # over one value.
+        ends = [match.end() for match in re.finditer(r"\S+", row)]
+        assert ends[1:-1] == columns[1:-2]
+        assert ends[-1] == columns[-1]
+        assert row.index(row.split()[0]) == heading.index("quantity")
+        assert max(len(row), len(heading)) <= 120
 
 
 def test_two_seeds_report_their_distances_without_inventing_a_floor(

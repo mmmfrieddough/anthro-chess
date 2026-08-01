@@ -730,6 +730,39 @@ def test_the_mix_compares_both_sides_over_one_rating_axis(
     assert categories <= set(TERMINATION_MIX_CATEGORIES)
 
 
+def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
+    pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """One arm's qualifier printed beside the other's distance is misread.
+
+    The mix line carried a single floor — the conditional one — with the pooled
+    distance immediately after it, and the null level the verdict is actually
+    computed against was not printed at all. The same defect as the rollout
+    table, recorded together in #172.
+    """
+
+    from anthro_chess.interfaces.cli import _render_termination
+
+    result = _run(_config(pool))
+
+    rendered = _render_termination(result)
+    comparison = result.mix("all", 1.0).comparison
+    assert comparison.references is not None
+    assert comparison.floors is not None
+    assert (
+        f"  conditional {comparison.conditional_distance:.4f}  "
+        f"null {comparison.references.conditional:.4f}  "
+        f"floor {comparison.floors.conditional.value:.4f}"
+    ) in rendered
+    assert (
+        f"  pooled      {comparison.pooled_distance:.4f}  "
+        f"null {comparison.references.pooled:.4f}  "
+        f"floor {comparison.floors.pooled.value:.4f}"
+    ) in rendered
+    assert f"  reads as    {comparison.response.value}" in rendered
+
+
 def test_a_reference_too_small_for_the_bandwidth_reports_unavailable(
     pool: Path,
 ) -> None:
