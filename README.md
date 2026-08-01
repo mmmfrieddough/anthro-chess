@@ -229,7 +229,16 @@ summary tier is committed under [`results/`](results/README.md), which keeps
 metric movement visible as a diff and readable with ordinary file tools; bulk
 diagnostics stay machine-local.
 
+`anthro eval suite` reads one checkpoint across every benchmark from one
+command, composing the per-benchmark selections beside it. The reduced sweep is
+the default and `--full` is opt-in; `--plan` resolves and prints what would run
+without running any of it.
+
 ```console
+uv run anthro eval suite \
+  --config configs/evaluation/checkpoint-suite.toml --plan
+uv run anthro eval suite \
+  --config configs/evaluation/checkpoint-suite.toml --no-record
 uv run anthro eval report
 uv run anthro eval report --history held_out.move_loss
 uv run anthro eval tensorboard .local/tensorboard-history
@@ -242,7 +251,9 @@ uv run anthro eval novelty \
   --config configs/evaluation/novelty-dose-response.toml --no-record
 ```
 
-The default report is a compact delta view by family and metric, with the
+A sweep writes each step's outcome as it finishes, so `--resume` continues one
+that failed partway without repeating the benchmarks it already read. The
+default report is a compact delta view by family and metric, with the
 direction of improvement declared rather than inferred, and with results that
 are not on the same series reported as incomparable instead of shown as a
 quality change. The TensorBoard projection is a disposable chart view that

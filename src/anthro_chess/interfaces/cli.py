@@ -9,7 +9,7 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from anthro_chess import __version__
 from anthro_chess.application_logging import (
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         InferenceBenchmarkResult,
         LadderBenchmarkConfig,
         LadderBenchmarkResult,
+        NoveltyBenchmarkConfig,
         NoveltyBenchmarkResult,
         PoolConfig,
         PuzzleBenchmarkConfig,
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
         ResultEnvelope,
     )
     from anthro_chess.evaluation.rollout import RolloutReading
+    from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
     from anthro_chess.evaluation.termination import Guardrails
     from anthro_chess.training import TrainingConfig
 
@@ -208,6 +210,95 @@ def build_parser() -> argparse.ArgumentParser:
         help="Strict dotted TOML override; may be repeated.",
     )
     prepare_puzzles_parser.set_defaults(handler=_run_eval_prepare_puzzles)
+
+    suite_parser = eval_commands.add_parser(
+        "suite",
+        help=(
+            "Run every benchmark against one checkpoint, composing their "
+            "existing selections."
+        ),
+    )
+    suite_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML suite selection.",
+    )
+    suite_parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Strict dotted TOML override; may be repeated.",
+    )
+    suite_parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Run every benchmark at its own declared size. The default is the "
+            "reduced sweep, because a sweep measured in hours is not a default "
+            "anyone will run on a new checkpoint. A reduced view is its own "
+            "series, so the two do not accumulate into one history."
+        ),
+    )
+    _add_store_argument(suite_parser)
+    suite_parser.add_argument(
+        "--detail-root",
+        type=Path,
+        help=(
+            "Machine-local detail-tier directory. Defaults to "
+            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    suite_parser.add_argument(
+        "--sweep-root",
+        type=Path,
+        help=(
+            "Where the sweep keeps its ledger and the payloads it hands "
+            "between steps. Defaults beneath ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    recording = suite_parser.add_mutually_exclusive_group()
+    recording.add_argument(
+        "--no-record",
+        action="store_true",
+        help=(
+            "Run the whole sweep without writing to the store. This is what a "
+            "shakedown reading uses: evidence about the instruments rather "
+            "than about the model."
+        ),
+    )
+    recording.add_argument(
+        "--record",
+        action="append",
+        default=[],
+        metavar="BENCHMARK",
+        help=(
+            "Commit only the named benchmark's reading, overriding what the "
+            "suite selection decided; may be repeated."
+        ),
+    )
+    suite_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Continue the sweep this selection and checkpoint already started, "
+            "skipping the benchmarks it finished."
+        ),
+    )
+    suite_parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Resolve and print what would run, without running any of it.",
+    )
+    suite_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    suite_parser.set_defaults(handler=_run_eval_suite)
 
     run_parser = eval_commands.add_parser(
         "run",
@@ -1136,6 +1227,182 @@ def _run_eval_prepare_puzzles(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_suite(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+    from anthro_chess.evaluation.suite import (
+        SuiteConfig,
+        SuiteError,
+        SuiteScale,
+        resolve_suite,
+        run_suite,
+        sweep_directory,
+    )
+
+    scale = SuiteScale.FULL if arguments.full else SuiteScale.REDUCED
+    try:
+        plan = resolve_suite(
+            load_config(SuiteConfig, path=arguments.config, overrides=arguments.set),
+            scale=scale,
+            no_record=arguments.no_record,
+            record_only=arguments.record or None,
+        )
+    except (ConfigError, SuiteError) as error:
+        print(f"anthro eval suite: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.plan:
+        if arguments.format == "json":
+            print(json.dumps(plan.as_record(), indent=2, sort_keys=True))
+            return 0
+        print(_render_plan(plan), end="")
+        return 0
+
+    try:
+        store = (
+            ResultsStore(resolve_store_root(arguments.store))
+            if plan.recording
+            else None
+        )
+        detail = (
+            DetailStore(resolve_detail_root(arguments.detail_root))
+            if plan.recording
+            else None
+        )
+        run = run_suite(
+            plan,
+            sweep_root=sweep_directory(_sweep_root(arguments.sweep_root), plan),
+            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            store=store,
+            detail=detail,
+            resume=arguments.resume,
+            observer=None if arguments.format == "json" else _report_step,
+        )
+    except (ConfigError, ResultsStoreError, SuiteError) as error:
+        print(f"anthro eval suite: {error}", file=sys.stderr)
+        return 2
+
+    if arguments.format == "json":
+        print(json.dumps(run.as_record(), indent=2, sort_keys=True))
+    else:
+        print(_render_sweep(run), end="")
+    # A failed benchmark is a real outcome the sweep reports rather than an
+    # error it raises, so the readings beside it survive; the exit status is
+    # what makes it visible to whatever ran the sweep.
+    return 1 if run.failed else 0
+
+
+def _sweep_root(explicit: Path | None) -> Path:
+    """Resolve where sweeps keep their ledgers on this machine."""
+
+    if explicit is not None:
+        return explicit
+    root = _optional_environment_root("ANTHRO_CHESS_RUN_ROOT")
+    if root is None:
+        from anthro_chess.config import ConfigError
+
+        raise ConfigError(
+            "a sweep directory must be provided with --sweep-root, or "
+            "ANTHRO_CHESS_RUN_ROOT must be set"
+        )
+    return root / "benchmark-sweeps"
+
+
+def _report_step(outcome: StepOutcome) -> None:
+    """Print one finished benchmark's own reading, as its command would.
+
+    Printed as the sweep goes rather than collected for the end: a sweep runs
+    for long enough that a reading held back until the last benchmark finishes
+    is a reading nobody sees until then.
+    """
+
+    from anthro_chess.evaluation.suite import StepStatus
+
+    print(f"=== {outcome.name} [{outcome.status.value}, {outcome.seconds:.1f}s] ===")
+    if outcome.status is not StepStatus.COMPLETED:
+        print(f"  {outcome.note}")
+        print()
+        return
+    renderer = _STEP_RENDERERS.get(outcome.name)
+    if renderer is None or outcome.result is None:
+        print(f"  {outcome.note or 'no reading to print'}")
+    else:
+        print(renderer(outcome.result), end="")
+    print()
+
+
+def _render_plan(plan: SuitePlan) -> str:
+    """Render what a sweep would run, in the order it would run it."""
+
+    committing = ", ".join(plan.recording) or "nothing"
+    lines = [
+        f"Suite: {plan.suite} ({plan.scale.value})",
+        f"Checkpoint: {plan.checkpoint_label or 'the machine-local default'}",
+        f"Plan: {plan.sha256[:12]}, {len(plan.steps)} step(s), committing {committing}",
+        "",
+    ]
+    for position, step in enumerate(plan.steps, start=1):
+        source = "reads another step's output" if step.source is None else step.source
+        lines.append(
+            f"  {position}. {step.name:<12} "
+            f"{'record ' if step.record else '       '} {source}"
+        )
+        if step.benchmark.games_from is not None:
+            lines.append(
+                f"     after {step.benchmark.games_from}, whose games it reads"
+            )
+        for override in step.overrides:
+            lines.append(f"     {override}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_sweep(run: SuiteRun) -> str:
+    """Render what a finished sweep ran, read, and cost."""
+
+    plan = run.plan
+    lines = [
+        f"Suite: {plan.suite} ({plan.scale.value}), {len(run.outcomes)} step(s) "
+        f"in {run.seconds:.1f}s",
+        f"Sweep: {run.sweep_root}",
+        "",
+        f"  {'benchmark':<12} {'status':<10} {'seconds':>9} {'results':>8} "
+        f"{'metrics':>8}",
+    ]
+    for outcome in run.outcomes:
+        lines.append(
+            f"  {outcome.name:<12} {outcome.status.value:<10} "
+            f"{outcome.seconds:>9.1f} {outcome.results:>8} "
+            f"{outcome.measurements:>8}"
+        )
+    recorded = sum(len(outcome.recorded_paths) for outcome in run.outcomes)
+    lines.extend(
+        [
+            "",
+            (
+                f"Recorded: {recorded} result file(s)"
+                if recorded
+                else "Recorded: nothing; this sweep did not write to the store"
+            ),
+        ]
+    )
+    unfinished = [
+        outcome for outcome in run.outcomes if outcome.status.value != "completed"
+    ]
+    if unfinished:
+        lines.append("")
+        lines.extend(
+            f"{outcome.status.value}: {outcome.name} — {outcome.note}"
+            for outcome in unfinished
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _run_eval_run(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.evaluation import (
@@ -1334,10 +1601,13 @@ def _run_eval_novelty(arguments: argparse.Namespace) -> int:
     )
 
     try:
-        resolved = load_config(
-            NoveltyBenchmarkConfig,
-            path=arguments.config,
-            overrides=arguments.set,
+        resolved = _resolve_novelty_roots(
+            load_config(
+                NoveltyBenchmarkConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            ),
+            arguments.set,
         )
         store = (
             None
@@ -3162,29 +3432,16 @@ def _resolve_evaluation_roots(
     overrides: Sequence[str],
 ) -> ResolvedConfig[CheckpointEvaluationConfig]:
     """Resolve checked-in relative pool paths beneath the shared data root."""
-    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
-        return resolved
 
-    config = resolved.value
-    root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
-    override_keys = {item.partition("=")[0] for item in overrides}
-    update: dict[str, object] = {}
-    if not config.pool.is_absolute() and "pool" not in override_keys:
-        update["pool"] = _rooted_artifact_path(root, config.pool)
-    training = config.leakage.training_normalized
-    if (
-        training is not None
-        and not training.is_absolute()
-        and "leakage.training_normalized" not in override_keys
-    ):
-        update["leakage"] = config.leakage.model_copy(
-            update={"training_normalized": _rooted_artifact_path(root, training)}
-        )
-    if not update:
-        return resolved
-    return ResolvedConfig(
-        value=config.model_copy(update=update),
-        provenance=resolved.provenance,
+    from anthro_chess.evaluation.roots import (
+        CHECKPOINT_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
+    )
+
+    return resolve_artifact_roots(
+        resolved,
+        fields=CHECKPOINT_ARTIFACT_FIELDS,
+        overrides=overrides,
     )
 
 
@@ -3194,27 +3451,33 @@ def _resolve_puzzle_roots(
 ) -> ResolvedConfig[PuzzleBenchmarkConfig]:
     """Resolve puzzle and training-overlap artifacts beneath the data root."""
 
-    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
-        return resolved
-    config = resolved.value
-    override_keys = {item.partition("=")[0] for item in overrides}
-    root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
-    update: dict[str, Path] = {}
-    if not config.puzzle_set.is_absolute() and "puzzle_set" not in override_keys:
-        update["puzzle_set"] = _rooted_artifact_path(root, config.puzzle_set)
-    if (
-        not config.training_normalized.is_absolute()
-        and "training_normalized" not in override_keys
-    ):
-        update["training_normalized"] = _rooted_artifact_path(
-            root,
-            config.training_normalized,
-        )
-    if not update:
-        return resolved
-    return ResolvedConfig(
-        value=config.model_copy(update=update),
-        provenance=resolved.provenance,
+    from anthro_chess.evaluation.roots import (
+        PUZZLE_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
+    )
+
+    return resolve_artifact_roots(
+        resolved,
+        fields=PUZZLE_ARTIFACT_FIELDS,
+        overrides=overrides,
+    )
+
+
+def _resolve_novelty_roots(
+    resolved: ResolvedConfig[NoveltyBenchmarkConfig],
+    overrides: Sequence[str],
+) -> ResolvedConfig[NoveltyBenchmarkConfig]:
+    """Resolve the checked-in relative evaluation pool beneath the data root."""
+
+    from anthro_chess.evaluation.roots import (
+        NOVELTY_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
+    )
+
+    return resolve_artifact_roots(
+        resolved,
+        fields=NOVELTY_ARTIFACT_FIELDS,
+        overrides=overrides,
     )
 
 
@@ -3230,19 +3493,15 @@ def _resolve_rollout_roots(
     happens to hold an `artifacts/` tree.
     """
 
-    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
-        return resolved
-    config = resolved.value
-    override_keys = {item.partition("=")[0] for item in overrides}
-    if config.pool is None or config.pool.is_absolute() or "pool" in override_keys:
-        return resolved
-    rooted = _rooted_artifact_path(
-        _environment_root("ANTHRO_CHESS_DATA_ROOT"),
-        config.pool,
+    from anthro_chess.evaluation.roots import (
+        ROLLOUT_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
     )
-    return ResolvedConfig(
-        value=config.model_copy(update={"pool": rooted}),
-        provenance=resolved.provenance,
+
+    return resolve_artifact_roots(
+        resolved,
+        fields=ROLLOUT_ARTIFACT_FIELDS,
+        overrides=overrides,
     )
 
 
@@ -3257,19 +3516,15 @@ def _resolve_termination_roots(
     path is named, so it has to be rooted the same way.
     """
 
-    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
-        return resolved
-    config = resolved.value
-    override_keys = {item.partition("=")[0] for item in overrides}
-    if config.pool.is_absolute() or "pool" in override_keys:
-        return resolved
-    rooted = _rooted_artifact_path(
-        _environment_root("ANTHRO_CHESS_DATA_ROOT"),
-        config.pool,
+    from anthro_chess.evaluation.roots import (
+        TERMINATION_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
     )
-    return ResolvedConfig(
-        value=config.model_copy(update={"pool": rooted}),
-        provenance=resolved.provenance,
+
+    return resolve_artifact_roots(
+        resolved,
+        fields=TERMINATION_ARTIFACT_FIELDS,
+        overrides=overrides,
     )
 
 
@@ -3286,24 +3541,16 @@ def _resolve_pool_roots(
     overrides: Sequence[str],
 ) -> ResolvedConfig[PoolConfig]:
     """Resolve checked-in relative source paths beneath the shared data root."""
-    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
-        return resolved
 
-    config = resolved.value
-    override_keys = {item.partition("=")[0] for item in overrides}
-    update: dict[str, object] = {}
-    for field_name in ("normalized", "manifest"):
-        path = getattr(config, field_name)
-        if not path.is_absolute() and field_name not in override_keys:
-            update[field_name] = _rooted_artifact_path(
-                _environment_root("ANTHRO_CHESS_DATA_ROOT"),
-                path,
-            )
-    if not update:
-        return resolved
-    return ResolvedConfig(
-        value=config.model_copy(update=update),
-        provenance=resolved.provenance,
+    from anthro_chess.evaluation.roots import (
+        POOL_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
+    )
+
+    return resolve_artifact_roots(
+        resolved,
+        fields=POOL_ARTIFACT_FIELDS,
+        overrides=overrides,
     )
 
 
@@ -3319,23 +3566,15 @@ def _resolve_ladder_roots(
     directory that happens to hold an `artifacts/` tree.
     """
 
-    if not os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip():
-        return resolved
+    from anthro_chess.evaluation.roots import (
+        LADDER_ARTIFACT_FIELDS,
+        resolve_artifact_roots,
+    )
 
-    config = resolved.value
-    pool = config.openings.pool
-    if (
-        pool is None
-        or pool.is_absolute()
-        or "openings.pool" in {item.partition("=")[0] for item in overrides}
-    ):
-        return resolved
-    rooted = _rooted_artifact_path(_environment_root("ANTHRO_CHESS_DATA_ROOT"), pool)
-    return ResolvedConfig(
-        value=config.model_copy(
-            update={"openings": config.openings.model_copy(update={"pool": rooted})}
-        ),
-        provenance=resolved.provenance,
+    return resolve_artifact_roots(
+        resolved,
+        fields=LADDER_ARTIFACT_FIELDS,
+        overrides=overrides,
     )
 
 
@@ -3406,10 +3645,24 @@ def _resolve_training_roots(
 
 
 def _rooted_artifact_path(root: Path, configured_path: Path) -> Path:
-    parts = configured_path.parts
-    if parts and parts[0] == "artifacts":
-        parts = parts[1:]
-    return root.joinpath(*parts)
+    from anthro_chess.evaluation.roots import rooted_artifact_path
+
+    return rooted_artifact_path(root, configured_path)
+
+
+#: How a sweep prints each benchmark's reading. The benchmarks already own
+#: their text views, so a sweep reuses them rather than growing a second
+#: reporting surface that would drift from the commands it stands in for.
+_STEP_RENDERERS: Mapping[str, Callable[[Any], str]] = {
+    "inference": _render_inference,
+    "run": _render_evaluation,
+    "novelty": _render_novelty,
+    "puzzles": _render_puzzles,
+    "rollout": _render_rollout,
+    "decisions": _render_decisions,
+    "termination": _render_termination,
+    "ladder": _render_ladder,
+}
 
 
 if __name__ == "__main__":  # pragma: no cover - console scripts call main directly

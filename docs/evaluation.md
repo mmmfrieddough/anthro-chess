@@ -161,7 +161,9 @@ checkpoint ends games against the human termination mix; see game termination
 below. `anthro eval budget` reports held-out quality
 against the training budget that bought it, joining two families rather than
 defining a third; see training efficiency below. Training efficiency itself has no command, because it is
-measured by `anthro train` while the run happens.
+measured by `anthro train` while the run happens. `anthro eval suite` runs all
+of the checkpoint-scoped benchmarks above in one sweep; see the benchmark suite
+below.
 
 `anthro eval tensorboard OUTPUT` regenerates a disposable chart view of the
 store's checkpoint history. Checkpoint ordinal is its step axis, and each raw
@@ -176,6 +178,73 @@ lines. Deleting the output loses nothing, and the output must live outside the
 committed results store. Decision 0023 owns this constrained projection and
 refines decision 0014's earlier prohibition on cross-version TensorBoard
 history.
+
+### The Benchmark Suite
+
+`anthro eval suite` evaluates one checkpoint across every benchmark, and is the
+default way a new checkpoint is read. It **composes** the per-benchmark
+selections rather than restating any of them: a suite selection names each
+benchmark's own file, the checkpoint, and nothing about how that benchmark
+measures. A second copy of a declared workload would be a second thing to keep
+correct, and the first one to drift would be silent.
+
+It is a driver rather than a shell script because a sweep is long enough for
+four things to matter that a script cannot supply.
+
+**The whole plan resolves before any of it runs.** An unreadable selection, a
+pool that does not exist, a dependency on a benchmark the sweep does not
+include, or a step configured to discard output another step reads all fail in
+the first second. This is the same rule training cadences follow: a run that
+will fail should fail before it spends time, not after.
+
+**Ordering is enforced rather than documented.** Decision decomposition reads
+the games the rollout generated, so the suite orders it after the rollout and
+refuses a sweep where it could find nothing to read. The games are handed over
+as a payload in the sweep directory rather than in memory, which is what lets a
+resumed sweep retry the decomposition without replaying the rollout.
+
+**Recording is decided per benchmark within one sweep.** A sweep that commits
+one baseline reading and leaves the rest as evidence about the instrument is
+the normal case, not an exception, so the decision belongs to each step rather
+than to the sweep.
+
+**A sweep that dies late keeps what it already read.** Each step's outcome is
+written to a machine-local ledger as it finishes, and a failed step does not
+end the sweep: the independent benchmarks after it still run, and only the
+steps that read its output are skipped. A resumed sweep refuses a ledger
+belonging to a different plan, so a reduced sweep can never continue a full one
+or another checkpoint's.
+
+The **reduced sweep is the default and the full sweep is opt-in**, because a
+sweep measured in hours is not a default anyone will run on a new checkpoint.
+Reductions are confined to sample counts — view sizes, seeds, games per
+position, resamples, measured decisions — and never touch a grid, a dose, a
+temperature, or a ply limit, since those decide *what* is measured and
+shrinking one would report a different quantity rather than the same one less
+precisely. A smaller view is still its own data component, so a reduced sweep
+is a separate series rather than a partial down payment on a full one, and the
+scale is named in the output and in the ledger for that reason.
+
+That rule has a consequence worth stating, because it looks like an omission
+otherwise: **a benchmark whose cost is a grid rather than a sample size has no
+reduction at all**, and belongs to the full sweep alone. The rating ladder is
+the case. Its cost is quadratic in its seat count, the seats are the
+measurement, and its only sample dials — seeds and openings — are already at
+their floor while it is still playing hundreds of games. Shrinking the seat
+grid instead would not merely be less precise: one joint fit places every seat
+on a single internal scale, so a ladder fitted on a different set of seats
+cannot be read against this one at all. A step declares which scales include
+it rather than being nominally reduced and still unaffordable, since a reduced
+sweep nobody can run is worse than one that says what it left out.
+
+The suite adds no measurement of its own and registers no metric. Decision
+decomposition is the one step it cannot commit, because that family has no
+result kind: a decomposition is read per cell of the dials it was made under,
+and which cell a committed series would follow is not yet decided.
+
+`anthro_chess.evaluation.suite` owns the suite schema, the benchmark registry,
+the ordering rules, and the ledger format; the shipped sweep lives beside the
+selections it composes under `configs/evaluation/`.
 
 ### The Checkpoint Evaluation Runner
 
