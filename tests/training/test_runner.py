@@ -267,6 +267,145 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         run_training(load_config(TrainingConfig, path=incompatible_data_config))
 
 
+_SHARD_BACKED = """
+[train.streaming]
+planning_window_examples = 8
+workers = 0
+prefetch_batches = 2
+"""
+
+
+def test_shard_backed_training_runs_and_records_which_loader_read_the_corpus(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=True,
+        train_streaming=_SHARD_BACKED,
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    assert result.initial_parameter_sha256 != result.final_parameter_sha256
+    run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
+    assert run_record["data"]["train"]["loader"] == "shard-backed"
+    # The eager loader still reads the validation selection, because only the
+    # train selection declared a streaming section.
+    assert run_record["data"]["validation"]["loader"] == "eager"
+    assert run_record["data"]["train"]["selection"]["selected_games"] > 0
+    # Absolute resolved paths, so a run record names the corpus it read rather
+    # than a configured path whose meaning depends on where it was read from.
+    assert run_record["data"]["train"]["normalized_paths"] == [
+        str(prepared.normalized_path.resolve())
+    ]
+
+
+def test_shard_backed_training_resumes_from_its_own_checkpoint(tmp_path: Path) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    uninterrupted_config = _write_training_config(
+        tmp_path / "uninterrupted-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "uninterrupted",
+        validation=False,
+        steps=4,
+        checkpoint_every_steps=2,
+        train_streaming=_SHARD_BACKED,
+    )
+    uninterrupted = run_training(load_config(TrainingConfig, path=uninterrupted_config))
+
+    resumable = tmp_path / "resumable-config"
+    initial = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                resumable,
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                output=tmp_path / "resumable",
+                validation=False,
+                steps=2,
+                checkpoint_every_steps=2,
+                train_streaming=_SHARD_BACKED,
+            ),
+        )
+    )
+    resumed = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                resumable,
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                output=tmp_path / "resumable",
+                validation=False,
+                steps=4,
+                checkpoint_every_steps=2,
+                resume_from="latest",
+                train_streaming=_SHARD_BACKED,
+            ),
+        )
+    )
+
+    assert resumed.final_parameter_sha256 == uninterrupted.final_parameter_sha256
+    assert resumed.initial_parameter_sha256 == initial.final_parameter_sha256
+    checkpoint = load_training_checkpoint(resumed.checkpoint_path)
+    assert checkpoint["loader_state"]["position"] >= 0
+    assert (
+        checkpoint["metadata"]["data"]["train"]["dataset_sha256"]
+        == json.loads(resumed.run_path.read_text(encoding="utf-8"))["data"]["train"][
+            "dataset_sha256"
+        ]
+    )
+
+
+def test_a_run_cannot_change_loader_and_continue_the_same_checkpoint(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    initial = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "initial-config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                output=tmp_path / "initial",
+                validation=False,
+                train_streaming=_SHARD_BACKED,
+            ),
+        )
+    )
+    eager_continuation = _write_training_config(
+        tmp_path / "eager-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "eager",
+        validation=False,
+        steps=3,
+        resume_from=initial.checkpoint_path,
+    )
+
+    with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
+        run_training(load_config(TrainingConfig, path=eager_continuation))
+
+
 def test_training_device_rejects_unavailable_or_strict_mps(
     tmp_path: Path,
 ) -> None:
@@ -1091,6 +1230,7 @@ def _write_training_config(
     determinism: str = "strict",
     extra: str = "",
     train_selection: str = "",
+    train_streaming: str = "",
 ) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "training.toml"
@@ -1142,7 +1282,7 @@ manifest = {json.dumps(str(manifest))}
 split = "train"
 batch_size = 1
 shuffle = {str(shuffle).lower()}
-{train_selection}{validation_selection}
+{train_selection}{train_streaming}{validation_selection}
 """,
         encoding="utf-8",
     )

@@ -83,12 +83,22 @@ sequences, whenever practical. The transformer should receive one timestep per
 ply and use a causal attention mask so every ply prediction can be trained in a
 single parallel forward pass while still preventing access to future moves.
 
-The initial loader supports full games and contiguous chunks, groups sequences
-into configurable length buckets, pads only within the current batch, and emits
+The loader supports full games and contiguous chunks, groups sequences into
+configurable length buckets, pads only within the current batch, and emits
 separate padding, action-loss, nullable-context, and causal-attention masks.
 Deterministic ordering is derived from an explicit seed and epoch. A
 serializable dataset identity plus next-batch cursor permits exact continuation
 without preserving opaque worker state.
+
+A training selection chooses between an eager loader and a bounded-memory
+shard-backed one, and the choice belongs to the selection rather than to the
+run: a corpus-scale train split and a small validation split can sit in one
+configuration and read through different loaders. `docs/data.md` owns what each
+holds, how the shard-backed epoch is ordered, and why the two are not
+interchangeable mid-run. What matters here is that the model, loss, runner,
+checkpoint format, and resume contract are the same either way, and that the
+run record names which loader read each selection, because a training curve is
+not comparable across two different epoch orders.
 
 The initial action-only model consumes that ordinary loader boundary through
 `anthro_chess.models`, preserving its explicit targets, legal actions,

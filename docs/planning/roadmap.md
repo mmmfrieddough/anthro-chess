@@ -266,9 +266,11 @@ second masked loss, its own diagnostics, and clock handling at the UCI boundary
 conditioning at a corpus scale beyond where this stage's depth pass lands.
 Timing diagnostics arrive with it.
 
-Corpus-scale training should replace fixture-oriented eager per-ply
-materialization with bounded-memory shard-backed loading before attempting full
-passes over the prepared million-game selection.
+Corpus-scale training reads through bounded-memory shard-backed loading rather
+than the fixture-oriented eager per-ply materialization, which is what makes a
+pass over the prepared million-game selection possible at all. Both loaders
+stay, because a fixture or a proof slice is cheaper read eagerly; `docs/data.md`
+owns which applies where.
 
 Evaluation should guide this work. New data, model changes, and runtime changes
 should be judged by the same benchmark surfaces whenever possible, with deeper
