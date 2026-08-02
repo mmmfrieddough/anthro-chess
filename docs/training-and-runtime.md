@@ -312,6 +312,19 @@ model and optimizer restore it onto the selected backend, which is what makes
 a checkpoint portable between them. Resume compares code-owned compatibility
 identities before loading state and rejects unsafe changes clearly.
 
+What a checkpoint records about its execution is two kinds of thing, and only
+one of them is a condition on continuing. The settings that decide what the
+optimizer does to the weights have to match, because a checkpoint written under
+one value is not a checkpoint another value can continue. The rest describes the
+run that wrote it — what it selected, how it was accumulated and instrumented —
+and a continuation may differ in all of it. That split is what lets a later
+version record more about a run without invalidating the checkpoints already on
+disk: a setting this version does not recognize, or one added after a checkpoint
+was written, does not stop a resume, and changing what a stored checkpoint means
+stays the checkpoint version's deliberate act. Compatibility identities are the
+opposite case, and every one of them is compared, so an identity a checkpoint
+does not carry is an unknown rather than a match.
+
 Which backends can run the stripped-down correctness path is a property of the
 locked Torch build and this model, not a preference. CPU and CUDA both supply a
 deterministic implementation for every operation the backward pass needs, so

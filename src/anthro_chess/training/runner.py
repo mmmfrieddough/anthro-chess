@@ -1019,10 +1019,36 @@ def _fused_optimizer(device: torch.device) -> bool:
     return device.type == "cuda"
 
 
+#: The execution settings a continuation has to match. Each one decides what
+#: the optimizer does to the weights rather than only where it happened, so a
+#: checkpoint written under one value is not a checkpoint another value can
+#: continue. Adding to this set changes what a stored checkpoint means, which
+#: is `CHECKPOINT_VERSION`'s job.
+_EXECUTION_COMPATIBILITY_KEYS = ("precision", "parameter_dtype", "determinism")
+
+#: The execution settings recorded to describe the run that wrote a checkpoint.
+#: A continuation is free to differ in every one of them, so adding one is not
+#: a breaking change and a checkpoint written before one existed still resumes.
+_EXECUTION_PROVENANCE_KEYS = (
+    "device",
+    "backend",
+    "gradient_accumulation_steps",
+    "fused_optimizer",
+    "phase_profiling",
+)
+
+
 def _execution_record(
     config: TrainingConfig,
     device: torch.device,
 ) -> dict[str, object]:
+    """Record how one run executed, in the two roles resume distinguishes.
+
+    Every key belongs to exactly one of `_EXECUTION_COMPATIBILITY_KEYS` and
+    `_EXECUTION_PROVENANCE_KEYS`, which is what lets a later version record
+    more about a run without invalidating the checkpoints already on disk.
+    """
+
     return {
         "device": config.device,
         "backend": device.type,
@@ -1039,31 +1065,25 @@ def _validate_checkpoint_execution(
     metadata: object,
     current: Mapping[str, object],
 ) -> None:
+    """Reject a continuation the checkpoint's execution settings cannot support.
+
+    Only the compatibility set is compared. The rest is provenance that this
+    run never reads, including `backend`, so a checkpoint holding a key this
+    version does not know, or missing one it added later, still resumes.
+    """
+
     if not isinstance(metadata, Mapping):
         raise CheckpointError("checkpoint metadata is not a mapping")
     execution = metadata.get("execution")
     if not isinstance(execution, Mapping):
         raise CheckpointError("checkpoint has no execution metadata")
-    required = {
-        "device",
-        "backend",
-        "precision",
-        "parameter_dtype",
-        "determinism",
-        "gradient_accumulation_steps",
-        "fused_optimizer",
-        "phase_profiling",
-    }
-    if set(execution) != required:
-        raise CheckpointError("checkpoint execution metadata is incomplete or unknown")
-    if execution["backend"] not in {"cpu", "mps", "cuda"}:
-        raise CheckpointError(
-            f"checkpoint execution backend is unsupported: {execution['backend']}"
-        )
-    for key in ("precision", "parameter_dtype", "determinism"):
+    for key in _EXECUTION_COMPATIBILITY_KEYS:
+        if key not in execution:
+            raise CheckpointError(f"checkpoint execution metadata has no {key}")
         if execution[key] != current[key]:
             raise CheckpointError(
-                f"checkpoint execution {key} is incompatible with the current run"
+                f"checkpoint execution {key} is incompatible with the current "
+                f"run: checkpoint {execution[key]!r}, current {current[key]!r}"
             )
 
 
@@ -1080,25 +1100,37 @@ def _data_compatibility(value: object) -> dict[str, object]:
     return {key: value[key] for key in keys}
 
 
+#: How each compatibility identity is named in a resume failure. An identity
+#: absent from here is still compared, under its own key, so adding one to
+#: `_compatibility_record` cannot leave it silently unchecked.
+_COMPATIBILITY_LABELS = {
+    "training_config": "training configuration",
+    "data": "data",
+    "model": "model",
+    "action_vocabulary": "action vocabulary",
+    "encoding": "model-facing encoding",
+}
+
+
 def _validate_checkpoint_compatibility(
     saved: object,
     current: Mapping[str, object],
 ) -> None:
+    """Reject a resume whose code-owned identities differ from this run's.
+
+    Unlike execution provenance, every identity here is compared, and one the
+    checkpoint does not carry is an unknown rather than a match. The running
+    code decides what has to agree, so an identity it does not know about is
+    left alone; retiring or adding one is a `CHECKPOINT_VERSION` change.
+    """
+
     if not isinstance(saved, Mapping):
         raise CheckpointError("checkpoint compatibility metadata is not a mapping")
-    if set(saved) != set(current):
-        raise CheckpointError(
-            "checkpoint compatibility metadata is incomplete or unknown"
-        )
-    labels = {
-        "training_config": "training configuration",
-        "data": "data",
-        "model": "model",
-        "action_vocabulary": "action vocabulary",
-        "encoding": "model-facing encoding",
-    }
-    for key, label in labels.items():
-        if saved[key] != current[key]:
+    for key, value in current.items():
+        label = _COMPATIBILITY_LABELS.get(key, key)
+        if key not in saved:
+            raise CheckpointError(f"checkpoint has no {label} compatibility identity")
+        if saved[key] != value:
             raise CheckpointError(
                 f"checkpoint {label} is incompatible with the current run"
             )
