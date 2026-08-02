@@ -51,14 +51,16 @@ class BoardEncoder(nn.Module):
         en_passant_tokens = torch.where(
             inputs.en_passant_square.present,
             inputs.en_passant_square.values + 1,
-            torch.zeros_like(inputs.en_passant_square.values),
+            0,
         )
-        rule_counts = torch.stack(
-            (
-                torch.log1p(inputs.halfmove_clock.float()),
-                torch.log1p(inputs.fullmove_number.float()),
-            ),
-            dim=-1,
+        rule_counts = torch.log1p(
+            torch.stack(
+                (
+                    inputs.halfmove_clock.float(),
+                    inputs.fullmove_number.float(),
+                ),
+                dim=-1,
+            )
         )
         features = torch.cat(
             (
@@ -168,10 +170,7 @@ class CausalMoveModel(nn.Module):
         previous_action_tokens = torch.where(
             inputs.previous_action_id.present,
             inputs.previous_action_id.values,
-            torch.full_like(
-                inputs.previous_action_id.values,
-                ACTION_VOCABULARY_SIZE,
-            ),
+            ACTION_VOCABULARY_SIZE,
         )
         context = torch.cat(
             (
@@ -278,7 +277,7 @@ def _nullable_log_value(value: OptionalTensor) -> Tensor:
     return torch.where(
         value.present,
         torch.log1p(value.values.float()),
-        torch.zeros_like(value.values, dtype=torch.float),
+        0.0,
     )
 
 
