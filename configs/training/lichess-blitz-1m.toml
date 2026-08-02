@@ -69,8 +69,12 @@ planning_window_examples = 16384
 workers = 4
 prefetch_batches = 8
 
-# The validation selection stays eager. It is a small split read once per run,
-# where indexing a corpus buys nothing.
+# Validation reads the same way, and the reason is worth stating because the
+# split is small. Its cost is not set by how many games it keeps but by the
+# artifact it keeps them from: the eager loader materializes every row of every
+# shard before it filters, so selecting a thousand games out of a million-game
+# corpus costs the same scan as selecting all of them. Measured here that was
+# 45s of startup against 4s to index.
 [validation]
 normalized = "artifacts/lichess-blitz-2017-04/normalized"
 manifest = "artifacts/lichess-blitz-2017-04/manifests/manifest.json"
@@ -82,4 +86,11 @@ length_bucket_width = 16
 shuffle = false
 seed = "anthro-lichess-blitz-baseline-validation-v1"
 drop_last = false
+# Enough held-out games for a per-run validation figure without paying for the
+# whole split on a corpus this size.
 selection = { fraction = 0.02 }
+
+[validation.streaming]
+planning_window_examples = 16384
+workers = 4
+prefetch_batches = 8
