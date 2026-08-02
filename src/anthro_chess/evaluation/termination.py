@@ -91,6 +91,8 @@ from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_p
 from anthro_chess.evaluation.reference import (
     ReferenceConfig,
     minimum_reference_games,
+    reference_workload,
+    validate_reference_size,
 )
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -386,18 +388,9 @@ class TerminationBenchmarkConfig(ConfigModel):
         names = [entry.name for entry in self.time_controls]
         if len(set(names)) != len(names):
             raise ValueError("a termination suite must not repeat a time-control name")
-        declared = self.reference.view.maximum_games
-        required = minimum_reference_games(
-            self.grid.target_ratings, DECLARED_MIX_NEIGHBOURS
+        validate_reference_size(
+            self.reference.view, self.grid.target_ratings, DECLARED_MIX_NEIGHBOURS
         )
-        if declared is not None and declared < required:
-            raise ValueError(
-                f"reference.view.maximum_games is {declared}, below the "
-                f"{required} game(s) a {len(set(self.grid.target_ratings))}-point "
-                f"grid needs at a bandwidth of {DECLARED_MIX_NEIGHBOURS} "
-                "neighbours; a reference this size is one neighbourhood wearing "
-                "the shape of a curve, so raise it or drop grid points"
-            )
         return self
 
 
@@ -1410,11 +1403,9 @@ def _mix_execution(
     population the distance is to. Two classes are two different questions
     rather than two samples of one, so they must not share a series.
 
-    The reference joins it for a related but stronger reason. The bandwidth is
-    a neighbour count, so the reference decides the rating span every
-    neighbourhood covers: the same endings read against two reference sizes are
-    smoothed differently and produce two different distances. Leaving it out
-    would let those land on one line.
+    The reference joins it for a related but stronger reason, which
+    ``reference_workload`` gives: the bandwidth is a neighbour count, so two
+    reference sizes are two smoothings rather than two samples of one.
     """
 
     return execution_record(
@@ -1432,11 +1423,7 @@ def _mix_execution(
             "time_control": time_control.as_record(),
             "curve_spec_version": MIX_CURVE_SPEC_VERSION,
             "neighbours": DECLARED_MIX_NEIGHBOURS,
-            "reference": {
-                "view": reference_view.name,
-                "game_ids_sha256": reference_view.as_record()["game_ids_sha256"],
-                "maximum_rating_gap": config.reference.maximum_rating_gap,
-            },
+            "reference": reference_workload(config.reference, reference_view),
         },
     )
 

@@ -50,6 +50,7 @@ from anthro_chess.evaluation.games import (
     analyze_trajectory,
 )
 from anthro_chess.evaluation.openings import OpeningBook, OpeningLevel
+from anthro_chess.evaluation.views import ViewConfig, ViewSelection
 
 REFERENCE_VERSION = 1
 
@@ -398,6 +399,57 @@ def minimum_reference_games(ratings: Sequence[float], neighbours: int) -> int:
     return neighbours * len({float(rating) for rating in ratings})
 
 
+def validate_reference_size(
+    view: ViewConfig,
+    ratings: Sequence[float],
+    neighbours: int,
+) -> None:
+    """Reject a declared cap the rating grid could not be resolved on.
+
+    Checked on the configuration so a suite plan rejects it in the first second
+    rather than the generation it precedes. An undeclared cap passes here and is
+    caught on the realized reference instead: how much of a view survives the
+    rating-gap filter is a property of the pool rather than of configuration.
+    """
+
+    if view.maximum_games is None:
+        return
+    required = minimum_reference_games(ratings, neighbours)
+    if view.maximum_games < required:
+        raise ValueError(
+            f"reference.view.maximum_games is {view.maximum_games}, below the "
+            f"{required} game(s) a {len({float(r) for r in ratings})}-point grid "
+            f"needs at a bandwidth of {neighbours} neighbours; a reference this "
+            "size is one neighbourhood wearing the shape of a curve, so raise it "
+            "or drop grid points"
+        )
+
+
+def reference_workload(
+    config: ReferenceConfig,
+    view: ViewSelection,
+) -> dict[str, Any]:
+    """Declare the human reference a comparison was smoothed against.
+
+    Identity rather than provenance, and the distinction is not a formality
+    here. The bandwidth is a neighbour count, so the reference decides the
+    rating span every neighbourhood covers: the same checkpoint read against
+    1,701 human games and against 10,206 is estimated at two different
+    smoothings and produces two different numbers. Leaving the reference out
+    would let those land on one line.
+
+    The selected game ids rather than their count, because two references of
+    equal size are still two references, and the rating gap beside them because
+    it decides which of the selected games survive.
+    """
+
+    return {
+        "view": view.name,
+        "game_ids_sha256": view.as_record()["game_ids_sha256"],
+        "maximum_rating_gap": config.maximum_rating_gap,
+    }
+
+
 def curve_spec(
     quantity: ComparedQuantity,
     ratings: Sequence[float],
@@ -484,5 +536,7 @@ __all__ = [
     "iter_quantities",
     "minimum_reference_games",
     "observations_for",
+    "reference_workload",
     "select_bandwidths",
+    "validate_reference_size",
 ]

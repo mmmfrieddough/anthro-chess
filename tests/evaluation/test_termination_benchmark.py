@@ -769,6 +769,24 @@ def test_a_reference_below_the_bandwidth_is_rejected_before_a_sweep_starts(
         )
 
 
+def test_a_reference_too_thin_for_the_mix_says_so_in_the_pool_pass(
+    pool: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The declared cap cannot promise what the pool and the filter leave.
+
+    Said while the reference is read rather than only in the unavailable lines
+    the run ends with. Not an error, because the guardrails, the deficit, and
+    the held-out reading need no curve at all.
+    """
+
+    result = _run(_config(pool))
+
+    assert "below the" in caplog.text
+    assert result.mixes == ()
+    assert "mix:all" in result.unavailable
+
+
 def test_the_human_reference_scopes_the_mix_series(
     pool: Path,
     small_bandwidth: None,

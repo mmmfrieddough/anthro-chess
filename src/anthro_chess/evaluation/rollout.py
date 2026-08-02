@@ -138,6 +138,8 @@ from anthro_chess.evaluation.reference import (
     iter_quantities,
     minimum_reference_games,
     observations_for,
+    reference_workload,
+    validate_reference_size,
 )
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -402,19 +404,12 @@ class RolloutBenchmarkConfig(ConfigModel):
                     "reference.enabled to false to record the rollout scalars "
                     "alone"
                 )
-        declared = self.reference.view.maximum_games
-        if self.reference.enabled and declared is not None:
-            neighbours = max(DECLARED_NEIGHBOURS.values())
-            required = minimum_reference_games(self.grid.target_ratings, neighbours)
-            if declared < required:
-                raise ValueError(
-                    f"reference.view.maximum_games is {declared}, below the "
-                    f"{required} game(s) a "
-                    f"{len(set(self.grid.target_ratings))}-point grid needs at a "
-                    f"bandwidth of {neighbours} neighbours; a reference this "
-                    "size is one neighbourhood wearing the shape of a curve, so "
-                    "raise it or drop grid points"
-                )
+        if self.reference.enabled:
+            validate_reference_size(
+                self.reference.view,
+                self.grid.target_ratings,
+                max(DECLARED_NEIGHBOURS.values()),
+            )
         return self
 
 
@@ -1525,35 +1520,10 @@ def _walk_execution_record(
             "walk_threshold": config.walk.threshold,
             "curve_spec_version": CURVE_SPEC_VERSION,
             "curve_neighbours": DECLARED_NEIGHBOURS[ComparedQuantity.REPERTOIRE],
-            "reference": _reference_workload(config, reference_view),
+            "reference": reference_workload(config.reference, reference_view),
         }
     )
     return execution_record(device, workload)
-
-
-def _reference_workload(
-    config: RolloutBenchmarkConfig,
-    reference_view: ViewSelection,
-) -> dict[str, Any]:
-    """Declare the human reference a comparison was smoothed against.
-
-    Identity rather than provenance, and the distinction is not a formality
-    here. The bandwidth is a neighbour count, so the reference decides the
-    rating span every neighbourhood covers: the same checkpoint read against
-    1,701 human games and against 10,206 is estimated at two different
-    smoothings and produces two different numbers. Leaving the reference out
-    would let those land on one line.
-
-    The selected game ids rather than their count, because two references of
-    equal size are still two references, and the rating gap beside them because
-    it decides which of the selected games survive.
-    """
-
-    return {
-        "view": reference_view.name,
-        "game_ids_sha256": reference_view.as_record()["game_ids_sha256"],
-        "maximum_rating_gap": config.reference.maximum_rating_gap,
-    }
 
 
 def _seed_spread(
@@ -1625,7 +1595,7 @@ def _reading_execution_record(
     curve shape joins it too: a distance estimated at one bandwidth and one at
     another are not the same quantity, which is exactly why the bandwidth is
     declared and frozen rather than configured. So does the human reference the
-    bandwidth is expressed against, for the reason ``_reference_workload``
+    bandwidth is expressed against, for the reason ``reference_workload``
     gives.
     """
 
@@ -1640,7 +1610,7 @@ def _reading_execution_record(
                 quantity.value: DECLARED_NEIGHBOURS[quantity]
                 for quantity in iter_quantities()
             },
-            "reference": _reference_workload(config, reference_view),
+            "reference": reference_workload(config.reference, reference_view),
         }
     )
     return execution_record(device, workload)
