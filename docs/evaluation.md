@@ -1382,8 +1382,22 @@ the shared decision decomposition rather than a private one, since that layer
 already groups decisions by the dials they were made under and a ladder's seats
 are exactly those groups.
 
+**A full ladder is a scheduled reading rather than a routine one.** The declared
+grid plays thousands of games per checkpoint and has run in a couple of hours per
+checkpoint at that size, so it is affordable on purpose rather than by habit: it
+is taken when a checkpoint is worth that much time, not on every checkpoint, and
+it is the one benchmark the reduced sweep leaves out entirely. Seats and their
+sample are the two things not to confuse when that cost is under discussion.
+Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
+linearly, because a round robin gives each seat one pairing per opponent — so a
+cheaper ladder is also a noisier one, on the axis the benchmark exists to
+measure. Raising seeds, openings, or games per position is the lever that buys
+precision instead, at linear cost and without ending a series.
+
 `docs/decisions/0022-one-joint-rating-ladder-fit.md` owns the joint-fit rule,
 why the ablated arm sits inside it, and what the round robin costs.
+`docs/decisions/0027-settled-rating-ladder-grid.md` settles the grid at its
+declared size and records what that is worth against what it costs.
 
 Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
 of Anthro target ratings against one or more fixed external engine
