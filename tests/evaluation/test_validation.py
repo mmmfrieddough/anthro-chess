@@ -23,6 +23,8 @@ from anthro_chess.evaluation import (
 )
 from anthro_chess.models import MoveModelBatch
 
+from accelerators import accelerator_parameters
+
 
 def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
     sequence_batch = _sequence_batch(
@@ -182,40 +184,48 @@ def test_evaluate_move_model_uses_loader_path_and_restores_training_mode() -> No
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(
-    not torch.backends.mps.is_available(),
-    reason="requires an available PyTorch MPS backend",
-)
-def test_mps_metrics_match_cpu_without_casting_logits_on_device() -> None:
+@pytest.mark.parametrize("accelerator", accelerator_parameters())
+def test_accelerator_metrics_match_cpu_without_casting_logits_on_device(
+    accelerator: str,
+) -> None:
+    """Ask the agreement of whichever accelerator this host actually has.
+
+    Nothing here passes through a training or inference device selection, so
+    this covers a backend the rest of the suite cannot yet request.
+    """
+
     sequence_batch = _sequence_batch((("e2e4", "e7e5"), 1500, 1600))
     cpu_batch = MoveModelBatch.from_sequence_batch(sequence_batch)
-    mps_batch = MoveModelBatch.from_sequence_batch(sequence_batch, device="mps")
+    device_batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch,
+        device=accelerator,
+    )
     cpu_logits = torch.linspace(
         -2.0,
         2.0,
         steps=cpu_batch.action_targets.numel() * ACTION_VOCABULARY_SIZE,
         dtype=torch.float32,
     ).reshape(*cpu_batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
-    mps_logits = cpu_logits.to("mps")
+    device_logits = cpu_logits.to(accelerator)
 
     cpu = MoveValidationAccumulator()
     cpu.update(cpu_logits, cpu_batch)
-    mps = MoveValidationAccumulator()
-    mps.update(mps_logits, mps_batch)
+    on_device = MoveValidationAccumulator()
+    on_device.update(device_logits, device_batch)
 
     cpu_metrics = cpu.compute()
-    mps_metrics = mps.compute()
-    assert mps_metrics.position_count == cpu_metrics.position_count
-    assert mps_metrics.move_loss == pytest.approx(cpu_metrics.move_loss, rel=1e-6)
-    assert mps_metrics.legal_move_loss == pytest.approx(
+    device_metrics = on_device.compute()
+    assert device_metrics.position_count == cpu_metrics.position_count
+    assert device_metrics.move_loss == pytest.approx(cpu_metrics.move_loss, rel=1e-6)
+    assert device_metrics.legal_move_loss == pytest.approx(
         cpu_metrics.legal_move_loss,
         rel=1e-6,
     )
-    assert mps_metrics.mask_penalty == pytest.approx(
+    assert device_metrics.mask_penalty == pytest.approx(
         cpu_metrics.mask_penalty,
         rel=1e-6,
     )
-    assert mps_metrics.legal_mass == pytest.approx(
+    assert device_metrics.legal_mass == pytest.approx(
         cpu_metrics.legal_mass,
         rel=1e-6,
     )

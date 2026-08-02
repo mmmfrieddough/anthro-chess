@@ -29,6 +29,8 @@ from anthro_chess.training.devices import DeviceCapabilities
 from anthro_chess.training.runner import _training_device
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
+from accelerators import requires_training_accelerator
+
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
 SAMPLE_DATA_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
@@ -289,10 +291,7 @@ def test_training_device_rejects_unavailable_or_strict_mps(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(
-    not torch.backends.mps.is_available(),
-    reason="MPS smoke verification requires Apple silicon",
-)
+@requires_training_accelerator("mps")
 def test_mps_checkpoint_cross_backend_and_original_device_resume(
     tmp_path: Path,
 ) -> None:
@@ -551,10 +550,7 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(
-    not torch.backends.mps.is_available(),
-    reason="requires an available PyTorch MPS backend",
-)
+@requires_training_accelerator("mps")
 def test_real_mps_forward_backward_update_and_validation(tmp_path: Path) -> None:
     prepared = prepare_pgn(
         SAMPLE_PGN,

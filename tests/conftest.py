@@ -1,8 +1,10 @@
-"""Fixtures shared across the suite.
+"""Fixtures shared across the suite, and what it reports about the host.
 
 One module holds them all rather than one per test package, because two
 files named ``conftest`` are two modules with the same name to a type
 checker, and every fixture here is used from more than one package anyway.
+Collection-time facts about the host live in ``accelerators`` instead, since a
+``skipif`` condition is evaluated before any fixture exists.
 """
 
 from __future__ import annotations
@@ -55,6 +57,21 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
 from anthro_chess.models import CausalMoveModel, MoveModelConfig
 from anthro_chess.training.checkpoints import save_training_checkpoint
+
+from accelerators import HOST
+
+
+def pytest_report_header() -> list[str]:
+    """Report the host's accelerator surface beside what the project accepts.
+
+    Without this, a run exercising no accelerator looks identical on a machine
+    that has none and on a fully provisioned one whose accelerator no device
+    selection accepts. Both print the same skip count, and only the first makes
+    a green run honest about the accelerator.
+    """
+
+    return HOST.report_lines()
+
 
 OPENING_MOVES = (
     "e2e4",
