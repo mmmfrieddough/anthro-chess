@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, datetime
@@ -22,6 +23,10 @@ import chess
 import pytest
 import torch
 
+from anthro_chess.application_logging import (
+    APPLICATION_LOGGER_NAME,
+    _remove_owned_handlers,
+)
 from anthro_chess.chess import action_vocabulary_identity, encode_move
 from anthro_chess.data import (
     GameEncodingInput,
@@ -359,6 +364,32 @@ def restored_registry() -> Iterator[None]:
         yield
     finally:
         restore_registry(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def restored_application_logging() -> Iterator[None]:
+    """Undo the level, propagation, and handlers a test left on the process.
+
+    Configuring the application logger is what an entry point wants and what a
+    worker with a thousand tests still to run does not, and only sharding
+    decides which tests share a worker. Without this, a test reading ``caplog``
+    passes or fails on whether an earlier one in its worker happened to raise
+    the logger above the level being asserted, since a suppressed record is
+    never emitted for any handler to capture. Handlers go through
+    ``_remove_owned_handlers`` rather than a restored list so that the ones a
+    test opened are closed, and so that a handler pytest attached for the
+    current phase is never a candidate.
+    """
+
+    application_logger = logging.getLogger(APPLICATION_LOGGER_NAME)
+    level = application_logger.level
+    propagate = application_logger.propagate
+    try:
+        yield
+    finally:
+        _remove_owned_handlers(application_logger)
+        application_logger.setLevel(level)
+        application_logger.propagate = propagate
 
 
 def _scored_row(game_id: int, **overrides: Any) -> dict[str, Any]:
