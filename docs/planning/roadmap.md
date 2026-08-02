@@ -104,7 +104,7 @@ this stage should make evaluation coherent enough to compare model versions
 without relying on subjective playtesting.
 
 This stage builds the instrument; it does not yet take readings anyone acts on.
-Model iteration starts in stage 4, so no benchmark history accumulated here is
+Model iteration starts in stage 5, so no benchmark history accumulated here is
 protected and no checkpoint produced here is worth preserving. Breaking a
 comparability series, bumping the preprocessing version, changing the action
 vocabulary, and regenerating the corpus are all free during this stage, and
@@ -119,7 +119,7 @@ share: a `test` partition training never consumes, one frozen pool drawn from
 it, and derived views each benchmark selects through. Game-level opening
 classification from an owned versioned book lands here too, because rollout
 distribution comparison needs family aggregation; the per-ply multi-label form
-for preference conditioning stays in stage 5.
+for preference conditioning stays in stage 6.
 
 Alongside the data contract, this stage builds the result infrastructure the
 benchmarks share: a durable results store benchmarks append to, a metric
@@ -175,8 +175,8 @@ measuring, and deferring it means the first reading lands on an already-scaled
 checkpoint with no baseline to compare against. A degenerate result on a weak
 checkpoint is a reportable outcome rather than an error, and it is not a
 calibration verdict. Anchoring the resulting scale against an external engine
-stays in the next stage, since it needs an external binary and answers a
-different question.
+stays in stage 5, since it needs an external binary and answers a different
+question.
 
 Human-likeness evaluation beyond simple distribution metrics belongs later in
 the process. A compact human-vs-engine classifier can be useful once the model
@@ -185,7 +185,58 @@ separate anti-cheat project.
 
 Timing diagnostics arrive with timing itself, in the stage that adds it.
 
-### 4. Scale And Improve
+### 4. Efficient Loop And Trusted Readings
+
+Make every experiment cheaper and every reading interpretable, before scaling
+starts spending against them.
+
+Stage 3 built the instrument. Reading it on real checkpoints, and profiling it
+on the CUDA host, showed that it is not yet affordable enough or resolved enough
+to guide the decisions stage 5 wants to make. None of that is scaling work, and
+all of it sits upstream of scaling work: a capacity comparison read from a suite
+whose cost is unknown, and whose readings mostly state no resolution, produces a
+number nobody can act on.
+
+This stage has two halves. The first makes an experiment cheaper. The training
+step should stop spending longer building a batch than the device spends
+computing it, which is a property of the loader's representation rather than of
+model size and so is worth fixing at any capacity later selected. The evaluation
+suite should stop paying for repeated work — pools materialized once per
+benchmark, scoring passes it already holds the answer to, replicates that are
+provably one game. Training moves to a multi-GPU CUDA host here, and using every
+card on a long run is the ordinary execution path rather than an optimization to
+justify later. Single-device CUDA lands first, because it is the foundation the
+distributed path shares and the baseline its scaling efficiency is read against,
+but distribution does not wait for a demonstrated single-device limit, and it is
+measured at a width where the reading means something. Corpus-scale training
+reads through bounded-memory shard-backed loading rather than fixture-oriented
+eager materialization, which is what makes a pass over the prepared selection
+possible at all. Both loaders stay, because a fixture or a proof slice is
+cheaper read eagerly; `docs/data.md` owns which applies where.
+
+The second half makes a reading interpretable. A benchmark should record what it
+cost where it records what it measured, so a cost claim is reviewable the way a
+metric delta is; cost figures asserted in configuration files drift silently and
+have. The families the suite actually spends its time in should state a
+resolution, or record that they cannot discriminate and what that means for
+reading them. The shape of the noise-floor system is settled here against
+measured resolution rather than extended by default.
+
+Sample size, rather than the estimator, turned out to be the binding constraint
+on resolution, and sample size is an efficiency problem. That is why the two
+halves are one stage rather than two: the cheap lever on resolution is a view
+size nobody could afford, and affording it is the first half's job.
+
+This stage also defines how a change that alters the model shows it improved
+something. The test suite proves a change did not break anything; nothing yet
+says how to tell an improvement from run-to-run noise, so every model-affecting
+change otherwise sets its own evidence standard. That definition should compose
+the machinery this stage and stage 3 already built rather than add tooling.
+
+Nothing in this stage freezes an evaluation reference or buys capacity. Both
+belong to stage 5 and are blocked on this one.
+
+### 5. Scale And Improve
 
 Use the working loop and evaluation harness to improve the bot.
 
@@ -195,12 +246,6 @@ and reproducible runs, and improve runtime reliability. Iterating here is the
 point of having built the harness first, and it should continue until the
 benchmark surfaces stop moving.
 
-Training moves to a multi-GPU CUDA host in this stage, and using every card on a
-long run is the ordinary execution path rather than an optimization to justify
-later. Single-device CUDA still lands first, because it is the foundation the
-distributed path shares and the baseline its scaling efficiency is read against,
-but distribution does not wait for a demonstrated single-device limit. Short
-independent jobs may still take one card each; that is a scheduling choice.
 Distribution replicates the model rather than sharding it, so it buys throughput
 and not capacity, and the per-card memory ceiling still bounds how large a model
 this stage can select.
@@ -260,23 +305,17 @@ of bundling it with the timing feature. See `docs/data.md` and
 `docs/design-principles.md`, which uses this case as its worked example of the
 pattern.
 
-**The move-time head itself moves to stage 5.** It is a second output head, a
+**The move-time head itself moves to stage 6.** It is a second output head, a
 second masked loss, its own diagnostics, and clock handling at the UCI boundary
 — a feature rather than a scaling step. `docs/data.md` also places useful timing
 conditioning at a corpus scale beyond where this stage's depth pass lands.
 Timing diagnostics arrive with it.
 
-Corpus-scale training reads through bounded-memory shard-backed loading rather
-than the fixture-oriented eager per-ply materialization, which is what makes a
-pass over the prepared million-game selection possible at all. Both loaders
-stay, because a fixture or a proof slice is cheaper read eagerly; `docs/data.md`
-owns which applies where.
-
 Evaluation should guide this work. New data, model changes, and runtime changes
 should be judged by the same benchmark surfaces whenever possible, with deeper
 diagnostics available when a regression or surprising result appears.
 
-### 5. Late Controllability
+### 6. Late Controllability
 
 Add the move-time head and learned preference controls after the model, runtime,
 and evaluation stack are clearly working.

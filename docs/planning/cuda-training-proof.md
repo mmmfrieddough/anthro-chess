@@ -25,7 +25,7 @@ baseline.
 
 Every measurement below runs the ordinary `anthro train` command against the
 pinned corpus, not a synthetic loop. Stand the corpus up first — the exact
-selection the Milestone 4 baseline trains on:
+selection the Milestone 5 baseline trains on:
 
 ```console
 uv run anthro data acquire \
