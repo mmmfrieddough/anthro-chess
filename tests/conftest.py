@@ -60,6 +60,15 @@ from anthro_chess.training.checkpoints import save_training_checkpoint
 
 from accelerators import HOST
 
+#: The suite runs sharded, so every worker sharing one machine must be told to
+#: stop claiming all of it. Torch sizes its intra-op pool from the core count
+#: and knows nothing about the other workers, so N workers each open N threads
+#: and the machine ends up oversubscribed by a factor of N. Nothing here is a
+#: large enough tensor to win that back: pinned to one thread the suite is
+#: faster wall-clock than it is unpinned, and a timing assertion stops
+#: measuring how many workers happened to be resident.
+torch.set_num_threads(1)
+
 
 def pytest_report_header() -> list[str]:
     """Report the host's accelerator surface beside what the project accepts.

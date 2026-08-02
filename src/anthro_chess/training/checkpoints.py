@@ -198,6 +198,11 @@ def parameter_sha256(model: torch.nn.Module) -> str:
     return digest.hexdigest()
 
 
+#: The accelerator RNG key each backend adds beside the host state. A backend
+#: absent from here keeps only the host stream, which is what CPU wants.
+_ACCELERATOR_RNG_KEYS = {"mps": "torch_mps", "cuda": "torch_cuda"}
+
+
 def capture_rng_state(device: torch.device | str) -> dict[str, object]:
     """Capture host RNG state plus the selected accelerator state when available."""
 
@@ -206,10 +211,14 @@ def capture_rng_state(device: torch.device | str) -> dict[str, object]:
         "python": random.getstate(),
         "torch_cpu": torch.get_rng_state(),
     }
+    key = _ACCELERATOR_RNG_KEYS.get(selected.type)
+    if key is None:
+        return state
+    _require_accelerator(selected.type, "capture")
     if selected.type == "mps":
-        if not torch.backends.mps.is_available():
-            raise CheckpointError("cannot capture MPS RNG state: MPS is unavailable")
-        state["torch_mps"] = torch.mps.get_rng_state()
+        state[key] = torch.mps.get_rng_state()
+    else:
+        state[key] = torch.cuda.get_rng_state(selected)
     return state
 
 
@@ -219,12 +228,17 @@ def restore_rng_state(
     device: torch.device | str,
     fallback_seed: int,
 ) -> None:
-    """Restore RNG state for the host and selected execution backend."""
+    """Restore RNG state for the host and selected execution backend.
 
-    if set(state) not in (
-        {"python", "torch_cpu"},
-        {"python", "torch_cpu", "torch_mps"},
-    ):
+    A checkpoint written on one backend carries no stream for another, so a
+    continuation that changes backend seeds the target reproducibly from the
+    run seed rather than leaving it wherever process startup left it.
+    """
+
+    accepted = [{"python", "torch_cpu"}] + [
+        {"python", "torch_cpu", key} for key in _ACCELERATOR_RNG_KEYS.values()
+    ]
+    if set(state) not in accepted:
         raise CheckpointError("checkpoint RNG state is incomplete or unknown")
     python_state = state["python"]
     torch_state = state["torch_cpu"]
@@ -232,20 +246,46 @@ def restore_rng_state(
         raise CheckpointError("checkpoint Python RNG state is invalid")
     if not isinstance(torch_state, torch.Tensor):
         raise CheckpointError("checkpoint Torch RNG state is invalid")
-    mps_state = state.get("torch_mps")
-    if mps_state is not None and not isinstance(mps_state, torch.Tensor):
-        raise CheckpointError("checkpoint MPS RNG state is invalid")
+    selected = torch.device(device)
+    key = _ACCELERATOR_RNG_KEYS.get(selected.type)
+    accelerator_state = None if key is None else state.get(key)
+    if accelerator_state is not None and not isinstance(
+        accelerator_state, torch.Tensor
+    ):
+        raise CheckpointError(
+            f"checkpoint {selected.type.upper()} RNG state is invalid"
+        )
+    # Checked before the guarded block rather than inside it. CheckpointError
+    # is a ValueError, so raising it there would have this function rewrap its
+    # own message as though the stored state were the thing that was malformed.
+    if key is not None:
+        _require_accelerator(selected.type, "restore")
     try:
         random.setstate(python_state)
         torch.set_rng_state(torch_state)
-        if torch.device(device).type == "mps":
-            if not torch.backends.mps.is_available():
-                raise CheckpointError(
-                    "cannot restore MPS RNG state: MPS is unavailable"
-                )
-            if isinstance(mps_state, torch.Tensor):
-                torch.mps.set_rng_state(mps_state)
+        if key is None:
+            return
+        if selected.type == "mps":
+            if isinstance(accelerator_state, torch.Tensor):
+                torch.mps.set_rng_state(accelerator_state)
             else:
                 torch.mps.manual_seed(fallback_seed)
+        elif isinstance(accelerator_state, torch.Tensor):
+            torch.cuda.set_rng_state(accelerator_state, selected)
+        else:
+            torch.cuda.manual_seed_all(fallback_seed)
     except (TypeError, ValueError, RuntimeError) as error:
         raise CheckpointError(f"checkpoint RNG state is invalid: {error}") from error
+
+
+def _require_accelerator(backend: str, action: str) -> None:
+    available = (
+        torch.backends.mps.is_available()
+        if backend == "mps"
+        else torch.cuda.is_available()
+    )
+    if not available:
+        raise CheckpointError(
+            f"cannot {action} {backend.upper()} RNG state: "
+            f"{backend.upper()} is unavailable"
+        )

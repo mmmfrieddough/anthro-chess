@@ -35,22 +35,28 @@ index, build variant, or install flag is involved:
 | macOS on Apple silicon | `macosx_14_0_arm64` | MPS |
 | anything else, or no driver | that platform's build | none |
 
-**What the project can select is a smaller set than what PyTorch can see, and
-the two selections do not accept the same set.** Inference and evaluation
-resolve an explicit `auto`, `cpu`, `mps`, or `cuda` selection. Training resolves
-`auto`, `cpu`, or `mps` and does not accept `cuda` yet, which is tracked
-separately. So on a CUDA host the benchmarks and the playable engine run on the
-GPU, while training still runs on CPU there, `auto` included, since `auto` falls
-back rather than failing.
+**What the project can select is still a smaller set than what PyTorch can
+see.** Training, inference, and evaluation now each resolve an explicit `auto`,
+`cpu`, `mps`, or `cuda` selection, so on a CUDA host all three use the GPU.
+Only `auto` falls back; an explicit accelerator that is absent is an error
+rather than a quiet CPU run.
 
-That gap is worth stating plainly because it is otherwise invisible: an
-accelerator no device selection accepts produces exactly the passing run that
-no accelerator at all produces. The suite prints both lists in its header, and
-names each selection that cannot use a present accelerator:
+The two selections are still reported apart, because they are separate lists
+that have disagreed before and will again the next time a backend lands in one
+path ahead of the other. An accelerator a selection does not accept produces
+exactly the passing run that no accelerator at all produces, so the suite names
+each selection that cannot use what is present. On a host where both accept the
+card there is nothing to name:
 
 ```text
 accelerators present: cuda (2 device(s))
 accelerators the device selection accepts: cuda, mps
+```
+
+and while one of them was behind, as training was until CUDA training landed,
+the gap said so outright:
+
+```text
 the training device selection does not accept cuda, so nothing here exercised a
 training path on it
 ```
@@ -162,10 +168,17 @@ uv run mypy src tests
 uv run pytest
 ```
 
-Continuous integration runs that last command as `uv run pytest -n auto`, which
-shards the suite across the runner's cores. The same flag works locally and is
-worth using for a full run, but it starts a worker process per core, so leave it
-off when running a handful of tests or a debugger.
+Those are the commands continuous integration runs, with no extra flags on
+either side. The suite shards itself across the machine's cores by default, so
+a full run costs roughly a third of its serial wall time; pass `-n0` to turn
+sharding off for a debugger or a handful of tests.
+
+Sharding is why the suite pins Torch to a single thread per worker. Torch sizes
+its thread pool from the core count and cannot see the other workers, so the
+unpinned default oversubscribes the machine by a factor of the worker count —
+which costs more wall time than sharding saves, and leaves timing assertions
+measuring how contended the run was rather than what they were written to
+measure.
 
 Coverage and the complete pre-commit suite are available on demand:
 

@@ -1,0 +1,62 @@
+# The shortest real CUDA run: forward, backward, update, validation, and a
+# checkpoint, on the sample corpus, in seconds. Its job is to prove the device
+# path works on a new host, not to measure anything — the model is far too
+# small for its throughput figure to mean anything, and phase profiling is on,
+# which synchronizes deliberately and costs more than it reports.
+#
+# Prepare the sample corpus first; README.md has that path.
+#
+#   uv run anthro train --config configs/training/cuda-smoke.toml
+#
+# Strict determinism rather than relaxed, unlike the MPS smoke beside this
+# one. The CUDA backward pass has a deterministic implementation for every
+# operation this model needs, so the correctness path is available here and a
+# repeated run reaches the same weights.
+output_directory = "artifacts/training-cuda-smoke"
+seed = 17
+steps = 3
+learning_rate = 0.003
+log_every_steps = 1
+gradient_accumulation_steps = 4
+device = "cuda"
+precision = "float32"
+determinism = "strict"
+profile_phases = true
+
+[model]
+piece_embedding_dim = 2
+action_embedding_dim = 4
+model_dim = 16
+attention_heads = 2
+transformer_layers = 1
+feedforward_dim = 24
+dropout = 0.0
+
+[efficiency]
+# A three-step run has no steady state to report, and a smoke check should not
+# be able to write to committed benchmark history at all.
+record = false
+
+[train]
+normalized = "artifacts/lichess-sample/normalized"
+manifest = "artifacts/lichess-sample/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+batch_size = 1
+length_bucket_width = 32
+shuffle = false
+seed = "anthro-training-cuda-smoke-v1"
+drop_last = false
+
+[validation]
+normalized = "artifacts/lichess-sample/normalized"
+manifest = "artifacts/lichess-sample/manifests/manifest.json"
+
+[validation.loader]
+split = "train"
+batch_size = 1
+length_bucket_width = 32
+shuffle = false
+seed = "anthro-validation-cuda-smoke-v1"
+drop_last = false

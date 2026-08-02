@@ -14,8 +14,8 @@ The repository currently provides an installable Python package, a lightweight
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
 a minimal causal action model with masked move loss, a reproducible bounded
-Lichess baseline-corpus path, shared CPU/MPS training with explicit device and
-determinism selection, an end-to-end minimal training proof, compatible
+Lichess baseline-corpus path, shared CPU/MPS/CUDA training with explicit device
+and determinism selection, an end-to-end minimal training proof, compatible
 checkpoint-backed full-history inference, an untimed game-session runtime with
 exact legal action selection, a directly invoked minimal UCI process, an
 independent-client playable UCI integration proof, and a locked development
@@ -163,26 +163,31 @@ uv run anthro train \
 
 The current MPS Transformer backward path requires relaxed determinism because
 the locked Torch build does not provide a deterministic implementation for one
-of its gradient operations. The selected backend, precision, and determinism
-mode are retained in run and checkpoint metadata.
+of its gradient operations. CUDA needs no such exception and runs the strict
+path. The selected backend, precision, and determinism mode are retained in run
+and checkpoint metadata, beside a separate record of the machine itself.
 
-Training accepts MPS but not CUDA, so training on a CUDA host still runs on CPU
-no matter what PyTorch can see there. Inference and evaluation accept both, so
-the benchmarks and the playable engine do use the GPU on that host.
+Training, inference, and evaluation all accept MPS and CUDA, so on either host
+every one of them uses the accelerator.
 [CONTRIBUTING.md](CONTRIBUTING.md) covers what each platform resolves to.
 
-On Apple silicon with an MPS-enabled PyTorch build, the same runner can exercise
-the real accelerator path:
+On a host with a supported accelerator, the same runner exercises the real
+device path:
 
 ```console
 uv run anthro train --config configs/training/mps-smoke.toml
+uv run anthro train --config configs/training/cuda-smoke.toml
 ```
 
-Explicit `mps` selection fails if the backend is unavailable; `auto` selects MPS
-when available and otherwise CPU. Run artifacts record requested and resolved
-devices, precision, determinism, accumulation, phase timings, throughput, and
-sampled MPS memory. The synchronized phase profiling used by the smoke selection
+Explicit accelerator selection fails if the backend is unavailable; only `auto`
+falls back to CPU. Run artifacts record requested and resolved devices,
+precision, determinism, accumulation, phase timings, throughput, and sampled
+device memory. The synchronized phase profiling used by the smoke selections
 adds diagnostic overhead and should be disabled for ordinary throughput runs.
+
+What the CUDA path is worth on the current workload, and which optimizations
+were measured and then rejected, is recorded in
+[`docs/planning/cuda-training-proof.md`](docs/planning/cuda-training-proof.md).
 
 ## Baseline Training Corpus
 
