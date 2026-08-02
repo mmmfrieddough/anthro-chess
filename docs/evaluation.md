@@ -2373,3 +2373,74 @@ Useful regression dimensions:
 - timing rollout behavior;
 - human-likeness;
 - preference-control behavior when applicable.
+
+### Reading A Model Change Against A Control Arm
+
+The comparison above watches the project's own lineage. This one attributes a
+change: a change that decides what a training run learns is read as a delta
+between two **arms**, a control trained without the change and a treatment
+trained with it, identical in everything else. The control is what makes the
+delta attributable. The most recent recorded reading is not one, because it came
+from a run whose corpus, step budget, machine, and code have all moved since,
+and a delta against it confounds the change with everything else in between.
+`docs/decisions/0029-model-change-control-arm.md` owns why the control is
+required rather than recommended, what it costs, and what it still does not buy.
+
+Both arms are read the same way — the default reduced sweep at the same
+checkpoint step, on one machine — and the claim is written down before either
+arm runs: which metric moves, in which direction. Stating it first is what makes
+the reading falsifiable, for the same reason a shakedown states its expectation
+first.
+
+The reduced sweep is the default because a reduction is confined to sample
+counts, so it estimates the same quantities with wider floors: reading two arms
+at less precision cannot let a weak claim through, it raises the bar the delta
+has to clear. What it cannot do is read a benchmark that has no reduced form.
+A claim naming such a family — strength, whose only reading is the ladder,
+whose cost is a grid rather than a sample — is not testable by a reduced sweep
+at all, so that benchmark is read at its declared size on both arms and the
+comparison says which scale each family was read at.
+
+The scale is therefore part of the claim rather than a response to it. It is
+chosen before the arms run, and a delta inside its floor at the chosen scale is
+a null result, not a reason to re-read at a larger view: a reading widened
+because its answer was unwelcome is the same failure as an arm retrained for a
+better number, and reduced and full are separate series in any case rather than
+two precisions of one. Where a small effect is expected, `uv run anthro eval
+noise plan` reports how many games an axis needs to resolve an effect of a given
+size, which is a question for before the reading.
+
+The comparison itself needs nothing new. A training run is a coordinate rather
+than a component of series identity, so two arms of one configuration land in
+the same series, and `uv run anthro eval report` reads the delta between them
+from their checkpoint labels. Arms are recorded into a machine-local store
+rather than the committed one: a candidate arm is not project history, and an
+arm nobody adopted would otherwise become some later report's baseline.
+
+**What makes a delta admissible is narrower than the machinery suggests**,
+because of which floors exist. Every floor that qualifies a checkpoint delta
+today is a data-sampling floor, whether the reading bootstrapped it or a report
+paired it, and such a floor says the delta survives a different draw of
+evaluation games rather than that the change produced it. Two arms differ by
+their initialization seeds as well as by the change, so clearing a data-sampling
+floor establishes that two models differ, not that the change is why. That is
+not a theoretical gap. Measured at proof scale, two arms differing only by their
+initialization seed cleared 14 of 54 floored metrics and read better on every
+held-out and legality metric; decision 0029 holds the reading.
+
+A claim therefore rests on one of two things: a delta far enough outside seed
+variance that nothing else explains it, or a training floor characterized from
+arms trained at several seeds, which `uv run anthro eval noise characterize`
+already produces. Such a floor describes the training configuration its arms
+shared, and no series fingerprint carries that — the scoping problem decision
+0025 solved for the machine, unsolved for this kind and open as `#235` — so it
+is read beside the comparison it was characterized for rather than committed to
+the store.
+Anything narrower is reported as what it is, a delta not distinguished from seed
+variance, rather than as an improvement. A family with no floor at all can show
+that nothing else moved; it cannot carry the claim.
+
+A null reading is a reading. Arms are not re-run until a number improves, and a
+delta inside its floor is a null result rather than a small win.
+`docs/issue-workflow.md` owns what that means for the pull request and the
+issue.
