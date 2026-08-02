@@ -292,11 +292,20 @@ which is far inside the 0.5% run-to-run bar this document holds elsewhere.
 **Not worth changing the board encoder for.** At width 1024 and batch 256,
 removing the piece embedding's backward pass outright — not making it cheaper,
 deleting it — would return at most 1.2% of a step, and 0.4% at width 2048. Both
-are upper bounds, for the denominator reason above. The candidate change was a
-fused per-square-per-piece table, which is a defensible formulation on its own
-merits and is strictly more expressive than the current rank-8 factorization,
-but it changes the model's function and so costs a model identity bump and every
-checkpoint built against the old one. That is not a trade worth 1%.
+are upper bounds, for the denominator reason above.
+
+The candidate change was a fused per-square-per-piece table — one 832-row lookup
+replacing `piece_embedding` and its slice of the projection. It is worth being
+clear that this is **not** a simplification, because it reads like one. The
+current form factors each square's 13 vectors through a shared
+`piece_embedding_dim`-wide table, and at the default 8 that is a rank-8
+bottleneck on a 13-way choice; removing it makes the encoder strictly more
+expressive and costs 1.62× the parameters on that path at every width. What
+looks like collapsing two operations into one is a capacity increase wearing a
+performance argument, and `roadmap.md` puts capacity behind a demonstrated
+plateau of the current architecture. It would also change the model's function,
+so it costs a model identity bump and every checkpoint built against the old
+one. None of that is a trade worth 1%.
 
 The 14.3% headline was true and was never evidence the operation matters: it was
 measured at the smallest width and batch this project runs, against a
