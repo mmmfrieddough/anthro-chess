@@ -313,7 +313,7 @@ def test_rebuilding_rejects_a_piece_id_outside_the_contract() -> None:
     from anthro_chess.data import BoardEncoding
 
     board = BoardEncoding(
-        piece_ids=(99,) + (0,) * 63,
+        piece_ids=bytes([99]) + bytes(63),
         side_to_move=0,
         castling_rights=0,
         en_passant_square=None,

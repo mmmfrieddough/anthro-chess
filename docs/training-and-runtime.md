@@ -57,7 +57,9 @@ rating. The dataloading layer encodes each game once, retains both players'
 moves, and enables action loss on every valid ply. It then packs these values
 into framework-neutral numeric sequence batches so model code can make the
 final tensor/device conversion without reopening normalized data or
-reconstructing alignment.
+reconstructing alignment. Those batches are contiguous arrays, so that
+conversion is a buffer wrap and a device copy rather than a traversal of the
+loader's output.
 
 Optional preference labels should be allowed to be multi-label. A single ply may
 belong to several useful concepts, such as an opening family, a pawn structure,

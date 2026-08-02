@@ -104,6 +104,13 @@ nested Python sequences on the host, which happens identically whether the
 result then stays put or crosses to a device. The input pipeline, not the
 accelerator, is the binding constraint at the current model size.
 
+The loader has since stopped emitting those sequences. On this workload and
+host, batch construction and transfer falls from 4.1 ms to 0.8 ms per step and
+forward and backward becomes the largest phase, which is what the last section
+of this document asked for. What that change did not touch is the decode
+upstream of it, and under the shard-backed loader that is now what a step waits
+on.
+
 Separating optimizer work from forward and backward was worth doing, and not
 for the reason expected: at 4.9% of a step it looked like the last place worth
 touching, and it turned out to hold the only throughput win found here.
@@ -220,6 +227,98 @@ implementation in the locked build, and a repeated run reaches bit-identical
 gradients. That is a genuine gain over MPS, where the correctness path is
 unavailable.
 
+## The Embedding Backward, Re-Measured
+
+A kernel-level profile taken alongside the phase profile above, and reported in
+`#202` rather than here, put `embedding_dense_backward` at 0.642 ms per step and
+14.3% of device busy time at `model_dim` 64 — larger than any matmul in the
+model. Re-measuring it across width and batch retires it, and corrects what it
+was attributed to.
+
+These readings come from a standalone harness rather than from `anthro train`:
+one real batch off the pinned corpus loader, held fixed, driven through forward,
+backward, and a fused Adam step under `torch.profiler`, summing self device time
+per operation over 30 steps after 10 warmup steps. Only the model is real; the
+runner is not. That is deliberate, and it cuts one way: the denominator excludes
+the runner's own per-step telemetry, and the gradient-norm monitor issues device
+work proportional to the parameter list, so a real run's denominator is larger
+at every width and larger still at the wide end. **Every share below is
+therefore an upper bound.** The harness reproduces the original reading closely
+enough to be read against it — 0.620 ms at batch 16 by 192 plies, against the
+0.642 ms above.
+
+### It is four tables, and not mostly the one it was blamed on
+
+The cost was attributed to the piece table: one lookup per square, so 196,608
+gradients scattering back into 13 rows. That contention is real, and it is not
+the largest part of the line. At batch 16 by 192 plies and `model_dim` 64:
+
+| Table | Rows | Indices | Calls | Device time |
+| --- | ---: | ---: | ---: | ---: |
+| `side`, `castling`, `en_passant` | 2, 16, 65 | 3,072 each | 3 | 0.361 ms |
+| `piece` | 13 | 196,608 | 1 | 0.205 ms |
+| `previous_action` | 1,971 | 3,072 | 1 | 0.055 ms |
+
+The three rule-state tables cost 1.8× the piece table while carrying a
+sixty-fourth of its indices. The last two rows are the controlled comparison:
+the same 3,072 indices, and the table with 1,971 rows costs less than half of
+what each 2-to-65-row table costs. **Row count, not index count, is what sets
+this price.** The piece table is expensive because it is narrow, and it survives
+being indexed sixty-four times as often for only 3.7× the cost.
+
+### The share decays on width, and the tables swap places on batch
+
+Left column is the batch this project trains today; right is the batch the
+device work above argues for. Percentages are of device busy time per step.
+
+| `model_dim` | batch 16 × 192: piece / all | batch 256 × 96: piece / all |
+| ---: | ---: | ---: |
+| 64 | 10.3% / 31.1% | — |
+| 256 | 6.4% / 19.3% | — |
+| 512 | 3.3% / 10.1% | 3.0% / 3.4% |
+| 1024 | 1.5% / 4.1% | 1.2% / 1.4% |
+| 2048 | — | 0.4% / 0.5% |
+
+Width is what retires it. The operation is very nearly constant in absolute
+terms — the piece table costs 0.19 ms at width 64 and 0.25 ms at 1024, because
+it scales with the board encoding rather than with the model — while everything
+around it grows superlinearly.
+
+Batch does something different and worth recording: it inverts which tables
+matter. Widening the batch gives the rule-state tables enough indices to fill
+the device, and their combined cost falls from 0.361 ms to 0.131 ms even as
+their index count grows eightfold; the piece table's cost rises roughly with its
+own. At batch 256 the piece table is 88% of the line it was originally blamed
+for only a third of.
+
+Three repeats at width 1024 and batch 256 returned 1.23%, 1.24%, and 1.23%,
+which is far inside the 0.5% run-to-run bar this document holds elsewhere.
+
+### Verdict
+
+**Not worth changing the board encoder for.** At width 1024 and batch 256,
+removing the piece embedding's backward pass outright — not making it cheaper,
+deleting it — would return at most 1.2% of a step, and 0.4% at width 2048. Both
+are upper bounds, for the denominator reason above.
+
+The candidate change was a fused per-square-per-piece table — one 832-row lookup
+replacing `piece_embedding` and its slice of the projection. It is worth being
+clear that this is **not** a simplification, because it reads like one. The
+current form factors each square's 13 vectors through a shared
+`piece_embedding_dim`-wide table, and at the default 8 that is a rank-8
+bottleneck on a 13-way choice; removing it makes the encoder strictly more
+expressive and costs 1.62× the parameters on that path at every width. What
+looks like collapsing two operations into one is a capacity increase wearing a
+performance argument, and `roadmap.md` puts capacity behind a demonstrated
+plateau of the current architecture. It would also change the model's function,
+so it costs a model identity bump and every checkpoint built against the old
+one. None of that is a trade worth 1%.
+
+The 14.3% headline was true and was never evidence the operation matters: it was
+measured at the smallest width and batch this project runs, against a
+denominator that both inflate. **A share measured at `model_dim` 64 is a
+statement about `model_dim` 64.**
+
 ## What This Does Not Show
 
 - **Nothing about quality.** No run here was long enough to move a held-out
@@ -228,11 +327,13 @@ unavailable.
   through their own device boundary, landed separately, and none of the figures
   here describe what a benchmark sweep costs on this host.
 - **Nothing about the second card**, or about how this scales across both.
-- **Nothing about a larger model.** Every conclusion above is bound to a
-  `model_dim` of 64. TF32 and mixed precision are exactly the settings expected
-  to start mattering as capacity grows, which is why the precision dial was
-  kept; the correct move is to re-measure at the new size rather than to assume
-  either result carries.
+- **Nothing about a larger model**, with one exception. Every conclusion above
+  is bound to a `model_dim` of 64 except the embedding backward, which has since
+  been swept across width and batch in the section above. TF32 and mixed
+  precision are exactly the settings expected to start mattering as capacity
+  grows, which is why the precision dial was kept; the correct move is to
+  re-measure at the new size rather than to assume either result carries. The
+  embedding sweep is what that costs and what it is worth: one finding, retired.
 
 ## What To Do Next
 
@@ -255,7 +356,8 @@ optimized toward. Two things lift it, and neither is a device-side change:
   the recompile storm that made `torch.compile` unusable, and the prefetch
   thread's lock contention. A loader that hands back arrays addresses all
   three, and that is the shard-streaming work rather than anything in this
-  change.
+  change. The loader now does; the construction cost is what was re-measured,
+  and neither `torch.compile` nor the prefetch thread was tried again.
 
 A third and smaller one is now visible and was not before: the per-step
 gradient norm costs the same order as the optimizer on a launch-bound step.
