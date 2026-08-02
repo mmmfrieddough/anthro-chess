@@ -28,6 +28,7 @@ from anthro_chess.evaluation.reference import (
     DECLARED_NEIGHBOURS,
     ComparedQuantity,
     curve_spec,
+    minimum_reference_games,
 )
 from anthro_chess.evaluation.results import (
     CheckpointReference,
@@ -255,6 +256,50 @@ def reference_pool(
 
 
 @pytest.fixture
+def mismatched_reference_pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a pool of rated games whose players are mostly nowhere near each other.
+
+    Every game carries ratings, so the view selects all of them; only a handful
+    survives the rating gap. That is the shape a cap alone cannot rule out,
+    because how many games are matched is a property of the pool rather than of
+    configuration, and a reference of a handful is not empty either.
+    """
+
+    rows = [
+        normalized_row(
+            index,
+            split="test",
+            plies=4 + (index % 5) * 2,
+            ratings=(
+                (1200 + index * 100, 1200 + index * 100) if index <= 6 else (1100, 2100)
+            ),
+            result=("1-0", "0-1", "1/2-1/2")[index % 3],
+        )
+        for index in range(1, 61)
+    ]
+    normalized, manifest = write_corpus(tmp_path / "mismatched-corpus", rows)
+    output = tmp_path / "mismatched-pool"
+    freeze_pool(
+        ResolvedConfig(
+            value=PoolConfig.model_validate(
+                {
+                    "pool_id": "fixture-mismatched",
+                    "normalized": str(normalized),
+                    "manifest": str(manifest),
+                }
+            ),
+            provenance=ConfigProvenance(source=None, overrides=()),
+        ),
+        output,
+    )
+    return output
+
+
+@pytest.fixture
 def small_bandwidth(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink the declared bandwidth so a fixture reference can support it.
 
@@ -291,6 +336,96 @@ def test_the_declared_bandwidth_is_one_frozen_value() -> None:
         assert spec.quantity is quantity.kind
         # The evaluation points are the ratings played, not a declared grid.
         assert spec.grid == (1200.0, 1800.0)
+
+
+def test_a_grid_point_needs_a_bandwidth_of_its_own() -> None:
+    """The floor is one full bandwidth per point, and counts points once.
+
+    Below it the neighbourhoods cannot be disjoint however the ratings fall, so
+    the curve reports fewer independent points than it plots. Repeated ratings
+    are one evaluation point rather than two, because the grid is a set.
+    """
+
+    assert minimum_reference_games((1200, 1800), 1024) == 2048
+    assert minimum_reference_games((1100, 1300, 1500, 1700, 1900, 2100), 1024) == 6144
+    assert minimum_reference_games((1200, 1200, 1800), 1024) == 2048
+
+
+def test_a_reference_below_the_bandwidth_is_rejected_before_a_sweep_starts() -> None:
+    """A sweep that cannot resolve its own grid should fail in the first second.
+
+    The reference size is the neighbour-count bandwidth's radius rather than a
+    sample size, so a cap this low does not make the reading noisier: it makes
+    every grid point the same neighbourhood. Rejected on the configuration so a
+    suite plan catches it, rather than an hour of generation later.
+    """
+
+    with pytest.raises(ValidationError, match="below the 2048 game"):
+        _compared(
+            Path("pool"),
+            grid={"target_ratings": (1200, 1800)},
+            reference={
+                "view": {"name": "rollout-reference", "maximum_games": 2000},
+            },
+        )
+
+
+def test_a_reference_the_rating_gap_guts_fails_before_a_game_is_played(
+    mismatched_reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The declared cap cannot promise what survives the rating-gap filter.
+
+    That fraction is a property of the pool's rating composition, so a cap that
+    clears the floor can still leave a reference that does not. It is read
+    before the first game so a suite pays a pool pass rather than a whole
+    generation matrix to learn it.
+    """
+
+    runner = TrajectoryRunner()
+
+    with pytest.raises(RolloutBenchmarkError, match="usable human game"):
+        _run(
+            _compared(
+                mismatched_reference_pool,
+                grid={"target_ratings": (1200, 1800)},
+            ),
+            runner=runner,
+        )
+
+    assert runner.calls == 0
+
+
+def test_the_human_reference_scopes_the_curve_series(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Two references are two smoothings, so two quantities rather than two draws.
+
+    The bandwidth is a neighbour count, so the reference decides the rating span
+    every neighbourhood covers. Without this in identity a checkpoint read
+    against a small reference would be plotted against one read against a large
+    one, and the difference between the smoothings would render as movement.
+    """
+
+    workloads = []
+    for maximum_games in (24, 48):
+        result = _run(
+            _compared(
+                reference_pool,
+                grid={"target_ratings": (1200, 1800)},
+                reference={
+                    "view": {
+                        "name": "rollout-reference",
+                        "require_ratings": True,
+                        "maximum_games": maximum_games,
+                    },
+                },
+            )
+        )
+        workloads.append(result.readings[0].execution.workload_sha256)
+
+    assert workloads[0] != workloads[1]
 
 
 def test_the_declared_walk_shape_is_the_one_a_suite_runs() -> None:
@@ -519,6 +654,33 @@ def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(
         assert item.noise_floor.value == pytest.approx(
             comparison.floors.conditional.value
         )
+
+
+def test_a_reading_reports_how_far_its_smoother_actually_reached(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The declared neighbour count says nothing about a particular reading.
+
+    It is the same number whatever the reference holds. What decides whether
+    the grid resolves the points it plots is the rating span those neighbours
+    occupy, so that is what the reading prints — the widest across quantities,
+    because a quantity some games lack reaches furthest for its neighbours.
+    """
+
+    from anthro_chess.interfaces.cli import _render_rollout
+
+    result = _run(_compared(reference_pool, grid={"target_ratings": (1200, 1800)}))
+
+    (reading,) = result.readings
+    widest = [
+        max(comparison.points[index].bandwidth for comparison in comparisons)
+        for comparisons in [list(reading.comparisons.values())]
+        for index in range(len(reading.ratings))
+    ]
+    assert len(widest) == 2
+    line = f"  bandwidth      reaches ±{widest[0]:.0f} ±{widest[1]:.0f} rating points"
+    assert line in _render_rollout(result)
 
 
 def _comparison_table(rendered: str) -> tuple[str, dict[str, str]]:

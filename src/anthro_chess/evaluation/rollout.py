@@ -136,7 +136,10 @@ from anthro_chess.evaluation.reference import (
     generated_games,
     human_reference,
     iter_quantities,
+    minimum_reference_games,
     observations_for,
+    reference_workload,
+    validate_reference_size,
 )
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -282,9 +285,14 @@ class RolloutReferenceConfig(ReferenceConfig):
     """Which human games the comparison is measured against, and how many.
 
     A separate view from the prefix one because the two want opposite things.
-    Prefixes are a handful of openings to continue; the reference is as much
-    matched human play as can be afforded, since it forces the bandwidth and
-    the noise floors at every evaluation point.
+    Prefixes are a handful of openings to continue; the reference is what forces
+    the bandwidth and the noise floors at every evaluation point.
+
+    Its size is not a sample count. The bandwidth is a neighbour count, so the
+    reference size decides the rating span those neighbours occupy: shrinking it
+    widens every neighbourhood until the grid points are estimated from the same
+    games. That is why a reduced sweep leaves this view alone, and why the size
+    belongs in the declared workload rather than in provenance.
     """
 
     view: ViewConfig = ViewConfig(name="rollout-reference", require_ratings=True)
@@ -396,6 +404,12 @@ class RolloutBenchmarkConfig(ConfigModel):
                     "reference.enabled to false to record the rollout scalars "
                     "alone"
                 )
+        if self.reference.enabled:
+            validate_reference_size(
+                self.reference.view,
+                self.grid.target_ratings,
+                max(DECLARED_NEIGHBOURS.values()),
+            )
         return self
 
 
@@ -800,6 +814,15 @@ def benchmark_rollout(
     book = _load_book()
     sources, view, dataset = _position_sources(config, book=book)
 
+    # Read before the matrix is played, not after. The reference is a pass over
+    # frozen rows and can fail on its own — a view the rating gap guts cannot
+    # carry the declared bandwidth — so a suite that is going to fail on it
+    # should fail in the pool pass rather than an hour of generation later.
+    reference: HumanReference | None = None
+    reference_view: ViewSelection | None = None
+    if config.reference.enabled:
+        reference, reference_view = _load_reference(config, book=book)
+
     cells: list[RolloutCell] = []
     for source in sources:
         for target_rating in config.grid.target_ratings:
@@ -816,15 +839,13 @@ def benchmark_rollout(
                     )
                 )
 
-    reference: HumanReference | None = None
-    reference_view: ViewSelection | None = None
     readings: tuple[RolloutReading, ...] = ()
-    if config.reference.enabled:
-        reference, reference_view = _load_reference(config, book=book)
+    if reference is not None and reference_view is not None:
         readings = _curve_readings(
             config,
             cells,
             reference,
+            reference_view,
             book=book,
             runner=loaded,
             device=_device(loaded),
@@ -1047,6 +1068,23 @@ def _load_reference(
         reference = human_reference(rows, config.reference, book=book)
     except ReferenceError as error:
         raise RolloutBenchmarkError(str(error)) from error
+    required = minimum_reference_games(
+        config.grid.target_ratings, max(DECLARED_NEIGHBOURS.values())
+    )
+    # The declared cap clears this floor by construction; what the cap cannot
+    # promise is how much of the view survives the rating-gap filter, which
+    # depends on the pool's rating composition rather than on configuration.
+    if len(reference.games) < required:
+        excluded = ", ".join(
+            f"{count} {reason}" for reason, count in sorted(reference.excluded.items())
+        )
+        raise RolloutBenchmarkError(
+            f"view {config.reference.view.name!r} left "
+            f"{len(reference.games)} usable human game(s) of "
+            f"{selection.selected_games} selected ({excluded or 'none excluded'}), "
+            f"below the {required} a curve over this rating grid needs at the "
+            "declared bandwidth; widen the view or the rating gap"
+        )
     return reference, selection
 
 
@@ -1054,6 +1092,7 @@ def _curve_readings(
     config: RolloutBenchmarkConfig,
     cells: Sequence[RolloutCell],
     reference: HumanReference,
+    reference_view: ViewSelection,
     *,
     book: OpeningBook | None,
     runner: ActionModelRunner,
@@ -1082,6 +1121,7 @@ def _curve_readings(
                     temperature,
                     selected,
                     reference,
+                    reference_view,
                     book=book,
                     runner=runner,
                     device=device,
@@ -1096,6 +1136,7 @@ def _curve_reading(
     temperature: float,
     cells: Sequence[RolloutCell],
     reference: HumanReference,
+    reference_view: ViewSelection,
     *,
     book: OpeningBook | None,
     runner: ActionModelRunner,
@@ -1152,13 +1193,14 @@ def _curve_reading(
             temperature,
             cells,
             reference,
+            reference_view,
             ratings,
             book=book,
             runner=runner,
             device=device,
         ),
         execution=_reading_execution_record(
-            config, cells, temperature, ratings, device=device
+            config, cells, temperature, ratings, reference_view, device=device
         ),
     )
 
@@ -1289,6 +1331,7 @@ def _exact_repertoire(
     temperature: float,
     cells: Sequence[RolloutCell],
     reference: HumanReference,
+    reference_view: ViewSelection,
     ratings: Sequence[int],
     *,
     book: OpeningBook | None,
@@ -1392,7 +1435,7 @@ def _exact_repertoire(
         waypoint_mass=sum(walk.waypoint_mass for _, walk in walks) / len(walks),
         deepest_expanded_ply=max(walk.deepest_expanded_ply for _, walk in walks),
         execution=_walk_execution_record(
-            config, cells, temperature, ratings, device=device
+            config, cells, temperature, ratings, reference_view, device=device
         ),
     )
 
@@ -1453,6 +1496,7 @@ def _walk_execution_record(
     cells: Sequence[RolloutCell],
     temperature: float,
     ratings: Sequence[int],
+    reference_view: ViewSelection,
     *,
     device: torch.device,
 ) -> ExecutionRecord:
@@ -1476,7 +1520,7 @@ def _walk_execution_record(
             "walk_threshold": config.walk.threshold,
             "curve_spec_version": CURVE_SPEC_VERSION,
             "curve_neighbours": DECLARED_NEIGHBOURS[ComparedQuantity.REPERTOIRE],
-            "reference_maximum_rating_gap": config.reference.maximum_rating_gap,
+            "reference": reference_workload(config.reference, reference_view),
         }
     )
     return execution_record(device, workload)
@@ -1540,6 +1584,7 @@ def _reading_execution_record(
     cells: Sequence[RolloutCell],
     temperature: float,
     ratings: Sequence[int],
+    reference_view: ViewSelection,
     *,
     device: torch.device,
 ) -> ExecutionRecord:
@@ -1549,7 +1594,9 @@ def _reading_execution_record(
     grid, because the grid is the axis rather than a setting held fixed. The
     curve shape joins it too: a distance estimated at one bandwidth and one at
     another are not the same quantity, which is exactly why the bandwidth is
-    declared and frozen rather than configured.
+    declared and frozen rather than configured. So does the human reference the
+    bandwidth is expressed against, for the reason ``reference_workload``
+    gives.
     """
 
     workload = dict(cells[0].execution.workload)
@@ -1563,7 +1610,7 @@ def _reading_execution_record(
                 quantity.value: DECLARED_NEIGHBOURS[quantity]
                 for quantity in iter_quantities()
             },
-            "reference_maximum_rating_gap": config.reference.maximum_rating_gap,
+            "reference": reference_workload(config.reference, reference_view),
         }
     )
     return execution_record(device, workload)

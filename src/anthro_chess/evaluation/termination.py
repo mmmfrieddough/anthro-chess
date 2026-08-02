@@ -88,7 +88,12 @@ from anthro_chess.evaluation.policy import (
     score_terminal_actions,
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
-from anthro_chess.evaluation.reference import ReferenceConfig
+from anthro_chess.evaluation.reference import (
+    ReferenceConfig,
+    minimum_reference_games,
+    reference_workload,
+    validate_reference_size,
+)
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -299,7 +304,13 @@ class TerminationGridConfig(ConfigModel):
 
 
 class TerminationReferenceConfig(ReferenceConfig):
-    """Which human games the mix and the deficit are read against."""
+    """Which human games the mix and the deficit are read against.
+
+    Its size is not a sample count. The mix bandwidth is a neighbour count, so
+    the reference size decides the rating span every neighbourhood covers:
+    shrinking it widens them until the grid points are estimated from the same
+    games. That is why a reduced sweep leaves this view alone.
+    """
 
     view: ViewConfig = ViewConfig(name="termination-reference", require_ratings=True)
 
@@ -377,6 +388,9 @@ class TerminationBenchmarkConfig(ConfigModel):
         names = [entry.name for entry in self.time_controls]
         if len(set(names)) != len(names):
             raise ValueError("a termination suite must not repeat a time-control name")
+        validate_reference_size(
+            self.reference.view, self.grid.target_ratings, DECLARED_MIX_NEIGHBOURS
+        )
         return self
 
 
@@ -765,7 +779,9 @@ def benchmark_termination(
     )
 
     unavailable: dict[str, str] = {}
-    mixes = _mix_readings(config, loaded, reference, generated, unavailable)
+    mixes = _mix_readings(
+        config, loaded, reference, reference_view, generated, unavailable
+    )
     held_out = (
         _held_out_resignation(config, loaded, pool) if config.held_out.enabled else None
     )
@@ -966,6 +982,7 @@ def _mix_readings(
     config: TerminationBenchmarkConfig,
     runner: ActionModelRunner,
     reference: Sequence[HumanEnding],
+    reference_view: ViewSelection,
     generated: Sequence[GeneratedReading],
     unavailable: dict[str, str],
 ) -> tuple[TerminationMix, ...]:
@@ -1010,7 +1027,11 @@ def _mix_readings(
                     ratings=reading.ratings,
                     comparison=comparison,
                     execution=_mix_execution(
-                        config, runner, time_control, reading.temperature
+                        config,
+                        runner,
+                        time_control,
+                        reading.temperature,
+                        reference_view,
                     ),
                     human_games=len(human),
                     model_games=len(model),
@@ -1249,6 +1270,24 @@ def _load_reference(
         len(endings),
         sum(excluded.values()),
     )
+    required = minimum_reference_games(
+        config.grid.target_ratings, DECLARED_MIX_NEIGHBOURS
+    )
+    # Said in the pool pass rather than only in the per-class unavailable lines
+    # the run ends with. The declared cap clears this floor by construction, so
+    # reaching here means the pool or the rating-gap filter did it, which is a
+    # property of the corpus rather than of configuration. Not an error: the
+    # guardrails, the deficit, and the held-out reading need no curve at all,
+    # and discarding them would lose more than the mix is worth.
+    if len(endings) < required:
+        logger.warning(
+            "Human termination reference holds %s usable game(s), below the %s "
+            "a mix curve over this rating grid needs at a bandwidth of %s "
+            "neighbours; the mix will report as unavailable",
+            len(endings),
+            required,
+            DECLARED_MIX_NEIGHBOURS,
+        )
     return tuple(endings), selection, _dataset_reference(pool, selection, rows)
 
 
@@ -1356,12 +1395,17 @@ def _mix_execution(
     runner: ActionModelRunner,
     time_control: TimeControlClass,
     temperature: float,
+    reference_view: ViewSelection,
 ) -> ExecutionRecord:
     """Declare what one mix comparison measured.
 
     The time-control class joins the workload because it decides which human
     population the distance is to. Two classes are two different questions
     rather than two samples of one, so they must not share a series.
+
+    The reference joins it for a related but stronger reason, which
+    ``reference_workload`` gives: the bandwidth is a neighbour count, so two
+    reference sizes are two smoothings rather than two samples of one.
     """
 
     return execution_record(
@@ -1379,6 +1423,7 @@ def _mix_execution(
             "time_control": time_control.as_record(),
             "curve_spec_version": MIX_CURVE_SPEC_VERSION,
             "neighbours": DECLARED_MIX_NEIGHBOURS,
+            "reference": reference_workload(config.reference, reference_view),
         },
     )
 
