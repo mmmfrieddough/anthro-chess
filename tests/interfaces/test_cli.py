@@ -419,6 +419,61 @@ split = "train"
     assert main(["train", "--config", str(config)]) == 0
 
 
+def test_train_roots_a_shard_backed_selection_and_keeps_how_it_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "training.toml"
+    config.write_text(
+        """
+output_directory = "artifacts/example-run"
+
+[train]
+normalized = "artifacts/example-data/normalized"
+manifest = "artifacts/example-data/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+
+[train.streaming]
+planning_window_examples = 32
+workers = 2
+""",
+        encoding="utf-8",
+    )
+    data_root = tmp_path / "datasets"
+    run_root = tmp_path / "runs"
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(run_root))
+
+    def fake_run(
+        resolved: ResolvedConfig[TrainingConfig],
+        *,
+        store: object = None,
+        detail: object = None,
+    ) -> TrainingResult:
+        selection = resolved.value.train
+        assert selection.normalized == data_root / "example-data/normalized"
+        # Rooting rewrites a selection's paths and has to carry the rest of it
+        # across, or a rooted run would quietly fall back to eager loading.
+        assert selection.streaming is not None
+        assert selection.streaming.planning_window_examples == 32
+        assert selection.streaming.workers == 2
+        return TrainingResult(
+            run_path=run_root / "example-run/run.json",
+            metrics_path=run_root / "example-run/metrics.jsonl",
+            checkpoint_path=run_root / "example-run/checkpoints/step-00000001.pt",
+            steps=1,
+            initial_parameter_sha256="a",
+            final_parameter_sha256="b",
+            validation=None,
+        )
+
+    monkeypatch.setattr("anthro_chess.training.run_training", fake_run)
+
+    assert main(["train", "--config", str(config)]) == 0
+
+
 def test_train_explicit_path_overrides_win_over_machine_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
