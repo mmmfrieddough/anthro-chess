@@ -622,20 +622,52 @@ does not need to be a model input, but it should serve reconstruction, targets,
 filtering, evaluation, provenance, compatibility, or debugging rather than be
 retained without a concrete downstream purpose.
 
-The initial sequence loader reads those normalized games into either full-game
+The sequence loading layer reads those normalized games into either full-game
 sequences or contiguous fixed-length chunks. It packs framework-neutral numeric
 batches, keeps nullable context behind explicit presence masks, reconstructs
 legal actions per ply, and pads variable lengths behind attention and loss
-masks. Length buckets keep similarly sized sequences together before completed
-batches are shuffled, reducing padding without changing the examples. Its
-deterministic epoch plan and explicit next-batch cursor are the restart boundary
-for training checkpoints.
+masks. Length buckets keep similarly sized sequences together, reducing padding
+without changing the examples. A deterministic epoch plan and an explicit
+next-batch cursor are the restart boundary for training checkpoints.
 
-The current loader eagerly reconstructs and retains every selected per-ply
-encoding. That is appropriate for checked-in fixtures and bounded laptop proof
-slices, but it is not the corpus-scale path for the prepared million-game
-selection. Corpus-scale training therefore requires bounded-memory shard-backed
-loading that preserves deterministic ordering and resume state.
+Two loaders provide that boundary, and a selection picks one by declaring a
+streaming section or leaving it out. Both produce batches through the same
+encoding and collation and expose the same identities and cursor; they differ
+in what they hold.
+
+The **eager** loader reconstructs and retains every selected per-ply encoding
+before the first batch. A per-ply encoding is far larger than the normalized
+row it came from, so this suits checked-in fixtures and bounded proof slices
+and reaches neither the memory nor the startup time a corpus needs.
+
+The **shard-backed** loader decodes a batch at a time. It first indexes the
+selection from columns cheap enough to read for a whole corpus, which is
+possible because a game's decoded length follows from its ply count and whether
+a terminal action was appended, so no game is decoded to plan against it. An
+epoch then orders row groups, orders the games inside each one, and cuts that
+stream into planning windows. A window is where length buckets fill and flush,
+so every example in a batch comes from one row group and a batch is read with a
+single columnar take. Flushing at a window boundary rather than an epoch
+boundary is the one visible cost: each window ends with a short batch per
+occupied bucket, which `drop_last` drops and otherwise leaves slightly small.
+What stays resident is one row group's projected columns, the index, and the
+batches in flight, none of which grows with corpus size.
+Because the plan follows from the index alone, a resumed run replays it to its
+saved cursor without reading or decoding anything.
+
+The two produce different orders and neither is a defect. A global shuffle over
+a corpus means a seek per example, so the shard-backed loader shuffles row
+groups and shuffles within them instead. Their identities differ accordingly,
+which is what stops a run from continuing across the two and training on an
+order it did not record.
+
+Decoding is the expensive half and it parallelizes, so the shard-backed loader
+can build batches in worker processes. Rows travel to a worker and a packed
+batch comes back, which keeps every Parquet read sequential in one process.
+Worker count and prefetch depth change how fast the same batches arrive and
+never which examples share one, so they stay out of the identity a resumed run
+has to match. Preparation's shard and row-group sizing is the remaining bound,
+because a row group is the unit a batch's rows are read from.
 
 ## Approximate Scale
 

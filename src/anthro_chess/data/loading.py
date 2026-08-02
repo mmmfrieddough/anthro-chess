@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -205,6 +206,49 @@ class SequenceLoaderState:
         }
 
 
+class SequenceBatchSource(Iterator[SequenceBatch], ABC):
+    """What a training run and its checkpoints require of any loader.
+
+    Two loaders implement it and a run picks one by configuration. The eager
+    loader reconstructs every selected ply before the first batch, which suits
+    fixtures and bounded proof slices. The shard-backed loader in
+    ``anthro_chess.data.streaming`` decodes a batch at a time, which is the
+    only way a corpus-scale selection starts at all.
+
+    They differ in what they hold and not in what they promise: a deterministic
+    epoch order, an exact next-batch cursor, and identities that tell a resumed
+    run whether it is continuing the same work.
+    """
+
+    config: SequenceLoaderConfig
+    configuration_sha256: str
+
+    @property
+    @abstractmethod
+    def identity_sha256(self) -> str:
+        """Return what this source is reading, for checkpoint compatibility."""
+
+    @property
+    @abstractmethod
+    def resolution(self) -> SelectionResolution:
+        """Return which games the configured selection kept."""
+
+    @abstractmethod
+    def state(self) -> SequenceLoaderState:
+        """Return the exact next-batch cursor for checkpointing."""
+
+    @abstractmethod
+    def load_state(self, state: SequenceLoaderState | Mapping[str, object]) -> None:
+        """Restore a compatible saved cursor and deterministic epoch order."""
+
+    @abstractmethod
+    def start_epoch(self, epoch: int) -> None:
+        """Start a deterministic epoch from its first example."""
+
+    def close(self) -> None:
+        """Release whatever the source holds open. Idempotent."""
+
+
 class SequenceDataset(Sequence[SequenceExample]):
     """In-memory sequence view over one or more normalized Parquet shards."""
 
@@ -331,7 +375,7 @@ class SequenceDataset(Sequence[SequenceExample]):
         )
 
 
-class SequenceDataLoader(Iterator[SequenceBatch]):
+class SequenceDataLoader(SequenceBatchSource):
     """Stateful deterministic batch iterator with explicit resume state."""
 
     def __init__(
@@ -371,6 +415,18 @@ class SequenceDataLoader(Iterator[SequenceBatch]):
         indices = self._batches[self._position]
         self._position += 1
         return collate_sequences(tuple(self.dataset[index] for index in indices))
+
+    @property
+    def identity_sha256(self) -> str:
+        """Return the decoded-content identity of the retained examples."""
+
+        return self.dataset.identity_sha256
+
+    @property
+    def resolution(self) -> SelectionResolution:
+        """Return which games the configured selection kept."""
+
+        return self.dataset.resolution
 
     def state(self) -> SequenceLoaderState:
         """Return the exact next-batch cursor for checkpointing."""

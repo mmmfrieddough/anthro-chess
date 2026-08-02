@@ -196,12 +196,16 @@ def _write_corpus(
     rows: list[dict[str, Any]],
     *,
     source_id: str = "fixture",
+    games_per_shard: int | None = None,
+    row_group_size: int | None = None,
 ) -> tuple[Path, Path]:
-    """Write a normalized shard plus a matching manifest, returning both paths.
+    """Write a normalized corpus plus a matching manifest, returning both paths.
 
     ``source_id`` distinguishes separately prepared corpora, whose manifests
     would otherwise be byte-identical here in a way real preparation runs are
-    not.
+    not. ``games_per_shard`` and ``row_group_size`` reproduce the shard and
+    row-group layout a real preparation run chooses, which is what the
+    shard-backed loader reads and orders against.
     """
 
     import pyarrow as pa  # type: ignore[import-untyped]
@@ -212,12 +216,23 @@ def _write_corpus(
     normalized_directory.mkdir(parents=True, exist_ok=True)
     manifest_directory.mkdir(parents=True, exist_ok=True)
 
-    games_path = normalized_directory / "games.parquet"
-    pq.write_table(
-        pa.Table.from_pylist(rows, schema=normalized_parquet_schema()),
-        games_path,
-        compression="zstd",
-    )
+    per_shard = len(rows) if games_per_shard is None else games_per_shard
+    groups = [
+        rows[start : start + per_shard] for start in range(0, len(rows), per_shard)
+    ]
+    shards: list[tuple[Path, list[dict[str, Any]]]] = []
+    for index, shard_rows in enumerate(groups):
+        name = (
+            "games.parquet" if games_per_shard is None else f"games-{index:05d}.parquet"
+        )
+        games_path = normalized_directory / name
+        pq.write_table(
+            pa.Table.from_pylist(shard_rows, schema=normalized_parquet_schema()),
+            games_path,
+            compression="zstd",
+            row_group_size=row_group_size,
+        )
+        shards.append((games_path, shard_rows))
 
     manifest_path = manifest_directory / "manifest.json"
     manifest_path.write_text(
@@ -237,8 +252,9 @@ def _write_corpus(
                         {
                             "path": f"normalized/{games_path.name}",
                             "sha256": file_sha256(games_path),
-                            "games": len(rows),
+                            "games": len(shard_rows),
                         }
+                        for games_path, shard_rows in shards
                     ],
                 },
             },

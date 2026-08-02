@@ -9,6 +9,7 @@ rules belong in one place so they cannot drift between consumers.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +26,18 @@ _PARQUET_MISSING = "Parquet support is unavailable; install anthro-chess[data]"
 
 class DataLoadingError(ValueError):
     """Raised when normalized data or saved loader state is incompatible."""
+
+
+@dataclass(frozen=True)
+class ShardIdentity:
+    """One normalized shard, named by the digest its manifest recorded.
+
+    A consumer that has verified a shard against its manifest already knows
+    what the shard is, so identifying a corpus does not have to read it again.
+    """
+
+    path: Path
+    sha256: str
 
 
 def file_sha256(path: Path) -> str:
@@ -86,6 +99,64 @@ def read_normalized_rows(
     return cast(list[dict[str, Any]], table.to_pylist())
 
 
+def open_normalized_shard(path: Path) -> Any:
+    """Open one shard for row-group reads, parsing its footer only.
+
+    The reader, its row groups, and the tables they produce stay opaque to
+    callers. Keeping every Parquet call in this module is what lets the storage
+    format be one decision rather than one per consumer.
+    """
+
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
+        raise DataLoadingError(_PARQUET_MISSING) from error
+    try:
+        return pq.ParquetFile(path)
+    except (OSError, ValueError) as error:
+        raise DataLoadingError(
+            f"cannot read normalized data {path}: {error}"
+        ) from error
+
+
+def normalized_row_group_count(reader: Any) -> int:
+    """Return how many row groups one opened shard holds."""
+
+    return int(reader.metadata.num_row_groups)
+
+
+def read_normalized_row_group(
+    reader: Any,
+    row_group: int,
+    columns: Sequence[str],
+) -> Any:
+    """Read one row group's projected columns as an opaque columnar table."""
+
+    try:
+        return reader.read_row_group(row_group, columns=list(columns))
+    except (OSError, ValueError) as error:
+        raise DataLoadingError(
+            f"cannot read normalized row group {row_group}: {error}"
+        ) from error
+
+
+def row_group_column(table: Any, column: str) -> list[Any]:
+    """Return one column of a row-group table as a Python list.
+
+    Reading a column at a time rather than a row at a time is what keeps an
+    index pass over a corpus-scale shard cheap: it builds one list per column
+    instead of one dictionary per game.
+    """
+
+    return cast(list[Any], table.column(column).to_pylist())
+
+
+def rows_at_positions(table: Any, positions: Sequence[int]) -> list[dict[str, Any]]:
+    """Materialize the named row positions of a row-group table."""
+
+    return cast(list[dict[str, Any]], table.take(list(positions)).to_pylist())
+
+
 def write_normalized_rows(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
     """Write rows as a zstd-compressed shard using the canonical schema."""
 
@@ -132,8 +203,13 @@ def validate_manifest_outputs(
     manifest: Mapping[str, Any],
     manifest_path: Path,
     paths: Sequence[Path],
-) -> None:
-    """Check that the selected shards are exactly the ones the manifest recorded."""
+) -> tuple[ShardIdentity, ...]:
+    """Check that the selected shards are exactly the ones the manifest recorded.
+
+    The verified digests are returned rather than discarded, because a caller
+    that needs to identify this corpus would otherwise read every shard a
+    second time to learn what this pass already established.
+    """
 
     output = manifest.get("output")
     if not isinstance(output, Mapping):
@@ -157,6 +233,10 @@ def validate_manifest_outputs(
         raise DataLoadingError(
             "configured normalized paths do not match the data manifest outputs"
         )
+    identities: list[ShardIdentity] = []
     for path in paths:
-        if file_sha256(path) != expected[path.resolve()]:
+        digest = file_sha256(path)
+        if digest != expected[path.resolve()]:
             raise DataLoadingError(f"normalized data checksum mismatch: {path}")
+        identities.append(ShardIdentity(path=path, sha256=digest))
+    return tuple(identities)

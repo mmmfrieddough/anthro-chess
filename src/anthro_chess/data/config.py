@@ -187,9 +187,36 @@ class SequenceLoaderConfig(ConfigModel):
     drop_last: StrictBool = False
 
 
+class StreamingLoaderConfig(ConfigModel):
+    """Bounded-memory shard-backed reading of one normalized selection.
+
+    Declaring this section selects the shard-backed loader over the eager one.
+    Every field is a memory bound rather than a tuning preference, and they
+    divide by whether they change which examples land in a batch:
+
+    ``planning_window_examples`` does, because a window is the span over which
+    length buckets are filled and flushed, so it belongs to the loader identity
+    a resumed run has to match. ``workers`` and ``prefetch_batches`` do not;
+    they decide how far ahead the same batches are built and on how many
+    processes, so a run may be resumed on a machine that affords a different
+    number of either. ``prefetch_batches`` applies only alongside workers:
+    with none, building a batch ahead would cost the memory and save nothing,
+    so exactly one is held.
+
+    The remaining bound is not configured here at all. Materialization reads
+    one row group at a time, so preparation's shard and row-group sizing is
+    what caps the columnar read; ``docs/data.md`` owns that end.
+    """
+
+    planning_window_examples: int = Field(default=16384, ge=1)
+    workers: int = Field(default=0, ge=0)
+    prefetch_batches: int = Field(default=4, ge=1)
+
+
 class SequenceDataConfig(ConfigModel):
     """One explicit normalized-data and loader selection."""
 
     normalized: Path
     manifest: Path
     loader: SequenceLoaderConfig
+    streaming: StreamingLoaderConfig | None = None

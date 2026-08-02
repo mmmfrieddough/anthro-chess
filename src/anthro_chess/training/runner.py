@@ -6,7 +6,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -18,12 +18,17 @@ import torch
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import (
+    STREAMING_LOADER_NAME,
     DataLoadingError,
+    SequenceBatchSource,
     SequenceDataConfig,
     SequenceDataLoader,
+    StreamingSequenceDataLoader,
+    build_sharded_index,
     encoding_identity,
 )
 from anthro_chess.data.artifacts import (
+    ShardIdentity,
     normalized_shard_paths,
     validate_manifest_compatibility,
     validate_manifest_outputs,
@@ -109,7 +114,7 @@ class TrainingResult:
 
 @dataclass(frozen=True)
 class _DataSelection:
-    loader: SequenceDataLoader
+    loader: SequenceBatchSource
     provenance: dict[str, object]
 
 
@@ -475,6 +480,12 @@ def run_training(
         raise TrainingError(f"training failed: {error}") from error
     finally:
         torch.use_deterministic_algorithms(previous_deterministic)
+        # A shard-backed loader holds worker processes and an open shard; both
+        # outlive the run unless the run releases them, including the run that
+        # is failing.
+        train.loader.close()
+        if validation is not None:
+            validation.loader.close()
 
     logger.info("Completed training and wrote run, metrics, and checkpoint artifacts")
     return TrainingResult(
@@ -495,7 +506,7 @@ def run_training(
 def _optimize(
     model: CausalMoveModel,
     optimizer: torch.optim.Optimizer,
-    loader: SequenceDataLoader,
+    loader: SequenceBatchSource,
     *,
     steps: int,
     starting_step: int,
@@ -992,30 +1003,59 @@ def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
     manifest = json.loads(manifest_bytes)
     if not isinstance(manifest, dict):
         raise DataLoadingError("data manifest must contain a JSON object")
-    _validate_manifest(manifest, manifest_path, paths)
-    loader = SequenceDataLoader.from_parquet(paths, config.loader)
+    shards = _validate_manifest(manifest, manifest_path, paths)
+    manifest_sha256 = sha256(manifest_bytes).hexdigest()
+    loader = _open_loader(config, shards, manifest_sha256=manifest_sha256)
     return _DataSelection(
         loader=loader,
         provenance={
             "manifest_path": str(manifest_path.resolve()),
-            "manifest_sha256": sha256(manifest_bytes).hexdigest(),
+            "manifest_sha256": manifest_sha256,
             "manifest": manifest,
             "normalized_paths": [str(path.resolve()) for path in paths],
-            "dataset_sha256": loader.dataset.identity_sha256,
+            # Which loader read the corpus, because the two order an epoch
+            # differently and a run's curve is not comparable across them.
+            "loader": (
+                STREAMING_LOADER_NAME if config.streaming is not None else "eager"
+            ),
+            "dataset_sha256": loader.identity_sha256,
             "loader_configuration_sha256": loader.configuration_sha256,
             # The resolved selection, not only the requested one: two runs
             # differing only in what they trained on are told apart here, and
             # the digest is what lets a later run confirm it reproduced the
             # same games rather than merely the same configuration.
-            "selection": loader.dataset.resolution.as_record(),
+            "selection": loader.resolution.as_record(),
         },
     )
+
+
+def _open_loader(
+    config: SequenceDataConfig,
+    shards: Sequence[ShardIdentity],
+    *,
+    manifest_sha256: str,
+) -> SequenceBatchSource:
+    """Open the loader this selection declared, eager or shard-backed."""
+
+    if config.streaming is None:
+        return SequenceDataLoader.from_parquet(
+            [shard.path for shard in shards],
+            config.loader,
+        )
+    index = build_sharded_index(
+        shards,
+        split=config.loader.split,
+        selection=config.loader.selection,
+        chunk_length=config.loader.chunk_length,
+        manifest_sha256=manifest_sha256,
+    )
+    return StreamingSequenceDataLoader(index, config.loader, config.streaming)
 
 
 def _validate_manifest(
     manifest: dict[str, Any],
     manifest_path: Path,
     paths: tuple[Path, ...],
-) -> None:
+) -> tuple[ShardIdentity, ...]:
     validate_manifest_compatibility(manifest, manifest_path)
-    validate_manifest_outputs(manifest, manifest_path, paths)
+    return validate_manifest_outputs(manifest, manifest_path, paths)

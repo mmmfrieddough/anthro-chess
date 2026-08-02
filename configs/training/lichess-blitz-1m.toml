@@ -1,0 +1,85 @@
+# Corpus-scale counterpart of the 30k baseline. Model, optimizer, batch, and
+# seed settings are identical to `lichess-blitz-30k-v4.toml`, so the two differ
+# in the corpus they read and the loader that reads it and in nothing else.
+#
+# Prepare the selection first; it is the checked-in million-game bound:
+#
+#   uv run anthro data acquire --config configs/data/lichess-blitz-2017-04.toml
+#   uv run anthro data prepare --config configs/data/lichess-blitz-2017-04.toml
+#
+# Normalized and manifest paths are machine-specific and must be supplied at
+# run time, the same convention the other training configs follow.
+output_directory = "artifacts/training-blitz-1m"
+seed = 17
+steps = 8000
+learning_rate = 0.001
+log_every_steps = 10
+checkpoint_every_steps = 100
+gradient_accumulation_steps = 1
+device = "auto"
+precision = "float32"
+determinism = "relaxed"
+# Corpus-scale runs are the ones where knowing whether the loader or the device
+# is the bottleneck decides what to do next, so the phase split is on by
+# default here and off in the proof configurations.
+profile_phases = true
+
+[model]
+piece_embedding_dim = 8
+action_embedding_dim = 16
+model_dim = 64
+attention_heads = 4
+transformer_layers = 2
+feedforward_dim = 128
+dropout = 0.0
+
+[[evaluation.cadences]]
+name = "preview"
+every_steps = 200
+metrics = [
+  "held_out.move_loss",
+  "held_out.top1_accuracy",
+  "legality.mask_penalty",
+  "training_health.gradient_norm",
+  "training_health.update_to_weight_ratio",
+]
+
+[evaluation.cadences.view]
+name = "preview-200"
+maximum_games = 200
+
+[train]
+normalized = "artifacts/lichess-blitz-2017-04/normalized"
+manifest = "artifacts/lichess-blitz-2017-04/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+batch_size = 16
+length_bucket_width = 16
+shuffle = true
+seed = "anthro-lichess-blitz-baseline-train-v1"
+drop_last = false
+
+# Declaring this section is what selects the shard-backed loader. Raise
+# `workers` on a machine with cores to spare; it changes how fast the same
+# batches arrive and never which examples share one, so a run may be resumed
+# with a different value.
+[train.streaming]
+planning_window_examples = 16384
+workers = 4
+prefetch_batches = 8
+
+# The validation selection stays eager. It is a small split read once per run,
+# where indexing a corpus buys nothing.
+[validation]
+normalized = "artifacts/lichess-blitz-2017-04/normalized"
+manifest = "artifacts/lichess-blitz-2017-04/manifests/manifest.json"
+
+[validation.loader]
+split = "validation"
+batch_size = 16
+length_bucket_width = 16
+shuffle = false
+seed = "anthro-lichess-blitz-baseline-validation-v1"
+drop_last = false
+selection = { fraction = 0.02 }
