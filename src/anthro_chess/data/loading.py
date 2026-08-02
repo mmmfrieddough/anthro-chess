@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypeAlias, overload
+from typing import TYPE_CHECKING, Any, TypeAlias, overload
 
 from anthro_chess.data.artifacts import (
     DataLoadingError,
@@ -24,6 +24,9 @@ from anthro_chess.data.encoding import (
     encode_game,
 )
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
+
+if TYPE_CHECKING:
+    import numpy as np
 
 LOADER_STATE_VERSION = 4
 SELECTION_SPEC_VERSION = 1
@@ -52,9 +55,6 @@ _LOADER_COLUMNS = (
     NormalizedColumn.SPLIT,
 )
 
-IntMatrix: TypeAlias = tuple[tuple[int, ...], ...]
-BoolMatrix: TypeAlias = tuple[tuple[bool, ...], ...]
-PieceTensor: TypeAlias = tuple[tuple[tuple[int, ...], ...], ...]
 LegalActionTensor: TypeAlias = tuple[tuple[tuple[int, ...], ...], ...]
 
 
@@ -80,20 +80,20 @@ class SequenceExample:
 class OptionalIntBatch:
     """Packed nullable integers with an explicit presence mask."""
 
-    values: IntMatrix
-    present: BoolMatrix
+    values: np.ndarray
+    present: np.ndarray
 
 
 @dataclass(frozen=True)
 class SequenceInputs:
     """Framework-neutral numeric model inputs shaped batch by sequence."""
 
-    piece_ids: PieceTensor
-    side_to_move: IntMatrix
-    castling_rights: IntMatrix
+    piece_ids: np.ndarray
+    side_to_move: np.ndarray
+    castling_rights: np.ndarray
     en_passant_square: OptionalIntBatch
-    halfmove_clock: IntMatrix
-    fullmove_number: IntMatrix
+    halfmove_clock: np.ndarray
+    fullmove_number: np.ndarray
     previous_action_id: OptionalIntBatch
     target_rating: OptionalIntBatch
     time_initial_ms: OptionalIntBatch
@@ -106,6 +106,11 @@ class SequenceInputs:
 class SequenceBatch:
     """Padded causal batch with aligned targets, masks, and slice metadata.
 
+    Every field is a contiguous array narrow enough to hold what it carries,
+    which is what lets a consumer wrap it rather than walk it: the tensor
+    boundary is a buffer view and a device copy, and a batch crossing a
+    process boundary travels as buffers rather than as objects.
+
     Boolean attention values are ``True`` where a timestep is present.
 
     Causality is a property of the model rather than of the batch, so no
@@ -115,29 +120,30 @@ class SequenceBatch:
 
     ``legal_action_ids`` is absent when nothing downstream will read it. Only
     policy scoring and the construction-time legality check use it, so a
-    training batch carries none.
+    training batch carries none. It stays a ragged Python structure because
+    each timestep enables a different number of actions.
     """
 
     inputs: SequenceInputs
-    action_targets: IntMatrix
-    action_loss_mask: BoolMatrix
-    attention_mask: BoolMatrix
+    action_targets: np.ndarray
+    action_loss_mask: np.ndarray
+    attention_mask: np.ndarray
     legal_action_ids: LegalActionTensor | None
-    game_ids: IntMatrix
-    ply_indices: IntMatrix
+    game_ids: np.ndarray
+    ply_indices: np.ndarray
     chunk_start_plies: tuple[int, ...]
 
     @property
     def batch_size(self) -> int:
         """Return the number of sequences in the batch."""
 
-        return len(self.action_targets)
+        return int(self.action_targets.shape[0])
 
     @property
     def sequence_length(self) -> int:
         """Return the padded sequence length."""
 
-        return len(self.attention_mask[0])
+        return int(self.attention_mask.shape[1])
 
 
 @dataclass(frozen=True)
@@ -547,59 +553,97 @@ def collate_sequences(
     *,
     legal_actions: bool = True,
 ) -> SequenceBatch:
-    """Pad and pack sequence examples without introducing fake targets.
+    """Pad and pack sequence examples into arrays, inventing no targets.
+
+    Every column is written into a zero-filled array of its own width, so a
+    padded timestep costs a memset rather than a Python object and the result
+    is what a tensor can wrap. The widths are what each value needs: a square,
+    a side, and a castling mask fit in one byte, an action id, a rating, a rule
+    counter, and a ply index in two, and a clock in milliseconds in four. NumPy
+    rejects a value that does not fit rather than wrapping it, so a corpus that
+    outgrew one of these fails loudly at the batch that first carried it.
 
     ``legal_actions`` packs each timestep's legal action ids. Policy scoring
     needs them and training does not, so a training loader turns them off; the
     default keeps every scoring caller correct without saying so.
     """
 
+    # Deferred so that importing this package needs no array dependency, the
+    # way `anthro_chess.data.artifacts` defers pyarrow. Only this boundary
+    # builds arrays.
+    import numpy as np
+
     if not examples:
         raise ValueError("cannot collate an empty sequence collection")
-    sequence_length = max(len(example.plies) for example in examples)
-    padded = tuple(
-        tuple(example.plies) + (None,) * (sequence_length - len(example.plies))
-        for example in examples
-    )
-    attention_mask = tuple(tuple(ply is not None for ply in row) for row in padded)
+    lengths = [len(example.plies) for example in examples]
+    shape = (len(examples), max(lengths))
+
+    def required(
+        getter: Callable[[PlyEncoding], int],
+        dtype: type[np.generic],
+    ) -> np.ndarray:
+        values = np.zeros(shape, dtype=dtype)
+        for index, example in enumerate(examples):
+            values[index, : lengths[index]] = [getter(ply) for ply in example.plies]
+        return values
+
+    def optional(
+        getter: Callable[[PlyEncoding], int | None],
+        dtype: type[np.generic],
+    ) -> OptionalIntBatch:
+        values = np.zeros(shape, dtype=dtype)
+        present = np.zeros(shape, dtype=np.bool_)
+        for index, example in enumerate(examples):
+            observed: list[int] = []
+            seen: list[bool] = []
+            for ply in example.plies:
+                value = getter(ply)
+                observed.append(0 if value is None else value)
+                seen.append(value is not None)
+            values[index, : lengths[index]] = observed
+            present[index, : lengths[index]] = seen
+        return OptionalIntBatch(values, present)
+
+    piece_ids = np.zeros((*shape, BOARD_SQUARE_COUNT), dtype=np.uint8)
+    attention_mask = np.zeros(shape, dtype=np.bool_)
+    for index, example in enumerate(examples):
+        length = lengths[index]
+        piece_ids[index, :length] = np.frombuffer(
+            b"".join([ply.board.piece_ids for ply in example.plies]),
+            dtype=np.uint8,
+        ).reshape(length, BOARD_SQUARE_COUNT)
+        attention_mask[index, :length] = True
 
     inputs = SequenceInputs(
-        piece_ids=tuple(
-            tuple(
-                ply.board.piece_ids if ply is not None else (0,) * BOARD_SQUARE_COUNT
-                for ply in row
-            )
-            for row in padded
-        ),
-        side_to_move=_pack_required(padded, lambda ply: ply.board.side_to_move),
-        castling_rights=_pack_required(padded, lambda ply: ply.board.castling_rights),
-        en_passant_square=_pack_optional(
-            padded, lambda ply: ply.board.en_passant_square
-        ),
-        halfmove_clock=_pack_required(padded, lambda ply: ply.board.halfmove_clock),
-        fullmove_number=_pack_required(padded, lambda ply: ply.board.fullmove_number),
-        previous_action_id=_pack_optional(padded, lambda ply: ply.previous_action_id),
-        target_rating=_pack_optional(padded, lambda ply: ply.target_rating),
-        time_initial_ms=_pack_optional(padded, lambda ply: ply.time_initial_ms),
-        time_increment_ms=_pack_optional(padded, lambda ply: ply.time_increment_ms),
-        player_clock_ms=_pack_optional(padded, lambda ply: ply.player_clock_ms),
-        opponent_clock_ms=_pack_optional(padded, lambda ply: ply.opponent_clock_ms),
+        piece_ids=piece_ids,
+        side_to_move=required(lambda ply: ply.board.side_to_move, np.uint8),
+        castling_rights=required(lambda ply: ply.board.castling_rights, np.uint8),
+        en_passant_square=optional(lambda ply: ply.board.en_passant_square, np.uint8),
+        halfmove_clock=required(lambda ply: ply.board.halfmove_clock, np.int16),
+        fullmove_number=required(lambda ply: ply.board.fullmove_number, np.int16),
+        previous_action_id=optional(lambda ply: ply.previous_action_id, np.int16),
+        target_rating=optional(lambda ply: ply.target_rating, np.int16),
+        time_initial_ms=optional(lambda ply: ply.time_initial_ms, np.int32),
+        time_increment_ms=optional(lambda ply: ply.time_increment_ms, np.int32),
+        player_clock_ms=optional(lambda ply: ply.player_clock_ms, np.int32),
+        opponent_clock_ms=optional(lambda ply: ply.opponent_clock_ms, np.int32),
     )
     return SequenceBatch(
         inputs=inputs,
-        action_targets=_pack_required(padded, lambda ply: ply.target_action_id),
+        action_targets=required(lambda ply: ply.target_action_id, np.int16),
         action_loss_mask=attention_mask,
         attention_mask=attention_mask,
         legal_action_ids=(
             tuple(
-                tuple(ply.legal_action_ids if ply is not None else () for ply in row)
-                for row in padded
+                tuple(ply.legal_action_ids for ply in example.plies)
+                + ((),) * (shape[1] - lengths[index])
+                for index, example in enumerate(examples)
             )
             if legal_actions
             else None
         ),
-        game_ids=_pack_required(padded, lambda ply: ply.game_id),
-        ply_indices=_pack_required(padded, lambda ply: ply.ply_index),
+        game_ids=required(lambda ply: ply.game_id, np.uint64),
+        ply_indices=required(lambda ply: ply.ply_index, np.int16),
         chunk_start_plies=tuple(example.start_ply for example in examples),
     )
 
@@ -781,33 +825,6 @@ def _normalized_game_sha256(row: Mapping[str, Any]) -> str:
     return sha256(
         json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-
-
-def _pack_required(
-    padded: Sequence[Sequence[PlyEncoding | None]],
-    getter: Callable[[PlyEncoding], int],
-) -> IntMatrix:
-    return tuple(
-        tuple(getter(ply) if ply is not None else 0 for ply in row) for row in padded
-    )
-
-
-def _pack_optional(
-    padded: Sequence[Sequence[PlyEncoding | None]],
-    getter: Callable[[PlyEncoding], int | None],
-) -> OptionalIntBatch:
-    values: list[tuple[int, ...]] = []
-    present: list[tuple[bool, ...]] = []
-    for row in padded:
-        row_values: list[int] = []
-        row_present: list[bool] = []
-        for ply in row:
-            value = getter(ply) if ply is not None else None
-            row_values.append(value if value is not None else 0)
-            row_present.append(value is not None)
-        values.append(tuple(row_values))
-        present.append(tuple(row_present))
-    return OptionalIntBatch(tuple(values), tuple(present))
 
 
 def _shuffle_key(seed: str, epoch: int, example: SequenceExample) -> bytes:

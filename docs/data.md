@@ -630,6 +630,14 @@ sized sequences together, reducing padding without changing the examples. A
 deterministic epoch plan and an explicit next-batch cursor are the restart
 boundary for training checkpoints.
 
+A batch is contiguous columns rather than nested Python sequences, each one no
+wider than the values it carries, and the per-ply encoding hands over its board
+as bytes so a sequence of them joins rather than being walked square by square.
+That is what a batch costs on both boundaries it crosses: a worker sends
+buffers rather than an object graph, and the tensor conversion wraps a column
+and copies it instead of visiting every timestep. Widening to what a model
+indexes with belongs on the far side of that copy.
+
 Per-ply legal actions reach a batch only when a caller reads them. The encoding
 always reconstructs them, because that is what validates a target against its
 own position, but policy scoring is the only consumer of the packed form and

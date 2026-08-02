@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -109,25 +110,23 @@ class MoveModelBatch:
         *,
         device: torch.device | str | None = None,
     ) -> MoveModelBatch:
-        """Convert the loader output without changing target or mask alignment."""
+        """Wrap the loader's arrays without changing target or mask alignment.
+
+        The loader's columns are already contiguous, so each one is wrapped
+        rather than walked. Widening to what the model indexes with happens
+        after the device copy, not before it: the copy is the narrow bytes the
+        loader wrote, and the cast is a device kernel on what has landed.
+        """
 
         tensor_device = torch.device(device) if device is not None else None
 
-        def required(values: object) -> Tensor:
-            return torch.as_tensor(
-                values,
-                dtype=torch.long,
-                device=tensor_device,
-            )
+        def required(values: np.ndarray) -> Tensor:
+            return torch.from_numpy(values).to(device=tensor_device).to(torch.long)
 
-        def boolean(values: object) -> Tensor:
-            return torch.as_tensor(
-                values,
-                dtype=torch.bool,
-                device=tensor_device,
-            )
+        def boolean(values: np.ndarray) -> Tensor:
+            return torch.from_numpy(values).to(device=tensor_device)
 
-        def optional(values: object, present: object) -> OptionalTensor:
+        def optional(values: np.ndarray, present: np.ndarray) -> OptionalTensor:
             return OptionalTensor(required(values), boolean(present))
 
         inputs = batch.inputs
@@ -155,11 +154,7 @@ class MoveModelBatch:
             action_loss_mask=boolean(batch.action_loss_mask),
             attention_mask=boolean(batch.attention_mask),
             legal_action_ids=batch.legal_action_ids,
-            game_ids=torch.as_tensor(
-                batch.game_ids,
-                dtype=torch.uint64,
-                device=tensor_device,
-            ),
+            game_ids=torch.from_numpy(batch.game_ids).to(device=tensor_device),
             ply_indices=required(batch.ply_indices),
             chunk_start_plies=batch.chunk_start_plies,
         )
@@ -234,11 +229,12 @@ class MoveModelBatch:
                 ),
             )
 
-        boards = tuple(
-            tuple(ply.board.piece_ids for ply in plies)
-            + ((0,) * BOARD_SQUARE_COUNT,) * (width - len(plies))
-            for plies in histories
-        )
+        boards = np.zeros((len(contexts), width, BOARD_SQUARE_COUNT), dtype=np.uint8)
+        for index, plies in enumerate(histories):
+            boards[index, : len(plies)] = np.frombuffer(
+                b"".join([ply.board.piece_ids for ply in plies]),
+                dtype=np.uint8,
+            ).reshape(len(plies), BOARD_SQUARE_COUNT)
         ratings = tuple(
             (None,) * (length - 1)
             + (context.target_rating,)
@@ -247,9 +243,9 @@ class MoveModelBatch:
         )
         result = cls(
             inputs=MoveModelInputs(
-                piece_ids=torch.as_tensor(
-                    boards, dtype=torch.long, device=tensor_device
-                ),
+                piece_ids=torch.from_numpy(boards)
+                .to(device=tensor_device)
+                .to(torch.long),
                 side_to_move=required(padded(lambda ply: ply.board.side_to_move)),
                 castling_rights=required(padded(lambda ply: ply.board.castling_rights)),
                 en_passant_square=optional(

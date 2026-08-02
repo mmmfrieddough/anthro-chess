@@ -111,9 +111,14 @@ class GameEncodingInput:
 
 @dataclass(frozen=True)
 class BoardEncoding:
-    """Compact exact standard-chess state before one target move."""
+    """Compact exact standard-chess state before one target move.
 
-    piece_ids: tuple[int, ...]
+    ``piece_ids`` is one contiguous byte per square rather than a tuple of
+    integers. Every square still reads as the same integer, and collation
+    joins a sequence of them into a batch array without visiting a square.
+    """
+
+    piece_ids: bytes
     side_to_move: int
     castling_rights: int
     en_passant_square: int | None
@@ -556,7 +561,7 @@ def _context_for_position(
 
 
 def _encode_board(board: chess.Board) -> BoardEncoding:
-    piece_ids = tuple(_piece_id(board.piece_at(square)) for square in chess.SQUARES)
+    piece_ids = bytes(_piece_id(board.piece_at(square)) for square in chess.SQUARES)
     castling_rights = 0
     if board.has_kingside_castling_rights(chess.WHITE):
         castling_rights |= 1
