@@ -35,6 +35,8 @@ dependencies = [
 
 [package.optional-dependencies]
 data = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pyarrow" },
     { name = "zstandard" },
 ]
@@ -64,6 +66,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "chess", specifier = ">=1.11,<2" },
+    { name = "numpy", marker = "extra == 'data'", specifier = ">=2,<3" },
     { name = "numpy", marker = "extra == 'model'", specifier = ">=2,<3" },
     { name = "pyarrow", marker = "extra == 'data'", specifier = ">=21,<22" },
     { name = "pydantic", specifier = ">=2,<3" },

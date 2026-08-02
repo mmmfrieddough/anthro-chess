@@ -57,11 +57,6 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   `uv run anthro machine` before concluding that this machine has no corpus or
   no checkpoints; an empty worktree is not evidence, because unset roots and a
   machine with no artifacts look identical from inside the repository.
-- When a change adds or alters a benchmark, take a shakedown reading on two real
-  checkpoints from one training run before the pull request is ready, using
-  `--no-record` and the default reduced sweep rather than `--full`. Fixtures
-  cannot show that a benchmark measures anything. `docs/evaluation.md` says what
-  the reading is and is not.
 - Use exact chess logic for board reconstruction, legal move generation, and
   rule bookkeeping.
 - Legal-mask model move outputs before sampling.
@@ -102,6 +97,18 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   `scripts/anthro-gui-target .` and say the engine is ready to test, what to
   look at, and what a good result looks like. The GUI itself is configured once
   and is never reconfigured per issue.
+- When a change adds or alters a benchmark, take a shakedown reading on two real
+  checkpoints from one training run before the pull request is ready, using
+  `--no-record` and the default reduced sweep rather than `--full`. Fixtures
+  cannot show that a benchmark measures anything. `docs/evaluation.md` says what
+  the reading is and is not.
+- A change under `src/anthro_chess/models/`, `src/anthro_chess/training/`,
+  `src/anthro_chess/data/`, `src/anthro_chess/chess/actions.py`,
+  `configs/training/`, or `configs/data/` decides what a model learns, so it
+  shows its effect against a control arm trained without it before the pull
+  request is ready. `docs/issue-workflow.md` says when that is required and how
+  a session without the hardware routes it. A change in those paths meant to
+  leave the weights alone shows that instead, which is cheaper.
 - Add tests for chess-rule changes, model-facing encodings, data preprocessing,
   and runtime behavior.
 - Document a major architectural choice in `docs/decisions/` when the rationale

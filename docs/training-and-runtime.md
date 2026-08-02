@@ -57,7 +57,9 @@ rating. The dataloading layer encodes each game once, retains both players'
 moves, and enables action loss on every valid ply. It then packs these values
 into framework-neutral numeric sequence batches so model code can make the
 final tensor/device conversion without reopening normalized data or
-reconstructing alignment.
+reconstructing alignment. Those batches are contiguous arrays, so that
+conversion is a buffer wrap and a device copy rather than a traversal of the
+loader's output.
 
 Optional preference labels should be allowed to be multi-label. A single ply may
 belong to several useful concepts, such as an opening family, a pawn structure,
@@ -565,6 +567,24 @@ end-of-run reading over the frozen test pool remains a separate command against
 a retained checkpoint. A cadence changes what a run reports and not what it
 trains, so it stays out of the checkpoint compatibility record and a resumed run
 may schedule differently than the run it continues.
+
+### Comparison Arms
+
+An arm of a model-change comparison is an ordinary run rather than a mode of the
+trainer. Two arms share their configuration, corpus, seed, device, and step
+budget and differ only by the change under test. Each checkpoint retains the
+resolved configuration and provenance it was written under, so "identical apart
+from the change" is checkable from the artifacts rather than asserted in a pull
+request.
+
+Strict determinism, available on CPU and CUDA as described above, is what lets a
+change meant to leave the weights alone establish that cheaply: two short runs
+at one seed either agree exactly or they do not. It also means repeating one arm
+is a check on the harness rather than a second replicate. Replicates for a
+training noise floor are arms at different seeds.
+
+`docs/evaluation.md` owns how two arms are read and what makes their delta
+admissible.
 
 ### Training Observability
 
