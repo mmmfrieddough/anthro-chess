@@ -2297,6 +2297,7 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 ),
             ]
         )
+        lines.extend(_render_bandwidth(reading))
         lines.extend(_render_comparison_table(reading, width))
         lines.extend(_render_unavailable(reading))
         lines.extend(_render_repertoire_drilldown(reading))
@@ -2315,6 +2316,36 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
 #: went without turning a summary into the whole distribution, which lives in
 #: the detail tier.
 _DRILLDOWN_CATEGORIES = 8
+
+
+def _render_bandwidth(reading: RolloutReading) -> list[str]:
+    """Show how far the smoother actually reached around each grid point.
+
+    The declared bandwidth is a neighbour count, so quoting it back says nothing
+    about this reading: it is the same number whatever the reference holds. What
+    varies is the rating span those neighbours occupy, and that is what decides
+    whether the grid resolves the points it plots. A span approaching the grid
+    spacing means adjacent points were estimated from largely the same games, so
+    the conditional distance is closer to the pooled one than the two column
+    headings suggest.
+
+    The widest span across the compared quantities, because a quantity some
+    games lack reaches further for its neighbours than the rest and it is the
+    worst point that decides how much of the curve is really there.
+    """
+
+    comparisons = list(reading.comparisons.values())
+    if not comparisons:
+        return []
+    spans = (
+        max(comparison.points[index].bandwidth for comparison in comparisons)
+        for index in range(len(reading.ratings))
+    )
+    return [
+        "  bandwidth      reaches "
+        + " ".join(f"±{span:.0f}" for span in spans)
+        + " rating points at those grid points"
+    ]
 
 
 def _render_unavailable(reading: RolloutReading) -> list[str]:
@@ -2499,6 +2530,13 @@ def _render_termination(result: TerminationBenchmarkResult) -> str:
                 f"Termination mix — {mix.label}  "
                 f"(series {mix.execution.workload_sha256[:12]})",
                 f"  {mix.model_games} generated vs {mix.human_games} human game(s)",
+                # The realized span rather than the declared neighbour count,
+                # for the reason the rollout reading gives: the count is the
+                # same whatever the reference holds, and it is the span that
+                # says whether the grid resolves the points it plots.
+                "  bandwidth   reaches "
+                + " ".join(f"±{point.bandwidth:.0f}" for point in comparison.points)
+                + " rating points",
                 _termination_arm(
                     "conditional",
                     comparison.conditional_distance,

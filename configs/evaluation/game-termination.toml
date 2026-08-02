@@ -61,10 +61,19 @@ maximum_rating_gap = 200
 resamples = 200
 
 [reference.view]
-# As much matched human play as can be afforded: the reference forces the
-# bandwidth at every evaluation point and supplies the human deficit
+# Sized from the bandwidth, matching the generated-play reference beside it and
+# for the same reason: the declared smoothing is a neighbour count, so this
+# number is the smoothing radius rather than a sample size. At 2,000 selected
+# games one neighbourhood spans 620 rating points against a grid spaced 200
+# apart; at 12,000 the widest is 180. It also supplies the human deficit
 # distribution and the human premature-resignation rate.
+#
+# Unlike the rollout reference this one is cheap — endings are read from the
+# row rather than replayed, so the whole pool costs four seconds. It is capped
+# anyway, because a mix distance smoothed over a different reference is a
+# different quantity whatever it cost to read.
 name = "termination-reference"
+maximum_games = 12000
 require_ratings = true
 
 [held_out]

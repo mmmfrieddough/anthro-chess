@@ -380,6 +380,24 @@ DECLARED_NEIGHBOURS: Mapping[ComparedQuantity, int] = {
 }
 
 
+def minimum_reference_games(ratings: Sequence[float], neighbours: int) -> int:
+    """Return the smallest reference a grid of this size can be estimated on.
+
+    One full bandwidth per grid point. At a neighbour-count bandwidth the
+    reference size *is* the smoothing radius: a reference only a little larger
+    than the bandwidth puts most of itself inside every point's neighbourhood,
+    so adjacent points are estimated from largely the same games and the
+    conditional curve resolves fewer points than it plots. Below this the
+    neighbourhoods cannot be disjoint however the ratings fall.
+
+    A floor rather than a target. A reference exactly this size still overlaps
+    wherever the corpus is thin, which is why the realized bandwidth is reported
+    per grid point instead of being assumed from the count.
+    """
+
+    return neighbours * len({float(rating) for rating in ratings})
+
+
 def curve_spec(
     quantity: ComparedQuantity,
     ratings: Sequence[float],
@@ -464,6 +482,7 @@ __all__ = [
     "generated_games",
     "human_reference",
     "iter_quantities",
+    "minimum_reference_games",
     "observations_for",
     "select_bandwidths",
 ]

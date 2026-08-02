@@ -22,6 +22,7 @@ from typing import Any
 import chess
 import pytest
 import torch
+from pydantic import ValidationError
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -728,6 +729,74 @@ def test_the_mix_compares_both_sides_over_one_rating_axis(
     assert 0.0 <= mix.comparison.pooled_distance <= 1.0
     categories = {share.category for share in mix.comparison.category_shares()}
     assert categories <= set(TERMINATION_MIX_CATEGORIES)
+
+
+def test_the_mix_reports_how_far_its_smoother_actually_reached(
+    pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The declared neighbour count is the same whatever the reference holds.
+
+    What decides whether the grid resolves its points is the rating span those
+    neighbours occupy, so that is what the mix prints beside its distances.
+    """
+
+    from anthro_chess.interfaces.cli import _render_termination
+
+    result = _run(_config(pool))
+
+    comparison = result.mix("all", 1.0).comparison
+    spans = " ".join(f"±{point.bandwidth:.0f}" for point in comparison.points)
+    assert f"  bandwidth   reaches {spans} rating points" in _render_termination(result)
+
+
+def test_a_reference_below_the_bandwidth_is_rejected_before_a_sweep_starts(
+    pool: Path,
+) -> None:
+    """The mix bandwidth is a neighbour count, so this cap is its radius.
+
+    A cap below one bandwidth per grid point does not make the mix noisier; it
+    makes every grid point the same neighbourhood. Rejected on the configuration
+    so a suite plan catches it rather than the run that follows.
+    """
+
+    with pytest.raises(ValidationError, match="below the 2048 game"):
+        _config(
+            pool,
+            reference={
+                "view": {"name": "termination-reference", "maximum_games": 2000},
+            },
+        )
+
+
+def test_the_human_reference_scopes_the_mix_series(
+    pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Two references are two smoothings, so two quantities rather than two draws.
+
+    Without this in identity a checkpoint whose endings were compared against a
+    small reference would be plotted against one compared against a large one,
+    and the difference between the smoothings would render as movement.
+    """
+
+    workloads = []
+    for maximum_games in (16, 32):
+        result = _run(
+            _config(
+                pool,
+                reference={
+                    "view": {
+                        "name": "termination-reference",
+                        "require_ratings": True,
+                        "maximum_games": maximum_games,
+                    },
+                },
+            )
+        )
+        workloads.append(result.mix("all", 1.0).execution.workload_sha256)
+
+    assert workloads[0] != workloads[1]
 
 
 def test_the_mix_reports_each_arm_beside_its_own_qualifiers(

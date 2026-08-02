@@ -73,10 +73,20 @@ maximum_rating_gap = 200
 resamples = 200
 
 [reference.view]
-# As much matched human play as can be afforded: the reference forces the
-# bandwidth and the floors at every evaluation point, so it is the one view
-# that should not be shrunk casually.
+# Sized from the bandwidth rather than from what can be afforded. The declared
+# smoothing is a neighbour count, so this number *is* the smoothing radius: at
+# 2,000 selected games a single neighbourhood spanned 620 rating points against
+# a grid spaced 200 apart, and the human curve's own rating response read 42%
+# below what the whole pool gives. At 12,000 the widest neighbourhood is 180
+# points and that response is within 2% of the whole 50,073-game pool.
+#
+# So it is neither a sample count nor a ceiling to raise later. Reading more
+# human play past this narrows nothing the estimator can use, and it is not
+# free: every reference game is replayed and classified, so the whole pool costs
+# almost five minutes against seventy seconds here. Reading less silently
+# re-smooths every curve, which is why a reduced sweep leaves this alone.
 name = "rollout-reference"
+maximum_games = 12000
 require_ratings = true
 
 [detail]
