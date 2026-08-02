@@ -171,6 +171,11 @@ When asked to build or refine the task roadmap, an agent should:
   the exact required environment and acceptance evidence in the issue body;
 - keep issue bodies focused on intent, acceptance criteria, relevant docs, and
   likely test/doc updates;
+- write acceptance criteria that decide new surface rather than only describing
+  it: when an issue may add an option, a mode, a dependency, or a layer, the
+  criterion says what evidence justifies keeping it and that an unproven
+  addition is removed rather than shipped disabled by default, per
+  `docs/design-principles.md` "Earn New Surface";
 - avoid creating a detailed issue tree for the entire project before evidence
   exists;
 - prefer a short runway of ready issues plus broader later placeholders;
@@ -290,6 +295,18 @@ GUI check finds a defect, add the regression test that would have caught it.
 
 ## Publishing
 
+Before marking a pull request ready, account for its size against the request
+that produced it. Read the diff statistics, fill in the pull request template's
+size and surface section from what the diff actually contains rather than from
+memory, and answer its questions honestly — including which part would go if the
+change had to be a third smaller. An addition with no answer is a candidate for
+removal, not for a better explanation.
+
+This is a required answer rather than a size limit on purpose. A threshold only
+teaches everyone to sit just under it, and the diffs worth questioning here are
+not the ones that cross a line but the ones whose size nobody was asked to
+justify.
+
 Include `Closes #<issue-number>` so merging into the default branch closes the
 implementation issue automatically. Do not close the implementation issue
 manually because the pull request is ready; the merge should close it.
@@ -351,3 +368,5 @@ Before substantive changes:
 7. Add a decision record only when the rationale has lasting value.
 8. Offer a real GUI check when the change alters what a GUI observes.
 9. Take a shakedown reading when the change adds or alters a benchmark.
+10. Account for the diff's size and new surface before marking the pull request
+    ready.
