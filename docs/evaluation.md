@@ -217,13 +217,18 @@ or another checkpoint's.
 
 The **reduced sweep is the default and the full sweep is opt-in**, because a
 sweep measured in hours is not a default anyone will run on a new checkpoint.
-Reductions are confined to sample counts — view sizes, seeds, games per
+Reductions are confined to sample counts — scored view sizes, seeds, games per
 position, resamples, measured decisions — and never touch a grid, a dose, a
 temperature, or a ply limit, since those decide *what* is measured and
 shrinking one would report a different quantity rather than the same one less
 precisely. A smaller view is still its own data component, so a reduced sweep
 is a separate series rather than a partial down payment on a full one, and the
 scale is named in the output and in the ledger for that reason.
+
+Not every view is a sample count, and the exception is the human reference the
+curve comparisons are smoothed against: at a neighbour-count bandwidth its size
+is the smoothing radius rather than a sample size, so it is declared by the
+benchmarks that read it and left alone by both scales.
 
 That rule has a consequence worth stating, because it looks like an omission
 otherwise: **a benchmark whose cost is a grid rather than a sample size has no
@@ -345,9 +350,23 @@ would not be comparable. Choose it once from the human reference by
 cross-validation, then freeze and declare it; changing it is a benchmark version
 bump.
 
+Because the bandwidth is a neighbour count, **the reference size is part of
+it**. The same declared count spans a wider rating range on a smaller reference,
+so shrinking the reference does not sample the curve more coarsely — it smooths
+it more heavily, until every evaluation point is estimated from the same games
+and the grid resolves fewer points than it plots. The reference is therefore
+declared at a size the grid can resolve, is neither shrunk by a reduced sweep nor
+left uncapped at full scale, and joins the declared workload so two readings
+smoothed differently cannot share a series.
+`docs/decisions/0029-the-human-reference-is-bandwidth-not-sample-size.md` owns
+that rule.
+
 Report the effective local sample size alongside the curve, so a difference
 where the human reference is thin is not read as the same strength of claim as
-one where it is dense.
+one where it is dense. Report the **realized** bandwidth per evaluation point
+too, rather than the declared neighbour count: the count is the same at every
+reference size and says nothing about a particular reading, while the rating
+span it reached is what tells a reader whether the grid resolved its points.
 
 Both a rating-conditional and a rating-free reading come from the same pass,
 and they answer different questions. The pooled reading asks whether the model
