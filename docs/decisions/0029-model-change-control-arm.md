@@ -92,6 +92,16 @@ not the reading, so there is no case for reading the arms differently or
 narrowing the benchmark set to the family expected to move: a win that costs
 something elsewhere is exactly what a suite is for.
 
+Reduced rather than full, because a reduction only cuts sample counts and the
+floors widen to match, so a less precise reading of both arms raises the bar
+rather than lowering it. The exception is structural rather than a matter of
+precision: a benchmark whose cost is a grid has no reduced form, and a claim
+about a family only the full sweep reads — strength, which lives in the
+ladder — has to be read there or it is not being tested at all. Requiring the
+full sweep for every comparison instead would put an hours-long ladder on both
+arms of every model change, and a process nobody can afford is one nobody runs,
+which is the failure this record exists to prevent.
+
 Arms are recorded into a machine-local store rather than the committed one.
 Committing a candidate is a separate decision about project history, and an arm
 nobody adopted would otherwise become a later report's default baseline.

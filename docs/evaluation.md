@@ -2392,6 +2392,15 @@ arm runs: which metric moves, in which direction. Stating it first is what makes
 the reading falsifiable, for the same reason a shakedown states its expectation
 first.
 
+The reduced sweep is the default because a reduction is confined to sample
+counts, so it estimates the same quantities with wider floors: reading two arms
+at less precision cannot let a weak claim through, it raises the bar the delta
+has to clear. What it cannot do is read a benchmark that has no reduced form.
+A claim naming such a family — strength, whose only reading is the ladder,
+whose cost is a grid rather than a sample — is not testable by a reduced sweep
+at all, so that benchmark is read at its declared size on both arms and the
+comparison says which scale each family was read at.
+
 The comparison itself needs nothing new. A training run is a coordinate rather
 than a component of series identity, so two arms of one configuration land in
 the same series, and `uv run anthro eval report` reads the delta between them
