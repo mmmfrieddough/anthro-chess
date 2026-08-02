@@ -68,10 +68,14 @@ class MoveModelInputs:
 class MoveModelBatch:
     """Tensor model boundary plus alignment metadata for inspection.
 
-    Every factory here validates what it built, so a batch that exists is a
-    batch that passed. That is the whole contract: nothing downstream revalidates
-    it, and a caller assembling one field by field with :func:`dataclasses.replace`
-    owns calling :meth:`validate` again.
+    Every factory here validates what it built, so a batch a factory returned is
+    a batch that passed, and the model rechecks nothing.
+
+    :func:`dataclasses.replace` goes around that. Substituting a field of equal
+    shape and range — which is what the conditioning treatments in
+    ``evaluation.checkpoint`` do to ``target_rating`` — preserves everything the
+    model relies on. Changing a shape, a ply index, or the padding layout does
+    not, and owns calling :meth:`validate` again.
 
     ``legal_action_ids`` is ``None`` when the batch came from a loader that was
     not asked for them. Legality checking and policy scoring are the only
@@ -416,6 +420,16 @@ class MoveModelBatch:
             (
                 "action loss cannot include padded timesteps",
                 torch.any(self.action_loss_mask & ~self.attention_mask),
+            ),
+            (
+                # The model reads no padding mask at all. It relies on this
+                # instead: a real query attends only to earlier timesteps, and
+                # every timestep earlier than a real one is itself real. An
+                # interior gap would silently let a real position attend to
+                # padding, so the property the model assumes is checked rather
+                # than asserted in prose.
+                "padding must follow every real timestep in a row",
+                torch.any(self.attention_mask[:, :-1] < self.attention_mask[:, 1:]),
             ),
             (
                 "piece ids are outside the board encoding",

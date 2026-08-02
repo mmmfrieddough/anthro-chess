@@ -139,16 +139,12 @@ class CausalMoveModel(nn.Module):
             self.config.model_dim,
             ACTION_VOCABULARY_SIZE,
         )
-        # Derived constants rather than state: both are a pure function of the
-        # configuration and the longest sequence seen so far, so neither belongs
-        # in a checkpoint. Plain attributes rather than non-persistent buffers,
-        # which would also stay out of the state dict but would put a lazily
-        # grown, rank-varying tensor in `named_buffers()` for distributed
-        # training to broadcast every step.
-        #
-        # Both are built under `torch.inference_mode(False)`: the first caller
-        # may be a benchmark scoring under `torch.inference_mode`, and a tensor
-        # created there could never afterwards join a training backward pass.
+        # Derived constants, not state: a pure function of the configuration and
+        # the longest sequence seen, so neither belongs in a checkpoint. Both are
+        # built under `torch.inference_mode(False)`, because the first caller may
+        # be a benchmark scoring under `torch.inference_mode` and a tensor made
+        # there can never afterwards join a training backward pass. `#227` would
+        # retire the laziness by declaring a maximum context length.
         self._cached_causal_mask: Tensor | None = None
         self._cached_position_table: Tensor | None = None
 
@@ -192,32 +188,47 @@ class CausalMoveModel(nn.Module):
         # removes the all-padding-row hazard a key padding mask carries.
         hidden = self.transformer(
             hidden,
-            mask=self._causal_mask(hidden.shape[1], hidden.device),
+            mask=self._causal_mask(hidden.shape[1], hidden.device, hidden.dtype),
             is_causal=True,
         )
         return cast(Tensor, hidden)
 
-    def _causal_mask(self, length: int, device: torch.device) -> Tensor:
-        """Return the boolean mask that hides every future timestep.
+    def _causal_mask(
+        self,
+        length: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return the additive mask that hides every future timestep.
 
         The mask states only that a query cannot attend past itself, which is a
         property of this model rather than of any batch. It is held at the
         longest length seen and sliced for shorter ones, so a step neither
         builds it in Python nor copies it to the device.
 
-        ``is_causal=True`` does not stand in for it. The encoder reads the flag
-        as a hint accompanying a mask, and on the locked build refuses it alone
-        with ``Need attn_mask if specifying the is_causal hint``.
+        Additive rather than boolean, and in the attention input's own dtype,
+        because a boolean mask is converted to exactly this one on the way in:
+        ``F._canonical_mask`` writes a fresh length-by-length float tensor per
+        forward pass, which is 1.44 MB at 600 plies. Caching the boolean form
+        would avoid rebuilding a tensor the framework then rebuilds anyway.
+
+        ``is_causal=True`` does not stand in for a mask. The encoder reads the
+        flag as a hint accompanying one, and refuses it alone.
         """
 
         cached = self._cached_causal_mask
-        if cached is None or cached.shape[0] < length or cached.device != device:
+        if (
+            cached is None
+            or cached.shape[0] < length
+            or cached.device != device
+            or cached.dtype != dtype
+        ):
             with torch.inference_mode(False):
-                cached = torch.ones(
-                    (length, length),
-                    dtype=torch.bool,
+                cached = nn.Transformer.generate_square_subsequent_mask(
+                    length,
                     device=device,
-                ).triu(1)
+                    dtype=dtype,
+                )
             self._cached_causal_mask = cached
         return cached[:length, :length]
 

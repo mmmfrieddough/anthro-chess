@@ -25,6 +25,14 @@ def _with_inputs(batch: MoveModelBatch, **overrides: Any) -> MoveModelBatch:
     return replace(batch, inputs=replace(batch.inputs, **overrides))
 
 
+def _holed(mask: torch.Tensor) -> torch.Tensor:
+    """Return the mask with an interior timestep cleared, breaking alignment."""
+
+    holed = mask.clone()
+    holed[0, 0] = False
+    return holed
+
+
 def _corrupted(batch: MoveModelBatch, field: str, value: int) -> MoveModelBatch:
     """Return the batch with one entry of an ordinary input tensor rewritten."""
 
@@ -76,6 +84,17 @@ def test_a_valid_batch_is_accepted(
             ),
             "action loss cannot include padded timesteps",
             id="padded-loss",
+        ),
+        pytest.param(
+            # The model reads no padding mask, so an interior gap would let a
+            # real timestep attend to padding with nothing to notice.
+            lambda batch: replace(
+                batch,
+                attention_mask=_holed(batch.attention_mask),
+                action_loss_mask=_holed(batch.action_loss_mask),
+            ),
+            "padding must follow every real timestep in a row",
+            id="padding-before-a-real-timestep",
         ),
         pytest.param(
             lambda batch: _corrupted(batch, "piece_ids", 13),

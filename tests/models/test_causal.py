@@ -153,16 +153,27 @@ def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
 
 
 def test_the_causal_mask_is_built_once_and_sliced_for_shorter_batches() -> None:
-    """Held rather than rebuilt, and still exactly upper triangular."""
+    """Held rather than rebuilt, and additive so the framework rebuilds nothing.
 
+    A boolean mask is converted to exactly this tensor on the way into
+    attention, once per forward pass, so handing one over would cache a thing
+    the framework then discards.
+    """
+
+    device = torch.device("cpu")
     model = CausalMoveModel(_tiny_config())
 
-    wide = model._causal_mask(5, torch.device("cpu"))  # noqa: SLF001
+    wide = model._causal_mask(5, device, torch.float32)  # noqa: SLF001
     held = model._cached_causal_mask  # noqa: SLF001
-    narrow = model._causal_mask(3, torch.device("cpu"))  # noqa: SLF001
+    narrow = model._causal_mask(3, device, torch.float32)  # noqa: SLF001
 
-    assert torch.equal(wide, torch.ones((5, 5), dtype=torch.bool).triu(1))
-    assert torch.equal(narrow, torch.ones((3, 3), dtype=torch.bool).triu(1))
+    for mask, length in ((wide, 5), (narrow, 3)):
+        assert mask.dtype == torch.float32
+        assert torch.equal(
+            mask.isinf(), torch.ones((length, length), dtype=torch.bool).triu(1)
+        )
+        # Nothing is fully masked: every query keeps at least its own timestep.
+        assert bool((~mask.isinf()).any(dim=-1).all())
     assert model._cached_causal_mask is held  # noqa: SLF001
 
 
