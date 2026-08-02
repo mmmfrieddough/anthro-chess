@@ -6,7 +6,6 @@ import argparse
 import contextlib
 import json
 import logging
-import os
 import sys
 import uuid
 from collections.abc import Callable, Sequence
@@ -35,6 +34,7 @@ from anthro_chess.interfaces.config import (
     UCI_TEMPERATURE_SCALE,
     UciConfig,
 )
+from anthro_chess.machine import RUN_ROOT_VARIABLE, optional_root
 from anthro_chess.runtime import (
     ActionModelRunner,
     DecisionRuntimeError,
@@ -497,10 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        run_root_value = os.environ.get("ANTHRO_CHESS_RUN_ROOT", "").strip()
-        run_root = (
-            Path(run_root_value).expanduser().resolve() if run_root_value else None
-        )
+        run_root = optional_root(RUN_ROOT_VARIABLE)
     except ConfigError as error:
         logger.error("Configuration failed: %s", error)
         return 2

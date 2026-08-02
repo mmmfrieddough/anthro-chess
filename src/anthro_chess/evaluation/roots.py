@@ -14,14 +14,12 @@ discover an hour in.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TypeVar
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
-
-DATA_ROOT_VARIABLE = "ANTHRO_CHESS_DATA_ROOT"
+from anthro_chess.machine import DATA_ROOT_VARIABLE, optional_root
 
 #: ``anthro eval run``: the frozen pool, plus the training corpus the leakage
 #: check reads when that corpus has moved.
@@ -58,11 +56,10 @@ def resolve_artifact_roots(
     would silently move it somewhere else.
     """
 
-    configured = os.environ.get(DATA_ROOT_VARIABLE, "").strip()
-    if not configured:
+    root = optional_root(DATA_ROOT_VARIABLE)
+    if root is None:
         return resolved
 
-    root = Path(configured).expanduser().resolve()
     override_keys = {item.partition("=")[0] for item in overrides}
     value = resolved.value
     for field in fields:

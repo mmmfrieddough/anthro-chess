@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -18,6 +17,14 @@ from anthro_chess.application_logging import (
     configure_application_logging,
 )
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.machine import (
+    DATA_ROOT_VARIABLE,
+    RUN_ROOT_VARIABLE,
+    MachineReport,
+    inspect_machine,
+    optional_root,
+    required_root,
+)
 
 if TYPE_CHECKING:
     from anthro_chess.data import SequenceDataConfig
@@ -1075,6 +1082,60 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     train_parser.set_defaults(handler=_run_train)
+
+    machine_parser = subcommands.add_parser(
+        "machine",
+        help="Report the configured artifact roots and what they hold.",
+        description=(
+            "Report what this machine is configured to hold: its artifact "
+            "roots, the retained training runs and prepared data artifacts "
+            "beneath them, and how the default model selection resolves. "
+            "Exits nonzero when a root is configured in a way that would read "
+            "as an empty machine."
+        ),
+    )
+    machine_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: %(default)s).",
+    )
+    machine_parser.set_defaults(handler=_run_machine)
+
+    model_parser = subcommands.add_parser(
+        "model",
+        help="Maintain the machine-local default model selection.",
+    )
+    model_commands = model_parser.add_subparsers(dest="model_command", required=True)
+    select_parser = model_commands.add_parser(
+        "select",
+        help="Record which retained run and checkpoint commands default to.",
+        description=(
+            "Write the machine-local default model selection. Commands and "
+            "the UCI process resolve this record when no explicit checkpoint "
+            "or run is configured."
+        ),
+    )
+    select_parser.add_argument(
+        "run",
+        help="Retained run directory name, relative to the run root.",
+    )
+    select_parser.add_argument(
+        "--checkpoint",
+        help=(
+            "Pin one checkpoint file name within the run. Omit to follow the "
+            "run's latest pointer, so the selection tracks a continuing run."
+        ),
+    )
+    select_parser.add_argument(
+        "--run-root",
+        type=Path,
+        help=(
+            "Directory holding retained training runs. Defaults to "
+            "ANTHRO_CHESS_RUN_ROOT."
+        ),
+    )
+    select_parser.set_defaults(handler=_run_model_select)
     return parser
 
 
@@ -1091,6 +1152,103 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _run_smoke(_arguments: argparse.Namespace) -> int:
     print(f"Anthro Chess {__version__} is installed and ready.")
+    return 0
+
+
+def _run_machine(arguments: argparse.Namespace) -> int:
+    report = inspect_machine()
+    if arguments.format == "json":
+        print(json.dumps(report.as_record(), indent=2, sort_keys=True))
+    else:
+        print(_render_machine(report), end="")
+    # A half-configured machine is the failure this command exists to catch, so
+    # it has to be visible to whatever ran the command and not only to a reader.
+    return 1 if report.problems else 0
+
+
+def _render_machine(report: MachineReport) -> str:
+    lines: list[str] = ["roots"]
+    width = max(len(root.variable) for root in report.roots)
+    for root in report.roots:
+        if root.path is None:
+            state = f"not set; {root.fallback}"
+        elif root.exists:
+            state = str(root.path)
+        else:
+            state = f"{root.path} (missing)"
+        lines.append(f"  {root.variable:<{width}}  {state}")
+
+    lines.append("")
+    lines.append("retained runs")
+    if not report.runs:
+        lines.append(f"  none beneath {_root_note(report, RUN_ROOT_VARIABLE)}")
+    for run in report.runs:
+        latest = run.latest_checkpoint or "no latest pointer"
+        record = "" if run.has_run_record else ", no run record"
+        lines.append(f"  {run.name}  {run.checkpoints} checkpoint(s), {latest}{record}")
+
+    lines.append("")
+    lines.append("data artifacts")
+    if not report.artifacts:
+        lines.append(f"  none beneath {_root_note(report, DATA_ROOT_VARIABLE)}")
+    for artifact in report.artifacts:
+        lines.append(f"  {artifact.name}  {artifact.kind}")
+
+    lines.append("")
+    lines.append("default model selection")
+    selection = report.selection
+    if selection.resolved is not None:
+        lines.append(f"  {selection.resolved['checkpoint_path']}")
+        lines.append(f"  recorded in {selection.record_path}")
+    elif selection.error is not None:
+        lines.append(f"  unresolved: {selection.error}")
+    else:
+        lines.append("  not determined")
+
+    for heading, entries in (
+        ("problems", report.problems),
+        ("not reported here", report.unavailable),
+    ):
+        if not entries:
+            continue
+        lines.append("")
+        lines.append(heading)
+        lines.extend(f"  {entry}" for entry in entries)
+    return "\n".join(lines) + "\n"
+
+
+def _root_note(report: MachineReport, variable: str) -> str:
+    """Describe a root the way an empty listing beneath it needs to be read."""
+
+    status = next(root for root in report.roots if root.variable == variable)
+    if status.path is None:
+        return f"{variable} (not set)"
+    return str(status.path)
+
+
+def _run_model_select(arguments: argparse.Namespace) -> int:
+    from anthro_chess.config import ConfigError
+    from anthro_chess.inference.config import LATEST_CHECKPOINT
+    from anthro_chess.inference.selection import (
+        ModelSelectionError,
+        write_model_selection,
+    )
+
+    try:
+        run_root = arguments.run_root or required_root(
+            RUN_ROOT_VARIABLE,
+            alternative="a run root must be provided with --run-root",
+        )
+        record_path = write_model_selection(
+            run_root,
+            run=arguments.run,
+            checkpoint=arguments.checkpoint or LATEST_CHECKPOINT,
+        )
+    except (ConfigError, ModelSelectionError) as error:
+        print(f"anthro model select: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Default model selection: {record_path}")
     return 0
 
 
@@ -1278,7 +1436,7 @@ def _run_eval_suite(arguments: argparse.Namespace) -> int:
         run = run_suite(
             plan,
             sweep_root=sweep_directory(_sweep_root(arguments.sweep_root), plan),
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
             resume=arguments.resume,
@@ -1303,15 +1461,13 @@ def _sweep_root(explicit: Path | None) -> Path:
 
     if explicit is not None:
         return explicit
-    root = _optional_environment_root("ANTHRO_CHESS_RUN_ROOT")
-    if root is None:
-        from anthro_chess.config import ConfigError
-
-        raise ConfigError(
-            "a sweep directory must be provided with --sweep-root, or "
-            "ANTHRO_CHESS_RUN_ROOT must be set"
+    return (
+        required_root(
+            RUN_ROOT_VARIABLE,
+            alternative="a sweep directory must be provided with --sweep-root",
         )
-    return root / "benchmark-sweeps"
+        / "benchmark-sweeps"
+    )
 
 
 def _report_step(outcome: StepOutcome) -> None:
@@ -1438,7 +1594,7 @@ def _run_eval_run(arguments: argparse.Namespace) -> int:
         )
         result = evaluate_checkpoint(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -1570,7 +1726,7 @@ def _run_eval_puzzles(arguments: argparse.Namespace) -> int:
         )
         result = benchmark_puzzles(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -1621,7 +1777,7 @@ def _run_eval_novelty(arguments: argparse.Namespace) -> int:
         )
         result = benchmark_novelty(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -1787,7 +1943,7 @@ def _run_eval_inference(arguments: argparse.Namespace) -> int:
         )
         result = benchmark_inference(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -1904,7 +2060,7 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
         )
         result = benchmark_rollout(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -2266,7 +2422,7 @@ def _run_eval_termination(arguments: argparse.Namespace) -> int:
         )
         result = benchmark_termination(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -2451,7 +2607,7 @@ def _run_eval_ladder(arguments: argparse.Namespace) -> int:
         )
         result = benchmark_ladder(
             resolved,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
             store=store,
             detail=detail,
         )
@@ -2716,7 +2872,7 @@ def _run_eval_decisions(arguments: argparse.Namespace) -> int:
             decomposition = decompose_played_log(
                 arguments.log,
                 resolved.value.model,
-                run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+                run_root=_run_root(),
             )
         if arguments.output is not None:
             arguments.output.parent.mkdir(parents=True, exist_ok=True)
@@ -3174,7 +3330,7 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
         sample = sample_execution_noise(
             resolved,
             repeats=repeats,
-            run_root=_optional_environment_root("ANTHRO_CHESS_RUN_ROOT"),
+            run_root=_run_root(),
         )
     except (ConfigError, ExecutionNoiseError) as error:
         print(f"anthro eval noise sample: {error}", file=sys.stderr)
@@ -3668,12 +3824,16 @@ def _resolve_termination_roots(
     )
 
 
-def _optional_environment_root(name: str) -> Path | None:
-    """Return a configured machine root, or ``None`` when it is unset."""
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    return Path(value).expanduser().resolve()
+def _run_root() -> Path | None:
+    """Return the configured run root, or ``None`` when it is unset.
+
+    Optional on purpose: a fresh clone resolves checked-in relative paths
+    inside the working directory, and several commands depend on that. The
+    commands that cannot proceed without a root fail where they need it, and
+    name it when they do.
+    """
+
+    return optional_root(RUN_ROOT_VARIABLE)
 
 
 def _resolve_pool_roots(
@@ -3721,19 +3881,11 @@ def _resolve_ladder_roots(
 def _data_output_path(output: Path | None, artifact_name: str) -> Path:
     if output is not None:
         return output
-    root = _environment_root("ANTHRO_CHESS_DATA_ROOT")
-    return root / artifact_name
+    return _environment_root(DATA_ROOT_VARIABLE) / artifact_name
 
 
 def _environment_root(name: str) -> Path:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        from anthro_chess.config import ConfigError
-
-        raise ConfigError(
-            f"a directory must be provided explicitly or {name} must be set"
-        )
-    return Path(value).expanduser().resolve()
+    return required_root(name, alternative="a directory must be provided explicitly")
 
 
 def _resolve_training_roots(
@@ -3745,34 +3897,30 @@ def _resolve_training_roots(
     update: dict[str, object] = {}
     override_keys = {item.partition("=")[0] for item in overrides}
 
+    run_root = _run_root()
+    data_root = optional_root(DATA_ROOT_VARIABLE)
+
     output_directory = config.output_directory
     if (
         not output_directory.is_absolute()
         and "output_directory" not in override_keys
-        and os.environ.get("ANTHRO_CHESS_RUN_ROOT", "").strip()
+        and run_root is not None
     ):
-        update["output_directory"] = _rooted_artifact_path(
-            _environment_root("ANTHRO_CHESS_RUN_ROOT"),
-            output_directory,
-        )
+        update["output_directory"] = _rooted_artifact_path(run_root, output_directory)
 
-    data_root_available = bool(os.environ.get("ANTHRO_CHESS_DATA_ROOT", "").strip())
     selections: tuple[tuple[str, SequenceDataConfig | None], ...] = (
         ("train", config.train),
         ("validation", config.validation),
     )
     for selection_name, selection in selections:
-        if selection is None or not data_root_available:
+        if selection is None or data_root is None:
             continue
         selection_update: dict[str, Path] = {}
         for field_name in ("normalized", "manifest"):
             path = getattr(selection, field_name)
             dotted_key = f"{selection_name}.{field_name}"
             if not path.is_absolute() and dotted_key not in override_keys:
-                selection_update[field_name] = _rooted_artifact_path(
-                    _environment_root("ANTHRO_CHESS_DATA_ROOT"),
-                    path,
-                )
+                selection_update[field_name] = _rooted_artifact_path(data_root, path)
         if selection_update:
             update[selection_name] = selection.model_copy(update=selection_update)
 

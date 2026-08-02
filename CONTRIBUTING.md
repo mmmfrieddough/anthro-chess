@@ -84,22 +84,31 @@ beneath them and the precedence rules.
 Both are optional, and that is the part worth knowing before you draw a
 conclusion from an empty directory. Unset, checked-in relative paths resolve
 inside the worktree — correct for a fresh clone, and indistinguishable from a
-machine that genuinely has no artifacts. The run root is the quieter of the
-two: a data command fails loudly when its root is missing, while a missing run
-root silently falls back to worktree-relative paths.
+machine that genuinely has no artifacts.
 
 **So a checkout with no `artifacts/` or `runs/` directory proves nothing, and
-neither does searching the repository and its worktrees.** Ask the roots
+neither does searching the repository and its worktrees.** Ask the machine
 instead:
 
 ```console
-env | grep ANTHRO_CHESS
-ls "${ANTHRO_CHESS_DATA_ROOT:?}"
-ls "${ANTHRO_CHESS_RUN_ROOT:?}"/*/checkpoints/*.pt | tail
+uv run anthro machine
 ```
+
+It reports every root, the retained runs and prepared data artifacts beneath
+the pair, and how the default model selection resolves. It exits nonzero when
+the configuration is itself the problem — one half of the pair set without the
+other, or a root pointing somewhere that is not a directory — because that
+state otherwise looks exactly like a machine holding nothing.
 
 This matters most before concluding that a shakedown reading cannot be taken
 here; `docs/issue-workflow.md` describes when one is required.
+
+A machine holding runs but no default model selection has to name a checkpoint
+explicitly in every command. Record one instead:
+
+```console
+uv run anthro model select <run-directory-name>
+```
 
 ### Standing One Up From The Pinned Sources
 

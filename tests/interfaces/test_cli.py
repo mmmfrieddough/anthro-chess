@@ -1730,3 +1730,153 @@ def test_eval_suite_runs_the_ladder_only_at_full_scale(
 
     plan = json.loads(capsys.readouterr().out)
     assert "ladder" in {step["benchmark"] for step in plan["steps"]}
+
+
+def _retained_run(root: Path, name: str, step: int = 8000) -> Path:
+    """Write the marker files a run is recognized and selected by.
+
+    Nothing here loads, because neither the report nor the selection record
+    reads weights: both check that the run record and checkpoint exist and
+    stop there.
+    """
+
+    checkpoints = root / name / "checkpoints"
+    checkpoints.mkdir(parents=True)
+    (root / name / "run.json").write_text("{}", encoding="utf-8")
+    (checkpoints / f"step-{step:08d}.pt").write_bytes(b"")
+    (checkpoints / "latest.json").write_text(
+        json.dumps({"global_step": step, "path": f"step-{step:08d}.pt"}),
+        encoding="utf-8",
+    )
+    return root / name
+
+
+def _unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in (
+        "ANTHRO_CHESS_DATA_ROOT",
+        "ANTHRO_CHESS_RUN_ROOT",
+        "ANTHRO_CHESS_RESULTS_ROOT",
+        "ANTHRO_CHESS_RESULT_DETAIL_ROOT",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+
+def test_machine_reports_the_runs_and_artifacts_the_roots_hold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unconfigured(monkeypatch)
+    _retained_run(tmp_path / "runs", "trained")
+    (tmp_path / "datasets" / "corpus" / "manifests").mkdir(parents=True)
+    (tmp_path / "datasets" / "corpus" / "manifests" / "manifest.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+
+    assert main(["machine"]) == 0
+
+    output = capsys.readouterr().out
+    assert "trained  1 checkpoint(s), step-00008000.pt" in output
+    assert "corpus  corpus" in output
+
+
+def test_machine_reports_a_half_configured_pair_as_a_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The exact state that once cost a session a shakedown reading."""
+
+    _unconfigured(monkeypatch)
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path))
+
+    assert main(["machine"]) == 1
+
+    output = capsys.readouterr().out
+    assert "problems" in output
+    assert "ANTHRO_CHESS_RUN_ROOT is not" in output
+
+
+def test_machine_reports_a_fresh_clone_as_configured_nothing_rather_than_broken(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unconfigured(monkeypatch)
+
+    assert main(["machine"]) == 0
+
+    output = capsys.readouterr().out
+    assert "problems" not in output
+    assert (
+        "not set; configured relative paths resolve in the working directory" in output
+    )
+
+
+def test_machine_json_carries_the_whole_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unconfigured(monkeypatch)
+    _retained_run(tmp_path / "runs", "trained")
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+
+    assert main(["machine", "--format", "json"]) == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert [run["name"] for run in report["runs"]] == ["trained"]
+    # The data root is set to a directory that was never created, which the
+    # report has to distinguish from a data root holding nothing.
+    assert len(report["problems"]) == 1
+
+
+def test_model_select_records_the_machine_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unconfigured(monkeypatch)
+    _retained_run(tmp_path / "runs", "trained")
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+    (tmp_path / "datasets").mkdir()
+
+    assert main(["model", "select", "trained"]) == 0
+    capsys.readouterr()
+    assert main(["machine"]) == 0
+
+    output = capsys.readouterr().out
+    assert str(tmp_path / "runs/trained/checkpoints/step-00008000.pt") in output
+
+
+def test_model_select_without_a_run_root_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unconfigured(monkeypatch)
+
+    assert main(["model", "select", "trained"]) == 2
+
+    error = capsys.readouterr().err
+    assert "--run-root" in error
+    assert "ANTHRO_CHESS_RUN_ROOT" in error
+    assert "retained training runs" in error
+
+
+def test_a_missing_data_root_says_what_it_would_have_to_hold(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _unconfigured(monkeypatch)
+    repository_root = Path(__file__).parents[2]
+    config = repository_root / "configs/data/lichess-sample.toml"
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+
+    assert main(["data", "prepare", str(sample), "--config", str(config)]) == 2
+
+    error = capsys.readouterr().err
+    assert "ANTHRO_CHESS_DATA_ROOT" in error
+    assert "corpora" in error

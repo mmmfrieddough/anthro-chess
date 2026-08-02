@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from anthro_chess.inference.config import LATEST_CHECKPOINT, ModelRunnerConfig
+from anthro_chess.machine import ROOT_CONTENTS, RUN_ROOT_VARIABLE
 from anthro_chess.training.checkpoints import CheckpointError, latest_checkpoint_path
 
 MODEL_SELECTION_VERSION = 1
@@ -160,9 +161,19 @@ def _resolve_explicit_run(path: Path, run_root: Path | None) -> Path:
 
 
 def _required_root(run_root: Path | None) -> Path:
+    """Return the run root, or fail naming the configuration that is missing.
+
+    Every caller resolves this root from the environment, so an unset variable
+    presents here as an artifact that could not be found. Naming the variable
+    is what separates a misconfigured machine from one that genuinely holds no
+    runs; the two are otherwise identical from inside a checkout.
+    """
+
     if run_root is None:
         raise ModelSelectionError(
-            "a run root is required for relative or default model selection"
+            "a relative or default model selection needs a run root: pass an "
+            f"explicit checkpoint path, or set {RUN_ROOT_VARIABLE} to the "
+            f"directory holding {ROOT_CONTENTS[RUN_ROOT_VARIABLE]}"
         )
     return run_root.expanduser().resolve()
 
