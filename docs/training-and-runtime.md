@@ -151,6 +151,13 @@ and returns activation memory, and activation memory is what decides whether a
 larger model fits on a fixed card — so it stays available, and stays off by
 default at a size where memory is not yet the constraint.
 
+`docs/planning/memory-envelope.md` measures what that trade is worth on a 24 GiB
+card, and records the envelope of width, batch, and sequence length it bounds. It
+also corrects an assumption this section could otherwise invite: at the width
+this project trains today, the activation memory deciding a fit is not the
+transformer's but the action head's, because the head projects to the action
+vocabulary and its cost follows padded positions rather than model width.
+
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input
 embedding. It is also compatible with teacher forcing: previous moves are known
