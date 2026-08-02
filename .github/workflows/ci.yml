@@ -28,6 +28,37 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      - name: Agent guide names commands that exist
+        run: |
+          test -f AGENTS.md || exit 0
+          for h in '## Commands' '## Where to look' '## Traps' '## Working here'; do
+            grep -qxF -- "$h" AGENTS.md \
+              || { echo "::error file=AGENTS.md::missing heading $h"; exit 1; }
+          done
+          sed 's/^[[:space:]]*//; s/^run:[[:space:]]*//; s/[[:space:]]*$//' \
+            .github/workflows/ci.yml > "$RUNNER_TEMP/ci-cmds"
+          sed -n '/^```console agent-commands$/,/^```$/{//!p}' AGENTS.md \
+            | sed 's/[[:space:]]*#.*//; s/[[:space:]]*$//' | grep . \
+            > "$RUNNER_TEMP/ag-cmds" \
+            || { echo "::error file=AGENTS.md::no non-empty 'console agent-commands' block"; exit 1; }
+          while read -r c; do
+            grep -qxF -- "$c" "$RUNNER_TEMP/ci-cmds" \
+              || { echo "::error file=AGENTS.md::names a command CI does not run: $c"; exit 1; }
+          done < "$RUNNER_TEMP/ag-cmds"
+          printf '%s\n' \
+            'uv lock --check' \
+            'uv run ruff format --check .' \
+            'uv run ruff check .' \
+            'uv run mypy src tests' \
+            'uv run pytest' > "$RUNNER_TEMP/req-cmds"
+          while read -r c; do
+            grep -qxF -- "$c" "$RUNNER_TEMP/ag-cmds" \
+              || { echo "::error file=AGENTS.md::no longer names a command CI requires: $c"; exit 1; }
+          done < "$RUNNER_TEMP/req-cmds"
+          if grep -nE '`(anthro-uci|anthro) [^`]*`' AGENTS.md; then
+            echo "::error file=AGENTS.md::bare console script above needs the 'uv run' prefix"; exit 1
+          fi
+
       - name: Verify lockfile
         run: uv lock --check
 
