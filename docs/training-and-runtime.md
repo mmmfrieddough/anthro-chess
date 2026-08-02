@@ -568,6 +568,24 @@ a retained checkpoint. A cadence changes what a run reports and not what it
 trains, so it stays out of the checkpoint compatibility record and a resumed run
 may schedule differently than the run it continues.
 
+### Comparison Arms
+
+An arm of a model-change comparison is an ordinary run rather than a mode of the
+trainer. Two arms share their configuration, corpus, seed, device, and step
+budget and differ only by the change under test. Each checkpoint retains the
+resolved configuration and provenance it was written under, so "identical apart
+from the change" is checkable from the artifacts rather than asserted in a pull
+request.
+
+Strict determinism, available on CPU and CUDA as described above, is what lets a
+change meant to leave the weights alone establish that cheaply: two short runs
+at one seed either agree exactly or they do not. It also means repeating one arm
+is a check on the harness rather than a second replicate. Replicates for a
+training noise floor are arms at different seeds.
+
+`docs/evaluation.md` owns how two arms are read and what makes their delta
+admissible.
+
 ### Training Observability
 
 Every training run emits TensorBoard output by default. Following a run should

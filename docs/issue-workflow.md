@@ -265,6 +265,46 @@ Shakedown readings are never appended to the committed results store. Committing
 a benchmark result is a separate decision about project history and is made
 where that history is designated, not as a side effect of landing a benchmark.
 
+## Showing A Model Change Improved Something
+
+A shakedown reading asks whether an instrument measures anything. This asks the
+other question, about the model rather than the instrument: whether a change
+that alters what the model learns improved it. It applies to a change under
+`src/anthro_chess/models/`, `src/anthro_chess/training/`,
+`src/anthro_chess/data/`, `src/anthro_chess/chess/actions.py`,
+`configs/training/`, or `configs/data/`, because those are the paths a training
+run reads. `docs/evaluation.md` owns what the reading is; this section owns when
+it is required and how a session that cannot take it routes it.
+
+Not every change under those paths trains a different model. A change meant to
+leave the weights alone — a loader representation, an instrumentation path, a
+refactor — says so in the pull request and shows it instead: two short runs at
+one seed under strict determinism, one on each side of the change, whose
+readings agree exactly.
+That costs minutes rather than hours and claims something a training comparison
+cannot, so establish it before assuming the expensive reading is owed.
+
+The reading is complete before the pull request is ready, and the claim it
+tests — which metric moves, in which direction — is written down before either
+arm runs. It belongs in the pull request beside the other commands that were
+run, and the pull request says which benchmarks were read and which were not.
+
+A session with neither the training hardware nor the corpus cannot produce an
+arm. Route it the way a pending GPU check is routed: complete the
+implementation, open the pull request with the pending reading named
+prominently, including both arms' exact commands and the expected direction, and
+correct the issue's routing label — `execution: gpu-required` where what the
+reading says would change the implementation, `verification: gpu-required` where
+the implementation is settled and only the reading remains.
+
+**A null or negative reading is a result rather than a failed attempt.** The
+pull request lands with the reading it got, and the issue closes having answered
+its question. An arm is never re-run in the hope of a better number; a re-run is
+legitimate only when the first was faulty for a stated reason, and then both
+readings are reported. Where a change was worth having only if it improved the
+model, a null reading removes it rather than merging it disabled, and the
+recorded finding is what stops the next session from trying it again blindly.
+
 ## Offering A Real GUI Check
 
 Some changes are only convincing in a real chess GUI. Automated coverage proves
@@ -368,5 +408,7 @@ Before substantive changes:
 7. Add a decision record only when the rationale has lasting value.
 8. Offer a real GUI check when the change alters what a GUI observes.
 9. Take a shakedown reading when the change adds or alters a benchmark.
-10. Account for the diff's size and new surface before marking the pull request
+10. Read a model change against a control arm when the change decides what a
+    training run learns.
+11. Account for the diff's size and new surface before marking the pull request
     ready.
