@@ -104,26 +104,66 @@ nested Python sequences on the host, which happens identically whether the
 result then stays put or crosses to a device. The input pipeline, not the
 accelerator, is the binding constraint at the current model size.
 
-Separating optimizer work from forward and backward was worth doing: it is 4.9%
-of a CUDA step, so it is not where any effort belongs.
+Separating optimizer work from forward and backward was worth doing, and not
+for the reason expected: at 4.9% of a step it looked like the last place worth
+touching, and it turned out to hold the only throughput win found here.
 
-## Optimizations Measured And Rejected
+## Optimizations Measured
 
-Each was implemented, measured on the workload above, and then removed, because
-retaining a dial that never wins costs more than the measurement it preserves.
-The readings are kept here so the next person does not re-derive them.
+Each was implemented and measured on the workload above. One was kept, one was
+kept for a different reason than it was tried for, and the rest were removed:
+retaining a dial that never wins costs more than the measurement it preserves,
+and the readings below are what preserve it instead.
 
 | Candidate | Throughput | Verdict |
 | --- | ---: | --- |
 | Baseline (float32) | 86,799 | — |
+| **Fused optimizer update** | **88,819** | **+2.3% — kept, derived from the backend** |
 | TF32 float32 matmul | 87,011 | +0.24%, inside run-to-run noise |
-| Page-locked staging, asynchronous copy | 37,590 and 80,111 | 8% to 57% slower across two runs |
-| bfloat16 autocast | 80,695 | 7% slower |
+| bfloat16 autocast | 80,695 | 7% slower — kept for memory, see below |
 | bfloat16 autocast with TF32 | 78,790 | 9% slower |
+| Page-locked staging, asynchronous copy | 37,590 and 80,111 | 8% to 57% slower over two runs |
+| `torch.compile(dynamic=True)` | per-step parity | 1,098 s of compilation — rejected |
+| Host prefetch thread, queue depth 2 | 17.3 ms/step vs 12.9 | 35% slower — rejected |
+
+Run-to-run spread on one configuration is about 0.5% across three repeats,
+which is the bar a claim here has to clear.
+
+**The fused optimizer is the only throughput win.** Adam over this model's
+parameter list is otherwise dozens of small elementwise kernel launches, and on
+a step this short the launches cost more than the arithmetic they carry. It is
+derived from the backend rather than configured, because there is one right
+answer per backend and a dial with a single correct setting is one nobody
+should have to find.
+
+It is worth recording that this looked far larger in isolation. In a bare
+training loop — forward, backward, step, nothing else — fusing was worth 17.7%
+(12.86 ms to 10.58 ms, five interleaved repeats per arm). Through the real
+runner it is worth 2.3%. The difference is the per-step health instrumentation,
+which computes a gradient norm across every parameter tensor on every step and
+issues its own comparable pile of small launches. **On a launch-bound step, a
+run's own telemetry costs the same order as its optimizer.** That is the next
+thing to look at, and it is invisible in the wall-clock accounting, because the
+monitor's host time is already charged to instrumentation and excluded from the
+throughput window while its device launches are not separable there.
 
 **TF32 does nothing here** because the model is not matmul-bound. A `model_dim`
 of 64 gives the tensor cores nothing to accelerate; the step is spent on kernel
 launches and host work.
+
+**`torch.compile` is not viable at this shape variety.** It reached roughly the
+baseline's steady state per step, but paid 1,098 seconds of compilation for 115
+steps and hit Dynamo's recompile limit of 8. The reported cause is the
+Python-level iteration over ragged `legal_action_ids` in the batch validation
+path — the same ragged Python structure that makes batch construction
+expensive. Amortizing that compilation at the observed per-step difference
+would take millions of steps.
+
+**A prefetch thread makes it worse**, and unstably: 13.9 ms to 23.4 ms across
+repeats against a 12.9 ms baseline. Building a batch is Python-object traversal
+holding the interpreter lock, so a background thread contends with the training
+loop instead of overlapping it. Overlapping that cost needs a worker process or
+a loader that emits arrays; a thread cannot do it.
 
 **Page-locked staging lost badly**, and the phase profile above says why.
 Pinning helps when a real copy can overlap real device work. Here the expensive
@@ -133,6 +173,14 @@ overlap with, because the device is idle waiting. The two runs disagreed by a
 wide margin, which is itself informative: allocating page-locked buffers for the
 loader's varying bucket shapes cannot reuse a cached buffer, so its cost depends
 on allocation luck. It was never faster in either run.
+
+**One suspected cost turned out not to be one.** The masked loss reads a device
+tensor in boolean context on every micro-batch, to reject an empty loss mask,
+which is exactly the pattern this project otherwise forbids in hot paths.
+Removing it changes nothing measurable: 12.00 ms with the guard, 12.55 ms
+without, against a 12.55 ms repeat of the original arm. The device is idle
+waiting for the host, so a synchronization has nothing to wait for. The guard
+was left in place.
 
 **The synchronization probe measured −0.11 ms per step**, meaning the arm that
 synchronizes on every micro-batch was very slightly *faster* than the deferred
@@ -180,10 +228,28 @@ unavailable.
 
 ## What To Do Next
 
-The measurement points at one thing: **the input pipeline is the binding
-constraint, and it is costing more than half of what this accelerator can
-deliver.** A 4.8 ms host-side cost per step, unchanged between backends, sits in
-front of a 6.2 ms compute step. Removing it is worth more than any device-side
-optimization available at this model size, and raising the batch is the cheap
-partial workaround available today — 3.79× at batch 64 rather than 2.00× at
-batch 16, with memory to spare.
+Everything above converges on one statement: **at this model size the device is
+not the constraint, the host is, and every device-side option is therefore
+worth almost nothing.** Seven were tried. One returned 2.3%. A 4.8 ms host-side
+cost per step, unchanged between backends, sits in front of a 6.2 ms compute
+step, and the card idles at roughly 11% for the difference.
+
+That bounds what this milestone's CUDA work could deliver, and it is worth
+being plain that the 2.00x figure is a ceiling reached rather than a result
+optimized toward. Two things lift it, and neither is a device-side change:
+
+- **Raise the effective batch.** Free today, no code: 3.79x at batch 64 and
+  4.76x at 256, using 2.6 GiB of 23.5 GiB. What the batch should actually be is
+  a question about the optimization trajectory rather than about throughput, so
+  it belongs with capacity selection.
+- **Stop building batches out of ragged Python structures.** This is the single
+  root cause behind three separate findings here: the 4.8 ms construction cost,
+  the recompile storm that made `torch.compile` unusable, and the prefetch
+  thread's lock contention. A loader that hands back arrays addresses all
+  three, and that is the shard-streaming work rather than anything in this
+  change.
+
+A third and smaller one is now visible and was not before: the per-step
+gradient norm costs the same order as the optimizer on a launch-bound step.
+Measuring what the health monitor costs on the device, rather than only on the
+host, would say whether its cadence should become a dial.

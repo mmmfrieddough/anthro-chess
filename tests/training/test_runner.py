@@ -101,6 +101,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         "parameter_dtype": "float32",
         "determinism": "strict",
         "gradient_accumulation_steps": 1,
+        "fused_optimizer": False,
         "phase_profiling": False,
     }
     # Which machine, kept apart from what was selected on it. Nothing compares
@@ -190,6 +191,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         "backend": "cpu",
         "determinism": "strict",
         "device": "cpu",
+        "fused_optimizer": False,
         "gradient_accumulation_steps": 1,
         "parameter_dtype": "float32",
         "phase_profiling": False,
@@ -400,6 +402,7 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         "backend": backend,
         "determinism": "relaxed",
         "device": backend,
+        "fused_optimizer": backend == "cuda",
         "gradient_accumulation_steps": 1,
         "parameter_dtype": "float32",
         "phase_profiling": False,

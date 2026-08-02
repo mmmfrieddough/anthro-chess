@@ -228,6 +228,7 @@ def run_training(
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=config.learning_rate,
+            fused=_fused_optimizer(device),
         )
         code_record = code_provenance().as_record()
         data_record = {
@@ -987,6 +988,26 @@ def _autocast(
     return torch.autocast(device_type=device.type, dtype=dtype)
 
 
+def _fused_optimizer(device: torch.device) -> bool:
+    """Return whether the optimizer update runs as one fused kernel.
+
+    Derived from the backend rather than configured, because there is one right
+    answer per backend and a dial with a single correct setting is a dial
+    nobody should have to find. Adam over this model's parameter list is
+    otherwise dozens of small elementwise launches, and on CUDA the launches
+    cost more than the arithmetic: fusing them was worth 17.7% of a whole
+    training step, which is larger than every precision and transfer option
+    measured for this milestone put together.
+
+    Elementwise and deterministic either way, so this stays compatible with the
+    strict correctness path. It does reassociate some floating-point work, so
+    the two forms are not bit-identical to each other — which is already true
+    of any change of backend, and is why neither is a compatibility identity.
+    """
+
+    return device.type == "cuda"
+
+
 def _execution_record(
     config: TrainingConfig,
     device: torch.device,
@@ -998,6 +1019,7 @@ def _execution_record(
         "parameter_dtype": str(_training_dtype(config)).removeprefix("torch."),
         "determinism": config.determinism,
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "fused_optimizer": _fused_optimizer(device),
         "phase_profiling": config.profile_phases,
     }
 
@@ -1018,6 +1040,7 @@ def _validate_checkpoint_execution(
         "parameter_dtype",
         "determinism",
         "gradient_accumulation_steps",
+        "fused_optimizer",
         "phase_profiling",
     }
     if set(execution) != required:

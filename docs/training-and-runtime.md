@@ -116,13 +116,20 @@ or an explicitly selected checkpoint across supported backends.
 Which device-side optimizations this runner offers is decided by measurement
 rather than by what the hardware nominally supports, and the bar is that a
 setting has to be worth its own existence. Reduced-precision float32 matrix
-multiplication and page-locked batch staging were both implemented, measured on
-the workload this milestone actually runs, and then removed: the first moved
-throughput by a fraction of a percent, and the second was slower every time it
-was tried, because the expensive part of preparing a batch is building it on the
-host rather than copying it to the device. `docs/planning/cuda-training-proof.md`
-records those readings so the next attempt starts from evidence rather than from
-the same first principles.
+multiplication, page-locked batch staging, graph compilation, and host-side
+prefetching were each implemented, measured on the workload this milestone
+actually runs, and then removed: none of them returned more than noise, and
+most of them cost. What survived is a fused optimizer update on backends that
+have one, which is derived from the backend rather than configured because
+there is one right answer per backend.
+
+That result is worth stating as a shape rather than a list. At the model size
+this milestone starts from, the accelerator is not the constraint — building
+batches out of ragged Python structures on the host is — so device-side options
+have very little to act on, and the same root cause explains why compilation
+and prefetching failed as well as why the batch is slow to build.
+`docs/planning/cuda-training-proof.md` records every reading, so the next
+attempt starts from evidence rather than from the same first principles.
 
 Mixed precision survived that bar on a different axis. Selecting it autocasts
 the forward pass while parameters and optimizer state stay float32, so a
