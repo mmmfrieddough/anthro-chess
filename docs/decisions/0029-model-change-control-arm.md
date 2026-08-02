@@ -138,9 +138,12 @@ a floor covering the delta exists rather than how it was computed.
 ### A Null Result Is An Outcome
 
 The pull request lands with the reading it got, and the issue closes having
-answered its question. Arms are not re-run in the hope of a better number; a
-re-run is legitimate only when the first was faulty for a stated reason, and
-then both readings are reported. Where a change was worth having only if it
+answered its question. Arms are not re-run in the hope of a better number, and
+the reading is not widened at a larger view because the first was inconclusive;
+both are the same failure, and the view is sized from the effect the claim names
+before the arms run rather than from the answer they gave. A re-run is
+legitimate only when the first was faulty for a stated reason, and then both
+readings are reported. Where a change was worth having only if it
 improved the model, a null reading removes it rather than merging it disabled,
 which is what `docs/design-principles.md` already says about surface that does
 not win.

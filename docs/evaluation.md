@@ -2401,6 +2401,15 @@ whose cost is a grid rather than a sample — is not testable by a reduced sweep
 at all, so that benchmark is read at its declared size on both arms and the
 comparison says which scale each family was read at.
 
+The scale is therefore part of the claim rather than a response to it. It is
+chosen before the arms run, and a delta inside its floor at the chosen scale is
+a null result, not a reason to re-read at a larger view: a reading widened
+because its answer was unwelcome is the same failure as an arm retrained for a
+better number, and reduced and full are separate series in any case rather than
+two precisions of one. Where a small effect is expected, `uv run anthro eval
+noise plan` reports how many games an axis needs to resolve an effect of a given
+size, which is a question for before the reading.
+
 The comparison itself needs nothing new. A training run is a coordinate rather
 than a component of series identity, so two arms of one configuration land in
 the same series, and `uv run anthro eval report` reads the delta between them
