@@ -26,7 +26,7 @@ that rebuild the data side from the pinned sources.
 ## Where to look
 
 Read `docs/documentation.md`, the rows below that match the work, and the
-matching records in `docs/decisions/` (0001-0028).
+matching records in `docs/decisions/` (0001-0029).
 
 | Open when | File |
 | --- | --- |
@@ -62,6 +62,13 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   `--no-record` and the default reduced sweep rather than `--full`. Fixtures
   cannot show that a benchmark measures anything. `docs/evaluation.md` says what
   the reading is and is not.
+- A change under `src/anthro_chess/models/`, `src/anthro_chess/training/`,
+  `src/anthro_chess/data/`, `src/anthro_chess/chess/actions.py`,
+  `configs/training/`, or `configs/data/` decides what a model learns, so it
+  shows its effect against a control arm trained without it before the pull
+  request is ready. `docs/issue-workflow.md` says when that is required and how
+  a session without the hardware routes it. A change in those paths meant to
+  leave the weights alone shows that instead, which is cheaper.
 - Use exact chess logic for board reconstruction, legal move generation, and
   rule bookkeeping.
 - Legal-mask model move outputs before sampling.
