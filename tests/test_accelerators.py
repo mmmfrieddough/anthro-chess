@@ -25,9 +25,10 @@ CPU_HOST = AcceleratorSurface(
     selectable_training=("mps",),
     selectable_inference=("mps",),
 )
-#: A CUDA host while inference accepts CUDA and training does not. Not a
-#: contrived case: it is what this repository looks like between the two halves
-#: of CUDA support landing.
+#: A CUDA host whose inference selection accepts the card and whose training
+#: selection does not. Not a contrived case: it is what this repository looked
+#: like between the two halves of CUDA support landing, and it is what every
+#: future backend will look like while one path has it and the other does not.
 HALF_SELECTABLE_HOST = AcceleratorSurface(
     present=(("cuda", 2),),
     selectable_training=("mps",),
@@ -146,3 +147,4 @@ def test_the_detected_surface_describes_this_process() -> None:
     assert "cpu" not in detected.selectable_training
     assert "auto" not in detected.selectable_inference
     assert "cuda" in detected.selectable_inference
+    assert "cuda" in detected.selectable_training
