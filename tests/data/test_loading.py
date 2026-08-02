@@ -63,6 +63,7 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
     assert batch.action_loss_mask == batch.attention_mask
     assert batch.action_targets[0] == _action_ids(("e2e4", "e7e5", "g1f3"))
     assert batch.action_targets[1] == (_action_ids(("d2d4",))[0], 0, 0)
+    assert batch.legal_action_ids is not None
     assert batch.legal_action_ids[1][0]
     assert batch.legal_action_ids[1][1:] == ((), ())
     assert batch.inputs.piece_ids[1][1] == (0,) * 64
@@ -137,7 +138,14 @@ def test_length_buckets_keep_similarly_sized_full_games_together(
     assert long_batch.sequence_length == 8
 
 
-def test_causal_mask_prevents_future_target_attention() -> None:
+def test_each_timestep_is_handed_the_action_the_previous_one_predicted() -> None:
+    """One ply's target is the next ply's context, which is what makes it causal.
+
+    The mask that stops a timestep attending to its own future belongs to the
+    model, so what the batch owes is this alignment: no timestep may already
+    carry the answer it is about to be asked for.
+    """
+
     dataset = _encoded_dataset()
     loader = SequenceDataLoader(
         dataset,
@@ -146,13 +154,24 @@ def test_causal_mask_prevents_future_target_attention() -> None:
 
     batch = next(loader)
 
-    assert batch.causal_attention_mask == (
-        (True, False, False),
-        (True, True, False),
-        (True, True, True),
-    )
+    assert batch.inputs.previous_action_id.present[0] == (False, True, True)
     assert batch.inputs.previous_action_id.values[0][1] == batch.action_targets[0][0]
     assert batch.inputs.previous_action_id.values[0][2] == batch.action_targets[0][1]
+
+
+def test_a_loader_asked_for_no_legal_actions_packs_none() -> None:
+    """Nothing in a training step reads them, so nothing packs or ships them."""
+
+    dataset = _encoded_dataset()
+    config = SequenceLoaderConfig(batch_size=1, shuffle=False)
+
+    scoring = next(SequenceDataLoader(dataset, config))
+    training = next(SequenceDataLoader(dataset, config, legal_actions=False))
+
+    assert scoring.legal_action_ids is not None
+    assert training.legal_action_ids is None
+    assert training.action_targets == scoring.action_targets
+    assert training.attention_mask == scoring.attention_mask
 
 
 def test_deterministic_order_changes_by_epoch_and_restores_exact_cursor(

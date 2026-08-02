@@ -384,6 +384,9 @@ def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
 
     batch.validate()
     _validate_logit_shape(logits, batch)
+    legal_action_ids = batch.legal_action_ids
+    if legal_action_ids is None:
+        raise ValueError("scoring a policy needs the batch's legal actions")
 
     active_logits = (
         logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
@@ -441,7 +444,7 @@ def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
         targets,
         strict=True,
     ):
-        legal_actions = batch.legal_action_ids[batch_index][sequence_index]
+        legal_actions = legal_action_ids[batch_index][sequence_index]
         _validate_legal_actions(legal_actions, target)
         legal_rows.append(legal_actions)
         game_ids.append(game_id_rows[batch_index][sequence_index])

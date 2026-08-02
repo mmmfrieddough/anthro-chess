@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import chess
 import pytest
@@ -73,6 +74,7 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     assert batch.inputs.target_rating.present[0].tolist() == [True, False, True]
     assert batch.inputs.target_rating.values[0].tolist() == [1500, 0, 1500]
     assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
+    assert batch.legal_action_ids is not None
     assert tuple(batch.legal_action_ids[0][0]) == legal_action_ids(
         initial_board,
         include_resignation=True,
@@ -98,7 +100,7 @@ def test_tensor_boundary_preserves_unsigned_normalized_game_ids() -> None:
     assert int(batch.game_ids[0, 0].item()) == game_id
 
 
-def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() -> None:
+def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
     batch = MoveModelBatch.from_sequence_batch(
         _sequence_batch(
             ("e2e4", "e7e5", "g1f3"),
@@ -112,7 +114,6 @@ def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() ->
     assert logits.shape == (2, 3, ACTION_VOCABULARY_SIZE)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    assert torch.count_nonzero(logits[1, 1:]).item() == 0
     assert model.identity()["version"] == 3
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
@@ -121,6 +122,99 @@ def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() ->
     )
     assert model.identity()["timing_inputs"] is False
     assert model.identity()["timing_head"] is False
+
+
+def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
+    """What replaces the key padding mask: right-aligned padding makes it moot.
+
+    A real query attends only to earlier timesteps, and every timestep earlier
+    than a real one is itself real, so a shorter history batched beside a
+    longer one sees exactly what it would have seen alone. Padded rows now
+    carry ordinary logits instead of zeros, and this is the property that lets
+    nobody care.
+    """
+
+    torch.manual_seed(19)
+    alone = MoveModelBatch.from_sequence_batch(_sequence_batch(("d2d4",)))
+    padded = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("d2d4",), ("e2e4", "e7e5", "g1f3"))
+    )
+    model = CausalMoveModel(_tiny_config()).eval()
+
+    with torch.no_grad():
+        alone_logits = model(alone)
+        padded_logits = model(padded)
+
+    torch.testing.assert_close(
+        padded_logits[0, :1],
+        alone_logits[0, :1],
+        rtol=0.0,
+        atol=1e-6,
+    )
+    # The padded columns are not zeroed any more, and nothing reads them.
+    assert torch.isfinite(padded_logits).all()
+    assert torch.count_nonzero(padded_logits[0, 1:]) > 0
+
+
+def test_the_causal_mask_is_built_once_and_sliced_for_shorter_batches() -> None:
+    """Held rather than rebuilt, and still exactly upper triangular."""
+
+    model = CausalMoveModel(_tiny_config())
+
+    wide = model.causal_mask(5, torch.device("cpu"))
+    held = model._causal_mask  # noqa: SLF001
+    narrow = model.causal_mask(3, torch.device("cpu"))
+
+    assert torch.equal(wide, torch.ones((5, 5), dtype=torch.bool).triu(1))
+    assert torch.equal(narrow, torch.ones((3, 3), dtype=torch.bool).triu(1))
+    assert model._causal_mask is held  # noqa: SLF001
+
+
+def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> None:
+    """The table replaced a per-forward recomputation, so it must agree with it."""
+
+    config = _tiny_config()
+    model = CausalMoveModel(config)
+    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+
+    features = model.positions(batch, torch.float32)
+
+    dimension = config.model_dim
+    frequencies = torch.exp(
+        torch.arange(0, dimension, 2, dtype=torch.float32)
+        * (-math.log(10_000.0) / dimension)
+    )
+    angles = batch.ply_indices.float().unsqueeze(-1) * frequencies
+    expected = torch.zeros((*batch.ply_indices.shape, dimension))
+    expected[..., 0::2] = torch.sin(angles)
+    expected[..., 1::2] = torch.cos(angles)
+
+    torch.testing.assert_close(features, expected)
+
+
+def test_position_features_reach_a_chunk_that_starts_past_the_padded_width() -> None:
+    """A chunked game's indices run past its own width, and the table must too."""
+
+    model = CausalMoveModel(_tiny_config())
+    whole = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4", "e7e5", "g1f3", "b8c6"))
+    )
+    tail = replace(
+        whole,
+        ply_indices=whole.ply_indices[:, 2:],
+        chunk_start_plies=(2,),
+        action_targets=whole.action_targets[:, 2:],
+        action_loss_mask=whole.action_loss_mask[:, 2:],
+        attention_mask=whole.attention_mask[:, 2:],
+        legal_action_ids=None,
+        game_ids=whole.game_ids[:, 2:],
+        inputs=whole.inputs,
+    )
+
+    torch.testing.assert_close(
+        model.positions(tail, torch.float32),
+        model.positions(whole, torch.float32)[:, 2:],
+    )
 
 
 def test_future_context_does_not_change_earlier_predictions() -> None:

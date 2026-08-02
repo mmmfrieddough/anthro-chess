@@ -66,14 +66,24 @@ class MoveModelInputs:
 
 @dataclass(frozen=True)
 class MoveModelBatch:
-    """Tensor model boundary plus alignment metadata for inspection."""
+    """Tensor model boundary plus alignment metadata for inspection.
+
+    Every factory here validates what it built, so a batch that exists is a
+    batch that passed. That is the whole contract: nothing downstream revalidates
+    it, and a caller assembling one field by field with :func:`dataclasses.replace`
+    owns calling :meth:`validate` again.
+
+    ``legal_action_ids`` is ``None`` when the batch came from a loader that was
+    not asked for them. Legality checking and policy scoring are the only
+    readers, so a training batch omits them and :meth:`validate` skips the
+    checks that need them.
+    """
 
     inputs: MoveModelInputs
     action_targets: Tensor
     action_loss_mask: Tensor
     attention_mask: Tensor
-    causal_attention_mask: Tensor
-    legal_action_ids: LegalActionTensor
+    legal_action_ids: LegalActionTensor | None
     game_ids: Tensor
     ply_indices: Tensor
     chunk_start_plies: tuple[int, ...]
@@ -130,7 +140,6 @@ class MoveModelBatch:
             action_targets=required(batch.action_targets),
             action_loss_mask=boolean(batch.action_loss_mask),
             attention_mask=boolean(batch.attention_mask),
-            causal_attention_mask=boolean(batch.causal_attention_mask),
             legal_action_ids=batch.legal_action_ids,
             game_ids=torch.as_tensor(
                 batch.game_ids,
@@ -170,9 +179,9 @@ class MoveModelBatch:
 
         Padding goes after the history rather than before it. Every real ply
         then keeps the index it would have had on its own, and since the
-        position encoding reads that index and the causal mask lets a timestep
-        attend only to earlier ones, the row's last real timestep sees exactly
-        the inputs the same history would present alone. A caller reads each
+        position encoding reads that index and the model lets a timestep attend
+        only to earlier ones, the row's last real timestep sees exactly the
+        inputs the same history would present alone. A caller reads each
         decision at its own history length rather than at a shared last
         column.
         """
@@ -252,9 +261,6 @@ class MoveModelBatch:
                 dtype=torch.bool,
                 device=tensor_device,
             ),
-            causal_attention_mask=torch.tril(
-                torch.ones((width, width), dtype=torch.bool, device=tensor_device)
-            ),
             legal_action_ids=(((),) * width,) * len(contexts),
             game_ids=torch.zeros(
                 (len(contexts), width), dtype=torch.long, device=tensor_device
@@ -270,11 +276,11 @@ class MoveModelBatch:
         """Combine equal-length batches into one wider batch.
 
         This is the narrow case: every input covers the same number of plies,
-        so the rows concatenate with no padding and the causal mask is already
-        shared. It exists for declared-batch throughput measurement, where the
-        workload fixes one history length on purpose. In-flight games of
-        differing lengths are a padding problem rather than a stacking one and
-        belong in :meth:`from_decision_contexts`.
+        so the rows concatenate with no padding. It exists for declared-batch
+        throughput measurement, where the workload fixes one history length on
+        purpose. In-flight games of differing lengths are a padding problem
+        rather than a stacking one and belong in
+        :meth:`from_decision_contexts`.
         """
 
         if not batches:
@@ -282,6 +288,12 @@ class MoveModelBatch:
         length = batches[0].action_targets.shape[1]
         if any(batch.action_targets.shape[1] != length for batch in batches):
             raise ValueError("stacked batches must cover the same sequence length")
+        carries_legal_actions = batches[0].legal_action_ids is not None
+        if any(
+            (batch.legal_action_ids is not None) != carries_legal_actions
+            for batch in batches
+        ):
+            raise ValueError("stacked batches must agree on carrying legal actions")
 
         def joined(select: Callable[[MoveModelBatch], Tensor]) -> Tensor:
             return torch.cat([select(batch) for batch in batches], dim=0)
@@ -294,7 +306,6 @@ class MoveModelBatch:
                 torch.cat([select(batch.inputs).present for batch in batches], dim=0),
             )
 
-        first = batches[0]
         result = cls(
             inputs=MoveModelInputs(
                 piece_ids=joined(lambda batch: batch.inputs.piece_ids),
@@ -313,9 +324,12 @@ class MoveModelBatch:
             action_targets=joined(lambda batch: batch.action_targets),
             action_loss_mask=joined(lambda batch: batch.action_loss_mask),
             attention_mask=joined(lambda batch: batch.attention_mask),
-            causal_attention_mask=first.causal_attention_mask,
-            legal_action_ids=tuple(
-                row for batch in batches for row in batch.legal_action_ids
+            legal_action_ids=(
+                tuple(
+                    row for batch in batches for row in (batch.legal_action_ids or ())
+                )
+                if carries_legal_actions
+                else None
             ),
             game_ids=joined(lambda batch: batch.game_ids),
             ply_indices=joined(lambda batch: batch.ply_indices),
@@ -356,13 +370,11 @@ class MoveModelBatch:
             for item in optional_inputs
         ):
             raise ValueError("nullable model inputs must align with targets")
-        sequence_length = expected_shape[1]
-        if self.causal_attention_mask.shape != (
-            sequence_length,
-            sequence_length,
-        ):
-            raise ValueError("causal attention mask must be sequence by sequence")
+        if len(self.chunk_start_plies) != expected_shape[0]:
+            raise ValueError("chunk start plies must name every sequence in the batch")
         self._reject_invalid_values()
+        if self.legal_action_ids is None:
+            return
         if len(self.legal_action_ids) != expected_shape[0] or any(
             len(row) != expected_shape[1] for row in self.legal_action_ids
         ):
@@ -381,10 +393,17 @@ class MoveModelBatch:
         en_passant = self.inputs.en_passant_square
         previous_actions = self.inputs.previous_action_id
         ratings = self.inputs.target_rating
+        # What the model's position table is sized against. A row starts at its
+        # chunk's first ply and runs to the padded width, so this is the batch's
+        # own statement of how far its indices reach; checking it here is what
+        # lets the model gather positions without asking the device anything.
+        position_bound = max(self.chunk_start_plies) + self.action_targets.shape[1]
         checks: tuple[tuple[str, Tensor], ...] = (
             (
-                "causal attention mask cannot expose future timesteps",
-                torch.any(torch.triu(self.causal_attention_mask, diagonal=1)),
+                "ply indices must lie inside the plies the batch declares",
+                torch.any(
+                    (self.ply_indices < 0) | (self.ply_indices >= position_bound)
+                ),
             ),
             (
                 "action loss cannot include padded timesteps",
@@ -463,7 +482,7 @@ class MoveModelBatch:
             .cpu()
             .tolist()
         )
-        for batch_index, row in enumerate(self.legal_action_ids):
+        for batch_index, row in enumerate(self.legal_action_ids or ()):
             for sequence_index, legal_actions in enumerate(row):
                 if (
                     enabled[batch_index][sequence_index]

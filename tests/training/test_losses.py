@@ -1,3 +1,5 @@
+from typing import Any
+
 import chess
 import pytest
 import torch
@@ -85,6 +87,7 @@ def test_a_terminal_target_is_supervised_like_any_other_action() -> None:
 
     assert batch.action_targets[0, -1].item() == RESIGNATION_ACTION_ID
     assert bool(batch.action_loss_mask[0, -1])
+    assert batch.legal_action_ids is not None
     assert RESIGNATION_ACTION_ID in batch.legal_action_ids[0][-1]
 
     logits = torch.zeros((1, len(plies), ACTION_VOCABULARY_SIZE), requires_grad=True)
@@ -100,19 +103,63 @@ def test_a_terminal_target_is_supervised_like_any_other_action() -> None:
     assert torch.any(logits.grad[0, -1] != 0.0)
 
 
-def test_action_loss_rejects_empty_or_misaligned_masks() -> None:
+def test_action_loss_rejects_misaligned_masks() -> None:
     logits = torch.zeros((1, 2, 3))
     targets = torch.zeros((1, 2), dtype=torch.long)
 
-    with pytest.raises(ValueError, match="at least one"):
-        masked_action_cross_entropy(
-            logits,
-            targets,
-            torch.zeros((1, 2), dtype=torch.bool),
-        )
     with pytest.raises(ValueError, match="align"):
         masked_action_cross_entropy(
             logits,
             targets,
             torch.ones((1, 1), dtype=torch.bool),
         )
+
+
+def test_a_mask_enabling_nothing_reports_a_non_finite_loss() -> None:
+    """The cost of dropping the empty-mask guard, stated rather than found.
+
+    Asking whether any target is enabled reads a device tensor on every
+    micro-batch. Nothing the loader emits can reach here — every example holds
+    at least one ply and the loss mask is the attention mask — and a training
+    run already refuses to continue on a loss that is not finite, so the check
+    is paid downstream rather than once per accumulation step.
+    """
+
+    loss = masked_action_cross_entropy(
+        torch.zeros((1, 2, 3)),
+        torch.zeros((1, 2), dtype=torch.long),
+        torch.zeros((1, 2), dtype=torch.bool),
+    )
+
+    assert not torch.isfinite(loss)
+
+
+def test_the_loss_takes_no_shape_from_the_mask_it_is_given() -> None:
+    """Static shapes, which is half of what stands between this and compilation.
+
+    Two masks enabling different numbers of targets must reach the same kernel
+    with the same shapes. What varies is which target values are dropped, not
+    the size of anything.
+    """
+
+    torch.manual_seed(17)
+    logits = torch.randn((2, 4, 6))
+    targets = torch.tensor([[1, 2, 3, 4], [5, 0, 1, 2]])
+    shapes: list[tuple[torch.Size, ...]] = []
+    original = F.cross_entropy
+
+    def recorded(*arguments: Any, **keywords: Any) -> torch.Tensor:
+        shapes.append(
+            tuple(item.shape for item in arguments if isinstance(item, torch.Tensor))
+        )
+        return original(*arguments, **keywords)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(F, "cross_entropy", recorded)
+        for mask in (
+            torch.ones((2, 4), dtype=torch.bool),
+            torch.tensor([[True, False, False, False], [True, True, False, False]]),
+        ):
+            masked_action_cross_entropy(logits, targets, mask)
+
+    assert shapes[0] == shapes[1]

@@ -503,6 +503,7 @@ def test_stacked_batches_carry_every_row_through_the_model(
     # Four played plies plus the decision ply the context adds.
     assert stacked.action_targets.shape == (3, 5)
     assert logits.shape[:2] == (3, 5)
+    assert stacked.legal_action_ids is not None
     assert len(stacked.legal_action_ids) == 3
     assert torch.isfinite(logits).all()
 

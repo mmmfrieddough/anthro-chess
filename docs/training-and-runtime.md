@@ -101,12 +101,21 @@ run record names which loader read each selection, because a training curve is
 not comparable across two different epoch orders.
 
 The initial action-only model consumes that ordinary loader boundary through
-`anthro_chess.models`, preserving its explicit targets, legal actions,
-rating missingness, padding, and causal masks during tensor conversion. Timing
-fields remain preserved in the loader output but are deliberately outside the
-Milestone 1 model boundary and objective. The shared masked action objective
-lives in `anthro_chess.training`; deterministic structural and tiny-overfit
-checks exercise those same model and loss APIs.
+`anthro_chess.models`, preserving its explicit targets, rating missingness, and
+padding during tensor conversion. Timing fields remain preserved in the loader
+output but are deliberately outside the Milestone 1 model boundary and
+objective. The shared masked action objective lives in `anthro_chess.training`;
+deterministic structural and tiny-overfit checks exercise those same model and
+loss APIs.
+
+Two things the batch once carried are derived where they are used instead,
+because neither is a property of the data. Causality belongs to the model, so
+the mask that hides a timestep's own future is held there rather than packed
+per batch and copied to the device — still passed to attention, because the
+framework's causal flag is a hint accompanying a mask rather than a substitute
+for one. Legal actions are packed only where something reads them, which is
+policy scoring and the construction-time legality check, so a training batch
+carries none and a scoring batch carries them as before.
 
 The shared training runner also lives in `anthro_chess.training` and uses those
 ordinary loader, model, loss, and validation boundaries. It resolves explicit

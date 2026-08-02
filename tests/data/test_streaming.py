@@ -151,6 +151,8 @@ def test_pads_masks_and_indexes_every_sequence_it_emits(
     batch = next(loader)
     loader.close()
 
+    legal_action_ids = batch.legal_action_ids
+    assert legal_action_ids is not None
     for row in range(batch.batch_size):
         mask = batch.attention_mask[row]
         held = sum(mask)
@@ -158,8 +160,8 @@ def test_pads_masks_and_indexes_every_sequence_it_emits(
         assert batch.action_loss_mask[row] == mask
         assert batch.ply_indices[row][:held] == tuple(range(held))
         assert batch.action_targets[row][held:] == (0,) * (len(mask) - held)
-        assert batch.legal_action_ids[row][held:] == ((),) * (len(mask) - held)
-        assert all(batch.legal_action_ids[row][:held])
+        assert legal_action_ids[row][held:] == ((),) * (len(mask) - held)
+        assert all(legal_action_ids[row][:held])
 
 
 def test_length_buckets_keep_a_batch_to_one_bucket(

@@ -198,9 +198,13 @@ def run_training(
         config.steps,
     )
     try:
-        train = _load_data_selection(config.train)
+        # Training reads targets and masks; validation scores policies against
+        # each position's legal actions. Only the second needs them packed, and
+        # under the shard-backed loader they are about a quarter of what every
+        # batch pickles on its way out of a worker.
+        train = _load_data_selection(config.train, legal_actions=False)
         validation = (
-            _load_data_selection(config.validation)
+            _load_data_selection(config.validation, legal_actions=True)
             if config.validation is not None
             else None
         )
@@ -586,7 +590,7 @@ def _optimize(
 
             monitor.begin_step()
             totals.begin_step()
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
             for _ in range(gradient_accumulation_steps):
                 data_started = time.perf_counter()
                 try:
@@ -1136,7 +1140,11 @@ def _validate_checkpoint_compatibility(
             )
 
 
-def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
+def _load_data_selection(
+    config: SequenceDataConfig,
+    *,
+    legal_actions: bool,
+) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
     if not manifest_path.is_file():
@@ -1147,7 +1155,12 @@ def _load_data_selection(config: SequenceDataConfig) -> _DataSelection:
         raise DataLoadingError("data manifest must contain a JSON object")
     shards = _validate_manifest(manifest, manifest_path, paths)
     manifest_sha256 = sha256(manifest_bytes).hexdigest()
-    loader = _open_loader(config, shards, manifest_sha256=manifest_sha256)
+    loader = _open_loader(
+        config,
+        shards,
+        manifest_sha256=manifest_sha256,
+        legal_actions=legal_actions,
+    )
     return _DataSelection(
         loader=loader,
         provenance={
@@ -1176,6 +1189,7 @@ def _open_loader(
     shards: Sequence[ShardIdentity],
     *,
     manifest_sha256: str,
+    legal_actions: bool,
 ) -> SequenceBatchSource:
     """Open the loader this selection declared, eager or shard-backed."""
 
@@ -1183,6 +1197,7 @@ def _open_loader(
         return SequenceDataLoader.from_parquet(
             [shard.path for shard in shards],
             config.loader,
+            legal_actions=legal_actions,
         )
     index = build_sharded_index(
         shards,
@@ -1191,7 +1206,12 @@ def _open_loader(
         chunk_length=config.loader.chunk_length,
         manifest_sha256=manifest_sha256,
     )
-    return StreamingSequenceDataLoader(index, config.loader, config.streaming)
+    return StreamingSequenceDataLoader(
+        index,
+        config.loader,
+        config.streaming,
+        legal_actions=legal_actions,
+    )
 
 
 def _validate_manifest(

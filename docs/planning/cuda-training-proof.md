@@ -180,7 +180,10 @@ which is exactly the pattern this project otherwise forbids in hot paths.
 Removing it changes nothing measurable: 12.00 ms with the guard, 12.55 ms
 without, against a 12.55 ms repeat of the original arm. The device is idle
 waiting for the host, so a synchronization has nothing to wait for. The guard
-was left in place.
+was left in place here. It has since gone, for a reason that has nothing to do
+with its cost: the loss stopped gathering its enabled rows by boolean index, and
+what the guard protected against is now a non-finite loss the run already
+rejects.
 
 **The synchronization probe measured −0.11 ms per step**, meaning the arm that
 synchronizes on every micro-batch was very slightly *faster* than the deferred
