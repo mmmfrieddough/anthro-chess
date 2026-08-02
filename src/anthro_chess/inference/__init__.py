@@ -6,9 +6,12 @@ from anthro_chess.inference.config import (
     ModelRunnerConfig,
 )
 from anthro_chess.inference.runner import (
+    AUTO_ACCELERATORS,
     CheckpointModelRunner,
     InferenceDeviceCapabilities,
     ModelRunnerError,
+    detect_inference_device_capabilities,
+    resolve_inference_device,
 )
 from anthro_chess.inference.selection import (
     MODEL_SELECTION_FILE,
@@ -20,6 +23,7 @@ from anthro_chess.inference.selection import (
 )
 
 __all__ = [
+    "AUTO_ACCELERATORS",
     "LATEST_CHECKPOINT",
     "MODEL_SELECTION_FILE",
     "MODEL_SELECTION_VERSION",
@@ -30,6 +34,8 @@ __all__ = [
     "ModelRunnerError",
     "ModelSelectionError",
     "ResolvedModelSelection",
+    "detect_inference_device_capabilities",
+    "resolve_inference_device",
     "resolve_model_selection",
     "write_model_selection",
 ]

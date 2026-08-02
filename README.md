@@ -166,8 +166,9 @@ the locked Torch build does not provide a deterministic implementation for one
 of its gradient operations. The selected backend, precision, and determinism
 mode are retained in run and checkpoint metadata.
 
-MPS is the only accelerator a device selection currently accepts, so every
-command on a CUDA host runs on CPU no matter what PyTorch can see there.
+Training accepts MPS but not CUDA, so training on a CUDA host still runs on CPU
+no matter what PyTorch can see there. Inference and evaluation accept both, so
+the benchmarks and the playable engine do use the GPU on that host.
 [CONTRIBUTING.md](CONTRIBUTING.md) covers what each platform resolves to.
 
 On Apple silicon with an MPS-enabled PyTorch build, the same runner can exercise
@@ -265,6 +266,17 @@ uv run anthro eval puzzles \
   --config configs/evaluation/puzzle-rating-response.toml --no-record
 uv run anthro eval novelty \
   --config configs/evaluation/novelty-dose-response.toml --no-record
+```
+
+Every benchmark resolves its device through the same inference selection, which
+accepts `auto`, `cpu`, `mps`, and `cuda`. `auto` takes whichever accelerator the
+host has, so a GPU machine needs no flag; an explicit selection fails rather
+than falling back when that backend is unavailable:
+
+```console
+uv run anthro eval inference \
+  --config configs/evaluation/inference-efficiency.toml \
+  --set 'model.device="cuda"' --no-record
 ```
 
 A sweep writes each step's outcome as it finishes, so `--resume` continues one
