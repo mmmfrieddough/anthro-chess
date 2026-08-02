@@ -53,12 +53,6 @@ PositionKey = tuple[int, int]
 WEAKER_PREFIX_GROUP = "weaker_prefix"
 STRONGER_PREFIX_GROUP = "stronger_prefix"
 
-#: What each aligned per-game contribution carries. These are local names, not
-#: metric identifiers: metric identity belongs to the results registry, and
-#: this module stays free of it the same way it stays free of torch.
-ANCHOR_DIVERGENCE_CONTRIBUTION = "anchor_policy_divergence"
-ANCHOR_AGREEMENT_CONTRIBUTION = "anchor_top1_agreement"
-
 logger = logging.getLogger(__name__)
 
 
@@ -287,25 +281,21 @@ class WithinGameResult:
         }
 
 
-def degradation_contribution(kind: ConditioningKind) -> str:
-    """Return the contribution name carrying one treatment's degradation."""
-
-    return f"{kind}_degradation"
-
-
 @dataclass(frozen=True)
 class GameContribution:
-    """One game's aligned share of the dependency metrics a floor can cover.
+    """One game's aligned share of the dependency results a floor can cover.
 
     ``positions`` is the weight rather than a diagnostic. Every value here is a
-    mean over the game's own rated positions, and the reported metric is a mean
-    over all of them, so recovering the metric from these means needs each game
+    mean over the game's own rated positions, and the reported quantity is a
+    mean over all of them, so recovering it from these means needs each game
     counted in proportion to how many positions it brought.
     """
 
     game_id: int
     positions: int
-    values: Mapping[str, float]
+    degradations: Mapping[ConditioningKind, float]
+    anchor_divergence: float
+    anchor_agreement: float
 
 
 @dataclass(frozen=True)
@@ -323,7 +313,7 @@ class DependencyTestResult:
     #: Aligned per-game inputs for a later paired checkpoint floor. Empty when
     #: the scored passes do not line up position for position, which is a
     #: reason to report no floor rather than to fail the reading.
-    contributions: tuple[GameContribution, ...] = ()
+    contributions: tuple[GameContribution, ...]
 
     def corruption(self, kind: ConditioningKind) -> CorruptionResult | None:
         """Return one corruption result by treatment kind."""
@@ -464,29 +454,25 @@ def _game_contributions(
         return ()
 
     corrupted_loss = {
-        degradation_contribution(conditioning.kind): {
+        conditioning.kind: {
             (position.game_id, position.ply_index): position.move_nll
             for position in positions
         }
         for conditioning, positions in corrupted_positions.values()
     }
-    contributions: list[GameContribution] = []
-    for game_id in sorted(keys_by_game):
-        keys = keys_by_game[game_id]
-        values = {
-            name: fmean(losses[key] - true_loss[key] for key in keys)
-            for name, losses in corrupted_loss.items()
-        }
-        values[ANCHOR_DIVERGENCE_CONTRIBUTION] = fmean(
-            trajectory[key].anchor_divergence for key in keys
+    return tuple(
+        GameContribution(
+            game_id=game_id,
+            positions=len(keys),
+            degradations={
+                kind: fmean(losses[key] - true_loss[key] for key in keys)
+                for kind, losses in corrupted_loss.items()
+            },
+            anchor_divergence=fmean(trajectory[key].anchor_divergence for key in keys),
+            anchor_agreement=fmean(trajectory[key].anchor_agreement for key in keys),
         )
-        values[ANCHOR_AGREEMENT_CONTRIBUTION] = fmean(
-            float(trajectory[key].anchor_agreement) for key in keys
-        )
-        contributions.append(
-            GameContribution(game_id=game_id, positions=len(keys), values=values)
-        )
-    return tuple(contributions)
+        for game_id, keys in sorted(keys_by_game.items())
+    )
 
 
 def _corruption_result(

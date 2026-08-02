@@ -574,11 +574,18 @@ repeats across checkpoints stays visible instead of being filtered away.
 
 **No floor at all is two situations, not one.** A floor may be missing because
 nobody has characterized it yet, which is work somebody could do, or because the
-metric counts something no characterization resamples, which is not. A metric of
+metric counts something resampling cannot estimate, which is not. A metric of
 the second kind declares why in the registry, and a report renders it
 `unqualifiable` rather than `unknown`. Reporting both as unknown sets a reader to
 work that cannot be done, and it is the same ambiguity as a floor rendering as
 exactly zero.
+
+That declaration rules out one estimator rather than every floor. It says
+resampling the units a reading scored cannot estimate this metric's dispersion,
+so no data-sampling floor can exist for it — but evaluation and training noise
+are read from repeated measurements instead, and either still describes such a
+metric. A report refuses only the sampling floor and judges the delta against
+any other kind it has.
 
 Training noise should be characterized early, while runs are short. It is the
 most valuable of the three and the only one that becomes harder to obtain over
@@ -923,10 +930,10 @@ reported quantity that is a mean over the positions it scored, so a later
 comparison can bootstrap the paired delta from them. The share is weighted by
 the positions behind it, because the quantity averages over positions while the
 resampling unit is the game. Two reported quantities are not means over
-positions and carry no floor at all: the cross-conditioning match rate counts
-rating slices, and the within-game response splits each slice at that slice's
-own median. A report says `unqualifiable` for those rather than `unknown`, since
-only the latter is waiting on work somebody could do.
+positions and can carry no sampling floor: the cross-conditioning match rate
+counts rating slices, and the within-game response splits each slice at that
+slice's own median. A report says `unqualifiable` for those rather than
+`unknown`, since only the latter is waiting on work somebody could do.
 `docs/decisions/0028-qualifying-the-rating-dependency-family.md` owns the
 choice.
 

@@ -73,7 +73,8 @@ Five metrics are covered: the three corruption degradations, the anchor policy
 divergence, and the anchor top-one agreement. Each is a mean over the same rated
 positions, so each has a per-game share.
 
-**Two are not, and they are not waiting on further work.**
+**Two are not, and they are not waiting on further work.** Neither has a
+per-game share to retain, so neither can carry a sampling floor.
 `dependency.rating_cross_conditioning_match_rate` counts rating slices rather
 than games, so resampling games estimates the dispersion of a different
 quantity. `dependency.rating_within_game_response` splits each rating slice at
@@ -85,11 +86,21 @@ under resampling and there is no per-unit contribution to bootstrap.
 `noise unknown` was one word for two situations: a floor nobody has produced
 yet, and a floor that cannot exist. Only the first is worth waiting for.
 
-A metric may now declare `no_floor_reason` in the registry, and a report renders
-`unqualifiable` rather than `unknown` for it. The declaration annotates the
-metric rather than redefining it, so it stays out of series identity and needs no
-`definition_version` bump. `anthro eval metrics` prints the reason, which is
-where the verdict points.
+A metric may now declare `no_sampling_floor_reason` in the registry, and a report
+renders `unqualifiable` rather than `unknown` for it. The declaration annotates
+the metric rather than redefining it, so it stays out of series identity and
+needs no `definition_version` bump. `anthro eval metrics` prints the reason,
+which is where the verdict points.
+
+**The declaration is scoped to data-sampling, not to floors in general**, and the
+name says so. Both reasons above are arguments about resampling the units a
+reading scored. Evaluation noise and training noise are read from repeated
+measurements rather than from per-unit contributions, so either would qualify
+these two metrics perfectly well; a report refuses only the sampling floor and
+judges the delta against any other kind it has. Suppressing every kind would
+have meant that a repeat-run characterization landing later was computed,
+matched to the series, and then silently discarded, with the report still
+claiming no floor could exist.
 
 ## Consequences
 
@@ -104,10 +115,10 @@ its deltas keep reporting `unknown`. That is correct — the inputs were not kep
 and it means the family's floors begin at the next reading rather than
 retroactively.
 
-`no_floor_reason` is a general facility introduced for two specific metrics.
-Other families carry quantities with the same shape — #175 raises the same
-ambiguity about floors rendering as exactly `0.0000` — and adopting it there is a
-separate decision about each family, not a consequence of this one.
+`no_sampling_floor_reason` is a general facility introduced for two specific
+metrics. Other families carry quantities with the same shape — #175 raises the
+same ambiguity about floors rendering as exactly `0.0000` — and adopting it there
+is a separate decision about each family, not a consequence of this one.
 
 Two adjacent gaps are untouched. The rating ladder reports ordering, slope, and
 span with no resolution beside them (#190), and its fitted ratings are not

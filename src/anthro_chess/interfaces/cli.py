@@ -3567,6 +3567,7 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
         metric_column_width,
         registry_record,
     )
+    from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
 
     if arguments.format == "json":
         print(json.dumps(registry_record(), indent=2, sort_keys=True))
@@ -3588,13 +3589,13 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
                 f"v{metric.definition_version}  {metric.cost.value:<14} "
                 f"{projection}"
             )
-            if metric.no_floor_reason is not None:
+            if metric.no_sampling_floor_reason is not None:
                 # Where a report reads "unqualifiable", this is what it points
                 # at, so the reason belongs in the listing rather than only in
                 # the source.
                 for line in textwrap.wrap(
-                    f"no floor can exist: {metric.no_floor_reason}",
-                    width=88,
+                    f"no sampling floor can exist: {metric.no_sampling_floor_reason}",
+                    width=MAXIMUM_LINE_WIDTH,
                     initial_indent="    ",
                     subsequent_indent="      ",
                 ):

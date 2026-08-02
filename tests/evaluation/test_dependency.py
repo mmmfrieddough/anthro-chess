@@ -192,11 +192,11 @@ def test_game_contributions_recover_the_reported_degradation() -> None:
     assert set(contributions) == {1, 2}
     assert contributions[1].positions == 1
     assert contributions[2].positions == 3
-    assert contributions[1].values["absent_degradation"] == pytest.approx(3.0)
-    assert contributions[2].values["absent_degradation"] == pytest.approx(0.2)
+    absent = ConditioningKind.ABSENT
+    assert contributions[1].degradations[absent] == pytest.approx(3.0)
+    assert contributions[2].degradations[absent] == pytest.approx(0.2)
     weighted = sum(
-        item.positions * item.values["absent_degradation"]
-        for item in result.contributions
+        item.positions * item.degradations[absent] for item in result.contributions
     ) / sum(item.positions for item in result.contributions)
     assert weighted == pytest.approx(degradation.degradation)
     assert weighted != pytest.approx(
@@ -231,11 +231,11 @@ def test_game_contributions_carry_the_anchor_quantities() -> None:
         trajectory=trajectory,
     )
 
-    values = {item.game_id: item.values for item in result.contributions}
-    assert values[1]["anchor_policy_divergence"] == pytest.approx(0.4)
-    assert values[2]["anchor_policy_divergence"] == pytest.approx(0.2)
-    assert values[1]["anchor_top1_agreement"] == pytest.approx(1.0)
-    assert values[2]["anchor_top1_agreement"] == pytest.approx(0.0)
+    values = {item.game_id: item for item in result.contributions}
+    assert values[1].anchor_divergence == pytest.approx(0.4)
+    assert values[2].anchor_divergence == pytest.approx(0.2)
+    assert values[1].anchor_agreement == pytest.approx(1.0)
+    assert values[2].anchor_agreement == pytest.approx(0.0)
 
 
 def test_game_contributions_are_withheld_when_a_signal_is_missing() -> None:

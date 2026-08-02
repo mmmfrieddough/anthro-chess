@@ -66,6 +66,10 @@ UNREGISTERED_FAMILY_ABSENCE = "no metric is registered for this family yet"
 #: rather than relying on the reader's window.
 MAXIMUM_LINE_WIDTH = 120
 
+#: The one floor kind estimated by resampling the units a reading scored, and
+#: therefore the only kind a metric can rule out by what it counts.
+SAMPLING_FLOOR_KIND = "data-sampling"
+
 
 def _delta_header(metric_width: int) -> str:
     """Return the delta table's header row at one identifier-column width.
@@ -789,9 +793,9 @@ def _noise_legend(report: DeltaReport) -> list[str]:
     )
     if NoiseVerdict.UNQUALIFIABLE in verdicts:
         legend = (
-            f"{legend} 'unqualifiable' means no floor can exist for that "
-            "metric, because what it counts is not what a characterization "
-            "resamples; the metric registry says why."
+            f"{legend} 'unqualifiable' means resampling that metric's units "
+            "cannot estimate its dispersion, so no sampling floor can exist "
+            "for it; the metric registry says why."
         )
     return textwrap.wrap(
         legend,
@@ -1285,29 +1289,23 @@ def _metric_delta(
         else ()
     )
     delta = current_measurement.value - baseline_measurement.value
-    # A metric that declares no floor can exist is not asked for one. Looking
-    # anyway would only find a floor that answers a different question, and
-    # showing it beside the delta would read as a qualification.
-    if definition.no_floor_reason is not None:
-        applicable: tuple[NoiseFloor, ...] = ()
-    else:
-        comparison_floor = (
-            None
-            if comparison_floors is None
-            else comparison_floors.floor(
-                baseline_envelope,
-                current_envelope,
-                definition.identifier,
-            )
-        )
-        applicable = _applicable_floors(
+    comparison_floor = (
+        None
+        if comparison_floors is None
+        else comparison_floors.floor(
+            baseline_envelope,
+            current_envelope,
             definition.identifier,
-            baseline_measurement,
-            current_measurement,
-            floors,
-            comparison_floor=comparison_floor,
-            executions=(baseline_envelope.execution, current_envelope.execution),
         )
+    )
+    applicable = _applicable_floors(
+        definition,
+        baseline_measurement,
+        current_measurement,
+        floors,
+        comparison_floor=comparison_floor,
+        executions=(baseline_envelope.execution, current_envelope.execution),
+    )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
     environment = (
         environment_differences(baseline_envelope, current_envelope)
@@ -1453,7 +1451,7 @@ def _pivoted_movement(
 
 
 def _applicable_floors(
-    metric: str,
+    definition: MetricDefinition,
     baseline: Measurement,
     current: Measurement,
     floors: NoiseFloorIndex,
@@ -1473,8 +1471,16 @@ def _applicable_floors(
     whether a machine-scoped execution floor describes it. A delta whose two
     sides ran on different machines is covered by no characterized execution
     floor, and reporting the noise as unknown there is the honest answer.
+
+    A metric that declares why resampling its units cannot estimate its
+    dispersion is refused a data-sampling floor here, whichever source offered
+    one, for the same reason: it would answer a question the metric does not
+    pose. Only that kind is refused, because evaluation and training noise come
+    from repeated measurements rather than per-unit contributions and describe
+    such a metric perfectly well.
     """
 
+    metric = definition.identifier
     widest: dict[str, NoiseFloor] = {}
     candidates = [
         floor
@@ -1490,6 +1496,10 @@ def _applicable_floors(
             floor for floor in candidates if floor.kind != comparison_floor.kind
         ]
         candidates.append(comparison_floor)
+    if definition.no_sampling_floor_reason is not None:
+        candidates = [
+            floor for floor in candidates if floor.kind != SAMPLING_FLOOR_KIND
+        ]
     for floor in candidates:
         existing = widest.get(floor.kind)
         if existing is None or floor.value > existing.value:
@@ -1513,16 +1523,11 @@ def _noise_verdict(
     delta: float,
     floor: float | None,
 ) -> NoiseVerdict:
-    """Judge one delta, distinguishing a missing floor from an impossible one.
+    """Judge one delta, distinguishing a missing floor from an impossible one."""
 
-    The declaration decides the verdict rather than the absence of a floor
-    does, so a metric that says no floor can exist reads the same way whatever
-    the lookup would have returned for it.
-    """
-
-    if definition.no_floor_reason is not None:
-        return NoiseVerdict.UNQUALIFIABLE
     if floor is None:
+        if definition.no_sampling_floor_reason is not None:
+            return NoiseVerdict.UNQUALIFIABLE
         return NoiseVerdict.UNKNOWN
     return NoiseVerdict.CLEARED if abs(delta) > floor else NoiseVerdict.WITHIN
 

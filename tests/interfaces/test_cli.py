@@ -724,7 +724,7 @@ def test_eval_metrics_states_why_a_metric_can_carry_no_floor(
     assert main(["eval", "metrics"]) == 0
 
     rendered = " ".join(capsys.readouterr().out.split())
-    assert "no floor can exist: the rate counts rating slices" in rendered
+    assert "no sampling floor can exist: the rate counts rating slices" in rendered
 
 
 def test_eval_metrics_aligns_every_family_on_one_column(

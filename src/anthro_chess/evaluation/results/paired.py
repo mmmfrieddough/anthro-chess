@@ -300,11 +300,7 @@ class PairedFloorIndex:
             measurement = envelope.measurement(metric)
             if measurement is None:
                 continue
-            retained = float(
-                np.mean(values[:, column])
-                if weights is None
-                else np.average(values[:, column], weights=weights)
-            )
+            retained = float(np.average(values[:, column], weights=weights))
             if not math.isclose(
                 retained,
                 measurement.value,

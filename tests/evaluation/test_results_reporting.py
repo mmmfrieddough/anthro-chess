@@ -695,7 +695,64 @@ def test_paired_contribution_weights_are_validated(
         )
 
 
-def test_a_metric_that_can_carry_no_floor_says_so_rather_than_unknown(
+def test_a_declared_metric_still_takes_a_floor_the_declaration_does_not_cover(
+    two_checkpoints: tuple[ResultEnvelope, ResultEnvelope],
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """The declaration rules out one estimator, not every noise source.
+
+    Both declared reasons argue that resampling the units a reading scored
+    cannot estimate the metric's dispersion. Evaluation noise is read from
+    repeated measurements instead, so it describes such a metric perfectly
+    well, and a report that discarded it would be withholding a floor it has.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_cross_conditioning_match_rate"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.25, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement(metric, 0.75, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="evaluation",
+                method="repeat-measurement",
+                replicates=8,
+                source="eight re-measurements of one checkpoint",
+                floors=[
+                    FloorEntry(
+                        metric=metric,
+                        fingerprint=series_fingerprint(metric, component),
+                        floor=0.75,
+                        dispersion=0.2,
+                        dispersion_bound=0.2,
+                        degrees_of_freedom=7,
+                        sampling_units=8,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex(), floors=floors)
+    row = _row(report, metric)
+
+    # The delta is 0.5, inside an evaluation floor of 0.75.
+    assert row.noise is NoiseVerdict.WITHIN
+    assert row.noise_floor_kind == "evaluation"
+    assert [floor.kind for floor in row.noise_floors] == ["evaluation"]
+
+
+def test_a_metric_that_can_carry_no_sampling_floor_says_so_rather_than_unknown(
     tmp_path: Path,
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
@@ -748,13 +805,16 @@ def test_a_metric_that_can_carry_no_floor_says_so_rather_than_unknown(
     )
     row = _row(report, metric)
 
+    # A sampling floor was retained for it and is still refused, because the
+    # declaration is about what resampling can estimate rather than about
+    # whether anybody produced a number.
     assert row.noise is NoiseVerdict.UNQUALIFIABLE
     assert row.noise_floor is None
     assert row.noise_floors == ()
     rendered = render_report(report)
     assert "unqualifiable" in rendered
     # The legend wraps to the terminal width, so it is read unwrapped here.
-    assert "no floor can exist for that metric" in " ".join(rendered.split())
+    assert "no sampling floor can exist for it" in " ".join(rendered.split())
 
 
 def test_an_unknown_noise_floor_is_stated_rather_than_assumed(

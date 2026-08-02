@@ -48,8 +48,6 @@ from anthro_chess.evaluation.adjudication import (
 )
 from anthro_chess.evaluation.aggregation import SliceTable
 from anthro_chess.evaluation.dependency import (
-    ANCHOR_AGREEMENT_CONTRIBUTION,
-    ANCHOR_DIVERGENCE_CONTRIBUTION,
     Conditioning,
     ConditioningKind,
     DependencyError,
@@ -60,7 +58,6 @@ from anthro_chess.evaluation.dependency import (
     PositionKey,
     TrajectorySignal,
     build_dependency_result,
-    degradation_contribution,
 )
 from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_leakage
 from anthro_chess.evaluation.noise import NoiseConfig, characterize_sampling_noise
@@ -701,17 +698,23 @@ def _run_dependency_tests(
         raise CheckpointEvaluationError(str(error)) from error
 
 
+#: Which metric each conditioning treatment's degradation is reported as. One
+#: table rather than two, because the reading and the floor beside it have to
+#: name the same quantity, and a treatment added to only one of them is the
+#: missing-floor gap this family already had once.
+_DEGRADATION_METRICS = {
+    ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
+    ConditioningKind.CONSTANT: DEPENDENCY_RATING_CONSTANT_DEGRADATION,
+    ConditioningKind.ABSENT: DEPENDENCY_RATING_ABSENT_DEGRADATION,
+}
+
+
 def _dependency_measurements(
     dependency: DependencyTestResult,
     component: DataComponent,
 ) -> tuple[Measurement, ...]:
     values: list[Measurement] = []
-    degradations = (
-        (ConditioningKind.SHUFFLED, DEPENDENCY_RATING_SHUFFLED_DEGRADATION),
-        (ConditioningKind.CONSTANT, DEPENDENCY_RATING_CONSTANT_DEGRADATION),
-        (ConditioningKind.ABSENT, DEPENDENCY_RATING_ABSENT_DEGRADATION),
-    )
-    for kind, definition in degradations:
+    for kind, definition in _DEGRADATION_METRICS.items():
         result = dependency.corruption(kind)
         if result is None:
             continue
@@ -762,24 +765,6 @@ def _dependency_measurements(
     return tuple(values)
 
 
-#: Which retained contribution feeds which metric. A conditioning treatment
-#: with no entry here contributes nothing to a floor, which is what keeps a
-#: newly added treatment from silently acquiring one.
-_DEPENDENCY_CONTRIBUTION_METRICS = {
-    degradation_contribution(
-        ConditioningKind.SHUFFLED
-    ): DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
-    degradation_contribution(
-        ConditioningKind.CONSTANT
-    ): DEPENDENCY_RATING_CONSTANT_DEGRADATION,
-    degradation_contribution(
-        ConditioningKind.ABSENT
-    ): DEPENDENCY_RATING_ABSENT_DEGRADATION,
-    ANCHOR_DIVERGENCE_CONTRIBUTION: DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
-    ANCHOR_AGREEMENT_CONTRIBUTION: DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
-}
-
-
 def _dependency_contributions(
     dependency: DependencyTestResult,
     config: NoiseConfig,
@@ -798,20 +783,23 @@ def _dependency_contributions(
     contributions = dependency.contributions
     if len(contributions) < 2:
         return None
-    # Every game carries the same quantities, so one of them says which were
-    # measured at all — a conditioning treatment the run did not score is
-    # absent from all of them or from none.
-    retained = contributions[0].values
+    metrics = {
+        definition.identifier: [
+            contribution.degradations[kind] for contribution in contributions
+        ]
+        for kind, definition in _DEGRADATION_METRICS.items()
+        if kind in contributions[0].degradations
+    }
+    metrics[DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE.identifier] = [
+        contribution.anchor_divergence for contribution in contributions
+    ]
+    metrics[DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT.identifier] = [
+        contribution.anchor_agreement for contribution in contributions
+    ]
     return paired_contributions(
         unit="pool-game",
         unit_ids=[str(contribution.game_id) for contribution in contributions],
-        metrics={
-            definition.identifier: [
-                contribution.values[name] for contribution in contributions
-            ]
-            for name, definition in _DEPENDENCY_CONTRIBUTION_METRICS.items()
-            if name in retained
-        },
+        metrics=metrics,
         weights=[float(contribution.positions) for contribution in contributions],
         resamples=config.resamples,
         seed=config.seed,
