@@ -27,6 +27,7 @@ def test_policy_records_hand_computable_legality_and_rank(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
     batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), 1500, None)))
+    assert batch.legal_action_ids is not None
     legal_actions = batch.legal_action_ids[0][0]
     target = int(batch.action_targets[0, 0].item())
     others = [action for action in legal_actions if action != target]
@@ -74,6 +75,7 @@ def test_target_rank_counts_only_stronger_legal_actions(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
     batch = MoveModelBatch.from_sequence_batch(sequence_batch((("d2d4",), None, None)))
+    assert batch.legal_action_ids is not None
     legal_actions = batch.legal_action_ids[0][0]
     target = int(batch.action_targets[0, 0].item())
     logits = torch.zeros((1, 1, ACTION_VOCABULARY_SIZE))
@@ -90,6 +92,7 @@ def test_named_action_sets_report_raw_mass_and_the_legal_greedy_choice(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
     batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), 1500, None)))
+    assert batch.legal_action_ids is not None
     legal_actions = batch.legal_action_ids[0][0]
     target = int(batch.action_targets[0, 0].item())
     alternative = next(action for action in legal_actions if action != target)
@@ -119,6 +122,7 @@ def test_legal_policy_normalizes_over_legal_actions_only(
     batch = MoveModelBatch.from_sequence_batch(
         sequence_batch((("e2e4", "e7e5"), 1500, 1500))
     )
+    assert batch.legal_action_ids is not None
     legal_actions = batch.legal_action_ids[0][0]
     logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
     logits[0, 0, legal_actions[0]] = 4.0
@@ -137,6 +141,7 @@ def test_scoring_rejects_legal_actions_that_do_not_align(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
     batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), None, None)))
+    assert batch.legal_action_ids is not None
     misaligned = replace(
         batch,
         legal_action_ids=((tuple(reversed(batch.legal_action_ids[0][0])),),),
@@ -145,6 +150,21 @@ def test_scoring_rejects_legal_actions_that_do_not_align(
 
     with pytest.raises(ValueError, match="sorted and unique"):
         score_positions(logits, misaligned)
+
+
+def test_scoring_needs_a_batch_that_carries_legal_actions(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """A training batch omits them, and asking it to score must say so."""
+
+    batch = replace(
+        MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), None, None))),
+        legal_action_ids=None,
+    )
+    logits = torch.zeros((1, 1, ACTION_VOCABULARY_SIZE))
+
+    with pytest.raises(ValueError, match="needs the batch's legal actions"):
+        score_positions(logits, batch)
 
 
 def test_scoring_preserves_a_game_id_past_the_signed_maximum(

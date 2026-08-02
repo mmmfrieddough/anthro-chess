@@ -100,11 +100,6 @@ def test_decision_tensorization_rates_only_the_current_decision() -> None:
     assert batch.inputs.previous_action_id.present.tolist() == [[False, True, True]]
     assert batch.ply_indices.tolist() == [[0, 1, 2]]
     assert not batch.action_loss_mask.any()
-    assert batch.causal_attention_mask.tolist() == [
-        [True, False, False],
-        [True, True, False],
-        [True, True, True],
-    ]
 
 
 def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:

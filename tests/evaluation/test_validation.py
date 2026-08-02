@@ -47,6 +47,7 @@ def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
         target = int(batch.action_targets[batch_index, sequence_index].item())
         logits[batch_index, sequence_index, target] = float(offset + 1)
 
+    assert batch.legal_action_ids is not None
     illegal_action = _first_illegal_action(batch.legal_action_ids[0][1])
     logits[0, 1, illegal_action] = 4.0
     logits[~batch.action_loss_mask] = torch.nan
@@ -68,6 +69,7 @@ def test_metrics_use_explicit_masks_ratings_and_exact_legal_actions() -> None:
     expected_legal_masses = []
     expected_legal_losses = []
     for offset, (batch_index, sequence_index) in enumerate(active_indices.tolist()):
+        assert batch.legal_action_ids is not None
         legal_actions = batch.legal_action_ids[batch_index][sequence_index]
         probabilities = torch.softmax(active_logits[offset], dim=-1)
         expected_legal_masses.append(
@@ -135,7 +137,7 @@ def test_simple_baselines_are_stable_across_batch_aggregation() -> None:
     legal_counts = [
         len(legal_actions)
         for batch in (first_batch, second_batch)
-        for row_index, row in enumerate(batch.legal_action_ids)
+        for row_index, row in enumerate(batch.legal_action_ids or ())
         for sequence_index, legal_actions in enumerate(row)
         if batch.action_loss_mask[row_index, sequence_index]
     ]
@@ -154,6 +156,7 @@ def test_simple_baselines_are_stable_across_batch_aggregation() -> None:
 
 def test_metrics_reject_misaligned_legal_actions() -> None:
     batch = MoveModelBatch.from_sequence_batch(_sequence_batch((("e2e4",), None, None)))
+    assert batch.legal_action_ids is not None
     legal_actions = batch.legal_action_ids[0][0]
     misaligned = replace(
         batch,

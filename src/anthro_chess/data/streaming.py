@@ -137,6 +137,7 @@ class _BatchJob:
     rows: tuple[Mapping[str, Any], ...]
     lengths: tuple[int, ...]
     entries: tuple[tuple[int, int, int], ...]
+    legal_actions: bool
 
 
 @dataclass(frozen=True)
@@ -256,6 +257,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         index: ShardedSequenceIndex,
         config: SequenceLoaderConfig,
         streaming: StreamingLoaderConfig,
+        *,
+        legal_actions: bool = True,
     ) -> None:
         if config.split != index.split:
             raise DataLoadingError("loader split does not match the sequence index")
@@ -268,6 +271,9 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self.index = index
         self.config = config
         self.streaming = streaming
+        # Outside the configuration digest for the same reason as in the eager
+        # loader: it decides what a batch carries, not which games it holds.
+        self.legal_actions = legal_actions
         self.configuration_sha256 = sha256(
             json.dumps(
                 {
@@ -417,6 +423,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 (row_index[example.slot], example.start_ply, example.length)
                 for example in planned
             ),
+            legal_actions=self.legal_actions,
         )
 
     def _row_group_table(self, group_index: int) -> Any:
@@ -470,7 +477,7 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
                 plies=chunk,
             )
         )
-    return collate_sequences(examples)
+    return collate_sequences(examples, legal_actions=job.legal_actions)
 
 
 @dataclass(frozen=True)

@@ -73,6 +73,7 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     assert batch.inputs.target_rating.present[0].tolist() == [True, False, True]
     assert batch.inputs.target_rating.values[0].tolist() == [1500, 0, 1500]
     assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
+    assert batch.legal_action_ids is not None
     assert tuple(batch.legal_action_ids[0][0]) == legal_action_ids(
         initial_board,
         include_resignation=True,
@@ -98,7 +99,7 @@ def test_tensor_boundary_preserves_unsigned_normalized_game_ids() -> None:
     assert int(batch.game_ids[0, 0].item()) == game_id
 
 
-def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() -> None:
+def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
     batch = MoveModelBatch.from_sequence_batch(
         _sequence_batch(
             ("e2e4", "e7e5", "g1f3"),
@@ -112,7 +113,6 @@ def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() ->
     assert logits.shape == (2, 3, ACTION_VOCABULARY_SIZE)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    assert torch.count_nonzero(logits[1, 1:]).item() == 0
     assert model.identity()["version"] == 3
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
@@ -121,6 +121,98 @@ def test_forward_is_cpu_only_action_vocabulary_compatible_and_masks_padding() ->
     )
     assert model.identity()["timing_inputs"] is False
     assert model.identity()["timing_head"] is False
+
+
+def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
+    """What replaces the key padding mask, and what makes padded logits ignorable.
+
+    A shorter history batched beside a longer one must see exactly what it
+    would have seen alone.
+    """
+
+    torch.manual_seed(19)
+    alone = MoveModelBatch.from_sequence_batch(_sequence_batch(("d2d4",)))
+    padded = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("d2d4",), ("e2e4", "e7e5", "g1f3"))
+    )
+    model = CausalMoveModel(_tiny_config()).eval()
+
+    with torch.no_grad():
+        alone_logits = model(alone)
+        padded_logits = model(padded)
+
+    torch.testing.assert_close(
+        padded_logits[0, :1],
+        alone_logits[0, :1],
+        rtol=0.0,
+        atol=1e-6,
+    )
+    # The padded columns are not zeroed any more, and nothing reads them.
+    assert torch.isfinite(padded_logits).all()
+    assert torch.count_nonzero(padded_logits[0, 1:]) > 0
+
+
+def test_the_causal_mask_is_built_once_and_sliced_for_shorter_batches() -> None:
+    """Held rather than rebuilt, and additive so the framework rebuilds nothing.
+
+    A boolean mask is converted to exactly this tensor on the way into
+    attention, once per forward pass, so handing one over would cache a thing
+    the framework then discards.
+    """
+
+    device = torch.device("cpu")
+    model = CausalMoveModel(_tiny_config())
+
+    wide = model._causal_mask(5, device, torch.float32)  # noqa: SLF001
+    held = model._cached_causal_mask  # noqa: SLF001
+    narrow = model._causal_mask(3, device, torch.float32)  # noqa: SLF001
+
+    for mask, length in ((wide, 5), (narrow, 3)):
+        assert mask.dtype == torch.float32
+        assert torch.equal(
+            mask.isinf(), torch.ones((length, length), dtype=torch.bool).triu(1)
+        )
+        # Nothing is fully masked: every query keeps at least its own timestep.
+        assert bool((~mask.isinf()).any(dim=-1).all())
+    assert model._cached_causal_mask is held  # noqa: SLF001
+
+
+def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> None:
+    """The table replaced a per-forward recomputation, so it must agree with it."""
+
+    config = _tiny_config()
+    model = CausalMoveModel(config)
+    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+
+    features = model._positions(batch, torch.float32)  # noqa: SLF001
+
+    dimension = config.model_dim
+    frequencies = torch.exp(
+        torch.arange(0, dimension, 2, dtype=torch.float32)
+        * (-math.log(10_000.0) / dimension)
+    )
+    angles = batch.ply_indices.float().unsqueeze(-1) * frequencies
+    expected = torch.zeros((*batch.ply_indices.shape, dimension))
+    expected[..., 0::2] = torch.sin(angles)
+    expected[..., 1::2] = torch.cos(angles)
+
+    torch.testing.assert_close(features, expected)
+
+
+def test_position_features_reach_a_chunk_that_starts_past_the_padded_width() -> None:
+    """A chunked game's indices run past its own width, and the table must too."""
+
+    moves = ("e2e4", "e7e5", "g1f3", "b8c6")
+    model = CausalMoveModel(_tiny_config())
+    whole = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    tail = MoveModelBatch.from_sequence_batch(_sequence_batch(moves, start_ply=2))
+
+    assert tail.chunk_start_plies == (2,)
+    assert tail.position_bound > tail.ply_indices.shape[1]
+    torch.testing.assert_close(
+        model._positions(tail, torch.float32),  # noqa: SLF001
+        model._positions(whole, torch.float32)[:, 2:],  # noqa: SLF001
+    )
 
 
 def test_future_context_does_not_change_earlier_predictions() -> None:
@@ -231,6 +323,7 @@ def _sequence_batch(
     white_rating: int | None = None,
     black_rating: int | None = None,
     game_id_base: int = 100,
+    start_ply: int = 0,
 ) -> SequenceBatch:
     examples = []
     for game_offset, moves in enumerate(move_lines):
@@ -258,8 +351,8 @@ def _sequence_batch(
             SequenceExample(
                 shard_index=0,
                 game_id=game_id_base + game_offset,
-                start_ply=0,
-                plies=plies,
+                start_ply=start_ply,
+                plies=plies[start_ply:],
             )
         )
     return collate_sequences(examples)

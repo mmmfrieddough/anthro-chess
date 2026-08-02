@@ -51,6 +51,8 @@ def _loader(
     corpus: Corpus,
     config: SequenceLoaderConfig,
     streaming: StreamingLoaderConfig | None = None,
+    *,
+    legal_actions: bool = True,
 ) -> StreamingSequenceDataLoader:
     shards, manifest_sha256 = corpus
     index = build_sharded_index(
@@ -64,6 +66,7 @@ def _loader(
         index,
         config,
         StreamingLoaderConfig() if streaming is None else streaming,
+        legal_actions=legal_actions,
     )
 
 
@@ -151,6 +154,8 @@ def test_pads_masks_and_indexes_every_sequence_it_emits(
     batch = next(loader)
     loader.close()
 
+    legal_action_ids = batch.legal_action_ids
+    assert legal_action_ids is not None
     for row in range(batch.batch_size):
         mask = batch.attention_mask[row]
         held = sum(mask)
@@ -158,8 +163,45 @@ def test_pads_masks_and_indexes_every_sequence_it_emits(
         assert batch.action_loss_mask[row] == mask
         assert batch.ply_indices[row][:held] == tuple(range(held))
         assert batch.action_targets[row][held:] == (0,) * (len(mask) - held)
-        assert batch.legal_action_ids[row][held:] == ((),) * (len(mask) - held)
-        assert all(batch.legal_action_ids[row][:held])
+        assert legal_action_ids[row][held:] == ((),) * (len(mask) - held)
+        assert all(legal_action_ids[row][:held])
+
+
+def test_a_loader_asked_for_no_legal_actions_ships_none_through_its_workers(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The flag has to travel in the job rather than be consulted in the parent.
+
+    This is where the payload saving actually lands, so it drains a real worker
+    pool rather than the in-process path.
+    """
+
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row))
+    config = SequenceLoaderConfig(
+        split="train",
+        batch_size=4,
+        length_bucket_width=None,
+        shuffle=False,
+    )
+    streaming = StreamingLoaderConfig(workers=2, prefetch_batches=2)
+
+    training = _loader(corpus, config, streaming, legal_actions=False)
+    scoring = _loader(corpus, config, streaming)
+    try:
+        training_batch = next(training)
+        scoring_batch = next(scoring)
+    finally:
+        training.close()
+        scoring.close()
+
+    assert training_batch.legal_action_ids is None
+    assert scoring_batch.legal_action_ids is not None
+    # Everything a training step reads is the same batch either way.
+    assert training_batch.action_targets == scoring_batch.action_targets
+    assert training_batch.attention_mask == scoring_batch.attention_mask
+    assert training_batch.ply_indices == scoring_batch.ply_indices
 
 
 def test_length_buckets_keep_a_batch_to_one_bucket(

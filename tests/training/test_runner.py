@@ -171,7 +171,15 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     assert [record["global_step"] for record in records] == [1, 2, 3, 4]
     events = EventAccumulator(str(resumed.run_path.parent / TENSORBOARD_DIRECTORY))
     events.Reload()
-    assert [item.step for item in events.Scalars("training/move_loss")] == [
+    # Sorted, because the property under test is that resuming leaves each step
+    # projected exactly once — neither purged away nor written twice. The order
+    # the accumulator returns them in is not that property: it reads a
+    # directory's event files in plain filename order, and their names end in a
+    # process-global counter that is not zero padded, so a run whose two writers
+    # straddle `...9` and `...10` is read second file first. Which side of that
+    # boundary a test lands on depends on how many writers the process built
+    # before it, which under sharding depends on how the suite was distributed.
+    assert sorted(item.step for item in events.Scalars("training/move_loss")) == [
         1,
         2,
         3,

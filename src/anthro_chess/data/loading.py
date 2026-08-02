@@ -106,16 +106,23 @@ class SequenceInputs:
 class SequenceBatch:
     """Padded causal batch with aligned targets, masks, and slice metadata.
 
-    Boolean attention values are ``True`` where a timestep is present, and
-    causal values are ``True`` where a query may attend to a key.
+    Boolean attention values are ``True`` where a timestep is present.
+
+    Causality is a property of the model rather than of the batch, so no
+    sequence-by-sequence mask travels here. Padding is right-aligned, which is
+    what makes that safe: a real query attends only to earlier timesteps, and
+    every timestep earlier than a real one is itself real.
+
+    ``legal_action_ids`` is absent when nothing downstream will read it. Only
+    policy scoring and the construction-time legality check use it, so a
+    training batch carries none.
     """
 
     inputs: SequenceInputs
     action_targets: IntMatrix
     action_loss_mask: BoolMatrix
     attention_mask: BoolMatrix
-    causal_attention_mask: BoolMatrix
-    legal_action_ids: LegalActionTensor
+    legal_action_ids: LegalActionTensor | None
     game_ids: IntMatrix
     ply_indices: IntMatrix
     chunk_start_plies: tuple[int, ...]
@@ -130,7 +137,7 @@ class SequenceBatch:
     def sequence_length(self) -> int:
         """Return the padded sequence length."""
 
-        return len(self.causal_attention_mask)
+        return len(self.attention_mask[0])
 
 
 @dataclass(frozen=True)
@@ -382,6 +389,8 @@ class SequenceDataLoader(SequenceBatchSource):
         self,
         dataset: SequenceDataset,
         config: SequenceLoaderConfig,
+        *,
+        legal_actions: bool = True,
     ) -> None:
         if config.split != dataset.split:
             raise DataLoadingError("loader split does not match the sequence dataset")
@@ -395,6 +404,10 @@ class SequenceDataLoader(SequenceBatchSource):
             )
         self.dataset = dataset
         self.config = config
+        # Deliberately outside the configuration digest. Whether a batch
+        # carries legal actions follows from what reads it, so a run resumed
+        # against the same declared loader is reading the same data either way.
+        self.legal_actions = legal_actions
         self.configuration_sha256 = sha256(
             json.dumps(
                 config.model_dump(mode="json"),
@@ -414,7 +427,10 @@ class SequenceDataLoader(SequenceBatchSource):
             raise StopIteration
         indices = self._batches[self._position]
         self._position += 1
-        return collate_sequences(tuple(self.dataset[index] for index in indices))
+        return collate_sequences(
+            tuple(self.dataset[index] for index in indices),
+            legal_actions=self.legal_actions,
+        )
 
     @property
     def identity_sha256(self) -> str:
@@ -467,6 +483,8 @@ class SequenceDataLoader(SequenceBatchSource):
         cls,
         paths: str | Path | Sequence[str | Path],
         config: SequenceLoaderConfig,
+        *,
+        legal_actions: bool = True,
     ) -> SequenceDataLoader:
         """Build a configured loader directly from normalized Parquet shards."""
 
@@ -478,6 +496,7 @@ class SequenceDataLoader(SequenceBatchSource):
                 selection=config.selection,
             ),
             config,
+            legal_actions=legal_actions,
         )
 
     def start_epoch(self, epoch: int) -> None:
@@ -523,8 +542,17 @@ class SequenceDataLoader(SequenceBatchSource):
         return tuple(batches)
 
 
-def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
-    """Pad and pack sequence examples without introducing fake targets."""
+def collate_sequences(
+    examples: Sequence[SequenceExample],
+    *,
+    legal_actions: bool = True,
+) -> SequenceBatch:
+    """Pad and pack sequence examples without introducing fake targets.
+
+    ``legal_actions`` packs each timestep's legal action ids. Policy scoring
+    needs them and training does not, so a training loader turns them off; the
+    default keeps every scoring caller correct without saying so.
+    """
 
     if not examples:
         raise ValueError("cannot collate an empty sequence collection")
@@ -562,13 +590,13 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         action_targets=_pack_required(padded, lambda ply: ply.target_action_id),
         action_loss_mask=attention_mask,
         attention_mask=attention_mask,
-        causal_attention_mask=tuple(
-            tuple(key_index <= query_index for key_index in range(sequence_length))
-            for query_index in range(sequence_length)
-        ),
-        legal_action_ids=tuple(
-            tuple(ply.legal_action_ids if ply is not None else () for ply in row)
-            for row in padded
+        legal_action_ids=(
+            tuple(
+                tuple(ply.legal_action_ids if ply is not None else () for ply in row)
+                for row in padded
+            )
+            if legal_actions
+            else None
         ),
         game_ids=_pack_required(padded, lambda ply: ply.game_id),
         ply_indices=_pack_required(padded, lambda ply: ply.ply_index),

@@ -25,6 +25,14 @@ def _with_inputs(batch: MoveModelBatch, **overrides: Any) -> MoveModelBatch:
     return replace(batch, inputs=replace(batch.inputs, **overrides))
 
 
+def _holed(mask: torch.Tensor) -> torch.Tensor:
+    """Return the mask with an interior timestep cleared, breaking alignment."""
+
+    holed = mask.clone()
+    holed[0, 0] = False
+    return holed
+
+
 def _corrupted(batch: MoveModelBatch, field: str, value: int) -> MoveModelBatch:
     """Return the batch with one entry of an ordinary input tensor rewritten."""
 
@@ -63,10 +71,10 @@ def test_a_valid_batch_is_accepted(
         pytest.param(
             lambda batch: replace(
                 batch,
-                causal_attention_mask=torch.ones_like(batch.causal_attention_mask),
+                ply_indices=batch.ply_indices + batch.ply_indices.shape[1],
             ),
-            "causal attention mask cannot expose future timesteps",
-            id="future-timesteps",
+            "ply indices must lie inside the plies the batch declares",
+            id="ply-index-outside-declared-plies",
         ),
         pytest.param(
             lambda batch: replace(
@@ -76,6 +84,17 @@ def test_a_valid_batch_is_accepted(
             ),
             "action loss cannot include padded timesteps",
             id="padded-loss",
+        ),
+        pytest.param(
+            # The model reads no padding mask, so an interior gap would let a
+            # real timestep attend to padding with nothing to notice.
+            lambda batch: replace(
+                batch,
+                attention_mask=_holed(batch.attention_mask),
+                action_loss_mask=_holed(batch.action_loss_mask),
+            ),
+            "padding must follow every real timestep in a row",
+            id="padding-before-a-real-timestep",
         ),
         pytest.param(
             lambda batch: _corrupted(batch, "piece_ids", 13),
@@ -149,6 +168,7 @@ def test_an_active_target_that_is_not_legal_is_rejected(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
     batch = _batch(sequence_batch)
+    assert batch.legal_action_ids is not None
     legal = batch.legal_action_ids[0][0]
     substitute = next(
         action for action in range(ACTION_VOCABULARY_SIZE) if action not in legal
@@ -164,9 +184,28 @@ def test_misaligned_legal_actions_are_rejected(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
     batch = _batch(sequence_batch)
+    assert batch.legal_action_ids is not None
 
     with pytest.raises(ValueError, match="legal actions must align"):
         replace(batch, legal_action_ids=batch.legal_action_ids[:0]).validate()
+
+
+def test_a_batch_without_legal_actions_skips_only_the_legality_checks(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """A training batch carries none of them, and must still be validated.
+
+    The alignment and range checks are what a training step depends on. Only
+    the two that read legal actions can be skipped, so an out-of-range value
+    still has to be named rather than waved through with them.
+    """
+
+    batch = replace(_batch(sequence_batch), legal_action_ids=None)
+
+    batch.validate()
+
+    with pytest.raises(ValueError, match="piece ids are outside"):
+        _corrupted(batch, "piece_ids", 13).validate()
 
 
 def test_validation_never_asks_the_device_for_a_scalar(
