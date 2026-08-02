@@ -206,11 +206,9 @@ class CausalMoveModel(nn.Module):
         longest length seen and sliced for shorter ones, so a step neither
         builds it in Python nor copies it to the device.
 
-        Additive rather than boolean, and in the attention input's own dtype,
-        because a boolean mask is converted to exactly this one on the way in:
-        ``F._canonical_mask`` writes a fresh length-by-length float tensor per
-        forward pass, which is 1.44 MB at 600 plies. Caching the boolean form
-        would avoid rebuilding a tensor the framework then rebuilds anyway.
+        Additive rather than boolean, in attention's own dtype: a boolean mask
+        is converted to exactly this tensor on the way in, a fresh
+        length-by-length float per forward pass — 1.44 MB at 600 plies.
 
         ``is_causal=True`` does not stand in for a mask. The encoder reads the
         flag as a hint accompanying one, and refuses it alone.
