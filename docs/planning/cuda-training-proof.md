@@ -104,6 +104,13 @@ nested Python sequences on the host, which happens identically whether the
 result then stays put or crosses to a device. The input pipeline, not the
 accelerator, is the binding constraint at the current model size.
 
+The loader has since stopped emitting those sequences. On this workload and
+host, batch construction and transfer falls from 4.1 ms to 0.8 ms per step and
+forward and backward becomes the largest phase, which is what the last section
+of this document asked for. What that change did not touch is the decode
+upstream of it, and under the shard-backed loader that is now what a step waits
+on.
+
 Separating optimizer work from forward and backward was worth doing, and not
 for the reason expected: at 4.9% of a step it looked like the last place worth
 touching, and it turned out to hold the only throughput win found here.
@@ -349,7 +356,8 @@ optimized toward. Two things lift it, and neither is a device-side change:
   the recompile storm that made `torch.compile` unusable, and the prefetch
   thread's lock contention. A loader that hands back arrays addresses all
   three, and that is the shard-streaming work rather than anything in this
-  change.
+  change. The loader now does; the construction cost is what was re-measured,
+  and neither `torch.compile` nor the prefetch thread was tried again.
 
 A third and smaller one is now visible and was not before: the per-step
 gradient norm costs the same order as the optimizer on a launch-bound step.

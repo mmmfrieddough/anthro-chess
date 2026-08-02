@@ -33,6 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 data = [
+    "numpy>=2,<3",
     "pyarrow>=21,<22",
     "zstandard>=0.23,<1",
 ]

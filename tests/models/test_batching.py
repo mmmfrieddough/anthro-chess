@@ -141,6 +141,29 @@ def test_out_of_range_values_are_rejected_by_name(
         corrupt(_batch(sequence_batch)).validate()
 
 
+def test_the_tensor_boundary_widens_the_columns_the_model_indexes_with(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """The loader hands over narrow columns; embeddings and the loss need long.
+
+    Widening belongs on this side of the copy, so what crosses to a device is
+    the loader's own width and what the model reads is what it can index with.
+    """
+
+    source = sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+    batch = MoveModelBatch.from_sequence_batch(source)
+
+    assert source.inputs.piece_ids.dtype.name == "uint8"
+    assert batch.inputs.piece_ids.dtype is torch.long
+    assert batch.action_targets.dtype is torch.long
+    assert batch.ply_indices.dtype is torch.long
+    assert batch.inputs.previous_action_id.values.dtype is torch.long
+    assert batch.attention_mask.dtype is torch.bool
+    assert batch.inputs.piece_ids.tolist() == source.inputs.piece_ids.tolist()
+    assert batch.action_targets.tolist() == source.action_targets.tolist()
+    assert batch.game_ids.tolist() == source.game_ids.tolist()
+
+
 def test_an_active_target_outside_the_vocabulary_is_rejected(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
