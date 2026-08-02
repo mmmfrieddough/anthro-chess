@@ -159,6 +159,10 @@ the locked Torch build does not provide a deterministic implementation for one
 of its gradient operations. The selected backend, precision, and determinism
 mode are retained in run and checkpoint metadata.
 
+MPS is the only accelerator a device selection currently accepts, so every
+command on a CUDA host runs on CPU no matter what PyTorch can see there.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers what each platform resolves to.
+
 On Apple silicon with an MPS-enabled PyTorch build, the same runner can exercise
 the real accelerator path:
 

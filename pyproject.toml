@@ -107,3 +107,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
+
+[tool.ruff.lint.isort]
+# Modules the suite imports from its own directory. Without this they sort in
+# among PyPI packages, where a reader has no way to tell the two apart.
+known-local-folder = ["accelerators"]

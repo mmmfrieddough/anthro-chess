@@ -23,6 +23,47 @@ Optional lightweight commit hooks can be installed with:
 uv run pre-commit install
 ```
 
+## Platforms And Accelerators
+
+Development happens on Linux and on Apple silicon, and the setup above is the
+same on both. The locked PyTorch wheel is chosen by platform, so no extra
+index, build variant, or install flag is involved:
+
+| host | wheel the lock selects | accelerator PyTorch sees |
+| --- | --- | --- |
+| Linux x86-64 with an NVIDIA driver | `manylinux`, CUDA bundled | CUDA |
+| macOS on Apple silicon | `macosx_14_0_arm64` | MPS |
+| anything else, or no driver | that platform's build | none |
+
+**What the project can select is a smaller set than what PyTorch can see.**
+Training and inference each resolve an explicit `auto`, `cpu`, or `mps`
+selection, and neither accepts `cuda` yet. On a CUDA host every command
+therefore runs on CPU today, `auto` included, since `auto` falls back rather
+than failing. Adding CUDA to those two selections is tracked separately.
+
+That gap is worth stating plainly because it is otherwise invisible: an
+accelerator no device selection accepts produces exactly the passing run that
+no accelerator at all produces. The suite prints both lists in its header, and
+says so outright when a present accelerator is unselectable:
+
+```text
+accelerators present: cuda (2 device(s))
+accelerators the device selection accepts: mps
+no present accelerator is selectable, so nothing here exercised a training or
+inference path on one
+```
+
+Which `gpu`-marked tests actually run follows from the same two lists, and is a
+property of the host rather than of the marker: the device-agreement check runs
+on whichever accelerator is present, while the tests driving a whole training
+run through a device selection need one that selection accepts. Each states
+what the host has when it skips. The marker itself is described under
+[Quality Checks](#quality-checks).
+
+Work that is specifically about CUDA needs more than a driver. The exact
+requirement belongs to the issue asking for it, because a distributed run and a
+single-device run do not want the same host.
+
 ## Corpora And Training Runs
 
 Corpora and training runs are far too large for the repository, so they live
@@ -59,6 +100,43 @@ ls "${ANTHRO_CHESS_RUN_ROOT:?}"/*/checkpoints/*.pt | tail
 
 This matters most before concluding that a shakedown reading cannot be taken
 here; `docs/issue-workflow.md` describes when one is required.
+
+### Standing One Up From The Pinned Sources
+
+A machine whose roots are set but empty can rebuild the data side from the
+checked-in configuration. Every input is pinned and every step is verified
+against a recorded digest, so a rebuild elsewhere is checked rather than merely
+plausible — which is what makes a corpus prepared on one machine and a pool
+frozen on another the same artifact.
+
+```console
+uv run anthro data acquire --config configs/data/lichess-blitz-2017-04.toml
+uv run anthro data prepare --config configs/data/lichess-blitz-2017-04.toml
+uv run anthro eval freeze --config configs/evaluation/lichess-blitz-2017-04-pool.toml
+uv run anthro eval prepare-puzzles --config configs/evaluation/lichess-puzzles-v1.toml
+```
+
+Three digests carry that verification, and a mismatch in each means something
+different:
+
+- `[archive] sha256` in the corpus and puzzle configurations — the downloaded
+  release is the pinned one. A mismatch means the source moved, not that the
+  download is corrupt in some recoverable way.
+- `expected_game_ids_sha256` in the pool configuration — the frozen pool holds
+  exactly the games the recorded one did. A mismatch means the corpus, the
+  filters, or the split seed moved, and the benchmark needs a new pool version
+  rather than a retry.
+- `expected_puzzles_sha256` in the puzzle configuration — the deterministic
+  selection over the pinned archive reproduced.
+
+The network is used only to fetch those two archives, and the game archive is
+by far the larger of them. Preparation, freezing, training, and evaluation all
+run offline afterwards. Each archive is kept under the data root, so a later
+rebuild re-verifies what is already there rather than fetching it again.
+
+For a check that needs no network and no large download, the repository carries
+a sample game that prepares, trains, and serves UCI in seconds. `README.md` has
+that path.
 
 ## Quality Checks
 
