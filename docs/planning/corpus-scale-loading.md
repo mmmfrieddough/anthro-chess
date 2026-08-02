@@ -15,10 +15,9 @@ configuration: 1,000,000 accepted games in 20 shards, 198 MB normalized, one
 row group per shard. Of those, 900,218 fall in the train split and 49,709 in
 validation.
 
-The host is Linux with 32 cores. Training resolved `auto` to CPU, because the
-training device selection does not accept CUDA on this branch; that is `#56`,
-not a property of the loader. Every figure below is therefore a CPU figure, and
-the loader's share of a step is the part that carries over.
+The host is the documented Linux CUDA machine from
+`docs/planning/cuda-training-proof.md`: 32 cores, two RTX 4090s, one used.
+Training resolved `auto` to CUDA.
 
 ## Why The Eager Loader Cannot Read It
 
@@ -58,41 +57,62 @@ counts of 0, 4, 8, 12, and 16 produced byte-identical batch sequences.
 
 ## The Run
 
-500 steps, batch 16, four loader workers, `profile_phases` on:
+500 steps, batch 16, eight loader workers, `profile_phases` on:
 
 ```console
 uv run anthro train --config configs/training/lichess-blitz-1m.toml --no-record
 ```
 
-| configuration | startup | peak resident | wall clock |
+| configuration | startup | peak host resident | wall clock |
 | --- | --- | --- | --- |
-| eager validation selection, preview cadence | 171.9 s | 4.03 GB | 3:16.8 |
-| shard-backed validation selection, preview cadence | 130.2 s | 3.83 GB | 2:35.6 |
-| shard-backed validation selection, no cadence | 7.2 s | 1.60 GB | 0:30.1 |
+| as checked in, preview cadence declared | 125.4 s | 4.40 GB | 2:25.4 |
+| same, no cadence | 7.6 s | 2.25 GB | 0:24.4 |
 
-All three reported the same validation loss over the same 994 games, so the two
-loaders resolve one selection and differ only in what they hold.
+Steady state was **59,846 active positions/s** against 274.7 MB reserved on the
+device. The run reported the same validation loss over the same 994 games as
+the CPU run it replaced, and as the run that read validation eagerly, so the
+two loaders resolve one selection and differ only in what they hold.
 
-Steady state was **33,691 active positions/s**, and the phase split over the
-500 steps was **1.35 s data, 3.02 s transfer, 12.39 s compute**. Data is 8% of
-the step on this host: the loader is not the bottleneck at this model size, and
-the standalone figure above says it has roughly twice this rate in reserve.
+## Where A Step Goes, And What Workers Buy
 
-## What The Third Row Says
+Phase seconds over the 500 steps, sweeping the worker dial and changing nothing
+else:
 
-The two rows that are not 7.2 s are the finding. Once the training loader stops
+| workers | data | transfer | compute | steady state |
+| --- | --- | --- | --- | --- |
+| 4 | 4.37 s | 2.85 s | 3.35 s | 54,556 /s |
+| 8 | 3.20 s | 3.06 s | 3.51 s | 59,437 /s |
+| 12 | 3.29 s | 2.87 s | 3.75 s | 56,944 /s |
+| 16 | 3.04 s | 3.03 s | 3.60 s | 58,476 /s |
+
+Decoding is the largest phase at four workers and stops being so at eight,
+where the three phases are within half a second of each other. Past eight the
+data time does not move, because what remains is the parent's own share —
+taking a batch's rows out of the columnar table and reading a packed batch back
+from a worker — which no number of workers reduces. The standalone plateau at
+68,500 plies/s is the same ceiling seen from the other side.
+
+Eight is therefore what the checked-in configuration carries. On a CPU run of
+the same configuration the balance is different: compute was 12.4 s against
+1.35 s of data, so the loader had roughly twice its rate spare. A larger model
+moves it back that way, which is worth remembering when capacity scaling
+changes the shape of a step.
+
+## What The First Table's Two Rows Say
+
+The gap between 7.6 s and 125.4 s is the finding. Once the training loader stops
 reading the whole corpus, everything else that still does becomes the startup
 cost, and both remaining offenders are outside the loader.
 
-The eager validation selection is the smaller one at about 42 s, and a
+The eager validation selection was the smaller one at about 42 s, and a
 configuration fixes it: the checked-in corpus-scale configuration reads both
 selections through shards.
 
-The preview cadence's view is the larger one at about 123 s and 2.2 GB, and a
-configuration does not fix it. `_prepare_view` reads normalized rows directly
-rather than through either loader, so it materializes every row of every shard
-whatever the loaders do. That is `#195`, tracked separately because changing
-what a preview reads is a change to a measurement rather than to a read path.
+The preview cadence's view is the larger one at about 118 s, and a configuration
+does not fix it. `_prepare_view` reads normalized rows directly rather than
+through either loader, so it materializes every row of every shard whatever the
+loaders do. That is `#195`, tracked separately because changing what a preview
+reads is a change to a measurement rather than to a read path.
 
 Both were invisible before this work, since the training loader read the whole
 corpus too and these were the smaller of identical costs.

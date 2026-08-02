@@ -60,13 +60,16 @@ shuffle = true
 seed = "anthro-lichess-blitz-baseline-train-v1"
 drop_last = false
 
-# Declaring this section is what selects the shard-backed loader. Raise
-# `workers` on a machine with cores to spare; it changes how fast the same
-# batches arrive and never which examples share one, so a run may be resumed
-# with a different value.
+# Declaring this section is what selects the shard-backed loader. `workers` is
+# a machine capability rather than a property of the run: it changes how fast
+# the same batches arrive and never which examples share one, so lower it on a
+# host with fewer cores and a run may still be resumed with a different value.
+# Eight is where decoding stopped being the largest phase of a step on the
+# measured host; past that the remaining data time is the parent's own share
+# and more workers do not move it.
 [train.streaming]
 planning_window_examples = 16384
-workers = 4
+workers = 8
 prefetch_batches = 8
 
 # Validation reads the same way, and the reason is worth stating because the
@@ -92,5 +95,5 @@ selection = { fraction = 0.02 }
 
 [validation.streaming]
 planning_window_examples = 16384
-workers = 4
+workers = 8
 prefetch_batches = 8
