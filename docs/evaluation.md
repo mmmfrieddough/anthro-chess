@@ -560,10 +560,25 @@ series — a distributional distance, whose floor grows with the category count
 and shrinks with the sample — attaches the floor to its measurement instead,
 because that is the only place it can be correct.
 
+Retention is not always faithful without a weight. A quantity reported as a mean
+over positions cannot be resampled by position, because positions inside one
+game are far from independent; but a plain mean over per-game values is not that
+quantity either, since games differ in size. Where the two disagree the unit
+carries a weight, the metric is treated as the ratio of sums it is, and the
+bootstrap recomputes the denominator on every draw.
+
 A delta is judged against the widest floor that applies to it, since a finding
 has to clear every noise source, and the report names which one that was. A
 delta inside its floor is still shown with its value, so a small regression that
 repeats across checkpoints stays visible instead of being filtered away.
+
+**No floor at all is two situations, not one.** A floor may be missing because
+nobody has characterized it yet, which is work somebody could do, or because the
+metric counts something no characterization resamples, which is not. A metric of
+the second kind declares why in the registry, and a report renders it
+`unqualifiable` rather than `unknown`. Reporting both as unknown sets a reader to
+work that cannot be done, and it is the same ambiguity as a floor rendering as
+exactly zero.
 
 Training noise should be characterized early, while runs are short. It is the
 most valuable of the three and the only one that becomes harder to obtain over
@@ -902,6 +917,18 @@ Dependency results are recorded in the correctness family with the training
 maturity they were measured at. Nothing in them returns a pass or a fail: weak
 dependency on an undertrained checkpoint means the conditioning has not been
 learned yet, which is not the same finding as a miswired input.
+
+The family qualifies its own readings by retaining each game's share of every
+reported quantity that is a mean over the positions it scored, so a later
+comparison can bootstrap the paired delta from them. The share is weighted by
+the positions behind it, because the quantity averages over positions while the
+resampling unit is the game. Two reported quantities are not means over
+positions and carry no floor at all: the cross-conditioning match rate counts
+rating slices, and the within-game response splits each slice at that slice's
+own median. A report says `unqualifiable` for those rather than `unknown`, since
+only the latter is waiting on work somebody could do.
+`docs/decisions/0028-qualifying-the-rating-dependency-family.md` owns the
+choice.
 
 ## Held-Out Prediction
 

@@ -168,6 +168,11 @@ class NoiseVerdict(StrEnum):
     CLEARED = "cleared"
     WITHIN = "within"
     UNKNOWN = "unknown"
+    #: No floor can exist for this metric, because what it counts is not what
+    #: any characterization resamples. Distinct from ``UNKNOWN``, which means a
+    #: floor could exist and none was found: only one of the two is waiting on
+    #: work somebody could do.
+    UNQUALIFIABLE = "unqualifiable"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -777,10 +782,19 @@ def _noise_legend(report: DeltaReport) -> list[str]:
     }
     if not verdicts:
         return []
-    return textwrap.wrap(
+    legend = (
         "noise: a delta is judged against the widest characterized floor that "
         "applies, named in the column; 'within' means the delta is inside it "
-        "and 'unknown' means no floor is characterized for that series.",
+        "and 'unknown' means no floor is characterized for that series."
+    )
+    if NoiseVerdict.UNQUALIFIABLE in verdicts:
+        legend = (
+            f"{legend} 'unqualifiable' means no floor can exist for that "
+            "metric, because what it counts is not what a characterization "
+            "resamples; the metric registry says why."
+        )
+    return textwrap.wrap(
+        legend,
         width=MAXIMUM_LINE_WIDTH,
         subsequent_indent="  ",
     )
@@ -1271,23 +1285,29 @@ def _metric_delta(
         else ()
     )
     delta = current_measurement.value - baseline_measurement.value
-    comparison_floor = (
-        None
-        if comparison_floors is None
-        else comparison_floors.floor(
-            baseline_envelope,
-            current_envelope,
-            definition.identifier,
+    # A metric that declares no floor can exist is not asked for one. Looking
+    # anyway would only find a floor that answers a different question, and
+    # showing it beside the delta would read as a qualification.
+    if definition.no_floor_reason is not None:
+        applicable: tuple[NoiseFloor, ...] = ()
+    else:
+        comparison_floor = (
+            None
+            if comparison_floors is None
+            else comparison_floors.floor(
+                baseline_envelope,
+                current_envelope,
+                definition.identifier,
+            )
         )
-    )
-    applicable = _applicable_floors(
-        definition.identifier,
-        baseline_measurement,
-        current_measurement,
-        floors,
-        comparison_floor=comparison_floor,
-        executions=(baseline_envelope.execution, current_envelope.execution),
-    )
+        applicable = _applicable_floors(
+            definition.identifier,
+            baseline_measurement,
+            current_measurement,
+            floors,
+            comparison_floor=comparison_floor,
+            executions=(baseline_envelope.execution, current_envelope.execution),
+        )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
     environment = (
         environment_differences(baseline_envelope, current_envelope)
@@ -1303,7 +1323,11 @@ def _metric_delta(
         delta=delta,
         comparability=comparison.comparability,
         movement=_pivoted_movement(definition, delta, attribution, pivot),
-        noise=_noise_verdict(delta, None if binding is None else binding.value),
+        noise=_noise_verdict(
+            definition,
+            delta,
+            None if binding is None else binding.value,
+        ),
         noise_floor=None if binding is None else binding.value,
         noise_floor_kind=None if binding is None else binding.kind,
         noise_floors=applicable,
@@ -1484,7 +1508,20 @@ def _movement(direction: MetricDirection, delta: float) -> Movement:
     return Movement.BETTER if improved else Movement.WORSE
 
 
-def _noise_verdict(delta: float, floor: float | None) -> NoiseVerdict:
+def _noise_verdict(
+    definition: MetricDefinition,
+    delta: float,
+    floor: float | None,
+) -> NoiseVerdict:
+    """Judge one delta, distinguishing a missing floor from an impossible one.
+
+    The declaration decides the verdict rather than the absence of a floor
+    does, so a metric that says no floor can exist reads the same way whatever
+    the lookup would have returned for it.
+    """
+
+    if definition.no_floor_reason is not None:
+        return NoiseVerdict.UNQUALIFIABLE
     if floor is None:
         return NoiseVerdict.UNKNOWN
     return NoiseVerdict.CLEARED if abs(delta) > floor else NoiseVerdict.WITHIN

@@ -48,6 +48,8 @@ from anthro_chess.evaluation.adjudication import (
 )
 from anthro_chess.evaluation.aggregation import SliceTable
 from anthro_chess.evaluation.dependency import (
+    ANCHOR_AGREEMENT_CONTRIBUTION,
+    ANCHOR_DIVERGENCE_CONTRIBUTION,
     Conditioning,
     ConditioningKind,
     DependencyError,
@@ -58,6 +60,7 @@ from anthro_chess.evaluation.dependency import (
     PositionKey,
     TrajectorySignal,
     build_dependency_result,
+    degradation_contribution,
 )
 from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_leakage
 from anthro_chess.evaluation.noise import NoiseConfig, characterize_sampling_noise
@@ -76,6 +79,7 @@ from anthro_chess.evaluation.pool import (
     load_pool,
 )
 from anthro_chess.evaluation.results import (
+    PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
@@ -92,6 +96,7 @@ from anthro_chess.evaluation.results import (
     dataset_reference,
     default_checkpoint_label,
     measurement,
+    paired_contributions,
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -529,13 +534,20 @@ def evaluate_checkpoint(
                 )
             )
         if dependency is not None:
+            dependency_payload = dependency.as_record()
+            contributions = _dependency_contributions(dependency, config.noise)
+            if contributions is not None:
+                dependency_payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
             dependency_detail = _write_detail(
                 detail,
                 kind=DEPENDENCY_KIND,
                 checkpoint=checkpoint,
                 recorded_at=recorded_at,
-                payload=dependency.as_record(),
-                description="Cross-conditioning and within-game dependency tables.",
+                payload=dependency_payload,
+                description=(
+                    "Cross-conditioning and within-game dependency tables, and "
+                    "the aligned per-game values a later paired floor needs."
+                ),
                 paths=detail_paths,
             )
             envelopes.append(
@@ -748,6 +760,63 @@ def _dependency_measurements(
             )
         )
     return tuple(values)
+
+
+#: Which retained contribution feeds which metric. A conditioning treatment
+#: with no entry here contributes nothing to a floor, which is what keeps a
+#: newly added treatment from silently acquiring one.
+_DEPENDENCY_CONTRIBUTION_METRICS = {
+    degradation_contribution(
+        ConditioningKind.SHUFFLED
+    ): DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
+    degradation_contribution(
+        ConditioningKind.CONSTANT
+    ): DEPENDENCY_RATING_CONSTANT_DEGRADATION,
+    degradation_contribution(
+        ConditioningKind.ABSENT
+    ): DEPENDENCY_RATING_ABSENT_DEGRADATION,
+    ANCHOR_DIVERGENCE_CONTRIBUTION: DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
+    ANCHOR_AGREEMENT_CONTRIBUTION: DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
+}
+
+
+def _dependency_contributions(
+    dependency: DependencyTestResult,
+    config: NoiseConfig,
+) -> dict[str, object] | None:
+    """Retain the aligned per-game values a later paired floor bootstraps.
+
+    The dependency family scores one frozen view repeatedly under different
+    conditioning, so its uncertainty is uncertainty in the *paired* delta
+    between two checkpoints on the same games. That floor belongs to the
+    comparison and cannot be attached to either reading alone, which is why it
+    is retained here rather than characterized into the committed tier.
+    """
+
+    if not config.enabled:
+        return None
+    contributions = dependency.contributions
+    if len(contributions) < 2:
+        return None
+    metrics = {
+        definition.identifier: [
+            contribution.values[name] for contribution in contributions
+        ]
+        for name, definition in _DEPENDENCY_CONTRIBUTION_METRICS.items()
+        if all(name in contribution.values for contribution in contributions)
+    }
+    if not metrics:
+        return None
+    return paired_contributions(
+        unit="pool-game",
+        unit_ids=[str(contribution.game_id) for contribution in contributions],
+        metrics=metrics,
+        weights=[float(contribution.positions) for contribution in contributions],
+        resamples=config.resamples,
+        seed=config.seed,
+        coverage=config.coverage,
+        confidence=config.confidence,
+    ).as_record()
 
 
 def _write_detail(

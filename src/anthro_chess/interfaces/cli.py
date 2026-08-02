@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import sys
+import textwrap
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -3587,6 +3588,17 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
                 f"v{metric.definition_version}  {metric.cost.value:<14} "
                 f"{projection}"
             )
+            if metric.no_floor_reason is not None:
+                # Where a report reads "unqualifiable", this is what it points
+                # at, so the reason belongs in the listing rather than only in
+                # the source.
+                for line in textwrap.wrap(
+                    f"no floor can exist: {metric.no_floor_reason}",
+                    width=88,
+                    initial_indent="    ",
+                    subsequent_indent="      ",
+                ):
+                    print(line)
     return 0
 
 

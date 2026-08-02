@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -27,7 +27,12 @@ from anthro_chess.evaluation.checkpoint import (
     _batch_keys,
 )
 from anthro_chess.evaluation.dependency import ConditioningKind
-from anthro_chess.evaluation.results import DetailStore, ResultsStore
+from anthro_chess.evaluation.results import (
+    PAIRED_CONTRIBUTIONS_KEY,
+    DetailStore,
+    PairedContributions,
+    ResultsStore,
+)
 from anthro_chess.evaluation.slices import (
     GamePhase,
     PositionCharacteristic,
@@ -348,6 +353,52 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert "dependency.rating_shuffled_degradation" in measurements
     assert "dependency.rating_absent_degradation" in measurements
     assert "dependency.rating_anchor_policy_divergence" in measurements
+
+
+def test_dependency_detail_retains_what_a_paired_floor_needs(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The retained per-game values have to reproduce the recorded reading.
+
+    That is not a restatement of the arithmetic. The report refuses to
+    bootstrap contributions whose weighted mean is not the measurement they
+    claim to decompose, so a payload that fails here fails the report later on
+    a real reading, where it is far more expensive to find.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    result = evaluate_checkpoint(_config(pool, checkpoint), detail=detail)
+
+    envelope = next(item for item in result.envelopes if item.kind == DEPENDENCY_KIND)
+    assert envelope.detail is not None
+    payload = detail.read(envelope.detail)
+    assert isinstance(payload, Mapping)
+    retained = PairedContributions.model_validate(payload[PAIRED_CONTRIBUTIONS_KEY])
+    assert result.dependency is not None
+    assert retained.unit == "pool-game"
+    assert retained.weights is not None
+    # One unit per rated game, weighted by the positions it brought.
+    assert sum(retained.weights) == pytest.approx(
+        result.dependency.rated_position_count
+    )
+    values = {item.metric: item.value for item in envelope.measurements}
+    for metric, contributions in retained.metrics.items():
+        weighted = sum(
+            weight * value
+            for weight, value in zip(retained.weights, contributions, strict=True)
+        ) / sum(retained.weights)
+        assert weighted == pytest.approx(values[metric], abs=1e-12)
+    # The two quantities no resampling of games can recompute stay out.
+    assert "dependency.rating_cross_conditioning_match_rate" not in retained.metrics
+    assert "dependency.rating_within_game_response" not in retained.metrics
 
 
 def test_absent_conditioning_changes_what_the_model_is_shown(

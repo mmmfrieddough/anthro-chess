@@ -32,13 +32,24 @@ from anthro_chess.evaluation.results.store import (
     ResultsStoreError,
 )
 
+#: Version 3 added per-unit weights, so a metric whose reported value is a mean
+#: over something *inside* the resampling unit — a per-position mean carried by
+#: games — can be retained without redefining it as a mean over units.
 #: Version 2 added the confidence the floor's dispersion bound carries.
-PAIRED_CONTRIBUTIONS_VERSION = 2
+PAIRED_CONTRIBUTIONS_VERSION = 3
 PAIRED_CONTRIBUTIONS_KEY = "paired_contributions"
 
 
 class PairedContributions(ResultModel):
-    """Aligned per-unit metric values retained for later checkpoint deltas."""
+    """Aligned per-unit metric values retained for later checkpoint deltas.
+
+    ``weights`` is how a unit-level retention stays faithful to a metric the
+    benchmark reports as a mean over smaller things. A per-position mean is a
+    ratio of sums, so a game contributes its own mean weighted by how many
+    positions it holds; without the weight, the retained values would only
+    reproduce the metric on units of identical size. Absent weights mean every
+    unit counts once, which is the unweighted case earlier versions carried.
+    """
 
     version: int = Field(default=PAIRED_CONTRIBUTIONS_VERSION, ge=1)
     unit: Identifier
@@ -46,6 +57,7 @@ class PairedContributions(ResultModel):
     stratum: Identifier | None = None
     strata: tuple[str, ...] | None = None
     metrics: dict[str, tuple[float, ...]] = Field(min_length=1)
+    weights: tuple[float, ...] | None = None
     resamples: int = Field(ge=100)
     seed: int = Field(ge=0)
     coverage: float = Field(gt=0.0)
@@ -71,6 +83,18 @@ class PairedContributions(ResultModel):
             )
         if not math.isfinite(self.coverage):
             raise ValueError("paired contribution coverage must be finite")
+        if self.weights is not None:
+            if len(self.weights) != len(self.unit_ids):
+                raise ValueError(
+                    f"paired contributions have {len(self.weights)} weights for "
+                    f"{len(self.unit_ids)} units"
+                )
+            if any(
+                not math.isfinite(weight) or weight <= 0.0 for weight in self.weights
+            ):
+                raise ValueError(
+                    "paired contribution weights must be finite and positive"
+                )
         for metric, values in self.metrics.items():
             if not metric:
                 raise ValueError("paired contribution metric names cannot be empty")
@@ -96,6 +120,7 @@ def paired_contributions(
     stratum: str | None = None,
     strata: Sequence[str] | None = None,
     metrics: Mapping[str, Sequence[float]],
+    weights: Sequence[float] | None = None,
     resamples: int,
     seed: int,
     coverage: float,
@@ -112,6 +137,7 @@ def paired_contributions(
             metric: tuple(float(value) for value in values)
             for metric, values in sorted(metrics.items())
         },
+        weights=None if weights is None else tuple(float(value) for value in weights),
         resamples=resamples,
         seed=seed,
         coverage=coverage,
@@ -173,6 +199,18 @@ class PairedFloorIndex:
         )
         if left_strata != right_strata:
             return {}
+        left_weights = left.weights
+        right_weights = (
+            None
+            if right.weights is None
+            else tuple(right.weights[index] for index in right_order)
+        )
+        # A weight describes the frozen view rather than the checkpoint, so two
+        # comparable readings carry the same one. Where they do not, the two
+        # sides weight their units differently and their difference is not the
+        # delta either measurement reports.
+        if left_weights != right_weights:
+            return {}
         common = sorted(set(left.metrics) & set(right.metrics))
         if not common:
             return {}
@@ -185,12 +223,16 @@ class PairedFloorIndex:
                 for metric in common
             ]
         )
-        self._verify_means(baseline, common, baseline_values)
-        self._verify_means(current, common, current_values)
+        unit_weights = (
+            None if left_weights is None else np.asarray(left_weights, dtype=np.float64)
+        )
+        self._verify_means(baseline, common, baseline_values, unit_weights)
+        self._verify_means(current, common, current_values, unit_weights)
         deltas = current_values - baseline_values
         replicates = _bootstrap_paired_means(
             deltas,
             strata=left_strata,
+            weights=unit_weights,
             seed=left.seed,
             resamples=left.resamples,
         )
@@ -214,6 +256,7 @@ class PairedFloorIndex:
                 source=(
                     f"{left.resamples} "
                     f"{'stratified ' if left.stratum is not None else ''}"
+                    f"{'weighted ' if left_weights is not None else ''}"
                     "paired bootstrap resamples of "
                     f"{len(left.unit_ids)} matching {left.unit} units"
                 ),
@@ -251,12 +294,17 @@ class PairedFloorIndex:
         envelope: ResultEnvelope,
         metrics: Sequence[str],
         values: np.ndarray,
+        weights: np.ndarray | None = None,
     ) -> None:
         for column, metric in enumerate(metrics):
             measurement = envelope.measurement(metric)
             if measurement is None:
                 continue
-            retained = float(np.mean(values[:, column]))
+            retained = float(
+                np.mean(values[:, column])
+                if weights is None
+                else np.average(values[:, column], weights=weights)
+            )
             if not math.isclose(
                 retained,
                 measurement.value,
@@ -273,10 +321,18 @@ def _bootstrap_paired_means(
     deltas: np.ndarray,
     *,
     strata: Sequence[str] | None = None,
+    weights: np.ndarray | None = None,
     seed: int,
     resamples: int,
 ) -> np.ndarray:
-    """Resample aligned units and return the mean delta for every metric."""
+    """Resample aligned units and return the mean delta for every metric.
+
+    With ``weights`` the replicate is a ratio rather than a plain mean, and the
+    denominator is recomputed per draw. That is the point: a resample that
+    happens to draw the heavy units is a resample carrying more of the thing
+    the metric averages over, and holding the denominator fixed would report
+    that as movement in the metric instead.
+    """
 
     units = int(deltas.shape[0])
     generator = np.random.default_rng(seed)
@@ -294,8 +350,12 @@ def _bootstrap_paired_means(
                     np.take_along_axis(grouped_indices, offsets, axis=1).ravel()
                 )
             drawn = np.concatenate(sampled)
-        weights = np.bincount(drawn, minlength=units).astype(np.float64)
-        replicates[index] = weights @ deltas / units
+        multiplicity = np.bincount(drawn, minlength=units).astype(np.float64)
+        if weights is None:
+            replicates[index] = multiplicity @ deltas / units
+            continue
+        drawn_weights = multiplicity * weights
+        replicates[index] = drawn_weights @ deltas / float(drawn_weights.sum())
     return replicates
 
 

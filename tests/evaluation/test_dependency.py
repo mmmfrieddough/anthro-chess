@@ -159,6 +159,116 @@ def test_a_missing_conditioning_pass_fails_clearly() -> None:
         _build(contexts, [_policy(1, 0, 2.0)], {}, conditioned={1000: []})
 
 
+def test_game_contributions_recover_the_reported_degradation() -> None:
+    """A game's share carries its own weight, not an equal one.
+
+    The two games hold different numbers of rated positions, which is the case
+    an unweighted mean over games gets wrong. Reproducing the reported value
+    from the retained values is exactly what the paired floor's own check does
+    at report time.
+    """
+
+    contexts = {
+        (1, 0): _context(1, 0, rating=1500, band="1200_to_1599"),
+        (2, 0): _context(2, 0, rating=1500, band="1200_to_1599"),
+        (2, 1): _context(2, 1, rating=1500, band="1200_to_1599"),
+        (2, 2): _context(2, 2, rating=1500, band="1200_to_1599"),
+    }
+    true = [_policy(1, 0, 2.0), _policy(2, 0, 2.0), _policy(2, 1, 3.0)]
+    true.append(_policy(2, 2, 4.0))
+    corrupted = {
+        "absent": (
+            Conditioning(name="absent", kind=ConditioningKind.ABSENT),
+            [_policy(1, 0, 5.0), _policy(2, 0, 2.1), _policy(2, 1, 3.2)]
+            + [_policy(2, 2, 4.3)],
+        ),
+    }
+
+    result = _build(contexts, true, corrupted)
+
+    degradation = result.corruption(ConditioningKind.ABSENT)
+    contributions = {item.game_id: item for item in result.contributions}
+    assert degradation is not None
+    assert set(contributions) == {1, 2}
+    assert contributions[1].positions == 1
+    assert contributions[2].positions == 3
+    assert contributions[1].values["absent_degradation"] == pytest.approx(3.0)
+    assert contributions[2].values["absent_degradation"] == pytest.approx(0.2)
+    weighted = sum(
+        item.positions * item.values["absent_degradation"]
+        for item in result.contributions
+    ) / sum(item.positions for item in result.contributions)
+    assert weighted == pytest.approx(degradation.degradation)
+    assert weighted != pytest.approx(
+        (3.0 + 0.2) / 2,
+    ), "an unweighted mean over games would not be the reported degradation"
+
+
+def test_game_contributions_carry_the_anchor_quantities() -> None:
+    contexts = {
+        (1, 0): _context(1, 0, rating=1500, band="1200_to_1599"),
+        (2, 0): _context(2, 0, rating=1500, band="1200_to_1599"),
+    }
+    trajectory = {
+        (1, 0): TrajectorySignal(
+            strength_signal=0.0,
+            alignment=0.0,
+            anchor_divergence=0.4,
+            anchor_agreement=True,
+        ),
+        (2, 0): TrajectorySignal(
+            strength_signal=0.0,
+            alignment=0.0,
+            anchor_divergence=0.2,
+            anchor_agreement=False,
+        ),
+    }
+
+    result = _build(
+        contexts,
+        [_policy(1, 0, 2.0), _policy(2, 0, 2.0)],
+        {},
+        trajectory=trajectory,
+    )
+
+    values = {item.game_id: item.values for item in result.contributions}
+    assert values[1]["anchor_policy_divergence"] == pytest.approx(0.4)
+    assert values[2]["anchor_policy_divergence"] == pytest.approx(0.2)
+    assert values[1]["anchor_top1_agreement"] == pytest.approx(1.0)
+    assert values[2]["anchor_top1_agreement"] == pytest.approx(0.0)
+
+
+def test_game_contributions_are_withheld_when_a_signal_is_missing() -> None:
+    """One weight per game cannot describe two different denominators.
+
+    A rated position with no anchor signal would leave the degradations
+    averaged over more positions than the anchor quantities, so nothing is
+    retained rather than retaining values that do not reproduce the reading.
+    """
+
+    contexts = {
+        (1, 0): _context(1, 0, rating=1500, band="1200_to_1599"),
+        (2, 0): _context(2, 0, rating=1500, band="1200_to_1599"),
+    }
+    trajectory = {
+        (1, 0): TrajectorySignal(
+            strength_signal=0.0,
+            alignment=0.0,
+            anchor_divergence=0.4,
+            anchor_agreement=True,
+        ),
+    }
+
+    result = _build(
+        contexts,
+        [_policy(1, 0, 2.0), _policy(2, 0, 2.0)],
+        {},
+        trajectory=trajectory,
+    )
+
+    assert result.contributions == ()
+
+
 def test_dependency_tests_need_a_rated_position() -> None:
     contexts = {(1, 0): _context(1, 0, rating=None, band=None)}
 

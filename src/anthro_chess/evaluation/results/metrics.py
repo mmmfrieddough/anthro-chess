@@ -181,6 +181,14 @@ class MetricDefinition:
     #: the environment is recorded so a report can attribute a delta rather than
     #: credit it to the model.
     execution_sensitive: bool = False
+    #: Why this metric can carry no noise floor at all, when that follows from
+    #: what the metric counts rather than from what has been characterized so
+    #: far. Without it a report has one word for two situations: a floor nobody
+    #: has produced yet, and a floor that cannot exist. Only the first is worth
+    #: waiting for, so a reader has to be able to tell them apart. It annotates
+    #: the metric rather than redefining it, so it stays out of series identity
+    #: and needs no ``definition_version`` bump.
+    no_floor_reason: str | None = None
 
 
 _PROJECTIONS: dict[str, DataProjection] = {}
@@ -392,6 +400,7 @@ def registry_record() -> dict[str, object]:
                         "cost": metric.cost.value,
                         "projection": metric.projection,
                         "execution_sensitive": metric.execution_sensitive,
+                        "no_floor_reason": metric.no_floor_reason,
                         "summary": metric.summary,
                     }
                     for metric in metrics
@@ -1278,6 +1287,11 @@ DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        no_floor_reason=(
+            "the rate counts rating slices rather than games, so resampling "
+            "the games a reading scored estimates the dispersion of a "
+            "different quantity"
+        ),
     )
 )
 
@@ -1295,6 +1309,11 @@ DEPENDENCY_RATING_WITHIN_GAME_RESPONSE = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        no_floor_reason=(
+            "each rating slice is split at its own median prefix strength, so "
+            "a game's contribution is not fixed under resampling and there is "
+            "no per-unit contribution to bootstrap"
+        ),
     )
 )
 
