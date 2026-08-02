@@ -14,6 +14,18 @@ from anthro_chess.training.cadence import TrainingEvaluationConfig
 from anthro_chess.training.devices import DeviceSelection
 from anthro_chess.training.efficiency import TrainingEfficiencyConfig
 
+#: Parameters always stay float32. ``bfloat16-mixed`` autocasts the forward
+#: pass, so activations are held at half the width while the optimizer keeps
+#: full-precision master weights. bfloat16 rather than float16 because its
+#: exponent range matches float32, so no gradient scaler is involved and a
+#: checkpoint's scaler slot stays empty on every supported path.
+#:
+#: Its measured benefit is memory rather than speed, which is why it is off by
+#: default: activation width is what decides whether a larger model fits, and
+#: the throughput it costs is only worth paying when that is the constraint.
+#: ``docs/planning/cuda-training-proof.md`` holds the readings.
+TrainingPrecision = Literal["float32", "bfloat16-mixed"]
+
 
 class TrainingConfig(ConfigModel):
     """Configuration for a bounded action-model training run."""
@@ -27,7 +39,7 @@ class TrainingConfig(ConfigModel):
     resume_from: Literal["latest"] | Path | None = None
     gradient_accumulation_steps: int = Field(default=1, ge=1)
     device: DeviceSelection = "auto"
-    precision: Literal["float32"] = "float32"
+    precision: TrainingPrecision = "float32"
     determinism: Literal["strict", "relaxed"] = "relaxed"
     profile_phases: StrictBool = False
     model: MoveModelConfig = MoveModelConfig()

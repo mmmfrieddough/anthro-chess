@@ -7,6 +7,7 @@ import logging
 import random
 import time
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -59,8 +60,10 @@ from anthro_chess.training.checkpoints import (
 )
 from anthro_chess.training.config import TrainingConfig
 from anthro_chess.training.devices import (
+    STRICT_DETERMINISM_BACKENDS,
     DeviceCapabilities,
     DeviceError,
+    hardware_record,
     resolve_training_device,
 )
 from anthro_chess.training.efficiency import (
@@ -69,6 +72,7 @@ from anthro_chess.training.efficiency import (
     TrainingEfficiencyMonitor,
     TrainingEfficiencySummary,
     coordinate_record,
+    driver_allocated_memory_bytes,
     record_efficiency,
     write_efficiency_detail,
 )
@@ -82,7 +86,7 @@ from anthro_chess.training.tensorboard import (
     TrainingTensorBoard,
 )
 
-RUN_ARTIFACT_VERSION = 5
+RUN_ARTIFACT_VERSION = 6
 logger = logging.getLogger(__name__)
 
 
@@ -212,6 +216,8 @@ def run_training(
     torch.manual_seed(config.seed)
     if device.type == "mps":
         torch.mps.manual_seed(config.seed)
+    elif device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
+        torch.cuda.manual_seed_all(config.seed)
     previous_deterministic = torch.are_deterministic_algorithms_enabled()
     torch.use_deterministic_algorithms(config.determinism == "strict")
     try:
@@ -222,6 +228,7 @@ def run_training(
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=config.learning_rate,
+            fused=_fused_optimizer(device),
         )
         code_record = code_provenance().as_record()
         data_record = {
@@ -357,6 +364,7 @@ def run_training(
             checkpoint_every_steps=config.checkpoint_every_steps,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             device=device,
+            autocast=_autocast(config, device),
             profile_phases=config.profile_phases,
             metrics_path=metrics_path,
             output_directory=output_directory,
@@ -421,6 +429,7 @@ def run_training(
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
             "execution": execution_record,
+            "hardware": hardware_record(device),
             "optimization": {
                 "optimizer": "Adam",
                 "starting_step": starting_step,
@@ -462,6 +471,15 @@ def run_training(
             json.dumps(run_record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+    except torch.OutOfMemoryError as error:  # pragma: no cover - needs a real device
+        raise TrainingError(
+            _out_of_memory_message(
+                config,
+                device,
+                train.loader.config.batch_size,
+                error,
+            )
+        ) from error
     except (
         CadenceError,
         CheckpointError,
@@ -504,6 +522,7 @@ def _optimize(
     checkpoint_every_steps: int,
     gradient_accumulation_steps: int,
     device: torch.device,
+    autocast: AbstractContextManager[None],
     profile_phases: bool,
     metrics_path: Path,
     output_directory: Path,
@@ -519,6 +538,7 @@ def _optimize(
     data_seconds = 0.0
     transfer_seconds = 0.0
     compute_seconds = 0.0
+    optimizer_seconds = 0.0
     health_monitor = StepHealthMonitor(model.parameters())
     charged_instrumentation = 0.0
     readings: list[CadenceReading] = []
@@ -583,11 +603,15 @@ def _optimize(
                 transfer_seconds += time.perf_counter() - transfer_started
 
                 compute_started = time.perf_counter()
-                loss = masked_action_cross_entropy(
-                    model(batch),
-                    batch.action_targets,
-                    batch.action_loss_mask,
-                )
+                with autocast:
+                    loss = masked_action_cross_entropy(
+                        model(batch),
+                        batch.action_targets,
+                        batch.action_loss_mask,
+                    )
+                # Backward stays outside the autocast scope. Each operation's
+                # backward already runs in the dtype its forward chose, and
+                # nesting it would autocast a second time.
                 (loss / gradient_accumulation_steps).backward()
                 if profile_phases:
                     _synchronize_device(device)
@@ -605,11 +629,11 @@ def _optimize(
             if reported:
                 health_monitor.snapshot_parameters()
 
-            compute_started = time.perf_counter()
+            optimizer_started = time.perf_counter()
             optimizer.step()
             if profile_phases:
                 _synchronize_device(device)
-            compute_seconds += time.perf_counter() - compute_started
+            optimizer_seconds += time.perf_counter() - optimizer_started
             health_monitor.observe_update()
             totals.end_step()
             # Both drains stay inside the timed span. They are where the
@@ -671,7 +695,14 @@ def _optimize(
                     "checkpoint_seconds": summary.checkpoint_seconds,
                     "data_seconds": data_seconds if profile_phases else None,
                     "transfer_seconds": (transfer_seconds if profile_phases else None),
+                    # Forward and backward only. The optimizer's own work is
+                    # reported beside it rather than inside it, because the two
+                    # scale with different things and a merged figure cannot
+                    # say which of them a slow step is spending its time in.
                     "compute_seconds": compute_seconds if profile_phases else None,
+                    "optimizer_seconds": (
+                        optimizer_seconds if profile_phases else None
+                    ),
                     "peak_sampled_allocated_memory_bytes": (
                         monitor.peak_allocated_memory_bytes
                     ),
@@ -794,6 +825,36 @@ def _charge_instrumentation(
     return total
 
 
+def _out_of_memory_message(  # pragma: no cover - needs a real device to raise
+    config: TrainingConfig,
+    device: torch.device,
+    batch_size: int,
+    error: BaseException,
+) -> str:
+    """Explain an exhausted accelerator in terms of the dials that fix it.
+
+    Torch's own message reports allocator arithmetic, which establishes that
+    the run did not fit but not what to change. Both halves of the effective
+    batch are named because they trade against each other: accumulation buys
+    the same effective batch back out of a smaller resident one.
+    """
+
+    accumulation = config.gradient_accumulation_steps
+    reserved = driver_allocated_memory_bytes(device)
+    held = (
+        "an unmeasurable amount"
+        if reserved is None
+        else f"{reserved / 2**30:.2f} GiB reserved"
+    )
+    return (
+        f"training ran out of memory on {device.type} with batch {batch_size} "
+        f"by {accumulation} accumulation step(s), an effective batch of "
+        f"{batch_size * accumulation}, while holding {held}: {error}. Lower "
+        f"the loader batch_size, raising gradient_accumulation_steps by the "
+        f"same factor to keep the effective batch unchanged"
+    )
+
+
 def _render_throughput(value: float | None) -> str:
     """Render steady-state throughput, which is absent during warmup."""
 
@@ -886,18 +947,65 @@ def _training_device(
         )
     except DeviceError as error:
         raise TrainingError(str(error)) from error
-    if device.type == "mps" and config.determinism == "strict":
+    if (
+        config.determinism == "strict"
+        and device.type not in STRICT_DETERMINISM_BACKENDS
+    ):
         raise TrainingError(
-            "strict determinism is not supported for the current MPS "
-            "training path; select determinism='relaxed'"
+            f"strict determinism is not supported for the current "
+            f"{device.type.upper()} training path; select determinism='relaxed'"
         )
     return device
 
 
 def _training_dtype(config: TrainingConfig) -> torch.dtype:
-    if config.precision == "float32":
+    """Return the dtype parameters and optimizer state are held in.
+
+    Mixed precision does not change this. Master weights stay float32 and only
+    the forward pass is autocast, so a checkpoint written under either setting
+    holds the same tensors and loads on either.
+    """
+
+    if config.precision in ("float32", "bfloat16-mixed"):
         return torch.float32
     raise TrainingError(f"unsupported training precision: {config.precision}")
+
+
+def _autocast_dtype(config: TrainingConfig) -> torch.dtype | None:
+    """Return the dtype the forward pass is autocast to, if any."""
+
+    return torch.bfloat16 if config.precision == "bfloat16-mixed" else None
+
+
+def _autocast(
+    config: TrainingConfig, device: torch.device
+) -> AbstractContextManager[None]:
+    """Return the autocast scope one micro-batch's forward pass runs under."""
+
+    dtype = _autocast_dtype(config)
+    if dtype is None:
+        return nullcontext()
+    return torch.autocast(device_type=device.type, dtype=dtype)
+
+
+def _fused_optimizer(device: torch.device) -> bool:
+    """Return whether the optimizer update runs as one fused kernel.
+
+    Derived from the backend rather than configured, because there is one right
+    answer per backend and a dial with a single correct setting is a dial
+    nobody should have to find. Adam over this model's parameter list is
+    otherwise dozens of small elementwise launches, and on CUDA the launches
+    cost more than the arithmetic: fusing them was worth 17.7% of a whole
+    training step, which is larger than every precision and transfer option
+    measured for this milestone put together.
+
+    Elementwise and deterministic either way, so this stays compatible with the
+    strict correctness path. It does reassociate some floating-point work, so
+    the two forms are not bit-identical to each other — which is already true
+    of any change of backend, and is why neither is a compatibility identity.
+    """
+
+    return device.type == "cuda"
 
 
 def _execution_record(
@@ -911,6 +1019,7 @@ def _execution_record(
         "parameter_dtype": str(_training_dtype(config)).removeprefix("torch."),
         "determinism": config.determinism,
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "fused_optimizer": _fused_optimizer(device),
         "phase_profiling": config.profile_phases,
     }
 
@@ -931,11 +1040,12 @@ def _validate_checkpoint_execution(
         "parameter_dtype",
         "determinism",
         "gradient_accumulation_steps",
+        "fused_optimizer",
         "phase_profiling",
     }
     if set(execution) != required:
         raise CheckpointError("checkpoint execution metadata is incomplete or unknown")
-    if execution["backend"] not in {"cpu", "mps"}:
+    if execution["backend"] not in {"cpu", "mps", "cuda"}:
         raise CheckpointError(
             f"checkpoint execution backend is unsupported: {execution['backend']}"
         )

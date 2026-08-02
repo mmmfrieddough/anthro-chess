@@ -20,16 +20,23 @@ from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.evaluation.results.budget import build_budget_report
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
+    RUN_ARTIFACT_VERSION,
     TrainingConfig,
     TrainingError,
     load_training_checkpoint,
     run_training,
 )
-from anthro_chess.training.devices import DeviceCapabilities
+from anthro_chess.training.devices import (
+    STRICT_DETERMINISM_BACKENDS,
+    DeviceCapabilities,
+)
 from anthro_chess.training.runner import _training_device
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
-from accelerators import requires_training_accelerator
+from accelerators import (
+    ACCELERATOR_RNG_KEYS,
+    training_accelerator_parameters,
+)
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -94,8 +101,15 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         "parameter_dtype": "float32",
         "determinism": "strict",
         "gradient_accumulation_steps": 1,
+        "fused_optimizer": False,
         "phase_profiling": False,
     }
+    # Which machine, kept apart from what was selected on it. Nothing compares
+    # these across runs, which is exactly why they can name the host.
+    assert run_record["hardware"]["backend"] == "cpu"
+    assert run_record["hardware"]["torch_version"]
+    assert run_record["hardware"]["cpu"]["torch_threads"] >= 1
+    assert "cuda" not in run_record["hardware"]
     assert run_record["validation"]["position_count"] == 26
     assert "step=1 move_loss=" in log_output.getvalue()
     assert "step=1 move_loss=" not in capsys.readouterr().out
@@ -177,6 +191,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         "backend": "cpu",
         "determinism": "strict",
         "device": "cpu",
+        "fused_optimizer": False,
         "gradient_accumulation_steps": 1,
         "parameter_dtype": "float32",
         "phase_profiling": False,
@@ -184,7 +199,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     }
 
     run_record = json.loads(resumed.run_path.read_text(encoding="utf-8"))
-    assert run_record["version"] == 5
+    assert run_record["version"] == RUN_ARTIFACT_VERSION
     assert run_record["optimization"]["starting_step"] == 2
     assert run_record["optimization"]["processed_positions"] == 104
     assert run_record["optimization"]["resumed_from"] == str(
@@ -274,6 +289,8 @@ def test_training_device_rejects_unavailable_or_strict_mps(
             capabilities=DeviceCapabilities(
                 mps_built=True,
                 mps_available=False,
+                cuda_built=False,
+                cuda_available=False,
             ),
         )
 
@@ -286,13 +303,57 @@ def test_training_device_rejects_unavailable_or_strict_mps(
             capabilities=DeviceCapabilities(
                 mps_built=True,
                 mps_available=True,
+                cuda_built=False,
+                cuda_available=False,
             ),
         )
 
 
+def test_mixed_precision_keeps_full_precision_parameters_and_no_scaler(
+    tmp_path: Path,
+) -> None:
+    """Autocast changes how the forward pass computes, not what is stored.
+
+    The checkpoint is the thing worth pinning: master weights stay float32 and
+    the gradient-scaler slot stays empty, which is what keeps a mixed-precision
+    checkpoint loadable everywhere a full-precision one is.
+    """
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path / "config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=True,
+        precision="bfloat16-mixed",
+        determinism="relaxed",
+    )
+
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    assert result.initial_parameter_sha256 != result.final_parameter_sha256
+    assert result.validation is not None
+    checkpoint = load_training_checkpoint(result.checkpoint_path)
+    assert checkpoint["scaler_state"] is None
+    assert all(
+        value.dtype == torch.float32
+        for value in checkpoint["model_state"].values()
+        if isinstance(value, torch.Tensor) and value.is_floating_point()
+    )
+    execution = checkpoint["metadata"]["execution"]
+    assert execution["precision"] == "bfloat16-mixed"
+    assert execution["parameter_dtype"] == "float32"
+
+
 @pytest.mark.gpu
-@requires_training_accelerator("mps")
-def test_mps_checkpoint_cross_backend_and_original_device_resume(
+@pytest.mark.parametrize("backend", training_accelerator_parameters())
+def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
+    backend: str,
     tmp_path: Path,
 ) -> None:
     prepared = prepare_pgn(
@@ -312,16 +373,16 @@ def test_mps_checkpoint_cross_backend_and_original_device_resume(
     )
     cpu_result = run_training(load_config(TrainingConfig, path=cpu_config))
 
-    mps_config_directory = tmp_path / "mps-config"
+    accelerator_config_directory = tmp_path / f"{backend}-config"
     cross_backend_config = _write_training_config(
-        mps_config_directory,
+        accelerator_config_directory,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "mps",
+        output=tmp_path / backend,
         validation=True,
         steps=2,
         resume_from=cpu_result.checkpoint_path,
-        device="mps",
+        device=backend,
         determinism="relaxed",
     )
     cross_backend = run_training(load_config(TrainingConfig, path=cross_backend_config))
@@ -331,36 +392,37 @@ def test_mps_checkpoint_cross_backend_and_original_device_resume(
         cross_backend.final_parameter_sha256
     )
     assert cross_backend.validation is not None
-    mps_checkpoint = load_training_checkpoint(cross_backend.checkpoint_path)
+    accelerator_checkpoint = load_training_checkpoint(cross_backend.checkpoint_path)
     assert all(
         value.device.type == "cpu"
-        for value in mps_checkpoint["model_state"].values()
+        for value in accelerator_checkpoint["model_state"].values()
         if isinstance(value, torch.Tensor)
     )
-    assert mps_checkpoint["metadata"]["execution"] == {
-        "backend": "mps",
+    assert accelerator_checkpoint["metadata"]["execution"] == {
+        "backend": backend,
         "determinism": "relaxed",
-        "device": "mps",
+        "device": backend,
+        "fused_optimizer": backend == "cuda",
         "gradient_accumulation_steps": 1,
         "parameter_dtype": "float32",
         "phase_profiling": False,
         "precision": "float32",
     }
-    assert set(mps_checkpoint["rng_state"]) == {
+    assert set(accelerator_checkpoint["rng_state"]) == {
         "python",
         "torch_cpu",
-        "torch_mps",
+        ACCELERATOR_RNG_KEYS[backend],
     }
 
     original_device_config = _write_training_config(
-        mps_config_directory,
+        accelerator_config_directory,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "mps",
+        output=tmp_path / backend,
         validation=True,
         steps=3,
         resume_from="latest",
-        device="mps",
+        device=backend,
         determinism="relaxed",
     )
     original_device = run_training(
@@ -550,8 +612,54 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
 
 
 @pytest.mark.gpu
-@requires_training_accelerator("mps")
-def test_real_mps_forward_backward_update_and_validation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend", training_accelerator_parameters())
+def test_strict_determinism_on_an_accelerator_reproduces_the_same_parameters(
+    backend: str,
+    tmp_path: Path,
+) -> None:
+    """The correctness path has to be the real one, on the real device.
+
+    An accelerator that accepts the strict selection is claiming its whole
+    backward pass has deterministic kernels. Nothing about a single run would
+    reveal a claim that is false, so this runs the same configuration twice and
+    compares the weights it arrived at. A backend that cannot make the claim
+    must refuse the selection instead of quietly training anyway.
+    """
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+
+    def train(name: str) -> str:
+        config_path = _write_training_config(
+            tmp_path / f"{name}-config",
+            normalized=prepared.normalized_path,
+            manifest=prepared.manifest_path,
+            output=tmp_path / name,
+            validation=False,
+            steps=3,
+            device=backend,
+            determinism="strict",
+        )
+        result = run_training(load_config(TrainingConfig, path=config_path))
+        return str(result.final_parameter_sha256)
+
+    if backend not in STRICT_DETERMINISM_BACKENDS:
+        with pytest.raises(TrainingError, match="strict determinism is not supported"):
+            train("refused")
+        return
+
+    assert train("first") == train("second")
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("backend", training_accelerator_parameters())
+def test_real_accelerator_forward_backward_update_and_validation(
+    backend: str,
+    tmp_path: Path,
+) -> None:
     prepared = prepare_pgn(
         SAMPLE_PGN,
         tmp_path / "data",
@@ -563,7 +671,7 @@ def test_real_mps_forward_backward_update_and_validation(tmp_path: Path) -> None
         manifest=prepared.manifest_path,
         output=tmp_path / "run",
         validation=True,
-        device="mps",
+        device=backend,
         determinism="relaxed",
         extra="profile_phases = true\n",
     )
@@ -574,12 +682,24 @@ def test_real_mps_forward_backward_update_and_validation(tmp_path: Path) -> None
     assert result.initial_parameter_sha256 != result.final_parameter_sha256
     assert result.checkpoint_path.is_file()
     assert result.validation is not None
-    assert run_record["execution"]["backend"] == "mps"
+    assert run_record["execution"]["backend"] == backend
     metric = json.loads(
         result.metrics_path.read_text(encoding="utf-8").splitlines()[-1]
     )
     assert metric["peak_sampled_allocated_memory_bytes"] > 0
     assert metric["peak_sampled_driver_memory_bytes"] > 0
+    # Every profiled phase is separately attributed, so a slow accelerator run
+    # can be blamed on the pipeline it is actually spending time in rather than
+    # on one bucket that quietly holds four of them.
+    assert all(
+        metric[phase] > 0.0
+        for phase in (
+            "data_seconds",
+            "transfer_seconds",
+            "compute_seconds",
+            "optimizer_seconds",
+        )
+    )
 
 
 def test_declared_cadences_report_a_run_before_it_finishes(

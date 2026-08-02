@@ -35,6 +35,11 @@ _NON_ACCELERATOR_SELECTIONS = frozenset({"auto", "cpu"})
 #: correct only while nothing in the project can select it either.
 CANDIDATE_BACKENDS = ("mps", "cuda")
 
+#: The checkpoint RNG key each backend contributes beside the host streams.
+#: Mirrors ``anthro_chess.training.checkpoints`` so a test can assert the exact
+#: key set without restating which backend it is running on.
+ACCELERATOR_RNG_KEYS = {"mps": "torch_mps", "cuda": "torch_cuda"}
+
 
 @dataclass(frozen=True)
 class AcceleratorSurface:
@@ -183,6 +188,33 @@ def accelerator_parameters() -> list[Any]:
                 reason=(
                     "this host has none of the accelerator backends the project "
                     f"targets ({', '.join(CANDIDATE_BACKENDS)})"
+                )
+            ),
+        )
+    ]
+
+
+def training_accelerator_parameters() -> list[Any]:
+    """Return one parameter per accelerator this host can train on.
+
+    Parametrizing rather than writing a test per backend is what makes a new
+    backend arrive already covered: the CUDA path inherited the whole
+    cross-backend checkpoint story from the MPS test on the day the training
+    device selection began accepting it.
+    """
+
+    if HOST.usable_training:
+        return [pytest.param(backend, id=backend) for backend in HOST.usable_training]
+    return [
+        pytest.param(
+            "cpu",
+            id="none",
+            marks=pytest.mark.skip(
+                reason=(
+                    "no accelerator on this host is training-selectable; "
+                    f"present: {HOST.describe_present()}; the training device "
+                    "selection accepts: "
+                    + (", ".join(HOST.selectable_training) or "none")
                 )
             ),
         )
