@@ -9,14 +9,20 @@ schema.
 `data/` contains the offline sample selection and the pinned, bounded Lichess
 baseline-corpus selection. The latter owns the archive identity, published
 checksum, rating namespace, deterministic maximum, and normalized shard size.
-`training/` contains the strict CPU and explicitly selected MPS smoke paths
-against the prepared sample artifact, including step-keyed checkpoint and
+`training/` contains the strict CPU and explicitly selected MPS and CUDA smoke
+paths against the prepared sample artifact, including step-keyed checkpoint and
 resume coverage. It also contains the first measured many-game MPS proof
 selection; `docs/planning/minimal-training-proof.md` owns the reproducible
-corpus slice, evidence, and interpretation. The MPS smoke selection enables
-synchronized phase profiling for bounded device verification; larger-corpus
-batch and accumulation choices belong in resolved run configuration and
-measured artifacts.
+corpus slice, evidence, and interpretation. The accelerator smoke selections
+enable synchronized phase profiling for bounded device verification;
+larger-corpus batch and accumulation choices belong in resolved run
+configuration and measured artifacts.
+
+The two accelerator smoke selections differ in their determinism setting, and
+the difference belongs to the backend rather than to taste: the CUDA backward
+pass has a deterministic implementation for every operation this model needs
+and the MPS one does not. A selection asking for strict determinism where the
+backend cannot supply it fails before the first optimizer step.
 
 A training selection may also declare in-training evaluation cadences: when an
 entry runs, which registered metrics it computes, and the explicitly sized

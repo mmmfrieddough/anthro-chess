@@ -100,16 +100,39 @@ checks exercise those same model and loss APIs.
 
 The shared training runner also lives in `anthro_chess.training` and uses those
 ordinary loader, model, loss, and validation boundaries. It resolves explicit
-`cpu`, `mps`, or `auto` device selection at one boundary and moves the model,
-batches, loss, validation, and optimizer state through that resolved device.
-Explicit MPS selection never silently falls back. Strict determinism remains
-available for the stripped-down CPU correctness path, while ordinary
-accelerator work can select the performance-oriented mode. Run artifacts own
-the exact device, precision, determinism, accumulation, throughput, phase
-timing, and available memory measurements rather than duplicating those values
-in prose. The same runner writes atomic optimizer-step checkpoints and can
-continue from the latest checkpoint in a run or an explicitly selected
-checkpoint across supported backends.
+`cpu`, `mps`, `cuda`, or `auto` device selection at one boundary and moves the
+model, batches, loss, validation, and optimizer state through that resolved
+device. Only `auto` falls back; an explicit accelerator that is not present is
+an error, because the reason to name one is that the run is not worth doing
+without it. There is one model, one loss, one loader, and one checkpoint format
+across every backend: a backend appears in this system as a resolved device and
+a small number of recorded execution settings, never as a parallel
+implementation. Run artifacts own the exact device, precision, determinism,
+accumulation, throughput, phase timing, and available memory measurements
+rather than duplicating those values in prose. The same runner writes atomic
+optimizer-step checkpoints and can continue from the latest checkpoint in a run
+or an explicitly selected checkpoint across supported backends.
+
+Which device-side optimizations this runner offers is decided by measurement
+rather than by what the hardware nominally supports, and the bar is that a
+setting has to be worth its own existence. Reduced-precision float32 matrix
+multiplication and page-locked batch staging were both implemented, measured on
+the workload this milestone actually runs, and then removed: the first moved
+throughput by a fraction of a percent, and the second was slower every time it
+was tried, because the expensive part of preparing a batch is building it on the
+host rather than copying it to the device. `docs/planning/cuda-training-proof.md`
+records those readings so the next attempt starts from evidence rather than from
+the same first principles.
+
+Mixed precision survived that bar on a different axis. Selecting it autocasts
+the forward pass while parameters and optimizer state stay float32, so a
+checkpoint is identical in shape to a full-precision one and loads anywhere one
+does. bfloat16 rather than float16 because its exponent range matches float32,
+which is why no gradient scaler exists anywhere in this system and why the
+checkpoint's scaler slot is empty on every supported path. It costs throughput
+and returns activation memory, and activation memory is what decides whether a
+larger model fits on a fixed card — so it stays available, and stays off by
+default at a size where memory is not yet the constraint.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input
@@ -268,19 +291,32 @@ progress counters, Python and Torch random-number-generator state, and the
 loader's exact deterministic next-batch cursor. Each checkpoint retains the
 resolved configuration and code, data, model, action-vocabulary, encoding, and
 execution provenance. Tensor state is loaded through CPU storage before the
-model and optimizer restore it onto the selected CPU or MPS backend. Resume
-compares code-owned compatibility identities before loading state and rejects
-unsafe changes clearly.
+model and optimizer restore it onto the selected backend, which is what makes
+a checkpoint portable between them. Resume compares code-owned compatibility
+identities before loading state and rejects unsafe changes clearly.
 
-The initial runner uses full precision. CPU supports strict or relaxed
-determinism. The current MPS Transformer backward path requires relaxed
-determinism because the locked Torch build lacks a deterministic implementation
-for one required gradient operation; selecting strict MPS training fails before
-optimization with a clear error. An MPS checkpoint preserves MPS RNG state.
-When a CPU checkpoint starts an MPS continuation, the target-backend RNG is
-initialized reproducibly from the run seed because the source checkpoint has no
-MPS RNG state. Loader continuation remains exact, but stochastic model behavior
-across different backends is not promised to be bit-identical.
+Which backends can run the stripped-down correctness path is a property of the
+locked Torch build and this model, not a preference. CPU and CUDA both supply a
+deterministic implementation for every operation the backward pass needs, so
+strict determinism is available there and a repeated run reaches the same
+weights. The MPS Transformer backward path lacks one, so selecting strict MPS
+training fails before optimization with a clear error rather than training
+nondeterministically under a setting that claims otherwise.
+
+A checkpoint preserves the random-number stream of whichever accelerator wrote
+it, beside the host streams. When a checkpoint from one backend starts a
+continuation on another, the target backend's stream is initialized
+reproducibly from the run seed, because the source checkpoint has no stream for
+it. Loader continuation remains exact, but stochastic model behavior across
+different backends is not promised to be bit-identical.
+
+Which machine a run executed on is retained separately from what it selected,
+and the split matters. The selection is a compatibility identity a resumed run
+has to match, so it can only hold values another machine could reproduce. The
+hardware record holds the values that make a throughput or memory figure
+interpretable later — which accelerator, how many of them, which driver and
+runtime — and precisely because those differ between machines, nothing compares
+them.
 
 The checkpoint configuration schema and artifact version in
 `anthro_chess.training` are the source of truth for exact fields and selection

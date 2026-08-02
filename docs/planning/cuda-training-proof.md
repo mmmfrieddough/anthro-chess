@@ -1,0 +1,189 @@
+# CUDA Training Proof
+
+This document records what the single-GPU CUDA training path is worth, measured
+rather than assumed, and which candidate optimizations were tried and rejected.
+It is an implementation proof for the shared runner on a new backend. It is not
+a claim about model quality, and nothing here was appended to the committed
+benchmark store: every run below used `[efficiency] record = false`, because
+committing a benchmark result is a separate decision about project history.
+
+The headline is that the accelerator helps, that it helps far less than the
+hardware could, and that the reason is measurable and lives outside the model.
+
+## Host
+
+| | |
+| --- | --- |
+| Accelerator | 2 × NVIDIA GeForce RTX 4090, 23.5 GiB each, compute capability 8.9 |
+| Host | Linux x86-64, 32 logical cores, Torch defaulting to 16 threads |
+| Torch | 2.13.0+cu130, CUDA runtime 13.0, cuDNN 9.2.0 |
+
+Only one card is used. Distribution is separate work and shares this as its
+baseline.
+
+## Reproducing
+
+Every measurement below runs the ordinary `anthro train` command against the
+pinned corpus, not a synthetic loop. Stand the corpus up first — the exact
+selection the Milestone 4 baseline trains on:
+
+```console
+uv run anthro data acquire \
+  --config configs/data/lichess-blitz-2017-04.toml
+
+uv run anthro data prepare \
+  --config configs/data/lichess-blitz-2017-04.toml \
+  --set 'artifact_name="lichess-blitz-proof-30k-v4"' \
+  --set filters.maximum_games=30000 \
+  --set output.games_per_shard=30000
+```
+
+That yields 30,000 accepted games over 2,052,632 plies, split into 26,944
+training games. The measured configuration is the checked-in baseline model —
+`model_dim` 64, two transformer layers, four heads — at loader batch 16 with no
+gradient accumulation, which is what the shipped baseline selection trains.
+
+The shortest check that the device path works at all needs no corpus beyond the
+checked-in sample:
+
+```console
+uv run anthro train --config configs/training/cuda-smoke.toml
+```
+
+## What The Accelerator Is Worth
+
+Steady-state active positions per second, which excludes warmup, checkpointing,
+evaluation, and the run's own instrumentation. Both devices ran the same model,
+corpus, seed, and loader configuration.
+
+| Device | Batch 16 | Batch 64 | Batch 256 |
+| --- | ---: | ---: | ---: |
+| CPU (16 threads) | 43,425 | 37,540 | 35,295 |
+| CUDA (one 4090) | 86,799 | 142,289 | 168,107 |
+| CUDA ÷ CPU | 2.00× | 3.79× | 4.76× |
+
+At the batch the project currently trains, one 4090 is worth exactly twice the
+16-thread host. That clears the bar, and it is also a disappointing figure for
+this hardware, so the rest of this document is about why.
+
+The two devices respond to batch size in opposite directions, which is the more
+useful result. CUDA gains 94% going from batch 16 to 256 and has not stopped
+climbing; the CPU *loses* throughput as the batch grows, because a wider batch
+buys it no parallelism it did not already have and costs it cache locality.
+Peak reserved device memory at batch 256 was 2.6 GiB of 23.5 GiB, so the batch
+axis is nowhere near a memory ceiling.
+
+The batch-256 columns rest on short steady-state windows — 140 CUDA steps and
+15 CPU ones — because a wide batch consumes the same positions in fewer steps.
+They are firm enough to establish the direction and the rough size of the gap,
+and the batch-16 row is the one to quote precisely.
+
+## Where The Time Goes
+
+Phase profiling attributes each part of a step separately, with a device
+synchronization at each boundary so the attribution is real rather than an
+enqueue time. Cumulative seconds, and the same figures divided by their step
+counts:
+
+| Phase | CUDA (400 steps) | CPU (120 steps) | CUDA per step | CPU per step |
+| --- | ---: | ---: | ---: | ---: |
+| Input preparation | 0.748s (13.8%) | 0.248s (7.7%) | 1.9 ms | 2.1 ms |
+| Batch construction and transfer | 1.904s (35.2%) | 0.567s (17.6%) | 4.8 ms | 4.7 ms |
+| Forward and backward | 2.486s (46.0%) | 2.128s (66.1%) | 6.2 ms | 17.7 ms |
+| Optimizer | 0.265s (4.9%) | 0.278s (8.6%) | 0.7 ms | 2.3 ms |
+
+Read the per-step columns rather than the percentages. **Model compute is 2.9×
+faster on the accelerator. Batch construction and transfer costs the same 4.8 ms
+either way.** That fixed host-side cost is what collapses a 2.9× compute win
+into a 2.0× end-to-end one, and it is why the card sat at roughly 11% utilization
+throughout.
+
+The reason it is the same on both devices is that the phase is not dominated by
+the copy across the bus. It is dominated by building tensors out of the loader's
+nested Python sequences on the host, which happens identically whether the
+result then stays put or crosses to a device. The input pipeline, not the
+accelerator, is the binding constraint at the current model size.
+
+Separating optimizer work from forward and backward was worth doing: it is 4.9%
+of a CUDA step, so it is not where any effort belongs.
+
+## Optimizations Measured And Rejected
+
+Each was implemented, measured on the workload above, and then removed, because
+retaining a dial that never wins costs more than the measurement it preserves.
+The readings are kept here so the next person does not re-derive them.
+
+| Candidate | Throughput | Verdict |
+| --- | ---: | --- |
+| Baseline (float32) | 86,799 | — |
+| TF32 float32 matmul | 87,011 | +0.24%, inside run-to-run noise |
+| Page-locked staging, asynchronous copy | 37,590 and 80,111 | 8% to 57% slower across two runs |
+| bfloat16 autocast | 80,695 | 7% slower |
+| bfloat16 autocast with TF32 | 78,790 | 9% slower |
+
+**TF32 does nothing here** because the model is not matmul-bound. A `model_dim`
+of 64 gives the tensor cores nothing to accelerate; the step is spent on kernel
+launches and host work.
+
+**Page-locked staging lost badly**, and the phase profile above says why.
+Pinning helps when a real copy can overlap real device work. Here the expensive
+part is constructing the tensor on the host, which pinning does not remove and
+in fact duplicates by adding a staging copy — and there is no device work to
+overlap with, because the device is idle waiting. The two runs disagreed by a
+wide margin, which is itself informative: allocating page-locked buffers for the
+loader's varying bucket shapes cannot reuse a cached buffer, so its cost depends
+on allocation luck. It was never faster in either run.
+
+**The synchronization probe measured −0.11 ms per step**, meaning the arm that
+synchronizes on every micro-batch was very slightly *faster* than the deferred
+one. That is noise around zero, and it says the deferred read-back buys nothing
+on this workload — for the opposite reason it buys nothing at four accumulation
+micro-batches on MPS. There the device is busy enough that the host never gets
+ahead; here the host is the bottleneck, so it never gets ahead either.
+
+## What Was Kept
+
+`precision = "bfloat16-mixed"` stays available and stays off by default. Its
+throughput cost is real and measured, but throughput is not what it is for:
+
+| Precision | Throughput | Peak reserved device memory | Parameter bytes |
+| --- | ---: | ---: | ---: |
+| float32 | 86,799 | 226.5 MB | 23.4 MB |
+| bfloat16-mixed | 80,695 | 174.1 MB | 23.4 MB |
+
+Activations are held at half width, so reserved memory falls 23% while the
+master weights and optimizer state stay float32 and byte-identical. Activation
+memory is what decides whether a larger model fits on a fixed card, which is the
+question the next stage of this milestone asks. Trading 7% throughput for 23%
+of the memory ceiling is a trade worth being able to make; making it by default,
+at a model size where memory is not the constraint, is not.
+
+Strict determinism is also available on CUDA and is what the smoke selection
+uses. Every operation this model's backward pass needs has a deterministic CUDA
+implementation in the locked build, and a repeated run reaches bit-identical
+gradients. That is a genuine gain over MPS, where the correctness path is
+unavailable.
+
+## What This Does Not Show
+
+- **Nothing about quality.** No run here was long enough to move a held-out
+  metric, and none was scored against the frozen pool.
+- **Nothing about evaluation cost.** Inference and the benchmarks select CUDA
+  through their own device boundary, landed separately, and none of the figures
+  here describe what a benchmark sweep costs on this host.
+- **Nothing about the second card**, or about how this scales across both.
+- **Nothing about a larger model.** Every conclusion above is bound to a
+  `model_dim` of 64. TF32 and mixed precision are exactly the settings expected
+  to start mattering as capacity grows, which is why the precision dial was
+  kept; the correct move is to re-measure at the new size rather than to assume
+  either result carries.
+
+## What To Do Next
+
+The measurement points at one thing: **the input pipeline is the binding
+constraint, and it is costing more than half of what this accelerator can
+deliver.** A 4.8 ms host-side cost per step, unchanged between backends, sits in
+front of a 6.2 ms compute step. Removing it is worth more than any device-side
+optimization available at this model size, and raising the batch is the cheap
+partial workaround available today — 3.79× at batch 64 rather than 2.00× at
+batch 16, with memory to spare.
