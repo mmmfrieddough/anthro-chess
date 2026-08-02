@@ -30,7 +30,12 @@ from anthro_chess.training.devices import (
     STRICT_DETERMINISM_BACKENDS,
     DeviceCapabilities,
 )
-from anthro_chess.training.runner import _training_device
+from anthro_chess.training.runner import (
+    _EXECUTION_COMPATIBILITY_KEYS,
+    _EXECUTION_PROVENANCE_KEYS,
+    _execution_record,
+    _training_device,
+)
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
 from accelerators import (
@@ -265,6 +270,164 @@ def test_explicit_resume_rejects_incompatible_state_identities(
     )
     with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
         run_training(load_config(TrainingConfig, path=incompatible_data_config))
+
+
+def test_every_recorded_execution_setting_has_exactly_one_declared_role(
+    tmp_path: Path,
+) -> None:
+    config = load_config(
+        TrainingConfig,
+        path=_write_training_config(
+            tmp_path,
+            normalized=tmp_path / "missing.parquet",
+            manifest=tmp_path / "missing-manifest.json",
+            output=tmp_path / "run",
+            validation=False,
+        ),
+    ).value
+
+    record = _execution_record(config, torch.device("cpu"))
+
+    compatibility = set(_EXECUTION_COMPATIBILITY_KEYS)
+    provenance = set(_EXECUTION_PROVENANCE_KEYS)
+    assert compatibility.isdisjoint(provenance)
+    assert set(record) == compatibility | provenance
+
+
+def test_resume_reads_execution_provenance_it_does_not_recognize(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    initial = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "initial-config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                output=tmp_path / "initial",
+                validation=False,
+            ),
+        )
+    )
+    # A checkpoint from a version that recorded distributed provenance this one
+    # knows nothing about, and had not yet recorded one this one writes.
+    foreign = _rewrite_checkpoint_execution(
+        initial.checkpoint_path,
+        tmp_path / "foreign.pt",
+        add={"world_size": 4},
+        drop=("fused_optimizer",),
+    )
+    continuation = _write_training_config(
+        tmp_path / "continuation-config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "continuation",
+        validation=False,
+        steps=3,
+        resume_from=foreign,
+    )
+
+    resumed = run_training(load_config(TrainingConfig, path=continuation))
+
+    assert resumed.initial_parameter_sha256 == initial.final_parameter_sha256
+    assert resumed.final_parameter_sha256 != initial.final_parameter_sha256
+
+
+def test_resume_rejects_a_changed_or_absent_execution_identity(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    initial = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "initial-config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                output=tmp_path / "initial",
+                validation=False,
+            ),
+        )
+    )
+    changed = _rewrite_checkpoint_execution(
+        initial.checkpoint_path,
+        tmp_path / "changed.pt",
+        add={"parameter_dtype": "bfloat16"},
+    )
+    absent = _rewrite_checkpoint_execution(
+        initial.checkpoint_path,
+        tmp_path / "absent.pt",
+        drop=("determinism",),
+    )
+
+    with pytest.raises(
+        TrainingError,
+        match=(
+            "checkpoint execution parameter_dtype is incompatible with the "
+            "current run: checkpoint 'bfloat16', current 'float32'"
+        ),
+    ):
+        run_training(
+            load_config(
+                TrainingConfig,
+                path=_write_training_config(
+                    tmp_path / "changed-config",
+                    normalized=prepared.normalized_path,
+                    manifest=prepared.manifest_path,
+                    output=tmp_path / "changed",
+                    validation=False,
+                    steps=3,
+                    resume_from=changed,
+                ),
+            )
+        )
+
+    with pytest.raises(
+        TrainingError,
+        match="checkpoint execution metadata has no determinism",
+    ):
+        run_training(
+            load_config(
+                TrainingConfig,
+                path=_write_training_config(
+                    tmp_path / "absent-config",
+                    normalized=prepared.normalized_path,
+                    manifest=prepared.manifest_path,
+                    output=tmp_path / "absent",
+                    validation=False,
+                    steps=3,
+                    resume_from=absent,
+                ),
+            )
+        )
+
+
+def _rewrite_checkpoint_execution(
+    source: Path,
+    destination: Path,
+    *,
+    add: dict[str, object] | None = None,
+    drop: tuple[str, ...] = (),
+) -> Path:
+    payload = load_training_checkpoint(source)
+    execution = {
+        key: value
+        for key, value in payload["metadata"]["execution"].items()
+        if key not in drop
+    }
+    execution.update(add or {})
+    payload["metadata"] = {**payload["metadata"], "execution": execution}
+    torch.save(payload, destination)
+    return destination
 
 
 _SHARD_BACKED = """
