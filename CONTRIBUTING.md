@@ -168,8 +168,14 @@ uv run mypy src tests
 uv run pytest
 ```
 
-Those are the commands continuous integration runs, with no extra flags on
-either side. The suite shards itself across the machine's cores by default, so
+Those are the core checks, and continuous integration runs each of them with no
+extra flags on either side. They are not the whole of it: `Required CI` also
+verifies the lockfile, syncs the locked environment, builds the distributions,
+installs the built wheel into a clean environment, and smoke-tests the installed
+package. A green run of the list above is therefore not yet a green required
+check, and the steps it does not cover are the packaging ones.
+
+The suite shards itself across the machine's cores by default, so
 a full run costs roughly a third of its serial wall time; pass `-n0` to turn
 sharding off for a debugger or a handful of tests.
 
