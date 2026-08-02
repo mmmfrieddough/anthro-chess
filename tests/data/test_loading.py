@@ -59,18 +59,20 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
 
     assert batch.batch_size == 2
     assert batch.sequence_length == 3
-    assert batch.attention_mask == ((True, True, True), (True, False, False))
-    assert batch.action_loss_mask == batch.attention_mask
-    assert batch.action_targets[0] == _action_ids(("e2e4", "e7e5", "g1f3"))
-    assert batch.action_targets[1] == (_action_ids(("d2d4",))[0], 0, 0)
+    assert batch.attention_mask.tolist() == [[True, True, True], [True, False, False]]
+    assert batch.action_loss_mask.tolist() == batch.attention_mask.tolist()
+    assert batch.action_targets[0].tolist() == list(
+        _action_ids(("e2e4", "e7e5", "g1f3"))
+    )
+    assert batch.action_targets[1].tolist() == [_action_ids(("d2d4",))[0], 0, 0]
     assert batch.legal_action_ids is not None
     assert batch.legal_action_ids[1][0]
     assert batch.legal_action_ids[1][1:] == ((), ())
-    assert batch.inputs.piece_ids[1][1] == (0,) * 64
-    assert batch.inputs.previous_action_id.present[0] == (False, True, True)
-    assert batch.inputs.target_rating.values[0] == (1400, 1401, 1400)
-    assert batch.game_ids == ((1, 1, 1), (2, 0, 0))
-    assert batch.ply_indices == ((0, 1, 2), (0, 0, 0))
+    assert batch.inputs.piece_ids[1][1].tolist() == [0] * 64
+    assert batch.inputs.previous_action_id.present[0].tolist() == [False, True, True]
+    assert batch.inputs.target_rating.values[0].tolist() == [1400, 1401, 1400]
+    assert batch.game_ids.tolist() == [[1, 1, 1], [2, 0, 0]]
+    assert batch.ply_indices.tolist() == [[0, 1, 2], [0, 0, 0]]
 
 
 def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
@@ -93,9 +95,9 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
     batch = next(loader)
 
     assert batch.chunk_start_plies == (0, 2, 4)
-    assert batch.ply_indices == ((0, 1), (2, 3), (4, 0))
+    assert batch.ply_indices.tolist() == [[0, 1], [2, 3], [4, 0]]
     assert batch.inputs.previous_action_id.values[1][0] == _action_ids(("e7e5",))[0]
-    assert batch.inputs.previous_action_id.present[1][0] is True
+    assert bool(batch.inputs.previous_action_id.present[1][0]) is True
 
 
 def test_length_buckets_keep_similarly_sized_full_games_together(
@@ -154,9 +156,49 @@ def test_each_timestep_is_handed_the_action_the_previous_one_predicted() -> None
 
     batch = next(loader)
 
-    assert batch.inputs.previous_action_id.present[0] == (False, True, True)
+    assert batch.inputs.previous_action_id.present[0].tolist() == [False, True, True]
     assert batch.inputs.previous_action_id.values[0][1] == batch.action_targets[0][0]
     assert batch.inputs.previous_action_id.values[0][2] == batch.action_targets[0][1]
+
+
+def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
+    """A batch is buffers, and each one is the width its own values require.
+
+    Contiguity is what lets the tensor boundary wrap a column instead of
+    walking it, and width is what a worker pays to send one and what crosses to
+    a device. The board dominates both, at 64 squares for every timestep.
+    """
+
+    batch = next(
+        SequenceDataLoader(
+            _encoded_dataset(),
+            SequenceLoaderConfig(batch_size=1, shuffle=False),
+        )
+    )
+    inputs = batch.inputs
+    expected = {
+        "piece_ids": (inputs.piece_ids, "uint8"),
+        "side_to_move": (inputs.side_to_move, "uint8"),
+        "castling_rights": (inputs.castling_rights, "uint8"),
+        "en_passant_square": (inputs.en_passant_square.values, "uint8"),
+        "halfmove_clock": (inputs.halfmove_clock, "int16"),
+        "fullmove_number": (inputs.fullmove_number, "int16"),
+        "previous_action_id": (inputs.previous_action_id.values, "int16"),
+        "target_rating": (inputs.target_rating.values, "int16"),
+        "time_initial_ms": (inputs.time_initial_ms.values, "int32"),
+        "time_increment_ms": (inputs.time_increment_ms.values, "int32"),
+        "player_clock_ms": (inputs.player_clock_ms.values, "int32"),
+        "opponent_clock_ms": (inputs.opponent_clock_ms.values, "int32"),
+        "action_targets": (batch.action_targets, "int16"),
+        "ply_indices": (batch.ply_indices, "int16"),
+        "game_ids": (batch.game_ids, "uint64"),
+        "attention_mask": (batch.attention_mask, "bool"),
+        "action_loss_mask": (batch.action_loss_mask, "bool"),
+        "en_passant_present": (inputs.en_passant_square.present, "bool"),
+    }
+    for name, (column, dtype) in expected.items():
+        assert column.dtype.name == dtype, name
+        assert column.flags.c_contiguous, name
 
 
 def test_a_loader_asked_for_no_legal_actions_packs_none() -> None:

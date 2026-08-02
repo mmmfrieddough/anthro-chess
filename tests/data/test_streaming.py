@@ -82,8 +82,8 @@ def _sequences(batch: SequenceBatch) -> list[tuple[int, tuple[int, ...]]]:
         ]
         sequences.append(
             (
-                batch.game_ids[row][0],
-                tuple(batch.ply_indices[row][index] for index in present),
+                int(batch.game_ids[row][0]),
+                tuple(int(batch.ply_indices[row][index]) for index in present),
             )
         )
     return sequences
@@ -157,12 +157,12 @@ def test_pads_masks_and_indexes_every_sequence_it_emits(
     legal_action_ids = batch.legal_action_ids
     assert legal_action_ids is not None
     for row in range(batch.batch_size):
-        mask = batch.attention_mask[row]
+        mask = batch.attention_mask[row].tolist()
         held = sum(mask)
-        assert mask == tuple([True] * held + [False] * (len(mask) - held))
-        assert batch.action_loss_mask[row] == mask
-        assert batch.ply_indices[row][:held] == tuple(range(held))
-        assert batch.action_targets[row][held:] == (0,) * (len(mask) - held)
+        assert mask == [True] * held + [False] * (len(mask) - held)
+        assert batch.action_loss_mask[row].tolist() == mask
+        assert batch.ply_indices[row][:held].tolist() == list(range(held))
+        assert batch.action_targets[row][held:].tolist() == [0] * (len(mask) - held)
         assert legal_action_ids[row][held:] == ((),) * (len(mask) - held)
         assert all(legal_action_ids[row][:held])
 
@@ -199,9 +199,13 @@ def test_a_loader_asked_for_no_legal_actions_ships_none_through_its_workers(
     assert training_batch.legal_action_ids is None
     assert scoring_batch.legal_action_ids is not None
     # Everything a training step reads is the same batch either way.
-    assert training_batch.action_targets == scoring_batch.action_targets
-    assert training_batch.attention_mask == scoring_batch.attention_mask
-    assert training_batch.ply_indices == scoring_batch.ply_indices
+    assert (
+        training_batch.action_targets.tolist() == scoring_batch.action_targets.tolist()
+    )
+    assert (
+        training_batch.attention_mask.tolist() == scoring_batch.attention_mask.tolist()
+    )
+    assert training_batch.ply_indices.tolist() == scoring_batch.ply_indices.tolist()
 
 
 def test_length_buckets_keep_a_batch_to_one_bucket(
