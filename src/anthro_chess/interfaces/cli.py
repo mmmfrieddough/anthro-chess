@@ -2329,9 +2329,9 @@ def _render_bandwidth(reading: RolloutReading) -> list[str]:
     the conditional distance is closer to the pooled one than the two column
     headings suggest.
 
-    The widest span across the compared quantities, because a quantity some
-    games lack reaches further for its neighbours than the rest and it is the
-    worst point that decides how much of the curve is really there.
+    Quantities disagree on the span, because one that some games lack reaches
+    further for its neighbours than the rest. The worst of them is what decides
+    how much of the curve is really there, so that is the one reported.
     """
 
     comparisons = list(reading.comparisons.values())

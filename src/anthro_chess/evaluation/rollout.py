@@ -814,10 +814,10 @@ def benchmark_rollout(
     book = _load_book()
     sources, view, dataset = _position_sources(config, book=book)
 
-    # Before the first game rather than after the last. The reference is a pass
-    # over frozen rows, so a suite whose reference cannot carry the declared
-    # bandwidth should discover that in the pool pass rather than an hour of
-    # generation later.
+    # Read before the matrix is played, not after. The reference is a pass over
+    # frozen rows and can fail on its own — a view the rating gap guts cannot
+    # carry the declared bandwidth — so a suite that is going to fail on it
+    # should fail in the pool pass rather than an hour of generation later.
     reference: HumanReference | None = None
     reference_view: ViewSelection | None = None
     if config.reference.enabled:
