@@ -798,19 +798,20 @@ def _dependency_contributions(
     contributions = dependency.contributions
     if len(contributions) < 2:
         return None
-    metrics = {
-        definition.identifier: [
-            contribution.values[name] for contribution in contributions
-        ]
-        for name, definition in _DEPENDENCY_CONTRIBUTION_METRICS.items()
-        if all(name in contribution.values for contribution in contributions)
-    }
-    if not metrics:
-        return None
+    # Every game carries the same quantities, so one of them says which were
+    # measured at all — a conditioning treatment the run did not score is
+    # absent from all of them or from none.
+    retained = contributions[0].values
     return paired_contributions(
         unit="pool-game",
         unit_ids=[str(contribution.game_id) for contribution in contributions],
-        metrics=metrics,
+        metrics={
+            definition.identifier: [
+                contribution.values[name] for contribution in contributions
+            ]
+            for name, definition in _DEPENDENCY_CONTRIBUTION_METRICS.items()
+            if name in retained
+        },
         weights=[float(contribution.positions) for contribution in contributions],
         resamples=config.resamples,
         seed=config.seed,

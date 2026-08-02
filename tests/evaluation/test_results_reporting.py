@@ -27,6 +27,7 @@ from anthro_chess.evaluation.results import (
     NoiseFloor,
     NoiseFloorIndex,
     NoiseVerdict,
+    PairedContributions,
     PairedFloorIndex,
     ReportError,
     ResultEnvelope,
@@ -629,6 +630,38 @@ def test_a_paired_floor_is_withheld_when_the_weights_disagree(
 
     assert row.noise is NoiseVerdict.UNKNOWN
     assert row.noise_floors == ()
+
+
+def test_a_payload_written_before_weights_existed_still_resolves() -> None:
+    """Retained contributions outlive the build that wrote them.
+
+    Adding the weight vector must not strand the payloads already sitting in
+    machine-local detail directories, which is a property of the stored bytes
+    rather than of anything the current code path produces. So this validates
+    a literal record rather than one built through ``paired_contributions``.
+    """
+
+    stored = {
+        "version": 2,
+        "unit": "puzzle-source-game",
+        "unit_ids": ["a", "b", "c", "d"],
+        "stratum": "puzzle-rating",
+        "strata": ["1000", "1000", "1800", "1800"],
+        "metrics": {"puzzle.greedy_first_move_accuracy": [0.0, 1.0, 0.0, 1.0]},
+        "resamples": 1000,
+        "seed": 0,
+        "coverage": 1.96,
+        "confidence": 0.95,
+    }
+
+    restored = PairedContributions.model_validate(stored)
+
+    assert restored.version == 2
+    # No weights means every unit counts once, which is what version 2 meant.
+    assert restored.weights is None
+    # The ceiling still refuses a payload this build cannot read.
+    with pytest.raises(ValueError, match="version 4"):
+        PairedContributions.model_validate({**stored, "version": 4})
 
 
 @pytest.mark.parametrize(

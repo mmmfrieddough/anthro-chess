@@ -294,7 +294,7 @@ class PairedFloorIndex:
         envelope: ResultEnvelope,
         metrics: Sequence[str],
         values: np.ndarray,
-        weights: np.ndarray | None = None,
+        weights: np.ndarray | None,
     ) -> None:
         for column, metric in enumerate(metrics):
             measurement = envelope.measurement(metric)
