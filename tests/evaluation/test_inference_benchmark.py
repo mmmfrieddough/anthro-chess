@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -150,15 +149,20 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
     A benchmark that folded them in would report a checkpoint as slow to play
     with when it is only slow to start, and the two have different fixes.
 
-    The startup cost is injected rather than measured. Loading this fixture
-    checkpoint and deciding one move are both a few milliseconds on an idle
-    machine, and which of the two comes out larger is a property of what else
-    the machine is doing rather than of the benchmark, so comparing them
-    ambiently decides which piece of noise won.
+    The startup cost is injected rather than measured, on the clock the warmup
+    test injects. Loading this fixture checkpoint and deciding one move are
+    both a few milliseconds on an idle machine, so a real clock makes the
+    comparison a property of what else the machine is doing: under a sharded
+    run this asserted that a contended decision beat an injected 50ms, and
+    lost. Charging every window one tick keeps the durations ordered and
+    nonzero, which is what the whole benchmark needs to report at all.
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=6)
+    tick_seconds = 0.001
     delay_seconds = 0.05
+    clock = _FakeClock(tick_seconds=tick_seconds)
+    monkeypatch.setattr(inference_module, "time", clock)
     real_decide = inference_module._decide
     served = 0
 
@@ -166,7 +170,7 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
         nonlocal served
         if served == 0:
             served += 1
-            time.sleep(delay_seconds)
+            clock.advance(delay_seconds)
         real_decide(session)
 
     monkeypatch.setattr(inference_module, "_decide", slow_first_decision)
@@ -177,8 +181,9 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
     assert served == 1
     # The cold reading carries the startup cost the first decision paid.
     assert result.cold_start.first_decision_seconds * 1000.0 >= delay_ms
-    # The steady-state percentiles do not, which is the whole separation.
-    assert result.reference_latency.maximum_ms < delay_ms
+    # The steady-state percentiles carry only the per-window tick, so the
+    # separation is exact rather than a race against the injected cost.
+    assert result.reference_latency.maximum_ms == pytest.approx(tick_seconds * 1000.0)
     # Loading is still reported, on its own, as the other half of cold start.
     assert result.cold_start.model_load_seconds > 0.0
 
@@ -548,12 +553,22 @@ class _FakeClock:
     removes the ambient side of that comparison, and costs no sleep.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tick_seconds: float = 0.0) -> None:
         self.now = 0.0
+        self._tick_seconds = tick_seconds
 
     def perf_counter(self) -> float:
-        """Return the current fake time, in seconds."""
+        """Return the current fake time, in seconds.
 
+        A caller measuring a whole benchmark needs every window to come out
+        positive, since a load or a throughput batch that took no time at all
+        is reported as unmeasurable rather than as fast. A tick charges each
+        read a fixed cost, which keeps the durations ordered and nonzero
+        without letting the machine decide any of them. It defaults to zero so
+        a caller timing one window still sees real work as free.
+        """
+
+        self.now += self._tick_seconds
         return self.now
 
     def advance(self, seconds: float) -> None:

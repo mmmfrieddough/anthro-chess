@@ -84,7 +84,7 @@ warn_return_any = true
 warn_unused_ignores = true
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers"
+addopts = "--strict-config --strict-markers -n auto"
 testpaths = ["tests"]
 markers = [
   "slow: tests that are too slow for the default local suite",
