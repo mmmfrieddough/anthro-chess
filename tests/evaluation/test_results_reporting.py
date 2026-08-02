@@ -27,6 +27,7 @@ from anthro_chess.evaluation.results import (
     NoiseFloor,
     NoiseFloorIndex,
     NoiseVerdict,
+    PairedContributions,
     PairedFloorIndex,
     ReportError,
     ResultEnvelope,
@@ -494,6 +495,326 @@ def test_a_paired_floor_preserves_the_benchmark_strata(
     assert row.noise_floor == 0.0
     assert row.noise_floors[0].source is not None
     assert "stratified paired bootstrap" in row.noise_floors[0].source
+
+
+def test_a_weighted_paired_floor_reproduces_a_mean_over_positions(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A dependency degradation is a per-position mean carried by games.
+
+    Games hold different numbers of positions, so the retained per-game values
+    only reproduce the recorded measurement once each is weighted by the
+    positions behind it. Without the weights the store rejects the payload
+    rather than bootstrapping a quantity nobody measured.
+    """
+
+    component = move_prediction_component()
+    units = tuple(f"game-{index}" for index in range(40))
+    # Alternating sizes, so an unweighted mean and a weighted one differ.
+    weights = [1.0 + 9.0 * (index % 2) for index in range(len(units))]
+    offsets = [0.05 * (index - (len(units) - 1) / 2) for index in range(len(units))]
+    baseline_values = [0.5 + offset for offset in offsets]
+    current_values = [value + 0.2 for value in baseline_values]
+
+    def weighted_mean(values: list[float]) -> float:
+        return sum(
+            weight * value for weight, value in zip(weights, values, strict=True)
+        ) / sum(weights)
+
+    metric = "dependency.rating_absent_degradation"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[
+            measurement(metric, weighted_mean(baseline_values), data=component)
+        ],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(metric, weighted_mean(current_values), data=component)
+        ],
+        recorded_at=CURRENT_AT,
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(values: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="pool-game",
+                unit_ids=units,
+                metrics={metric: values},
+                weights=weights,
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={"detail": detail.write("baseline.json", retained(baseline_values))}
+    )
+    current = current.model_copy(
+        update={"detail": detail.write("current.json", retained(current_values))}
+    )
+
+    report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, metric)
+
+    assert row.delta == pytest.approx(0.2)
+    assert row.noise is NoiseVerdict.CLEARED
+    assert row.noise_floor is not None
+    assert row.noise_floor < 0.2
+    assert row.noise_floors[0].source is not None
+    assert "weighted paired bootstrap" in row.noise_floors[0].source
+
+
+def test_a_paired_floor_is_withheld_when_the_weights_disagree(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Differently weighted sides do not describe one delta.
+
+    A weight is a property of the frozen view rather than of the checkpoint, so
+    two readings that disagree about it did not average over the same thing,
+    and their difference is not the delta either measurement reports.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_absent_degradation"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.5, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement(metric, 0.5, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(weights: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="pool-game",
+                unit_ids=("a", "b", "c", "d"),
+                metrics={metric: [0.5, 0.5, 0.5, 0.5]},
+                weights=weights,
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={"detail": detail.write("baseline.json", retained([1.0, 1.0, 2.0, 2.0]))}
+    )
+    current = current.model_copy(
+        update={"detail": detail.write("current.json", retained([1.0, 1.0, 1.0, 1.0]))}
+    )
+
+    report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, metric)
+
+    assert row.noise is NoiseVerdict.UNKNOWN
+    assert row.noise_floors == ()
+
+
+def test_a_payload_written_before_weights_existed_still_resolves() -> None:
+    """Retained contributions outlive the build that wrote them.
+
+    Adding the weight vector must not strand the payloads already sitting in
+    machine-local detail directories, which is a property of the stored bytes
+    rather than of anything the current code path produces. So this validates
+    a literal record rather than one built through ``paired_contributions``.
+    """
+
+    stored = {
+        "version": 2,
+        "unit": "puzzle-source-game",
+        "unit_ids": ["a", "b", "c", "d"],
+        "stratum": "puzzle-rating",
+        "strata": ["1000", "1000", "1800", "1800"],
+        "metrics": {"puzzle.greedy_first_move_accuracy": [0.0, 1.0, 0.0, 1.0]},
+        "resamples": 1000,
+        "seed": 0,
+        "coverage": 1.96,
+        "confidence": 0.95,
+    }
+
+    restored = PairedContributions.model_validate(stored)
+
+    assert restored.version == 2
+    # No weights means every unit counts once, which is what version 2 meant.
+    assert restored.weights is None
+    # The ceiling still refuses a payload this build cannot read.
+    with pytest.raises(ValueError, match="version 4"):
+        PairedContributions.model_validate({**stored, "version": 4})
+
+
+@pytest.mark.parametrize(
+    ("weights", "message"),
+    [
+        ([1.0, 2.0, 3.0], "3 weights for 4 units"),
+        ([1.0, 1.0, 0.0, 1.0], "finite and positive"),
+        ([1.0, 1.0, -1.0, 1.0], "finite and positive"),
+    ],
+)
+def test_paired_contribution_weights_are_validated(
+    weights: list[float],
+    message: str,
+) -> None:
+    """A weight decides how much of the metric a unit accounts for.
+
+    A missing or non-positive one silently reweights the reading rather than
+    failing, so it is rejected where it is written instead of surfacing as a
+    floor nobody can explain.
+    """
+
+    with pytest.raises(ValueError, match=message):
+        paired_contributions(
+            unit="pool-game",
+            unit_ids=("a", "b", "c", "d"),
+            metrics={"held_out.move_loss": [1.0, 1.0, 1.0, 1.0]},
+            weights=weights,
+            resamples=1_000,
+            seed=0,
+            coverage=1.96,
+        )
+
+
+def test_a_declared_metric_still_takes_a_floor_the_declaration_does_not_cover(
+    two_checkpoints: tuple[ResultEnvelope, ResultEnvelope],
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """The declaration rules out one estimator, not every noise source.
+
+    Both declared reasons argue that resampling the units a reading scored
+    cannot estimate the metric's dispersion. Evaluation noise is read from
+    repeated measurements instead, so it describes such a metric perfectly
+    well, and a report that discarded it would be withholding a floor it has.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_cross_conditioning_match_rate"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.25, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement(metric, 0.75, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="evaluation",
+                method="repeat-measurement",
+                replicates=8,
+                source="eight re-measurements of one checkpoint",
+                floors=[
+                    FloorEntry(
+                        metric=metric,
+                        fingerprint=series_fingerprint(metric, component),
+                        floor=0.75,
+                        dispersion=0.2,
+                        dispersion_bound=0.2,
+                        degrees_of_freedom=7,
+                        sampling_units=8,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex(), floors=floors)
+    row = _row(report, metric)
+
+    # The delta is 0.5, inside an evaluation floor of 0.75.
+    assert row.noise is NoiseVerdict.WITHIN
+    assert row.noise_floor_kind == "evaluation"
+    assert [floor.kind for floor in row.noise_floors] == ["evaluation"]
+
+
+def test_a_metric_that_can_carry_no_sampling_floor_says_so_rather_than_unknown(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """ "Nobody characterized one" and "one cannot exist" are different states.
+
+    The cross-conditioning match rate counts rating slices, so no resampling of
+    games estimates its dispersion. Reporting that as ``unknown`` beside a
+    metric merely awaiting a characterization would set a reader to work that
+    cannot be done.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_cross_conditioning_match_rate"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.25, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement(metric, 0.75, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(values: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="pool-game",
+                unit_ids=("a", "b", "c", "d"),
+                metrics={metric: values},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={"detail": detail.write("baseline.json", retained([0.25] * 4))}
+    )
+    current = current.model_copy(
+        update={"detail": detail.write("current.json", retained([0.75] * 4))}
+    )
+
+    report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, metric)
+
+    # A sampling floor was retained for it and is still refused, because the
+    # declaration is about what resampling can estimate rather than about
+    # whether anybody produced a number.
+    assert row.noise is NoiseVerdict.UNQUALIFIABLE
+    assert row.noise_floor is None
+    assert row.noise_floors == ()
+    rendered = render_report(report)
+    assert "unqualifiable" in rendered
+    # The legend wraps to the terminal width, so it is read unwrapped here.
+    assert "no sampling floor can exist for it" in " ".join(rendered.split())
 
 
 def test_an_unknown_noise_floor_is_stated_rather_than_assumed(

@@ -712,6 +712,21 @@ def test_eval_metrics_lists_the_registry(
     assert all(metric["execution_sensitive"] for metric in efficiency["metrics"])
 
 
+def test_eval_metrics_states_why_a_metric_can_carry_no_floor(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The listing is where a report's "unqualifiable" verdict is explained.
+
+    Without it the verdict is a word with nowhere to look up, which relocates
+    the ambiguity it exists to remove rather than removing it.
+    """
+
+    assert main(["eval", "metrics"]) == 0
+
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert "no sampling floor can exist: the rate counts rating slices" in rendered
+
+
 def test_eval_metrics_aligns_every_family_on_one_column(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

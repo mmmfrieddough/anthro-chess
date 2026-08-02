@@ -181,6 +181,19 @@ class MetricDefinition:
     #: the environment is recorded so a report can attribute a delta rather than
     #: credit it to the model.
     execution_sensitive: bool = False
+    #: Why resampling the units a reading scored cannot estimate this metric's
+    #: dispersion, when that follows from what the metric counts rather than
+    #: from what has been characterized so far. Without it a report has one word
+    #: for two situations: a sampling floor nobody has produced yet, and one
+    #: that cannot exist. Only the first is worth waiting for.
+    #:
+    #: It is deliberately scoped to data-sampling rather than to floors in
+    #: general. Evaluation and training noise are read from repeated
+    #: measurements rather than from per-unit contributions, so either could
+    #: still qualify a metric named here, and a report judges against one when
+    #: it exists. It annotates the metric rather than redefining it, so it stays
+    #: out of series identity and needs no ``definition_version`` bump.
+    no_sampling_floor_reason: str | None = None
 
 
 _PROJECTIONS: dict[str, DataProjection] = {}
@@ -392,6 +405,7 @@ def registry_record() -> dict[str, object]:
                         "cost": metric.cost.value,
                         "projection": metric.projection,
                         "execution_sensitive": metric.execution_sensitive,
+                        "no_sampling_floor_reason": metric.no_sampling_floor_reason,
                         "summary": metric.summary,
                     }
                     for metric in metrics
@@ -1278,6 +1292,11 @@ DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        no_sampling_floor_reason=(
+            "the rate counts rating slices rather than games, so resampling "
+            "the games a reading scored estimates the dispersion of a "
+            "different quantity"
+        ),
     )
 )
 
@@ -1295,6 +1314,11 @@ DEPENDENCY_RATING_WITHIN_GAME_RESPONSE = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        no_sampling_floor_reason=(
+            "each rating slice is split at its own median prefix strength, so "
+            "a game's contribution is not fixed under resampling and there is "
+            "no per-unit contribution to bootstrap"
+        ),
     )
 )
 
