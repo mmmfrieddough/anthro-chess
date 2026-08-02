@@ -112,10 +112,9 @@ class MoveModelBatch:
     ) -> MoveModelBatch:
         """Wrap the loader's arrays without changing target or mask alignment.
 
-        The loader's columns are already contiguous, so each one is wrapped
-        rather than walked. Widening to what the model indexes with happens
-        after the device copy, not before it: the copy is the narrow bytes the
-        loader wrote, and the cast is a device kernel on what has landed.
+        Widening to what the model indexes with happens after the device copy
+        rather than before it, so the copy carries the width the loader chose
+        and the cast is a device kernel on what has already landed.
         """
 
         tensor_device = torch.device(device) if device is not None else None

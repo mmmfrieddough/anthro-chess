@@ -164,9 +164,9 @@ def test_each_timestep_is_handed_the_action_the_previous_one_predicted() -> None
 def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
     """A batch is buffers, and each one is the width its own values require.
 
-    This is what lets the tensor boundary wrap a batch rather than walk it, and
-    what a worker's batch costs to send: at 64 squares a timestep the board is
-    the largest thing here, and it holds ids from 0 to 12.
+    Contiguity is what lets the tensor boundary wrap a column instead of
+    walking it, and width is what a worker pays to send one and what crosses to
+    a device. The board dominates both, at 64 squares for every timestep.
     """
 
     batch = next(

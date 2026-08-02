@@ -113,9 +113,9 @@ class GameEncodingInput:
 class BoardEncoding:
     """Compact exact standard-chess state before one target move.
 
-    ``piece_ids`` is one contiguous byte per square rather than a tuple of
-    integers. Every square still reads as the same integer, and collation
-    joins a sequence of them into a batch array without visiting a square.
+    ``piece_ids`` is one byte per square, in the same order and with the same
+    meaning as any other sequence of squares. Collation joins a run of them
+    into a batch array without visiting a square.
     """
 
     piece_ids: bytes

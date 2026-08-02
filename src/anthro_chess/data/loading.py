@@ -120,8 +120,8 @@ class SequenceBatch:
 
     ``legal_action_ids`` is absent when nothing downstream will read it. Only
     policy scoring and the construction-time legality check use it, so a
-    training batch carries none. It stays a ragged Python structure because
-    each timestep enables a different number of actions.
+    training batch carries none. It is a ragged Python structure because each
+    timestep enables a different number of actions.
     """
 
     inputs: SequenceInputs
@@ -557,20 +557,21 @@ def collate_sequences(
 
     Every column is written into a zero-filled array of its own width, so a
     padded timestep costs a memset rather than a Python object and the result
-    is what a tensor can wrap. The widths are what each value needs: a square,
-    a side, and a castling mask fit in one byte, an action id, a rating, a rule
-    counter, and a ply index in two, and a clock in milliseconds in four. NumPy
-    rejects a value that does not fit rather than wrapping it, so a corpus that
-    outgrew one of these fails loudly at the batch that first carried it.
+    is what a tensor can wrap. Each width is what that column's values need and
+    no more, because this is what a worker sends and what crosses to a device.
+    NumPy raises on a value too large for its column rather than wrapping it,
+    so a corpus that outgrew one fails at the batch that first carried it.
 
     ``legal_actions`` packs each timestep's legal action ids. Policy scoring
     needs them and training does not, so a training loader turns them off; the
     default keeps every scoring caller correct without saying so.
     """
 
-    # Deferred so that importing this package needs no array dependency, the
-    # way `anthro_chess.data.artifacts` defers pyarrow. Only this boundary
-    # builds arrays.
+    # Deferred, the way `anthro_chess.data.artifacts` defers pyarrow: this is
+    # the only place in the package that needs an array library, and importing
+    # it at module scope would take `anthro machine` — a diagnostic that has to
+    # run wherever the package is installed — down with it on an install
+    # carrying no extras.
     import numpy as np
 
     if not examples:
