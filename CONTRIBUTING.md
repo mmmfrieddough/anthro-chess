@@ -168,10 +168,17 @@ uv run mypy src tests
 uv run pytest
 ```
 
-Continuous integration runs that last command as `uv run pytest -n auto`, which
-shards the suite across the runner's cores. The same flag works locally and is
-worth using for a full run, but it starts a worker process per core, so leave it
-off when running a handful of tests or a debugger.
+Those are the commands continuous integration runs, with no extra flags on
+either side. The suite shards itself across the machine's cores by default, so
+a full run costs roughly a third of its serial wall time; pass `-n0` to turn
+sharding off for a debugger or a handful of tests.
+
+Sharding is why the suite pins Torch to a single thread per worker. Torch sizes
+its thread pool from the core count and cannot see the other workers, so the
+unpinned default oversubscribes the machine by a factor of the worker count —
+which costs more wall time than sharding saves, and leaves timing assertions
+measuring how contended the run was rather than what they were written to
+measure.
 
 Coverage and the complete pre-commit suite are available on demand:
 
