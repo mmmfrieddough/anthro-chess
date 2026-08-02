@@ -206,6 +206,11 @@ question the next stage of this milestone asks. Trading 7% throughput for 23%
 of the memory ceiling is a trade worth being able to make; making it by default,
 at a model size where memory is not the constraint, is not.
 
+`memory-envelope.md` answers that next question and the trade holds: the saving
+runs 19–39% once width and batch grow, and there are configurations reachable
+only with the dial on. It also revises what "activation memory" means here, by
+locating the cost in the action head rather than in the transformer.
+
 Strict determinism is also available on CUDA and is what the smoke selection
 uses. Every operation this model's backward pass needs has a deterministic CUDA
 implementation in the locked build, and a repeated run reaches bit-identical

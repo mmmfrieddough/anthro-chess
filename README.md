@@ -188,6 +188,10 @@ adds diagnostic overhead and should be disabled for ordinary throughput runs.
 What the CUDA path is worth on the current workload, and which optimizations
 were measured and then rejected, is recorded in
 [`docs/planning/cuda-training-proof.md`](docs/planning/cuda-training-proof.md).
+What fits on one 24 GiB card — across model width, batch size, sequence length,
+and precision, with the out-of-memory boundary located rather than estimated —
+is recorded in
+[`docs/planning/memory-envelope.md`](docs/planning/memory-envelope.md).
 
 ## Baseline Training Corpus
 
