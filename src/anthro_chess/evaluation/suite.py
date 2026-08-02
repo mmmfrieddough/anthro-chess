@@ -604,7 +604,7 @@ def _run_step(
         )
 
     seconds = time.perf_counter() - started
-    envelopes, recorded, detail_paths = _step_reading(result)
+    envelopes = _reported(result, "envelopes")
     logger.info("Suite step %s: completed in %.1fs", step.name, seconds)
     return StepOutcome(
         name=step.name,
@@ -612,8 +612,8 @@ def _run_step(
         seconds=seconds,
         results=len(envelopes),
         measurements=sum(len(envelope.measurements) for envelope in envelopes),
-        recorded_paths=recorded,
-        detail_paths=detail_paths,
+        recorded_paths=_reported(result, "recorded_paths"),
+        detail_paths=_reported(result, "detail_paths"),
         result=result,
     )
 
@@ -681,34 +681,15 @@ def _invoke_decisions(path: Path) -> Any:
     return decompose_game_records(path)
 
 
-def _step_reading(
-    result: Any,
-) -> tuple[tuple[Any, ...], tuple[Path, ...], tuple[Path, ...]]:
-    """Return one result's envelopes and the paths it wrote.
+def _reported(result: Any, name: str) -> tuple[Any, ...]:
+    """Return one of a result's reported tuples, or none where it has that one.
 
-    Benchmark results are independent records rather than one hierarchy, and
-    they report this in two shapes: most carry tuples, while the puzzle
-    response carries a single envelope and a single path each. Both are read
-    here so neither has to be reshaped for the suite's sake.
+    Read by attribute rather than through a shared base class, because the
+    benchmarks are independent of the suite and each owns its own result type.
+    Decision decomposition reports none of these.
     """
 
-    envelopes = getattr(result, "envelopes", None)
-    if envelopes is None:
-        single = getattr(result, "envelope", None)
-        envelopes = () if single is None else (single,)
-    return (
-        tuple(envelopes),
-        _paths(result, "recorded_paths", "recorded_path"),
-        _paths(result, "detail_paths", "detail_path"),
-    )
-
-
-def _paths(result: Any, plural: str, singular: str) -> tuple[Path, ...]:
-    many = getattr(result, plural, None)
-    if many is not None:
-        return tuple(many)
-    one = getattr(result, singular, None)
-    return () if one is None else (one,)
+    return tuple(getattr(result, name, ()))
 
 
 def _order(

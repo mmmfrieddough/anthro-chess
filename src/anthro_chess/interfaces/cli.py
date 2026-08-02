@@ -1904,10 +1904,10 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             ),
         ]
     )
-    if result.recorded_path is None:
-        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    if result.recorded_paths:
+        lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
     else:
-        lines.extend(["", f"Recorded: {result.recorded_path}"])
+        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
 
 

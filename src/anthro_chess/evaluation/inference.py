@@ -38,6 +38,7 @@ from torch import Tensor
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DecisionContext, EncodingError, build_decision_context
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.execution import (
     execution_record,
     synchronize,
@@ -344,6 +345,11 @@ def benchmark_inference(
 
     recorded_at = datetime.now(tz=UTC)
     detail_paths: list[Path] = []
+    configuration = configuration_reference(
+        resolved_config.as_record(),
+        source=resolved_config.provenance.source,
+        overrides=resolved_config.provenance.overrides,
+    )
     try:
         detail_reference = _write_detail(
             detail,
@@ -356,23 +362,29 @@ def benchmark_inference(
             kind=INFERENCE_KIND,
             benchmark=INFERENCE_BENCHMARK,
             checkpoint=checkpoint,
-            configuration=configuration_reference(
-                resolved_config.as_record(),
-                source=resolved_config.provenance.source,
-                overrides=resolved_config.provenance.overrides,
-            ),
+            configuration=configuration,
             execution=execution,
             measurements=_measurements(result, execution.workload_component()),
             detail=detail_reference,
             recorded_at=recorded_at,
         )
+        cost = benchmark_cost_result(
+            benchmark=INFERENCE_BENCHMARK,
+            checkpoint=checkpoint,
+            configuration=configuration,
+            config=config,
+            device=runner.device,
+            seconds=time.perf_counter() - started,
+            recorded_at=recorded_at,
+        )
     except ResultRecordError as error:
         raise InferenceBenchmarkError(str(error)) from error
 
+    envelopes = (envelope, cost)
     recorded_paths: list[Path] = []
     if store is not None:
         try:
-            recorded_paths.append(store.append(envelope))
+            recorded_paths = [store.append(item) for item in envelopes]
         except (ResultRecordError, ResultsStoreError) as error:
             raise InferenceBenchmarkError(str(error)) from error
 
@@ -384,7 +396,7 @@ def benchmark_inference(
         latency_sweep=latency_sweep,
         reference_throughput=reference_throughput,
         throughput_sweep=throughput_sweep,
-        envelopes=(envelope,),
+        envelopes=envelopes,
         recorded_paths=tuple(recorded_paths),
         detail_paths=tuple(detail_paths),
     )

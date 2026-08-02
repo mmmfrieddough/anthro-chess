@@ -160,6 +160,14 @@ def _run(
     )
 
 
+def _readings(result: RolloutBenchmarkResult) -> tuple[ResultEnvelope, ...]:
+    """Return the benchmark's own readings, without the invocation's cost."""
+
+    return tuple(
+        envelope for envelope in result.envelopes if envelope.kind == ROLLOUT_KIND
+    )
+
+
 def _curve_envelope(result: RolloutBenchmarkResult) -> ResultEnvelope:
     """Return the envelope carrying one reading's distances."""
 
@@ -458,7 +466,7 @@ def test_every_generated_play_metric_is_reported_by_the_benchmark(
     )
 
     reported = {
-        item.metric for envelope in result.envelopes for item in envelope.measurements
+        item.metric for envelope in _readings(result) for item in envelope.measurements
     }
     registered = {
         metric.identifier
@@ -902,7 +910,7 @@ def test_the_matrix_produces_one_result_per_cell() -> None:
     )
 
     assert len(result.cells) == 4
-    assert len(result.envelopes) == 4
+    assert len(_readings(result)) == 4
     assert {
         (cell.arm, cell.target_rating, cell.temperature) for cell in result.cells
     } == {
@@ -1019,7 +1027,7 @@ def test_the_ply_limit_is_reported_as_unfinished_rather_than_as_a_result() -> No
     cell = result.cells[0]
     assert cell.distribution.termination_counts == {GameTermination.PLY_LIMIT.value: 1}
     assert cell.distribution.result_counts == {"*": 1}
-    envelope = result.envelopes[0]
+    envelope = _readings(result)[0]
     unfinished = envelope.measurement(GENERATED_PLAY_UNFINISHED_GAME_RATE.identifier)
     assert unfinished is not None
     assert unfinished.value == pytest.approx(1.0)
@@ -1042,7 +1050,7 @@ def test_a_metric_averaged_over_a_subset_reports_that_subset_as_its_sample() -> 
         _config(generation={"games_per_position": 2, "maximum_generated_plies": 6})
     )
 
-    (envelope,) = result.envelopes
+    (envelope,) = _readings(result)
     distribution = result.cells[0].distribution
     assert distribution.games == 2
     # Nothing repeated and nothing finished inside six plies, so both subsets
@@ -1063,7 +1071,7 @@ def test_a_finished_game_counts_toward_the_rates_computed_over_results() -> None
         runner=ResigningRunner(),
     )
 
-    (envelope,) = result.envelopes
+    (envelope,) = _readings(result)
     assert _sample(envelope, GENERATED_PLAY_DECISIVE_GAME_RATE) == 1
     decisive = envelope.measurement(GENERATED_PLAY_DECISIVE_GAME_RATE.identifier)
     assert decisive is not None
@@ -1083,7 +1091,7 @@ def test_a_resigning_model_is_recorded_as_resigning() -> None:
     assert cell.distribution.termination_counts == {
         GameTermination.RESIGNATION.value: 1
     }
-    rate = result.envelopes[0].measurement(GENERATED_PLAY_RESIGNATION_RATE.identifier)
+    rate = _readings(result)[0].measurement(GENERATED_PLAY_RESIGNATION_RATE.identifier)
     assert rate is not None
     assert rate.value == pytest.approx(1.0)
 
@@ -1118,7 +1126,7 @@ def test_temperature_zero_collapses_the_suite_to_one_trajectory() -> None:
         )
     )
 
-    fraction = result.envelopes[0].measurement(
+    fraction = _readings(result)[0].measurement(
         GENERATED_PLAY_DISTINCT_GAME_FRACTION.identifier
     )
     assert fraction is not None
@@ -1141,7 +1149,7 @@ def test_multiple_games_aggregate_into_one_cell_reading() -> None:
 
     cell = result.cells[0]
     assert cell.distribution.games == 6
-    mean = result.envelopes[0].measurement(GENERATED_PLAY_MEAN_GAME_PLIES.identifier)
+    mean = _readings(result)[0].measurement(GENERATED_PLAY_MEAN_GAME_PLIES.identifier)
     assert mean is not None
     assert mean.value == pytest.approx(cell.distribution.mean_ply_count)
     assert mean.sample_size == 6
@@ -1239,7 +1247,7 @@ def test_the_prefix_arm_records_its_human_games_as_provenance(pool: Path) -> Non
     assert result.dataset.selected_games == 2
     by_arm = {
         envelope.execution.workload["positions"]["kind"]: envelope
-        for envelope in result.envelopes
+        for envelope in _readings(result)
         if envelope.execution is not None
     }
     assert by_arm[RolloutArm.HUMAN_PREFIX.value].data is not None
@@ -1297,7 +1305,7 @@ def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
         detail=detail,
     )
 
-    (envelope,) = result.envelopes
+    (envelope,) = _readings(result)
     assert envelope.kind == ROLLOUT_KIND
     assert envelope.detail is not None
     assert envelope.execution is not None

@@ -63,6 +63,7 @@ a narrow reading is not mistaken for a complete one.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -79,6 +80,7 @@ from anthro_chess.chess import MOVE_ACTION_COUNT, decode_move
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveComparisonError,
@@ -810,7 +812,9 @@ def benchmark_rollout(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
+    device = _device(loaded)
     book = _load_book()
     sources, view, dataset = _position_sources(config, book=book)
 
@@ -848,7 +852,7 @@ def benchmark_rollout(
             reference_view,
             book=book,
             runner=loaded,
-            device=_device(loaded),
+            device=device,
         )
 
     result = RolloutBenchmarkResult(
@@ -860,7 +864,14 @@ def benchmark_rollout(
         reference=reference,
         reference_view=reference_view,
     )
-    return _record(result, resolved_config, store=store, detail=detail)
+    return _record(
+        result,
+        resolved_config,
+        store=store,
+        detail=detail,
+        started=started,
+        device=device,
+    )
 
 
 def _measure_cell(
@@ -1701,6 +1712,8 @@ def _record(
     *,
     store: ResultsStore | None,
     detail: DetailStore | None,
+    started: float,
+    device: torch.device,
 ) -> RolloutBenchmarkResult:
     """Write one envelope per cell, per curve reading, and per exact walk.
 
@@ -1803,6 +1816,17 @@ def _record(
                     recorded_at=recorded_at,
                 )
             )
+        envelopes.append(
+            benchmark_cost_result(
+                benchmark=ROLLOUT_BENCHMARK,
+                checkpoint=result.checkpoint,
+                configuration=configuration,
+                config=resolved_config.value,
+                device=device,
+                seconds=time.perf_counter() - started,
+                recorded_at=recorded_at,
+            )
+        )
     except ResultRecordError as error:
         raise RolloutBenchmarkError(str(error)) from error
 

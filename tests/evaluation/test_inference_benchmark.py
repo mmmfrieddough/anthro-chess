@@ -14,6 +14,7 @@ from pydantic import ValidationError
 import anthro_chess.evaluation.inference as inference_module
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.inference import (
     INFERENCE_KIND,
     InferenceBenchmarkConfig,
@@ -124,8 +125,9 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
     assert result.cold_start.model_load_seconds > 0.0
     assert result.cold_start.first_decision_seconds > 0.0
 
-    (envelope,) = result.envelopes
+    envelope, cost = result.envelopes
     assert envelope.kind == INFERENCE_KIND
+    assert cost.kind == BENCHMARK_COST_KIND
     assert {item.metric for item in envelope.measurements} == {
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier,
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[90].identifier,
@@ -351,7 +353,7 @@ def test_the_recorded_execution_reproduces_its_own_series_identity(
 ) -> None:
     checkpoint = inference_run(tmp_path / "run", seed=10)
 
-    (envelope,) = benchmark_inference(_config(checkpoint)).envelopes
+    envelope = benchmark_inference(_config(checkpoint)).envelopes[0]
 
     assert envelope.execution is not None
     assert envelope.execution.device == "cpu"

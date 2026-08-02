@@ -37,6 +37,7 @@ choices.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -59,6 +60,7 @@ from anthro_chess.data import SequenceDataLoader
 from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.data.termination import TERMINATION_CATEGORIES, TerminationCategory
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveComparisonError,
@@ -769,6 +771,7 @@ def benchmark_termination(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
     pool = _load_pool(config)
     reference, reference_view, dataset = _load_reference(config, pool)
@@ -799,7 +802,14 @@ def benchmark_termination(
         held_out=held_out,
         unavailable=unavailable,
     )
-    return _record(result, resolved_config, store=store, detail=detail)
+    return _record(
+        result,
+        resolved_config,
+        store=store,
+        detail=detail,
+        started=started,
+        device=_device(loaded),
+    )
 
 
 def mix_curve_spec(ratings: Sequence[int]) -> CurveSpec:
@@ -1434,6 +1444,8 @@ def _record(
     *,
     store: ResultsStore | None,
     detail: DetailStore | None,
+    started: float,
+    device: torch.device,
 ) -> TerminationBenchmarkResult:
     """Write one envelope per generated reading, per mix, and per held-out pass.
 
@@ -1530,6 +1542,17 @@ def _record(
                         recorded_at=recorded_at,
                     )
                 )
+        envelopes.append(
+            benchmark_cost_result(
+                benchmark=TERMINATION_BENCHMARK,
+                checkpoint=result.checkpoint,
+                configuration=configuration,
+                config=resolved_config.value,
+                device=device,
+                seconds=time.perf_counter() - started,
+                recorded_at=recorded_at,
+            )
+        )
     except ResultRecordError as error:
         raise TerminationBenchmarkError(str(error)) from error
 

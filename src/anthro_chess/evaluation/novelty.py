@@ -40,6 +40,7 @@ See ``docs/evaluation.md`` and
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -65,6 +66,7 @@ from anthro_chess.evaluation.checkpoint import (
     DetailConfig,
     LeakageConfig,
 )
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.execution import execution_record
 from anthro_chess.evaluation.leakage import LeakageCheck, check_leakage
 from anthro_chess.evaluation.noise import (
@@ -438,6 +440,7 @@ def benchmark_novelty(
     """Measure one checkpoint's dose response and optionally record it."""
 
     config = resolved_config.value
+    started = time.perf_counter()
     try:
         pool, selection, source_rows = _load_inputs(config)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -537,6 +540,18 @@ def benchmark_novelty(
             )
             if characterization is not None:
                 characterizations.append(characterization)
+        # After the bootstrap floors above, which this invocation also paid for.
+        envelopes.append(
+            benchmark_cost_result(
+                benchmark=NOVELTY_BENCHMARK,
+                checkpoint=checkpoint,
+                configuration=configuration,
+                config=config,
+                device=runner.device,
+                seconds=time.perf_counter() - started,
+                recorded_at=recorded_at,
+            )
+        )
     except (ResultRecordError, ResultsStoreError) as error:
         raise NoveltyBenchmarkError(str(error)) from error
 

@@ -18,6 +18,7 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
@@ -31,17 +32,25 @@ from anthro_chess.evaluation.puzzles import (
     puzzle_set_identity,
 )
 from anthro_chess.evaluation.puzzles.benchmark import (
+    PUZZLE_KIND,
+    PuzzleBenchmarkConfig,
     _accepted_actions,
     _paired_contributions,
     _score_rating,
     _training_overlap,
+    benchmark_puzzles,
     score_puzzle_set,
 )
 from anthro_chess.evaluation.puzzles.dataset import (
     PUZZLE_FILE_NAME,
     PUZZLE_METADATA_FILE_NAME,
 )
-from anthro_chess.evaluation.results import PairedContributions
+from anthro_chess.evaluation.results import (
+    DetailStore,
+    PairedContributions,
+    ResultsStore,
+)
+from anthro_chess.inference import ModelRunnerConfig
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:
@@ -476,3 +485,54 @@ def test_training_overlap_joins_source_keys_and_excludes_test_games(
 
     assert training_games == 2
     assert overlapping == 1
+
+
+def test_the_benchmark_records_its_reading_and_what_it_cost(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """One invocation, two records: the response and the cost of reading it."""
+
+    puzzles = _write_fixture_artifact(tmp_path / "puzzles")
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [{**normalized_row(1, split="train"), "source_id": "lichess"}],
+    )
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = benchmark_puzzles(
+        ResolvedConfig(
+            value=PuzzleBenchmarkConfig(
+                model=ModelRunnerConfig(checkpoint_path=checkpoint),
+                puzzle_set=puzzles,
+                training_normalized=normalized,
+                target_ratings=(1000, 2000),
+                inference_batch_size=2,
+            ),
+            provenance=ConfigProvenance(source="puzzles.toml", overrides=()),
+        ),
+        store=store,
+        detail=detail,
+    )
+
+    assert [envelope.kind for envelope in result.envelopes] == [
+        PUZZLE_KIND,
+        BENCHMARK_COST_KIND,
+    ]
+    assert len(result.recorded_paths) == len(result.envelopes)
+    # The reading writes a detail payload; the cost record has nothing bulky.
+    assert len(result.detail_paths) == 1
+    for envelope in result.envelopes:
+        envelope.verify()
+
+    (cost,) = (
+        envelope for envelope in store.results() if envelope.kind == BENCHMARK_COST_KIND
+    )
+    (seconds,) = cost.measurements
+    assert seconds.value > 0.0

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -47,6 +48,7 @@ from anthro_chess.evaluation.adjudication import (
     merge_game_totals,
 )
 from anthro_chess.evaluation.aggregation import SliceTable
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.dependency import (
     Conditioning,
     ConditioningKind,
@@ -133,6 +135,13 @@ ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
+#: One invocation produces three readings, and its cost belongs to none of
+#: them: the scoring pass, the dependency treatments, and the adjudication all
+#: happen once. The cost record names the runner instead.
+CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
+    name="checkpoint-evaluation",
+    version=CHECKPOINT_EVALUATION_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +409,7 @@ def evaluate_checkpoint(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     try:
         inputs = _load_inputs(config)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -559,6 +569,17 @@ def evaluate_checkpoint(
                     recorded_at=recorded_at,
                 )
             )
+        envelopes.append(
+            benchmark_cost_result(
+                benchmark=CHECKPOINT_COST_BENCHMARK,
+                checkpoint=checkpoint,
+                configuration=configuration,
+                config=config,
+                device=runner.device,
+                seconds=time.perf_counter() - started,
+                recorded_at=recorded_at,
+            )
+        )
     except (ResultRecordError, ResultsStoreError) as error:
         raise CheckpointEvaluationError(str(error)) from error
 

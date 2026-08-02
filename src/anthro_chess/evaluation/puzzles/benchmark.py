@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.data.artifacts import read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveQuantity,
@@ -230,9 +232,9 @@ class PuzzleBenchmarkResult:
     training_games: int
     overlapping_puzzles: int
     overlap_rate: float
-    envelope: ResultEnvelope | None
-    recorded_path: Path | None
-    detail_path: Path | None
+    envelopes: tuple[ResultEnvelope, ...] = ()
+    recorded_paths: tuple[Path, ...] = ()
+    detail_paths: tuple[Path, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         return {
@@ -251,9 +253,7 @@ class PuzzleBenchmarkResult:
                 "overlapping_puzzles": self.overlapping_puzzles,
                 "rate": self.overlap_rate,
             },
-            "recorded": (
-                None if self.recorded_path is None else str(self.recorded_path)
-            ),
+            "recorded": [str(path) for path in self.recorded_paths],
         }
 
 
@@ -297,6 +297,7 @@ def benchmark_puzzles(
     """Measure and optionally record puzzle response for one checkpoint."""
 
     config = resolved_config.value
+    started = time.perf_counter()
     puzzle_set = load_puzzle_set(config.puzzle_set)
     try:
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -352,9 +353,6 @@ def benchmark_puzzles(
         training_games=training_games,
         overlapping_puzzles=overlapping,
         overlap_rate=overlap_rate,
-        envelope=None,
-        recorded_path=None,
-        detail_path=None,
     )
     configuration = configuration_reference(
         resolved_config.as_record(),
@@ -373,22 +371,39 @@ def benchmark_puzzles(
         result,
         component,
     )
-    envelope = build_result(
-        kind=PUZZLE_KIND,
-        benchmark=PUZZLE_BENCHMARK,
-        checkpoint=checkpoint,
-        configuration=configuration,
-        data=data,
-        measurements=measurements,
-        detail=detail_reference,
-        recorded_at=recorded_at,
+    envelopes = (
+        build_result(
+            kind=PUZZLE_KIND,
+            benchmark=PUZZLE_BENCHMARK,
+            checkpoint=checkpoint,
+            configuration=configuration,
+            data=data,
+            measurements=measurements,
+            detail=detail_reference,
+            recorded_at=recorded_at,
+        ),
+        benchmark_cost_result(
+            benchmark=PUZZLE_BENCHMARK,
+            checkpoint=checkpoint,
+            configuration=configuration,
+            config=config,
+            device=runner.device,
+            seconds=time.perf_counter() - started,
+            recorded_at=recorded_at,
+        ),
     )
-    recorded_path = store.append(envelope) if store is not None else None
+    recorded_paths = (
+        tuple(store.append(envelope) for envelope in envelopes)
+        if store is not None
+        else ()
+    )
     return replace(
         result,
-        envelope=envelope,
-        recorded_path=recorded_path,
-        detail_path=(None if detail_reference is None else Path(detail_reference.path)),
+        envelopes=envelopes,
+        recorded_paths=recorded_paths,
+        detail_paths=(
+            () if detail_reference is None else (Path(detail_reference.path),)
+        ),
     )
 
 

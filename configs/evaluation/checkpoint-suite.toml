@@ -28,12 +28,25 @@
 # size is the declared bandwidth's radius, so shrinking it re-smooths the curve
 # rather than sampling it. Both benchmarks declare it themselves.
 #
-# Measured on Apple Silicon MPS against training-blitz-30k-v4 step 8000, the
-# reduced sweep costs about half an hour, and the two long poles are the
-# checkpoint reading and the puzzle response. The per-step figures are recorded
-# beside each step below so a later change can be judged against them; they are
-# costs on one machine rather than measurements of the model, and they will go
-# stale as the corpus and the checkpoint move.
+# Every step that records a reading also records what it cost, as a
+# `benchmark.wall_clock_seconds` reading in the committed store, so what a
+# sweep is affordable enough to include is a claim a reviewer can check rather
+# than a comment nobody re-derives. Per-step magnitudes are deliberately
+# absent from this file for that reason: the figures that used to be here had
+# drifted by an order of magnitude and nothing ever contradicted them.
+#
+# What stays here is only the ordering, because it is what the reductions below
+# are argued from. On one Linux CUDA host on 2026-08-02, against
+# training-blitz-1m step 500 and over three sweeps, the reduced sweep's longest
+# step was the rollout, then the checkpoint reading, then termination and
+# novelty within a few percent of each other; the inference and decision steps
+# together were under one percent of it. The puzzle step is absent from that
+# ordering because the pinned puzzle artifact was not on the host.
+#
+# A cost reading is the machine's rather than the model's, and a busy host
+# moves it much further than a model change does, so read a cost delta against
+# a characterized execution floor per
+# `docs/decisions/0025-machine-scoped-execution-noise-floors.md`.
 name = "checkpoint"
 
 # Cheapest first, so a broken checkpoint selection fails in seconds rather than
@@ -53,12 +66,12 @@ reduced = [
 ]
 
 [benchmarks.run]
-# The canonical held-out reading, and the reduced sweep's longest step at about
-# eight minutes on 400 games. The view is not the whole story: the rating
-# dependency test scores the same games again under each corrupted and each
-# fixed conditioning, so this step pays roughly nine passes over whatever the
-# view selects. The passes stay — dropping one would drop a measurement rather
-# than shrink it — so the view is what carries the reduction.
+# The canonical held-out reading, and the second most expensive step of the
+# reduced sweep. The view is not the whole story: the rating dependency test
+# scores the same games again under each corrupted and each fixed conditioning,
+# so this step pays roughly nine passes over whatever the view selects. The
+# passes stay — dropping one would drop a measurement rather than shrink it —
+# so the view is what carries the reduction.
 config = "configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
 reduced = ["view.maximum_games=400"]
 
@@ -70,29 +83,28 @@ config = "configs/evaluation/novelty-dose-response.toml"
 reduced = ["view.maximum_games=100"]
 
 [benchmarks.puzzles]
-# Rating response against the owned calibrated puzzle set, and the second of
-# the reduced sweep's two long poles at about fifteen minutes.
+# Rating response against the owned calibrated puzzle set.
 #
 # It is unreduced, and not by choice: the benchmark has no subsample dial, and
 # its rating grid is the measurement rather than a sample size, so there is
-# nothing here that can honestly be shrunk. Fifteen minutes is therefore the
+# nothing here that can honestly be shrunk. Whatever it costs is therefore the
 # floor of any reduced sweep that includes it. Adding a puzzle subsample would
 # change what the benchmark selects to measure over, which is a benchmark
 # change with its own shakedown reading rather than a suite setting.
 config = "configs/evaluation/puzzle-rating-response.toml"
 
 [benchmarks.rollout]
-# The first generating step, and the one whose games the decomposition below
-# reads. Seeds and games per position are sample counts; the rating and
-# temperature grids are not and are left alone.
+# The first generating step, the one whose games the decomposition below reads,
+# and the reduced sweep's longest. Seeds and games per position are sample
+# counts; the rating and temperature grids are not and are left alone.
 #
 # Neither is the human reference, which is why it is absent here. The declared
 # bandwidth is a neighbour count, so the reference size is that bandwidth's
 # radius rather than a sample size: shrinking it widens every neighbourhood
 # until the whole rating grid is estimated from one set of games, and the
 # reading would be a differently smoothed quantity rather than the same one
-# less precisely. It costs about seventy seconds of trajectory replay, which is
-# the price of a reduced curve reading that says anything.
+# less precisely. That trajectory replay is a real share of this step, and it
+# is the price of a reduced curve reading that says anything.
 config = "configs/evaluation/generated-play-rollout.toml"
 reduced = [
   "grid.seeds=[0]",
@@ -130,18 +142,16 @@ reduced = [
 # Full sweeps only, and this is the one step with no affordable reduction.
 #
 # Its cost is quadratic in its seat count, and the seat count is the
-# measurement: four ratings at three temperatures plus three ablated seats is
-# fifteen seats and one hundred and five pairings. Seeds and openings are the
-# only sample sizes it has, and both are already at their floor once a single
-# opening is played from each side — which still leaves two hundred and ten
-# games. Measured at roughly eighteen seconds a game, that is over an hour, and
-# the shipped grid at one seed and four openings is eight hundred and forty
-# games, or around four hours.
+# measurement, so the seat grid is not a dial: a ladder fitted on a different
+# set of seats cannot be read against this one at all, since the fit places
+# every seat on one internal scale. Seeds and openings are the only sample
+# sizes it has, and driving both to their floor still leaves every pairing
+# playing one opening from each side — over two hundred generated games.
 #
-# So a nominally reduced ladder would be a reduced sweep nobody could run.
-# Shrinking the seat grid instead would measure a different ladder, and one
-# fitted on a different set of seats cannot be read against this one at all,
-# since the fit places every seat on one internal scale.
+# Whether that belongs in a sweep meant to run on every new checkpoint is a
+# cost question, and the seconds-a-game figure this exclusion used to answer
+# it with predated the generated-game fix. Run the ladder once and read the
+# cost it records.
 config = "configs/evaluation/rating-ladder.toml"
 scales = ["full"]
 reduced = ["grid.seeds=[0]", "openings.view.maximum_games=4"]

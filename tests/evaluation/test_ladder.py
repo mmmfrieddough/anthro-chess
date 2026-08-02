@@ -452,15 +452,17 @@ def test_recorded_results_carry_one_series_per_unit(tmp_path: Path) -> None:
 
     result = _run(_config(), store=store, detail=detail)
 
-    envelopes = result.envelopes
+    envelopes = tuple(
+        envelope for envelope in result.envelopes if envelope.kind == LADDER_KIND
+    )
     # One per seat, one per temperature row, and none for the response, which a
-    # single-temperature grid cannot measure.
+    # single-temperature grid cannot measure. The invocation's own cost is
+    # recorded beside them under its own kind and has no detail payload.
     assert len(envelopes) == len(result.seats) + len(result.readings)
-    assert all(envelope.kind == LADDER_KIND for envelope in envelopes)
     assert all(envelope.execution is not None for envelope in envelopes)
-    assert len(result.recorded_paths) == len(envelopes)
+    assert len(result.recorded_paths) == len(envelopes) + 1
     assert len(result.detail_paths) == len(envelopes)
-    for envelope in envelopes:
+    for envelope in result.envelopes:
         envelope.verify()
 
     seat_envelope = _envelope_with(envelopes, LADDER_FITTED_RATING)
@@ -545,7 +547,11 @@ def test_every_result_declares_the_reference_temperature(tmp_path: Path) -> None
         detail=DetailStore(tmp_path / "detail"),
     )
 
-    for envelope in result.envelopes:
+    readings = [
+        envelope for envelope in result.envelopes if envelope.kind == LADDER_KIND
+    ]
+    assert len(readings) < len(result.envelopes)
+    for envelope in readings:
         assert envelope.execution is not None
         assert envelope.execution.workload["reference_temperature"] == 1.0
 

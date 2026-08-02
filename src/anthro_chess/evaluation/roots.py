@@ -21,6 +21,10 @@ from typing import TypeVar
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.machine import DATA_ROOT_VARIABLE, optional_root
 
+#: How a checked-in selection names an artifact, before this machine's data
+#: root replaces it.
+ARTIFACT_PREFIX = "artifacts"
+
 #: ``anthro eval run``: the frozen pool, plus the training corpus the leakage
 #: check reads when that corpus has moved.
 CHECKPOINT_ARTIFACT_FIELDS = ("pool", "leakage.training_normalized")
@@ -77,10 +81,38 @@ def resolve_artifact_roots(
 def rooted_artifact_path(root: Path, configured_path: Path) -> Path:
     """Return a configured artifact path relocated beneath ``root``."""
 
-    parts = configured_path.parts
-    if parts and parts[0] == "artifacts":
-        parts = parts[1:]
-    return root.joinpath(*parts)
+    return root.joinpath(*_unprefixed(configured_path))
+
+
+def artifact_name(path: Path, root: Path | None) -> str:
+    """Return what a configured path names, with the machine taken off.
+
+    The inverse of :func:`rooted_artifact_path`, so a shipped selection and the
+    same selection after rooting name one artifact rather than two. Kept beside
+    the rooting it undoes for the reason this module exists: two halves of one
+    convention living apart would drift, and here the drift would be silent —
+    a benchmark's cost series would split or merge with nothing to notice it.
+
+    A path outside the data root keeps its full string, since it is a caller's
+    own override rather than a named artifact.
+    """
+
+    if root is not None and path.is_absolute():
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            return str(path)
+    parts = _unprefixed(path)
+    return str(Path(*parts)) if parts else str(path)
+
+
+def _unprefixed(path: Path) -> tuple[str, ...]:
+    """Return a configured path's parts without the repository's prefix."""
+
+    parts = path.parts
+    if parts and parts[0] == ARTIFACT_PREFIX:
+        return parts[1:]
+    return parts
 
 
 def _read(config: ConfigModel, field: str) -> Path | None:

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -62,6 +63,7 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.decisions import (
     DecisionCell,
     DecisionDecompositionError,
@@ -665,6 +667,7 @@ def benchmark_ladder(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
     source, view, dataset = _position_source(config)
     seats = seat_keys(config)
@@ -740,7 +743,14 @@ def benchmark_ladder(
         records=tuple(records),
     )
     _log_summary(result)
-    return _record(result, resolved_config, store=store, detail=detail)
+    return _record(
+        result,
+        resolved_config,
+        store=store,
+        detail=detail,
+        started=started,
+        device=device,
+    )
 
 
 def seat_keys(config: LadderBenchmarkConfig) -> tuple[SeatKey, ...]:
@@ -1306,6 +1316,8 @@ def _record(
     *,
     store: ResultsStore | None,
     detail: DetailStore | None,
+    started: float,
+    device: torch.device,
 ) -> LadderBenchmarkResult:
     """Write one envelope per seat, per temperature row, and per response.
 
@@ -1393,6 +1405,17 @@ def _record(
                     recorded_at=recorded_at,
                 )
             )
+        envelopes.append(
+            benchmark_cost_result(
+                benchmark=LADDER_BENCHMARK,
+                checkpoint=result.checkpoint,
+                configuration=configuration,
+                config=resolved_config.value,
+                device=device,
+                seconds=time.perf_counter() - started,
+                recorded_at=recorded_at,
+            )
+        )
     except ResultRecordError as error:
         raise LadderBenchmarkError(str(error)) from error
 
