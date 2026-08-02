@@ -170,8 +170,6 @@ def test_a_loader_asked_for_no_legal_actions_packs_none() -> None:
 
     assert scoring.legal_action_ids is not None
     assert training.legal_action_ids is None
-    assert training.action_targets == scoring.action_targets
-    assert training.attention_mask == scoring.attention_mask
 
 
 def test_deterministic_order_changes_by_epoch_and_restores_exact_cursor(

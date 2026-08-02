@@ -116,14 +116,7 @@ def test_action_loss_rejects_misaligned_masks() -> None:
 
 
 def test_a_mask_enabling_nothing_reports_a_non_finite_loss() -> None:
-    """The cost of dropping the empty-mask guard, stated rather than found.
-
-    Asking whether any target is enabled reads a device tensor on every
-    micro-batch. Nothing the loader emits can reach here — every example holds
-    at least one ply and the loss mask is the attention mask — and a training
-    run already refuses to continue on a loss that is not finite, so the check
-    is paid downstream rather than once per accumulation step.
-    """
+    """The cost of dropping the empty-mask guard, stated rather than found."""
 
     loss = masked_action_cross_entropy(
         torch.zeros((1, 2, 3)),
@@ -142,9 +135,8 @@ def test_the_loss_takes_no_shape_from_the_mask_it_is_given() -> None:
     the size of anything.
     """
 
-    torch.manual_seed(17)
-    logits = torch.randn((2, 4, 6))
-    targets = torch.tensor([[1, 2, 3, 4], [5, 0, 1, 2]])
+    logits = torch.zeros((2, 4, 6))
+    targets = torch.zeros((2, 4), dtype=torch.long)
     shapes: list[tuple[torch.Size, ...]] = []
     original = F.cross_entropy
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
 
 import chess
 import pytest
@@ -125,13 +124,10 @@ def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
 
 
 def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
-    """What replaces the key padding mask: right-aligned padding makes it moot.
+    """What replaces the key padding mask, and what makes padded logits ignorable.
 
-    A real query attends only to earlier timesteps, and every timestep earlier
-    than a real one is itself real, so a shorter history batched beside a
-    longer one sees exactly what it would have seen alone. Padded rows now
-    carry ordinary logits instead of zeros, and this is the property that lets
-    nobody care.
+    A shorter history batched beside a longer one must see exactly what it
+    would have seen alone.
     """
 
     torch.manual_seed(19)
@@ -161,13 +157,13 @@ def test_the_causal_mask_is_built_once_and_sliced_for_shorter_batches() -> None:
 
     model = CausalMoveModel(_tiny_config())
 
-    wide = model.causal_mask(5, torch.device("cpu"))
-    held = model._causal_mask  # noqa: SLF001
-    narrow = model.causal_mask(3, torch.device("cpu"))
+    wide = model._causal_mask(5, torch.device("cpu"))  # noqa: SLF001
+    held = model._cached_causal_mask  # noqa: SLF001
+    narrow = model._causal_mask(3, torch.device("cpu"))  # noqa: SLF001
 
     assert torch.equal(wide, torch.ones((5, 5), dtype=torch.bool).triu(1))
     assert torch.equal(narrow, torch.ones((3, 3), dtype=torch.bool).triu(1))
-    assert model._causal_mask is held  # noqa: SLF001
+    assert model._cached_causal_mask is held  # noqa: SLF001
 
 
 def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> None:
@@ -177,7 +173,7 @@ def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> Non
     model = CausalMoveModel(config)
     batch = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
 
-    features = model.positions(batch, torch.float32)
+    features = model._positions(batch, torch.float32)  # noqa: SLF001
 
     dimension = config.model_dim
     frequencies = torch.exp(
@@ -195,25 +191,16 @@ def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> Non
 def test_position_features_reach_a_chunk_that_starts_past_the_padded_width() -> None:
     """A chunked game's indices run past its own width, and the table must too."""
 
+    moves = ("e2e4", "e7e5", "g1f3", "b8c6")
     model = CausalMoveModel(_tiny_config())
-    whole = MoveModelBatch.from_sequence_batch(
-        _sequence_batch(("e2e4", "e7e5", "g1f3", "b8c6"))
-    )
-    tail = replace(
-        whole,
-        ply_indices=whole.ply_indices[:, 2:],
-        chunk_start_plies=(2,),
-        action_targets=whole.action_targets[:, 2:],
-        action_loss_mask=whole.action_loss_mask[:, 2:],
-        attention_mask=whole.attention_mask[:, 2:],
-        legal_action_ids=None,
-        game_ids=whole.game_ids[:, 2:],
-        inputs=whole.inputs,
-    )
+    whole = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    tail = MoveModelBatch.from_sequence_batch(_sequence_batch(moves, start_ply=2))
 
+    assert tail.chunk_start_plies == (2,)
+    assert tail.position_bound > tail.ply_indices.shape[1]
     torch.testing.assert_close(
-        model.positions(tail, torch.float32),
-        model.positions(whole, torch.float32)[:, 2:],
+        model._positions(tail, torch.float32),  # noqa: SLF001
+        model._positions(whole, torch.float32)[:, 2:],  # noqa: SLF001
     )
 
 
@@ -325,6 +312,7 @@ def _sequence_batch(
     white_rating: int | None = None,
     black_rating: int | None = None,
     game_id_base: int = 100,
+    start_ply: int = 0,
 ) -> SequenceBatch:
     examples = []
     for game_offset, moves in enumerate(move_lines):
@@ -352,8 +340,8 @@ def _sequence_batch(
             SequenceExample(
                 shard_index=0,
                 game_id=game_id_base + game_offset,
-                start_ply=0,
-                plies=plies,
+                start_ply=start_ply,
+                plies=plies[start_ply:],
             )
         )
     return collate_sequences(examples)

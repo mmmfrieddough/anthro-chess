@@ -115,8 +115,7 @@ class SequenceBatch:
 
     ``legal_action_ids`` is absent when nothing downstream will read it. Only
     policy scoring and the construction-time legality check use it, so a
-    training batch carries none and pays neither the packing nor, under the
-    shard-backed loader, the pickling.
+    training batch carries none.
     """
 
     inputs: SequenceInputs

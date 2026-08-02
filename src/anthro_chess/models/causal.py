@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 from typing import cast
 
 import torch
@@ -141,11 +140,17 @@ class CausalMoveModel(nn.Module):
             ACTION_VOCABULARY_SIZE,
         )
         # Derived constants rather than state: both are a pure function of the
-        # configuration and the longest sequence seen so far. They stay out of
-        # the state dict deliberately, so a checkpoint written before or after
-        # this existed holds the same tensors.
-        self._causal_mask: Tensor | None = None
-        self._position_table: Tensor | None = None
+        # configuration and the longest sequence seen so far, so neither belongs
+        # in a checkpoint. Plain attributes rather than non-persistent buffers,
+        # which would also stay out of the state dict but would put a lazily
+        # grown, rank-varying tensor in `named_buffers()` for distributed
+        # training to broadcast every step.
+        #
+        # Both are built under `torch.inference_mode(False)`: the first caller
+        # may be a benchmark scoring under `torch.inference_mode`, and a tensor
+        # created there could never afterwards join a training backward pass.
+        self._cached_causal_mask: Tensor | None = None
+        self._cached_position_table: Tensor | None = None
 
     def forward(self, batch: MoveModelBatch) -> Tensor:
         """Return raw action logits shaped batch by sequence by vocabulary.
@@ -180,19 +185,19 @@ class CausalMoveModel(nn.Module):
             dim=-1,
         )
         hidden = self.context_combiner(context)
-        hidden = hidden + self.positions(batch, hidden.dtype)
+        hidden = hidden + self._positions(batch, hidden.dtype)
         # No key padding mask. Padding is right-aligned, so a real query attends
         # only to keys that are themselves real, and a padded query's output is
         # discarded by target and by loss mask downstream. Leaving it out also
         # removes the all-padding-row hazard a key padding mask carries.
         hidden = self.transformer(
             hidden,
-            mask=self.causal_mask(hidden.shape[1], hidden.device),
+            mask=self._causal_mask(hidden.shape[1], hidden.device),
             is_causal=True,
         )
         return cast(Tensor, hidden)
 
-    def causal_mask(self, length: int, device: torch.device) -> Tensor:
+    def _causal_mask(self, length: int, device: torch.device) -> Tensor:
         """Return the boolean mask that hides every future timestep.
 
         The mask states only that a query cannot attend past itself, which is a
@@ -201,55 +206,48 @@ class CausalMoveModel(nn.Module):
         builds it in Python nor copies it to the device.
 
         ``is_causal=True`` does not stand in for it. The encoder reads the flag
-        as a hint accompanying a mask, so passing the flag alone runs without
-        error and trains a model that can see its own future.
+        as a hint accompanying a mask, and on the locked build refuses it alone
+        with ``Need attn_mask if specifying the is_causal hint``.
         """
 
-        cached = self._causal_mask
+        cached = self._cached_causal_mask
         if cached is None or cached.shape[0] < length or cached.device != device:
-            cached = _grown(
-                lambda size: torch.ones(
-                    (size, size),
+            with torch.inference_mode(False):
+                cached = torch.ones(
+                    (length, length),
                     dtype=torch.bool,
                     device=device,
-                ).triu(1),
-                required=length,
-                held=cached,
-            )
-            self._causal_mask = cached
+                ).triu(1)
+            self._cached_causal_mask = cached
         return cached[:length, :length]
 
-    def positions(self, batch: MoveModelBatch, dtype: torch.dtype) -> Tensor:
+    def _positions(self, batch: MoveModelBatch, dtype: torch.dtype) -> Tensor:
         """Return each timestep's sinusoidal features for its own ply index.
 
         The features depend only on the ply index and the model width, so the
         table is held and gathered rather than recomputed every forward pass.
-        How far it must reach is a host-side property of the batch — the
-        furthest chunk start plus the padded width — and
-        :meth:`MoveModelBatch.validate` has already checked the indices against
-        exactly that bound.
+        How far it must reach is the batch's own
+        :attr:`~MoveModelBatch.position_bound`, which :meth:`MoveModelBatch.validate`
+        has already held its indices to.
         """
 
         indices = batch.ply_indices
-        required = max(batch.chunk_start_plies) + indices.shape[1]
-        table = self._position_table
+        bound = batch.position_bound
+        table = self._cached_position_table
         if (
             table is None
-            or table.shape[0] < required
+            or table.shape[0] < bound
             or table.device != indices.device
             or table.dtype != dtype
         ):
-            table = _grown(
-                lambda size: _sinusoidal_table(
-                    size,
+            with torch.inference_mode(False):
+                table = _sinusoidal_table(
+                    bound,
                     self.config.model_dim,
                     device=indices.device,
                     dtype=dtype,
-                ),
-                required=required,
-                held=table if table is not None and table.dtype == dtype else None,
-            )
-            self._position_table = table
+                )
+            self._cached_position_table = table
         return table[indices]
 
     def identity(self) -> dict[str, object]:
@@ -275,27 +273,6 @@ def _nullable_log_value(value: OptionalTensor) -> Tensor:
     )
 
 
-def _grown(
-    build: Callable[[int], Tensor],
-    *,
-    required: int,
-    held: Tensor | None,
-) -> Tensor:
-    """Rebuild a cached constant at least as long as the batch needs.
-
-    Doubling rather than fitting exactly, so a run whose sequences creep upward
-    rebuilds a handful of times over its life instead of once per new maximum.
-
-    Built outside inference mode on purpose. The first caller may well be a
-    benchmark scoring under :func:`torch.inference_mode`, and a tensor created
-    there could never afterwards take part in a training step's backward pass.
-    """
-
-    size = max(required, 2 * (0 if held is None else held.shape[0]))
-    with torch.inference_mode(False):
-        return build(size)
-
-
 def _sinusoidal_table(
     length: int,
     dimension: int,
@@ -303,8 +280,6 @@ def _sinusoidal_table(
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tensor:
-    """Return sinusoidal position features for ply indices ``0`` to ``length``."""
-
     frequencies = torch.exp(
         torch.arange(0, dimension, 2, device=device, dtype=dtype)
         * (-math.log(10_000.0) / dimension)

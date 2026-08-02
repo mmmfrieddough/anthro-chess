@@ -88,6 +88,19 @@ class MoveModelBatch:
     ply_indices: Tensor
     chunk_start_plies: tuple[int, ...]
 
+    @property
+    def position_bound(self) -> int:
+        """Return one past the furthest ply index this batch can hold.
+
+        A row starts at its chunk's first ply and runs no further than the
+        padded width, so this is the batch's own statement of how far its
+        indices reach. :meth:`validate` holds ``ply_indices`` to it, which is
+        what lets the model size a position table from it without asking the
+        device anything.
+        """
+
+        return max(self.chunk_start_plies) + self.action_targets.shape[1]
+
     @classmethod
     def from_sequence_batch(
         cls,
@@ -261,7 +274,7 @@ class MoveModelBatch:
                 dtype=torch.bool,
                 device=tensor_device,
             ),
-            legal_action_ids=(((),) * width,) * len(contexts),
+            legal_action_ids=None,
             game_ids=torch.zeros(
                 (len(contexts), width), dtype=torch.long, device=tensor_device
             ),
@@ -288,11 +301,12 @@ class MoveModelBatch:
         length = batches[0].action_targets.shape[1]
         if any(batch.action_targets.shape[1] != length for batch in batches):
             raise ValueError("stacked batches must cover the same sequence length")
-        carries_legal_actions = batches[0].legal_action_ids is not None
-        if any(
-            (batch.legal_action_ids is not None) != carries_legal_actions
+        carried = [
+            batch.legal_action_ids
             for batch in batches
-        ):
+            if batch.legal_action_ids is not None
+        ]
+        if carried and len(carried) != len(batches):
             raise ValueError("stacked batches must agree on carrying legal actions")
 
         def joined(select: Callable[[MoveModelBatch], Tensor]) -> Tensor:
@@ -325,11 +339,7 @@ class MoveModelBatch:
             action_loss_mask=joined(lambda batch: batch.action_loss_mask),
             attention_mask=joined(lambda batch: batch.attention_mask),
             legal_action_ids=(
-                tuple(
-                    row for batch in batches for row in (batch.legal_action_ids or ())
-                )
-                if carries_legal_actions
-                else None
+                tuple(row for rows in carried for row in rows) if carried else None
             ),
             game_ids=joined(lambda batch: batch.game_ids),
             ply_indices=joined(lambda batch: batch.ply_indices),
@@ -373,13 +383,14 @@ class MoveModelBatch:
         if len(self.chunk_start_plies) != expected_shape[0]:
             raise ValueError("chunk start plies must name every sequence in the batch")
         self._reject_invalid_values()
-        if self.legal_action_ids is None:
+        legal_action_ids = self.legal_action_ids
+        if legal_action_ids is None:
             return
-        if len(self.legal_action_ids) != expected_shape[0] or any(
-            len(row) != expected_shape[1] for row in self.legal_action_ids
+        if len(legal_action_ids) != expected_shape[0] or any(
+            len(row) != expected_shape[1] for row in legal_action_ids
         ):
             raise ValueError("legal actions must align with model timesteps")
-        self._reject_illegal_active_targets()
+        self._reject_illegal_active_targets(legal_action_ids)
 
     def _reject_invalid_values(self) -> None:
         """Raise for any out-of-range value, reading the device exactly once.
@@ -393,17 +404,14 @@ class MoveModelBatch:
         en_passant = self.inputs.en_passant_square
         previous_actions = self.inputs.previous_action_id
         ratings = self.inputs.target_rating
-        # What the model's position table is sized against. A row starts at its
-        # chunk's first ply and runs to the padded width, so this is the batch's
-        # own statement of how far its indices reach; checking it here is what
-        # lets the model gather positions without asking the device anything.
-        position_bound = max(self.chunk_start_plies) + self.action_targets.shape[1]
+        # A negative index would gather real position features from the wrong
+        # end of the table rather than fail, so the lower bound is checked even
+        # though no factory can produce one.
+        bound = self.position_bound
         checks: tuple[tuple[str, Tensor], ...] = (
             (
                 "ply indices must lie inside the plies the batch declares",
-                torch.any(
-                    (self.ply_indices < 0) | (self.ply_indices >= position_bound)
-                ),
+                torch.any((self.ply_indices < 0) | (self.ply_indices >= bound)),
             ),
             (
                 "action loss cannot include padded timesteps",
@@ -463,7 +471,10 @@ class MoveModelBatch:
             if failed:
                 raise ValueError(message)
 
-    def _reject_illegal_active_targets(self) -> None:
+    def _reject_illegal_active_targets(
+        self,
+        legal_action_ids: LegalActionTensor,
+    ) -> None:
         """Raise when an enabled target is not legal at its own timestep.
 
         Legal actions are a host-side structure, so this comparison happens on
@@ -482,7 +493,7 @@ class MoveModelBatch:
             .cpu()
             .tolist()
         )
-        for batch_index, row in enumerate(self.legal_action_ids or ()):
+        for batch_index, row in enumerate(legal_action_ids):
             for sequence_index, legal_actions in enumerate(row):
                 if (
                     enabled[batch_index][sequence_index]
