@@ -52,6 +52,31 @@ same staging.
 The cost is sequencing discipline and sometimes an extra step. That is usually
 cheaper than being unable to attribute an improvement.
 
+## Earn New Surface
+
+New surface — a file, a module, a layer of indirection, a config option, a
+dependency, an abstraction — should exist because the current request needed it,
+not because a later one might. Every changed line should trace to the request
+that prompted it.
+
+Where a measurement can settle whether the surface earns its cost, the
+measurement settles it, and an addition that does not win is removed rather than
+shipped disabled by default. `#193` implemented three training optimizations,
+measured them on the real workload, and deleted the two that never won; the one
+that stayed is off by default with its own justification on a different axis.
+Two dormant dials with no case for turning them on would have been the worse
+outcome even though leaving them in costs nothing at the time.
+
+This does not contradict Measure Before You Add. That principle adds sequencing
+steps deliberately, so an increment can be attributed. This one is about volume:
+a step that answers a question earns itself, and machinery nobody asked for does
+not.
+
+The cost is that some genuinely useful generality arrives one change later than
+it could have. That is cheaper than carrying indirection whose need was guessed,
+because unused generality is indistinguishable from used generality once it is
+in the tree, and the reader who finds it later has to assume it matters.
+
 ## Design A Measurement From Its Comparisons
 
 Write down the comparisons a metric family exists to answer before choosing
