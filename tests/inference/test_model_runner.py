@@ -28,6 +28,7 @@ from anthro_chess.inference import (
     resolve_model_selection,
     write_model_selection,
 )
+from anthro_chess.machine import RUN_ROOT_VARIABLE
 from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
@@ -261,7 +262,9 @@ def test_default_and_explicit_run_selection_have_deliberate_precedence(
 
 
 def test_selection_rejects_missing_stale_and_escaping_records(tmp_path: Path) -> None:
-    with pytest.raises(ModelSelectionError, match="run root is required"):
+    # An unconfigured run root and a configured one holding nothing are
+    # different failures, and the message is the only place they differ.
+    with pytest.raises(ModelSelectionError, match=RUN_ROOT_VARIABLE):
         resolve_model_selection(ModelRunnerConfig())
     with pytest.raises(ModelSelectionError, match="cannot resolve default"):
         resolve_model_selection(ModelRunnerConfig(), run_root=tmp_path)

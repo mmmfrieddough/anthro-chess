@@ -38,13 +38,18 @@ from anthro_chess.evaluation.results.records import (
     ResultEnvelope,
     ResultRecordError,
 )
+from anthro_chess.machine import (
+    RESULT_DETAIL_ROOT_VARIABLE,
+    RESULTS_ROOT_VARIABLE,
+    RUN_ROOT_VARIABLE,
+)
 
 RecordT = TypeVar("RecordT", bound=BaseModel)
 
 #: Directory name of the committed summary tier, relative to the repository.
 DEFAULT_STORE_DIRECTORY = "results"
-STORE_ROOT_VARIABLE = "ANTHRO_CHESS_RESULTS_ROOT"
-DETAIL_ROOT_VARIABLE = "ANTHRO_CHESS_RESULT_DETAIL_ROOT"
+STORE_ROOT_VARIABLE = RESULTS_ROOT_VARIABLE
+DETAIL_ROOT_VARIABLE = RESULT_DETAIL_ROOT_VARIABLE
 
 RECORDS_DIRECTORY = "records"
 BRIDGES_DIRECTORY = "bridges"
@@ -326,7 +331,7 @@ def resolve_detail_root(explicit: str | Path | None = None) -> Path:
         return resolved
     raise ResultsStoreError(
         "a detail-tier directory must be provided explicitly, or "
-        f"{DETAIL_ROOT_VARIABLE} or ANTHRO_CHESS_RUN_ROOT must be set"
+        f"{DETAIL_ROOT_VARIABLE} or {RUN_ROOT_VARIABLE} must be set"
     )
 
 
@@ -340,7 +345,7 @@ def resolve_optional_detail_root(
     configured = os.environ.get(DETAIL_ROOT_VARIABLE, "").strip()
     if configured:
         return Path(configured).expanduser()
-    run_root = os.environ.get("ANTHRO_CHESS_RUN_ROOT", "").strip()
+    run_root = os.environ.get(RUN_ROOT_VARIABLE, "").strip()
     if run_root:
         return Path(run_root).expanduser() / "benchmark-detail"
     return None

@@ -262,6 +262,17 @@ surface, installation smoke check, and PGN sample-data preparation route. Its
 handlers remain thin and call importable package APIs as training, evaluation,
 play, and runtime capabilities are implemented.
 
+The CLI also reports the machine itself. Corpora and runs live outside every
+worktree beneath configured roots, so a checkout cannot say what this machine
+holds, and from inside one an unconfigured root looks exactly like an empty
+one. `anthro machine` answers that in a single place — which roots are set,
+what is beneath them, and how the default model selection resolves — and exits
+nonzero when the configuration is itself the defect rather than the artifacts
+being absent. `anthro model select` maintains that default selection record.
+Failure text belongs to the same concern: a command that needs a root and
+cannot resolve one names the variable and what it would have to hold, instead
+of reporting a missing artifact.
+
 A future native web UI may talk directly to the Anthro runtime API. Native
 interfaces can expose richer controls, show current runtime state, and
 represent non-move game actions such as resignation without being limited by

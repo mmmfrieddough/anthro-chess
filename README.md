@@ -58,9 +58,11 @@ The current command surface is intentionally small:
 uv run anthro --help
 uv run anthro --version
 uv run anthro smoke
+uv run anthro machine
 uv run anthro data acquire --help
 uv run anthro data prepare --help
 uv run anthro eval --help
+uv run anthro model select --help
 uv run anthro train --help
 uv run anthro-uci --help
 ```
@@ -77,6 +79,11 @@ export ANTHRO_CHESS_RUN_ROOT="$HOME/.local/share/anthro-chess/runs"
 
 The commands below then read and write those directories directly. Explicit
 command path arguments and path overrides still take precedence.
+
+Set both or neither: they are two halves of one setup, and a machine with only
+one configured looks from inside a checkout exactly like a machine holding
+nothing. `uv run anthro machine` reports what each root is set to and what it
+holds, and exits nonzero when the configuration is the problem.
 
 ## Minimal UCI Process
 
@@ -224,6 +231,11 @@ directory together so training can resume and the model runner can validate and
 select a compatible checkpoint without copying it. See
 [`docs/training-and-runtime.md`](docs/training-and-runtime.md) for the artifact
 layout and boundary with future public model hosting.
+
+Commands that name no checkpoint resolve the machine's default model selection
+beneath that root. `uv run anthro model select <run-directory-name>` records it,
+optionally pinned to one checkpoint with `--checkpoint`; without the flag the
+selection follows the run's latest pointer.
 
 ## Benchmark Results
 

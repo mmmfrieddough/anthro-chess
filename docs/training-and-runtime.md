@@ -294,6 +294,15 @@ Use `ANTHRO_CHESS_RUN_ROOT` for that location. The CLI maps configured relative
 run paths beneath this root and maps configured relative dataset paths beneath
 `ANTHRO_CHESS_DATA_ROOT`. An explicit absolute path or command-line path
 override takes precedence. Resolved paths are retained in the run artifact.
+
+Both roots are optional, because a fresh clone resolves checked-in relative
+paths inside the worktree and several commands depend on that. What is not
+optional is that the failure stays legible: a command needing a root it cannot
+resolve names the variable and what it would have to hold, so a misconfigured
+machine reports itself rather than presenting as one holding nothing.
+`anthro machine` answers the same question ahead of the failure, and
+`docs/interfaces.md` describes it.
+
 A typical layout keeps datasets and runs as siblings:
 
 ```text
@@ -414,6 +423,12 @@ maintained default selection beneath the run root. Resolution never guesses from
 file names or modification times. The strict configuration and selection-record
 schemas in `anthro_chess.inference` own the exact names and precedence. Every
 selection retains and reports the absolute run record and checkpoint paths.
+
+That default selection is deliberate, so a command maintains it rather than a
+process inferring it: `anthro model select` writes the record, and the same
+validation a runner performs runs before it is written, so a selection that
+would fail to load is refused where it is made instead of at the next process
+start.
 
 Loading validates the run and checkpoint model configuration, action
 vocabulary, model-facing encoding, decision-only rating contract, and supported
