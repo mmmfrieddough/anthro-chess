@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import chess
 import pytest
@@ -21,6 +21,7 @@ from anthro_chess.data import build_decision_context, encoding_identity
 from anthro_chess.inference import (
     MODEL_SELECTION_FILE,
     CheckpointModelRunner,
+    InferenceDevice,
     InferenceDeviceCapabilities,
     ModelRunnerConfig,
     ModelRunnerError,
@@ -31,6 +32,8 @@ from anthro_chess.inference import (
 from anthro_chess.machine import RUN_ROOT_VARIABLE
 from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
 from anthro_chess.training.checkpoints import save_training_checkpoint
+
+from accelerators import inference_accelerator_parameters
 
 
 def test_inference_package_does_not_import_training_orchestration() -> None:
@@ -342,6 +345,80 @@ def test_runner_rejects_unavailable_explicit_device(tmp_path: Path) -> None:
                 mps_built=True,
                 mps_available=False,
             ),
+        )
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("accelerator", inference_accelerator_parameters())
+def test_a_cpu_checkpoint_decides_the_same_way_on_this_hosts_accelerator(
+    accelerator: str,
+    tmp_path: Path,
+) -> None:
+    """Load one checkpoint on CPU and on the accelerator, and compare.
+
+    This is the acceptance check that a selection which merely resolves also
+    runs: the weights survive the transfer, the forward pass reaches the same
+    decision, and the logits still come back on the host.
+    """
+
+    checkpoint = _write_run(tmp_path / "run", seed=23)
+    board, moves = _position(("e2e4", "e7e5", "g1f3"))
+    context = build_decision_context(board, moves, target_rating=1650)
+    selection = cast(InferenceDevice, accelerator)
+
+    cpu = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+    )
+    accelerated = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device=selection)
+    )
+
+    assert accelerated.device.type == accelerator
+    assert accelerated.parameter_sha256() == cpu.parameter_sha256()
+    logits = accelerated.predict(context)
+    assert logits.device.type == "cpu"
+    assert torch.isfinite(logits).all()
+    torch.testing.assert_close(logits, cpu.predict(context), rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("accelerator", inference_accelerator_parameters())
+def test_automatic_selection_takes_the_accelerator_this_host_has(
+    accelerator: str,
+    tmp_path: Path,
+) -> None:
+    checkpoint = _write_run(tmp_path / "run", seed=29)
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="auto")
+    )
+
+    assert runner.device.type == accelerator
+
+
+def test_an_exhausted_accelerator_fails_the_way_every_other_load_does(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out of memory arrives as a ``ModelRunnerError`` like any other failure.
+
+    Torch raises it from the transfer as a ``RuntimeError`` subclass, so the
+    behavior is inherited rather than written. Pinned because a caller that
+    catches the package's own error would otherwise miss the one failure a
+    large checkpoint on a busy GPU is most likely to produce, and reproducing
+    it by genuinely exhausting a device is not something a suite should do.
+    """
+
+    checkpoint = _write_run(tmp_path / "run", seed=31)
+
+    def refuse(self: CausalMoveModel, *args: Any, **kwargs: Any) -> CausalMoveModel:
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    monkeypatch.setattr(CausalMoveModel, "to", refuse)
+
+    with pytest.raises(ModelRunnerError, match="out of memory"):
+        CheckpointModelRunner.load(
+            ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
         )
 
 

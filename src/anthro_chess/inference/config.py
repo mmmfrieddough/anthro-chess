@@ -10,7 +10,7 @@ from pydantic import model_validator
 
 from anthro_chess.config import ConfigModel
 
-InferenceDevice = Literal["auto", "cpu", "mps"]
+InferenceDevice = Literal["auto", "cpu", "mps", "cuda"]
 LATEST_CHECKPOINT = "latest"
 _CHECKPOINT_NAME = re.compile(r"^step-\d{8}\.pt$")
 

@@ -15,7 +15,7 @@ from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, action_vocabulary_identity
 from anthro_chess.data import DecisionContext, encoding_identity
-from anthro_chess.inference.config import ModelRunnerConfig
+from anthro_chess.inference.config import InferenceDevice, ModelRunnerConfig
 from anthro_chess.inference.selection import (
     ModelSelectionError,
     ResolvedModelSelection,
@@ -35,12 +35,81 @@ class ModelRunnerError(ValueError):
     """Raised when a selected checkpoint cannot serve model decisions safely."""
 
 
+#: Accelerator backends an automatic selection considers, in preference order.
+#: In practice at most one is ever present, because the CUDA and MPS builds
+#: target different platforms. The order therefore settles nothing real and
+#: exists so ``auto`` is defined rather than left to whichever check runs first.
+AUTO_ACCELERATORS = ("cuda", "mps")
+
+
 @dataclass(frozen=True)
 class InferenceDeviceCapabilities:
-    """Hardware capabilities relevant to model-runner device selection."""
+    """Hardware capabilities relevant to model-runner device selection.
+
+    The CUDA fields default to absent so a fixture describing a host without
+    one can stay silent about it, which is how most of them read.
+    """
 
     mps_built: bool
     mps_available: bool
+    cuda_built: bool = False
+    cuda_available: bool = False
+
+    def __post_init__(self) -> None:
+        for backend in AUTO_ACCELERATORS:
+            if self.available(backend) and not self.built(backend):
+                raise ValueError(
+                    f"available {backend.upper()} requires a "
+                    f"{backend.upper()}-enabled Torch build"
+                )
+
+    def built(self, backend: str) -> bool:
+        """Whether the installed Torch build carries support for ``backend``."""
+
+        return self._support(backend)[0]
+
+    def available(self, backend: str) -> bool:
+        """Whether ``backend`` can actually run work on this host."""
+
+        return self._support(backend)[1]
+
+    def _support(self, backend: str) -> tuple[bool, bool]:
+        """Return whether ``backend`` is built and whether it is available.
+
+        An unknown name fails rather than falling through to some other
+        backend's answer, which would report a host that does not exist.
+        """
+
+        if backend == "cuda":
+            return self.cuda_built, self.cuda_available
+        if backend == "mps":
+            return self.mps_built, self.mps_available
+        raise ValueError(f"unknown accelerator backend: {backend}")
+
+    def unavailability(self, backend: str) -> str:
+        """Say why ``backend`` cannot be used, distinguishing build from host.
+
+        The two are different problems with different fixes — an installation
+        without the backend compiled in, against a machine with no such device
+        — and a message that conflated them would send a reader to the wrong
+        one.
+        """
+
+        name = backend.upper()
+        if not self.built(backend):
+            return f"the installed Torch build has no {name} support"
+        return f"{name} is not available on this host"
+
+
+def detect_inference_device_capabilities() -> InferenceDeviceCapabilities:
+    """Read this process's model-runner device capabilities from Torch."""
+
+    return InferenceDeviceCapabilities(
+        mps_built=torch.backends.mps.is_built(),
+        mps_available=torch.backends.mps.is_available(),
+        cuda_built=torch.backends.cuda.is_built(),
+        cuda_available=torch.cuda.is_available(),
+    )
 
 
 class CheckpointModelRunner:
@@ -87,7 +156,7 @@ class CheckpointModelRunner:
             checkpoint = load_training_checkpoint(selection.checkpoint_path)
             run_record = _load_run_record(selection.run_record_path)
             model_config = _validate_artifact_contract(checkpoint, run_record)
-            device = _resolve_device(config.device, capabilities=capabilities)
+            device = resolve_inference_device(config.device, capabilities=capabilities)
             model = CausalMoveModel(model_config)
             model.load_state_dict(checkpoint["model_state"], strict=True)
             model.to(device=device, dtype=torch.float32)
@@ -281,28 +350,31 @@ def _mapping(value: object, label: str) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value)
 
 
-def _resolve_device(
-    requested: str,
+def resolve_inference_device(
+    requested: InferenceDevice,
     *,
-    capabilities: InferenceDeviceCapabilities | None,
+    capabilities: InferenceDeviceCapabilities | None = None,
 ) -> torch.device:
-    observed = capabilities or InferenceDeviceCapabilities(
-        mps_built=torch.backends.mps.is_built(),
-        mps_available=torch.backends.mps.is_available(),
-    )
+    """Resolve automatic or explicit inference selection without silent fallback.
+
+    Public because the resolution is worth checking against a described host
+    rather than only against the one running the suite: a machine cannot be
+    asked what it would have chosen with a different accelerator.
+    """
+
+    observed = capabilities or detect_inference_device_capabilities()
     if requested == "auto":
-        backend = "mps" if observed.mps_available else "cpu"
-    elif requested == "mps":
-        if not observed.mps_available:
-            availability = (
-                "the installed Torch build has no MPS support"
-                if not observed.mps_built
-                else "MPS is not available on this host"
-            )
+        backend = next(
+            (name for name in AUTO_ACCELERATORS if observed.available(name)),
+            "cpu",
+        )
+    elif requested in AUTO_ACCELERATORS:
+        if not observed.available(requested):
             raise ModelRunnerError(
-                f"model runner device mps was requested but {availability}"
+                f"model runner device {requested} was requested but "
+                f"{observed.unavailability(requested)}"
             )
-        backend = "mps"
+        backend = requested
     elif requested == "cpu":
         backend = "cpu"
     else:

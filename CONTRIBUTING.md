@@ -35,30 +35,32 @@ index, build variant, or install flag is involved:
 | macOS on Apple silicon | `macosx_14_0_arm64` | MPS |
 | anything else, or no driver | that platform's build | none |
 
-**What the project can select is a smaller set than what PyTorch can see.**
-Training and inference each resolve an explicit `auto`, `cpu`, or `mps`
-selection, and neither accepts `cuda` yet. On a CUDA host every command
-therefore runs on CPU today, `auto` included, since `auto` falls back rather
-than failing. Adding CUDA to those two selections is tracked separately.
+**What the project can select is a smaller set than what PyTorch can see, and
+the two selections do not accept the same set.** Inference and evaluation
+resolve an explicit `auto`, `cpu`, `mps`, or `cuda` selection. Training resolves
+`auto`, `cpu`, or `mps` and does not accept `cuda` yet, which is tracked
+separately. So on a CUDA host the benchmarks and the playable engine run on the
+GPU, while training still runs on CPU there, `auto` included, since `auto` falls
+back rather than failing.
 
 That gap is worth stating plainly because it is otherwise invisible: an
 accelerator no device selection accepts produces exactly the passing run that
 no accelerator at all produces. The suite prints both lists in its header, and
-says so outright when a present accelerator is unselectable:
+names each selection that cannot use a present accelerator:
 
 ```text
 accelerators present: cuda (2 device(s))
-accelerators the device selection accepts: mps
-no present accelerator is selectable, so nothing here exercised a training or
-inference path on one
+accelerators the device selection accepts: cuda, mps
+the training device selection does not accept cuda, so nothing here exercised a
+training path on it
 ```
 
-Which `gpu`-marked tests actually run follows from the same two lists, and is a
+Which `gpu`-marked tests actually run follows from the same lists, and is a
 property of the host rather than of the marker: the device-agreement check runs
 on whichever accelerator is present, while the tests driving a whole training
-run through a device selection need one that selection accepts. Each states
-what the host has when it skips. The marker itself is described under
-[Quality Checks](#quality-checks).
+run or a loaded checkpoint through a device selection need one that selection
+accepts. Each states what the host has when it skips. The marker itself is
+described under [Quality Checks](#quality-checks).
 
 Work that is specifically about CUDA needs more than a driver. The exact
 requirement belongs to the issue asking for it, because a distributed run and a

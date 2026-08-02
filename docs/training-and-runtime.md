@@ -430,10 +430,25 @@ validation a runner performs runs before it is written, so a selection that
 would fail to load is refused where it is made instead of at the next process
 start.
 
+The runner resolves its own device selection, separate from the training one
+because the two accept different backends: inference and every benchmark
+resolving through it accept CUDA, and training does not yet. `auto` takes an
+available accelerator and otherwise CPU, while an explicit accelerator fails
+rather than falling back, and the failure distinguishes a Torch build without
+that backend from a host without such a device. The two are different problems
+with different fixes, and a message conflating them would send a reader to the
+wrong one. `anthro_chess.inference` owns the accepted set.
+
+Because the whole evaluation suite is inference-bound rather than
+training-bound, that selection is what decides what a sweep costs on a given
+machine. What a benchmark measured is reported with the device it ran on, so a
+reading taken on an accelerator is never silently compared against one taken on
+CPU; `docs/evaluation.md` owns those comparability rules.
+
 Loading validates the run and checkpoint model configuration, action
 vocabulary, model-facing encoding, decision-only rating contract, and supported
 timing shape before restoring weights. The runner loads checkpoints through CPU
-storage, places the model on the resolved CPU or MPS device, recomputes the full
+storage, places the model on the resolved device, recomputes the full
 target-free history for each request, and exposes only the current decision's
 detached CPU action logits. It does not import training-loop orchestration,
 invent an opponent rating, add a cache, mask actions, sample moves, or expose a

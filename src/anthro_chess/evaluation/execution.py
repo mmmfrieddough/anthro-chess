@@ -65,7 +65,7 @@ def platform_key() -> str:
 def device_name(device: torch.device) -> str:
     """Return a stable name for the device a measurement ran on."""
 
-    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
+    if device.type == "cuda":  # pragma: no cover - exercised on a CUDA host
         return torch.cuda.get_device_name(device)
     machine = platform.machine() or "unknown"
     processor = platform.processor() or machine
@@ -80,7 +80,7 @@ def synchronize(device: torch.device) -> None:
     happened to block next.
     """
 
-    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
-        torch.cuda.synchronize()
+    if device.type == "cuda":  # pragma: no cover - exercised on a CUDA host
+        torch.cuda.synchronize(device)
     elif device.type == "mps":  # pragma: no cover - no MPS in the CPU suite
         torch.mps.synchronize()

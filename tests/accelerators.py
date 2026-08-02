@@ -62,6 +62,16 @@ class AcceleratorSurface:
             if backend in self.selectable_training
         )
 
+    @property
+    def usable_inference(self) -> tuple[str, ...]:
+        """Return present backends an inference device selection also accepts."""
+
+        return tuple(
+            backend
+            for backend in self.present_backends
+            if backend in self.selectable_inference
+        )
+
     def describe_present(self) -> str:
         """Return a report-ready phrase for what is present, with counts."""
 
@@ -72,7 +82,13 @@ class AcceleratorSurface:
         )
 
     def report_lines(self) -> list[str]:
-        """Return the header lines that say what this run could exercise."""
+        """Return the header lines that say what this run could exercise.
+
+        Training and inference are reported apart because the two selections
+        accept different sets, and a host can sit between them. Collapsing
+        them would let a run that exercised no training path on a present GPU
+        read as though it had.
+        """
 
         selectable = sorted(set(self.selectable_training + self.selectable_inference))
         lines = [
@@ -80,15 +96,41 @@ class AcceleratorSurface:
             "accelerators the device selection accepts: "
             + (", ".join(selectable) or "none"),
         ]
-        if self.present and not self.usable_training:
+        if not self.present:
+            return lines
+        if not self.usable_training and not self.usable_inference:
             lines.append(
                 "no present accelerator is selectable, so nothing here exercised "
                 "a training or inference path on one"
             )
+            return lines
+        for kind, usable in (
+            ("training", self.usable_training),
+            ("inference", self.usable_inference),
+        ):
+            missing = [
+                backend for backend in self.present_backends if backend not in usable
+            ]
+            if missing:
+                lines.append(
+                    f"the {kind} device selection does not accept "
+                    f"{', '.join(missing)}, so nothing here exercised a {kind} "
+                    "path on it"
+                )
         return lines
 
     def training_skip_reason(self, backend: str) -> str:
-        """Return why a training accelerator test cannot run on this host.
+        """Return why a training accelerator test cannot run on this host."""
+
+        return self._skip_reason(backend, "training", self.usable_training)
+
+    def inference_skip_reason(self, backend: str) -> str:
+        """Return why an inference accelerator test cannot run on this host."""
+
+        return self._skip_reason(backend, "inference", self.usable_inference)
+
+    def _skip_reason(self, backend: str, kind: str, usable: tuple[str, ...]) -> str:
+        """Return why a ``kind`` accelerator test cannot run on this host.
 
         Naming the host is the point. "Requires Apple silicon" reads the same
         on a machine with no accelerator and on one holding two working GPUs,
@@ -98,10 +140,10 @@ class AcceleratorSurface:
         wanted = f"requires an available PyTorch {backend.upper()} backend"
         if not self.present:
             return f"{wanted}; this host has no accelerator the project targets"
-        if len(self.usable_training) < len(self.present):
+        if len(usable) < len(self.present):
             return (
                 f"{wanted}; this host has {self.describe_present()}, which the "
-                "training device selection does not accept"
+                f"{kind} device selection does not accept"
             )
         return f"{wanted}; this host has {self.describe_present()}"
 
@@ -147,6 +189,32 @@ def accelerator_parameters() -> list[Any]:
     ]
 
 
+def inference_accelerator_parameters() -> list[Any]:
+    """Return one parameter per accelerator this host can run inference on.
+
+    A present-but-unselectable backend is excluded here rather than skipped
+    from inside the test, so the explanation can name which of the two lists
+    the host fell out of.
+    """
+
+    if HOST.usable_inference:
+        return [pytest.param(backend, id=backend) for backend in HOST.usable_inference]
+    return [
+        pytest.param(
+            "cpu",
+            id="none",
+            marks=pytest.mark.skip(
+                reason=(
+                    "no accelerator on this host is inference-selectable; "
+                    f"present: {HOST.describe_present()}; the inference device "
+                    "selection accepts: "
+                    + (", ".join(HOST.selectable_inference) or "none")
+                )
+            ),
+        )
+    ]
+
+
 def requires_training_accelerator(backend: str) -> pytest.MarkDecorator:
     """Return the skip marker for a test driving training on ``backend``.
 
@@ -158,6 +226,15 @@ def requires_training_accelerator(backend: str) -> pytest.MarkDecorator:
     return pytest.mark.skipif(
         backend not in HOST.usable_training,
         reason=HOST.training_skip_reason(backend),
+    )
+
+
+def requires_inference_accelerator(backend: str) -> pytest.MarkDecorator:
+    """Return the skip marker for a test running inference on ``backend``."""
+
+    return pytest.mark.skipif(
+        backend not in HOST.usable_inference,
+        reason=HOST.inference_skip_reason(backend),
     )
 
 

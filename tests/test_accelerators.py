@@ -25,6 +25,14 @@ CPU_HOST = AcceleratorSurface(
     selectable_training=("mps",),
     selectable_inference=("mps",),
 )
+#: A CUDA host while inference accepts CUDA and training does not. Not a
+#: contrived case: it is what this repository looks like between the two halves
+#: of CUDA support landing.
+HALF_SELECTABLE_HOST = AcceleratorSurface(
+    present=(("cuda", 2),),
+    selectable_training=("mps",),
+    selectable_inference=("cuda", "mps"),
+)
 
 
 def test_an_unselectable_accelerator_is_reported_rather_than_left_implied() -> None:
@@ -53,6 +61,55 @@ def test_a_host_with_no_accelerator_reports_that_rather_than_warning() -> None:
         "accelerators the device selection accepts: mps",
     ]
     assert CPU_HOST.usable_training == ()
+
+
+def test_an_accelerator_only_one_selection_accepts_is_reported_per_selection() -> None:
+    """The two selections are reported apart because they can disagree.
+
+    Saying only "no present accelerator is selectable" here would be false,
+    and saying nothing would let a run that exercised no training path on a
+    working GPU read exactly like one that did.
+    """
+
+    lines = HALF_SELECTABLE_HOST.report_lines()
+
+    assert lines[0] == "accelerators present: cuda (2 device(s))"
+    assert lines[1] == "accelerators the device selection accepts: cuda, mps"
+    assert lines[2] == (
+        "the training device selection does not accept cuda, so nothing here "
+        "exercised a training path on it"
+    )
+    assert len(lines) == 3
+    assert HALF_SELECTABLE_HOST.usable_inference == ("cuda",)
+    assert HALF_SELECTABLE_HOST.usable_training == ()
+
+
+def test_a_host_both_selections_accept_needs_no_warning() -> None:
+    both = AcceleratorSurface(
+        present=(("cuda", 1),),
+        selectable_training=("cuda", "mps"),
+        selectable_inference=("cuda", "mps"),
+    )
+
+    assert both.report_lines() == [
+        "accelerators present: cuda (1 device(s))",
+        "accelerators the device selection accepts: cuda, mps",
+    ]
+
+
+def test_skip_reasons_name_the_selection_that_rejected_the_accelerator() -> None:
+    """Each selection explains itself, because they can reject different hosts.
+
+    The same GPU is rejected by training here and accepted by inference, so a
+    shared sentence would be wrong for one of them.
+    """
+
+    training = HALF_SELECTABLE_HOST.training_skip_reason("cuda")
+    inference = CUDA_HOST.inference_skip_reason("cuda")
+
+    assert training.endswith("which the training device selection does not accept")
+    assert inference.endswith("which the inference device selection does not accept")
+    assert HALF_SELECTABLE_HOST.inference_skip_reason("cuda") != inference
 
 
 def test_skip_reasons_separate_an_absent_accelerator_from_a_rejected_one() -> None:
@@ -88,3 +145,4 @@ def test_the_detected_surface_describes_this_process() -> None:
     assert "mps" in detected.selectable_training
     assert "cpu" not in detected.selectable_training
     assert "auto" not in detected.selectable_inference
+    assert "cuda" in detected.selectable_inference
