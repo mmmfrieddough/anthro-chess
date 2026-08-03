@@ -584,6 +584,39 @@ def _record_fixture_results(store_root: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "subcommand",
+    ["run", "puzzles", "novelty", "inference", "rollout", "termination", "ladder"],
+)
+def test_eval_handlers_share_one_recording_decision(
+    tmp_path: Path,
+    subcommand: str,
+) -> None:
+    """A subcommand that drops one of the three recording flags fails here."""
+
+    from anthro_chess.interfaces.cli import _result_stores, build_parser
+
+    parser = build_parser()
+    # Parsing is the whole exercise here, so the named config is never read.
+    invocation = ["eval", subcommand, "--config", str(tmp_path / "benchmark.toml")]
+
+    withheld = parser.parse_args([*invocation, "--no-record"])
+    assert _result_stores(withheld) == (None, None)
+
+    recording = parser.parse_args(
+        [
+            *invocation,
+            "--store",
+            str(tmp_path / "results"),
+            "--detail-root",
+            str(tmp_path / "detail"),
+        ]
+    )
+    store, detail = _result_stores(recording)
+    assert store is not None and store.root == tmp_path / "results"
+    assert detail is not None and detail.root == tmp_path / "detail"
+
+
 def test_eval_report_shows_the_compact_delta_view(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
