@@ -606,14 +606,15 @@ source of truth.
 The current model-facing encoding API reconstructs each normalized standard
 game once. Every ply carries the compact exact pre-move state, both players'
 observed action history, the side-to-move player's optional rating as a
-decision target, explicit timing missingness, and legal action ids. Historical
-timestep contexts contain neither player's rating, and loss is enabled on every
-valid ply. The same position construction builds target-free live history
-without inventing an action target or opponent rating; Anthro's single runtime
-target rating is attached only to the current decision. The encoding's
-versioned serialized identity is the compatibility source of truth for future
-manifests, run records, and checkpoints; exact field names and token mappings
-live with the implementation rather than being duplicated here.
+decision target, explicit timing missingness, and the legal action ids a caller
+asked to have reconstructed. Historical timestep contexts contain neither
+player's rating, and loss is enabled on every valid ply. The same position
+construction builds target-free live history without inventing an action target
+or opponent rating; Anthro's single runtime target rating is attached only to
+the current decision. The encoding's versioned serialized identity is the
+compatibility source of truth for future manifests, run records, and
+checkpoints; exact field names and token mappings live with the implementation
+rather than being duplicated here.
 
 The canonical normalized-artifact schema lives in `anthro_chess.data.schema`.
 Preparation writes that schema, while loaders and other consumers select the
@@ -638,13 +639,15 @@ conversion wraps a column and copies it rather than visiting every timestep.
 Widening to what a model indexes with belongs on the far side of that copy, so
 what crosses to a device is the width the loader chose.
 
-Per-ply legal actions reach a batch only when a caller reads them. The encoding
-always reconstructs them, because that is what validates a target against its
-own position, but policy scoring is the only consumer of the packed form and
-training is not one, so a training loader is asked for none. What that saves is
-the packing and, under the shard-backed loader, roughly a third of what each
-batch pickles on its way out of a worker. Padding is right-aligned throughout,
-which is what lets a padded row's outputs be ignored rather than masked away.
+Per-ply legal actions are reconstructed only when a caller reads them. Scoring
+is the only consumer and training is not one, so a training loader asks for none
+and the encoding it drives builds none — which is most of what decoding a game
+costs, before any of what packing and pickling one costs. Asking is one signal,
+given where the reconstruction happens; a batch then carries the set exactly
+when the plies in it do. Refusing a target the position does not allow is asked
+about that one candidate rather than of the set, so it holds either way.
+Padding is right-aligned throughout, which is what lets a padded row's outputs
+be ignored rather than masked away.
 
 Two loaders provide that boundary, and a selection picks one by declaring a
 streaming section or leaving it out. Both produce batches through the same

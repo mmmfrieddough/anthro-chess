@@ -272,7 +272,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self.config = config
         self.streaming = streaming
         # Outside the configuration digest for the same reason as in the eager
-        # loader: it decides what a batch carries, not which games it holds.
+        # loader: it decides what a decoded ply carries, not which games the
+        # index holds.
         self.legal_actions = legal_actions
         self.configuration_sha256 = sha256(
             json.dumps(
@@ -460,7 +461,10 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
     for row_index, start_ply, length in job.entries:
         plies = decoded.get(row_index)
         if plies is None:
-            plies = encode_game(_game_from_row(job.rows[row_index], path))
+            plies = encode_game(
+                _game_from_row(job.rows[row_index], path),
+                legal_actions=job.legal_actions,
+            )
             if len(plies) != job.lengths[row_index]:
                 raise DataLoadingError(
                     f"{path} game {job.rows[row_index][NormalizedColumn.GAME_ID]} "
@@ -477,7 +481,7 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
                 plies=chunk,
             )
         )
-    return collate_sequences(examples, legal_actions=job.legal_actions)
+    return collate_sequences(examples)
 
 
 @dataclass(frozen=True)

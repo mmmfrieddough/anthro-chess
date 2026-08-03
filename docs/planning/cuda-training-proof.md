@@ -107,9 +107,13 @@ accelerator, is the binding constraint at the current model size.
 The loader has since stopped emitting those sequences. On this workload and
 host, batch construction and transfer falls from 4.1 ms to 0.8 ms per step and
 forward and backward becomes the largest phase, which is what the last section
-of this document asked for. What that change did not touch is the decode
-upstream of it, and under the shard-backed loader that is now what a step waits
-on.
+of this document asked for.
+
+The decode upstream of it then became what a step waited on, and it has since
+stopped reconstructing per-ply legal actions for a training run that never
+reads them. Under the shard-backed loader at eight workers, input preparation
+falls from 7.3 ms to 1.6 ms per step and forward and backward is the largest
+phase again.
 
 Separating optimizer work from forward and backward was worth doing, and not
 for the reason expected: at 4.9% of a step it looked like the last place worth
