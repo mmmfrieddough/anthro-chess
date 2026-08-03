@@ -545,16 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = eval_commands.add_parser(
         "report",
         help="Show the compact benchmark delta view over the results store.",
-        parents=[_STORE_FLAG, _FORMAT_FLAG],
-    )
-    report_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory used for paired checkpoint "
-            "floors. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
-            "directory beneath ANTHRO_CHESS_RUN_ROOT."
-        ),
+        parents=[_STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     report_parser.add_argument(
         "--pivot",
@@ -668,7 +659,7 @@ def build_parser() -> argparse.ArgumentParser:
     noise_characterize_parser = noise_commands.add_parser(
         "characterize",
         help="Estimate a noise floor from recorded replicate measurements.",
-        parents=[_STORE_FLAG],
+        parents=[_SET_FLAG, _STORE_FLAG],
     )
     noise_characterize_parser.add_argument(
         "--kind",
@@ -701,13 +692,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Execution noise only: the inference-benchmark selection to repeat. "
             "The floor it produces describes this machine under that workload."
         ),
-    )
-    noise_characterize_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override for --config; may be repeated.",
     )
     noise_characterize_parser.add_argument(
         "--processes",
@@ -836,22 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser = subcommands.add_parser(
         "train",
         help="Run bounded move-model training from explicit configuration.",
-        parents=[_SET_FLAG, _STORE_FLAG],
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG],
     )
     train_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML training, model, and data selection.",
-    )
-    train_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory for the efficiency "
-            "breakdown. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
-            "directory beneath ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     train_parser.add_argument(
         "--no-record",
