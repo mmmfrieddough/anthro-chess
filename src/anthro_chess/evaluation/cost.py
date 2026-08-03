@@ -40,7 +40,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from pydantic import BaseModel
 
 from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.results import (
@@ -55,7 +54,7 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import BENCHMARK_WALL_CLOCK_SECONDS
 from anthro_chess.evaluation.results.records import canonical_json
 from anthro_chess.evaluation.roots import artifact_name
-from anthro_chess.inference.config import ModelRunnerConfig
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference.runner import ModelRunnerError, resolve_inference_device
 from anthro_chess.machine import DATA_ROOT_VARIABLE, optional_root
 
@@ -71,7 +70,7 @@ def benchmark_cost_result(
     benchmark: BenchmarkReference,
     checkpoint: CheckpointReference,
     configuration: ConfigurationReference,
-    config: BaseModel,
+    config: CheckpointSelection,
     device: torch.device,
     seconds: float,
     environment: EnvironmentRecord | None = None,
@@ -104,7 +103,10 @@ def benchmark_cost_result(
     )
 
 
-def cost_device(config: BaseModel, runner: object | None = None) -> torch.device | None:
+def cost_device(
+    config: CheckpointSelection,
+    runner: object | None = None,
+) -> torch.device | None:
     """Return the device a cost reading is attributed to, or ``None``.
 
     Resolved from the declared selection rather than observed, because the
@@ -126,19 +128,15 @@ def cost_device(config: BaseModel, runner: object | None = None) -> torch.device
 
     if runner is not None:
         return runner_device(runner)
-    field = _selection_field(config)
-    if field is None:
-        return torch.device("cpu")
-    selection: ModelRunnerConfig = getattr(config, field)
     try:
-        return resolve_inference_device(selection.device)
+        return resolve_inference_device(config.model.device)
     except ModelRunnerError:
         return None
 
 
 def cost_workload(
     benchmark: BenchmarkReference,
-    config: BaseModel,
+    config: CheckpointSelection,
 ) -> dict[str, Any]:
     """Return the declared workload one cost reading was taken under.
 
@@ -163,12 +161,13 @@ def cost_workload(
     }
 
 
-def _normalized_configuration(config: BaseModel) -> dict[str, Any]:
+def _normalized_configuration(config: CheckpointSelection) -> dict[str, Any]:
     """Return the configured settings a cost series is scoped by.
 
-    The model selection and the label chosen for it are dropped: the checkpoint
-    is the coordinate a cost line varies along, so leaving it in would start a
-    new line at every checkpoint.
+    Everything :class:`~anthro_chess.evaluation.selection.CheckpointSelection`
+    declares is dropped, which is exactly the checkpoint being measured and the
+    label it is recorded under: the checkpoint is the coordinate a cost line
+    varies along, so leaving it in would start a new line at every one.
 
     Dumped in Python mode rather than the JSON mode every other view of a
     configuration here uses, because JSON mode has already turned each path
@@ -179,27 +178,11 @@ def _normalized_configuration(config: BaseModel) -> dict[str, Any]:
     """
 
     root = optional_root(DATA_ROOT_VARIABLE)
-    dropped = {"checkpoint_label", _selection_field(config)}
     return {
         field: _workload_value(value, root)
         for field, value in config.model_dump().items()
-        if field not in dropped
+        if field not in CheckpointSelection.model_fields
     }
-
-
-def _selection_field(config: BaseModel) -> str | None:
-    """Return the field holding the one checkpoint selection, if there is one.
-
-    Found by type rather than by the name every schema happens to use, because
-    a renamed or second selection would otherwise stay in the digest and
-    fragment every cost series with nothing to notice it. The same answer
-    decides what a reading is attributed to, so both are read from here.
-    """
-
-    for field in type(config).model_fields:
-        if isinstance(getattr(config, field), ModelRunnerConfig):
-            return field
-    return None
 
 
 def _workload_value(value: Any, root: Path | None) -> Any:

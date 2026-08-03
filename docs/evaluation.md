@@ -257,7 +257,10 @@ through `anthro_chess.evaluation.recording`; where those land, and whether they
 are committed at all, is the driver's rather than the benchmark's.
 `anthro_chess.evaluation.suite` owns the suite schema, the ordering rules, and
 the ledger format; the shipped sweep lives beside the selections it composes
-under `configs/evaluation/`.
+under `configs/evaluation/`. Every benchmark selection inherits
+`anthro_chess.evaluation.selection.CheckpointSelection`, so which checkpoint a
+sweep replaces, and what a reading calls it, are declared once rather than
+repeated by each schema.
 
 ### What A Benchmark Cost
 

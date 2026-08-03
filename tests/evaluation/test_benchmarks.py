@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from anthro_chess.config import (
-    ConfigModel,
     ConfigProvenance,
     ResolvedConfig,
 )
@@ -38,6 +37,7 @@ from anthro_chess.evaluation.results import (
     measurement,
 )
 from anthro_chess.evaluation.results.metrics import BENCHMARK_WALL_CLOCK_SECONDS
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import ModelRunnerConfig
 
 COST = BenchmarkReference(name="fake-benchmark", version=1)
@@ -67,7 +67,7 @@ def _fake(
 
     return Benchmark(
         name="fake",
-        schema=ConfigModel,
+        schema=CheckpointSelection,
         artifact_fields=(),
         errors=(_FakeError,),
         error=_FakeError,
@@ -76,9 +76,11 @@ def _fake(
     )
 
 
-def _resolved() -> ResolvedConfig[ConfigModel]:
+def _resolved() -> ResolvedConfig[CheckpointSelection]:
     return ResolvedConfig(
-        value=ConfigModel(),
+        # A selection on the CPU, so a cost record is attributed to the same
+        # device wherever the suite runs.
+        value=CheckpointSelection(model=ModelRunnerConfig(device="cpu")),
         provenance=ConfigProvenance(source=None, overrides=()),
     )
 
@@ -256,12 +258,12 @@ def test_a_recording_benchmark_declares_what_its_cost_is_filed_under() -> None:
     assert len(set(names)) == len(names)
 
 
-def test_every_recording_benchmark_declares_a_selection_cost_can_read() -> None:
-    """The device is found by type, so a moved selection has to fail loudly.
+def test_every_recording_benchmark_selects_a_checkpoint_the_same_way() -> None:
+    """A sweep replaces this field wholesale, and `model_copy` cannot check it.
 
-    A benchmark whose selection stopped being a top-level field would be
-    attributed to the CPU and start a fresh cost line, silently, which is the
-    failure the scoping rule exists to prevent.
+    A schema off the shared base would take the replacement as a stray
+    attribute and go on measuring its own checkpoint, and would drop nothing
+    from its cost workload either.
     """
 
     schemas = [
@@ -271,13 +273,7 @@ def test_every_recording_benchmark_declares_a_selection_cost_can_read() -> None:
     ]
 
     assert schemas
-    assert all(
-        any(
-            field.annotation is ModelRunnerConfig
-            for field in schema.model_fields.values()
-        )
-        for schema in schemas
-    )
+    assert all(issubclass(schema, CheckpointSelection) for schema in schemas)
 
 
 def test_the_driver_commits_what_the_invocation_cost(tmp_path: Path) -> None:

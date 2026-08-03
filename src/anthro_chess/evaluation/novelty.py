@@ -125,9 +125,10 @@ from anthro_chess.evaluation.scoring import (
     build_scoring_inputs,
     rows_identity_sha256,
 )
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION, PositionPredicate
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch
 
@@ -194,17 +195,12 @@ class PerturbationConfig(ConfigModel):
         return self
 
 
-class NoveltyBenchmarkConfig(ConfigModel):
+class NoveltyBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval novelty``."""
 
     pool: Path
     view: ViewConfig = ViewConfig(name="novelty")
-    model: ModelRunnerConfig = ModelRunnerConfig()
     loader: EvaluationLoaderConfig = EvaluationLoaderConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
     perturbation: PerturbationConfig = PerturbationConfig()
     leakage: LeakageConfig = LeakageConfig()
     detail: DetailConfig = DetailConfig()

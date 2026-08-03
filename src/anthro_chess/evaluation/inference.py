@@ -59,7 +59,8 @@ from anthro_chess.evaluation.results.metrics import (
     INFERENCE_MOVE_LATENCY_MEAN,
     LATENCY_PERCENTILES,
 )
-from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.evaluation.selection import CheckpointSelection
+from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import DecisionRuntimeError, GameSession, RuntimeConfig
@@ -137,17 +138,12 @@ class ThroughputWorkloadConfig(ConfigModel):
     seed: str = Field(default="anthro-inference-throughput-v1", min_length=1)
 
 
-class InferenceBenchmarkConfig(ConfigModel):
+class InferenceBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval inference``."""
 
-    model: ModelRunnerConfig = ModelRunnerConfig()
     runtime: RuntimeConfig = RuntimeConfig(seed=0)
     latency: LatencyWorkloadConfig = LatencyWorkloadConfig()
     throughput: ThroughputWorkloadConfig = ThroughputWorkloadConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
 
 
 @dataclass(frozen=True)

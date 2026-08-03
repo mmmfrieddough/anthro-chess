@@ -16,7 +16,7 @@ from pydantic import Field, StrictInt, model_validator
 from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
-from anthro_chess.config import ConfigModel, ResolvedConfig
+from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.data.artifacts import read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
@@ -64,9 +64,9 @@ from anthro_chess.evaluation.results.metrics import (
     PUZZLE_SAMPLED_RATING_SLOPE,
     PUZZLE_TRAINING_OVERLAP_RATE,
 )
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import (
     CheckpointModelRunner,
-    ModelRunnerConfig,
     ModelRunnerError,
 )
 
@@ -94,14 +94,9 @@ class PuzzlePredictionRunner(Protocol):
     ) -> tuple[Tensor, ...]: ...
 
 
-class PuzzleBenchmarkConfig(ConfigModel):
+class PuzzleBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval puzzles``."""
 
-    model: ModelRunnerConfig = ModelRunnerConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
     puzzle_set: Path
     training_normalized: Path
     target_ratings: tuple[StrictInt, ...] = (1000, 1400, 1800, 2200)

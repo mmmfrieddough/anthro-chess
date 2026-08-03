@@ -122,8 +122,8 @@ from anthro_chess.evaluation.results.metrics import (
     LADDER_TEMPERATURE_RESPONSE_ATTENUATION,
     MOVE_PREDICTION_PROJECTION,
 )
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
 LADDER_BENCHMARK_VERSION = 1
@@ -328,14 +328,9 @@ class LadderDetailConfig(ConfigModel):
     retain_games: StrictBool = True
 
 
-class LadderBenchmarkConfig(ConfigModel):
+class LadderBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval ladder``."""
 
-    model: ModelRunnerConfig = ModelRunnerConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
     #: The base runtime settings every seat plays under. Rating, temperature,
     #: and seed are supplied per seat and per game, so setting them here would
     #: be overridden; the rest applies to the whole ladder.
