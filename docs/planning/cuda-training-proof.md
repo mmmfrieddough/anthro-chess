@@ -338,10 +338,27 @@ batch and the card sat at roughly 11% utilization. The loader work removed that
 cost, so every verdict above was re-taken. **Most of them changed, and the two
 that changed most changed sign.**
 
-The arms below run through the same `anthro train` command against the same
-prepared corpus, one CUDA device, with the eager loader. Each arm was
-implemented as a patch applied at process start and discarded afterwards, so
-nothing here except the two settings named at the end reached the codebase.
+The arms below run through the same `anthro train` command on one CUDA device
+with the eager loader. Each was implemented as a patch applied at process start
+and discarded afterwards, so nothing here except the two settings named at the
+end reached the codebase.
+
+They run against a smaller selection than the table above — 8,000 games rather
+than 30,000, prepared the same way:
+
+```console
+uv run anthro data prepare \
+  --config configs/data/lichess-blitz-2017-04.toml \
+  --set 'artifact_name="lichess-blitz-m200-8k"' \
+  --set filters.maximum_games=8000 \
+  --set output.games_per_shard=8000
+```
+
+The eager loader materializes the whole selection before the first step, so
+that is 23 s of startup per arm instead of 85 s, and 77 arms were run. It costs
+nothing the arms measure: every batch has the same shape distribution, and the
+`model_dim` 64 batch 16 baseline reads 157,361 positions per second here
+against 155,143–163,905 over three runs on the 30,000-game selection.
 
 ### Read this as workloads, not as widths
 
