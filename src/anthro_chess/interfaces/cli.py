@@ -48,8 +48,10 @@ if TYPE_CHECKING:
     )
     from anthro_chess.evaluation.results import (
         BridgeIndex,
+        DetailStore,
         NoiseCharacterization,
         ResultEnvelope,
+        ResultsStore,
     )
     from anthro_chess.evaluation.rollout import RolloutReading
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
@@ -1560,6 +1562,31 @@ def _render_sweep(run: SuiteRun) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _result_stores(
+    arguments: argparse.Namespace,
+) -> tuple[ResultsStore | None, DetailStore | None]:
+    """Return the committed and detail stores a benchmark records through.
+
+    A committed summary references its detail payloads by path and digest, so a
+    benchmark that records needs both tiers. `anthro train`, whose breakdown is
+    best-effort, resolves an optional detail root instead and is not a caller.
+    """
+
+    from anthro_chess.evaluation.results import (
+        DetailStore,
+        ResultsStore,
+        resolve_detail_root,
+        resolve_store_root,
+    )
+
+    if arguments.no_record:
+        return None, None
+    return (
+        ResultsStore(resolve_store_root(arguments.store)),
+        DetailStore(resolve_detail_root(arguments.detail_root)),
+    )
+
+
 def _run_eval_run(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.evaluation import (
@@ -1568,13 +1595,7 @@ def _run_eval_run(arguments: argparse.Namespace) -> int:
         LeakageError,
         evaluate_checkpoint,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = load_config(
@@ -1583,16 +1604,7 @@ def _run_eval_run(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         resolved = _resolve_evaluation_roots(resolved, arguments.set)
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = evaluate_checkpoint(
             resolved,
             run_root=_run_root(),
@@ -1705,13 +1717,7 @@ def _run_eval_puzzles(arguments: argparse.Namespace) -> int:
         PuzzleBenchmarkError,
         benchmark_puzzles,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = load_config(
@@ -1720,16 +1726,7 @@ def _run_eval_puzzles(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         resolved = _resolve_puzzle_roots(resolved, arguments.set)
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = benchmark_puzzles(
             resolved,
             run_root=_run_root(),
@@ -1754,13 +1751,7 @@ def _run_eval_novelty(arguments: argparse.Namespace) -> int:
         NoveltyBenchmarkError,
         benchmark_novelty,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = _resolve_novelty_roots(
@@ -1771,16 +1762,7 @@ def _run_eval_novelty(arguments: argparse.Namespace) -> int:
             ),
             arguments.set,
         )
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = benchmark_novelty(
             resolved,
             run_root=_run_root(),
@@ -1920,13 +1902,7 @@ def _run_eval_inference(arguments: argparse.Namespace) -> int:
         InferenceBenchmarkError,
         benchmark_inference,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = load_config(
@@ -1934,16 +1910,7 @@ def _run_eval_inference(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = benchmark_inference(
             resolved,
             run_root=_run_root(),
@@ -2031,13 +1998,7 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
         RolloutBenchmarkError,
         benchmark_rollout,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = _resolve_rollout_roots(
@@ -2048,16 +2009,7 @@ def _run_eval_rollout(arguments: argparse.Namespace) -> int:
             ),
             arguments.set,
         )
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = benchmark_rollout(
             resolved,
             run_root=_run_root(),
@@ -2424,13 +2376,7 @@ def _run_eval_termination(arguments: argparse.Namespace) -> int:
         TerminationBenchmarkError,
         benchmark_termination,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = _resolve_termination_roots(
@@ -2441,16 +2387,7 @@ def _run_eval_termination(arguments: argparse.Namespace) -> int:
             ),
             arguments.set,
         )
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = benchmark_termination(
             resolved,
             run_root=_run_root(),
@@ -2616,13 +2553,7 @@ def _run_eval_ladder(arguments: argparse.Namespace) -> int:
         LadderBenchmarkError,
         benchmark_ladder,
     )
-    from anthro_chess.evaluation.results import (
-        DetailStore,
-        ResultsStore,
-        ResultsStoreError,
-        resolve_detail_root,
-        resolve_store_root,
-    )
+    from anthro_chess.evaluation.results import ResultsStoreError
 
     try:
         resolved = _resolve_ladder_roots(
@@ -2633,16 +2564,7 @@ def _run_eval_ladder(arguments: argparse.Namespace) -> int:
             ),
             arguments.set,
         )
-        store = (
-            None
-            if arguments.no_record
-            else ResultsStore(resolve_store_root(arguments.store))
-        )
-        detail = (
-            None
-            if arguments.no_record
-            else DetailStore(resolve_detail_root(arguments.detail_root))
-        )
+        store, detail = _result_stores(arguments)
         result = benchmark_ladder(
             resolved,
             run_root=_run_root(),
