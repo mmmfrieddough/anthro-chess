@@ -60,6 +60,7 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_BATCH_THROUGHPUT,
     INFERENCE_FIRST_DECISION_SECONDS,
+    INFERENCE_FORWARD_THROUGHPUT,
     INFERENCE_MODEL_LOAD_SECONDS,
     INFERENCE_MOVE_LATENCY_BY_PERCENTILE,
     INFERENCE_MOVE_LATENCY_MEAN,
@@ -132,11 +133,151 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[99].identifier,
         INFERENCE_MOVE_LATENCY_MEAN.identifier,
         INFERENCE_BATCH_THROUGHPUT.identifier,
+        INFERENCE_FORWARD_THROUGHPUT.identifier,
         INFERENCE_MODEL_LOAD_SECONDS.identifier,
         INFERENCE_FIRST_DECISION_SECONDS.identifier,
     }
     assert result.recorded_paths and result.recorded_paths[0].exists()
     assert result.detail_paths and result.detail_paths[0].exists()
+
+
+def test_the_stage_attribution_never_claims_more_than_the_whole(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """Two of three parts summing past the total is worse than no breakdown.
+
+    They did, because the parts were timed beside the measured decision rather
+    than inside it: a second, non-incremental encode and a second forward pass,
+    both charged against an end-to-end figure that paid for neither.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=16)
+
+    result = benchmark_inference(_config(checkpoint))
+
+    for sample in result.latency_sweep:
+        assert sample.context_mean_ms >= 0.0
+        assert sample.predict_mean_ms >= 0.0
+        # Derived from one window the parts were cut from, so this is an
+        # identity rather than a hope about the machine.
+        assert sample.remainder_mean_ms >= 0.0
+        assert sample.context_mean_ms + sample.predict_mean_ms <= sample.mean_ms
+        assert sample.remainder_mean_ms == pytest.approx(
+            sample.mean_ms - sample.context_mean_ms - sample.predict_mean_ms
+        )
+
+
+def test_the_context_stage_uses_the_session_the_decision_came_from(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The session assembles its context from plies it already encoded.
+
+    Timing a from-scratch ``build_decision_context`` instead reported that
+    assembly as two orders of magnitude above its real cost and grew it with
+    history, which is how a reader got the encode-or-model question backwards.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=17)
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+    )
+    session = GameSession(runner, config=RuntimeConfig(seed=7))
+    contexts: list[DecisionContext] = []
+    real_context = inference_module._decision_context
+
+    def recording(recorded: GameSession) -> DecisionContext:
+        context = real_context(recorded)
+        contexts.append(context)
+        return context
+
+    config = LatencyWorkloadConfig(
+        reference_plies=4,
+        sweep_plies=(4,),
+        decisions=2,
+        warmup_decisions=0,
+        seed="test-encode",
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(inference_module, "_decision_context", recording)
+        sample = _measure_latency(session, runner, _HistoryFactory(), config, 4)
+
+    # Every measured decision took its context from the session, once.
+    assert len(contexts) == config.decisions
+    assert sample.context_mean_ms < sample.mean_ms
+
+
+def test_throughput_times_the_batch_it_builds(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The suite's cost unit has to include the term that grows with history.
+
+    Timing a batch built once and reused excluded batch construction, which is
+    the dominant cost of a generated decision and the one that rises with ply
+    depth. That figure is still reported, as its own declared quantity.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=18)
+
+    sample = benchmark_inference(_config(checkpoint)).reference_throughput
+
+    assert sample.decisions_per_second > 0.0
+    assert sample.forward_decisions_per_second > 0.0
+    # Re-running a built batch drops batch construction, masking, and sampling
+    # from the window, which on every device this runs on dominates the padded
+    # sequence it scores in exchange.
+    assert sample.forward_median_ms < sample.batch_median_ms
+    assert sample.decisions_per_second < sample.forward_decisions_per_second
+    # The headline rate is the median batch, not the mean of ten.
+    assert sample.decisions_per_second == pytest.approx(
+        sample.batch_size / (sample.batch_median_ms / 1000.0)
+    )
+
+
+def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """A 300-ply request used to abort the command rather than measure it.
+
+    Random play thins the board down, so a walk that never ran out of legal
+    moves still arrives at a dead draw often enough that one offset in six
+    killed the run. The depth the generated benchmarks cap their games at is
+    exactly the depth this has to reach.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=19)
+
+    result = benchmark_inference(
+        _config(
+            checkpoint,
+            latency=FAST_LATENCY.model_copy(update={"sweep_plies": (4, 300)}),
+        )
+    )
+
+    depths = [sample.history_plies for sample in result.latency_sweep]
+    assert 300 in depths
+    deep = next(s for s in result.latency_sweep if s.history_plies == 300)
+    assert deep.decisions == FAST_LATENCY.decisions
+
+
+def test_a_history_ending_on_a_dead_position_is_walked_again(
+    tmp_path: Path,
+) -> None:
+    """A depth means a position a session can still decide from."""
+
+    factory = _HistoryFactory()
+
+    for offset in range(8):
+        history = factory.history("anthro-inference-latency-v1", 300, offset)
+        board = chess.Board()
+        for move in history:
+            board.push(move)
+        assert len(history) == 300
+        assert not board.is_game_over()
 
 
 def test_cold_start_is_reported_apart_from_steady_state_latency(
@@ -181,9 +322,13 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
     assert served == 1
     # The cold reading carries the startup cost the first decision paid.
     assert result.cold_start.first_decision_seconds * 1000.0 >= delay_ms
-    # The steady-state percentiles carry only the per-window tick, so the
-    # separation is exact rather than a race against the injected cost.
-    assert result.reference_latency.maximum_ms == pytest.approx(tick_seconds * 1000.0)
+    # A measured decision reads the clock at its start, after encoding, after
+    # predicting, and at its end, so a steady-state window carries three ticks
+    # and nothing else. The separation is exact rather than a race against the
+    # injected cost.
+    assert result.reference_latency.maximum_ms == pytest.approx(
+        3 * tick_seconds * 1000.0
+    )
     # Loading is still reported, on its own, as the other half of cold start.
     assert result.cold_start.model_load_seconds > 0.0
 
