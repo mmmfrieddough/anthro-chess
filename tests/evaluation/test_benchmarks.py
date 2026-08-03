@@ -7,6 +7,7 @@ or invoke a benchmark differently is the drift this module exists to end.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,15 +26,20 @@ from anthro_chess.evaluation.benchmarks import (
     resolve_benchmark,
     run_benchmark,
 )
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.recording import ResultRecording
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     DetailStore,
     ResultEnvelope,
+    ResultsStore,
     ResultsStoreError,
+    measurement,
 )
+from anthro_chess.evaluation.results.metrics import BENCHMARK_WALL_CLOCK_SECONDS
 
+COST = BenchmarkReference(name="fake-benchmark", version=1)
 ROLLOUT_SELECTION = 'pool = "artifacts/example-pool"\n\n[reference]\nenabled = false\n'
 LADDER_SELECTION = '[openings]\npool = "artifacts/example-pool"\n'
 
@@ -51,7 +57,11 @@ class _FakeError(ValueError):
     """What one benchmark raises for a bad reading."""
 
 
-def _fake(invoke: Callable[..., Any]) -> Benchmark:
+def _fake(
+    invoke: Callable[..., Any],
+    *,
+    cost: BenchmarkReference | None = None,
+) -> Benchmark:
     """Return a registry entry over a measuring body written for one test."""
 
     return Benchmark(
@@ -61,6 +71,7 @@ def _fake(invoke: Callable[..., Any]) -> Benchmark:
         errors=(_FakeError,),
         error=_FakeError,
         invoke=invoke,
+        cost=cost,
     )
 
 
@@ -211,3 +222,132 @@ def test_a_recording_benchmark_raises_what_its_entry_declares() -> None:
 
     assert recording_entries
     assert all(entry.error in entry.errors for entry in recording_entries)
+
+
+def test_a_recording_benchmark_declares_what_its_cost_is_filed_under() -> None:
+    """Checked rather than defaulted, because a default would fail silently.
+
+    A benchmark that recorded a reading and no cost is exactly the drift this
+    driver exists to end, and nothing about the reading itself would show it.
+    """
+
+    registry = benchmark_registry()
+    recording_entries = [entry for entry in registry.values() if entry.records_results]
+
+    assert all(entry.cost is not None for entry in recording_entries)
+    # One cost series per benchmark. Two sharing a name would put two
+    # unrelated amounts of work on one line.
+    names = [entry.cost.name for entry in recording_entries if entry.cost is not None]
+    assert len(set(names)) == len(names)
+
+
+def test_the_driver_commits_what_the_invocation_cost(tmp_path: Path) -> None:
+    """Timed here because here is the only place that sees one begin.
+
+    Committed rather than machine-local: the failure this record exists to
+    prevent is a stale cost claim nobody contradicts, and only a committed
+    record is contradicted by a diff.
+    """
+
+    store = ResultsStore(tmp_path / "results")
+    before = time.perf_counter()
+
+    def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
+        recorder = keywords["recording"].measuring(
+            CheckpointReference(label="checkpoint-a", step=8000),
+            kind="fake-reading",
+            benchmark=BenchmarkReference(name="fake-reading", version=1),
+        )
+        recorder.add(
+            [measurement("training_health.gradient_norm", 1.5)],
+            payload=dict,
+            description="What the fake measured.",
+        )
+        time.sleep(0.05)
+        return _Reading()
+
+    result = run_benchmark(_fake(invoke, cost=COST), _resolved(), store=store)
+
+    reading, cost = result.envelopes
+    assert reading.kind == "fake-reading"
+    assert cost.kind == BENCHMARK_COST_KIND
+    assert cost.benchmark == COST
+    (recorded,) = cost.measurements
+    assert recorded.metric == BENCHMARK_WALL_CLOCK_SECONDS.identifier
+    # The window covers the whole invocation, so work done inside it counts.
+    assert 0.05 <= recorded.value <= time.perf_counter() - before
+    # Committed beside the reading rather than in a tier only this machine sees.
+    assert len(result.recorded_paths) == 2
+    assert cost in store.results()
+
+
+def test_an_invocation_that_measured_nothing_costs_nothing_worth_recording(
+    tmp_path: Path,
+) -> None:
+    """Those seconds are the cost of finding nothing, and belong to no series."""
+
+    store = ResultsStore(tmp_path / "results")
+
+    def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
+        keywords["recording"].measuring(
+            CheckpointReference(label="checkpoint-a", step=8000),
+            kind="fake-reading",
+            benchmark=BenchmarkReference(name="fake-reading", version=1),
+        )
+        return _Reading()
+
+    result = run_benchmark(_fake(invoke, cost=COST), _resolved(), store=store)
+
+    assert result.envelopes == ()
+    assert store.results() == ()
+
+
+def test_a_failed_invocation_records_no_cost(tmp_path: Path) -> None:
+    """A failure's duration is the cost of the failure rather than a reading."""
+
+    store = ResultsStore(tmp_path / "results")
+
+    def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
+        keywords["recording"].measuring(
+            CheckpointReference(label="checkpoint-a", step=8000),
+            kind="fake-reading",
+            benchmark=BenchmarkReference(name="fake-reading", version=1),
+        ).add(
+            [measurement("training_health.gradient_norm", 1.5)],
+            payload=dict,
+            description="What the fake measured.",
+        )
+        raise _FakeError("the pool ran out half way through")
+
+    with pytest.raises(_FakeError):
+        run_benchmark(_fake(invoke, cost=COST), _resolved(), store=store)
+
+    assert store.results() == ()
+
+
+def test_a_measured_invocation_that_records_nothing_still_reports_its_cost() -> None:
+    """`--no-record` is how a shakedown reading is taken.
+
+    The envelope is assembled exactly as a committed one is and simply never
+    appended, so what a benchmark reports does not depend on the store.
+    """
+
+    def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
+        keywords["recording"].measuring(
+            CheckpointReference(label="checkpoint-a", step=8000),
+            kind="fake-reading",
+            benchmark=BenchmarkReference(name="fake-reading", version=1),
+        ).add(
+            [measurement("training_health.gradient_norm", 1.5)],
+            payload=dict,
+            description="What the fake measured.",
+        )
+        return _Reading()
+
+    result = run_benchmark(_fake(invoke, cost=COST), _resolved())
+
+    assert [envelope.kind for envelope in result.envelopes] == [
+        "fake-reading",
+        BENCHMARK_COST_KIND,
+    ]
+    assert result.recorded_paths == ()

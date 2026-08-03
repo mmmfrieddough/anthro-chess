@@ -7,6 +7,7 @@ import io
 import json
 from collections.abc import Callable, Sequence
 from hashlib import sha256
+from operator import attrgetter
 from pathlib import Path
 from typing import cast
 
@@ -20,6 +21,7 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
@@ -523,12 +525,21 @@ def test_the_benchmark_records_every_envelope_and_payload_it_produced(
 
     result = _measure(config, store=store, detail=detail)
 
-    assert result.envelopes == store.results()
-    assert len(result.recorded_paths) == len(result.envelopes) == 1
+    # The reading, and what the invocation cost recorded beside it. Sorted
+    # because the store reads its records back in its own order.
+    key = attrgetter("result_id")
+    assert sorted(result.envelopes, key=key) == sorted(store.results(), key=key)
+    assert {item.kind for item in result.envelopes} == {
+        PUZZLE_KIND,
+        BENCHMARK_COST_KIND,
+    }
+    assert len(result.recorded_paths) == len(result.envelopes) == 2
     (written,) = result.detail_paths
     assert written.is_absolute()
     assert written.parent == detail.root / PUZZLE_KIND / result.checkpoint.label
-    assert result.as_record()["recorded"] == [str(result.recorded_paths[0])]
+    assert result.as_record()["recorded"] == [
+        str(path) for path in result.recorded_paths
+    ]
 
 
 def test_the_benchmark_measures_without_recording_anything(
@@ -541,7 +552,7 @@ def test_the_benchmark_measures_without_recording_anything(
 
     result = _measure(config)
 
-    assert len(result.envelopes) == 1
+    assert len(result.envelopes) == 2
     assert result.recorded_paths == ()
     assert result.detail_paths == ()
 

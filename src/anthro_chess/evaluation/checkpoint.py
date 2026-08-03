@@ -130,6 +130,13 @@ ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
+#: One invocation produces three readings, and its cost belongs to none of
+#: them: the scoring pass, the dependency treatments, and the adjudication all
+#: happen once. The cost record names the whole evaluation instead.
+CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
+    name="checkpoint-evaluation",
+    version=CHECKPOINT_EVALUATION_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 

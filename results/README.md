@@ -18,7 +18,11 @@ store. Benchmarks append here; reports and comparisons are views over it.
 `anthro eval run` is what appends here: it scores one checkpoint over a
 deterministic view of the frozen pool, records the held-out prediction,
 legality, and rating-dependency results for it, and bootstraps the
-data-sampling floors for that reading from the same pass.
+data-sampling floors for that reading from the same pass. Every recording
+benchmark also appends one `benchmark-cost` record saying what the invocation
+cost, so a claim about what a sweep can afford is a reviewable diff rather than
+a comment; `docs/decisions/0031-committed-benchmark-cost.md` explains why that
+belongs in this tier despite being a property of the machine.
 Other benchmark commands append through the same boundary. In particular,
 `anthro eval puzzles` records rating-response headlines over the owned external
 puzzle set while leaving its continuous response curves, band drill-downs, and

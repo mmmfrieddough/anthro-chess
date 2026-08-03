@@ -76,10 +76,41 @@ def resolve_artifact_roots(
 def rooted_artifact_path(root: Path, configured_path: Path) -> Path:
     """Return a configured artifact path relocated beneath ``root``."""
 
-    parts = configured_path.parts
+    return root.joinpath(*_unprefixed(configured_path))
+
+
+def artifact_name(path: Path, root: Path | None) -> str:
+    """Return what a configured path names, with the machine taken off.
+
+    The inverse of :func:`rooted_artifact_path`, so a shipped selection and the
+    same selection after rooting name one artifact rather than two. Kept beside
+    the rooting it undoes for the reason this module exists: two halves of one
+    convention living apart would drift, and here the drift would be silent — a
+    benchmark's cost series would split with nothing to notice it.
+
+    An absolute path keeps its full string when this machine's root does not
+    contain it, and when there is no root to measure it against: both are the
+    caller's own path rather than a named artifact, and no prefix can be taken
+    off one without guessing. A machine with unset roots therefore keeps its own
+    cost series, which is the honest reading of a path nothing here can name.
+    """
+
+    if root is not None and path.is_absolute():
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            return str(path)
+    parts = _unprefixed(path)
+    return str(Path(*parts)) if parts else str(path)
+
+
+def _unprefixed(path: Path) -> tuple[str, ...]:
+    """Return a configured path's parts without the repository's prefix."""
+
+    parts = path.parts
     if parts and parts[0] == "artifacts":
-        parts = parts[1:]
-    return root.joinpath(*parts)
+        return parts[1:]
+    return parts
 
 
 def _read(config: ConfigModel, field: str) -> Path | None:
