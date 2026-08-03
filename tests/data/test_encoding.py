@@ -39,7 +39,7 @@ def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
     assert first.board.castling_rights == 15
     assert len(first.board.piece_ids) == BOARD_SQUARE_COUNT
     assert first.board.piece_ids[chess.E2] == chess.PAWN
-    assert first.target_action_id in first.legal_action_ids
+    assert first.target_action_id in first.enabled_actions()
 
     assert second.previous_action_id == first.target_action_id
     assert second.board.side_to_move == 1
@@ -170,9 +170,9 @@ def test_every_step_enables_the_terminal_actions_the_rules_allow() -> None:
     plies = encode_game(_game(("e2e4", "e7e5")))
 
     for ply in plies:
-        assert RESIGNATION_ACTION_ID in ply.legal_action_ids
-        assert DRAW_CLAIM_ACTION_ID not in ply.legal_action_ids
-        assert ply.target_action_id in ply.legal_action_ids
+        assert RESIGNATION_ACTION_ID in ply.enabled_actions()
+        assert DRAW_CLAIM_ACTION_ID not in ply.enabled_actions()
+        assert ply.target_action_id in ply.enabled_actions()
 
 
 def test_a_trailing_resignation_is_a_step_that_moves_nothing() -> None:
@@ -189,7 +189,7 @@ def test_a_trailing_resignation_is_a_step_that_moves_nothing() -> None:
     resignation = plies[-1]
     assert resignation.ply_index == len(moves)
     assert resignation.target_action_id == RESIGNATION_ACTION_ID
-    assert RESIGNATION_ACTION_ID in resignation.legal_action_ids
+    assert RESIGNATION_ACTION_ID in resignation.enabled_actions()
     assert resignation.target_clock_after_move_ms is None
     # The board is the one the last move left, read by the player who resigned.
     assert resignation.board.piece_ids[chess.F3] == chess.KNIGHT
@@ -209,13 +209,13 @@ def test_a_trailing_draw_claim_is_enabled_only_where_the_rules_allow_it() -> Non
 
     claim = plies[-1]
     assert claim.target_action_id == DRAW_CLAIM_ACTION_ID
-    assert DRAW_CLAIM_ACTION_ID in claim.legal_action_ids
+    assert DRAW_CLAIM_ACTION_ID in claim.enabled_actions()
     # The claim becomes available exactly where the position repeats a third
     # time, which is the final step and no earlier one.
     assert [
         index
         for index, ply in enumerate(plies)
-        if DRAW_CLAIM_ACTION_ID in ply.legal_action_ids
+        if DRAW_CLAIM_ACTION_ID in ply.enabled_actions()
     ] == [len(shuffle)]
 
     unclaimable = replace(
@@ -225,6 +225,49 @@ def test_a_trailing_draw_claim_is_enabled_only_where_the_rules_allow_it() -> Non
     )
     with pytest.raises(EncodingError, match="ply 2 is illegal"):
         encode_game(unclaimable)
+
+
+def test_an_encoding_asked_for_no_legal_actions_changes_nothing_else() -> None:
+    """Skipping the set has to be an omission, not a different encoding."""
+
+    moves = ("g1f3", "g8f6", "f3g1", "f6g8") * 2
+    game = replace(
+        _game(moves),
+        action_ids=(*_action_ids(moves), DRAW_CLAIM_ACTION_ID),
+        clock_remaining_ms=(*(59_000 for _ in moves), None),
+    )
+
+    scoring = encode_game(game)
+    training = encode_game(game, legal_actions=False)
+
+    assert [replace(ply, legal_action_ids=None) for ply in scoring] == list(training)
+    for absent in (training[0].enabled_actions, training[0].as_record):
+        with pytest.raises(EncodingError, match="without its legal actions"):
+            absent()
+
+
+def test_an_action_the_position_does_not_allow_is_refused_without_the_set() -> None:
+    """The target check has to survive losing the set it used to read."""
+
+    illegal_move = _game(("e2e4", "e2e3"))
+    with pytest.raises(EncodingError, match="ply 1 is illegal"):
+        encode_game(illegal_move, legal_actions=False)
+
+    unavailable_claim = replace(
+        _game(("e2e4", "e7e5")),
+        action_ids=(*_action_ids(("e2e4", "e7e5")), DRAW_CLAIM_ACTION_ID),
+        clock_remaining_ms=(59_000, 59_000, None),
+    )
+    with pytest.raises(EncodingError, match="ply 2 is illegal"):
+        encode_game(unavailable_claim, legal_actions=False)
+
+    outside_vocabulary = replace(
+        _game(("e2e4",)),
+        action_ids=(DRAW_CLAIM_ACTION_ID + 1,),
+        clock_remaining_ms=(None,),
+    )
+    with pytest.raises(EncodingError, match="ply 0 is illegal"):
+        encode_game(outside_vocabulary, legal_actions=False)
 
 
 def test_game_input_rejects_unsupported_or_empty_sequences() -> None:

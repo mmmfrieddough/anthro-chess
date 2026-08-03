@@ -10,6 +10,7 @@ from hashlib import sha256
 import chess
 
 from anthro_chess.chess import (
+    action_is_legal,
     action_vocabulary_identity,
     decode_move,
     encode_move,
@@ -166,13 +167,30 @@ class PlyContext:
 
 @dataclass(frozen=True)
 class PlyEncoding(PlyContext):
-    """One aligned model-input timestep and its supervised action target."""
+    """One aligned model-input timestep and its supervised action target.
+
+    ``legal_action_ids`` is ``None`` when the encoding was not asked to build
+    it. Reconstructing it is the most expensive thing an encoding does and only
+    scoring reads it, so a training encode leaves it out.
+    """
 
     game_id: int
     target_action_id: int
-    legal_action_ids: tuple[int, ...]
+    legal_action_ids: tuple[int, ...] | None
     target_rating: int | None
     target_clock_after_move_ms: int | None
+
+    def enabled_actions(self) -> tuple[int, ...]:
+        """Return the enabled action ids, refusing a ply encoded without them.
+
+        Reaching for the set a ply was not asked to build is a wiring mistake,
+        so it is an error rather than an empty answer nothing distinguishes
+        from a position that enabled nothing.
+        """
+
+        if self.legal_action_ids is None:
+            raise EncodingError("this ply was encoded without its legal actions")
+        return self.legal_action_ids
 
     def context(self) -> PlyContext:
         """Return the target-free input fields for train/inference comparison."""
@@ -196,7 +214,10 @@ class PlyEncoding(PlyContext):
             "board": self.board.as_record(),
             "previous_action_id": self.previous_action_id,
             "target_action_id": self.target_action_id,
-            "legal_action_ids": list(self.legal_action_ids),
+            # Through the accessor, so a ply encoded without the set refuses to
+            # be recorded rather than emitting a null where the hashed schema
+            # promises a list.
+            "legal_action_ids": list(self.enabled_actions()),
             "target_rating": self.target_rating,
             "time_initial_ms": self.time_initial_ms,
             "time_increment_ms": self.time_increment_ms,
@@ -230,7 +251,11 @@ def encoding_identity() -> dict[str, object]:
     }
 
 
-def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
+def encode_game(
+    game: GameEncodingInput,
+    *,
+    legal_actions: bool = True,
+) -> tuple[PlyEncoding, ...]:
     """Convert one normalized game into exact, aligned per-ply examples.
 
     A terminal action is a decision like any other and gets its own timestep,
@@ -243,6 +268,12 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
     rather than only where one was taken, so a model that puts mass on
     resigning mid-game is measured as making an available choice rather than an
     illegal one.
+
+    ``legal_actions`` is what a caller that never reads that set turns off, and
+    it is the bulk of what encoding a game costs. Refusing a target the position
+    does not allow is asked of the position about that one candidate, whether or
+    not the set was also built, so the two paths reject the same games by
+    construction rather than by agreeing.
     """
 
     try:
@@ -273,15 +304,24 @@ def encode_game(game: GameEncodingInput) -> tuple[PlyEncoding, ...]:
                     f"action at ply {ply_index} is not a board move: {target_action_id}"
                 ) from error
 
-        legal_ids = legal_action_ids(
+        if not action_is_legal(
             board,
+            target_action_id,
             include_resignation=True,
             include_draw_claim=True,
-        )
-        if target_action_id not in legal_ids:
+        ):
             raise EncodingError(
                 f"action at ply {ply_index} is illegal in the reconstructed position"
             )
+        legal_ids = (
+            legal_action_ids(
+                board,
+                include_resignation=True,
+                include_draw_claim=True,
+            )
+            if legal_actions
+            else None
+        )
 
         player_color = board.turn
         target_clock = game.clock_remaining_ms[ply_index]
