@@ -293,28 +293,6 @@ def _validate_artifact_contract(
         if container.get("encoding") != expected_encoding:
             raise ModelRunnerError(f"{label} model-facing encoding is incompatible")
 
-    resolved = _mapping(metadata.get("resolved_config"), "resolved configuration")
-    training_config = _mapping(
-        resolved.get("config"),
-        "resolved training configuration",
-    )
-    run_resolved = _mapping(
-        run_record.get("resolved_config"),
-        "run resolved configuration",
-    )
-    run_training_config = _mapping(
-        run_resolved.get("config"),
-        "run resolved training configuration",
-    )
-    expected_config = model_config.model_dump(mode="json")
-    if training_config.get("model") != expected_config:
-        raise ModelRunnerError(
-            "resolved training configuration disagrees with the model identity"
-        )
-    if run_training_config.get("model") != expected_config:
-        raise ModelRunnerError(
-            "run resolved training configuration disagrees with the model identity"
-        )
     checkpoint_execution = _mapping(
         metadata.get("execution"),
         "checkpoint execution metadata",

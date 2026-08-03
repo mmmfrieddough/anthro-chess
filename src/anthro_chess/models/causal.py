@@ -220,20 +220,16 @@ class CausalMoveModel(nn.Module):
     def identity(self) -> dict[str, object]:
         """Return compatibility metadata for future runs and checkpoints.
 
-        ``maximum_context_plies`` is left out. It bounds which batches the model
-        accepts rather than what its weights mean, and two checkpoints differing
-        only in it agree exactly on every batch both accept — so admitting it
-        here would retire every existing checkpoint for no compatibility reason.
-        The run record carries the value a run declared.
+        The whole configuration is carried, so a checkpoint says what to
+        rebuild without a second record having to supply the rest. Anything
+        left out here is a value the runner cannot recover, and it would then
+        rebuild the model at that field's default instead of the run's.
         """
 
         return {
             "name": "anthro-causal-move-model",
-            "version": 3,
-            "config": self.config.model_dump(
-                mode="json",
-                exclude={"maximum_context_plies"},
-            ),
+            "version": 4,
+            "config": self.config.model_dump(mode="json"),
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
             "rating_conditioning": "post-transformer-feature-modulation",

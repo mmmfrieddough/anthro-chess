@@ -113,7 +113,7 @@ def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
     assert logits.shape == (2, 3, ACTION_VOCABULARY_SIZE)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    assert model.identity()["version"] == 3
+    assert model.identity()["version"] == 4
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
     assert (
@@ -235,16 +235,17 @@ def test_a_batch_reaching_past_the_declared_context_is_refused() -> None:
             model(batch)
 
 
-def test_the_declared_context_is_recorded_provenance_rather_than_identity() -> None:
-    """Weights mean the same under either bound, so a checkpoint outlives it."""
+def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
+    """A checkpoint is rebuilt from its identity, so a gap becomes a default."""
 
-    baseline = CausalMoveModel(_tiny_config()).identity()
-    config_record = baseline["config"]
+    config = _tiny_config()
+    config_record = CausalMoveModel(config).identity()["config"]
 
-    assert isinstance(config_record, dict)
-    assert "maximum_context_plies" not in config_record
+    assert config_record == config.model_dump(mode="json")
+    assert MoveModelConfig.model_validate(config_record) == config
     assert (
-        CausalMoveModel(_tiny_config(maximum_context_plies=32)).identity() == baseline
+        CausalMoveModel(_tiny_config(maximum_context_plies=32)).identity()
+        != CausalMoveModel(config).identity()
     )
 
 
