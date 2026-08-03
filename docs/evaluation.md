@@ -247,9 +247,14 @@ decomposition is the one step it cannot commit, because that family has no
 result kind: a decomposition is read per cell of the dials it was made under,
 and which cell a committed series would follow is not yet decided.
 
-`anthro_chess.evaluation.suite` owns the suite schema, the benchmark registry,
-the ordering rules, and the ledger format; the shipped sweep lives beside the
-selections it composes under `configs/evaluation/`.
+`anthro_chess.evaluation.benchmarks` owns what a benchmark declares, the
+registry of them, and the one path that resolves a selection and runs one. The
+suite and every command that runs a benchmark from a selection file are callers
+of it, so neither holds its own idea of what a benchmark takes, roots, or
+raises.
+`anthro_chess.evaluation.suite` owns the suite schema, the ordering rules, and
+the ledger format; the shipped sweep lives beside the selections it composes
+under `configs/evaluation/`.
 
 ### The Checkpoint Evaluation Runner
 

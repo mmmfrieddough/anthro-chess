@@ -8,6 +8,7 @@ import logging
 import sys
 import textwrap
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,20 +31,14 @@ from anthro_chess.machine import (
 if TYPE_CHECKING:
     from anthro_chess.data import SequenceDataConfig
     from anthro_chess.evaluation import (
-        CheckpointEvaluationConfig,
         CheckpointEvaluationResult,
         DecisionDecomposition,
         InferenceBenchmarkResult,
-        LadderBenchmarkConfig,
         LadderBenchmarkResult,
-        NoveltyBenchmarkConfig,
         NoveltyBenchmarkResult,
         PoolConfig,
-        PuzzleBenchmarkConfig,
         PuzzleBenchmarkResult,
-        RolloutBenchmarkConfig,
         RolloutBenchmarkResult,
-        TerminationBenchmarkConfig,
         TerminationBenchmarkResult,
     )
     from anthro_chess.evaluation.results import (
@@ -322,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Compute and print results without writing them to the store.",
     )
-    run_parser.set_defaults(handler=_run_eval_run)
+    run_parser.set_defaults(handler=partial(_run_eval_benchmark, name="run"))
 
     puzzles_parser = eval_commands.add_parser(
         "puzzles",
@@ -340,7 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Compute and print results without writing them to the store.",
     )
-    puzzles_parser.set_defaults(handler=_run_eval_puzzles)
+    puzzles_parser.set_defaults(handler=partial(_run_eval_benchmark, name="puzzles"))
 
     novelty_parser = eval_commands.add_parser(
         "novelty",
@@ -365,7 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
             "about the model."
         ),
     )
-    novelty_parser.set_defaults(handler=_run_eval_novelty)
+    novelty_parser.set_defaults(handler=partial(_run_eval_benchmark, name="novelty"))
 
     inference_parser = eval_commands.add_parser(
         "inference",
@@ -387,7 +382,9 @@ def build_parser() -> argparse.ArgumentParser:
             "do not belong in the committed history."
         ),
     )
-    inference_parser.set_defaults(handler=_run_eval_inference)
+    inference_parser.set_defaults(
+        handler=partial(_run_eval_benchmark, name="inference")
+    )
 
     rollout_parser = eval_commands.add_parser(
         "rollout",
@@ -412,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
             "not belong in the committed history."
         ),
     )
-    rollout_parser.set_defaults(handler=_run_eval_rollout)
+    rollout_parser.set_defaults(handler=partial(_run_eval_benchmark, name="rollout"))
 
     termination_parser = eval_commands.add_parser(
         "termination",
@@ -437,7 +434,9 @@ def build_parser() -> argparse.ArgumentParser:
             "does not belong in the committed history."
         ),
     )
-    termination_parser.set_defaults(handler=_run_eval_termination)
+    termination_parser.set_defaults(
+        handler=partial(_run_eval_benchmark, name="termination")
+    )
 
     ladder_parser = eval_commands.add_parser(
         "ladder",
@@ -462,7 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
             "committed history."
         ),
     )
-    ladder_parser.set_defaults(handler=_run_eval_ladder)
+    ladder_parser.set_defaults(handler=partial(_run_eval_benchmark, name="ladder"))
 
     bandwidth_parser = eval_commands.add_parser(
         "curve-bandwidth",
@@ -1334,43 +1333,48 @@ def _result_stores(
     )
 
 
-def _run_eval_run(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        CheckpointEvaluationConfig,
-        CheckpointEvaluationError,
-        LeakageError,
-        evaluate_checkpoint,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
+def _run_eval_benchmark(arguments: argparse.Namespace, *, name: str) -> int:
+    """Run one benchmark from its selection file and render what it read.
 
+    Every benchmark's subcommand is this, and the name is all that separates
+    them: the registry entry holds the schema, the artifact paths to root and
+    the errors a bad reading raises, and the same name selects the text view
+    the sweep already prints that benchmark's reading through. A benchmark that
+    drifts off what it declared now breaks its command and the suite together,
+    rather than leaving two hand-written copies of one convention to disagree.
+    """
+
+    from anthro_chess.config import ConfigError
+    from anthro_chess.evaluation.benchmarks import (
+        benchmark_registry,
+        resolve_benchmark,
+        run_benchmark,
+    )
+
+    benchmark = benchmark_registry()[name]
+    reading_failed: tuple[type[Exception], ...] = (ConfigError, *benchmark.errors)
     try:
-        resolved = load_config(
-            CheckpointEvaluationConfig,
+        resolved = resolve_benchmark(
+            benchmark,
             path=arguments.config,
             overrides=arguments.set,
         )
-        resolved = _resolve_evaluation_roots(resolved, arguments.set)
         store, detail = _result_stores(arguments)
-        result = evaluate_checkpoint(
+        result = run_benchmark(
+            benchmark,
             resolved,
             run_root=_run_root(),
             store=store,
             detail=detail,
         )
-    except (
-        CheckpointEvaluationError,
-        ConfigError,
-        LeakageError,
-        ResultsStoreError,
-    ) as error:
-        print(f"anthro eval run: {error}", file=sys.stderr)
+    except reading_failed as error:
+        print(f"anthro eval {name}: {error}", file=sys.stderr)
         return 2
 
     if arguments.format == "json":
         print(json.dumps(result.as_record(), indent=2, sort_keys=True))
         return 0
-    print(_render_evaluation(result), end="")
+    print(_STEP_RENDERERS[name](result), end="")
     return 0
 
 
@@ -1455,76 +1459,6 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
         )
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
-
-
-def _run_eval_puzzles(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        PuzzleBenchmarkConfig,
-        PuzzleBenchmarkError,
-        benchmark_puzzles,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    try:
-        resolved = load_config(
-            PuzzleBenchmarkConfig,
-            path=arguments.config,
-            overrides=arguments.set,
-        )
-        resolved = _resolve_puzzle_roots(resolved, arguments.set)
-        store, detail = _result_stores(arguments)
-        result = benchmark_puzzles(
-            resolved,
-            run_root=_run_root(),
-            store=store,
-            detail=detail,
-        )
-    except (ConfigError, PuzzleBenchmarkError, ResultsStoreError) as error:
-        print(f"anthro eval puzzles: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
-        return 0
-    print(_render_puzzles(result), end="")
-    return 0
-
-
-def _run_eval_novelty(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        NoveltyBenchmarkConfig,
-        NoveltyBenchmarkError,
-        benchmark_novelty,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    try:
-        resolved = _resolve_novelty_roots(
-            load_config(
-                NoveltyBenchmarkConfig,
-                path=arguments.config,
-                overrides=arguments.set,
-            ),
-            arguments.set,
-        )
-        store, detail = _result_stores(arguments)
-        result = benchmark_novelty(
-            resolved,
-            run_root=_run_root(),
-            store=store,
-            detail=detail,
-        )
-    except (ConfigError, NoveltyBenchmarkError, ResultsStoreError) as error:
-        print(f"anthro eval novelty: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
-        return 0
-    print(_render_novelty(result), end="")
-    return 0
 
 
 def _render_novelty(result: NoveltyBenchmarkResult) -> str:
@@ -1642,39 +1576,6 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _run_eval_inference(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        InferenceBenchmarkConfig,
-        InferenceBenchmarkError,
-        benchmark_inference,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    try:
-        resolved = load_config(
-            InferenceBenchmarkConfig,
-            path=arguments.config,
-            overrides=arguments.set,
-        )
-        store, detail = _result_stores(arguments)
-        result = benchmark_inference(
-            resolved,
-            run_root=_run_root(),
-            store=store,
-            detail=detail,
-        )
-    except (ConfigError, InferenceBenchmarkError, ResultsStoreError) as error:
-        print(f"anthro eval inference: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
-        return 0
-    print(_render_inference(result), end="")
-    return 0
-
-
 def _render_inference(result: InferenceBenchmarkResult) -> str:
     execution = result.execution
     latency = result.reference_latency
@@ -1736,42 +1637,6 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
         )
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
-
-
-def _run_eval_rollout(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        RolloutBenchmarkConfig,
-        RolloutBenchmarkError,
-        benchmark_rollout,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    try:
-        resolved = _resolve_rollout_roots(
-            load_config(
-                RolloutBenchmarkConfig,
-                path=arguments.config,
-                overrides=arguments.set,
-            ),
-            arguments.set,
-        )
-        store, detail = _result_stores(arguments)
-        result = benchmark_rollout(
-            resolved,
-            run_root=_run_root(),
-            store=store,
-            detail=detail,
-        )
-    except (ConfigError, RolloutBenchmarkError, ResultsStoreError) as error:
-        print(f"anthro eval rollout: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
-        return 0
-    print(_render_rollout(result), end="")
-    return 0
 
 
 #: Column widths for the rollout comparison table. The conditional and pooled
@@ -2116,42 +1981,6 @@ def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
     ]
 
 
-def _run_eval_termination(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        TerminationBenchmarkConfig,
-        TerminationBenchmarkError,
-        benchmark_termination,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    try:
-        resolved = _resolve_termination_roots(
-            load_config(
-                TerminationBenchmarkConfig,
-                path=arguments.config,
-                overrides=arguments.set,
-            ),
-            arguments.set,
-        )
-        store, detail = _result_stores(arguments)
-        result = benchmark_termination(
-            resolved,
-            run_root=_run_root(),
-            store=store,
-            detail=detail,
-        )
-    except (ConfigError, TerminationBenchmarkError, ResultsStoreError) as error:
-        print(f"anthro eval termination: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
-        return 0
-    print(_render_termination(result), end="")
-    return 0
-
-
 def _termination_arm(
     name: str,
     distance: float,
@@ -2291,42 +2120,6 @@ def _optional_value(value: float | None, spec: str = ".2f") -> str:
     """Return a formatted number, or a dash when the reading is unavailable."""
 
     return "-" if value is None else format(value, spec)
-
-
-def _run_eval_ladder(arguments: argparse.Namespace) -> int:
-    from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.evaluation import (
-        LadderBenchmarkConfig,
-        LadderBenchmarkError,
-        benchmark_ladder,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    try:
-        resolved = _resolve_ladder_roots(
-            load_config(
-                LadderBenchmarkConfig,
-                path=arguments.config,
-                overrides=arguments.set,
-            ),
-            arguments.set,
-        )
-        store, detail = _result_stores(arguments)
-        result = benchmark_ladder(
-            resolved,
-            run_root=_run_root(),
-            store=store,
-            detail=detail,
-        )
-    except (ConfigError, LadderBenchmarkError, ResultsStoreError) as error:
-        print(f"anthro eval ladder: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(json.dumps(result.as_record(), indent=2, sort_keys=True))
-        return 0
-    print(_render_ladder(result), end="")
-    return 0
 
 
 def _render_ladder(result: LadderBenchmarkResult) -> str:
@@ -3431,107 +3224,6 @@ def _run_train(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_evaluation_roots(
-    resolved: ResolvedConfig[CheckpointEvaluationConfig],
-    overrides: Sequence[str],
-) -> ResolvedConfig[CheckpointEvaluationConfig]:
-    """Resolve checked-in relative pool paths beneath the shared data root."""
-
-    from anthro_chess.evaluation.roots import (
-        CHECKPOINT_ARTIFACT_FIELDS,
-        resolve_artifact_roots,
-    )
-
-    return resolve_artifact_roots(
-        resolved,
-        fields=CHECKPOINT_ARTIFACT_FIELDS,
-        overrides=overrides,
-    )
-
-
-def _resolve_puzzle_roots(
-    resolved: ResolvedConfig[PuzzleBenchmarkConfig],
-    overrides: Sequence[str],
-) -> ResolvedConfig[PuzzleBenchmarkConfig]:
-    """Resolve puzzle and training-overlap artifacts beneath the data root."""
-
-    from anthro_chess.evaluation.roots import (
-        PUZZLE_ARTIFACT_FIELDS,
-        resolve_artifact_roots,
-    )
-
-    return resolve_artifact_roots(
-        resolved,
-        fields=PUZZLE_ARTIFACT_FIELDS,
-        overrides=overrides,
-    )
-
-
-def _resolve_novelty_roots(
-    resolved: ResolvedConfig[NoveltyBenchmarkConfig],
-    overrides: Sequence[str],
-) -> ResolvedConfig[NoveltyBenchmarkConfig]:
-    """Resolve the checked-in relative evaluation pool beneath the data root."""
-
-    from anthro_chess.evaluation.roots import (
-        NOVELTY_ARTIFACT_FIELDS,
-        resolve_artifact_roots,
-    )
-
-    return resolve_artifact_roots(
-        resolved,
-        fields=NOVELTY_ARTIFACT_FIELDS,
-        overrides=overrides,
-    )
-
-
-def _resolve_rollout_roots(
-    resolved: ResolvedConfig[RolloutBenchmarkConfig],
-    overrides: Sequence[str],
-) -> ResolvedConfig[RolloutBenchmarkConfig]:
-    """Resolve the checked-in relative evaluation pool beneath the data root.
-
-    The shipped selection names its pool the way every other checked-in artifact
-    path is named, so it is rooted the same way `anthro eval run` roots its own.
-    Without this the shipped configuration only resolves from a directory that
-    happens to hold an `artifacts/` tree.
-    """
-
-    from anthro_chess.evaluation.roots import (
-        ROLLOUT_ARTIFACT_FIELDS,
-        resolve_artifact_roots,
-    )
-
-    return resolve_artifact_roots(
-        resolved,
-        fields=ROLLOUT_ARTIFACT_FIELDS,
-        overrides=overrides,
-    )
-
-
-def _resolve_termination_roots(
-    resolved: ResolvedConfig[TerminationBenchmarkConfig],
-    overrides: Sequence[str],
-) -> ResolvedConfig[TerminationBenchmarkConfig]:
-    """Resolve the checked-in relative evaluation pool beneath the data root.
-
-    Same treatment the rollout selection gets, and for the same reason: the
-    shipped selection names its pool the way every other checked-in artifact
-    path is named, so it has to be rooted the same way.
-    """
-
-    from anthro_chess.evaluation.roots import (
-        TERMINATION_ARTIFACT_FIELDS,
-        resolve_artifact_roots,
-    )
-
-    return resolve_artifact_roots(
-        resolved,
-        fields=TERMINATION_ARTIFACT_FIELDS,
-        overrides=overrides,
-    )
-
-
 def _run_root() -> Path | None:
     """Return the configured run root, or ``None`` when it is unset.
 
@@ -3558,30 +3250,6 @@ def _resolve_pool_roots(
     return resolve_artifact_roots(
         resolved,
         fields=POOL_ARTIFACT_FIELDS,
-        overrides=overrides,
-    )
-
-
-def _resolve_ladder_roots(
-    resolved: ResolvedConfig[LadderBenchmarkConfig],
-    overrides: Sequence[str],
-) -> ResolvedConfig[LadderBenchmarkConfig]:
-    """Resolve the checked-in relative opening pool beneath the shared data root.
-
-    The shipped selection names its pool the way every other checked-in artifact
-    path is named, so it has to be rooted the same way `anthro eval run` roots
-    its own pool. Without this the shipped configuration only works from a
-    directory that happens to hold an `artifacts/` tree.
-    """
-
-    from anthro_chess.evaluation.roots import (
-        LADDER_ARTIFACT_FIELDS,
-        resolve_artifact_roots,
-    )
-
-    return resolve_artifact_roots(
-        resolved,
-        fields=LADDER_ARTIFACT_FIELDS,
         overrides=overrides,
     )
 
@@ -3646,9 +3314,9 @@ def _rooted_artifact_path(root: Path, configured_path: Path) -> Path:
     return rooted_artifact_path(root, configured_path)
 
 
-#: How a sweep prints each benchmark's reading. The benchmarks already own
-#: their text views, so a sweep reuses them rather than growing a second
-#: reporting surface that would drift from the commands it stands in for.
+#: How a benchmark's reading is printed, keyed the way the registry is keyed.
+#: A sweep and the benchmark's own subcommand both read it, so one text view
+#: serves both rather than a second reporting surface drifting from the first.
 _STEP_RENDERERS: Mapping[str, Callable[[Any], str]] = {
     "inference": _render_inference,
     "run": _render_evaluation,

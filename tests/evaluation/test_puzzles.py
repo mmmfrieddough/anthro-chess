@@ -18,6 +18,7 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
+from anthro_chess.evaluation.benchmarks import benchmark_registry
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
@@ -50,7 +51,6 @@ from anthro_chess.evaluation.results import (
     PairedContributions,
     ResultsStore,
 )
-from anthro_chess.evaluation.suite import benchmark_registry
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:

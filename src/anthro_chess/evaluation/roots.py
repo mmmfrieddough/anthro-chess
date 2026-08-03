@@ -2,14 +2,13 @@
 
 Every shipped benchmark selection names its inputs the way the repository names
 artifacts, as ``artifacts/<name>``. That path only resolves from a directory
-which happens to hold an ``artifacts/`` tree, so each command rewrites it
-beneath ``ANTHRO_CHESS_DATA_ROOT`` before the benchmark reads it.
+which happens to hold an ``artifacts/`` tree, so it is rewritten beneath
+``ANTHRO_CHESS_DATA_ROOT`` before the benchmark reads it.
 
-Which fields a schema roots is declared here rather than at each call site,
-because the benchmark suite has to root exactly what the individual commands
-root. Two lists that must agree and live apart would drift, and a benchmark
-whose pool silently failed to resolve is the one failure a sweep should never
-discover an hour in.
+Which fields a schema roots is declared here rather than at a call site, and
+each benchmark's registry entry in :mod:`anthro_chess.evaluation.benchmarks`
+names the list it is resolved through. A benchmark whose pool silently failed
+to resolve is the one failure a sweep should never discover an hour in.
 """
 
 from __future__ import annotations
