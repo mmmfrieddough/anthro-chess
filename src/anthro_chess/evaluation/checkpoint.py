@@ -22,6 +22,7 @@ import random
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -76,9 +77,9 @@ from anthro_chess.evaluation.pool import (
     load_pool,
 )
 from anthro_chess.evaluation.recording import (
+    ResultRecorder,
     checkpoint_reference,
     pool_dataset_reference,
-    recording,
 )
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
@@ -442,13 +443,19 @@ def evaluate_checkpoint(
         MOVE_PREDICTION_PROJECTION,
     )
     checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
-    data = _dataset_reference(inputs, component)
+    data = pool_dataset_reference(
+        inputs.pool,
+        inputs.selection,
+        component,
+        error=CheckpointEvaluationError,
+    )
 
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
         checkpoint=checkpoint,
+        store=store,
         detail=detail,
         error=CheckpointEvaluationError,
     ) as recorder:
@@ -473,17 +480,15 @@ def evaluate_checkpoint(
         )
         recorder.add(
             slice_measurements(slices, component),
-            detail=recorder.detail(
-                {
-                    **result.as_record(),
-                    "positions": (
-                        [position.as_record() for position in positions]
-                        if config.detail.per_position
-                        else None
-                    ),
-                },
-                description="Slice tables and view provenance for one evaluation.",
-            ),
+            payload=lambda: {
+                **result.as_record(),
+                "positions": (
+                    [position.as_record() for position in positions]
+                    if config.detail.per_position
+                    else None
+                ),
+            },
+            description="Slice tables and view provenance for one evaluation.",
             data=data,
         )
         if adjudication is not None:
@@ -491,37 +496,27 @@ def evaluate_checkpoint(
                 adjudication.measurements(component),
                 kind=ADJUDICATION_KIND,
                 benchmark=ADJUDICATION_BENCHMARK,
-                detail=recorder.detail(
-                    adjudication.as_record(),
-                    kind=ADJUDICATION_KIND,
-                    description=(
-                        "Per-predicate human and model rates with rating-band "
-                        "drill-down and opportunity counts."
-                    ),
+                payload=adjudication.as_record,
+                description=(
+                    "Per-predicate human and model rates with rating-band "
+                    "drill-down and opportunity counts."
                 ),
                 data=data,
             )
         if dependency is not None:
-            dependency_payload = dependency.as_record()
-            contributions = _dependency_contributions(dependency, config.noise)
-            if contributions is not None:
-                dependency_payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
             recorder.add(
                 _dependency_measurements(dependency, component),
                 kind=DEPENDENCY_KIND,
                 benchmark=DEPENDENCY_BENCHMARK,
-                detail=recorder.detail(
-                    dependency_payload,
-                    kind=DEPENDENCY_KIND,
-                    description=(
-                        "Cross-conditioning and within-game dependency tables, "
-                        "and the aligned per-game values a later paired floor "
-                        "needs."
-                    ),
+                payload=partial(_dependency_payload, dependency, config.noise),
+                description=(
+                    "Cross-conditioning and within-game dependency tables, "
+                    "and the aligned per-game values a later paired floor "
+                    "needs."
                 ),
                 data=data,
             )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
@@ -710,6 +705,19 @@ def _dependency_measurements(
     return tuple(values)
 
 
+def _dependency_payload(
+    dependency: DependencyTestResult,
+    config: NoiseConfig,
+) -> dict[str, object]:
+    """Return the dependency tables plus the paired inputs a later floor needs."""
+
+    payload = dependency.as_record()
+    contributions = _dependency_contributions(dependency, config)
+    if contributions is not None:
+        payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
+    return payload
+
+
 def _dependency_contributions(
     dependency: DependencyTestResult,
     config: NoiseConfig,
@@ -751,18 +759,6 @@ def _dependency_contributions(
         coverage=config.coverage,
         confidence=config.confidence,
     ).as_record()
-
-
-def _dataset_reference(
-    inputs: _EvaluationInputs,
-    component: DataComponent,
-) -> DatasetReference:
-    return pool_dataset_reference(
-        inputs.pool,
-        inputs.selection,
-        component,
-        error=CheckpointEvaluationError,
-    )
 
 
 def _maturity(runner: CheckpointModelRunner) -> MaturityContext:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
@@ -28,7 +29,7 @@ from anthro_chess.evaluation.curves import (
 )
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles.dataset import Puzzle, PuzzleSet, load_puzzle_set
-from anthro_chess.evaluation.recording import checkpoint_reference, recording
+from anthro_chess.evaluation.recording import ResultRecorder, checkpoint_reference
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
@@ -347,27 +348,26 @@ def benchmark_puzzles(
         overlapping_puzzles=overlapping,
         overlap_rate=overlap_rate,
     )
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=PUZZLE_KIND,
         benchmark=PUZZLE_BENCHMARK,
         checkpoint=checkpoint,
+        store=store,
         detail=detail,
         error=PuzzleBenchmarkError,
     ) as recorder:
         recorder.add(
             _measurements(result, component),
-            detail=recorder.detail(
-                _detail_payload(result, scored_ratings, config.noise),
-                description=(
-                    "Puzzle-rating grid, human reference curve, rating-band "
-                    "response, source-game overlap provenance, and paired "
-                    "comparison inputs."
-                ),
+            payload=partial(_detail_payload, result, scored_ratings, config.noise),
+            description=(
+                "Puzzle-rating grid, human reference curve, rating-band "
+                "response, source-game overlap provenance, and paired "
+                "comparison inputs."
             ),
             data=data,
         )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 def score_puzzle_set(

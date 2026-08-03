@@ -66,6 +66,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from statistics import stdev
 from typing import Annotated, Any
@@ -124,8 +125,8 @@ from anthro_chess.evaluation.pool import (
     load_pool,
 )
 from anthro_chess.evaluation.recording import (
+    ResultRecorder,
     pool_dataset_reference,
-    recording,
     resolve_model,
     runner_device,
 )
@@ -807,7 +808,14 @@ def benchmark_rollout(
     """
 
     config = resolved_config.value
-    loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
+    loaded, identity = resolve_model(
+        config.model,
+        runner,
+        checkpoint,
+        label=config.checkpoint_label,
+        run_root=run_root,
+        error=RolloutBenchmarkError,
+    )
     book = _load_book()
     sources, view, dataset = _position_sources(config, book=book)
 
@@ -1704,24 +1712,22 @@ def _record(
     series recorded beside it.
     """
 
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=ROLLOUT_KIND,
         benchmark=ROLLOUT_BENCHMARK,
         checkpoint=result.checkpoint,
+        store=store,
         detail=detail,
         error=RolloutBenchmarkError,
     ) as recorder:
         for cell in result.cells:
             recorder.add(
                 _measurements(cell),
-                detail=recorder.detail(
-                    _cell_payload(cell),
-                    description=f"Generated-play rollout cell: {cell.label}",
-                    slug=(
-                        f"{cell.arm.value}-r{cell.target_rating}"
-                        f"-t{_slug(cell.temperature)}"
-                    ),
+                payload=partial(_cell_payload, cell),
+                description=f"Generated-play rollout cell: {cell.label}",
+                slug=(
+                    f"{cell.arm.value}-r{cell.target_rating}-t{_slug(cell.temperature)}"
                 ),
                 # Provenance rather than series identity: the pool games were
                 # an input to generation, not the content measured, so they
@@ -1733,11 +1739,9 @@ def _record(
         for reading in result.readings:
             recorder.add(
                 _curve_measurements(reading),
-                detail=recorder.detail(
-                    _reading_payload(result, reading),
-                    description=f"Human-reference curves: {reading.label}",
-                    slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
-                ),
+                payload=partial(_reading_payload, result, reading),
+                description=f"Human-reference curves: {reading.label}",
+                slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
                 # The reference view is provenance here for the same reason the
                 # prefix view is on a cell: the human games shaped what was
                 # compared against, and the workload carries identity.
@@ -1748,17 +1752,13 @@ def _record(
                 continue
             recorder.add(
                 _exact_measurements(reading),
-                detail=recorder.detail(
-                    reading.exact.as_record(),
-                    description=f"Exact shallow repertoire: {reading.label}",
-                    slug=(
-                        f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}"
-                    ),
-                ),
+                payload=reading.exact.as_record,
+                description=f"Exact shallow repertoire: {reading.label}",
+                slug=(f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}"),
                 data=result.dataset,
                 execution=reading.exact.execution,
             )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
@@ -1994,24 +1994,6 @@ def _slug(value: float) -> str:
     """Return a filename-safe form of a temperature."""
 
     return str(value).replace(".", "_")
-
-
-def _resolve_model(
-    config: RolloutBenchmarkConfig,
-    runner: ActionModelRunner | None,
-    checkpoint: CheckpointReference | None,
-    run_root: Path | None,
-) -> tuple[ActionModelRunner, CheckpointReference]:
-    """Return the runner to play with and the checkpoint identity to record."""
-
-    return resolve_model(
-        config.model,
-        runner,
-        checkpoint,
-        label=config.checkpoint_label,
-        run_root=run_root,
-        error=RolloutBenchmarkError,
-    )
 
 
 def _load_book() -> OpeningBook:

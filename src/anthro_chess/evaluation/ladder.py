@@ -52,6 +52,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -86,8 +87,8 @@ from anthro_chess.evaluation.games import (
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
+    ResultRecorder,
     pool_dataset_reference,
-    recording,
     resolve_model,
     runner_device,
 )
@@ -662,7 +663,14 @@ def benchmark_ladder(
     """
 
     config = resolved_config.value
-    loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
+    loaded, identity = resolve_model(
+        config.model,
+        runner,
+        checkpoint,
+        label=config.checkpoint_label,
+        run_root=run_root,
+        error=LadderBenchmarkError,
+    )
     source, view, dataset = _position_source(config)
     seats = seat_keys(config)
     labels = {seat: f"{identity.label}-{seat.label}" for seat in seats}
@@ -1306,11 +1314,12 @@ def _record(
     declares its own workload and so owns its own series.
     """
 
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=LADDER_KIND,
         benchmark=LADDER_BENCHMARK,
         checkpoint=result.checkpoint,
+        store=store,
         detail=detail,
         error=LadderBenchmarkError,
     ) as recorder:
@@ -1320,37 +1329,31 @@ def _record(
                 continue
             recorder.add(
                 measurements,
-                detail=recorder.detail(
-                    _seat_payload(result, seat),
-                    description=f"Rating-ladder seat: {seat.label}",
-                    slug=f"seat-{_slug(seat.label)}",
-                ),
+                payload=partial(_seat_payload, result, seat),
+                description=f"Rating-ladder seat: {seat.label}",
+                slug=f"seat-{_slug(seat.label)}",
                 data=result.dataset,
                 execution=seat.execution,
             )
         for reading in result.readings:
             recorder.add(
                 _reading_measurements(reading),
-                detail=recorder.detail(
-                    _reading_payload(result, reading),
-                    description=f"Rating ladder: {reading.label}",
-                    slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
-                ),
+                payload=partial(_reading_payload, result, reading),
+                description=f"Rating ladder: {reading.label}",
+                slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
                 data=result.dataset,
                 execution=reading.execution,
             )
         if result.response is not None:
             recorder.add(
                 _response_measurements(result.response),
-                detail=recorder.detail(
-                    result.response.as_record(),
-                    description="Rating-ladder temperature response",
-                    slug="temperature-response",
-                ),
+                payload=result.response.as_record,
+                description="Rating-ladder temperature response",
+                slug="temperature-response",
                 data=result.dataset,
                 execution=result.response.execution,
             )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:
@@ -1554,24 +1557,6 @@ def _log_summary(result: LadderBenchmarkResult) -> None:
             reading.ladder_error,
             reading.slope,
         )
-
-
-def _resolve_model(
-    config: LadderBenchmarkConfig,
-    runner: ActionModelRunner | None,
-    checkpoint: CheckpointReference | None,
-    run_root: Path | None,
-) -> tuple[ActionModelRunner, CheckpointReference]:
-    """Return the runner to play with and the checkpoint identity to record."""
-
-    return resolve_model(
-        config.model,
-        runner,
-        checkpoint,
-        label=config.checkpoint_label,
-        run_root=run_root,
-        error=LadderBenchmarkError,
-    )
 
 
 def _rating(strength: float) -> float:

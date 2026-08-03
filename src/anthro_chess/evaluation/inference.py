@@ -41,7 +41,7 @@ from anthro_chess.evaluation.execution import (
     execution_record,
     synchronize,
 )
-from anthro_chess.evaluation.recording import checkpoint_reference, recording
+from anthro_chess.evaluation.recording import ResultRecorder, checkpoint_reference
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -336,25 +336,24 @@ def benchmark_inference(
         throughput_sweep=throughput_sweep,
     )
 
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=INFERENCE_KIND,
         benchmark=INFERENCE_BENCHMARK,
         checkpoint=checkpoint,
+        store=store,
         detail=detail,
         error=InferenceBenchmarkError,
     ) as recorder:
         recorder.add(
             _measurements(result, execution.workload_component()),
-            detail=recorder.detail(
-                result.as_record(),
-                description=(
-                    "Latency depth sweep, batch-size sweep, and stage attribution."
-                ),
+            payload=result.as_record,
+            description=(
+                "Latency depth sweep, batch-size sweep, and stage attribution."
             ),
             execution=execution,
         )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 class _HistoryFactory:

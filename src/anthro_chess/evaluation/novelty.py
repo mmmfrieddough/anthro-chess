@@ -45,6 +45,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from random import Random
@@ -82,9 +83,9 @@ from anthro_chess.evaluation.policy import (
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
+    ResultRecorder,
     checkpoint_reference,
     pool_dataset_reference,
-    recording,
 )
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -478,7 +479,12 @@ def benchmark_novelty(
 
     component = projection_content_digest(source_rows, MOVE_PREDICTION_PROJECTION)
     checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
-    data = _dataset_reference(pool, selection, component)
+    data = pool_dataset_reference(
+        pool,
+        selection,
+        component,
+        error=NoveltyBenchmarkError,
+    )
 
     result = NoveltyBenchmarkResult(
         checkpoint=checkpoint,
@@ -489,11 +495,12 @@ def benchmark_novelty(
     )
     control = result.control
 
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=NOVELTY_KIND,
         benchmark=NOVELTY_BENCHMARK,
         checkpoint=checkpoint,
+        store=store,
         detail=detail,
         error=NoveltyBenchmarkError,
     ) as recorder:
@@ -503,14 +510,14 @@ def benchmark_novelty(
             dose_slug = f"{arm.dose:.4f}".replace(".", "-")
             recorder.add(
                 _arm_measurements(arm, control, component, workload),
-                detail=recorder.detail(
-                    _arm_payload(arm, per_position=config.detail.per_position),
-                    description=(
-                        "Per-arm derivation provenance, slice tables, and "
-                        "predicate readings for one novelty dose."
-                    ),
-                    slug=f"dose-{dose_slug}",
+                payload=partial(
+                    _arm_payload, arm, per_position=config.detail.per_position
                 ),
+                description=(
+                    "Per-arm derivation provenance, slice tables, and "
+                    "predicate readings for one novelty dose."
+                ),
+                slug=f"dose-{dose_slug}",
                 data=data,
                 execution=execution,
             )
@@ -523,7 +530,7 @@ def benchmark_novelty(
                     recorded_at=recorder.recorded_at,
                 )
             )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 def _derive_game(
@@ -1108,19 +1115,6 @@ def _load_inputs(
             "the evaluation pool does not contain every selected game"
         )
     return pool, selection, rows
-
-
-def _dataset_reference(
-    pool: FrozenPool,
-    selection: ViewSelection,
-    component: DataComponent,
-) -> DatasetReference:
-    return pool_dataset_reference(
-        pool,
-        selection,
-        component,
-        error=NoveltyBenchmarkError,
-    )
 
 
 def _pool_split(pool: FrozenPool) -> SplitName:

@@ -87,8 +87,8 @@ from anthro_chess.evaluation.policy import (
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
+    ResultRecorder,
     pool_dataset_reference,
-    recording,
     resolve_model,
     runner_device,
 )
@@ -765,7 +765,14 @@ def benchmark_termination(
     """
 
     config = resolved_config.value
-    loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
+    loaded, identity = resolve_model(
+        config.model,
+        runner,
+        checkpoint,
+        label=config.checkpoint_label,
+        run_root=run_root,
+        error=TerminationBenchmarkError,
+    )
     pool = _load_pool(config)
     reference, reference_view, dataset = _load_reference(config, pool)
 
@@ -1432,22 +1439,21 @@ def _record(
     scored, since it generated nothing at all.
     """
 
-    with recording(
+    with ResultRecorder(
         resolved_config,
         kind=TERMINATION_KIND,
         benchmark=TERMINATION_BENCHMARK,
         checkpoint=result.checkpoint,
+        store=store,
         detail=detail,
         error=TerminationBenchmarkError,
     ) as recorder:
         for reading in result.generated:
             recorder.add(
                 _generated_measurements(reading),
-                detail=recorder.detail(
-                    reading.as_record(),
-                    description=f"Game termination: {reading.label}",
-                    slug=f"generated-t{_slug(reading.temperature)}",
-                ),
+                payload=reading.as_record,
+                description=f"Game termination: {reading.label}",
+                slug=f"generated-t{_slug(reading.temperature)}",
                 # Provenance rather than identity: the human reference shaped
                 # the guardrail's comparison rate and the deficit's bands, but
                 # what identifies the series is the recipe the games were
@@ -1458,35 +1464,28 @@ def _record(
         for mix in result.mixes:
             recorder.add(
                 _mix_measurements(mix),
-                detail=recorder.detail(
-                    mix.as_record(),
-                    description=f"Termination mix: {mix.label}",
-                    slug=f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}",
-                ),
+                payload=mix.as_record,
+                description=f"Termination mix: {mix.label}",
+                slug=f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}",
                 data=result.dataset,
                 execution=mix.execution,
             )
         held_out = result.held_out
         if held_out is not None:
-            measurements = _held_out_measurements(held_out)
-            # The payload is written either way: a pass that measured nothing
-            # is still the evidence for why, and the detail tier is where it
-            # belongs when there is no committed record to hang it off.
-            reference = recorder.detail(
-                held_out.as_record(),
+            # A pass that measured nothing still writes its payload, which is
+            # what `add` does with empty measurements: the reading itself is
+            # the evidence for why there is nothing to commit.
+            recorder.add(
+                _held_out_measurements(held_out),
+                payload=held_out.as_record,
                 description="Held-out resignation prediction",
                 slug="held-out-resignation",
+                # Series identity here, not provenance: this reading is a
+                # deterministic pass over fixed content and generated nothing,
+                # so the content is what it is scoped by.
+                data=held_out.dataset,
             )
-            if measurements:
-                recorder.add(
-                    measurements,
-                    detail=reference,
-                    # Series identity here, not provenance: this reading is a
-                    # deterministic pass over fixed content and generated
-                    # nothing, so the content is what it is scoped by.
-                    data=held_out.dataset,
-                )
-        return replace(result, **recorder.commit(store))
+        return replace(result, **recorder.commit())
 
 
 def _generated_measurements(reading: GeneratedReading) -> tuple[Measurement, ...]:
@@ -1604,24 +1603,6 @@ def _held_out_measurements(reading: HeldOutResignation) -> tuple[Measurement, ..
         )
         for identifier, value, sample_size in values
         if value is not None
-    )
-
-
-def _resolve_model(
-    config: TerminationBenchmarkConfig,
-    runner: ActionModelRunner | None,
-    checkpoint: CheckpointReference | None,
-    run_root: Path | None,
-) -> tuple[ActionModelRunner, CheckpointReference]:
-    """Return the runner to measure and the checkpoint identity to record."""
-
-    return resolve_model(
-        config.model,
-        runner,
-        checkpoint,
-        label=config.checkpoint_label,
-        run_root=run_root,
-        error=TerminationBenchmarkError,
     )
 
 
