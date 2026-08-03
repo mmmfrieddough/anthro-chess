@@ -50,6 +50,9 @@ temperatures = [0.0, 0.7, 1.0]
 # Every calibration figure is declared against this temperature, and the joint
 # fit is anchored on its conditioned row.
 reference_temperature = 1.0
+# Replicates of the round robin, and precision alone. A pairing of two
+# temperature-zero seats plays the first seed by itself and records that it did:
+# the same result entered three times is not three results for the joint fit.
 seeds = [0, 1, 2]
 
 [ablation]

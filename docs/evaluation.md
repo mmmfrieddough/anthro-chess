@@ -1447,6 +1447,12 @@ cheaper ladder is also a noisier one, on the axis the benchmark exists to
 measure. Raising seeds, openings, or games per position is the lever that buys
 precision instead, at linear cost and without ending a series.
 
+That lever is inert on the pairings whose seats are both greedy, and a ladder
+does not pull it there: those pairings play one replicate and record the seeds
+they played, so a smaller game count beside one of them is the sample it
+realized rather than an omission. Decision 0027 carries what that leaves the
+declared grid playing.
+
 `docs/decisions/0022-one-joint-rating-ladder-fit.md` owns the joint-fit rule,
 why the ablated arm sits inside it, and what the round robin costs.
 `docs/decisions/0027-settled-rating-ladder-grid.md` settles the grid at its
@@ -1981,6 +1987,16 @@ walk** enumerates the shallow repertoire instead of playing it, and is scoped by
 its own depth and threshold so changing either cannot end the sampled series
 recorded beside it. Both arms run in one pass over one checkpoint so they share a
 grid and a seed derivation.
+
+A cell at temperature zero plays one replicate rather than the configured grid
+of them, and records the seeds it played. Greedy seats replay one game per
+position, so its remaining seeds and games per position would each be that game
+recorded again, and the spread across them it appears to sample is zero by
+construction rather than by measurement. The declared colour swap is untouched,
+so a cell that swaps colours — as the shipped selection does — still plays that
+pair of games and its distinct-game fraction still reads as collapsed; one
+configured with neither a colour swap nor a second position plays a single game
+and reports what any single game reports.
 
 The reading is the unit because the rating grid is the curve's axis: a single
 cell has one rating and therefore no curve at all. Temperature stays fixed

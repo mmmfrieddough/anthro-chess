@@ -46,6 +46,9 @@ resignation_enabled = false
 # distinct-game fraction should be read against.
 target_ratings = [1100, 1300, 1500, 1700, 1900, 2100]
 temperatures = [0.0, 0.7, 1.0]
+# Replicates of a cell, and precision alone. The temperature-zero row plays the
+# first seed by itself and one game per position, and records the count it
+# realized: two games, the colour assignments declared below.
 seeds = [0, 1, 2, 3, 4]
 
 [generation]

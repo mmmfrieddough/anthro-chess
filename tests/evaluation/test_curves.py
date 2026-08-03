@@ -300,6 +300,25 @@ def test_the_bandwidth_does_not_move_with_the_generated_sample() -> None:
     ]
 
 
+def test_replaying_the_generated_side_reads_as_the_sample_it_replayed() -> None:
+    """What licenses collapsing a deterministic suite's replicates.
+
+    A greedy cell's replicates are copies of one game, and a copy carries
+    nothing the original did not. The human side forces the bandwidth, so
+    duplicating every generated observation scales the weights inside each
+    neighbourhood uniformly and leaves both distances where they were.
+    """
+
+    model = _generated(
+        lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0)
+    )
+    once = _compare(model, resamples=0)
+    replayed = _compare(model * 3, resamples=0)
+
+    assert replayed.conditional_distance == pytest.approx(once.conditional_distance)
+    assert replayed.pooled_distance == pytest.approx(once.pooled_distance)
+
+
 def test_a_grid_point_no_generated_game_reaches_is_reported_not_averaged() -> None:
     comparison = _compare(
         _generated(lambda rating, _: _length(rating), grid=GRID[:2]),

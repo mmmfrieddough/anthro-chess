@@ -24,6 +24,7 @@ from anthro_chess.evaluation.games import (
     PlayerError,
     RandomPlayer,
     StartPosition,
+    collapse_replicates,
     generate_games,
     prefix_positions,
     standard_positions,
@@ -154,6 +155,35 @@ def test_one_seed_reproduces_a_suite_exactly() -> None:
     assert [record.action_ids for record in first] != [
         record.action_ids for record in different
     ]
+
+
+def test_greedy_seats_replay_one_game_however_many_replicates_they_are_given() -> None:
+    """The premise a deterministic suite's replicate collapse rests on.
+
+    Nothing in a greedy game draws from a seat's random stream, so a second
+    replicate of one is the same game rather than another sample of it.
+    """
+
+    played = _play(
+        _model(temperature=0.0),
+        _model(temperature=0.0, label="other"),
+        games_per_position=3,
+    )
+
+    assert len(played) == 3
+    assert {record.action_ids for record in played} == {played[0].action_ids}
+
+
+def test_replicates_collapse_only_where_every_seat_is_greedy() -> None:
+    """One sampling seat is enough to make the replicates differ again."""
+
+    configured = GenerationConfig(games_per_position=4)
+
+    greedy = collapse_replicates((0, 1, 2), configured, temperatures=(0.0, 0.0))
+    assert greedy == ((0,), configured.model_copy(update={"games_per_position": 1}))
+
+    mixed = collapse_replicates((0, 1, 2), configured, temperatures=(0.0, 0.7))
+    assert mixed == ((0, 1, 2), configured)
 
 
 def test_a_game_records_the_seed_that_reproduces_it_on_its_own() -> None:

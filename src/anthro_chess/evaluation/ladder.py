@@ -81,6 +81,7 @@ from anthro_chess.evaluation.games import (
     ModelPlayer,
     PlayerError,
     StartPosition,
+    collapse_replicates,
     generate_games,
     prefix_positions,
     standard_positions,
@@ -246,7 +247,8 @@ class LadderGridConfig(ConfigModel):
     #: row the joint fit is anchored on. Must be one of the grid's own.
     reference_temperature: float = Field(default=1.0, ge=0.0, le=3.0)
     #: Base seeds, each replaying the whole round robin. A sample size rather
-    #: than a measurement setting.
+    #: than a measurement setting, and a pairing of two greedy seats plays the
+    #: first of them alone, since it would replay one game.
     seeds: tuple[StrictInt, ...] = (0,)
 
     @model_validator(mode="after")
@@ -363,6 +365,9 @@ class LadderPairing:
     games: int
     first_points: float
     unfinished: int = 0
+    #: The seeds this pairing actually played, which ``collapse_replicates``
+    #: cuts to one when both seats are greedy.
+    seeds: tuple[int, ...] = ()
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one pairing."""
@@ -373,6 +378,7 @@ class LadderPairing:
             "games": self.games,
             "first_points": self.first_points,
             "unfinished": self.unfinished,
+            "seeds": list(self.seeds),
         }
 
 
@@ -689,11 +695,22 @@ def benchmark_ladder(
     samples: list[DecisionSample] = []
     unscored = 0
     for first, second in _pairings(seats):
-        played = _play_pairing(config, players[first], players[second], source)
+        seeds, generation = collapse_replicates(
+            config.grid.seeds,
+            config.generation,
+            temperatures=(first.temperature, second.temperature),
+        )
+        played = _play_pairing(
+            players[first],
+            players[second],
+            source,
+            seeds=seeds,
+            generation=generation,
+        )
         decisions = collect_decisions(played)
         samples.extend(decisions.samples)
         unscored += decisions.unscored_decisions
-        pairings.append(_score_pairing(first, second, by_label, played))
+        pairings.append(_score_pairing(first, second, by_label, played, seeds=seeds))
         if config.detail.retain_games:
             records.extend(played)
 
@@ -935,19 +952,25 @@ def _seat_runtime(config: LadderBenchmarkConfig, seat: SeatKey) -> RuntimeConfig
 
 
 def _play_pairing(
-    config: LadderBenchmarkConfig,
     first: ModelPlayer,
     second: ModelPlayer,
     source: _PositionSource,
+    *,
+    seeds: tuple[int, ...],
+    generation: GenerationConfig,
 ) -> tuple[GameRecord, ...]:
-    """Play every seed's games between two seats."""
+    """Play every replicate's games between two seats."""
 
     played: list[GameRecord] = []
-    for seed in config.grid.seeds:
-        generation = config.generation.model_copy(update={"seed": seed})
+    for seed in seeds:
         try:
             played.extend(
-                generate_games(first, second, source.positions, config=generation)
+                generate_games(
+                    first,
+                    second,
+                    source.positions,
+                    config=generation.model_copy(update={"seed": seed}),
+                )
             )
         except (GenerationError, PlayerError) as error:
             raise LadderBenchmarkError(f"cannot generate games: {error}") from error
@@ -959,6 +982,8 @@ def _score_pairing(
     second: SeatKey,
     by_label: Mapping[str, SeatKey],
     played: Sequence[GameRecord],
+    *,
+    seeds: tuple[int, ...],
 ) -> LadderPairing:
     """Reduce one pairing's games to points for the first seat.
 
@@ -993,6 +1018,7 @@ def _score_pairing(
         games=scored,
         first_points=points,
         unfinished=unfinished,
+        seeds=seeds,
     )
 
 
