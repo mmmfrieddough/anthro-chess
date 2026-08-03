@@ -152,40 +152,48 @@ def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
     assert torch.count_nonzero(padded_logits[0, 1:]) > 0
 
 
-def test_the_causal_mask_is_built_once_and_sliced_for_shorter_batches() -> None:
-    """Held rather than rebuilt, and additive so the framework rebuilds nothing.
+def test_derived_tables_are_sized_from_the_declared_context_and_never_saved() -> None:
+    """Both are a function of the configuration, so neither is state to restore.
 
-    A boolean mask is converted to exactly this tensor on the way into
-    attention, once per forward pass, so handing one over would cache a thing
-    the framework then discards.
+    The mask is additive rather than boolean because attention converts a
+    boolean one to exactly this on the way in, once per forward pass.
     """
-
-    device = torch.device("cpu")
-    model = CausalMoveModel(_tiny_config())
-
-    wide = model._causal_mask(5, device, torch.float32)  # noqa: SLF001
-    held = model._cached_causal_mask  # noqa: SLF001
-    narrow = model._causal_mask(3, device, torch.float32)  # noqa: SLF001
-
-    for mask, length in ((wide, 5), (narrow, 3)):
-        assert mask.dtype == torch.float32
-        assert torch.equal(
-            mask.isinf(), torch.ones((length, length), dtype=torch.bool).triu(1)
-        )
-        # Nothing is fully masked: every query keeps at least its own timestep.
-        assert bool((~mask.isinf()).any(dim=-1).all())
-    assert model._cached_causal_mask is held  # noqa: SLF001
-
-
-def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> None:
-    """The table replaced a per-forward recomputation, so it must agree with it."""
 
     config = _tiny_config()
     model = CausalMoveModel(config)
-    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+    declared = config.maximum_context_plies
 
-    features = model._positions(batch, torch.float32)  # noqa: SLF001
+    assert model.causal_mask.shape == (declared, declared)
+    assert model.causal_mask.dtype == torch.float32
+    assert torch.equal(
+        model.causal_mask.isinf(),
+        torch.ones((declared, declared), dtype=torch.bool).triu(1),
+    )
+    # Nothing is fully masked: every query keeps at least its own timestep.
+    assert bool((~model.causal_mask.isinf()).any(dim=-1).all())
+    assert model.position_table.shape == (declared, config.model_dim)
+    assert not {"causal_mask", "position_table"} & set(model.state_dict())
+    # The weights outlive the bound, so a differently bounded model loads them.
+    CausalMoveModel(_tiny_config(maximum_context_plies=32)).load_state_dict(
+        model.state_dict()
+    )
 
+
+@pytest.mark.parametrize("start_ply", [0, 2], ids=["from-ply-zero", "chunk-past-zero"])
+def test_position_features_are_read_at_each_timestep_own_ply_index(
+    start_ply: int,
+) -> None:
+    """A chunked game's indices run past its own width, and the table reaches."""
+
+    config = _tiny_config()
+    model = CausalMoveModel(config)
+    batch = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4", "e7e5", "g1f3", "b8c6"), start_ply=start_ply)
+    )
+
+    features = model.position_table[batch.ply_indices]
+
+    assert int(batch.ply_indices[0, 0].item()) == start_ply
     dimension = config.model_dim
     frequencies = torch.exp(
         torch.arange(0, dimension, 2, dtype=torch.float32)
@@ -199,19 +207,44 @@ def test_position_features_are_gathered_for_each_timestep_own_ply_index() -> Non
     torch.testing.assert_close(features, expected)
 
 
-def test_position_features_reach_a_chunk_that_starts_past_the_padded_width() -> None:
-    """A chunked game's indices run past its own width, and the table must too."""
+def test_position_features_do_not_narrow_with_the_forward_pass() -> None:
+    """The table is the model's own, not the width the forward pass runs at.
+
+    bfloat16 carries eight mantissa bits, so ply 257 and ply 258 are the same
+    number in it. Building the table at whatever width attention happened to be
+    running under collapsed one onto the other.
+    """
+
+    model = CausalMoveModel(_tiny_config(maximum_context_plies=512))
+
+    assert model.position_table.dtype == torch.float32
+    assert not torch.equal(model.position_table[257], model.position_table[258])
+
+
+def test_a_batch_reaching_past_the_declared_context_is_refused() -> None:
+    """A late chunk is measured by the ply it reaches, not by how wide it is."""
 
     moves = ("e2e4", "e7e5", "g1f3", "b8c6")
-    model = CausalMoveModel(_tiny_config())
+    model = CausalMoveModel(_tiny_config(maximum_context_plies=3))
     whole = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
     tail = MoveModelBatch.from_sequence_batch(_sequence_batch(moves, start_ply=2))
 
-    assert tail.chunk_start_plies == (2,)
-    assert tail.position_bound > tail.ply_indices.shape[1]
-    torch.testing.assert_close(
-        model._positions(tail, torch.float32),  # noqa: SLF001
-        model._positions(whole, torch.float32)[:, 2:],  # noqa: SLF001
+    assert tail.ply_indices.shape[1] < 3
+    for batch in (whole, tail):
+        with pytest.raises(ValueError, match="ply index 3, past the 3 plies"):
+            model(batch)
+
+
+def test_the_declared_context_is_recorded_provenance_rather_than_identity() -> None:
+    """Weights mean the same under either bound, so a checkpoint outlives it."""
+
+    baseline = CausalMoveModel(_tiny_config()).identity()
+    config_record = baseline["config"]
+
+    assert isinstance(config_record, dict)
+    assert "maximum_context_plies" not in config_record
+    assert (
+        CausalMoveModel(_tiny_config(maximum_context_plies=32)).identity() == baseline
     )
 
 
@@ -358,7 +391,7 @@ def _sequence_batch(
     return collate_sequences(examples)
 
 
-def _tiny_config() -> MoveModelConfig:
+def _tiny_config(maximum_context_plies: int = 8) -> MoveModelConfig:
     return MoveModelConfig(
         piece_embedding_dim=2,
         action_embedding_dim=4,
@@ -367,4 +400,5 @@ def _tiny_config() -> MoveModelConfig:
         transformer_layers=1,
         feedforward_dim=24,
         dropout=0.0,
+        maximum_context_plies=maximum_context_plies,
     )

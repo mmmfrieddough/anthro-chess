@@ -96,9 +96,10 @@ class MoveModelBatch:
 
         A row starts at its chunk's first ply and runs no further than the
         padded width, so this is the batch's own statement of how far its
-        indices reach. :meth:`validate` holds ``ply_indices`` to it, which is
-        what lets the model size a position table from it without asking the
-        device anything.
+        indices reach. :meth:`validate` holds ``ply_indices`` to it and the
+        model refuses a batch whose reach passes the context length it
+        declares. Between them a forward pass indexes a fixed position table in
+        range, having read nothing back from the device.
         """
 
         return max(self.chunk_start_plies) + self.action_targets.shape[1]

@@ -17,6 +17,13 @@ class MoveModelConfig(ConfigModel):
     transformer_layers: int = Field(default=2, ge=1)
     feedforward_dim: int = Field(default=128, ge=1)
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
+    #: One past the furthest ply index the model can encode, and the size of
+    #: both tables derived from it. A shape assertion rather than a dial: the
+    #: longest game in the million-game blitz corpus is 306 plies, and a chunked
+    #: selection reaches ``game_plies + chunk_length - 1``, so this covers that
+    #: game at any chunk length up to 718. It costs memory only — attention is
+    #: quadratic in the padded batch width, which this does not set.
+    maximum_context_plies: int = Field(default=1024, ge=1)
 
     @model_validator(mode="after")
     def validate_attention_shape(self) -> MoveModelConfig:

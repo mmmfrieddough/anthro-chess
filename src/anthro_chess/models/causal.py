@@ -107,6 +107,9 @@ class RatingConditioner(nn.Module):
 class CausalMoveModel(nn.Module):
     """Predict human action logits from exact state and causal trajectory."""
 
+    causal_mask: Tensor
+    position_table: Tensor
+
     def __init__(self, config: MoveModelConfig | None = None) -> None:
         super().__init__()
         self.config = config or MoveModelConfig()
@@ -141,14 +144,25 @@ class CausalMoveModel(nn.Module):
             self.config.model_dim,
             ACTION_VOCABULARY_SIZE,
         )
-        # Derived constants, not state: a pure function of the configuration and
-        # the longest sequence seen, so neither belongs in a checkpoint. Both are
-        # built under `torch.inference_mode(False)`, because the first caller may
-        # be a benchmark scoring under `torch.inference_mode` and a tensor made
-        # there can never afterwards join a training backward pass. `#227` would
-        # retire the laziness by declaring a maximum context length.
-        self._cached_causal_mask: Tensor | None = None
-        self._cached_position_table: Tensor | None = None
+        # Derived constants, not state: a pure function of the configuration, so
+        # neither belongs in a checkpoint. The mask is additive rather than
+        # boolean because attention converts a boolean one to exactly this on
+        # the way in, once per forward pass.
+        self.register_buffer(
+            "causal_mask",
+            nn.Transformer.generate_square_subsequent_mask(
+                self.config.maximum_context_plies
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "position_table",
+            _sinusoidal_table(
+                self.config.maximum_context_plies,
+                self.config.model_dim,
+            ),
+            persistent=False,
+        )
 
     def forward(self, batch: MoveModelBatch) -> Tensor:
         """Return raw action logits shaped batch by sequence by vocabulary.
@@ -166,6 +180,12 @@ class CausalMoveModel(nn.Module):
     def encode_history(self, batch: MoveModelBatch) -> Tensor:
         """Encode rating-neutral exact state and causal move history."""
 
+        declared = self.config.maximum_context_plies
+        if batch.position_bound > declared:
+            raise ValueError(
+                f"batch reaches ply index {batch.position_bound - 1}, past the "
+                f"{declared} plies this model declares as its context"
+            )
         inputs = batch.inputs
         previous_action_tokens = torch.where(
             inputs.previous_action_id.present,
@@ -180,91 +200,40 @@ class CausalMoveModel(nn.Module):
             dim=-1,
         )
         hidden = self.context_combiner(context)
-        hidden = hidden + self._positions(batch, hidden.dtype)
+        # A chunked selection carries ply indices past the row's own width.
+        hidden = hidden + self.position_table[batch.ply_indices].to(hidden.dtype)
         # No key padding mask. Padding is right-aligned, so a real query attends
         # only to keys that are themselves real, and a padded query's output is
         # discarded by target and by loss mask downstream. Leaving it out also
         # removes the all-padding-row hazard a key padding mask carries.
+        #
+        # ``is_causal=True`` does not stand in for the mask. The encoder reads
+        # the flag as a hint accompanying one, and refuses it alone.
+        width = hidden.shape[1]
         hidden = self.transformer(
             hidden,
-            mask=self._causal_mask(hidden.shape[1], hidden.device, hidden.dtype),
+            mask=self.causal_mask[:width, :width].to(hidden.dtype),
             is_causal=True,
         )
         return cast(Tensor, hidden)
 
-    def _causal_mask(
-        self,
-        length: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> Tensor:
-        """Return the additive mask that hides every future timestep.
-
-        The mask states only that a query cannot attend past itself, which is a
-        property of this model rather than of any batch. It is held at the
-        longest length seen and sliced for shorter ones, so a step neither
-        builds it in Python nor copies it to the device.
-
-        Additive rather than boolean, in attention's own dtype: a boolean mask
-        is converted to exactly this tensor on the way in, a fresh
-        length-by-length float per forward pass — 1.44 MB at 600 plies.
-
-        ``is_causal=True`` does not stand in for a mask. The encoder reads the
-        flag as a hint accompanying one, and refuses it alone.
-        """
-
-        cached = self._cached_causal_mask
-        if (
-            cached is None
-            or cached.shape[0] < length
-            or cached.device != device
-            or cached.dtype != dtype
-        ):
-            with torch.inference_mode(False):
-                cached = nn.Transformer.generate_square_subsequent_mask(
-                    length,
-                    device=device,
-                    dtype=dtype,
-                )
-            self._cached_causal_mask = cached
-        return cached[:length, :length]
-
-    def _positions(self, batch: MoveModelBatch, dtype: torch.dtype) -> Tensor:
-        """Return each timestep's sinusoidal features for its own ply index.
-
-        The features depend only on the ply index and the model width, so the
-        table is held and gathered rather than recomputed every forward pass.
-        How far it must reach is the batch's own
-        :attr:`~MoveModelBatch.position_bound`, which :meth:`MoveModelBatch.validate`
-        has already held its indices to.
-        """
-
-        indices = batch.ply_indices
-        bound = batch.position_bound
-        table = self._cached_position_table
-        if (
-            table is None
-            or table.shape[0] < bound
-            or table.device != indices.device
-            or table.dtype != dtype
-        ):
-            with torch.inference_mode(False):
-                table = _sinusoidal_table(
-                    bound,
-                    self.config.model_dim,
-                    device=indices.device,
-                    dtype=dtype,
-                )
-            self._cached_position_table = table
-        return table[indices]
-
     def identity(self) -> dict[str, object]:
-        """Return compatibility metadata for future runs and checkpoints."""
+        """Return compatibility metadata for future runs and checkpoints.
+
+        ``maximum_context_plies`` is left out. It bounds which batches the model
+        accepts rather than what its weights mean, and two checkpoints differing
+        only in it agree exactly on every batch both accept — so admitting it
+        here would retire every existing checkpoint for no compatibility reason.
+        The run record carries the value a run declared.
+        """
 
         return {
             "name": "anthro-causal-move-model",
             "version": 3,
-            "config": self.config.model_dump(mode="json"),
+            "config": self.config.model_dump(
+                mode="json",
+                exclude={"maximum_context_plies"},
+            ),
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),
             "rating_conditioning": "post-transformer-feature-modulation",
@@ -281,18 +250,10 @@ def _nullable_log_value(value: OptionalTensor) -> Tensor:
     )
 
 
-def _sinusoidal_table(
-    length: int,
-    dimension: int,
-    *,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> Tensor:
+def _sinusoidal_table(length: int, dimension: int) -> Tensor:
+    dtype = torch.get_default_dtype()
     frequencies = torch.exp(
-        torch.arange(0, dimension, 2, device=device, dtype=dtype)
-        * (-math.log(10_000.0) / dimension)
+        torch.arange(0, dimension, 2, dtype=dtype) * (-math.log(10_000.0) / dimension)
     )
-    angles = (
-        torch.arange(length, device=device, dtype=dtype).unsqueeze(-1) * frequencies
-    )
+    angles = torch.arange(length, dtype=dtype).unsqueeze(-1) * frequencies
     return torch.stack((torch.sin(angles), torch.cos(angles)), dim=-1).flatten(-2)
