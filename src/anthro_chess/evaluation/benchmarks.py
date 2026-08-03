@@ -24,7 +24,7 @@ owns the other half, which is everything after a benchmark has finished.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -55,7 +55,12 @@ class Benchmark:
     #: into its own failure — a failed sweep step, a command's exit status —
     #: rather than letting them end everything around it.
     errors: tuple[type[Exception], ...]
-    #: ``(resolved, *, run_root, store, detail) -> result``, called through
+    #: The one of those the benchmark raises itself, and what the store's own
+    #: errors are converted into while it runs. Declared rather than read as the
+    #: first of ``errors``, which would make that order load-bearing with
+    #: nothing saying so.
+    error: type[Exception]
+    #: ``(resolved, *, run_root, recording, ...) -> result``, called through
     #: :func:`run_benchmark`. A step configured by another step's output takes
     #: that payload instead and is invoked by whatever produced it.
     invoke: Callable[..., Any]
@@ -103,6 +108,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
         benchmark_termination,
         evaluate_checkpoint,
     )
+    from anthro_chess.evaluation.decisions import DecisionDecompositionError
     from anthro_chess.evaluation.results import ResultsStoreError
 
     store_errors = (ResultsStoreError,)
@@ -114,6 +120,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=InferenceBenchmarkConfig,
                 artifact_fields=(),
                 errors=(InferenceBenchmarkError, *store_errors),
+                error=InferenceBenchmarkError,
                 invoke=benchmark_inference,
             ),
             Benchmark(
@@ -121,6 +128,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=CheckpointEvaluationConfig,
                 artifact_fields=roots.CHECKPOINT_ARTIFACT_FIELDS,
                 errors=(CheckpointEvaluationError, LeakageError, *store_errors),
+                error=CheckpointEvaluationError,
                 invoke=evaluate_checkpoint,
             ),
             Benchmark(
@@ -128,6 +136,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=NoveltyBenchmarkConfig,
                 artifact_fields=roots.NOVELTY_ARTIFACT_FIELDS,
                 errors=(NoveltyBenchmarkError, *store_errors),
+                error=NoveltyBenchmarkError,
                 invoke=benchmark_novelty,
             ),
             Benchmark(
@@ -135,6 +144,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=PuzzleBenchmarkConfig,
                 artifact_fields=roots.PUZZLE_ARTIFACT_FIELDS,
                 errors=(PuzzleBenchmarkError, *store_errors),
+                error=PuzzleBenchmarkError,
                 invoke=benchmark_puzzles,
             ),
             Benchmark(
@@ -142,6 +152,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=RolloutBenchmarkConfig,
                 artifact_fields=roots.ROLLOUT_ARTIFACT_FIELDS,
                 errors=(RolloutBenchmarkError, *store_errors),
+                error=RolloutBenchmarkError,
                 invoke=benchmark_rollout,
                 games=_rollout_games,
                 retains_games=lambda config: bool(config.detail.retain_games),
@@ -150,7 +161,8 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 name="decisions",
                 schema=None,
                 artifact_fields=(),
-                errors=_decision_errors(),
+                errors=(DecisionDecompositionError, OSError),
+                error=DecisionDecompositionError,
                 invoke=_invoke_decisions,
                 records_results=False,
                 games_from="rollout",
@@ -160,6 +172,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=TerminationBenchmarkConfig,
                 artifact_fields=roots.TERMINATION_ARTIFACT_FIELDS,
                 errors=(TerminationBenchmarkError, *store_errors),
+                error=TerminationBenchmarkError,
                 invoke=benchmark_termination,
             ),
             Benchmark(
@@ -167,6 +180,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 schema=LadderBenchmarkConfig,
                 artifact_fields=roots.LADDER_ARTIFACT_FIELDS,
                 errors=(LadderBenchmarkError, *store_errors),
+                error=LadderBenchmarkError,
                 invoke=benchmark_ladder,
             ),
         )
@@ -203,35 +217,47 @@ def run_benchmark(
     run_root: Path | None = None,
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
+    **measured: Any,
 ) -> Any:
-    """Measure one benchmark against a resolved selection.
+    """Measure one benchmark against a resolved selection, and record it.
 
-    One call, and that is the whole point of it: every benchmark that measures
-    from a selection is invoked here, so something that has to happen around a
-    benchmark run is added once instead of at each caller. Both callers
-    previously wrote this call out by hand, identically, with nothing able to
-    notice when one of them stopped matching. A step fed another step's output
-    is the exception the registry declares, and its producer invokes it.
+    Every benchmark that measures from a selection is invoked here, so what
+    happens around a benchmark run is written once rather than by each of them:
+    the recording is opened, held across the whole call — so a store error
+    raised while measuring is converted like one raised while recording — and
+    closed, which is what appends. The result is assembled from what was
+    recorded, which is the last thing all seven used to do for themselves.
+
+    ``measured`` carries what one benchmark's entry point takes beyond the
+    shared call, which is a pre-loaded runner for the three that accept one.
+    Neither the sweep nor a command passes any: it is how something that has
+    already loaded a checkpoint measures with it rather than loading a second.
     """
 
-    return benchmark.invoke(
+    # Imported here for the reason the registry is built here: recording pulls
+    # in the model stack, and a suite selection is planned and printed without
+    # it.
+    from anthro_chess.evaluation.recording import ResultRecording
+
+    with ResultRecording(
         resolved_config,
-        run_root=run_root,
         store=store,
         detail=detail,
-    )
+        error=benchmark.error,
+    ) as recording:
+        result = benchmark.invoke(
+            resolved_config,
+            run_root=run_root,
+            recording=recording,
+            **measured,
+        )
+    return replace(result, **recording.fields)
 
 
 def _rollout_games(result: Any) -> tuple[GameRecord, ...]:
     """Return every game a rollout retained, across its whole matrix."""
 
     return tuple(record for cell in result.cells for record in cell.records)
-
-
-def _decision_errors() -> tuple[type[Exception], ...]:
-    from anthro_chess.evaluation.decisions import DecisionDecompositionError
-
-    return (DecisionDecompositionError, OSError)
 
 
 def _invoke_decisions(path: Path) -> Any:

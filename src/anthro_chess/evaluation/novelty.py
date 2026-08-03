@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from functools import partial
@@ -83,7 +83,7 @@ from anthro_chess.evaluation.policy import (
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
-    ResultRecorder,
+    ResultRecording,
     checkpoint_reference,
     pool_dataset_reference,
 )
@@ -92,11 +92,9 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultsStore,
     WorkloadComponent,
     measurement,
     projection_content_digest,
@@ -431,8 +429,7 @@ def benchmark_novelty(
     resolved_config: ResolvedConfig[NoveltyBenchmarkConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
 ) -> NoveltyBenchmarkResult:
     """Measure one checkpoint's dose response and optionally record it."""
 
@@ -495,42 +492,36 @@ def benchmark_novelty(
     )
     control = result.control
 
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        checkpoint,
         kind=NOVELTY_KIND,
         benchmark=NOVELTY_BENCHMARK,
-        checkpoint=checkpoint,
-        store=store,
-        detail=detail,
-        error=NoveltyBenchmarkError,
-    ) as recorder:
-        for arm in result.arms:
-            execution = _execution_record(runner, config.perturbation, arm.dose)
-            workload = execution.workload_component()
-            dose_slug = f"{arm.dose:.4f}".replace(".", "-")
-            recorder.add(
-                _arm_measurements(arm, control, component, workload),
-                payload=partial(
-                    _arm_payload, arm, per_position=config.detail.per_position
-                ),
-                description=(
-                    "Per-arm derivation provenance, slice tables, and "
-                    "predicate readings for one novelty dose."
-                ),
-                slug=f"dose-{dose_slug}",
-                data=data,
-                execution=execution,
+    )
+    for arm in result.arms:
+        execution = _execution_record(runner, config.perturbation, arm.dose)
+        workload = execution.workload_component()
+        dose_slug = f"{arm.dose:.4f}".replace(".", "-")
+        recorder.add(
+            _arm_measurements(arm, control, component, workload),
+            payload=partial(_arm_payload, arm, per_position=config.detail.per_position),
+            description=(
+                "Per-arm derivation provenance, slice tables, and "
+                "predicate readings for one novelty dose."
+            ),
+            slug=f"dose-{dose_slug}",
+            data=data,
+            execution=execution,
+        )
+        recorder.characterize(
+            _characterize_noise(
+                arm,
+                config.noise,
+                component=component,
+                workload=workload,
+                recorded_at=recording.recorded_at,
             )
-            recorder.characterize(
-                _characterize_noise(
-                    arm,
-                    config.noise,
-                    component=component,
-                    workload=workload,
-                    recorded_at=recorder.recorded_at,
-                )
-            )
-    return replace(result, **recorder.fields)
+        )
+    return result
 
 
 def _derive_game(
