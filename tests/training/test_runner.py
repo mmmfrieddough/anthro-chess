@@ -62,14 +62,14 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
     )
 
     resolved = load_config(TrainingConfig, path=config_path)
     log_output = StringIO()
     configure_application_logging(level="INFO", stream=log_output)
-    result = run_training(resolved)
+    result = run_training(resolved, output_directory=tmp_path / "run")
 
     assert result.steps == 2
     assert result.initial_parameter_sha256 != result.final_parameter_sha256
@@ -131,35 +131,44 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         tmp_path / "uninterrupted-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "uninterrupted",
+        run_name="uninterrupted",
         validation=False,
         steps=4,
         checkpoint_every_steps=2,
     )
-    uninterrupted = run_training(load_config(TrainingConfig, path=uninterrupted_config))
+    uninterrupted = run_training(
+        load_config(TrainingConfig, path=uninterrupted_config),
+        output_directory=tmp_path / "uninterrupted",
+    )
 
     resumable_config_directory = tmp_path / "resumable-config"
     initial_config = _write_training_config(
         resumable_config_directory,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "resumable",
+        run_name="resumable",
         validation=False,
         steps=2,
         checkpoint_every_steps=2,
     )
-    initial = run_training(load_config(TrainingConfig, path=initial_config))
+    initial = run_training(
+        load_config(TrainingConfig, path=initial_config),
+        output_directory=tmp_path / "resumable",
+    )
     resumed_config = _write_training_config(
         resumable_config_directory,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "resumable",
+        run_name="resumable",
         validation=False,
         steps=4,
         checkpoint_every_steps=2,
         resume_from="latest",
     )
-    resumed = run_training(load_config(TrainingConfig, path=resumed_config))
+    resumed = run_training(
+        load_config(TrainingConfig, path=resumed_config),
+        output_directory=tmp_path / "resumable",
+    )
 
     assert initial.checkpoint_path.name == "step-00000002.pt"
     assert resumed.checkpoint_path.name == "step-00000004.pt"
@@ -233,15 +242,18 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         tmp_path / "initial-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "initial",
+        run_name="initial",
         validation=False,
     )
-    initial = run_training(load_config(TrainingConfig, path=initial_config))
+    initial = run_training(
+        load_config(TrainingConfig, path=initial_config),
+        output_directory=tmp_path / "initial",
+    )
     incompatible_config = _write_training_config(
         tmp_path / "incompatible-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "incompatible",
+        run_name="incompatible",
         validation=False,
         steps=3,
         learning_rate=0.004,
@@ -252,33 +264,42 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         TrainingError,
         match="checkpoint training configuration is incompatible",
     ):
-        run_training(load_config(TrainingConfig, path=incompatible_config))
+        run_training(
+            load_config(TrainingConfig, path=incompatible_config),
+            output_directory=tmp_path / "incompatible",
+        )
 
     incompatible_model_config = _write_training_config(
         tmp_path / "incompatible-model-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "incompatible-model",
+        run_name="incompatible-model",
         validation=False,
         steps=3,
         model_dim=18,
         resume_from=initial.checkpoint_path,
     )
     with pytest.raises(TrainingError, match="checkpoint model is incompatible"):
-        run_training(load_config(TrainingConfig, path=incompatible_model_config))
+        run_training(
+            load_config(TrainingConfig, path=incompatible_model_config),
+            output_directory=tmp_path / "incompatible-model",
+        )
 
     incompatible_data_config = _write_training_config(
         tmp_path / "incompatible-data-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "incompatible-data",
+        run_name="incompatible-data",
         validation=False,
         steps=3,
         shuffle=True,
         resume_from=initial.checkpoint_path,
     )
     with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
-        run_training(load_config(TrainingConfig, path=incompatible_data_config))
+        run_training(
+            load_config(TrainingConfig, path=incompatible_data_config),
+            output_directory=tmp_path / "incompatible-data",
+        )
 
 
 def test_every_recorded_execution_setting_has_exactly_one_declared_role(
@@ -290,7 +311,7 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
             tmp_path,
             normalized=tmp_path / "missing.parquet",
             manifest=tmp_path / "missing-manifest.json",
-            output=tmp_path / "run",
+            run_name="run",
             validation=False,
         ),
     ).value
@@ -318,10 +339,11 @@ def test_resume_reads_execution_provenance_it_does_not_recognize(
                 tmp_path / "initial-config",
                 normalized=prepared.normalized_path,
                 manifest=prepared.manifest_path,
-                output=tmp_path / "initial",
+                run_name="initial",
                 validation=False,
             ),
-        )
+        ),
+        output_directory=tmp_path / "initial",
     )
     # A checkpoint from a version that recorded distributed provenance this one
     # knows nothing about, and had not yet recorded one this one writes.
@@ -335,13 +357,16 @@ def test_resume_reads_execution_provenance_it_does_not_recognize(
         tmp_path / "continuation-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "continuation",
+        run_name="continuation",
         validation=False,
         steps=3,
         resume_from=foreign,
     )
 
-    resumed = run_training(load_config(TrainingConfig, path=continuation))
+    resumed = run_training(
+        load_config(TrainingConfig, path=continuation),
+        output_directory=tmp_path / "continuation",
+    )
 
     assert resumed.initial_parameter_sha256 == initial.final_parameter_sha256
     assert resumed.final_parameter_sha256 != initial.final_parameter_sha256
@@ -362,10 +387,11 @@ def test_resume_rejects_a_changed_or_absent_execution_identity(
                 tmp_path / "initial-config",
                 normalized=prepared.normalized_path,
                 manifest=prepared.manifest_path,
-                output=tmp_path / "initial",
+                run_name="initial",
                 validation=False,
             ),
-        )
+        ),
+        output_directory=tmp_path / "initial",
     )
     changed = _rewrite_checkpoint_execution(
         initial.checkpoint_path,
@@ -392,12 +418,13 @@ def test_resume_rejects_a_changed_or_absent_execution_identity(
                     tmp_path / "changed-config",
                     normalized=prepared.normalized_path,
                     manifest=prepared.manifest_path,
-                    output=tmp_path / "changed",
+                    run_name="changed",
                     validation=False,
                     steps=3,
                     resume_from=changed,
                 ),
-            )
+            ),
+            output_directory=tmp_path / "changed",
         )
 
     with pytest.raises(
@@ -411,12 +438,13 @@ def test_resume_rejects_a_changed_or_absent_execution_identity(
                     tmp_path / "absent-config",
                     normalized=prepared.normalized_path,
                     manifest=prepared.manifest_path,
-                    output=tmp_path / "absent",
+                    run_name="absent",
                     validation=False,
                     steps=3,
                     resume_from=absent,
                 ),
-            )
+            ),
+            output_directory=tmp_path / "absent",
         )
 
 
@@ -459,12 +487,14 @@ def test_shard_backed_training_runs_and_records_which_loader_read_the_corpus(
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
         train_streaming=_SHARD_BACKED,
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path), output_directory=tmp_path / "run"
+    )
 
     assert result.initial_parameter_sha256 != result.final_parameter_sha256
     run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
@@ -490,13 +520,16 @@ def test_shard_backed_training_resumes_from_its_own_checkpoint(tmp_path: Path) -
         tmp_path / "uninterrupted-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "uninterrupted",
+        run_name="uninterrupted",
         validation=False,
         steps=4,
         checkpoint_every_steps=2,
         train_streaming=_SHARD_BACKED,
     )
-    uninterrupted = run_training(load_config(TrainingConfig, path=uninterrupted_config))
+    uninterrupted = run_training(
+        load_config(TrainingConfig, path=uninterrupted_config),
+        output_directory=tmp_path / "uninterrupted",
+    )
 
     resumable = tmp_path / "resumable-config"
     initial = run_training(
@@ -506,13 +539,14 @@ def test_shard_backed_training_resumes_from_its_own_checkpoint(tmp_path: Path) -
                 resumable,
                 normalized=prepared.normalized_path,
                 manifest=prepared.manifest_path,
-                output=tmp_path / "resumable",
+                run_name="resumable",
                 validation=False,
                 steps=2,
                 checkpoint_every_steps=2,
                 train_streaming=_SHARD_BACKED,
             ),
-        )
+        ),
+        output_directory=tmp_path / "resumable",
     )
     resumed = run_training(
         load_config(
@@ -521,14 +555,15 @@ def test_shard_backed_training_resumes_from_its_own_checkpoint(tmp_path: Path) -
                 resumable,
                 normalized=prepared.normalized_path,
                 manifest=prepared.manifest_path,
-                output=tmp_path / "resumable",
+                run_name="resumable",
                 validation=False,
                 steps=4,
                 checkpoint_every_steps=2,
                 resume_from="latest",
                 train_streaming=_SHARD_BACKED,
             ),
-        )
+        ),
+        output_directory=tmp_path / "resumable",
     )
 
     assert resumed.final_parameter_sha256 == uninterrupted.final_parameter_sha256
@@ -558,24 +593,28 @@ def test_a_run_cannot_change_loader_and_continue_the_same_checkpoint(
                 tmp_path / "initial-config",
                 normalized=prepared.normalized_path,
                 manifest=prepared.manifest_path,
-                output=tmp_path / "initial",
+                run_name="initial",
                 validation=False,
                 train_streaming=_SHARD_BACKED,
             ),
-        )
+        ),
+        output_directory=tmp_path / "initial",
     )
     eager_continuation = _write_training_config(
         tmp_path / "eager-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "eager",
+        run_name="eager",
         validation=False,
         steps=3,
         resume_from=initial.checkpoint_path,
     )
 
     with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
-        run_training(load_config(TrainingConfig, path=eager_continuation))
+        run_training(
+            load_config(TrainingConfig, path=eager_continuation),
+            output_directory=tmp_path / "eager",
+        )
 
 
 def test_training_device_rejects_unavailable_or_strict_mps(
@@ -585,7 +624,7 @@ def test_training_device_rejects_unavailable_or_strict_mps(
         tmp_path,
         normalized=tmp_path / "missing.parquet",
         manifest=tmp_path / "missing-manifest.json",
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
         device="mps",
     )
@@ -639,13 +678,15 @@ def test_mixed_precision_keeps_full_precision_parameters_and_no_scaler(
         tmp_path / "config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
         precision="bfloat16-mixed",
         determinism="relaxed",
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path), output_directory=tmp_path / "run"
+    )
 
     assert result.initial_parameter_sha256 != result.final_parameter_sha256
     assert result.validation is not None
@@ -676,27 +717,32 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         tmp_path / "cpu-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "cpu",
+        run_name="cpu",
         validation=True,
         steps=1,
         device="cpu",
         determinism="relaxed",
     )
-    cpu_result = run_training(load_config(TrainingConfig, path=cpu_config))
+    cpu_result = run_training(
+        load_config(TrainingConfig, path=cpu_config), output_directory=tmp_path / "cpu"
+    )
 
     accelerator_config_directory = tmp_path / f"{backend}-config"
     cross_backend_config = _write_training_config(
         accelerator_config_directory,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / backend,
+        run_name=backend,
         validation=True,
         steps=2,
         resume_from=cpu_result.checkpoint_path,
         device=backend,
         determinism="relaxed",
     )
-    cross_backend = run_training(load_config(TrainingConfig, path=cross_backend_config))
+    cross_backend = run_training(
+        load_config(TrainingConfig, path=cross_backend_config),
+        output_directory=tmp_path / backend,
+    )
 
     assert cross_backend.initial_parameter_sha256 == (cpu_result.final_parameter_sha256)
     assert cross_backend.initial_parameter_sha256 != (
@@ -729,7 +775,7 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         accelerator_config_directory,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / backend,
+        run_name=backend,
         validation=True,
         steps=3,
         resume_from="latest",
@@ -737,7 +783,8 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         determinism="relaxed",
     )
     original_device = run_training(
-        load_config(TrainingConfig, path=original_device_config)
+        load_config(TrainingConfig, path=original_device_config),
+        output_directory=tmp_path / backend,
     )
 
     assert original_device.initial_parameter_sha256 == (
@@ -753,14 +800,17 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         tmp_path / "return-to-cpu-config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "return-to-cpu",
+        run_name="return-to-cpu",
         validation=True,
         steps=4,
         resume_from=original_device.checkpoint_path,
         device="cpu",
         determinism="relaxed",
     )
-    return_to_cpu = run_training(load_config(TrainingConfig, path=return_to_cpu_config))
+    return_to_cpu = run_training(
+        load_config(TrainingConfig, path=return_to_cpu_config),
+        output_directory=tmp_path / "return-to-cpu",
+    )
 
     assert return_to_cpu.initial_parameter_sha256 == (
         original_device.final_parameter_sha256
@@ -785,12 +835,15 @@ def test_runner_rejects_manifest_and_normalized_data_mismatch(
         tmp_path,
         normalized=other_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
     )
 
     with pytest.raises(TrainingError, match="do not match"):
-        run_training(load_config(TrainingConfig, path=config_path))
+        run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
 
 
 def test_a_corpus_past_the_declared_context_refuses_before_the_first_step(
@@ -808,14 +861,14 @@ def test_a_corpus_past_the_declared_context_refuses_before_the_first_step(
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=output,
+        run_name=output.name,
         validation=False,
         maximum_context_plies=8,
     )
     resolved = load_config(TrainingConfig, path=config_path)
 
     with pytest.raises(TrainingError) as refusal:
-        run_training(resolved)
+        run_training(resolved, output_directory=output)
 
     assert "longest game of 26 plies" in str(refusal.value)
     assert "reaches ply index 26" in str(refusal.value)
@@ -881,12 +934,15 @@ def test_a_manifest_without_a_usable_longest_game_is_refused_rather_than_assumed
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
     )
 
     with pytest.raises(TrainingError, match="records no positive longest game"):
-        run_training(load_config(TrainingConfig, path=config_path))
+        run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
 
 
 def test_two_selections_of_one_corpus_are_told_apart_by_the_run_record(
@@ -918,10 +974,11 @@ def test_two_selections_of_one_corpus_are_told_apart_by_the_run_record(
                 tmp_path / "broad",
                 normalized=normalized,
                 manifest=manifest,
-                output=tmp_path / "runs" / "broad",
+                run_name="broad",
                 validation=False,
             ),
-        )
+        ),
+        output_directory=tmp_path / "runs" / "broad",
     )
     narrow = run_training(
         load_config(
@@ -930,13 +987,14 @@ def test_two_selections_of_one_corpus_are_told_apart_by_the_run_record(
                 tmp_path / "narrow",
                 normalized=normalized,
                 manifest=manifest,
-                output=tmp_path / "runs" / "narrow",
+                run_name="narrow",
                 validation=False,
                 train_selection=(
                     "\n[train.loader.selection]\nminimum_time_initial_ms = 300000\n"
                 ),
             ),
-        )
+        ),
+        output_directory=tmp_path / "runs" / "narrow",
     )
 
     broad_data = json.loads(broad.run_path.read_text(encoding="utf-8"))["data"]["train"]
@@ -970,7 +1028,7 @@ def test_a_selection_cannot_reach_the_held_out_test_split(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
         train_selection="\n[train.loader.selection]\nfraction = 1.0\n",
     )
@@ -997,12 +1055,14 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
         extra="gradient_accumulation_steps = 2\nprofile_phases = true\n",
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path), output_directory=tmp_path / "run"
+    )
 
     records = [
         json.loads(line)
@@ -1044,13 +1104,16 @@ def test_strict_determinism_on_an_accelerator_reproduces_the_same_parameters(
             tmp_path / f"{name}-config",
             normalized=prepared.normalized_path,
             manifest=prepared.manifest_path,
-            output=tmp_path / name,
+            run_name=name,
             validation=False,
             steps=3,
             device=backend,
             determinism="strict",
         )
-        result = run_training(load_config(TrainingConfig, path=config_path))
+        result = run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / name,
+        )
         return str(result.final_parameter_sha256)
 
     if backend not in STRICT_DETERMINISM_BACKENDS:
@@ -1076,14 +1139,16 @@ def test_real_accelerator_forward_backward_update_and_validation(
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
         device=backend,
         determinism="relaxed",
         extra="profile_phases = true\n",
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path), output_directory=tmp_path / "run"
+    )
 
     run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
     assert result.initial_parameter_sha256 != result.final_parameter_sha256
@@ -1126,7 +1191,7 @@ def test_declared_cadences_report_a_run_before_it_finishes(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
         validation_split="validation",
         steps=4,
@@ -1151,7 +1216,11 @@ maximum_games = 2
     )
     store = ResultsStore(tmp_path / "results")
 
-    result = run_training(load_config(TrainingConfig, path=config_path), store=store)
+    result = run_training(
+        load_config(TrainingConfig, path=config_path),
+        store=store,
+        output_directory=tmp_path / "run",
+    )
 
     assert [reading.global_step for reading in result.readings] == [2, 4]
     records = [
@@ -1228,7 +1297,7 @@ def test_tensorboard_projects_training_health_and_evaluation_by_step(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "runs" / "tensorboard-test",
+        run_name="tensorboard-test",
         validation=True,
         validation_split="validation",
         steps=2,
@@ -1247,7 +1316,10 @@ maximum_games = 2
 """,
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path),
+        output_directory=tmp_path / "runs" / "tensorboard-test",
+    )
 
     event_directory = result.run_path.parent / TENSORBOARD_DIRECTORY
     event_files = tuple(event_directory.glob("events.out.tfevents.*"))
@@ -1282,7 +1354,7 @@ def test_training_continues_when_tensorboard_writer_cannot_be_constructed(
         tmp_path,
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
     )
 
@@ -1294,7 +1366,9 @@ def test_training_continues_when_tensorboard_writer_cannot_be_constructed(
         reject_writer,
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path), output_directory=tmp_path / "run"
+    )
 
     assert result.run_path.is_file()
     assert result.metrics_path.is_file()
@@ -1318,7 +1392,7 @@ def test_reported_throughput_excludes_the_time_a_cadence_spent_measuring(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
         validation_split="validation",
         steps=4,
@@ -1341,7 +1415,9 @@ maximum_games = 6
 """,
     )
 
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path), output_directory=tmp_path / "run"
+    )
 
     records = [
         json.loads(line)
@@ -1392,12 +1468,16 @@ def test_a_run_without_declared_cadences_records_only_what_it_cost(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
     )
     store = ResultsStore(tmp_path / "results")
 
-    result = run_training(load_config(TrainingConfig, path=config_path), store=store)
+    result = run_training(
+        load_config(TrainingConfig, path=config_path),
+        store=store,
+        output_directory=tmp_path / "run",
+    )
 
     assert result.readings == ()
     recorded = store.results()
@@ -1411,6 +1491,42 @@ def test_a_run_without_declared_cadences_records_only_what_it_cost(
     assert result.efficiency.active_positions_per_second is None
 
 
+def test_a_run_placed_by_hand_is_identified_by_where_it_went(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A run's identity is the directory holding it, not its configured name.
+
+    `checkpoint_reference` reads the run id back from the run path's name, so a
+    training-side reading has to record the same string. Were it to use the
+    configured name instead, a run placed with `--output-directory` would have
+    its in-training preview and its later canonical reading of the same
+    parameters land in a report as two unrelated checkpoints.
+    """
+
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        run_name="configured-name",
+        validation=False,
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    run_training(
+        load_config(TrainingConfig, path=config_path),
+        store=store,
+        output_directory=tmp_path / "placed-by-hand",
+    )
+
+    recorded = store.results()
+    assert recorded[0].checkpoint.run_id == "placed-by-hand"
+    assert recorded[0].checkpoint.label == "placed-by-hand-step-00000002"
+
+
 def test_declining_to_record_keeps_a_run_cost_out_of_committed_history(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -1422,7 +1538,7 @@ def test_declining_to_record_keeps_a_run_cost_out_of_committed_history(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
         extra="""
 [efficiency]
@@ -1431,7 +1547,11 @@ record = false
     )
     store = ResultsStore(tmp_path / "results")
 
-    result = run_training(load_config(TrainingConfig, path=config_path), store=store)
+    result = run_training(
+        load_config(TrainingConfig, path=config_path),
+        store=store,
+        output_directory=tmp_path / "run",
+    )
 
     assert store.results() == ()
     assert not (tmp_path / "results" / "records").exists()
@@ -1455,7 +1575,7 @@ def test_an_unaffordable_cadence_fails_before_training_starts(
         tmp_path,
         normalized=normalized,
         manifest=manifest,
-        output=tmp_path / "run",
+        run_name="run",
         validation=True,
         validation_split="validation",
         extra="""
@@ -1474,7 +1594,10 @@ maximum_games = 6
     )
 
     with pytest.raises(TrainingError, match="position\\(s\\) per optimizer step"):
-        run_training(load_config(TrainingConfig, path=config_path))
+        run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
 
     assert not (tmp_path / "run" / "run.json").exists()
 
@@ -1496,12 +1619,15 @@ def _train_at_declared_context(
         tmp_path / f"context-{maximum_context_plies}",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / f"run-{maximum_context_plies}",
+        run_name=f"run-{maximum_context_plies}",
         validation=False,
         maximum_context_plies=maximum_context_plies,
         train_selection=train_selection,
     )
-    run_training(load_config(TrainingConfig, path=config_path))
+    run_training(
+        load_config(TrainingConfig, path=config_path),
+        output_directory=tmp_path / f"run-{maximum_context_plies}",
+    )
 
 
 def _write_training_config(
@@ -1509,7 +1635,7 @@ def _write_training_config(
     *,
     normalized: Path,
     manifest: Path,
-    output: Path,
+    run_name: str,
     validation: bool,
     validation_split: str = "train",
     steps: int = 2,
@@ -1552,7 +1678,7 @@ shuffle = false
 """
     config_path.write_text(
         f"""
-output_directory = {json.dumps(str(output))}
+run_name = {json.dumps(run_name)}
 seed = 23
 steps = {steps}
 learning_rate = {learning_rate}

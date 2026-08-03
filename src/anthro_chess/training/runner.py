@@ -175,10 +175,15 @@ class _EfficiencyRecorder:
 def run_training(
     resolved_config: ResolvedConfig[TrainingConfig],
     *,
+    output_directory: Path,
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
 ) -> TrainingResult:
     """Run a bounded optimization on the resolved device and write provenance.
+
+    The configuration names the run and the caller says where it goes, so the
+    environment decides which filesystem holds a run rather than a checked-in
+    value deciding it.
 
     Passing no ``store`` runs any declared cadence and records nothing, which
     is what an exploratory run wants: committed history should hold readings
@@ -220,7 +225,9 @@ def run_training(
     except (DataLoadingError, OSError, ValueError, json.JSONDecodeError) as error:
         raise TrainingError(str(error)) from error
 
-    output_directory = config.output_directory
+    # Not `config.run_name`: `checkpoint_reference` reads a run's id back from
+    # its directory, and a reading recorded under a different one would not join.
+    run_id = output_directory.name
     try:
         output_directory.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -389,7 +396,7 @@ def run_training(
             compatibility=compatibility,
             checkpoint_metadata=checkpoint_metadata,
             schedule=schedule,
-            run_id=output_directory.name,
+            run_id=run_id,
             efficiency=efficiency_recorder,
         )
         _synchronize_device(device)
@@ -412,9 +419,9 @@ def run_training(
             validation_metrics = None
 
         final_checkpoint = CheckpointReference(
-            label=default_checkpoint_label(output_directory.name, config.steps),
+            label=default_checkpoint_label(run_id, config.steps),
             step=config.steps,
-            run_id=output_directory.name,
+            run_id=run_id,
             parameter_sha256=final_parameter_sha256,
         )
         efficiency_summary = efficiency_monitor.summary(
@@ -935,9 +942,9 @@ def _compatibility_record(
             "evaluation",
             "log_every_steps",
             "model",
-            "output_directory",
             "profile_phases",
             "resume_from",
+            "run_name",
             "steps",
             "train",
             "validation",
