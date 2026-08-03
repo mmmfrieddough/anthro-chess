@@ -14,10 +14,11 @@ from tensorboard.backend.event_processing.event_accumulator import (  # type: ig
 
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
-from anthro_chess.data import PrepareConfig, prepare_pgn
+from anthro_chess.data import PrepareConfig, SequenceDataLoader, prepare_pgn
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.evaluation.results.budget import build_budget_report
+from anthro_chess.models import CausalMoveModel, MoveModelBatch
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
     RUN_ARTIFACT_VERSION,
@@ -792,6 +793,102 @@ def test_runner_rejects_manifest_and_normalized_data_mismatch(
         run_training(load_config(TrainingConfig, path=config_path))
 
 
+def test_a_corpus_past_the_declared_context_refuses_before_the_first_step(
+    tmp_path: Path,
+) -> None:
+    """The mid-run death this replaces is reachable from the same corpus."""
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    output = tmp_path / "run"
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=output,
+        validation=False,
+        maximum_context_plies=8,
+    )
+    resolved = load_config(TrainingConfig, path=config_path)
+
+    with pytest.raises(TrainingError) as refusal:
+        run_training(resolved)
+
+    assert "longest game of 26 plies" in str(refusal.value)
+    assert "reaches ply index 26" in str(refusal.value)
+    assert "8 plies the model declares as its context" in str(refusal.value)
+    # Nothing ran: the run directory is created after the selections load.
+    assert not output.exists()
+
+    # Without the refusal this corpus reaches the model from inside the
+    # micro-batch loop, which handles only an exhausted loader.
+    loader = SequenceDataLoader.from_parquet(
+        prepared.normalized_path,
+        resolved.value.train.loader,
+        legal_actions=False,
+    )
+    batch = MoveModelBatch.from_sequence_batch(next(loader))
+    with pytest.raises(ValueError, match="past the 8 plies"):
+        CausalMoveModel(resolved.value.model)(batch)
+
+
+def test_the_declared_context_is_compared_against_chunked_reach(
+    tmp_path: Path,
+) -> None:
+    """A chunk keeps its game's ply indices, so it reaches past its own width."""
+
+    # The 26-ply game encodes to at most 27 plies, so it starts its last chunk
+    # at ply 24 and no chunk of it is wider than 8: its batches reach ply index
+    # 31 rather than 26.
+    chunked = "chunk_length = 8\n"
+    with pytest.raises(TrainingError, match="chunked at 8, and reaches ply index 31"):
+        _train_at_declared_context(tmp_path, 30, train_selection=chunked)
+    _train_at_declared_context(tmp_path, 32, train_selection=chunked)
+
+
+def test_the_declared_context_leaves_room_for_an_appended_terminal_action(
+    tmp_path: Path,
+) -> None:
+    """A manifest counts moves; the encoding may append one action past them."""
+
+    with pytest.raises(TrainingError, match="encodes to at most 27"):
+        _train_at_declared_context(tmp_path, 26)
+    _train_at_declared_context(tmp_path, 27)
+
+
+@pytest.mark.parametrize("recorded", [None, 0, "26"])
+def test_a_manifest_without_a_usable_longest_game_is_refused_rather_than_assumed(
+    tmp_path: Path,
+    recorded: object,
+) -> None:
+    """An unreadable length must not resolve to a bound that admits anything."""
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
+    if recorded is None:
+        del manifest["games"]["plies"]
+    else:
+        manifest["games"]["plies"]["maximum_per_game"] = recorded
+    prepared.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=False,
+    )
+
+    with pytest.raises(TrainingError, match="records no positive longest game"):
+        run_training(load_config(TrainingConfig, path=config_path))
+
+
 def test_two_selections_of_one_corpus_are_told_apart_by_the_run_record(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -1382,6 +1479,31 @@ maximum_games = 6
     assert not (tmp_path / "run" / "run.json").exists()
 
 
+def _train_at_declared_context(
+    tmp_path: Path,
+    maximum_context_plies: int,
+    *,
+    train_selection: str = "",
+) -> None:
+    """Train on the sample corpus against one declared context length."""
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path / f"context-{maximum_context_plies}",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / f"run-{maximum_context_plies}",
+        validation=False,
+        maximum_context_plies=maximum_context_plies,
+        train_selection=train_selection,
+    )
+    run_training(load_config(TrainingConfig, path=config_path))
+
+
 def _write_training_config(
     tmp_path: Path,
     *,
@@ -1395,6 +1517,7 @@ def _write_training_config(
     checkpoint_every_steps: int = 100,
     resume_from: str | Path | None = None,
     model_dim: int = 16,
+    maximum_context_plies: int | None = None,
     shuffle: bool = False,
     device: str = "cpu",
     precision: str = "float32",
@@ -1409,6 +1532,11 @@ def _write_training_config(
         f"resume_from = {json.dumps(str(resume_from))}\n"
         if resume_from is not None
         else ""
+    )
+    context_declaration = (
+        ""
+        if maximum_context_plies is None
+        else f"maximum_context_plies = {maximum_context_plies}\n"
     )
     validation_selection = ""
     if validation:
@@ -1444,7 +1572,7 @@ attention_heads = 2
 transformer_layers = 1
 feedforward_dim = 24
 dropout = 0.0
-
+{context_declaration}
 [train]
 normalized = {json.dumps(str(normalized))}
 manifest = {json.dumps(str(manifest))}

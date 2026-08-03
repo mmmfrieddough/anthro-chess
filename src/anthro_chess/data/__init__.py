@@ -43,6 +43,7 @@ from anthro_chess.data.loading import (
     SequenceInputs,
     SequenceLoaderState,
     collate_sequences,
+    maximum_position_bound,
 )
 from anthro_chess.data.prepare import (
     AcquisitionResult,
@@ -124,6 +125,7 @@ __all__ = [
     "derive_termination",
     "encode_game",
     "encoding_identity",
+    "maximum_position_bound",
     "prepare_pgn",
     "terminal_action_for",
 ]

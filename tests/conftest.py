@@ -259,6 +259,14 @@ def _write_corpus(
                 "input": {"file_name": "fixture.pgn", "sha256": "0" * 64},
                 "split": {"algorithm": "sha256-threshold-v2", "seed": "fixture"},
                 "selection": {"algorithm": "fixture"},
+                # Counted from moves alone, the way preparation counts it. A
+                # training run reads the longest game from here to decide
+                # whether the model can encode this corpus at all.
+                "games": {
+                    "plies": {
+                        "maximum_per_game": max(row["ply_count"] for row in rows),
+                    },
+                },
                 "output": {
                     "format": "parquet",
                     "compression": "zstd",
