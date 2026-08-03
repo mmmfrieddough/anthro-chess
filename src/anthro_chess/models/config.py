@@ -19,10 +19,11 @@ class MoveModelConfig(ConfigModel):
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
     #: One past the furthest ply index the model can encode, and the size of
     #: both tables derived from it. A shape assertion rather than a dial: the
-    #: longest game in the million-game blitz corpus is 306 plies, and a chunked
-    #: selection reaches ``game_plies + chunk_length - 1``, so this covers that
-    #: game at any chunk length up to 718. It costs memory only — attention is
-    #: quadratic in the padded batch width, which this does not set.
+    #: longest game in the million-game blitz corpus is 306 plies, which this
+    #: covers at every chunk length. ``data.maximum_position_bound`` owns what
+    #: a corpus actually reaches, and a training run refuses to start when that
+    #: passes this. It costs memory only — attention is quadratic in the padded
+    #: batch width, which this does not set.
     maximum_context_plies: int = Field(default=1024, ge=1)
 
     @model_validator(mode="after")

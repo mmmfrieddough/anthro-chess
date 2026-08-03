@@ -119,6 +119,17 @@ for one. Legal actions are packed only where something reads them, which is
 policy scoring and the construction-time legality check, so a training batch
 carries none and a scoring batch carries them as before.
 
+The model also declares how far it can encode, which sizes those derived tables
+and bounds which batches it accepts. A run compares that declaration against the
+longest game its corpus manifest already records, carried through the
+selection's chunk length: a chunk keeps its game's own ply indices, so a late
+chunk reaches past its own width and game length alone is the wrong quantity. A
+corpus that would exceed the declaration makes the run refuse to start rather
+than fail at whichever step that game happened to land on. Refusing is
+deliberate rather than filtering, because a corpus a model cannot encode is a
+choice between raising the declaration and selecting different data, not
+something the loader should resolve by quietly dropping games.
+
 The shared training runner also lives in `anthro_chess.training` and uses those
 ordinary loader, model, loss, and validation boundaries. It resolves explicit
 `cpu`, `mps`, `cuda`, or `auto` device selection at one boundary and moves the

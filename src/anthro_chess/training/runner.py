@@ -27,6 +27,7 @@ from anthro_chess.data import (
     StreamingSequenceDataLoader,
     build_sharded_index,
     encoding_identity,
+    maximum_position_bound,
 )
 from anthro_chess.data.artifacts import (
     ShardIdentity,
@@ -202,9 +203,17 @@ def run_training(
         # each position's legal actions. Only the second needs them packed, and
         # under the shard-backed loader they are roughly a third of what every
         # batch pickles on its way out of a worker.
-        train = _load_data_selection(config.train, legal_actions=False)
+        train = _load_data_selection(
+            config.train,
+            legal_actions=False,
+            maximum_context_plies=config.model.maximum_context_plies,
+        )
         validation = (
-            _load_data_selection(config.validation, legal_actions=True)
+            _load_data_selection(
+                config.validation,
+                legal_actions=True,
+                maximum_context_plies=config.model.maximum_context_plies,
+            )
             if config.validation is not None
             else None
         )
@@ -1144,6 +1153,7 @@ def _load_data_selection(
     config: SequenceDataConfig,
     *,
     legal_actions: bool,
+    maximum_context_plies: int,
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1153,7 +1163,12 @@ def _load_data_selection(
     manifest = json.loads(manifest_bytes)
     if not isinstance(manifest, dict):
         raise DataLoadingError("data manifest must contain a JSON object")
-    shards = _validate_manifest(manifest, manifest_path, paths)
+    validate_manifest_compatibility(manifest, manifest_path)
+    # Ahead of the output check, which hashes every shard end to end. Both
+    # refuse the run, and this one reads two integers, so it is the cheaper of
+    # the two to fail on.
+    _reject_uncoverable_corpus(manifest, config, maximum_context_plies)
+    shards = validate_manifest_outputs(manifest, manifest_path, paths)
     manifest_sha256 = sha256(manifest_bytes).hexdigest()
     loader = _open_loader(
         config,
@@ -1214,10 +1229,40 @@ def _open_loader(
     )
 
 
-def _validate_manifest(
+def _reject_uncoverable_corpus(
     manifest: dict[str, Any],
-    manifest_path: Path,
-    paths: tuple[Path, ...],
-) -> tuple[ShardIdentity, ...]:
-    validate_manifest_compatibility(manifest, manifest_path)
-    return validate_manifest_outputs(manifest, manifest_path, paths)
+    config: SequenceDataConfig,
+    maximum_context_plies: int,
+) -> None:
+    """Refuse a corpus the model could not encode, before a shard is read.
+
+    The model refuses a batch reaching past the context it declares, and it
+    does so from inside the micro-batch loop, which has no handler. Left there,
+    one long game kills a run at whichever step it happened to land on.
+
+    Preparation already recorded the longest game, so nothing is scanned. That
+    number is corpus-wide rather than per split or per selection, which fails
+    closed: this can refuse a corpus whose long games the selection would never
+    have reached, and it never admits one that it would. It counts moves only,
+    and the encoding appends one terminal action to a game a player ended on
+    their own turn, so the longest encoded sequence is one past it.
+    """
+
+    manifest_path = config.manifest
+    chunk_length = config.loader.chunk_length
+    games = manifest.get("games")
+    plies = games.get("plies") if isinstance(games, Mapping) else None
+    longest = plies.get("maximum_per_game") if isinstance(plies, Mapping) else None
+    if type(longest) is not int or longest < 1:
+        raise DataLoadingError(f"{manifest_path} records no positive longest game")
+    encoded = longest + 1
+    bound = maximum_position_bound(encoded, chunk_length)
+    if bound <= maximum_context_plies:
+        return
+    chunked = "" if chunk_length is None else f", chunked at {chunk_length},"
+    raise DataLoadingError(
+        f"{manifest_path} records a longest game of {longest} plies, which "
+        f"encodes to at most {encoded}{chunked} and reaches ply index "
+        f"{bound - 1}, past the {maximum_context_plies} plies the model "
+        f"declares as its context"
+    )
