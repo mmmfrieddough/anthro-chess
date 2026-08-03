@@ -15,6 +15,7 @@ from anthro_chess.data import (
     SequenceDataLoader,
     SequenceDataset,
     SequenceLoaderConfig,
+    maximum_position_bound,
     prepare_pgn,
 )
 from anthro_chess.data.schema import SCHEMA_VERSION
@@ -98,6 +99,42 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
     assert batch.ply_indices.tolist() == [[0, 1], [2, 3], [4, 0]]
     assert batch.inputs.previous_action_id.values[1][0] == _action_ids(("e7e5",))[0]
     assert bool(batch.inputs.previous_action_id.present[1][0]) is True
+
+
+@pytest.mark.parametrize("chunk_length", [None, 1, 3, 5, 8, 12])
+def test_maximum_position_bound_covers_the_furthest_chunk_of_a_corpus(
+    tmp_path: Path,
+    chunk_length: int | None,
+) -> None:
+    """The longest game bounds every chunk, and chunking moves that bound."""
+
+    moves = (
+        "e2e4",
+        "e7e5",
+        "g1f3",
+        "b8c6",
+        "f1b5",
+        "a7a6",
+        "b5a4",
+        "g8f6",
+    )
+    path = _write_games(tmp_path, [_row(1, moves[:3]), _row(2, moves)])
+
+    dataset = SequenceDataset.from_parquet(
+        path,
+        split="train",
+        chunk_length=chunk_length,
+    )
+
+    # What a batch declares is its furthest chunk start plus its padded width,
+    # and the two need not come from the same game, so the corpus-wide worst
+    # case pairs the largest of each.
+    starts = [example.start_ply for example in dataset]
+    widths = [len(example.plies) for example in dataset]
+    assert max(starts) + max(widths) == maximum_position_bound(
+        len(moves),
+        chunk_length,
+    )
 
 
 def test_length_buckets_keep_similarly_sized_full_games_together(

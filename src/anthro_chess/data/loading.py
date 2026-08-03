@@ -807,6 +807,28 @@ def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
         raise DataLoadingError(f"invalid normalized game in {path}: {error}") from error
 
 
+def maximum_position_bound(maximum_game_plies: int, chunk_length: int | None) -> int:
+    """Return the furthest position bound batches over a corpus can declare.
+
+    ``MoveModelBatch.position_bound`` is one batch's own reach: its furthest
+    chunk start plus its padded width. Chunking is what separates that from
+    game length, so a caller comparing a corpus against a model's declared
+    context has to account for it here rather than compare game lengths.
+
+    Both loaders cut non-overlapping chunks, so a game of ``L`` plies starts
+    its last chunk at ``(L - 1) // C * C`` and has no chunk wider than
+    ``min(C, L)``. Both grow with ``L``, so the longest game in a corpus bounds
+    a batch that mixes its last chunk with any other game's widest one, and
+    that worst case is what this returns. Unchunked, a row is a whole game and
+    the reach is ``L``.
+    """
+
+    if chunk_length is None:
+        return maximum_game_plies
+    last_chunk_start = (maximum_game_plies - 1) // chunk_length * chunk_length
+    return last_chunk_start + min(chunk_length, maximum_game_plies)
+
+
 def _chunk_plies(
     plies: tuple[PlyEncoding, ...],
     chunk_length: int | None,
