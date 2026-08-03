@@ -21,7 +21,8 @@ import logging
 import random
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -75,23 +76,21 @@ from anthro_chess.evaluation.pool import (
     FrozenPool,
     load_pool,
 )
+from anthro_chess.evaluation.recording import (
+    ResultRecorder,
+    checkpoint_reference,
+    pool_dataset_reference,
+)
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailReference,
     DetailStore,
     Measurement,
     ResultEnvelope,
-    ResultRecordError,
     ResultsStore,
-    ResultsStoreError,
-    build_result,
-    configuration_reference,
-    dataset_reference,
-    default_checkpoint_label,
     measurement,
     paired_contributions,
     projection_content_digest,
@@ -187,9 +186,9 @@ class CheckpointEvaluationResult:
     adjudication: AdjudicationReport | None
     dependency: DependencyTestResult | None
     noise: NoiseCharacterization | None
-    envelopes: tuple[ResultEnvelope, ...]
-    recorded_paths: tuple[Path, ...]
-    detail_paths: tuple[Path, ...]
+    envelopes: tuple[ResultEnvelope, ...] = ()
+    recorded_paths: tuple[Path, ...] = ()
+    detail_paths: tuple[Path, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         """Return the full structured result, detail tier included."""
@@ -443,46 +442,45 @@ def evaluate_checkpoint(
         inputs.scoring.rows,
         MOVE_PREDICTION_PROJECTION,
     )
-    checkpoint = _checkpoint_reference(config, runner)
-    data = _dataset_reference(inputs, component)
-    recorded_at = datetime.now(tz=UTC)
-    noise = _characterize_noise(
-        config,
-        inputs,
-        positions,
-        adjudication,
+    checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
+    data = pool_dataset_reference(
+        inputs.pool,
+        inputs.selection,
         component,
-        recorded_at=recorded_at,
+        error=CheckpointEvaluationError,
     )
 
-    envelopes: list[ResultEnvelope] = []
-    detail_paths: list[Path] = []
-    configuration = configuration_reference(
-        resolved_config.as_record(),
-        source=resolved_config.provenance.source,
-        overrides=resolved_config.provenance.overrides,
-    )
-    result = CheckpointEvaluationResult(
+    with ResultRecorder(
+        resolved_config,
+        kind=HELD_OUT_KIND,
+        benchmark=HELD_OUT_BENCHMARK,
         checkpoint=checkpoint,
-        dataset=data,
-        view=inputs.selection,
-        leakage=leakage,
-        slices=slices,
-        adjudication=adjudication,
-        dependency=dependency,
-        noise=noise,
-        envelopes=(),
-        recorded_paths=(),
-        detail_paths=(),
-    )
-
-    try:
-        held_out_detail = _write_detail(
-            detail,
-            kind=HELD_OUT_KIND,
+        store=store,
+        detail=detail,
+        error=CheckpointEvaluationError,
+    ) as recorder:
+        noise = _characterize_noise(
+            config,
+            inputs,
+            positions,
+            adjudication,
+            component,
+            recorded_at=recorder.recorded_at,
+        )
+        recorder.characterize(noise)
+        result = CheckpointEvaluationResult(
             checkpoint=checkpoint,
-            recorded_at=recorded_at,
-            payload={
+            dataset=data,
+            view=inputs.selection,
+            leakage=leakage,
+            slices=slices,
+            adjudication=adjudication,
+            dependency=dependency,
+            noise=noise,
+        )
+        recorder.add(
+            slice_measurements(slices, component),
+            payload=lambda: {
                 **result.as_record(),
                 "positions": (
                     [position.as_record() for position in positions]
@@ -491,92 +489,34 @@ def evaluate_checkpoint(
                 ),
             },
             description="Slice tables and view provenance for one evaluation.",
-            paths=detail_paths,
-        )
-        envelopes.append(
-            build_result(
-                kind=HELD_OUT_KIND,
-                benchmark=HELD_OUT_BENCHMARK,
-                checkpoint=checkpoint,
-                configuration=configuration,
-                data=data,
-                measurements=slice_measurements(slices, component),
-                detail=held_out_detail,
-                recorded_at=recorded_at,
-            )
+            data=data,
         )
         if adjudication is not None:
-            adjudication_detail = _write_detail(
-                detail,
+            recorder.add(
+                adjudication.measurements(component),
                 kind=ADJUDICATION_KIND,
-                checkpoint=checkpoint,
-                recorded_at=recorded_at,
-                payload=adjudication.as_record(),
+                benchmark=ADJUDICATION_BENCHMARK,
+                payload=adjudication.as_record,
                 description=(
                     "Per-predicate human and model rates with rating-band "
                     "drill-down and opportunity counts."
                 ),
-                paths=detail_paths,
-            )
-            envelopes.append(
-                build_result(
-                    kind=ADJUDICATION_KIND,
-                    benchmark=ADJUDICATION_BENCHMARK,
-                    checkpoint=checkpoint,
-                    configuration=configuration,
-                    data=data,
-                    measurements=adjudication.measurements(component),
-                    detail=adjudication_detail,
-                    recorded_at=recorded_at,
-                )
+                data=data,
             )
         if dependency is not None:
-            dependency_payload = dependency.as_record()
-            contributions = _dependency_contributions(dependency, config.noise)
-            if contributions is not None:
-                dependency_payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
-            dependency_detail = _write_detail(
-                detail,
+            recorder.add(
+                _dependency_measurements(dependency, component),
                 kind=DEPENDENCY_KIND,
-                checkpoint=checkpoint,
-                recorded_at=recorded_at,
-                payload=dependency_payload,
+                benchmark=DEPENDENCY_BENCHMARK,
+                payload=partial(_dependency_payload, dependency, config.noise),
                 description=(
-                    "Cross-conditioning and within-game dependency tables, and "
-                    "the aligned per-game values a later paired floor needs."
+                    "Cross-conditioning and within-game dependency tables, "
+                    "and the aligned per-game values a later paired floor "
+                    "needs."
                 ),
-                paths=detail_paths,
+                data=data,
             )
-            envelopes.append(
-                build_result(
-                    kind=DEPENDENCY_KIND,
-                    benchmark=DEPENDENCY_BENCHMARK,
-                    checkpoint=checkpoint,
-                    configuration=configuration,
-                    data=data,
-                    measurements=_dependency_measurements(dependency, component),
-                    detail=dependency_detail,
-                    recorded_at=recorded_at,
-                )
-            )
-    except (ResultRecordError, ResultsStoreError) as error:
-        raise CheckpointEvaluationError(str(error)) from error
-
-    recorded_paths: list[Path] = []
-    if store is not None:
-        try:
-            recorded_paths = [store.append(envelope) for envelope in envelopes]
-            if noise is not None:
-                recorded_paths.append(store.append_characterization(noise))
-        except (ResultRecordError, ResultsStoreError) as error:
-            raise CheckpointEvaluationError(str(error)) from error
-
-    return replace(
-        result,
-        envelopes=tuple(envelopes),
-        recorded_paths=tuple(recorded_paths),
-        detail_paths=tuple(detail_paths),
-    )
+    return replace(result, **recorder.fields)
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
@@ -765,6 +705,19 @@ def _dependency_measurements(
     return tuple(values)
 
 
+def _dependency_payload(
+    dependency: DependencyTestResult,
+    config: NoiseConfig,
+) -> dict[str, object]:
+    """Return the dependency tables plus the paired inputs a later floor needs."""
+
+    payload = dependency.as_record()
+    contributions = _dependency_contributions(dependency, config)
+    if contributions is not None:
+        payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
+    return payload
+
+
 def _dependency_contributions(
     dependency: DependencyTestResult,
     config: NoiseConfig,
@@ -806,60 +759,6 @@ def _dependency_contributions(
         coverage=config.coverage,
         confidence=config.confidence,
     ).as_record()
-
-
-def _write_detail(
-    detail: DetailStore | None,
-    *,
-    kind: str,
-    checkpoint: CheckpointReference,
-    recorded_at: datetime,
-    payload: Mapping[str, object],
-    description: str,
-    paths: list[Path],
-) -> DetailReference | None:
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    relative = Path(kind) / checkpoint.label / f"{stamp}.json"
-    reference = detail.write(relative, dict(payload), description=description)
-    paths.append(detail.root / relative)
-    return reference
-
-
-def _checkpoint_reference(
-    config: CheckpointEvaluationConfig,
-    runner: CheckpointModelRunner,
-) -> CheckpointReference:
-    run_id = runner.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        runner.global_step,
-    )
-    return CheckpointReference(
-        label=label,
-        step=runner.global_step,
-        run_id=run_id,
-        parameter_sha256=runner.parameter_sha256(),
-    )
-
-
-def _dataset_reference(
-    inputs: _EvaluationInputs,
-    component: DataComponent,
-) -> DatasetReference:
-    pool = inputs.pool.manifest.get("pool")
-    if not isinstance(pool, Mapping):
-        raise CheckpointEvaluationError("evaluation pool manifest has no pool identity")
-    record = inputs.selection.as_record()
-    return dataset_reference(
-        pool_id=str(pool["id"]),
-        pool_version=int(pool["version"]),
-        view=inputs.selection.name,
-        selected_games=inputs.selection.selected_games,
-        game_ids_sha256=str(record["game_ids_sha256"]),
-        components=[component],
-    )
 
 
 def _maturity(runner: CheckpointModelRunner) -> MaturityContext:

@@ -51,8 +51,8 @@ import logging
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -72,7 +72,7 @@ from anthro_chess.evaluation.decisions import (
     summarize_decisions,
 )
 from anthro_chess.evaluation.dependency import ConditioningKind
-from anthro_chess.evaluation.execution import execution_record
+from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.games import (
     GENERATION_VERSION,
     GameRecord,
@@ -86,22 +86,20 @@ from anthro_chess.evaluation.games import (
     standard_positions,
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
+from anthro_chess.evaluation.recording import (
+    ResultRecorder,
+    pool_dataset_reference,
+    resolve_model,
+)
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     DatasetReference,
-    DetailReference,
     DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultRecordError,
     ResultsStore,
-    ResultsStoreError,
-    build_result,
-    configuration_reference,
-    dataset_reference,
-    default_checkpoint_label,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
@@ -126,8 +124,7 @@ from anthro_chess.evaluation.results.metrics import (
     MOVE_PREDICTION_PROJECTION,
 )
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
-from anthro_chess.inference.runner import ModelRunnerError
+from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
 LADDER_BENCHMARK_VERSION = 1
@@ -665,7 +662,14 @@ def benchmark_ladder(
     """
 
     config = resolved_config.value
-    loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
+    loaded, identity = resolve_model(
+        config.model,
+        runner,
+        checkpoint,
+        label=config.checkpoint_label,
+        run_root=run_root,
+        error=LadderBenchmarkError,
+    )
     source, view, dataset = _position_source(config)
     seats = seat_keys(config)
     labels = {seat: f"{identity.label}-{seat.label}" for seat in seats}
@@ -703,7 +707,7 @@ def benchmark_ladder(
         maximum_spread=config.fit.maximum_spread,
     )
     profiles = _error_profiles(DecisionSet(tuple(samples), unscored))
-    device = _device(loaded)
+    device = runner_device(loaded)
     workload = _base_workload(config, source)
     measured_seats = tuple(
         LadderSeat(
@@ -1243,21 +1247,15 @@ def _dataset_reference(
     it through the workload's position source instead.
     """
 
-    identity = pool.manifest.get("pool")
-    if not isinstance(identity, Mapping):
-        raise LadderBenchmarkError("evaluation pool manifest has no pool identity")
     try:
         component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
     except FingerprintError as error:
         raise LadderBenchmarkError(str(error)) from error
-    record = selection.as_record()
-    return dataset_reference(
-        pool_id=str(identity["id"]),
-        pool_version=int(identity["version"]),
-        view=selection.name,
-        selected_games=selection.selected_games,
-        game_ids_sha256=str(record["game_ids_sha256"]),
-        components=[component],
+    return pool_dataset_reference(
+        pool,
+        selection,
+        component,
+        error=LadderBenchmarkError,
     )
 
 
@@ -1315,99 +1313,46 @@ def _record(
     declares its own workload and so owns its own series.
     """
 
-    configuration = configuration_reference(
-        resolved_config.as_record(),
-        source=resolved_config.provenance.source,
-        overrides=resolved_config.provenance.overrides,
-    )
-    recorded_at = datetime.now(tz=UTC)
-    detail_paths: list[Path] = []
-    envelopes: list[ResultEnvelope] = []
-    try:
+    with ResultRecorder(
+        resolved_config,
+        kind=LADDER_KIND,
+        benchmark=LADDER_BENCHMARK,
+        checkpoint=result.checkpoint,
+        store=store,
+        detail=detail,
+        error=LadderBenchmarkError,
+    ) as recorder:
         for seat in result.seats:
             measurements = _seat_measurements(seat)
             if not measurements:
                 continue
-            envelopes.append(
-                build_result(
-                    kind=LADDER_KIND,
-                    benchmark=LADDER_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    data=result.dataset,
-                    execution=seat.execution,
-                    measurements=measurements,
-                    detail=_write_detail(
-                        detail,
-                        checkpoint=result.checkpoint,
-                        slug=f"seat-{_slug(seat.label)}",
-                        description=f"Rating-ladder seat: {seat.label}",
-                        payload=_seat_payload(result, seat),
-                        recorded_at=recorded_at,
-                        paths=detail_paths,
-                    ),
-                    recorded_at=recorded_at,
-                )
+            recorder.add(
+                measurements,
+                payload=partial(_seat_payload, result, seat),
+                description=f"Rating-ladder seat: {seat.label}",
+                slug=f"seat-{_slug(seat.label)}",
+                data=result.dataset,
+                execution=seat.execution,
             )
         for reading in result.readings:
-            envelopes.append(
-                build_result(
-                    kind=LADDER_KIND,
-                    benchmark=LADDER_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    data=result.dataset,
-                    execution=reading.execution,
-                    measurements=_reading_measurements(reading),
-                    detail=_write_detail(
-                        detail,
-                        checkpoint=result.checkpoint,
-                        slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
-                        description=f"Rating ladder: {reading.label}",
-                        payload=_reading_payload(result, reading),
-                        recorded_at=recorded_at,
-                        paths=detail_paths,
-                    ),
-                    recorded_at=recorded_at,
-                )
+            recorder.add(
+                _reading_measurements(reading),
+                payload=partial(_reading_payload, result, reading),
+                description=f"Rating ladder: {reading.label}",
+                slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
+                data=result.dataset,
+                execution=reading.execution,
             )
         if result.response is not None:
-            envelopes.append(
-                build_result(
-                    kind=LADDER_KIND,
-                    benchmark=LADDER_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    data=result.dataset,
-                    execution=result.response.execution,
-                    measurements=_response_measurements(result.response),
-                    detail=_write_detail(
-                        detail,
-                        checkpoint=result.checkpoint,
-                        slug="temperature-response",
-                        description="Rating-ladder temperature response",
-                        payload=result.response.as_record(),
-                        recorded_at=recorded_at,
-                        paths=detail_paths,
-                    ),
-                    recorded_at=recorded_at,
-                )
+            recorder.add(
+                _response_measurements(result.response),
+                payload=result.response.as_record,
+                description="Rating-ladder temperature response",
+                slug="temperature-response",
+                data=result.dataset,
+                execution=result.response.execution,
             )
-    except ResultRecordError as error:
-        raise LadderBenchmarkError(str(error)) from error
-
-    recorded_paths: list[Path] = []
-    if store is not None:
-        try:
-            recorded_paths = [store.append(envelope) for envelope in envelopes]
-        except (ResultRecordError, ResultsStoreError) as error:
-            raise LadderBenchmarkError(str(error)) from error
-    return replace(
-        result,
-        envelopes=tuple(envelopes),
-        recorded_paths=tuple(recorded_paths),
-        detail_paths=tuple(detail_paths),
-    )
+    return replace(result, **recorder.fields)
 
 
 def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:
@@ -1556,27 +1501,6 @@ def _reading_payload(
     return payload
 
 
-def _write_detail(
-    detail: DetailStore | None,
-    *,
-    checkpoint: CheckpointReference,
-    slug: str,
-    description: str,
-    payload: Mapping[str, Any],
-    recorded_at: datetime,
-    paths: list[Path],
-) -> DetailReference | None:
-    """Write one bulk payload and return its summary-tier reference."""
-
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    relative = Path(LADDER_KIND) / checkpoint.label / f"{stamp}-{slug}.json"
-    reference = detail.write(relative, dict(payload), description=description)
-    paths.append(detail.root / relative)
-    return reference
-
-
 def _held_white(record: GameRecord, seat: SeatKey) -> bool:
     """Return whether one seat configuration held white in one recorded game."""
 
@@ -1632,45 +1556,6 @@ def _log_summary(result: LadderBenchmarkResult) -> None:
             reading.ladder_error,
             reading.slope,
         )
-
-
-def _resolve_model(
-    config: LadderBenchmarkConfig,
-    runner: ActionModelRunner | None,
-    checkpoint: CheckpointReference | None,
-    run_root: Path | None,
-) -> tuple[ActionModelRunner, CheckpointReference]:
-    """Return the runner to play with and the checkpoint identity to record."""
-
-    if runner is not None:
-        if checkpoint is None:
-            raise LadderBenchmarkError(
-                "an explicitly supplied runner needs a checkpoint reference to "
-                "record its results against"
-            )
-        return runner, checkpoint
-    try:
-        loaded = CheckpointModelRunner.load(config.model, run_root=run_root)
-    except ModelRunnerError as error:
-        raise LadderBenchmarkError(str(error)) from error
-    run_id = loaded.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        loaded.global_step,
-    )
-    return loaded, CheckpointReference(
-        label=label,
-        step=loaded.global_step,
-        run_id=run_id,
-        parameter_sha256=loaded.parameter_sha256(),
-    )
-
-
-def _device(runner: ActionModelRunner) -> torch.device:
-    """Return the device a runner executes on, defaulting to the CPU."""
-
-    device = getattr(runner, "device", None)
-    return device if isinstance(device, torch.device) else torch.device("cpu")
 
 
 def _rating(strength: float) -> float:

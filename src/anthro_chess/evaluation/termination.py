@@ -39,12 +39,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
 import chess
-import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 from torch import Tensor
 
@@ -69,7 +67,7 @@ from anthro_chess.evaluation.curves import (
     compare_curves,
     distribution_distance,
 )
-from anthro_chess.evaluation.execution import execution_record
+from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.games import (
     GENERATION_VERSION,
     GameRecord,
@@ -88,6 +86,11 @@ from anthro_chess.evaluation.policy import (
     score_terminal_actions,
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
+from anthro_chess.evaluation.recording import (
+    ResultRecorder,
+    pool_dataset_reference,
+    resolve_model,
+)
 from anthro_chess.evaluation.reference import (
     ReferenceConfig,
     minimum_reference_games,
@@ -99,18 +102,11 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailReference,
     DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultRecordError,
     ResultsStore,
-    ResultsStoreError,
-    build_result,
-    configuration_reference,
-    dataset_reference,
-    default_checkpoint_label,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
@@ -141,8 +137,7 @@ from anthro_chess.evaluation.scoring import (
 )
 from anthro_chess.evaluation.slices import material_balance, rating_band_name
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
-from anthro_chess.inference.runner import ModelRunnerError
+from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
@@ -769,7 +764,14 @@ def benchmark_termination(
     """
 
     config = resolved_config.value
-    loaded, identity = _resolve_model(config, runner, checkpoint, run_root)
+    loaded, identity = resolve_model(
+        config.model,
+        runner,
+        checkpoint,
+        label=config.checkpoint_label,
+        run_root=run_root,
+        error=TerminationBenchmarkError,
+    )
     pool = _load_pool(config)
     reference, reference_view, dataset = _load_reference(config, pool)
 
@@ -1106,7 +1108,7 @@ def _score_decisions(
     except ScoringError as error:
         raise TerminationBenchmarkError(str(error)) from error
 
-    device = _device(runner)
+    device = runner_device(runner)
     scored: list[TerminalActionPolicy] = []
     loader = SequenceDataLoader(inputs.dataset, inputs.loader_config)
     for sequence_batch in loader:
@@ -1332,18 +1334,11 @@ def _dataset_reference(
 ) -> DatasetReference:
     """Describe the human games one reading read."""
 
-    identity = pool.manifest.get("pool")
-    if not isinstance(identity, Mapping):
-        raise TerminationBenchmarkError("evaluation pool manifest has no pool identity")
-    component = _projection_component(rows)
-    record = selection.as_record()
-    return dataset_reference(
-        pool_id=str(identity["id"]),
-        pool_version=int(identity["version"]),
-        view=selection.name,
-        selected_games=selection.selected_games,
-        game_ids_sha256=str(record["game_ids_sha256"]),
-        components=[component],
+    return pool_dataset_reference(
+        pool,
+        selection,
+        _projection_component(rows),
+        error=TerminationBenchmarkError,
     )
 
 
@@ -1371,7 +1366,7 @@ def _generated_execution(
     """
 
     return execution_record(
-        _device(runner),
+        runner_device(runner),
         {
             "generation_version": GENERATION_VERSION,
             "positions": {"kind": "standard-start"},
@@ -1409,7 +1404,7 @@ def _mix_execution(
     """
 
     return execution_record(
-        _device(runner),
+        runner_device(runner),
         {
             "generation_version": GENERATION_VERSION,
             "positions": {"kind": "standard-start"},
@@ -1443,109 +1438,53 @@ def _record(
     scored, since it generated nothing at all.
     """
 
-    configuration = configuration_reference(
-        resolved_config.as_record(),
-        source=resolved_config.provenance.source,
-        overrides=resolved_config.provenance.overrides,
-    )
-    recorded_at = datetime.now(tz=UTC)
-    detail_paths: list[Path] = []
-    envelopes: list[ResultEnvelope] = []
-    try:
+    with ResultRecorder(
+        resolved_config,
+        kind=TERMINATION_KIND,
+        benchmark=TERMINATION_BENCHMARK,
+        checkpoint=result.checkpoint,
+        store=store,
+        detail=detail,
+        error=TerminationBenchmarkError,
+    ) as recorder:
         for reading in result.generated:
-            detail_reference = _write_detail(
-                detail,
-                checkpoint=result.checkpoint,
-                slug=f"generated-t{_slug(reading.temperature)}",
+            recorder.add(
+                _generated_measurements(reading),
+                payload=reading.as_record,
                 description=f"Game termination: {reading.label}",
-                payload=reading.as_record(),
-                recorded_at=recorded_at,
-                paths=detail_paths,
-            )
-            envelopes.append(
-                build_result(
-                    kind=TERMINATION_KIND,
-                    benchmark=TERMINATION_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    # Provenance rather than identity: the human reference
-                    # shaped the guardrail's comparison rate and the deficit's
-                    # bands, but what identifies the series is the recipe the
-                    # games were played under, per decision 0020.
-                    data=result.dataset,
-                    execution=reading.execution,
-                    measurements=_generated_measurements(reading),
-                    detail=detail_reference,
-                    recorded_at=recorded_at,
-                )
+                slug=f"generated-t{_slug(reading.temperature)}",
+                # Provenance rather than identity: the human reference shaped
+                # the guardrail's comparison rate and the deficit's bands, but
+                # what identifies the series is the recipe the games were
+                # played under, per decision 0020.
+                data=result.dataset,
+                execution=reading.execution,
             )
         for mix in result.mixes:
-            detail_reference = _write_detail(
-                detail,
-                checkpoint=result.checkpoint,
-                slug=(f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}"),
+            recorder.add(
+                _mix_measurements(mix),
+                payload=mix.as_record,
                 description=f"Termination mix: {mix.label}",
-                payload=mix.as_record(),
-                recorded_at=recorded_at,
-                paths=detail_paths,
-            )
-            envelopes.append(
-                build_result(
-                    kind=TERMINATION_KIND,
-                    benchmark=TERMINATION_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    data=result.dataset,
-                    execution=mix.execution,
-                    measurements=_mix_measurements(mix),
-                    detail=detail_reference,
-                    recorded_at=recorded_at,
-                )
+                slug=f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}",
+                data=result.dataset,
+                execution=mix.execution,
             )
         held_out = result.held_out
         if held_out is not None:
-            measurements = _held_out_measurements(held_out)
-            detail_reference = _write_detail(
-                detail,
-                checkpoint=result.checkpoint,
-                slug="held-out-resignation",
+            # A pass that measured nothing still writes its payload, which is
+            # what `add` does with empty measurements: the reading itself is
+            # the evidence for why there is nothing to commit.
+            recorder.add(
+                _held_out_measurements(held_out),
+                payload=held_out.as_record,
                 description="Held-out resignation prediction",
-                payload=held_out.as_record(),
-                recorded_at=recorded_at,
-                paths=detail_paths,
+                slug="held-out-resignation",
+                # Series identity here, not provenance: this reading is a
+                # deterministic pass over fixed content and generated nothing,
+                # so the content is what it is scoped by.
+                data=held_out.dataset,
             )
-            if measurements:
-                envelopes.append(
-                    build_result(
-                        kind=TERMINATION_KIND,
-                        benchmark=TERMINATION_BENCHMARK,
-                        checkpoint=result.checkpoint,
-                        configuration=configuration,
-                        # Series identity here, not provenance: this reading is
-                        # a deterministic pass over fixed content and generated
-                        # nothing, so the content is what it is scoped by.
-                        data=held_out.dataset,
-                        measurements=measurements,
-                        detail=detail_reference,
-                        recorded_at=recorded_at,
-                    )
-                )
-    except ResultRecordError as error:
-        raise TerminationBenchmarkError(str(error)) from error
-
-    recorded_paths: list[Path] = []
-    if store is not None:
-        try:
-            recorded_paths = [store.append(envelope) for envelope in envelopes]
-        except (ResultRecordError, ResultsStoreError) as error:
-            raise TerminationBenchmarkError(str(error)) from error
-
-    return replace(
-        result,
-        envelopes=tuple(envelopes),
-        recorded_paths=tuple(recorded_paths),
-        detail_paths=tuple(detail_paths),
-    )
+    return replace(result, **recorder.fields)
 
 
 def _generated_measurements(reading: GeneratedReading) -> tuple[Measurement, ...]:
@@ -1663,59 +1602,6 @@ def _held_out_measurements(reading: HeldOutResignation) -> tuple[Measurement, ..
         )
         for identifier, value, sample_size in values
         if value is not None
-    )
-
-
-def _write_detail(
-    detail: DetailStore | None,
-    *,
-    checkpoint: CheckpointReference,
-    slug: str,
-    description: str,
-    payload: Mapping[str, Any],
-    recorded_at: datetime,
-    paths: list[Path],
-) -> DetailReference | None:
-    """Write one bulk payload and return its summary-tier reference."""
-
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    relative = Path(TERMINATION_KIND) / checkpoint.label / f"{stamp}-{slug}.json"
-    reference = detail.write(relative, dict(payload), description=description)
-    paths.append(detail.root / relative)
-    return reference
-
-
-def _resolve_model(
-    config: TerminationBenchmarkConfig,
-    runner: ActionModelRunner | None,
-    checkpoint: CheckpointReference | None,
-    run_root: Path | None,
-) -> tuple[ActionModelRunner, CheckpointReference]:
-    """Return the runner to measure and the checkpoint identity to record."""
-
-    if runner is not None:
-        if checkpoint is None:
-            raise TerminationBenchmarkError(
-                "an explicitly supplied runner needs a checkpoint reference to "
-                "record its results against"
-            )
-        return runner, checkpoint
-    try:
-        loaded = CheckpointModelRunner.load(config.model, run_root=run_root)
-    except ModelRunnerError as error:
-        raise TerminationBenchmarkError(str(error)) from error
-    run_id = loaded.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        loaded.global_step,
-    )
-    return loaded, CheckpointReference(
-        label=label,
-        step=loaded.global_step,
-        run_id=run_id,
-        parameter_sha256=loaded.parameter_sha256(),
     )
 
 
@@ -1851,13 +1737,6 @@ def _rate(part: int, whole: int) -> float | None:
     """Return a share, or ``None`` when there was nothing to take a share of."""
 
     return part / whole if whole else None
-
-
-def _device(runner: object) -> torch.device:
-    """Return the device a runner executes on, defaulting to the CPU."""
-
-    device = getattr(runner, "device", None)
-    return device if isinstance(device, torch.device) else torch.device("cpu")
 
 
 def _slug(value: float) -> str:

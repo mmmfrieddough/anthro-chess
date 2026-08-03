@@ -62,6 +62,18 @@ def platform_key() -> str:
     return f"{platform.system() or 'unknown'}-{platform.machine() or 'unknown'}"
 
 
+def runner_device(runner: object) -> torch.device:
+    """Return the device a runner executes on, defaulting to the CPU.
+
+    A stand-in runner need not carry a device. This half of a record is
+    attribution rather than identity, so a missing device is recorded as the
+    CPU rather than failing the measurement.
+    """
+
+    device = getattr(runner, "device", None)
+    return device if isinstance(device, torch.device) else torch.device("cpu")
+
+
 def device_name(device: torch.device) -> str:
     """Return a stable name for the device a measurement ran on."""
 

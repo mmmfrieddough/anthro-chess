@@ -31,17 +31,24 @@ from anthro_chess.evaluation.puzzles import (
     puzzle_set_identity,
 )
 from anthro_chess.evaluation.puzzles.benchmark import (
+    PUZZLE_KIND,
+    PuzzleBenchmarkConfig,
     _accepted_actions,
     _paired_contributions,
     _score_rating,
     _training_overlap,
+    benchmark_puzzles,
     score_puzzle_set,
 )
 from anthro_chess.evaluation.puzzles.dataset import (
     PUZZLE_FILE_NAME,
     PUZZLE_METADATA_FILE_NAME,
 )
-from anthro_chess.evaluation.results import PairedContributions
+from anthro_chess.evaluation.results import (
+    DetailStore,
+    PairedContributions,
+    ResultsStore,
+)
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:
@@ -476,3 +483,74 @@ def test_training_overlap_joins_source_keys_and_excludes_test_games(
 
     assert training_games == 2
     assert overlapping == 1
+
+
+def test_the_benchmark_records_every_envelope_and_payload_it_produced(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    inference_run: Callable[..., Path],
+) -> None:
+    # The only end-to-end reading of this benchmark. Its result carried a
+    # single envelope and a relative detail path where every other benchmark
+    # carried tuples of absolute ones, and nothing here noticed for as long as
+    # the drift existed.
+    config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = benchmark_puzzles(config, store=store, detail=detail)
+
+    assert result.envelopes == store.results()
+    assert len(result.recorded_paths) == len(result.envelopes) == 1
+    (written,) = result.detail_paths
+    assert written.is_absolute()
+    assert written.parent == detail.root / PUZZLE_KIND / result.checkpoint.label
+    assert result.as_record()["recorded"] == [str(result.recorded_paths[0])]
+
+
+def test_the_benchmark_measures_without_recording_anything(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    inference_run: Callable[..., Path],
+) -> None:
+    config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
+
+    result = benchmark_puzzles(config)
+
+    assert len(result.envelopes) == 1
+    assert result.recorded_paths == ()
+    assert result.detail_paths == ()
+
+
+def _benchmark_config(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    inference_run: Callable[..., Path],
+) -> ResolvedConfig[PuzzleBenchmarkConfig]:
+    """Write a puzzle artifact, a training corpus and a checkpoint, and select them."""
+
+    artifact = _write_fixture_artifact(tmp_path / "puzzles")
+    rows = [
+        {
+            **normalized_row(1, split="train"),
+            "source_id": "lichess",
+            "source_game_key": _fixture_set().puzzles[0].source_game_key,
+        }
+    ]
+    normalized, _ = write_corpus(tmp_path / "corpus", rows)
+    checkpoint = inference_run(tmp_path / "run")
+    return ResolvedConfig(
+        value=PuzzleBenchmarkConfig.model_validate(
+            {
+                "puzzle_set": str(artifact),
+                "training_normalized": str(normalized),
+                "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
+                "target_ratings": [1000, 1800],
+                "inference_batch_size": 4,
+            }
+        ),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )

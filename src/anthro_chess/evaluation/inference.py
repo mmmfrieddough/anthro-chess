@@ -25,8 +25,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -42,21 +41,16 @@ from anthro_chess.evaluation.execution import (
     execution_record,
     synchronize,
 )
+from anthro_chess.evaluation.recording import ResultRecorder, checkpoint_reference
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
-    DetailReference,
     DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultRecordError,
     ResultsStore,
-    ResultsStoreError,
     WorkloadComponent,
-    build_result,
-    configuration_reference,
-    default_checkpoint_label,
     measurement,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -331,7 +325,7 @@ def benchmark_inference(
     )
 
     execution = _execution_record(config, runner.device)
-    checkpoint = _checkpoint_reference(config, runner)
+    checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
     result = InferenceBenchmarkResult(
         checkpoint=checkpoint,
         execution=execution,
@@ -342,52 +336,24 @@ def benchmark_inference(
         throughput_sweep=throughput_sweep,
     )
 
-    recorded_at = datetime.now(tz=UTC)
-    detail_paths: list[Path] = []
-    try:
-        detail_reference = _write_detail(
-            detail,
-            checkpoint=checkpoint,
-            recorded_at=recorded_at,
-            payload=result.as_record(),
-            paths=detail_paths,
-        )
-        envelope = build_result(
-            kind=INFERENCE_KIND,
-            benchmark=INFERENCE_BENCHMARK,
-            checkpoint=checkpoint,
-            configuration=configuration_reference(
-                resolved_config.as_record(),
-                source=resolved_config.provenance.source,
-                overrides=resolved_config.provenance.overrides,
+    with ResultRecorder(
+        resolved_config,
+        kind=INFERENCE_KIND,
+        benchmark=INFERENCE_BENCHMARK,
+        checkpoint=checkpoint,
+        store=store,
+        detail=detail,
+        error=InferenceBenchmarkError,
+    ) as recorder:
+        recorder.add(
+            _measurements(result, execution.workload_component()),
+            payload=result.as_record,
+            description=(
+                "Latency depth sweep, batch-size sweep, and stage attribution."
             ),
             execution=execution,
-            measurements=_measurements(result, execution.workload_component()),
-            detail=detail_reference,
-            recorded_at=recorded_at,
         )
-    except ResultRecordError as error:
-        raise InferenceBenchmarkError(str(error)) from error
-
-    recorded_paths: list[Path] = []
-    if store is not None:
-        try:
-            recorded_paths.append(store.append(envelope))
-        except (ResultRecordError, ResultsStoreError) as error:
-            raise InferenceBenchmarkError(str(error)) from error
-
-    return InferenceBenchmarkResult(
-        checkpoint=checkpoint,
-        execution=execution,
-        cold_start=cold_start,
-        reference_latency=reference_latency,
-        latency_sweep=latency_sweep,
-        reference_throughput=reference_throughput,
-        throughput_sweep=throughput_sweep,
-        envelopes=(envelope,),
-        recorded_paths=tuple(recorded_paths),
-        detail_paths=tuple(detail_paths),
-    )
+    return replace(result, **recorder.fields)
 
 
 class _HistoryFactory:
@@ -751,44 +717,6 @@ def _select(
             return sample
     raise InferenceBenchmarkError(  # pragma: no cover - the sweep includes it
         f"the {label} did not include the declared reference point"
-    )
-
-
-def _write_detail(
-    detail: DetailStore | None,
-    *,
-    checkpoint: CheckpointReference,
-    recorded_at: datetime,
-    payload: Mapping[str, Any],
-    paths: list[Path],
-) -> DetailReference | None:
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    relative = Path(INFERENCE_KIND) / checkpoint.label / f"{stamp}.json"
-    reference = detail.write(
-        relative,
-        dict(payload),
-        description="Latency depth sweep, batch-size sweep, and stage attribution.",
-    )
-    paths.append(detail.root / relative)
-    return reference
-
-
-def _checkpoint_reference(
-    config: InferenceBenchmarkConfig,
-    runner: CheckpointModelRunner,
-) -> CheckpointReference:
-    run_id = runner.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        runner.global_step,
-    )
-    return CheckpointReference(
-        label=label,
-        step=runner.global_step,
-        run_id=run_id,
-        parameter_sha256=runner.parameter_sha256(),
     )
 
 
