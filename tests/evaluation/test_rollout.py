@@ -1105,6 +1105,9 @@ def test_temperature_zero_collapses_the_suite_to_one_trajectory() -> None:
 
     Greedy selection makes every game from one position identical, which is the
     failure mode a single-seed rollout cannot distinguish from stable behavior.
+    The cell plays the color assignments it declared rather than the replicates
+    it configured, so the collapse is read against the smallest sample that can
+    still show it.
     """
 
     result = _run(
@@ -1114,7 +1117,11 @@ def test_temperature_zero_collapses_the_suite_to_one_trajectory() -> None:
                 "temperatures": (0.0,),
                 "seeds": (0, 1, 2),
             },
-            generation={"games_per_position": 2, "maximum_generated_plies": 6},
+            generation={
+                "games_per_position": 2,
+                "maximum_generated_plies": 6,
+                "swap_colors": True,
+            },
         )
     )
 
@@ -1122,8 +1129,51 @@ def test_temperature_zero_collapses_the_suite_to_one_trajectory() -> None:
         GENERATED_PLAY_DISTINCT_GAME_FRACTION.identifier
     )
     assert fraction is not None
-    assert result.cells[0].distribution.games == 6
-    assert fraction.value == pytest.approx(1.0 / 6.0)
+    assert result.cells[0].distribution.games == 2
+    assert fraction.value == pytest.approx(0.5)
+
+
+def test_a_greedy_cell_plays_one_replicate_of_the_game_it_can_play() -> None:
+    """Seeds and games per position buy no precision over a point mass.
+
+    Both are sample counts, and at temperature zero every game they buy is the
+    same game, so the cell plays one replicate and reports the sample it
+    realized rather than the sample it was configured for.
+    """
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200,),
+                "temperatures": (0.0, 1.0),
+                "seeds": (0, 1, 2),
+            },
+            generation={"games_per_position": 2, "maximum_generated_plies": 6},
+        )
+    )
+
+    greedy = result.cell(RolloutArm.STANDARD_START, 1200, 0.0)
+    sampled = result.cell(RolloutArm.STANDARD_START, 1200, 1.0)
+    assert greedy.seeds == (0,)
+    assert greedy.distribution.games == 1
+    assert sampled.seeds == (0, 1, 2)
+    assert sampled.distribution.games == 6
+
+
+def test_a_collapsed_cell_reads_as_the_suite_it_collapsed_to() -> None:
+    """Collapsing changes what a greedy cell cost, not what it read."""
+
+    collapsed = _run(
+        _config(
+            grid={"temperatures": (0.0,), "seeds": (0, 1, 2)},
+            generation={"games_per_position": 2},
+        )
+    )
+    single = _run(_config(grid={"temperatures": (0.0,), "seeds": (0,)}))
+
+    assert collapsed.cells[0].distribution.as_record() == (
+        single.cells[0].distribution.as_record()
+    )
 
 
 def test_multiple_games_aggregate_into_one_cell_reading() -> None:

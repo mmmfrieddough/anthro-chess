@@ -102,6 +102,7 @@ from anthro_chess.evaluation.games import (
     PlayerError,
     StartPosition,
     analyze_games,
+    collapse_replicates,
     generate_games,
     prefix_positions,
     standard_positions,
@@ -245,7 +246,9 @@ class RolloutGridConfig(ConfigModel):
     #: Base seeds, each producing a whole independent suite inside its cell.
     #: Several is the point: one seed cannot distinguish a deterministic
     #: trajectory from stable behavior, and the spread across seeds is what a
-    #: later evaluation-noise characterization reads.
+    #: later evaluation-noise characterization reads. A cell at temperature
+    #: zero plays the first of them alone, because greedy seats make every
+    #: replicate the same game.
     seeds: tuple[StrictInt, ...] = (0, 1, 2)
 
     @model_validator(mode="after")
@@ -419,6 +422,8 @@ class RolloutCell:
     temperature: float
     #: Positions the cell's games started from, before color assignment.
     positions: int
+    #: The seeds the cell actually played, which ``collapse_replicates`` cuts
+    #: to one at temperature zero.
     seeds: tuple[int, ...]
     #: Each seed's own distribution, so the spread across seeds is readable as
     #: this cell's evaluation noise rather than having to be regenerated.
@@ -877,7 +882,7 @@ def _measure_cell(
     target_rating: int,
     temperature: float,
 ) -> RolloutCell:
-    """Play every seed of one cell and pool them into its reading."""
+    """Play every replicate of one cell and pool them into its reading."""
 
     runtime = config.runtime.model_copy(
         update={"target_rating": target_rating, "temperature": temperature}
@@ -888,13 +893,19 @@ def _measure_cell(
         config=runtime,
         checkpoint=checkpoint,
     )
+    # One configuration in both seats, so the cell's own temperature is the
+    # whole of what decides whether its replicates differ.
+    seeds, generation = collapse_replicates(
+        config.grid.seeds, config.generation, temperatures=(temperature,)
+    )
     features: list[GameFeatures] = []
     per_seed: list[tuple[int, GameDistribution]] = []
     by_seed: list[tuple[int, tuple[GameFeatures, ...]]] = []
     records: list[GameRecord] = []
-    for seed in config.grid.seeds:
-        generation = config.generation.model_copy(update={"seed": seed})
-        played = _generate(player, source.positions, generation)
+    for seed in seeds:
+        played = _generate(
+            player, source.positions, generation.model_copy(update={"seed": seed})
+        )
         seed_features = analyze_games(played, book=book)
         per_seed.append(
             (seed, summarize_games(seed_features, level=config.opening_level))
@@ -908,7 +919,7 @@ def _measure_cell(
         target_rating=target_rating,
         temperature=temperature,
         positions=len(source.positions),
-        seeds=tuple(config.grid.seeds),
+        seeds=seeds,
         per_seed=tuple(per_seed),
         distribution=summarize_games(features, level=config.opening_level),
         execution=_execution_record(config, runner, source, target_rating, temperature),

@@ -77,6 +77,7 @@ from anthro_chess.evaluation.games import (
     ModelPlayer,
     PlayerError,
     StartPosition,
+    collapse_replicates,
     generate_games,
     standard_positions,
 )
@@ -276,6 +277,9 @@ class TerminationGridConfig(ConfigModel):
     #: Each temperature is its own reading, because temperature is a separate
     #: dial rather than a point on the rating axis.
     temperatures: tuple[float, ...] = (1.0,)
+    #: Replicates of one rating's reading, and precision alone. A temperature
+    #: of zero plays the first of them alone, because greedy seats replay one
+    #: game per position.
     seeds: tuple[StrictInt, ...] = (0, 1, 2)
 
     @model_validator(mode="after")
@@ -933,9 +937,13 @@ def _measure_generated(
             config=runtime,
             checkpoint=checkpoint,
         )
-        for seed in config.grid.seeds:
-            generation = config.generation.model_copy(update={"seed": seed})
-            played = _generate(player, positions, generation)
+        seeds, generation = collapse_replicates(
+            config.grid.seeds, config.generation, temperatures=(temperature,)
+        )
+        for seed in seeds:
+            played = _generate(
+                player, positions, generation.model_copy(update={"seed": seed})
+            )
             endings.extend(generated_ending(record) for record in played)
             if config.detail.retain_games:
                 records.extend(played)

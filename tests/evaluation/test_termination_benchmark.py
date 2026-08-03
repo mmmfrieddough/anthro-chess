@@ -941,6 +941,25 @@ def test_every_reading_is_recorded_under_its_own_kind(
         assert path.is_file()
 
 
+def test_a_greedy_reading_counts_the_endings_it_played_once(pool: Path) -> None:
+    """Every ending is counted, so a replayed game would be counted again.
+
+    Greedy seats replay one game per position, so a temperature-zero reading
+    plays one replicate rather than the configured grid of them.
+    """
+
+    result = _run(
+        _config(
+            pool,
+            grid={"temperatures": (0.0,), "seeds": (0, 1, 2)},
+            generation={"games_per_position": 2},
+        )
+    )
+
+    # Two ratings, one position each, neither swapped nor replayed.
+    assert result.reading(0.0).games == 2
+
+
 def test_the_generated_readings_are_scoped_by_the_recipe_they_were_played_under(
     pool: Path,
 ) -> None:

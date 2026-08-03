@@ -339,6 +339,43 @@ def test_every_pair_of_seats_meets_and_both_colors_are_played() -> None:
     assert result.games > 0
 
 
+def test_two_greedy_seats_play_one_replicate_of_the_game_they_can_play() -> None:
+    """The same game three times is not three results for the joint fit.
+
+    Two greedy seats replay one game per opening however many replicates they
+    are asked for, so that pairing plays one. A pairing with a sampling seat
+    still needs every replicate it was given, which is what keeps this a
+    collapse rather than a cut.
+    """
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.0, 1.0),
+                "reference_temperature": 1.0,
+                "seeds": (0, 1, 2),
+            },
+            generation={"games_per_position": 1},
+            ablation={"enabled": False},
+        )
+    )
+
+    greedy = [
+        pairing
+        for pairing in result.pairings
+        if pairing.first.temperature == 0.0 and pairing.second.temperature == 0.0
+    ]
+    sampling = [pairing for pairing in result.pairings if pairing not in greedy]
+    assert len(greedy) == 1
+    assert {pairing.seeds for pairing in greedy} == {(0,)}
+    assert {pairing.seeds for pairing in sampling} == {(0, 1, 2)}
+    # One opening played from both sides: the greedy pairing plays that pair of
+    # games once, where a sampling one plays it at every seed and replicate.
+    assert {pairing.games + pairing.unfinished for pairing in greedy} == {2}
+    assert {pairing.games + pairing.unfinished for pairing in sampling} == {6}
+
+
 def test_the_ladder_orders_configured_ratings_and_reports_its_shape() -> None:
     result = _run(_config())
 

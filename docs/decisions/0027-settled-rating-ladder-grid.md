@@ -15,7 +15,10 @@ Nothing had yet run at declared size, so there was no cost to weigh against.
 
 The shipped selection declares four ratings, three temperatures, and an ablated
 arm. That is fifteen seats and 105 pairings, and at sixteen openings played from
-both sides across three seeds it is 10,080 games per checkpoint.
+both sides across three seeds it was 10,080 games per checkpoint when this was
+written. It is 9,440 since the ten pairings between two temperature-zero seats
+stopped replaying one game at every seed; every figure below was measured at the
+larger count.
 
 That size was first estimated at 42–50 hours per checkpoint, which would have
 made the ladder a constraint on the project rather than a benchmark in it. The
@@ -47,13 +50,17 @@ The cost argument for cutting seats is real and quadratic. The argument against
 is easy to miss, because it runs the other way on the same structure: in a round
 robin a seat's *own* sample is linear in the seat count. Each seat plays every
 other, so its games are `(seats - 1) × games per pairing`, and the declared
-selection puts 96 games in a pairing.
+selection puts 96 games in a pairing — 32 in one whose seats are both greedy,
+for the reason the precision section below gives.
 
 | grid | seats | pairings | games | games per seat |
 | --- | --- | --- | --- | --- |
 | declared: 4 ratings × 3 temperatures + ablation | 15 | 105 | 10,080 | 1,344 |
 | 4 ratings × 2 temperatures + ablation | 10 | 45 | 4,320 | 864 |
 | 3 ratings × 3 temperatures + ablation | 12 | 66 | 6,336 | 1,056 |
+
+The counts are each grid's full replicate arithmetic, which is the like-for-like
+comparison between grids. A temperature-zero seat realizes 1,088 of its 1,344.
 
 Dropping a temperature buys back 57% of the cost and takes 36% of every seat's
 sample with it. So a cut is not only incomparable with what came before, as 0022
@@ -97,6 +104,11 @@ this reason. A ladder that needs to be more precise is made more precise by
 raising them, at linear cost and without ending a series. That is the lever to
 reach for, and it means this decision does not have to be revisited to buy
 resolution.
+
+The lever is inert on the ten pairings whose seats are both at temperature zero.
+Two greedy seats replay one game per opening, so those pairings play one
+replicate and record the seeds they played; raising the count there would enter
+the same result into the joint fit again rather than more evidence.
 
 ## Consequences
 
