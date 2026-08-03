@@ -40,6 +40,7 @@ See ``docs/evaluation.md`` and
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -437,6 +438,7 @@ def benchmark_novelty(
     """Measure one checkpoint's dose response and optionally record it."""
 
     config = resolved_config.value
+    started = time.perf_counter()
     try:
         pool, selection, source_rows = _load_inputs(config)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -500,6 +502,8 @@ def benchmark_novelty(
         kind=NOVELTY_KIND,
         benchmark=NOVELTY_BENCHMARK,
         checkpoint=checkpoint,
+        started=started,
+        device=runner.device,
         store=store,
         detail=detail,
         error=NoveltyBenchmarkError,

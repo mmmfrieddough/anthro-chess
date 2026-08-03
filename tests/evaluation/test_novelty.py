@@ -13,6 +13,7 @@ import pytest
 from anthro_chess.chess import decode_move, is_terminal_action
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.novelty import (
     NOVELTY_KIND,
     NOVELTY_RECIPE_VERSION,
@@ -258,8 +259,12 @@ def test_the_benchmark_reports_retention_against_its_own_control(
     assert control.realized_dose == 0.0
     assert result.arms[-1].realized_dose > 0.0
 
-    recorded = store.results()
-    assert {envelope.kind for envelope in recorded} == {NOVELTY_KIND}
+    committed = store.results()
+    assert {envelope.kind for envelope in committed} == {
+        NOVELTY_KIND,
+        BENCHMARK_COST_KIND,
+    }
+    recorded = tuple(item for item in committed if item.kind == NOVELTY_KIND)
     # One result per dose cell. Showing the most recent would present one
     # arbitrary cell as the checkpoint's reading and hide the rest.
     assert len(recorded) == 3

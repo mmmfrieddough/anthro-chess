@@ -15,6 +15,8 @@ where the others carried tuples and a relative detail path where the others
 carried absolute ones, and the suite grew a dual-shape reader rather than the
 drift being caught. So the tail lives here instead, written once, and a
 cross-cutting addition to what a reading records is one edit rather than seven.
+What one invocation cost is the first such addition and is recorded here for
+that reason; see ``docs/decisions/0030-committed-benchmark-cost.md``.
 
 Only the tail. A rigid interface over the measuring itself would be worse than
 the duplication it removed.
@@ -22,14 +24,18 @@ the duplication it removed.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+import torch
+
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data.artifacts import game_ids_sha256
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.pool import FrozenPool
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -150,6 +156,12 @@ class ResultRecorder:
     The payload is a callable rather than a value because the store is often
     absent — ``--no-record`` is how a shakedown reading is taken — and some of
     these payloads cost real work to assemble.
+
+    ``started`` is the ``time.perf_counter`` reading the benchmark took as its
+    first statement, and it makes this the end of the timed window as well as
+    the end of the reading. Both halves are required rather than optional: a
+    benchmark that could silently opt out of recording its cost is the drift
+    this module exists to end.
     """
 
     def __init__(
@@ -159,18 +171,25 @@ class ResultRecorder:
         kind: str,
         benchmark: BenchmarkReference,
         checkpoint: CheckpointReference,
+        started: float,
+        device: torch.device,
         store: ResultsStore | None,
         detail: DetailStore | None,
         error: type[Exception],
+        cost_benchmark: BenchmarkReference | None = None,
     ) -> None:
         self.recorded_at = datetime.now(tz=UTC)
         self._stamp = self.recorded_at.strftime("%Y%m%dT%H%M%SZ")
         self._kind = kind
         self._benchmark = benchmark
         self._checkpoint = checkpoint
+        self._started = started
+        self._device = device
         self._store = store
         self._detail = detail
         self._error = error
+        self._cost_benchmark = cost_benchmark or benchmark
+        self._settings = resolved_config.value
         self._configuration = configuration_reference(
             resolved_config.as_record(),
             source=resolved_config.provenance.source,
@@ -195,11 +214,14 @@ class ResultRecorder:
         The append happens here rather than in a method the caller has to
         remember, because forgetting it would write nothing and report
         success. A reading that failed appends nothing at all: a partial
-        record of a broken measurement is worse than none.
+        record of a broken measurement is worse than none — and a failed
+        invocation's duration is the cost of the failure rather than of the
+        reading, so no cost record is written for one either.
         """
 
         try:
             if error is None:
+                self._cost()
                 self._append()
         except (ResultRecordError, ResultsStoreError) as failure:
             raise self._error(str(failure)) from failure
@@ -266,6 +288,33 @@ class ResultRecorder:
 
         if characterization is not None:
             self._characterizations.append(characterization)
+
+    def _cost(self) -> None:
+        """Record what the invocation cost, unless it measured nothing at all.
+
+        Timed to here rather than to the last measurement, because the seven
+        benchmarks interleave their detail writes and their bootstrap floors
+        differently and a window each one ends where it happens to finish would
+        not be the same window. Everything after this — the store append — is
+        the same handful of writes for all of them.
+
+        A benchmark that produced no envelope produced no reading, and the
+        seconds it spent finding that out belong to no series.
+        """
+
+        if not self._envelopes:
+            return
+        self._envelopes.append(
+            benchmark_cost_result(
+                benchmark=self._cost_benchmark,
+                checkpoint=self._checkpoint,
+                configuration=self._configuration,
+                config=self._settings,
+                device=self._device,
+                seconds=time.perf_counter() - self._started,
+                recorded_at=self.recorded_at,
+            )
+        )
 
     def _append(self) -> None:
         if self._store is None:

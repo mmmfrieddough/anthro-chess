@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -662,6 +663,7 @@ def benchmark_ladder(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     loaded, identity = resolve_model(
         config.model,
         runner,
@@ -744,7 +746,14 @@ def benchmark_ladder(
         records=tuple(records),
     )
     _log_summary(result)
-    return _record(result, resolved_config, store=store, detail=detail)
+    return _record(
+        result,
+        resolved_config,
+        started=started,
+        device=device,
+        store=store,
+        detail=detail,
+    )
 
 
 def seat_keys(config: LadderBenchmarkConfig) -> tuple[SeatKey, ...]:
@@ -1302,6 +1311,8 @@ def _record(
     result: LadderBenchmarkResult,
     resolved_config: ResolvedConfig[LadderBenchmarkConfig],
     *,
+    started: float,
+    device: torch.device,
     store: ResultsStore | None,
     detail: DetailStore | None,
 ) -> LadderBenchmarkResult:
@@ -1318,6 +1329,8 @@ def _record(
         kind=LADDER_KIND,
         benchmark=LADDER_BENCHMARK,
         checkpoint=result.checkpoint,
+        started=started,
+        device=device,
         store=store,
         detail=detail,
         error=LadderBenchmarkError,

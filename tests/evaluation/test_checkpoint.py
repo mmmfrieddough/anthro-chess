@@ -26,6 +26,7 @@ from anthro_chess.evaluation.checkpoint import (
     HELD_OUT_KIND,
     _batch_keys,
 )
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
@@ -114,7 +115,12 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     # Material gain is the one predicate common enough to fire on ordinary
     # play, so an adjudication record appears where no forced outcome would
     # have produced one.
-    assert kinds == {HELD_OUT_KIND, DEPENDENCY_KIND, ADJUDICATION_KIND}
+    assert kinds == {
+        HELD_OUT_KIND,
+        DEPENDENCY_KIND,
+        ADJUDICATION_KIND,
+        BENCHMARK_COST_KIND,
+    }
     adjudicated = next(item for item in recorded if item.kind == ADJUDICATION_KIND)
     assert {item.metric for item in adjudicated.measurements} >= {
         "adjudicated.material_gain_human_rate",
@@ -123,9 +129,9 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     }
     assert result.adjudication is not None
     assert PositionPredicate.MATERIAL_GAIN in result.adjudication.predicates
-    # Three result envelopes plus the data-sampling floors bootstrapped from
-    # the same pass, all committed.
-    assert len(result.recorded_paths) == 4
+    # Three result envelopes, what the invocation cost, and the data-sampling
+    # floors bootstrapped from the same pass, all committed.
+    assert len(result.recorded_paths) == 5
     assert result.checkpoint.step == 1
     assert result.checkpoint.parameter_sha256 is not None
     assert result.dataset.pool_id == "fixture-test"

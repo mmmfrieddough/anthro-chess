@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -297,6 +298,7 @@ def benchmark_puzzles(
     """Measure and optionally record puzzle response for one checkpoint."""
 
     config = resolved_config.value
+    started = time.perf_counter()
     try:
         puzzle_set = load_puzzle_set(config.puzzle_set)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -359,6 +361,8 @@ def benchmark_puzzles(
         kind=PUZZLE_KIND,
         benchmark=PUZZLE_BENCHMARK,
         checkpoint=checkpoint,
+        started=started,
+        device=runner.device,
         store=store,
         detail=detail,
         error=PuzzleBenchmarkError,

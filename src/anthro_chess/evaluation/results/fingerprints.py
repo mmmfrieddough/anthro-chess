@@ -130,6 +130,11 @@ def workload_digest(workload: Mapping[str, Any]) -> str:
     A benchmark passes only the settings that decide what was measured. Passing
     its whole configuration would put warmup counts, concurrency, and output
     paths into series identity and break the series on every unrelated flag.
+
+    Benchmark cost is the deliberate exception and does pass the whole
+    configuration, because a warmup count is an input to what an invocation
+    cost rather than an unrelated flag. See
+    ``docs/decisions/0030-committed-benchmark-cost.md``.
     """
 
     return _canonical_digest(

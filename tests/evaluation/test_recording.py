@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import torch
 
 from anthro_chess.config import ConfigModel, ConfigProvenance, ResolvedConfig
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.recording import ResultRecorder
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -68,16 +71,35 @@ def _recorder(
     *,
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
+    cost_benchmark: BenchmarkReference | None = None,
 ) -> ResultRecorder:
     return ResultRecorder(
         resolved,
         kind=KIND,
         benchmark=BENCHMARK,
         checkpoint=CHECKPOINT,
+        started=time.perf_counter(),
+        device=torch.device("cpu"),
         store=store,
         detail=detail,
         error=_BenchmarkError,
+        cost_benchmark=cost_benchmark,
     )
+
+
+def _readings(result: _Result) -> tuple[ResultEnvelope, ...]:
+    """Return what the benchmark measured, without what the invocation cost."""
+
+    return tuple(item for item in result.envelopes if item.kind != BENCHMARK_COST_KIND)
+
+
+def _cost(result: _Result) -> ResultEnvelope:
+    """Return the one cost record the tail appends beside the readings."""
+
+    (envelope,) = (
+        item for item in result.envelopes if item.kind == BENCHMARK_COST_KIND
+    )
+    return envelope
 
 
 def _dataset(component: DataComponent) -> DatasetReference:
@@ -125,10 +147,11 @@ def test_a_reading_lands_in_the_store_and_the_detail_tier(
         _add_reading(recorder, component, payload=lambda: {"slices": []})
     result = _Result(**recorder.fields)
 
-    (envelope,) = result.envelopes
-    (recorded,) = result.recorded_paths
+    (envelope,) = _readings(result)
+    recorded, _ = result.recorded_paths
     (written,) = result.detail_paths
-    assert store.results() == (envelope,)
+    assert envelope in store.results()
+    assert {item.kind for item in store.results()} == {KIND, BENCHMARK_COST_KIND}
     assert recorded.is_file()
     # Absolute, and under the kind and the checkpoint the reading belongs to,
     # so a caller can hand the path straight to a reader.
@@ -163,7 +186,7 @@ def test_one_kind_scopes_both_the_series_and_the_payload_directory(
         )
     result = _Result(**recorder.fields)
 
-    (envelope,) = result.envelopes
+    (envelope,) = _readings(result)
     (written,) = result.detail_paths
     assert envelope.kind == other_kind
     assert written.parent == detail.root / other_kind / CHECKPOINT.label
@@ -188,7 +211,7 @@ def test_a_payload_is_not_built_when_there_is_no_detail_store(
     result = _Result(**recorder.fields)
 
     assert built == 0
-    assert len(result.envelopes) == 1
+    assert len(_readings(result)) == 1
     assert result.recorded_paths == ()
     assert result.detail_paths == ()
 
@@ -204,7 +227,7 @@ def test_measuring_without_a_store_still_writes_the_detail_payload(
         _add_reading(recorder, component)
     result = _Result(**recorder.fields)
 
-    assert len(result.envelopes) == 1
+    assert len(_readings(result)) == 1
     assert result.recorded_paths == ()
     assert len(result.detail_paths) == 1
 
@@ -279,10 +302,75 @@ def test_a_noise_floor_is_appended_after_the_envelopes(
         recorder.characterize(None)
     result = _Result(**recorder.fields)
 
-    first, second = result.recorded_paths
-    assert first.parent == store.records_directory
-    assert second.parent == store.floors_directory
+    reading, cost, floor = result.recorded_paths
+    assert reading.parent == store.records_directory
+    assert cost.parent == store.records_directory
+    assert floor.parent == store.floors_directory
     assert store.characterizations() == (characterization,)
+
+
+def test_the_invocation_s_cost_is_committed_beside_the_reading(
+    tmp_path: Path,
+    resolved: ResolvedConfig[_Config],
+    move_prediction_component: Digest,
+) -> None:
+    # Committed rather than machine-local, because the failure this record
+    # exists to prevent is a stale cost claim nobody contradicts, and only a
+    # committed record is contradicted by a diff.
+    component = move_prediction_component()
+    store = ResultsStore(tmp_path / "results")
+    before = time.perf_counter()
+
+    with _recorder(resolved, store=store) as recorder:
+        _add_reading(recorder, component)
+        time.sleep(0.05)
+    result = _Result(**recorder.fields)
+
+    cost = _cost(result)
+    (recorded,) = cost.measurements
+    assert recorded.metric == "benchmark.wall_clock_seconds"
+    # The window runs from the statement the benchmark took its start in to the
+    # end of the block, so work done inside it counts.
+    assert 0.05 <= recorded.value <= time.perf_counter() - before
+    assert cost.benchmark == BENCHMARK
+    assert cost.data is None
+    assert cost.execution is not None
+    assert cost.execution.device == "cpu"
+    assert cost in store.results()
+
+
+def test_a_reading_that_measured_nothing_costs_nothing_worth_recording(
+    tmp_path: Path,
+    resolved: ResolvedConfig[_Config],
+) -> None:
+    # A benchmark that produced no envelope produced no reading, and the
+    # seconds it spent finding that out belong to no series.
+    store = ResultsStore(tmp_path / "results")
+
+    detail = DetailStore(tmp_path / "detail")
+    with _recorder(resolved, store=store, detail=detail) as recorder:
+        recorder.add((), payload=dict, description="Held-out resignation.")
+    result = _Result(**recorder.fields)
+
+    assert result.envelopes == ()
+    assert store.results() == ()
+
+
+def test_the_cost_record_can_name_the_whole_invocation(
+    resolved: ResolvedConfig[_Config],
+    move_prediction_component: Digest,
+) -> None:
+    # One invocation of the checkpoint evaluation produces three readings, and
+    # its cost belongs to none of them.
+    whole = BenchmarkReference(name="checkpoint-evaluation", version=1)
+    component = move_prediction_component()
+
+    with _recorder(resolved, cost_benchmark=whole) as recorder:
+        _add_reading(recorder, component)
+    result = _Result(**recorder.fields)
+
+    assert _cost(result).benchmark == whole
+    assert _readings(result)[0].benchmark == BENCHMARK
 
 
 def test_a_store_failure_becomes_the_benchmark_s_own_error(
@@ -310,7 +398,8 @@ def test_a_failed_reading_appends_nothing(
     move_prediction_component: Digest,
 ) -> None:
     # A partial record of a broken measurement is worse than none, so a block
-    # that raised leaves the store as it found it.
+    # that raised leaves the store as it found it. Its duration is the cost of
+    # the failure rather than of the reading, so no cost record either.
     component = move_prediction_component()
     store = ResultsStore(tmp_path / "results")
 
@@ -321,6 +410,8 @@ def test_a_failed_reading_appends_nothing(
 
     assert store.results() == ()
     assert recorder.fields["recorded_paths"] == ()
+    kinds = {item.kind for item in recorder.fields["envelopes"]}
+    assert BENCHMARK_COST_KIND not in kinds
 
 
 def test_building_a_measurement_is_covered_by_the_same_conversion(

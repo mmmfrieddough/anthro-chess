@@ -341,6 +341,8 @@ def benchmark_inference(
         kind=INFERENCE_KIND,
         benchmark=INFERENCE_BENCHMARK,
         checkpoint=checkpoint,
+        started=started,
+        device=runner.device,
         store=store,
         detail=detail,
         error=InferenceBenchmarkError,

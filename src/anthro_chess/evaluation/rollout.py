@@ -63,6 +63,7 @@ a narrow reading is not mistaken for a complete one.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -807,6 +808,7 @@ def benchmark_rollout(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     loaded, identity = resolve_model(
         config.model,
         runner,
@@ -864,7 +866,14 @@ def benchmark_rollout(
         reference=reference,
         reference_view=reference_view,
     )
-    return _record(result, resolved_config, store=store, detail=detail)
+    return _record(
+        result,
+        resolved_config,
+        started=started,
+        device=runner_device(loaded),
+        store=store,
+        detail=detail,
+    )
 
 
 def _measure_cell(
@@ -1697,6 +1706,8 @@ def _record(
     result: RolloutBenchmarkResult,
     resolved_config: ResolvedConfig[RolloutBenchmarkConfig],
     *,
+    started: float,
+    device: torch.device,
     store: ResultsStore | None,
     detail: DetailStore | None,
 ) -> RolloutBenchmarkResult:
@@ -1716,6 +1727,8 @@ def _record(
         kind=ROLLOUT_KIND,
         benchmark=ROLLOUT_BENCHMARK,
         checkpoint=result.checkpoint,
+        started=started,
+        device=device,
         store=store,
         detail=detail,
         error=RolloutBenchmarkError,

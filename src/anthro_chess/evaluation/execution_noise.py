@@ -47,6 +47,7 @@ from typing import Any
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.evaluation.inference import (
     COLD_START_METRICS,
+    INFERENCE_KIND,
     InferenceBenchmarkConfig,
     InferenceBenchmarkError,
     benchmark_inference,
@@ -147,7 +148,10 @@ def sample_execution_noise(
             result = benchmark_inference(resolved_config, run_root=run_root)
         except InferenceBenchmarkError as error:
             raise ExecutionNoiseError(str(error)) from error
-        (envelope,) = result.envelopes
+        # The invocation also records what it cost, on its own workload. A
+        # characterization covers one workload, so folding that reading in here
+        # would produce a floor keyed to neither.
+        (envelope,) = (item for item in result.envelopes if item.kind == INFERENCE_KIND)
         readings.append({item.metric: item.value for item in envelope.measurements})
         execution, checkpoint = result.execution, result.checkpoint
 

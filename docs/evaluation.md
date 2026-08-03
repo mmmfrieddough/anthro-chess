@@ -98,7 +98,8 @@ meaningless. Change the ply depth a latency figure is taken at, or the
 temperature a rollout is played at, and the number measures a different
 quantity, so that belongs in identity just as scored content does. Sample
 counts do not: generating more games, like scoring more, estimates the same
-quantity more precisely.
+quantity more precisely. Benchmark cost is the one metric where that last
+sentence inverts, and it is scoped accordingly; see "What A Benchmark Cost".
 
 Everything else a result was measured under is a **coordinate**: recorded,
 diffed, and named by a report, but never digested. The machine is one, and so
@@ -250,6 +251,38 @@ and which cell a committed series would follow is not yet decided.
 `anthro_chess.evaluation.suite` owns the suite schema, the benchmark registry,
 the ordering rules, and the ledger format; the shipped sweep lives beside the
 selections it composes under `configs/evaluation/`.
+
+### What A Benchmark Cost
+
+Every benchmark that records a reading also records what the invocation cost,
+as a single wall-clock measurement in its own committed record. This exists
+because scope decisions are made on these numbers — which benchmarks a reduced
+sweep can include, whether a step has an affordable reduction — and before it
+existed the numbers lived only in comments that nothing could contradict, by
+which point they had drifted by an order of magnitude or more.
+
+The benchmark records it rather than the sweep, because a single-benchmark
+invocation is how most readings are taken and a cost that only existed inside a
+sweep would miss them. The measured window is therefore the invocation in
+process, from its first statement to the moment its recording tail has
+assembled everything it will commit, and a sweep's total is the sum of its
+steps plus what the driver pays.
+
+Series identity is where this metric departs from every other workload-scoped
+one. The declared workload digests the benchmark's whole resolved
+configuration, because a sample count decides how much work was done and the
+work is the quantity being measured — the reverse of the rule that keeps sample
+counts out of a latency series. Two things are taken out of it: the model
+selection and its label, since the checkpoint is the coordinate a cost line
+varies along, and the machine prefix of every artifact path, since the artifact
+is the same work wherever it is rooted.
+
+Read a cost delta against a characterized execution floor. A shared machine
+moves these numbers much further than a model change does, and nothing in a
+record says the machine was busy; decision 0030 carries the measurements.
+
+`anthro_chess.evaluation.cost` owns the record and the workload normalization;
+`docs/decisions/0030-committed-benchmark-cost.md` owns the reasoning.
 
 ### The Checkpoint Evaluation Runner
 

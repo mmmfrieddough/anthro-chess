@@ -18,6 +18,7 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
@@ -503,12 +504,15 @@ def test_the_benchmark_records_every_envelope_and_payload_it_produced(
 
     result = benchmark_puzzles(config, store=store, detail=detail)
 
-    assert result.envelopes == store.results()
-    assert len(result.recorded_paths) == len(result.envelopes) == 1
+    # The rating response, and what the invocation cost to take.
+    assert {item.kind for item in store.results()} == {PUZZLE_KIND, BENCHMARK_COST_KIND}
+    assert len(result.recorded_paths) == len(result.envelopes) == 2
     (written,) = result.detail_paths
     assert written.is_absolute()
     assert written.parent == detail.root / PUZZLE_KIND / result.checkpoint.label
-    assert result.as_record()["recorded"] == [str(result.recorded_paths[0])]
+    assert result.as_record()["recorded"] == [
+        str(path) for path in result.recorded_paths
+    ]
 
 
 def test_the_benchmark_measures_without_recording_anything(
@@ -521,7 +525,7 @@ def test_the_benchmark_measures_without_recording_anything(
 
     result = benchmark_puzzles(config)
 
-    assert len(result.envelopes) == 1
+    assert len(result.envelopes) == 2
     assert result.recorded_paths == ()
     assert result.detail_paths == ()
 

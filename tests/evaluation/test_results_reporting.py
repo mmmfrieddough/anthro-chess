@@ -1363,11 +1363,12 @@ def test_the_default_text_view_stays_readable(
     assert max(len(line) for line in rendered.splitlines()) <= 120
     # A ratchet rather than a round number: it is the current height, so a
     # change that grows the default view has to be a deliberate one. Two lines
-    # each belong to decision decomposition, the puzzle-backed rating family,
-    # generated play, game termination, novelty, and training efficiency, which
-    # have metrics but no result in this fixture; a family gets its own
-    # actionable absence section as soon as it has a metric to be absent.
-    assert len(rendered.splitlines()) <= 32
+    # each belong to benchmark cost, decision decomposition, the puzzle-backed
+    # rating family, generated play, game termination, novelty, and training
+    # efficiency, which have metrics but no result in this fixture; a family
+    # gets its own actionable absence section as soon as it has a metric to be
+    # absent.
+    assert len(rendered.splitlines()) <= 34
 
 
 def _width_report(*identifiers: str) -> DeltaReport:

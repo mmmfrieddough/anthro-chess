@@ -37,12 +37,14 @@ choices.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
 import chess
+import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 from torch import Tensor
 
@@ -764,6 +766,7 @@ def benchmark_termination(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     loaded, identity = resolve_model(
         config.model,
         runner,
@@ -801,7 +804,14 @@ def benchmark_termination(
         held_out=held_out,
         unavailable=unavailable,
     )
-    return _record(result, resolved_config, store=store, detail=detail)
+    return _record(
+        result,
+        resolved_config,
+        started=started,
+        device=runner_device(loaded),
+        store=store,
+        detail=detail,
+    )
 
 
 def mix_curve_spec(ratings: Sequence[int]) -> CurveSpec:
@@ -1427,6 +1437,8 @@ def _record(
     result: TerminationBenchmarkResult,
     resolved_config: ResolvedConfig[TerminationBenchmarkConfig],
     *,
+    started: float,
+    device: torch.device,
     store: ResultsStore | None,
     detail: DetailStore | None,
 ) -> TerminationBenchmarkResult:
@@ -1443,6 +1455,8 @@ def _record(
         kind=TERMINATION_KIND,
         benchmark=TERMINATION_BENCHMARK,
         checkpoint=result.checkpoint,
+        started=started,
+        device=device,
         store=store,
         detail=detail,
         error=TerminationBenchmarkError,

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -132,6 +133,13 @@ ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
+#: One invocation produces three readings, and its cost belongs to none of
+#: them: the scoring pass, the dependency treatments, and the adjudication all
+#: happen once. The cost record names the whole evaluation instead.
+CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
+    name="checkpoint-evaluation",
+    version=CHECKPOINT_EVALUATION_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +407,7 @@ def evaluate_checkpoint(
     """
 
     config = resolved_config.value
+    started = time.perf_counter()
     try:
         inputs = _load_inputs(config)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -455,9 +464,12 @@ def evaluate_checkpoint(
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
         checkpoint=checkpoint,
+        started=started,
+        device=runner.device,
         store=store,
         detail=detail,
         error=CheckpointEvaluationError,
+        cost_benchmark=CHECKPOINT_COST_BENCHMARK,
     ) as recorder:
         noise = _characterize_noise(
             config,

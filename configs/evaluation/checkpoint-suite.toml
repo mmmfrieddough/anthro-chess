@@ -33,6 +33,9 @@
 # order of magnitude, nothing in the repository could contradict them, and by
 # the time anyone re-measured they were between six and thirty-five times the
 # real cost — while still deciding which benchmarks a reduced sweep includes.
+# Each step now commits what its invocation cost beside its reading, so the
+# numbers live where a diff contradicts them; see
+# `docs/decisions/0030-committed-benchmark-cost.md`.
 #
 # What stays is the ordering, because that is what the reductions below are
 # argued from, and it carries where and when it was taken so a reader can tell
