@@ -173,12 +173,12 @@ path. **Reduced-precision float32 matmul** — TF32 — rounds a matrix
 multiplication's inputs while accumulating in float32.
 
 Both are off by default because the default batch is the one where they return
-nothing. Neither default is a claim that they are not worth turning on: at a
-batch that fills the device, mixed precision is the largest single throughput
-result measured on this backend and returns activation memory besides, which is
-what decides whether a larger model fits on a fixed card. Which default is
-right at the batch capacity selection lands on is a question for that work,
-because throughput is not the only thing a precision change moves.
+nothing, and neither default is a claim that they are not worth turning on.
+Mixed precision also returns activation memory, which is what decides whether a
+larger model fits on a fixed card, so it has a second argument the matmul
+setting does not. Which default is right at the batch capacity selection lands
+on is a question for that work, because throughput is not the only thing a
+precision change moves.
 
 Unlike the fused optimizer, both are declared rather than derived, and what
 they declare is the arithmetic every gradient is computed in. So both are
@@ -497,12 +497,11 @@ step without gradient accumulation, and nothing measurable at four accumulation
 micro-batches, where the device is busy enough that the host never gets ahead.
 
 That probe measures a shipped decision rather than a dial, which is a fair
-reason to ask whether it earns its size, and the answer is that it does. On
-CUDA it reads under 1% of a step at the batch this project trains today and
-22% at a batch that fills the device, where the loader's own time overlaps
-device work in the deferred arm and a per-step synchronization serializes them.
-A reading that swings that far across workloads is not one a run can be assumed
-to know without measuring.
+reason to ask whether it earns its size, and the answer is that it does: what
+it reads swings by more than an order of magnitude between the batch this
+project trains today and one that fills the device, so it is not a number a run
+can be assumed to know without measuring. `docs/planning/cuda-training-proof.md`
+holds both readings and what the probe itself costs to take.
 
 The same rule governs the offline scoring pass and the per-move inference path,
 and there it is not a tradeoff at all. Batch validation, the finite-logit

@@ -126,6 +126,13 @@ kept for a different reason than it was tried for, and the rest were removed:
 retaining a dial that never wins costs more than the measurement it preserves,
 and the readings below are what preserve it instead.
 
+**This table has since been re-read and most of its verdicts changed**, because
+the workload it describes was replaced. Read it as the record of what a
+host-bound step was worth optimizing, and take the current verdicts from
+[the re-read below](#the-table-re-read-against-a-device-bound-step). TF32 in
+particular was removed on the strength of the reading here and now exists again
+as `matmul_precision`.
+
 | Candidate | Throughput | Verdict |
 | --- | ---: | --- |
 | Baseline (float32) | 86,799 | — |
@@ -160,7 +167,8 @@ throughput window while its device launches are not separable there.
 
 **TF32 does nothing here** because the model is not matmul-bound. A `model_dim`
 of 64 gives the tensor cores nothing to accelerate; the step is spent on kernel
-launches and host work.
+launches and host work. That diagnosis was right and the inference drawn from
+it — that width is what would change it — was not; see the re-read.
 
 **`torch.compile` is not viable at this shape variety.** It reached roughly the
 baseline's steady state per step, but paid 1,098 seconds of compilation for 115
@@ -447,6 +455,28 @@ the device was idle waiting, so a synchronization had nothing to wait for. Once
 the device is busy, the loader's own time overlaps device work in the deferred
 arm, and synchronizing every step serializes them. **The probe is what keeps that
 22.4% from being invisible**, so it stays.
+
+Keeping it is not free, and the figure above is not what it costs. That column
+is the difference between the two arms per step; what a run pays is that
+difference over the steps actually spent in the slower arm, which the default
+cadence puts at one interval in four:
+
+| Workload | probe arm costs | of a run of | share |
+| --- | ---: | ---: | ---: |
+| 64 × 16 | 0.00 s | 9.2 s | 0.03% |
+| 1024 × 256 | 1.76 s | 38.6 s | 4.6% |
+
+So the wide run spends 4.6% of itself measuring a 22.4% effect, against the
+0.6% the health monitor costs the same run. That is the honest comparison and
+it is the one the keep decision rests on: the probe is the more expensive of
+the two instruments this section judged, and it is kept because what it
+measures moves by a factor of thirty across workloads while the health
+monitor's cost does not move at all. If 4.6% is judged too much, the lever is
+`synchronization_probe_every_intervals` rather than the probe's existence —
+the cost falls in proportion to the share of intervals in the slower arm, and
+nothing about the reading needs one interval in four rather than one in eight.
+Changing that default is not done here because no reading argues for a
+particular value.
 
 The per-step health monitor was measured the same way, and the wall-clock
 figure is the honest one: its host time is subtracted from the throughput

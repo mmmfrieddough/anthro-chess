@@ -14,10 +14,13 @@ from typing import Any, cast
 
 import torch
 
-#: Version 3 added ``matmul_precision`` to the execution settings a
-#: continuation has to match. A checkpoint written before it cannot say which
-#: arithmetic produced its weights, so it cannot be continued under a claim
-#: about that arithmetic either way.
+#: Version 3 added ``matmul_precision`` to `_EXECUTION_COMPATIBILITY_KEYS`.
+#:
+#: Know what a bump costs before making the next one. This gate is read by every
+#: consumer rather than only by resume — inference, the benchmarks, and the UCI
+#: path all load through :func:`load_training_checkpoint` — so it retires every
+#: checkpoint on disk for every purpose, and the runs behind them have to be
+#: produced again. Only the resume path reads the key that motivated it.
 CHECKPOINT_VERSION = 3
 _CHECKPOINT_DIRECTORY = "checkpoints"
 _CHECKPOINT_PATTERN = re.compile(r"^step-(\d{8})\.pt$")

@@ -131,7 +131,7 @@ class StepHealthMonitor:
 
         started = time.perf_counter()
         gradients = [
-            parameter.grad.detach()
+            parameter.grad
             for parameter in self._parameters
             if parameter.grad is not None
         ]
@@ -146,21 +146,26 @@ class StepHealthMonitor:
         self._steps += 1
         self._instrumentation_seconds += time.perf_counter() - started
 
+    @torch.no_grad()
     def observe_update(self) -> None:
-        """Record the update-to-weight ratio against the retained snapshot."""
+        """Record the update-to-weight ratio against the retained snapshot.
+
+        Under ``no_grad`` because the subtraction below is the one arithmetic
+        this class does outside a Torch reduction that brings its own, and a
+        parameter is a leaf that requires grad: without it every difference
+        would carry a graph for a statistic nothing backpropagates through.
+        """
 
         if self._snapshot is None:
             return
         started = time.perf_counter()
         updates = [
-            parameter.detach() - previous
+            parameter - previous
             for parameter, previous in zip(
                 self._parameters, self._snapshot, strict=True
             )
         ]
-        weight_norm = get_total_norm(
-            [parameter.detach() for parameter in self._parameters]
-        )
+        weight_norm = get_total_norm(self._parameters)
         self._update_ratio = get_total_norm(updates) / torch.clamp(
             weight_norm, min=torch.finfo(weight_norm.dtype).tiny
         )

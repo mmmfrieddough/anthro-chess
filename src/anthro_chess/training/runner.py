@@ -358,6 +358,7 @@ def run_training(
                     batch_size=train.loader.config.batch_size,
                     gradient_accumulation_steps=config.gradient_accumulation_steps,
                     determinism=config.determinism,
+                    matmul_precision=config.matmul_precision,
                     profile_phases=config.profile_phases,
                 ),
                 device=device,
@@ -1022,14 +1023,13 @@ def _fused_optimizer(device: torch.device) -> bool:
     answer per backend and a dial with a single correct setting is a dial
     nobody should have to find. Adam over this model's parameter list is
     otherwise dozens of small elementwise launches, and on a launch-bound step
-    the launches cost more than the arithmetic: fusing them is worth 24.8% at
-    the batch this project trains today.
+    the launches cost more than the arithmetic.
 
-    What it is worth is a property of the workload rather than of the backend,
-    and at a batch that fills the device it is worth nothing measurable — 1.0%,
-    inside that arm's own spread. Neither reading argues for a dial: the fused
-    form is never slower, and the one that wins on a launch-bound step is free
-    on every other.
+    What that is worth turns out to be a property of the workload rather than
+    of the backend, and it ranges from decisive to nothing measurable across
+    the two this project runs. Neither end argues for a dial: the fused form is
+    never slower, so the setting that wins on a launch-bound step is free on
+    every other. `docs/planning/cuda-training-proof.md` owns both readings.
 
     Elementwise and deterministic either way, so this stays compatible with the
     strict correctness path. It does reassociate some floating-point work, so

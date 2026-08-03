@@ -303,10 +303,15 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
     provenance = set(_EXECUTION_PROVENANCE_KEYS)
     assert compatibility.isdisjoint(provenance)
     assert set(record) == compatibility | provenance
+    # Which side each arithmetic setting falls on, which is the declared
+    # against derived line the two sets are documented by.
+    assert {"precision", "matmul_precision"} <= compatibility
+    assert "fused_optimizer" in provenance
 
 
 def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The dial is a process-wide Torch setting, so the run has to hand it back.
 
@@ -329,53 +334,23 @@ def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
         validation=False,
         extra='matmul_precision = "high"\n',
     )
+    # What the forward pass actually ran under, sampled from inside the loop.
+    # Asserting only the restored value would pass against a runner that never
+    # set it at all.
+    observed: list[str] = []
+    original_forward = CausalMoveModel.forward
 
+    def recording_forward(self: CausalMoveModel, batch: MoveModelBatch) -> torch.Tensor:
+        observed.append(torch.get_float32_matmul_precision())
+        return original_forward(self, batch)
+
+    monkeypatch.setattr(CausalMoveModel, "forward", recording_forward)
     result = run_training(load_config(TrainingConfig, path=config_path))
 
+    assert observed and set(observed) == {"high"}
     assert torch.get_float32_matmul_precision() == "highest"
     checkpoint = load_training_checkpoint(result.checkpoint_path)
     assert checkpoint["metadata"]["execution"]["matmul_precision"] == "high"
-
-
-def test_resume_refuses_a_changed_matmul_precision(tmp_path: Path) -> None:
-    """A declared arithmetic change is one a continuation has to match.
-
-    Unlike the fused optimizer, which arrives with the backend and describes
-    where a run happened, this is chosen — and what it chooses is the precision
-    every gradient is computed in. A run that changed it partway would have no
-    way to say which half produced its weights.
-    """
-
-    prepared = prepare_pgn(
-        SAMPLE_PGN,
-        tmp_path / "data",
-        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
-    )
-    initial = run_training(
-        load_config(
-            TrainingConfig,
-            path=_write_training_config(
-                tmp_path / "initial-config",
-                normalized=prepared.normalized_path,
-                manifest=prepared.manifest_path,
-                output=tmp_path / "initial",
-                validation=False,
-            ),
-        )
-    )
-    continuation = _write_training_config(
-        tmp_path / "continuation-config",
-        normalized=prepared.normalized_path,
-        manifest=prepared.manifest_path,
-        output=tmp_path / "continuation",
-        validation=False,
-        steps=3,
-        resume_from=initial.checkpoint_path,
-        extra='matmul_precision = "high"\n',
-    )
-
-    with pytest.raises(TrainingError, match="incompatible"):
-        run_training(load_config(TrainingConfig, path=continuation))
 
 
 def test_resume_reads_execution_provenance_it_does_not_recognize(

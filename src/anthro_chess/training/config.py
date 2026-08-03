@@ -35,12 +35,9 @@ TrainingPrecision = Literal["float32", "bfloat16-mixed"]
 #: Same shape of tradeoff as the precision dial and the same reason to measure
 #: rather than assume: it returns nothing on a launch-bound step, because
 #: tensor cores accelerate arithmetic and a launch-bound step is not doing any.
-#: Off by default; ``docs/planning/cuda-training-proof.md`` holds the readings.
-#:
-#: Declared rather than derived, so it is one of the settings a continuation has
-#: to match: it decides the arithmetic every gradient is computed in, and a run
-#: that changed it partway would have no way to say which half produced its
-#: weights.
+#: Off by default; ``docs/planning/cuda-training-proof.md`` holds the readings,
+#: and ``_EXECUTION_COMPATIBILITY_KEYS`` in the runner holds why a continuation
+#: has to match it.
 MatmulPrecision = Literal["highest", "high"]
 
 
