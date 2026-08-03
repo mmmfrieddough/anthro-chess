@@ -43,7 +43,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
@@ -81,24 +81,22 @@ from anthro_chess.evaluation.policy import (
     score_positions,
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
+from anthro_chess.evaluation.recording import (
+    checkpoint_reference,
+    pool_dataset_reference,
+    recording,
+)
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailReference,
     DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultRecordError,
     ResultsStore,
-    ResultsStoreError,
     WorkloadComponent,
-    build_result,
-    configuration_reference,
-    dataset_reference,
-    default_checkpoint_label,
     measurement,
     projection_content_digest,
 )
@@ -374,9 +372,9 @@ class NoveltyBenchmarkResult:
     view: ViewSelection
     leakage: LeakageCheck
     arms: tuple[ArmReading, ...]
-    envelopes: tuple[ResultEnvelope, ...]
-    recorded_paths: tuple[Path, ...]
-    detail_paths: tuple[Path, ...]
+    envelopes: tuple[ResultEnvelope, ...] = ()
+    recorded_paths: tuple[Path, ...] = ()
+    detail_paths: tuple[Path, ...] = ()
 
     @property
     def control(self) -> ArmReading:
@@ -479,14 +477,8 @@ def benchmark_novelty(
             raise NoveltyBenchmarkError(str(error)) from error
 
     component = projection_content_digest(source_rows, MOVE_PREDICTION_PROJECTION)
-    checkpoint = _checkpoint_reference(config, runner)
+    checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
     data = _dataset_reference(pool, selection, component)
-    recorded_at = datetime.now(tz=UTC)
-    configuration = configuration_reference(
-        resolved_config.as_record(),
-        source=resolved_config.provenance.source,
-        overrides=resolved_config.provenance.overrides,
-    )
 
     result = NoveltyBenchmarkResult(
         checkpoint=checkpoint,
@@ -494,68 +486,44 @@ def benchmark_novelty(
         view=selection,
         leakage=leakage,
         arms=tuple(arms),
-        envelopes=(),
-        recorded_paths=(),
-        detail_paths=(),
     )
     control = result.control
 
-    envelopes: list[ResultEnvelope] = []
-    characterizations: list[NoiseCharacterization] = []
-    detail_paths: list[Path] = []
-    try:
+    with recording(
+        resolved_config,
+        kind=NOVELTY_KIND,
+        benchmark=NOVELTY_BENCHMARK,
+        checkpoint=checkpoint,
+        detail=detail,
+        error=NoveltyBenchmarkError,
+    ) as recorder:
         for arm in result.arms:
             execution = _execution_record(runner, config.perturbation, arm.dose)
             workload = execution.workload_component()
-            arm_detail = _write_detail(
-                detail,
-                arm,
-                checkpoint=checkpoint,
-                recorded_at=recorded_at,
-                per_position=config.detail.per_position,
-                paths=detail_paths,
+            dose_slug = f"{arm.dose:.4f}".replace(".", "-")
+            recorder.add(
+                _arm_measurements(arm, control, component, workload),
+                detail=recorder.detail(
+                    _arm_payload(arm, per_position=config.detail.per_position),
+                    description=(
+                        "Per-arm derivation provenance, slice tables, and "
+                        "predicate readings for one novelty dose."
+                    ),
+                    slug=f"dose-{dose_slug}",
+                ),
+                data=data,
+                execution=execution,
             )
-            envelopes.append(
-                build_result(
-                    kind=NOVELTY_KIND,
-                    benchmark=NOVELTY_BENCHMARK,
-                    checkpoint=checkpoint,
-                    configuration=configuration,
-                    data=data,
-                    execution=execution,
-                    measurements=_arm_measurements(arm, control, component, workload),
-                    detail=arm_detail,
-                    recorded_at=recorded_at,
+            recorder.characterize(
+                _characterize_noise(
+                    arm,
+                    config.noise,
+                    component=component,
+                    workload=workload,
+                    recorded_at=recorder.recorded_at,
                 )
             )
-            characterization = _characterize_noise(
-                arm,
-                config.noise,
-                component=component,
-                workload=workload,
-                recorded_at=recorded_at,
-            )
-            if characterization is not None:
-                characterizations.append(characterization)
-    except (ResultRecordError, ResultsStoreError) as error:
-        raise NoveltyBenchmarkError(str(error)) from error
-
-    recorded_paths: list[Path] = []
-    if store is not None:
-        try:
-            recorded_paths = [store.append(envelope) for envelope in envelopes]
-            recorded_paths.extend(
-                store.append_characterization(item) for item in characterizations
-            )
-        except (ResultRecordError, ResultsStoreError) as error:
-            raise NoveltyBenchmarkError(str(error)) from error
-
-    return replace(
-        result,
-        envelopes=tuple(envelopes),
-        recorded_paths=tuple(recorded_paths),
-        detail_paths=tuple(detail_paths),
-    )
+        return replace(result, **recorder.commit(store))
 
 
 def _derive_game(
@@ -1142,39 +1110,16 @@ def _load_inputs(
     return pool, selection, rows
 
 
-def _checkpoint_reference(
-    config: NoveltyBenchmarkConfig,
-    runner: CheckpointModelRunner,
-) -> CheckpointReference:
-    run_id = runner.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        runner.global_step,
-    )
-    return CheckpointReference(
-        label=label,
-        step=runner.global_step,
-        run_id=run_id,
-        parameter_sha256=runner.parameter_sha256(),
-    )
-
-
 def _dataset_reference(
     pool: FrozenPool,
     selection: ViewSelection,
     component: DataComponent,
 ) -> DatasetReference:
-    record = pool.manifest.get("pool")
-    if not isinstance(record, Mapping):
-        raise NoveltyBenchmarkError("evaluation pool manifest has no pool identity")
-    view_record = selection.as_record()
-    return dataset_reference(
-        pool_id=str(record["id"]),
-        pool_version=int(record["version"]),
-        view=selection.name,
-        selected_games=selection.selected_games,
-        game_ids_sha256=str(view_record["game_ids_sha256"]),
-        components=[component],
+    return pool_dataset_reference(
+        pool,
+        selection,
+        component,
+        error=NoveltyBenchmarkError,
     )
 
 
@@ -1188,33 +1133,13 @@ def _pool_split(pool: FrozenPool) -> SplitName:
     return cast(SplitName, split)
 
 
-def _write_detail(
-    detail: DetailStore | None,
-    arm: ArmReading,
-    *,
-    checkpoint: CheckpointReference,
-    recorded_at: datetime,
-    per_position: bool,
-    paths: list[Path],
-) -> DetailReference | None:
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+def _arm_payload(arm: ArmReading, *, per_position: bool) -> dict[str, object]:
+    """Return one arm's bulk record for the detail tier."""
+
     payload: dict[str, object] = dict(arm.as_record())
     if per_position:
         payload["positions"] = [position.as_record() for position in arm.positions]
-    dose_slug = f"{arm.dose:.4f}".replace(".", "-")
-    relative = Path(NOVELTY_KIND) / checkpoint.label / f"dose-{dose_slug}-{stamp}.json"
-    reference = detail.write(
-        relative,
-        payload,
-        description=(
-            "Per-arm derivation provenance, slice tables, and predicate "
-            "readings for one novelty dose."
-        ),
-    )
-    paths.append(detail.root / relative)
-    return reference
+    return payload
 
 
 __all__ = [

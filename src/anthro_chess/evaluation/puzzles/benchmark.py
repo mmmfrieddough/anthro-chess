@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
@@ -29,23 +28,20 @@ from anthro_chess.evaluation.curves import (
 )
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles.dataset import Puzzle, PuzzleSet, load_puzzle_set
+from anthro_chess.evaluation.recording import checkpoint_reference, recording
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailReference,
     DetailStore,
     Measurement,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
     ResultsStoreError,
-    build_result,
-    configuration_reference,
     dataset_reference,
-    default_checkpoint_label,
     measurement,
     paired_contributions,
     projection_content_digest,
@@ -230,9 +226,9 @@ class PuzzleBenchmarkResult:
     training_games: int
     overlapping_puzzles: int
     overlap_rate: float
-    envelope: ResultEnvelope | None
-    recorded_path: Path | None
-    detail_path: Path | None
+    envelopes: tuple[ResultEnvelope, ...] = ()
+    recorded_paths: tuple[Path, ...] = ()
+    detail_paths: tuple[Path, ...] = ()
 
     def as_record(self) -> dict[str, object]:
         return {
@@ -251,9 +247,7 @@ class PuzzleBenchmarkResult:
                 "overlapping_puzzles": self.overlapping_puzzles,
                 "rate": self.overlap_rate,
             },
-            "recorded": (
-                None if self.recorded_path is None else str(self.recorded_path)
-            ),
+            "recorded": [str(path) for path in self.recorded_paths],
         }
 
 
@@ -319,7 +313,7 @@ def benchmark_puzzles(
             (puzzle.as_projection_record() for puzzle in puzzle_set.puzzles),
             PUZZLE_RESPONSE_PROJECTION,
         )
-        checkpoint = _checkpoint_reference(config, runner)
+        checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
         data = _dataset_reference(puzzle_set, component)
     except (
         ModelRunnerError,
@@ -352,44 +346,28 @@ def benchmark_puzzles(
         training_games=training_games,
         overlapping_puzzles=overlapping,
         overlap_rate=overlap_rate,
-        envelope=None,
-        recorded_path=None,
-        detail_path=None,
     )
-    configuration = configuration_reference(
-        resolved_config.as_record(),
-        source=resolved_config.provenance.source,
-        overrides=resolved_config.provenance.overrides,
-    )
-    recorded_at = datetime.now(tz=UTC)
-    detail_reference = _write_detail(
-        detail,
-        result,
-        scored_ratings=scored_ratings,
-        noise=config.noise,
-        recorded_at=recorded_at,
-    )
-    measurements = _measurements(
-        result,
-        component,
-    )
-    envelope = build_result(
+    with recording(
+        resolved_config,
         kind=PUZZLE_KIND,
         benchmark=PUZZLE_BENCHMARK,
         checkpoint=checkpoint,
-        configuration=configuration,
-        data=data,
-        measurements=measurements,
-        detail=detail_reference,
-        recorded_at=recorded_at,
-    )
-    recorded_path = store.append(envelope) if store is not None else None
-    return replace(
-        result,
-        envelope=envelope,
-        recorded_path=recorded_path,
-        detail_path=(None if detail_reference is None else Path(detail_reference.path)),
-    )
+        detail=detail,
+        error=PuzzleBenchmarkError,
+    ) as recorder:
+        recorder.add(
+            _measurements(result, component),
+            detail=recorder.detail(
+                _detail_payload(result, scored_ratings, config.noise),
+                description=(
+                    "Puzzle-rating grid, human reference curve, rating-band "
+                    "response, source-game overlap provenance, and paired "
+                    "comparison inputs."
+                ),
+            ),
+            data=data,
+        )
+        return replace(result, **recorder.commit(store))
 
 
 def score_puzzle_set(
@@ -770,23 +748,6 @@ def _training_overlap(puzzle_set: PuzzleSet, path: Path) -> tuple[int, int]:
     return games, overlapping
 
 
-def _checkpoint_reference(
-    config: PuzzleBenchmarkConfig,
-    runner: CheckpointModelRunner,
-) -> CheckpointReference:
-    run_id = runner.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        runner.global_step,
-    )
-    return CheckpointReference(
-        label=label,
-        step=runner.global_step,
-        run_id=run_id,
-        parameter_sha256=runner.parameter_sha256(),
-    )
-
-
 def _dataset_reference(
     puzzle_set: PuzzleSet,
     component: DataComponent,
@@ -924,29 +885,18 @@ def _paired_contributions(
     ).as_record()
 
 
-def _write_detail(
-    detail: DetailStore | None,
+def _detail_payload(
     result: PuzzleBenchmarkResult,
-    *,
     scored_ratings: Sequence[_ScoredRating],
     noise: NoiseConfig,
-    recorded_at: datetime,
-) -> DetailReference | None:
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+) -> dict[str, object]:
+    """Return the bulk record, with the paired inputs a later floor needs."""
+
     payload = result.as_record()
     contributions = _paired_contributions(scored_ratings, noise)
     if contributions is not None:
         payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
-    return detail.write(
-        Path(PUZZLE_KIND) / f"{result.checkpoint.label}-{stamp}.json",
-        payload,
-        description=(
-            "Puzzle-rating grid, human reference curve, rating-band response, "
-            "source-game overlap provenance, and paired comparison inputs."
-        ),
-    )
+    return payload
 
 
 def _slope(x_values: Sequence[int], y_values: Sequence[float]) -> float:

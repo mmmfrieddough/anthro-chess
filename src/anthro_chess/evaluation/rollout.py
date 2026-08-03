@@ -65,7 +65,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from statistics import stdev
@@ -124,6 +123,12 @@ from anthro_chess.evaluation.pool import (
     FrozenPool,
     load_pool,
 )
+from anthro_chess.evaluation.recording import (
+    pool_dataset_reference,
+    recording,
+    resolve_model,
+    runner_device,
+)
 from anthro_chess.evaluation.reference import (
     CURVE_SPEC_VERSION,
     DECLARED_NEIGHBOURS,
@@ -145,18 +150,11 @@ from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     DatasetReference,
-    DetailReference,
     DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultRecordError,
     ResultsStore,
-    ResultsStoreError,
-    build_result,
-    configuration_reference,
-    dataset_reference,
-    default_checkpoint_label,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
@@ -192,8 +190,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.results.noise import floor_from_dispersion
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
-from anthro_chess.inference.runner import ModelRunnerError
+from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 from anthro_chess.runtime.session import (
     BatchedActionModelRunner,
@@ -848,7 +845,7 @@ def benchmark_rollout(
             reference_view,
             book=book,
             runner=loaded,
-            device=_device(loaded),
+            device=runner_device(loaded),
         )
 
     result = RolloutBenchmarkResult(
@@ -1643,21 +1640,15 @@ def _dataset_reference(
     reader can tell which human openings a rollout continued.
     """
 
-    identity = pool.manifest.get("pool")
-    if not isinstance(identity, Mapping):
-        raise RolloutBenchmarkError("evaluation pool manifest has no pool identity")
     try:
         component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
     except FingerprintError as error:
         raise RolloutBenchmarkError(str(error)) from error
-    record = selection.as_record()
-    return dataset_reference(
-        pool_id=str(identity["id"]),
-        pool_version=int(identity["version"]),
-        view=selection.name,
-        selected_games=selection.selected_games,
-        game_ids_sha256=str(record["game_ids_sha256"]),
-        components=[component],
+    return pool_dataset_reference(
+        pool,
+        selection,
+        component,
+        error=RolloutBenchmarkError,
     )
 
 
@@ -1679,7 +1670,7 @@ def _execution_record(
     """
 
     return execution_record(
-        _device(runner),
+        runner_device(runner),
         {
             "generation_version": GENERATION_VERSION,
             "positions": source.identity,
@@ -1713,112 +1704,61 @@ def _record(
     series recorded beside it.
     """
 
-    configuration = configuration_reference(
-        resolved_config.as_record(),
-        source=resolved_config.provenance.source,
-        overrides=resolved_config.provenance.overrides,
-    )
-    recorded_at = datetime.now(tz=UTC)
-    detail_paths: list[Path] = []
-    envelopes: list[ResultEnvelope] = []
-    try:
+    with recording(
+        resolved_config,
+        kind=ROLLOUT_KIND,
+        benchmark=ROLLOUT_BENCHMARK,
+        checkpoint=result.checkpoint,
+        detail=detail,
+        error=RolloutBenchmarkError,
+    ) as recorder:
         for cell in result.cells:
-            detail_reference = _write_detail(
-                detail,
-                checkpoint=result.checkpoint,
-                slug=(
-                    f"{cell.arm.value}-r{cell.target_rating}-t{_slug(cell.temperature)}"
+            recorder.add(
+                _measurements(cell),
+                detail=recorder.detail(
+                    _cell_payload(cell),
+                    description=f"Generated-play rollout cell: {cell.label}",
+                    slug=(
+                        f"{cell.arm.value}-r{cell.target_rating}"
+                        f"-t{_slug(cell.temperature)}"
+                    ),
                 ),
-                description=f"Generated-play rollout cell: {cell.label}",
-                payload=_cell_payload(cell),
-                recorded_at=recorded_at,
-                paths=detail_paths,
-            )
-            envelopes.append(
-                build_result(
-                    kind=ROLLOUT_KIND,
-                    benchmark=ROLLOUT_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    # Provenance rather than series identity: the pool games
-                    # were an input to generation, not the content measured,
-                    # so they reach the fingerprint through the workload's
-                    # position source instead of through a data component.
-                    data=result.dataset
-                    if cell.arm is RolloutArm.HUMAN_PREFIX
-                    else None,
-                    execution=cell.execution,
-                    measurements=_measurements(cell),
-                    detail=detail_reference,
-                    recorded_at=recorded_at,
-                )
+                # Provenance rather than series identity: the pool games were
+                # an input to generation, not the content measured, so they
+                # reach the fingerprint through the workload's position source
+                # instead of through a data component.
+                data=result.dataset if cell.arm is RolloutArm.HUMAN_PREFIX else None,
+                execution=cell.execution,
             )
         for reading in result.readings:
-            detail_reference = _write_detail(
-                detail,
-                checkpoint=result.checkpoint,
-                slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
-                description=f"Human-reference curves: {reading.label}",
-                payload=_reading_payload(result, reading),
-                recorded_at=recorded_at,
-                paths=detail_paths,
-            )
-            envelopes.append(
-                build_result(
-                    kind=ROLLOUT_KIND,
-                    benchmark=ROLLOUT_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    # The reference view is provenance here for the same reason
-                    # the prefix view is on a cell: the human games shaped what
-                    # was compared against, and the workload carries identity.
-                    data=result.dataset,
-                    execution=reading.execution,
-                    measurements=_curve_measurements(reading),
-                    detail=detail_reference,
-                    recorded_at=recorded_at,
-                )
+            recorder.add(
+                _curve_measurements(reading),
+                detail=recorder.detail(
+                    _reading_payload(result, reading),
+                    description=f"Human-reference curves: {reading.label}",
+                    slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
+                ),
+                # The reference view is provenance here for the same reason the
+                # prefix view is on a cell: the human games shaped what was
+                # compared against, and the workload carries identity.
+                data=result.dataset,
+                execution=reading.execution,
             )
             if reading.exact is None:
                 continue
-            detail_reference = _write_detail(
-                detail,
-                checkpoint=result.checkpoint,
-                slug=f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}",
-                description=f"Exact shallow repertoire: {reading.label}",
-                payload=reading.exact.as_record(),
-                recorded_at=recorded_at,
-                paths=detail_paths,
+            recorder.add(
+                _exact_measurements(reading),
+                detail=recorder.detail(
+                    reading.exact.as_record(),
+                    description=f"Exact shallow repertoire: {reading.label}",
+                    slug=(
+                        f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}"
+                    ),
+                ),
+                data=result.dataset,
+                execution=reading.exact.execution,
             )
-            envelopes.append(
-                build_result(
-                    kind=ROLLOUT_KIND,
-                    benchmark=ROLLOUT_BENCHMARK,
-                    checkpoint=result.checkpoint,
-                    configuration=configuration,
-                    data=result.dataset,
-                    execution=reading.exact.execution,
-                    measurements=_exact_measurements(reading),
-                    detail=detail_reference,
-                    recorded_at=recorded_at,
-                )
-            )
-    except ResultRecordError as error:
-        raise RolloutBenchmarkError(str(error)) from error
-
-    recorded_paths: list[Path] = []
-    if store is not None:
-        try:
-            recorded_paths = [store.append(envelope) for envelope in envelopes]
-        except (ResultRecordError, ResultsStoreError) as error:
-            raise RolloutBenchmarkError(str(error)) from error
-
-    return replace(
-        result,
-        envelopes=tuple(envelopes),
-        recorded_paths=tuple(recorded_paths),
-        detail_paths=tuple(detail_paths),
-    )
+        return replace(result, **recorder.commit(store))
 
 
 def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
@@ -2020,27 +1960,6 @@ def _exact_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
     )
 
 
-def _write_detail(
-    detail: DetailStore | None,
-    *,
-    checkpoint: CheckpointReference,
-    slug: str,
-    description: str,
-    payload: Mapping[str, Any],
-    recorded_at: datetime,
-    paths: list[Path],
-) -> DetailReference | None:
-    """Write one bulk payload and return its summary-tier reference."""
-
-    if detail is None:
-        return None
-    stamp = recorded_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-    relative = Path(ROLLOUT_KIND) / checkpoint.label / f"{stamp}-{slug}.json"
-    reference = detail.write(relative, dict(payload), description=description)
-    paths.append(detail.root / relative)
-    return reference
-
-
 def _cell_payload(cell: RolloutCell) -> dict[str, Any]:
     """Return one cell's diagnostics, games included when they were retained."""
 
@@ -2085,27 +2004,13 @@ def _resolve_model(
 ) -> tuple[ActionModelRunner, CheckpointReference]:
     """Return the runner to play with and the checkpoint identity to record."""
 
-    if runner is not None:
-        if checkpoint is None:
-            raise RolloutBenchmarkError(
-                "an explicitly supplied runner needs a checkpoint reference to "
-                "record its results against"
-            )
-        return runner, checkpoint
-    try:
-        loaded = CheckpointModelRunner.load(config.model, run_root=run_root)
-    except ModelRunnerError as error:
-        raise RolloutBenchmarkError(str(error)) from error
-    run_id = loaded.selection.run_path.name
-    label = config.checkpoint_label or default_checkpoint_label(
-        run_id,
-        loaded.global_step,
-    )
-    return loaded, CheckpointReference(
-        label=label,
-        step=loaded.global_step,
-        run_id=run_id,
-        parameter_sha256=loaded.parameter_sha256(),
+    return resolve_model(
+        config.model,
+        runner,
+        checkpoint,
+        label=config.checkpoint_label,
+        run_root=run_root,
+        error=RolloutBenchmarkError,
     )
 
 
@@ -2116,18 +2021,6 @@ def _load_book() -> OpeningBook:
         return load_book()
     except OpeningBookError as error:
         raise RolloutBenchmarkError(str(error)) from error
-
-
-def _device(runner: ActionModelRunner) -> torch.device:
-    """Return the device a runner executes on, defaulting to the CPU.
-
-    A stand-in runner need not carry a device. The environment half of the
-    record is attribution rather than identity, so a missing device is recorded
-    as the CPU rather than failing the measurement.
-    """
-
-    device = getattr(runner, "device", None)
-    return device if isinstance(device, torch.device) else torch.device("cpu")
 
 
 def _finished_games(distribution: GameDistribution) -> int:

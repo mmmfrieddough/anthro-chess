@@ -604,7 +604,7 @@ def _run_step(
         )
 
     seconds = time.perf_counter() - started
-    envelopes, recorded, detail_paths = _step_reading(result)
+    envelopes, recorded, detail_paths = _step_reading(step, result)
     logger.info("Suite step %s: completed in %.1fs", step.name, seconds)
     return StepOutcome(
         name=step.name,
@@ -682,33 +682,25 @@ def _invoke_decisions(path: Path) -> Any:
 
 
 def _step_reading(
+    step: PlannedBenchmark,
     result: Any,
 ) -> tuple[tuple[Any, ...], tuple[Path, ...], tuple[Path, ...]]:
     """Return one result's envelopes and the paths it wrote.
 
-    Benchmark results are independent records rather than one hierarchy, and
-    they report this in two shapes: most carry tuples, while the puzzle
-    response carries a single envelope and a single path each. Both are read
-    here so neither has to be reshaped for the suite's sake.
+    Driven by the registry's ``records_results`` declaration rather than by
+    inspecting the result: a benchmark that records carries all three fields,
+    and one that does not — decision decomposition, which has no result kind —
+    carries none of them. Reading them defensively is what let the puzzle
+    result drift to a different shape without a single test failing.
     """
 
-    envelopes = getattr(result, "envelopes", None)
-    if envelopes is None:
-        single = getattr(result, "envelope", None)
-        envelopes = () if single is None else (single,)
+    if not step.benchmark.records_results:
+        return (), (), ()
     return (
-        tuple(envelopes),
-        _paths(result, "recorded_paths", "recorded_path"),
-        _paths(result, "detail_paths", "detail_path"),
+        tuple(result.envelopes),
+        tuple(result.recorded_paths),
+        tuple(result.detail_paths),
     )
-
-
-def _paths(result: Any, plural: str, singular: str) -> tuple[Path, ...]:
-    many = getattr(result, plural, None)
-    if many is not None:
-        return tuple(many)
-    one = getattr(result, singular, None)
-    return () if one is None else (one,)
 
 
 def _order(
