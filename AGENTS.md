@@ -79,8 +79,9 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   When setting up milestone work, use real GitHub milestones, tracker issues,
   sub-issues, issue dependencies for true blockers, and the repo's `area:`,
   `type:`, `execution:`, and `verification:` labels as described in
-  `docs/issue-workflow.md`. File a finding of your own with that metadata
-  already on it; only public intake waits for a maintainer to place it.
+  `docs/issue-workflow.md`. A finding from your own work is filed with that
+  metadata already on it; only submissions from outside the project wait to be
+  placed.
 - When choosing the next issue, select only a `type: task` issue in the active
   milestone that is attached to its tracker and has no open blockers. Treat any
   issue missing that metadata as intake rather than as available work. An issue
