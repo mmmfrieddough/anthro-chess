@@ -62,6 +62,48 @@ CommandHandler = Callable[[argparse.Namespace], int]
 logger = logging.getLogger(__name__)
 
 
+# Flags repeated verbatim across subcommands, declared once and inherited
+# through `parents=`. A subcommand that words a flag differently, or that
+# shares it too narrowly to earn a parent, keeps its own definition.
+_SET_FLAG = argparse.ArgumentParser(add_help=False)
+_SET_FLAG.add_argument(
+    "--set",
+    action="append",
+    default=[],
+    metavar="KEY=VALUE",
+    help="Strict dotted TOML override; may be repeated.",
+)
+
+_STORE_FLAG = argparse.ArgumentParser(add_help=False)
+_STORE_FLAG.add_argument(
+    "--store",
+    type=Path,
+    help=(
+        "Committed results store directory. Defaults to "
+        "ANTHRO_CHESS_RESULTS_ROOT or ./results."
+    ),
+)
+
+_DETAIL_ROOT_FLAG = argparse.ArgumentParser(add_help=False)
+_DETAIL_ROOT_FLAG.add_argument(
+    "--detail-root",
+    type=Path,
+    help=(
+        "Machine-local detail-tier directory. Defaults to "
+        "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
+        "ANTHRO_CHESS_RUN_ROOT."
+    ),
+)
+
+_FORMAT_FLAG = argparse.ArgumentParser(add_help=False)
+_FORMAT_FLAG.add_argument(
+    "--format",
+    choices=("text", "json"),
+    default="text",
+    help="Output format (default: %(default)s).",
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level command parser."""
     parser = argparse.ArgumentParser(
@@ -96,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     acquire_parser = data_commands.add_parser(
         "acquire",
         help="Download and verify a configured source archive.",
+        parents=[_SET_FLAG],
     )
     acquire_parser.add_argument(
         "output",
@@ -112,18 +155,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Explicit TOML source and archive selection.",
     )
-    acquire_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
     acquire_parser.set_defaults(handler=_run_data_acquire)
 
     prepare_parser = data_commands.add_parser(
         "prepare",
         help="Normalize a PGN file into Parquet and manifest artifacts.",
+        parents=[_SET_FLAG],
     )
     prepare_parser.add_argument(
         "input",
@@ -146,13 +183,6 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Explicit TOML source and preprocessing selection.",
     )
-    prepare_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
     prepare_parser.set_defaults(handler=_run_data_prepare)
 
     eval_parser = subcommands.add_parser(
@@ -163,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     freeze_parser = eval_commands.add_parser(
         "freeze",
         help="Freeze the held-out test split into a checksummed evaluation pool.",
+        parents=[_SET_FLAG],
     )
     freeze_parser.add_argument(
         "output",
@@ -178,18 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Explicit TOML evaluation-pool selection.",
     )
-    freeze_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
 
     prepare_puzzles_parser = eval_commands.add_parser(
         "prepare-puzzles",
         help="Acquire and build the pinned external puzzle benchmark artifact.",
+        parents=[_SET_FLAG],
     )
     prepare_puzzles_parser.add_argument(
         "input",
@@ -212,13 +237,6 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Explicit TOML puzzle-source and selection recipe.",
     )
-    prepare_puzzles_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
     prepare_puzzles_parser.set_defaults(handler=_run_eval_prepare_puzzles)
 
     suite_parser = eval_commands.add_parser(
@@ -227,19 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Run every benchmark against one checkpoint, composing their "
             "existing selections."
         ),
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     suite_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML suite selection.",
-    )
-    suite_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
     )
     suite_parser.add_argument(
         "--full",
@@ -249,16 +261,6 @@ def build_parser() -> argparse.ArgumentParser:
             "reduced sweep, because a sweep measured in hours is not a default "
             "anyone will run on a new checkpoint. A reduced view is its own "
             "series, so the two do not accumulate into one history."
-        ),
-    )
-    _add_store_argument(suite_parser)
-    suite_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
         ),
     )
     suite_parser.add_argument(
@@ -302,17 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Resolve and print what would run, without running any of it.",
     )
-    suite_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     suite_parser.set_defaults(handler=_run_eval_suite)
 
     run_parser = eval_commands.add_parser(
         "run",
         help="Evaluate a checkpoint over the frozen pool and record the result.",
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     run_parser.add_argument(
         "--config",
@@ -321,38 +318,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit TOML checkpoint-evaluation selection.",
     )
     run_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(run_parser)
-    run_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
-    )
-    run_parser.add_argument(
         "--no-record",
         action="store_true",
         help="Compute and print results without writing them to the store.",
-    )
-    run_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
     )
     run_parser.set_defaults(handler=_run_eval_run)
 
     puzzles_parser = eval_commands.add_parser(
         "puzzles",
         help="Measure rating response against the owned calibrated puzzle set.",
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     puzzles_parser.add_argument(
         "--config",
@@ -361,32 +336,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit TOML puzzle-rating benchmark selection.",
     )
     puzzles_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(puzzles_parser)
-    puzzles_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
-    )
-    puzzles_parser.add_argument(
         "--no-record",
         action="store_true",
         help="Compute and print results without writing them to the store.",
-    )
-    puzzles_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
     )
     puzzles_parser.set_defaults(handler=_run_eval_puzzles)
 
@@ -396,29 +348,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Measure what a checkpoint retains under a controlled dose of "
             "perturbation-derived novelty."
         ),
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     novelty_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML novelty dose-response selection.",
-    )
-    novelty_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(novelty_parser)
-    novelty_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     novelty_parser.add_argument(
         "--no-record",
@@ -429,40 +365,18 @@ def build_parser() -> argparse.ArgumentParser:
             "about the model."
         ),
     )
-    novelty_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     novelty_parser.set_defaults(handler=_run_eval_novelty)
 
     inference_parser = eval_commands.add_parser(
         "inference",
         help="Measure a checkpoint's move latency, throughput, and cold start.",
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     inference_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML inference-benchmark selection.",
-    )
-    inference_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(inference_parser)
-    inference_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     inference_parser.add_argument(
         "--no-record",
@@ -473,12 +387,6 @@ def build_parser() -> argparse.ArgumentParser:
             "do not belong in the committed history."
         ),
     )
-    inference_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     inference_parser.set_defaults(handler=_run_eval_inference)
 
     rollout_parser = eval_commands.add_parser(
@@ -487,29 +395,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Play a declared matrix of generated games and report what whole "
             "games look like."
         ),
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     rollout_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML rollout-benchmark selection.",
-    )
-    rollout_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(rollout_parser)
-    rollout_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     rollout_parser.add_argument(
         "--no-record",
@@ -520,12 +412,6 @@ def build_parser() -> argparse.ArgumentParser:
             "not belong in the committed history."
         ),
     )
-    rollout_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     rollout_parser.set_defaults(handler=_run_eval_rollout)
 
     termination_parser = eval_commands.add_parser(
@@ -534,29 +420,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Measure how a checkpoint ends games against the human termination "
             "mix, with the premature-resignation guardrails."
         ),
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     termination_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML game-termination selection.",
-    )
-    termination_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(termination_parser)
-    termination_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     termination_parser.add_argument(
         "--no-record",
@@ -567,12 +437,6 @@ def build_parser() -> argparse.ArgumentParser:
             "does not belong in the committed history."
         ),
     )
-    termination_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     termination_parser.set_defaults(handler=_run_eval_termination)
 
     ladder_parser = eval_commands.add_parser(
@@ -581,29 +445,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Play a self-play rating ladder and report the transfer function "
             "from configured to fitted rating, plus its temperature response."
         ),
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     ladder_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML rating-ladder selection.",
-    )
-    ladder_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(ladder_parser)
-    ladder_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory. Defaults to "
-            "ANTHRO_CHESS_RESULT_DETAIL_ROOT or a directory beneath "
-            "ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     ladder_parser.add_argument(
         "--no-record",
@@ -614,12 +462,6 @@ def build_parser() -> argparse.ArgumentParser:
             "committed history."
         ),
     )
-    ladder_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     ladder_parser.set_defaults(handler=_run_eval_ladder)
 
     bandwidth_parser = eval_commands.add_parser(
@@ -628,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Select each generated-play curve's bandwidth from the human "
             "reference. An offline step whose output is declared in code."
         ),
+        parents=[_FORMAT_FLAG],
     )
     bandwidth_parser.add_argument(
         "pool",
@@ -660,12 +503,6 @@ def build_parser() -> argparse.ArgumentParser:
             "the optimum cannot show whether the optimum is interior."
         ),
     )
-    bandwidth_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     bandwidth_parser.set_defaults(handler=_run_eval_curve_bandwidth)
 
     decisions_parser = eval_commands.add_parser(
@@ -674,6 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Separate decisions the model preferred badly from decisions "
             "sampling drew against the model."
         ),
+        parents=[_SET_FLAG, _FORMAT_FLAG],
     )
     decisions_source = decisions_parser.add_mutually_exclusive_group(required=True)
     decisions_source.add_argument(
@@ -698,38 +536,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit TOML model-runner selection; required with --log.",
     )
     decisions_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    decisions_parser.add_argument(
         "--output",
         type=Path,
         help="Write the full decomposition, per-decision records included, here.",
-    )
-    decisions_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
     )
     decisions_parser.set_defaults(handler=_run_eval_decisions)
 
     report_parser = eval_commands.add_parser(
         "report",
         help="Show the compact benchmark delta view over the results store.",
-    )
-    _add_store_argument(report_parser)
-    report_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory used for paired checkpoint "
-            "floors. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
-            "directory beneath ANTHRO_CHESS_RUN_ROOT."
-        ),
+        parents=[_STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
     )
     report_parser.add_argument(
         "--pivot",
@@ -771,17 +587,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also show how the two compared checkpoints were produced.",
     )
-    report_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     report_parser.set_defaults(handler=_run_eval_report)
 
     tensorboard_parser = eval_commands.add_parser(
         "tensorboard",
         help="Project checkpoint history from the results store into TensorBoard.",
+        parents=[_STORE_FLAG],
     )
     tensorboard_parser.add_argument(
         "output",
@@ -791,7 +602,6 @@ def build_parser() -> argparse.ArgumentParser:
             "results store."
         ),
     )
-    _add_store_argument(tensorboard_parser)
     tensorboard_parser.set_defaults(handler=_run_eval_tensorboard)
 
     budget_parser = eval_commands.add_parser(
@@ -800,8 +610,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Report held-out quality against the training budget that bought "
             "it, joining the training-efficiency and held-out families."
         ),
+        parents=[_STORE_FLAG, _FORMAT_FLAG],
     )
-    _add_store_argument(budget_parser)
     budget_parser.add_argument(
         "--metric",
         default=None,
@@ -829,23 +639,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="Training wall-clock budget to answer for; may be repeated.",
     )
-    budget_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
-    )
     budget_parser.set_defaults(handler=_run_eval_budget)
 
     metrics_parser = eval_commands.add_parser(
         "metrics",
         help="List registered metric families, metrics, and their directions.",
-    )
-    metrics_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
+        parents=[_FORMAT_FLAG],
     )
     metrics_parser.set_defaults(handler=_run_eval_metrics)
 
@@ -860,8 +659,8 @@ def build_parser() -> argparse.ArgumentParser:
     noise_characterize_parser = noise_commands.add_parser(
         "characterize",
         help="Estimate a noise floor from recorded replicate measurements.",
+        parents=[_SET_FLAG, _STORE_FLAG],
     )
-    _add_store_argument(noise_characterize_parser)
     noise_characterize_parser.add_argument(
         "--kind",
         choices=("evaluation", "training", "execution"),
@@ -893,13 +692,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Execution noise only: the inference-benchmark selection to repeat. "
             "The floor it produces describes this machine under that workload."
         ),
-    )
-    noise_characterize_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override for --config; may be repeated.",
     )
     noise_characterize_parser.add_argument(
         "--processes",
@@ -947,6 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
     noise_sample_parser = noise_commands.add_parser(
         "sample",
         help="Measure one process's repeated efficiency readings, recording nothing.",
+        parents=[_SET_FLAG, _FORMAT_FLAG],
     )
     noise_sample_parser.add_argument(
         "--config",
@@ -955,55 +748,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit TOML inference-benchmark selection to repeat.",
     )
     noise_sample_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    noise_sample_parser.add_argument(
         "--repeats",
         type=int,
         help="Readings to take in this process.",
-    )
-    noise_sample_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
     )
     noise_sample_parser.set_defaults(handler=_run_eval_noise_sample)
 
     noise_list_parser = noise_commands.add_parser(
         "list",
         help="List recorded noise characterizations and their floors.",
-    )
-    _add_store_argument(noise_list_parser)
-    noise_list_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
+        parents=[_STORE_FLAG, _FORMAT_FLAG],
     )
     noise_list_parser.set_defaults(handler=_run_eval_noise_list)
 
     noise_plan_parser = noise_commands.add_parser(
         "plan",
         help="Report how many games an axis needs to resolve a given effect.",
+        parents=[_STORE_FLAG, _FORMAT_FLAG],
     )
-    _add_store_argument(noise_plan_parser)
     noise_plan_parser.add_argument("--metric", required=True)
     noise_plan_parser.add_argument(
         "--effect",
         type=float,
         required=True,
         help="The smallest metric difference the axis has to resolve.",
-    )
-    noise_plan_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
     )
     noise_plan_parser.set_defaults(handler=_run_eval_noise_plan)
 
@@ -1018,8 +786,8 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_add_parser = bridge_commands.add_parser(
         "add",
         help="Assert that two fingerprints name the same series.",
+        parents=[_STORE_FLAG],
     )
-    _add_store_argument(bridge_add_parser)
     bridge_add_parser.add_argument("--from", dest="from_fingerprint", required=True)
     bridge_add_parser.add_argument("--to", dest="to_fingerprint", required=True)
     bridge_add_parser.add_argument(
@@ -1037,44 +805,28 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_list_parser = bridge_commands.add_parser(
         "list",
         help="List recorded bridges.",
+        parents=[_STORE_FLAG],
     )
-    _add_store_argument(bridge_list_parser)
     bridge_list_parser.set_defaults(handler=_run_eval_bridge_list)
 
     bridge_revoke_parser = bridge_commands.add_parser(
         "revoke",
         help="Remove a recorded bridge.",
+        parents=[_STORE_FLAG],
     )
-    _add_store_argument(bridge_revoke_parser)
     bridge_revoke_parser.add_argument("bridge_id")
     bridge_revoke_parser.set_defaults(handler=_run_eval_bridge_revoke)
 
     train_parser = subcommands.add_parser(
         "train",
         help="Run bounded move-model training from explicit configuration.",
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG],
     )
     train_parser.add_argument(
         "--config",
         type=Path,
         required=True,
         help="Explicit TOML training, model, and data selection.",
-    )
-    train_parser.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Strict dotted TOML override; may be repeated.",
-    )
-    _add_store_argument(train_parser)
-    train_parser.add_argument(
-        "--detail-root",
-        type=Path,
-        help=(
-            "Machine-local detail-tier directory for the efficiency "
-            "breakdown. Defaults to ANTHRO_CHESS_RESULT_DETAIL_ROOT or a "
-            "directory beneath ANTHRO_CHESS_RUN_ROOT."
-        ),
     )
     train_parser.add_argument(
         "--no-record",
@@ -1096,12 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Exits nonzero when a root is configured in a way that would read "
             "as an empty machine."
         ),
-    )
-    machine_parser.add_argument(
-        "--format",
-        choices=("text", "json"),
-        default="text",
-        help="Output format (default: %(default)s).",
+        parents=[_FORMAT_FLAG],
     )
     machine_parser.set_defaults(handler=_run_machine)
 
@@ -2911,17 +2658,6 @@ def _render_decisions(decomposition: DecisionDecomposition) -> str:
 
 def _optional(value: float | None) -> str:
     return "not computed" if value is None else f"{value:.6f}"
-
-
-def _add_store_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--store",
-        type=Path,
-        help=(
-            "Committed results store directory. Defaults to "
-            "ANTHRO_CHESS_RESULTS_ROOT or ./results."
-        ),
-    )
 
 
 def _run_eval_report(arguments: argparse.Namespace) -> int:
