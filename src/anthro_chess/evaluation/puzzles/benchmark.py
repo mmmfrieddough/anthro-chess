@@ -28,7 +28,12 @@ from anthro_chess.evaluation.curves import (
     compare_curves,
 )
 from anthro_chess.evaluation.noise import NoiseConfig
-from anthro_chess.evaluation.puzzles.dataset import Puzzle, PuzzleSet, load_puzzle_set
+from anthro_chess.evaluation.puzzles.dataset import (
+    Puzzle,
+    PuzzleSet,
+    PuzzleSetError,
+    load_puzzle_set,
+)
 from anthro_chess.evaluation.recording import ResultRecorder, checkpoint_reference
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
@@ -292,8 +297,8 @@ def benchmark_puzzles(
     """Measure and optionally record puzzle response for one checkpoint."""
 
     config = resolved_config.value
-    puzzle_set = load_puzzle_set(config.puzzle_set)
     try:
+        puzzle_set = load_puzzle_set(config.puzzle_set)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
         training_games, overlapping = _training_overlap(
             puzzle_set,
@@ -319,6 +324,7 @@ def benchmark_puzzles(
     except (
         ModelRunnerError,
         OSError,
+        PuzzleSetError,
         ResultRecordError,
         ResultsStoreError,
         ValueError,

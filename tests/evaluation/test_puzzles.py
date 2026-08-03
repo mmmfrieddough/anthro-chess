@@ -33,6 +33,7 @@ from anthro_chess.evaluation.puzzles import (
 from anthro_chess.evaluation.puzzles.benchmark import (
     PUZZLE_KIND,
     PuzzleBenchmarkConfig,
+    PuzzleBenchmarkError,
     _accepted_actions,
     _paired_contributions,
     _score_rating,
@@ -49,6 +50,7 @@ from anthro_chess.evaluation.results import (
     PairedContributions,
     ResultsStore,
 )
+from anthro_chess.evaluation.suite import benchmark_registry
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:
@@ -524,15 +526,43 @@ def test_the_benchmark_measures_without_recording_anything(
     assert result.detail_paths == ()
 
 
+def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    inference_run: Callable[..., Path],
+) -> None:
+    # A host without the pinned artifact is the ordinary partial failure the
+    # sweep is built to survive. Raising anything the suite has not declared
+    # for this step ends the whole sweep and discards the readings before it.
+    config = _benchmark_config(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        inference_run,
+        puzzle_set=tmp_path / "absent",
+    )
+
+    with pytest.raises(
+        PuzzleBenchmarkError,
+        match="puzzle artifact is missing",
+    ) as raised:
+        benchmark_puzzles(config)
+
+    assert isinstance(raised.value, benchmark_registry()["puzzles"].errors)
+
+
 def _benchmark_config(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, object]],
     write_corpus: Callable[..., tuple[Path, Path]],
     inference_run: Callable[..., Path],
+    *,
+    puzzle_set: Path | None = None,
 ) -> ResolvedConfig[PuzzleBenchmarkConfig]:
     """Write a puzzle artifact, a training corpus and a checkpoint, and select them."""
 
-    artifact = _write_fixture_artifact(tmp_path / "puzzles")
+    artifact = puzzle_set or _write_fixture_artifact(tmp_path / "puzzles")
     rows = [
         {
             **normalized_row(1, split="train"),
