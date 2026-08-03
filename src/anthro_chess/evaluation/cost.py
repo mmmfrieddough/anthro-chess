@@ -47,6 +47,7 @@ from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     ConfigurationReference,
+    EnvironmentRecord,
     ResultEnvelope,
     build_result,
     measurement,
@@ -55,7 +56,7 @@ from anthro_chess.evaluation.results.metrics import BENCHMARK_WALL_CLOCK_SECONDS
 from anthro_chess.evaluation.results.records import canonical_json
 from anthro_chess.evaluation.roots import artifact_name
 from anthro_chess.inference.config import ModelRunnerConfig
-from anthro_chess.inference.runner import resolve_inference_device
+from anthro_chess.inference.runner import ModelRunnerError, resolve_inference_device
 from anthro_chess.machine import DATA_ROOT_VARIABLE, optional_root
 
 #: Result kind for a committed cost record. Distinct from every benchmark's own
@@ -73,9 +74,16 @@ def benchmark_cost_result(
     config: BaseModel,
     device: torch.device,
     seconds: float,
+    environment: EnvironmentRecord | None = None,
     recorded_at: datetime | None = None,
 ) -> ResultEnvelope:
-    """Return the committed record of what one benchmark invocation cost."""
+    """Return the committed record of what one benchmark invocation cost.
+
+    The reading's own environment is passed in rather than captured again:
+    capturing forks ``git rev-parse`` and re-scans the installed distributions
+    for a record that is byte-identical to the one taken microseconds earlier
+    in the same process.
+    """
 
     execution = execution_record(device, cost_workload(benchmark, config))
     return build_result(
@@ -83,6 +91,7 @@ def benchmark_cost_result(
         benchmark=benchmark,
         checkpoint=checkpoint,
         configuration=configuration,
+        environment=environment,
         execution=execution,
         measurements=[
             measurement(
@@ -95,8 +104,8 @@ def benchmark_cost_result(
     )
 
 
-def cost_device(config: BaseModel, runner: object | None = None) -> torch.device:
-    """Return the device a cost reading is attributed to.
+def cost_device(config: BaseModel, runner: object | None = None) -> torch.device | None:
+    """Return the device a cost reading is attributed to, or ``None``.
 
     Resolved from the declared selection rather than observed, because the
     driver deliberately does not load the runner: the inference benchmark times
@@ -106,14 +115,25 @@ def cost_device(config: BaseModel, runner: object | None = None) -> torch.device
 
     A runner handed to the driver wins, since it is the one that actually ran
     and nothing about the configuration says where a caller loaded it.
+
+    ``None`` when the selection names an accelerator this machine cannot offer,
+    which the benchmark's own load would already have refused — so reaching it
+    means the machine changed under a reading that had by then succeeded. The
+    cost record is dropped rather than the reading: this half of a record is
+    attribution, and no cost line is better than a wrong one or than a
+    completed measurement thrown away over a device label.
     """
 
     if runner is not None:
         return runner_device(runner)
-    selection = _model_selection(config)
-    if selection is None:
+    field = _selection_field(config)
+    if field is None:
         return torch.device("cpu")
-    return resolve_inference_device(selection.device)
+    selection: ModelRunnerConfig = getattr(config, field)
+    try:
+        return resolve_inference_device(selection.device)
+    except ModelRunnerError:
+        return None
 
 
 def cost_workload(
@@ -138,32 +158,28 @@ def cost_workload(
         "benchmark": benchmark.name,
         "benchmark_version": benchmark.version,
         "configuration_sha256": sha256(
-            canonical_json(normalized_configuration(config))
+            canonical_json(_normalized_configuration(config))
         ).hexdigest(),
     }
 
 
-def normalized_configuration(config: BaseModel) -> dict[str, Any]:
+def _normalized_configuration(config: BaseModel) -> dict[str, Any]:
     """Return the configured settings a cost series is scoped by.
 
     The model selection and the label chosen for it are dropped: the checkpoint
     is the coordinate a cost line varies along, so leaving it in would start a
-    new line at every checkpoint. The selection is found by type rather than by
-    field name, because a renamed or second one left in the digest would
-    fragment every cost series with nothing to notice it.
+    new line at every checkpoint.
 
     Dumped in Python mode rather than the JSON mode every other view of a
     configuration here uses, because JSON mode has already turned each path
     into a rooted string and the machine prefix has to come off while the
-    artifact it names stays.
+    artifact it names stays. That is also why the walk below is hand-written:
+    it exists to reach every path at any depth, which is exactly what a JSON
+    dump destroys.
     """
 
     root = optional_root(DATA_ROOT_VARIABLE)
-    dropped = {"checkpoint_label"} | {
-        field
-        for field in type(config).model_fields
-        if isinstance(getattr(config, field), ModelRunnerConfig)
-    }
+    dropped = {"checkpoint_label", _selection_field(config)}
     return {
         field: _workload_value(value, root)
         for field, value in config.model_dump().items()
@@ -171,18 +187,18 @@ def normalized_configuration(config: BaseModel) -> dict[str, Any]:
     }
 
 
-def _model_selection(config: BaseModel) -> ModelRunnerConfig | None:
-    """Return the one checkpoint selection a benchmark declares, if it has one.
+def _selection_field(config: BaseModel) -> str | None:
+    """Return the field holding the one checkpoint selection, if there is one.
 
-    Found by type for the reason :func:`normalized_configuration` drops it by
-    type: the field name is a convention, and a benchmark that renamed it would
-    otherwise be attributed to the wrong device with nothing to notice.
+    Found by type rather than by the name every schema happens to use, because
+    a renamed or second selection would otherwise stay in the digest and
+    fragment every cost series with nothing to notice it. The same answer
+    decides what a reading is attributed to, so both are read from here.
     """
 
     for field in type(config).model_fields:
-        value = getattr(config, field)
-        if isinstance(value, ModelRunnerConfig):
-            return value
+        if isinstance(getattr(config, field), ModelRunnerConfig):
+            return field
     return None
 
 
@@ -210,5 +226,4 @@ __all__ = [
     "benchmark_cost_result",
     "cost_device",
     "cost_workload",
-    "normalized_configuration",
 ]

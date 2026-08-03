@@ -107,6 +107,19 @@ cost line rather than joining the shipped one. That is accepted because the
 alternative is a per-schema list of which dials are sample counts, which is the
 kind of second list that drifts silently against the first.
 
+It is blunt in the other direction too, and only once. A pool contributes to
+the digest as the artifact it names, not as the realized dataset identity —
+`pool_id`, `pool_version`, `game_ids_sha256` — that every reading carries
+beside it. So re-freezing a pool at the same path with a different or larger
+game set keeps both readings on one cost line, and the shipped checkpoint
+selection reads the pool whole, so the second one costs more for a reason the
+series cannot see. Accepted for the same reason as the first: putting realized
+data identity in would start a fresh cost line at every re-freeze, including
+the ones that changed nothing about how much work there is. A frozen pool is
+checksummed and immutable by construction, so re-freezing over one is a
+deliberate act; the readings themselves record which pool version they scored,
+which is where a reader confirms that two cost figures are comparable.
+
 Digested rather than carried in full, which was tried first. A report labels a
 series by the workload fields that differ between two groups, so the full form
 would name the dial that moved — but every benchmark's cost lands in one
@@ -124,13 +137,16 @@ gets slower shows up as a committed diff rather than as a comment someone
 eventually re-derives by hand.
 
 The committed tier grows by one small record per recording invocation. The
-shipped reduced sweep adds five, and the full sweep seven.
+shipped reduced sweep adds six, and the full sweep seven.
 
 **A cost reading is worth much less without an execution floor than the other
-efficiency metrics are, and this is the honest limitation.** Two reduced sweeps
-taken minutes apart on one CUDA host, while that host was doing other work,
-landed at 299 s and 366 s. Nothing in the record says the machine was busy.
-Decision 0025's execution floor is the mechanism that would judge such a delta,
+efficiency metrics are, and this is the honest limitation.** On an idle CUDA
+host three reduced sweeps landed at 308.5 s, 306.9 s and 307.8 s, which is
+within half a percent and is what the metric looks like at its best. The
+investigation that opened this issue saw the same reading move by six times on
+a host where two other sessions were running benchmarks. Nothing in the record
+distinguishes the two situations, because nothing in it says the machine was
+busy. Decision 0025's execution floor is the mechanism that would judge such a delta,
 no floor is characterized for these workloads yet, and until one is a report
 will say the noise is unknown — which is correct, and is also weaker than a
 reader skimming a number will assume. Read it as a trip-wire for

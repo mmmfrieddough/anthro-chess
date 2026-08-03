@@ -19,6 +19,7 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.ladder import (
     LADDER_KIND,
@@ -497,6 +498,11 @@ def test_recorded_results_carry_one_series_per_unit(tmp_path: Path) -> None:
     # One per seat, one per temperature row, and none for the response, which a
     # single-temperature grid cannot measure.
     assert len(envelopes) == len(result.seats) + len(result.readings)
+    # The ladder's own records, and one saying what the invocation cost.
+    assert {envelope.kind for envelope in result.envelopes} == {
+        LADDER_KIND,
+        BENCHMARK_COST_KIND,
+    }
     assert all(envelope.execution is not None for envelope in envelopes)
     # Every reading is committed, and what the invocation cost beside them.
     assert len(result.recorded_paths) == len(envelopes) + 1

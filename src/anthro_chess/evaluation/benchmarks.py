@@ -282,12 +282,10 @@ def run_benchmark(
             recording=recording,
             **measured,
         )
-        if benchmark.cost is not None:
-            recording.cost(
-                benchmark.cost,
-                seconds=time.perf_counter() - started,
-                device=cost_device(resolved_config.value, measured.get("runner")),
-            )
+        seconds = time.perf_counter() - started
+        device = cost_device(resolved_config.value, measured.get("runner"))
+        if benchmark.cost is not None and device is not None:
+            recording.cost(benchmark.cost, seconds=seconds, device=device)
     return replace(result, **recording.fields)
 
 

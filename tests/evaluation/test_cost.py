@@ -13,10 +13,10 @@ from anthro_chess.evaluation.checkpoint import (
 )
 from anthro_chess.evaluation.cost import (
     BENCHMARK_COST_KIND,
+    _normalized_configuration,
     benchmark_cost_result,
     cost_device,
     cost_workload,
-    normalized_configuration,
 )
 from anthro_chess.evaluation.results import (
     CheckpointReference,
@@ -45,7 +45,6 @@ def test_the_checkpoint_is_a_coordinate_rather_than_a_series() -> None:
     config = _config(model=ModelRunnerConfig(run_path=Path("run-a")))
     other = _config(model=ModelRunnerConfig(run_path=Path("run-b")))
 
-    assert "model" not in normalized_configuration(config)
     assert _workload(config) == _workload(other)
 
 
@@ -61,7 +60,7 @@ def test_a_rooted_artifact_reads_the_same_as_an_unrooted_one(
         pool=rooted_artifact_path(tmp_path, Path("artifacts/blitz-pool")),
     )
 
-    assert normalized_configuration(shipped)["pool"] == "blitz-pool"
+    assert _normalized_configuration(shipped)["pool"] == "blitz-pool"
     assert _workload(shipped) == _workload(rooted)
 
 

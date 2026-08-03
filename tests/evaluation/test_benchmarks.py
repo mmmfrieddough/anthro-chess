@@ -38,6 +38,7 @@ from anthro_chess.evaluation.results import (
     measurement,
 )
 from anthro_chess.evaluation.results.metrics import BENCHMARK_WALL_CLOCK_SECONDS
+from anthro_chess.inference import ModelRunnerConfig
 
 COST = BenchmarkReference(name="fake-benchmark", version=1)
 ROLLOUT_SELECTION = 'pool = "artifacts/example-pool"\n\n[reference]\nenabled = false\n'
@@ -79,6 +80,20 @@ def _resolved() -> ResolvedConfig[ConfigModel]:
     return ResolvedConfig(
         value=ConfigModel(),
         provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+
+def _measure(recording: Any) -> None:
+    """Record one reading, which is all these tests need a benchmark to do."""
+
+    recording.measuring(
+        CheckpointReference(label="checkpoint-a", step=8000),
+        kind="fake-reading",
+        benchmark=BenchmarkReference(name="fake-reading", version=1),
+    ).add(
+        [measurement("training_health.gradient_norm", 1.5)],
+        payload=dict,
+        description="What the fake measured.",
     )
 
 
@@ -241,6 +256,30 @@ def test_a_recording_benchmark_declares_what_its_cost_is_filed_under() -> None:
     assert len(set(names)) == len(names)
 
 
+def test_every_recording_benchmark_declares_a_selection_cost_can_read() -> None:
+    """The device is found by type, so a moved selection has to fail loudly.
+
+    A benchmark whose selection stopped being a top-level field would be
+    attributed to the CPU and start a fresh cost line, silently, which is the
+    failure the scoping rule exists to prevent.
+    """
+
+    schemas = [
+        entry.schema
+        for entry in benchmark_registry().values()
+        if entry.records_results and entry.schema is not None
+    ]
+
+    assert schemas
+    assert all(
+        any(
+            field.annotation is ModelRunnerConfig
+            for field in schema.model_fields.values()
+        )
+        for schema in schemas
+    )
+
+
 def test_the_driver_commits_what_the_invocation_cost(tmp_path: Path) -> None:
     """Timed here because here is the only place that sees one begin.
 
@@ -253,16 +292,7 @@ def test_the_driver_commits_what_the_invocation_cost(tmp_path: Path) -> None:
     before = time.perf_counter()
 
     def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
-        recorder = keywords["recording"].measuring(
-            CheckpointReference(label="checkpoint-a", step=8000),
-            kind="fake-reading",
-            benchmark=BenchmarkReference(name="fake-reading", version=1),
-        )
-        recorder.add(
-            [measurement("training_health.gradient_norm", 1.5)],
-            payload=dict,
-            description="What the fake measured.",
-        )
+        _measure(keywords["recording"])
         time.sleep(0.05)
         return _Reading()
 
@@ -308,15 +338,7 @@ def test_a_failed_invocation_records_no_cost(tmp_path: Path) -> None:
     store = ResultsStore(tmp_path / "results")
 
     def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
-        keywords["recording"].measuring(
-            CheckpointReference(label="checkpoint-a", step=8000),
-            kind="fake-reading",
-            benchmark=BenchmarkReference(name="fake-reading", version=1),
-        ).add(
-            [measurement("training_health.gradient_norm", 1.5)],
-            payload=dict,
-            description="What the fake measured.",
-        )
+        _measure(keywords["recording"])
         raise _FakeError("the pool ran out half way through")
 
     with pytest.raises(_FakeError):
@@ -333,15 +355,7 @@ def test_a_measured_invocation_that_records_nothing_still_reports_its_cost() -> 
     """
 
     def invoke(resolved_config: ResolvedConfig[Any], **keywords: Any) -> _Reading:
-        keywords["recording"].measuring(
-            CheckpointReference(label="checkpoint-a", step=8000),
-            kind="fake-reading",
-            benchmark=BenchmarkReference(name="fake-reading", version=1),
-        ).add(
-            [measurement("training_health.gradient_norm", 1.5)],
-            payload=dict,
-            description="What the fake measured.",
-        )
+        _measure(keywords["recording"])
         return _Reading()
 
     result = run_benchmark(_fake(invoke, cost=COST), _resolved())

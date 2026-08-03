@@ -23,6 +23,7 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.curves import CurveQuantity
 from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.reference import (
@@ -1361,6 +1362,11 @@ def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
     )
 
     (envelope,) = _readings(result)
+    # The rollout's own record, and one saying what the invocation cost.
+    assert {item.kind for item in result.envelopes} == {
+        ROLLOUT_KIND,
+        BENCHMARK_COST_KIND,
+    }
     assert envelope.detail is not None
     assert envelope.execution is not None
     (path,) = result.detail_paths

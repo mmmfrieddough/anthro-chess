@@ -14,6 +14,7 @@ to resolve is the one failure a sweep should never discover an hour in.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import TypeVar
 
@@ -82,9 +83,9 @@ def rooted_artifact_path(root: Path, configured_path: Path) -> Path:
 def artifact_name(path: Path, root: Path | None) -> str:
     """Return what a configured path names, with the machine taken off.
 
-    The inverse of :func:`rooted_artifact_path`, so a shipped selection and the
-    same selection after rooting name one artifact rather than two. Kept beside
-    the rooting it undoes for the reason this module exists: two halves of one
+    Undoes :func:`rooted_artifact_path`, so a shipped selection and the same
+    selection after rooting name one artifact rather than two. Kept beside the
+    rooting it undoes for the reason this module exists: two halves of one
     convention living apart would drift, and here the drift would be silent — a
     benchmark's cost series would split with nothing to notice it.
 
@@ -95,13 +96,10 @@ def artifact_name(path: Path, root: Path | None) -> str:
     cost series, which is the honest reading of a path nothing here can name.
     """
 
-    if root is not None and path.is_absolute():
-        try:
+    if root is not None:
+        with suppress(ValueError):
             return str(path.relative_to(root))
-        except ValueError:
-            return str(path)
-    parts = _unprefixed(path)
-    return str(Path(*parts)) if parts else str(path)
+    return str(Path(*_unprefixed(path)))
 
 
 def _unprefixed(path: Path) -> tuple[str, ...]:
