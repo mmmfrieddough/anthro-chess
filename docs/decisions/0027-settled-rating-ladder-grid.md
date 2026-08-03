@@ -122,23 +122,27 @@ From that point the grid is effectively permanent, and widening it — another
 rating, another temperature — is a new benchmark generation rather than a tuning
 step, to be taken at a seam if it is taken at all.
 
-Two adjacent questions are left open on purpose, and neither is a grid question.
+Two adjacent questions were left open here, and neither is a grid question.
 
-The **ply limit** is in the declared workload and the evidence questions it:
+The **ply limit** is in the declared workload and the evidence questioned it:
 between 47% and 66% of games reached it, contributed no result, and consumed most
-of the benchmark's cost. Whether 300 plies is the right value is a measurement
-this record does not have, and it falls under the same free-until-the-core
-deadline as the grid does.
+of the benchmark's cost. Whether 300 plies is the right value was a measurement
+this record did not have.
+`docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md` has since taken it
+and settled the limit where it stands, inside the same free-until-the-core
+window as the grid.
 
-The **missing floor** is the more consequential of the two. The ladder states
-ordering, slope, and span with nothing beside them saying what it can resolve,
-which is the same reading-surface gap several other families carry. It is what
-makes "the transfer is flat" and "the sample is thin" indistinguishable from the
-output, and it is the reason this record declines to trade sample for time.
+The **missing floor** is the more consequential of the two, and is still open.
+The ladder states ordering, slope, and span with nothing beside them saying what
+it can resolve, which is the same reading-surface gap several other families
+carry. It is what makes "the transfer is flat" and "the sample is thin"
+indistinguishable from the output, and it is the reason this record declines to
+trade sample for time.
 
 ## References
 
 - `docs/decisions/0022-one-joint-rating-ladder-fit.md`
+- `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md`
 - `docs/decisions/0013-benchmark-result-comparability.md`
 - `docs/decisions/0020-declared-settings-scope-generated-series.md`
 - `docs/evaluation.md`, "The Implemented Ladder"
