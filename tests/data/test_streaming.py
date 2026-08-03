@@ -174,8 +174,8 @@ def test_a_loader_asked_for_no_legal_actions_ships_none_through_its_workers(
 ) -> None:
     """The flag has to travel in the job rather than be consulted in the parent.
 
-    This is where the payload saving actually lands, so it drains a real worker
-    pool rather than the in-process path.
+    Both the decode this skips and the payload it shrinks happen in the worker,
+    so this drains a real pool rather than the in-process path.
     """
 
     corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row))

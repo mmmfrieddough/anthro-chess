@@ -311,7 +311,7 @@ class _ScoringSession:
             true, low, high = policies
             for offset, key in enumerate(keys):
                 signals[key] = _trajectory_signal(
-                    legal_actions=self._inputs.plies[key].legal_action_ids,
+                    legal_actions=self._inputs.plies[key].enabled_actions(),
                     target_action_id=self._inputs.plies[key].target_action_id,
                     true=true[offset],
                     low=low[offset],

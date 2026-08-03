@@ -200,9 +200,9 @@ def run_training(
     )
     try:
         # Training reads targets and masks; validation scores policies against
-        # each position's legal actions. Only the second needs them packed, and
-        # under the shard-backed loader they are roughly a third of what every
-        # batch pickles on its way out of a worker.
+        # each position's legal actions. Only the second needs them, so only
+        # the second reconstructs them — which is most of what decoding a game
+        # costs, before any of what packing and pickling one costs.
         train = _load_data_selection(
             config.train,
             legal_actions=False,

@@ -7,6 +7,7 @@ from anthro_chess.chess import (
     MOVE_ACTION_COUNT,
     RESIGNATION_ACTION_ID,
     TERMINAL_ACTION_IDS,
+    action_is_legal,
     action_vocabulary_identity,
     decode_move,
     draw_claim_available,
@@ -137,6 +138,90 @@ def test_draw_claim_is_absent_where_the_game_already_ended() -> None:
 
     assert checkmate.is_checkmate()
     assert not draw_claim_available(checkmate)
+
+
+@pytest.mark.parametrize(
+    ("name", "fen", "moves"),
+    [
+        ("opening", chess.STARTING_FEN, ()),
+        # Both sides castling both ways, which is where the two answers most
+        # nearly diverged: a castle can be spelled as the king taking its own
+        # rook, and only one of those spellings is a legal action id.
+        (
+            "castling both ways",
+            "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+            (),
+        ),
+        (
+            "en passant available",
+            chess.STARTING_FEN,
+            ("e2e4", "a7a6", "e4e5", "d7d5"),
+        ),
+        ("promotions", "8/P6k/8/8/8/8/6K1/8 w - - 0 1", ()),
+        (
+            "in check",
+            "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+            (),
+        ),
+        ("checkmate", "7k/5QK1/8/8/8/8/8/8 b - - 100 60", ()),
+        ("stalemate", "7k/5Q2/6K1/8/8/8/8/8 b - - 0 60", ()),
+        ("full fifty-move clock", "8/8/8/4k3/8/8/4K3/6R1 b - - 100 60", ()),
+        # The claim a position has repeated three times, which no single
+        # position carries: it is the move stack that makes it available.
+        (
+            "third repetition",
+            chess.STARTING_FEN,
+            ("g1f3", "g8f6", "f3g1", "f6g8") * 2,
+        ),
+        # The last id in the vocabulary is legal here, so a check that dropped
+        # its lower bound and wrapped around to it is caught rather than
+        # answering correctly by accident.
+        ("king on the last vocabulary square", "7k/8/8/8/8/8/8/K7 b - - 0 1", ()),
+    ],
+)
+def test_one_candidate_answers_exactly_what_the_whole_set_answers(
+    name: str,
+    fen: str,
+    moves: tuple[str, ...],
+) -> None:
+    """The cheap check is what the encoding trusts, so it must not drift."""
+
+    board = _play(chess.Board(fen), *moves)
+    for include_resignation in (False, True):
+        for include_draw_claim in (False, True):
+            enabled = frozenset(
+                legal_action_ids(
+                    board,
+                    include_resignation=include_resignation,
+                    include_draw_claim=include_draw_claim,
+                )
+            )
+            for action_id in range(-1, ACTION_VOCABULARY_SIZE + 1):
+                assert action_is_legal(
+                    board,
+                    action_id,
+                    include_resignation=include_resignation,
+                    include_draw_claim=include_draw_claim,
+                ) is (action_id in enabled), (
+                    name,
+                    action_id,
+                    include_resignation,
+                    include_draw_claim,
+                )
+
+
+def test_a_castle_spelled_as_taking_the_rook_is_not_a_legal_action() -> None:
+    """``python-chess`` accepts both spellings; only one is in the vocabulary."""
+
+    board = chess.Board("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1")
+    king_side = chess.Move.from_uci("e1g1")
+    takes_rook = chess.Move.from_uci("e1h1")
+
+    assert board.is_legal(king_side) and board.is_legal(takes_rook)
+    assert encode_move(king_side) in legal_action_ids(board)
+    assert encode_move(takes_rook) not in legal_action_ids(board)
+    assert action_is_legal(board, encode_move(king_side))
+    assert not action_is_legal(board, encode_move(takes_rook))
 
 
 def test_vocabulary_identity_is_stable_and_serializable() -> None:

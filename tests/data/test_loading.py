@@ -117,13 +117,12 @@ def test_maximum_position_bound_covers_the_furthest_chunk_of_a_corpus(
         path,
         split="train",
         chunk_length=chunk_length,
+        legal_actions=False,
     )
 
     # Batching the whole corpus at once is its worst case, so the reach the
     # model would refuse on is read from the batch rather than restated here.
-    batch = MoveModelBatch.from_sequence_batch(
-        collate_sequences(list(dataset), legal_actions=False)
-    )
+    batch = MoveModelBatch.from_sequence_batch(collate_sequences(list(dataset)))
     assert batch.position_bound == maximum_position_bound(len(moves), chunk_length)
 
 
@@ -228,17 +227,28 @@ def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
         assert column.flags.c_contiguous, name
 
 
-def test_a_loader_asked_for_no_legal_actions_packs_none() -> None:
-    """Nothing in a training step reads them, so nothing packs or ships them."""
+def test_a_loader_asked_for_no_legal_actions_never_builds_them(
+    tmp_path: Path,
+) -> None:
+    """Nothing in a training step reads them, so nothing reconstructs them."""
 
-    dataset = _encoded_dataset()
+    path = _write_games(tmp_path, [_row(1, ("e2e4", "e7e5"))])
     config = SequenceLoaderConfig(batch_size=1, shuffle=False)
 
-    scoring = next(SequenceDataLoader(dataset, config))
-    training = next(SequenceDataLoader(dataset, config, legal_actions=False))
+    scoring = SequenceDataLoader.from_parquet(path, config)
+    training = SequenceDataLoader.from_parquet(path, config, legal_actions=False)
 
-    assert scoring.legal_action_ids is not None
-    assert training.legal_action_ids is None
+    assert next(scoring).legal_action_ids is not None
+    assert next(training).legal_action_ids is None
+    assert all(
+        ply.legal_action_ids is None
+        for example in training.dataset
+        for ply in example.plies
+    )
+    # Which games the loader holds is what a resumed run checks, and that is
+    # unchanged: the decision travels with the encoding rather than beside it.
+    assert training.identity_sha256 == scoring.identity_sha256
+    assert training.configuration_sha256 == scoring.configuration_sha256
 
 
 def test_deterministic_order_changes_by_epoch_and_restores_exact_cursor(

@@ -118,9 +118,10 @@ class SequenceBatch:
     what makes that safe: a real query attends only to earlier timesteps, and
     every timestep earlier than a real one is itself real.
 
-    ``legal_action_ids`` is absent when nothing downstream will read it. Only
-    policy scoring and the construction-time legality check use it, so a
-    training batch carries none. It is a ragged Python structure because each
+    ``legal_action_ids`` is absent when nothing downstream will read it. Policy
+    scoring and the batch's own legality check are its only consumers and
+    training is neither, so a training batch carries none and the encoding that
+    fed it never built one. It is a ragged Python structure because each
     timestep enables a different number of actions.
     """
 
@@ -312,6 +313,7 @@ class SequenceDataset(Sequence[SequenceExample]):
         split: str,
         chunk_length: int | None = None,
         selection: SelectionConfig | None = None,
+        legal_actions: bool = True,
     ) -> SequenceDataset:
         """Load, validate, encode, and optionally chunk normalized games.
 
@@ -341,7 +343,7 @@ class SequenceDataset(Sequence[SequenceExample]):
                 if row[NormalizedColumn.GAME_ID] not in selected:
                     continue
                 game = _game_from_row(row, path)
-                plies = encode_game(game)
+                plies = encode_game(game, legal_actions=legal_actions)
                 chunks = _chunk_plies(plies, chunk_length)
                 for chunk in chunks:
                     examples.append(
@@ -395,8 +397,6 @@ class SequenceDataLoader(SequenceBatchSource):
         self,
         dataset: SequenceDataset,
         config: SequenceLoaderConfig,
-        *,
-        legal_actions: bool = True,
     ) -> None:
         if config.split != dataset.split:
             raise DataLoadingError("loader split does not match the sequence dataset")
@@ -410,10 +410,6 @@ class SequenceDataLoader(SequenceBatchSource):
             )
         self.dataset = dataset
         self.config = config
-        # Deliberately outside the configuration digest. Whether a batch
-        # carries legal actions follows from what reads it, so a run resumed
-        # against the same declared loader is reading the same data either way.
-        self.legal_actions = legal_actions
         self.configuration_sha256 = sha256(
             json.dumps(
                 config.model_dump(mode="json"),
@@ -433,10 +429,7 @@ class SequenceDataLoader(SequenceBatchSource):
             raise StopIteration
         indices = self._batches[self._position]
         self._position += 1
-        return collate_sequences(
-            tuple(self.dataset[index] for index in indices),
-            legal_actions=self.legal_actions,
-        )
+        return collate_sequences(tuple(self.dataset[index] for index in indices))
 
     @property
     def identity_sha256(self) -> str:
@@ -492,7 +485,13 @@ class SequenceDataLoader(SequenceBatchSource):
         *,
         legal_actions: bool = True,
     ) -> SequenceDataLoader:
-        """Build a configured loader directly from normalized Parquet shards."""
+        """Build a configured loader directly from normalized Parquet shards.
+
+        ``legal_actions`` reaches the encoding rather than the collation.
+        Deliberately outside the configuration digest: which games this loader
+        holds is unchanged either way, so a run resumed against the same
+        declared loader is reading the same data.
+        """
 
         return cls(
             SequenceDataset.from_parquet(
@@ -500,9 +499,9 @@ class SequenceDataLoader(SequenceBatchSource):
                 split=config.split,
                 chunk_length=config.chunk_length,
                 selection=config.selection,
+                legal_actions=legal_actions,
             ),
             config,
-            legal_actions=legal_actions,
         )
 
     def start_epoch(self, epoch: int) -> None:
@@ -548,11 +547,7 @@ class SequenceDataLoader(SequenceBatchSource):
         return tuple(batches)
 
 
-def collate_sequences(
-    examples: Sequence[SequenceExample],
-    *,
-    legal_actions: bool = True,
-) -> SequenceBatch:
+def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     """Pad and pack sequence examples into arrays, inventing no targets.
 
     Every column is written into a zero-filled array of its own width, so a
@@ -562,9 +557,7 @@ def collate_sequences(
     NumPy raises on a value too large for its column rather than wrapping it,
     so a corpus that outgrew one fails at the batch that first carried it.
 
-    ``legal_actions`` packs each timestep's legal action ids. Policy scoring
-    needs them and training does not, so a training loader turns them off; the
-    default keeps every scoring caller correct without saying so.
+    Each timestep's legal action ids are packed when the encoding built them.
     """
 
     # Deferred, the way `anthro_chess.data.artifacts` defers pyarrow: this is
@@ -615,6 +608,10 @@ def collate_sequences(
         ).reshape(length, BOARD_SQUARE_COUNT)
         attention_mask[index, :length] = True
 
+    # One ply decides for the batch. A collection is encoded by one caller, so
+    # its plies agree; a hand-built one that does not raises from the accessor
+    # below rather than being reconciled here.
+    packs_legal_actions = examples[0].plies[0].legal_action_ids is not None
     inputs = SequenceInputs(
         piece_ids=piece_ids,
         side_to_move=required(lambda ply: ply.board.side_to_move, np.uint8),
@@ -636,11 +633,11 @@ def collate_sequences(
         attention_mask=attention_mask,
         legal_action_ids=(
             tuple(
-                tuple(ply.legal_action_ids for ply in example.plies)
+                tuple(ply.enabled_actions() for ply in example.plies)
                 + ((),) * (shape[1] - lengths[index])
                 for index, example in enumerate(examples)
             )
-            if legal_actions
+            if packs_legal_actions
             else None
         ),
         game_ids=required(lambda ply: ply.game_id, np.uint64),

@@ -130,3 +130,33 @@ def legal_action_ids(
     if include_draw_claim and draw_claim_available(board):
         action_ids.append(DRAW_CLAIM_ACTION_ID)
     return tuple(action_ids)
+
+
+def action_is_legal(
+    board: chess.Board,
+    action_id: int,
+    *,
+    include_resignation: bool = False,
+    include_draw_claim: bool = False,
+) -> bool:
+    """Return whether one action id is enabled by the board and runtime policy.
+
+    Answers exactly what membership in :func:`legal_action_ids` answers, for a
+    caller holding a single candidate rather than needing the whole set. That
+    caller generates one square's moves instead of every move on the board and
+    encoding each one, which is most of what building the set costs.
+
+    Deliberately not ``board.is_legal``, which is the cheaper test and the wrong
+    one: it also accepts a castle written as the king taking its own rook. The
+    generator never yields that spelling, so the set never carries it, and a
+    membership test that did would accept a target no legal mask enables.
+    """
+
+    if action_id == RESIGNATION_ACTION_ID:
+        return include_resignation
+    if action_id == DRAW_CLAIM_ACTION_ID:
+        return include_draw_claim and draw_claim_available(board)
+    if not 0 <= action_id < MOVE_ACTION_COUNT:
+        return False
+    move = _MOVES[action_id]
+    return move in board.generate_legal_moves(chess.BB_SQUARES[move.from_square])

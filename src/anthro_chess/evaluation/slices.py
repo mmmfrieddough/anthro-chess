@@ -639,7 +639,7 @@ def position_slices(
     """
 
     legal_moves = sum(
-        1 for action_id in ply.legal_action_ids if not is_terminal_action(action_id)
+        1 for action_id in ply.enabled_actions() if not is_terminal_action(action_id)
     )
     return PositionSlices(
         phase=game_phase(ply.board.piece_ids, ply.board.fullmove_number),
