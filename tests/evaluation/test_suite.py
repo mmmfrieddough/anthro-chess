@@ -19,6 +19,7 @@ import pytest
 
 from anthro_chess.chess import encode_move
 from anthro_chess.config import ConfigModel, ConfigProvenance, ResolvedConfig
+from anthro_chess.evaluation.benchmarks import Benchmark
 from anthro_chess.evaluation.games import (
     DecisionPolicy,
     DecisionRecord,
@@ -29,7 +30,6 @@ from anthro_chess.evaluation.games import (
     build_game_record,
 )
 from anthro_chess.evaluation.suite import (
-    Benchmark,
     StepOutcome,
     StepStatus,
     SuiteConfig,

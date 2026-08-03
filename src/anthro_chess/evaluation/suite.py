@@ -51,12 +51,16 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field, StrictBool, model_validator
 
-from anthro_chess.config import ConfigError, ConfigModel, ResolvedConfig, load_config
-from anthro_chess.evaluation import roots
+from anthro_chess.config import ConfigError, ConfigModel, ResolvedConfig
+from anthro_chess.evaluation.benchmarks import (
+    Benchmark,
+    benchmark_registry,
+    resolve_benchmark,
+    run_benchmark,
+)
 from anthro_chess.inference.config import LATEST_CHECKPOINT, ModelRunnerConfig
 
 if TYPE_CHECKING:
-    from anthro_chess.evaluation.games import GameRecord
     from anthro_chess.evaluation.results import DetailStore, ResultsStore
 
 SUITE_VERSION = 1
@@ -155,39 +159,6 @@ class SuiteConfig(ConfigModel):
         if not any(entry.enabled for entry in self.benchmarks.values()):
             raise ValueError("a suite needs at least one enabled benchmark")
         return self
-
-
-@dataclass(frozen=True)
-class Benchmark:
-    """How the driver runs one benchmark that it did not define.
-
-    The benchmarks are independent of the suite and stay that way: each owns
-    its configuration schema, its entry point, and its errors, and this record
-    is only the adapter that lets one driver call all of them.
-    """
-
-    name: str
-    #: ``None`` for a step whose input is another step's output.
-    schema: type[ConfigModel] | None
-    #: Which configured paths are rooted beneath the shared data root, exactly
-    #: as the benchmark's own command roots them.
-    artifact_fields: tuple[str, ...]
-    #: Errors this benchmark raises for a bad reading, which the sweep reports
-    #: as a failed step rather than letting them end the whole sweep.
-    errors: tuple[type[Exception], ...]
-    #: ``(resolved, *, run_root, store, detail) -> result``.
-    invoke: Callable[..., Any]
-    #: Whether the benchmark writes results to the store at all. Decision
-    #: decomposition does not: it has no result kind, and a decomposition over
-    #: one payload is a diagnostic rather than a series.
-    records_results: bool = True
-    #: Returns the games this benchmark generated, when a later step reads them.
-    games: Callable[[Any], tuple[GameRecord, ...]] | None = None
-    #: Whether a configuration retained its games at all, checked while the
-    #: plan resolves so a dependent step cannot be starved an hour in.
-    retains_games: Callable[[Any], bool] | None = None
-    #: The step whose game payload this benchmark reads.
-    games_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -311,107 +282,6 @@ class SuiteRun:
             "seconds": round(self.seconds, 3),
             "steps": [item.as_record() for item in self.outcomes],
         }
-
-
-def benchmark_registry() -> dict[str, Benchmark]:
-    """Return every benchmark a sweep can run, keyed by its command name.
-
-    Built on demand rather than at import, because the benchmarks pull in the
-    model stack and a suite selection can be planned and printed without it.
-    """
-
-    from anthro_chess.evaluation import (
-        CheckpointEvaluationConfig,
-        CheckpointEvaluationError,
-        InferenceBenchmarkConfig,
-        InferenceBenchmarkError,
-        LadderBenchmarkConfig,
-        LadderBenchmarkError,
-        LeakageError,
-        NoveltyBenchmarkConfig,
-        NoveltyBenchmarkError,
-        PuzzleBenchmarkConfig,
-        PuzzleBenchmarkError,
-        RolloutBenchmarkConfig,
-        RolloutBenchmarkError,
-        TerminationBenchmarkConfig,
-        TerminationBenchmarkError,
-        benchmark_inference,
-        benchmark_ladder,
-        benchmark_novelty,
-        benchmark_puzzles,
-        benchmark_rollout,
-        benchmark_termination,
-        evaluate_checkpoint,
-    )
-    from anthro_chess.evaluation.results import ResultsStoreError
-
-    store_errors = (ResultsStoreError,)
-    return {
-        benchmark.name: benchmark
-        for benchmark in (
-            Benchmark(
-                name="inference",
-                schema=InferenceBenchmarkConfig,
-                artifact_fields=(),
-                errors=(InferenceBenchmarkError, *store_errors),
-                invoke=benchmark_inference,
-            ),
-            Benchmark(
-                name="run",
-                schema=CheckpointEvaluationConfig,
-                artifact_fields=roots.CHECKPOINT_ARTIFACT_FIELDS,
-                errors=(CheckpointEvaluationError, LeakageError, *store_errors),
-                invoke=evaluate_checkpoint,
-            ),
-            Benchmark(
-                name="novelty",
-                schema=NoveltyBenchmarkConfig,
-                artifact_fields=roots.NOVELTY_ARTIFACT_FIELDS,
-                errors=(NoveltyBenchmarkError, *store_errors),
-                invoke=benchmark_novelty,
-            ),
-            Benchmark(
-                name="puzzles",
-                schema=PuzzleBenchmarkConfig,
-                artifact_fields=roots.PUZZLE_ARTIFACT_FIELDS,
-                errors=(PuzzleBenchmarkError, *store_errors),
-                invoke=benchmark_puzzles,
-            ),
-            Benchmark(
-                name="rollout",
-                schema=RolloutBenchmarkConfig,
-                artifact_fields=roots.ROLLOUT_ARTIFACT_FIELDS,
-                errors=(RolloutBenchmarkError, *store_errors),
-                invoke=benchmark_rollout,
-                games=_rollout_games,
-                retains_games=lambda config: bool(config.detail.retain_games),
-            ),
-            Benchmark(
-                name="decisions",
-                schema=None,
-                artifact_fields=(),
-                errors=_decision_errors(),
-                invoke=_invoke_decisions,
-                records_results=False,
-                games_from="rollout",
-            ),
-            Benchmark(
-                name="termination",
-                schema=TerminationBenchmarkConfig,
-                artifact_fields=roots.TERMINATION_ARTIFACT_FIELDS,
-                errors=(TerminationBenchmarkError, *store_errors),
-                invoke=benchmark_termination,
-            ),
-            Benchmark(
-                name="ladder",
-                schema=LadderBenchmarkConfig,
-                artifact_fields=roots.LADDER_ARTIFACT_FIELDS,
-                errors=(LadderBenchmarkError, *store_errors),
-                invoke=benchmark_ladder,
-            ),
-        )
-    }
 
 
 def resolve_suite(
@@ -587,7 +457,9 @@ def _run_step(
                 _games_payload(sweep_root, step.benchmark.games_from)
             )
         else:
-            result = step.benchmark.invoke(
+            assert step.resolved is not None  # a step with a schema resolved one
+            result = run_benchmark(
+                step.benchmark,
                 step.resolved,
                 run_root=run_root,
                 store=store,
@@ -661,24 +533,6 @@ def _dependents(plan: SuitePlan, producer: str) -> tuple[str, ...]:
     return tuple(
         step.name for step in plan.steps if step.benchmark.games_from == producer
     )
-
-
-def _rollout_games(result: Any) -> tuple[GameRecord, ...]:
-    """Return every game a rollout retained, across its whole matrix."""
-
-    return tuple(record for cell in result.cells for record in cell.records)
-
-
-def _decision_errors() -> tuple[type[Exception], ...]:
-    from anthro_chess.evaluation.decisions import DecisionDecompositionError
-
-    return (DecisionDecompositionError, OSError)
-
-
-def _invoke_decisions(path: Path) -> Any:
-    from anthro_chess.evaluation.decisions import decompose_game_records
-
-    return decompose_game_records(path)
 
 
 def _step_reading(
@@ -797,20 +651,14 @@ def _resolve_benchmark(
     if entry.config is None:
         raise SuiteError(f"the {name} step needs config to name its selection")
 
-    overrides = _scaled_overrides(entry, scale=scale)
     try:
-        resolved = load_config(
-            benchmark.schema,
+        resolved = resolve_benchmark(
+            benchmark,
             path=entry.config,
-            overrides=overrides,
+            overrides=_scaled_overrides(entry, scale=scale),
         )
     except ConfigError as error:
         raise SuiteError(f"the {name} step: {error}") from error
-    resolved = roots.resolve_artifact_roots(
-        resolved,
-        fields=benchmark.artifact_fields,
-        overrides=overrides,
-    )
     return _with_checkpoint(resolved, suite)
 
 

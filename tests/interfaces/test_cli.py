@@ -584,10 +584,48 @@ def _record_fixture_results(store_root: Path) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "subcommand",
-    ["run", "puzzles", "novelty", "inference", "rollout", "termination", "ladder"],
+#: Every `anthro eval` subcommand that runs one benchmark from a selection file.
+_BENCHMARK_SUBCOMMANDS = (
+    "run",
+    "puzzles",
+    "novelty",
+    "inference",
+    "rollout",
+    "termination",
+    "ladder",
 )
+
+
+@pytest.mark.parametrize("subcommand", _BENCHMARK_SUBCOMMANDS)
+def test_every_benchmark_subcommand_runs_its_registry_entry(
+    tmp_path: Path,
+    subcommand: str,
+) -> None:
+    """Each command names its benchmark, and everything else follows the name.
+
+    A subcommand wired to a name the registry does not hold, or one that goes
+    around the registry to call a benchmark directly, would take its schema,
+    its rooting, its error types and its view from somewhere else again.
+    """
+
+    from anthro_chess.evaluation.benchmarks import benchmark_registry
+    from anthro_chess.interfaces.cli import (
+        _STEP_RENDERERS,
+        _run_eval_benchmark,
+        build_parser,
+    )
+
+    arguments = build_parser().parse_args(
+        ["eval", subcommand, "--config", str(tmp_path / "benchmark.toml")]
+    )
+
+    assert arguments.handler.func is _run_eval_benchmark
+    assert arguments.handler.keywords["name"] == subcommand
+    assert subcommand in benchmark_registry()
+    assert subcommand in _STEP_RENDERERS
+
+
+@pytest.mark.parametrize("subcommand", _BENCHMARK_SUBCOMMANDS)
 def test_eval_handlers_share_one_recording_decision(
     tmp_path: Path,
     subcommand: str,
@@ -998,50 +1036,6 @@ def test_eval_rollout_reports_a_configuration_error_without_a_traceback(
     assert "anthro eval rollout:" in capsys.readouterr().err
 
 
-def test_eval_rollout_roots_its_checked_in_pool(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The shipped selection names its pool the way every artifact path is named."""
-
-    from anthro_chess.evaluation import RolloutBenchmarkConfig
-    from anthro_chess.interfaces.cli import _resolve_rollout_roots
-
-    data_root = tmp_path / "datasets"
-    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
-    resolved = ResolvedConfig(
-        value=RolloutBenchmarkConfig.model_validate(
-            {"pool": "artifacts/example-pool", "reference": {"enabled": False}}
-        ),
-        provenance=ConfigProvenance(source=None, overrides=()),
-    )
-
-    rooted = _resolve_rollout_roots(resolved, [])
-
-    assert rooted.value.pool == data_root / "example-pool"
-    # An explicit override is the caller's own path and is left alone.
-    overridden = _resolve_rollout_roots(resolved, ["pool=/somewhere/else"])
-    assert overridden.value.pool == Path("artifacts/example-pool")
-
-
-def test_eval_rollout_leaves_a_pool_free_suite_alone(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A suite that reads no pool has nothing to root."""
-
-    from anthro_chess.evaluation import RolloutBenchmarkConfig
-    from anthro_chess.interfaces.cli import _resolve_rollout_roots
-
-    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
-    resolved = ResolvedConfig(
-        value=RolloutBenchmarkConfig.model_validate({"reference": {"enabled": False}}),
-        provenance=ConfigProvenance(source=None, overrides=()),
-    )
-
-    assert _resolve_rollout_roots(resolved, []).value.pool is None
-
-
 def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None:
     """The text view has to name each cell's series and what it played."""
 
@@ -1118,32 +1112,6 @@ def test_eval_ladder_reports_a_configuration_error_without_a_traceback(
     assert main(["eval", "ladder", "--config", str(config), "--no-record"]) == 2
 
     assert "anthro eval ladder:" in capsys.readouterr().err
-
-
-def test_eval_ladder_roots_its_checked_in_opening_pool(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The shipped selection names its pool the way every artifact path is named."""
-
-    from anthro_chess.evaluation import LadderBenchmarkConfig
-    from anthro_chess.interfaces.cli import _resolve_ladder_roots
-
-    data_root = tmp_path / "datasets"
-    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
-    resolved = ResolvedConfig(
-        value=LadderBenchmarkConfig.model_validate(
-            {"openings": {"pool": "artifacts/example-pool"}}
-        ),
-        provenance=ConfigProvenance(source=None, overrides=()),
-    )
-
-    rooted = _resolve_ladder_roots(resolved, [])
-
-    assert rooted.value.openings.pool == data_root / "example-pool"
-    # An explicit override is the caller's own path and is left alone.
-    overridden = _resolve_ladder_roots(resolved, ["openings.pool=/somewhere/else"])
-    assert overridden.value.openings.pool == Path("artifacts/example-pool")
 
 
 def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
