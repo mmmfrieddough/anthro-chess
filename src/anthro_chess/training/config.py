@@ -20,11 +20,28 @@ from anthro_chess.training.efficiency import TrainingEfficiencyConfig
 #: exponent range matches float32, so no gradient scaler is involved and a
 #: checkpoint's scaler slot stays empty on every supported path.
 #:
-#: Its measured benefit is memory rather than speed, which is why it is off by
-#: default: activation width is what decides whether a larger model fits, and
-#: the throughput it costs is only worth paying when that is the constraint.
-#: ``docs/planning/cuda-training-proof.md`` holds the readings.
+#: What it is worth depends entirely on whether the step is launch-bound. At
+#: the batch this project trains today it costs throughput and returns
+#: activation memory; at a batch that fills the device it is the largest single
+#: win measured on this backend. It stays off by default because the default
+#: batch is the first of those.  ``docs/planning/cuda-training-proof.md`` holds
+#: the readings on both.
 TrainingPrecision = Literal["float32", "bfloat16-mixed"]
+
+#: Whether float32 matrix multiplication may use the tensor cores' reduced
+#: internal precision. ``highest`` keeps the full float32 path; ``high`` is
+#: TF32, which rounds the inputs of a matmul while accumulating in float32.
+#:
+#: Same shape of tradeoff as the precision dial and the same reason to measure
+#: rather than assume: it returns nothing on a launch-bound step, because
+#: tensor cores accelerate arithmetic and a launch-bound step is not doing any.
+#: Off by default; ``docs/planning/cuda-training-proof.md`` holds the readings.
+#:
+#: Declared rather than derived, so it is one of the settings a continuation has
+#: to match: it decides the arithmetic every gradient is computed in, and a run
+#: that changed it partway would have no way to say which half produced its
+#: weights.
+MatmulPrecision = Literal["highest", "high"]
 
 
 class TrainingConfig(ConfigModel):
@@ -40,6 +57,7 @@ class TrainingConfig(ConfigModel):
     gradient_accumulation_steps: int = Field(default=1, ge=1)
     device: DeviceSelection = "auto"
     precision: TrainingPrecision = "float32"
+    matmul_precision: MatmulPrecision = "highest"
     determinism: Literal["strict", "relaxed"] = "relaxed"
     profile_phases: StrictBool = False
     model: MoveModelConfig = MoveModelConfig()

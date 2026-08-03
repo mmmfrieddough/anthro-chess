@@ -14,7 +14,11 @@ from typing import Any, cast
 
 import torch
 
-CHECKPOINT_VERSION = 2
+#: Version 3 added ``matmul_precision`` to the execution settings a
+#: continuation has to match. A checkpoint written before it cannot say which
+#: arithmetic produced its weights, so it cannot be continued under a claim
+#: about that arithmetic either way.
+CHECKPOINT_VERSION = 3
 _CHECKPOINT_DIRECTORY = "checkpoints"
 _CHECKPOINT_PATTERN = re.compile(r"^step-(\d{8})\.pt$")
 _LATEST_RECORD = "latest.json"

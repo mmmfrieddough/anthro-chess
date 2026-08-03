@@ -25,6 +25,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 from torch.nn import Parameter
+from torch.nn.utils import get_total_norm
 
 from anthro_chess.evaluation.results import Measurement, measurement
 from anthro_chess.evaluation.results.metrics import (
@@ -129,13 +130,13 @@ class StepHealthMonitor:
         """Record the global gradient norm from the gradients just written."""
 
         started = time.perf_counter()
-        norms = [
-            parameter.grad.detach().norm()
+        gradients = [
+            parameter.grad.detach()
             for parameter in self._parameters
             if parameter.grad is not None
         ]
-        if norms:
-            gradient_norm = torch.linalg.vector_norm(torch.stack(norms))
+        if gradients:
+            gradient_norm = get_total_norm(gradients)
             self._latest_gradient_norm = gradient_norm
             self._maximum_gradient_norm = (
                 gradient_norm
@@ -151,19 +152,16 @@ class StepHealthMonitor:
         if self._snapshot is None:
             return
         started = time.perf_counter()
-        updates = torch.stack(
-            [
-                (parameter.detach() - previous).norm()
-                for parameter, previous in zip(
-                    self._parameters, self._snapshot, strict=True
-                )
-            ]
+        updates = [
+            parameter.detach() - previous
+            for parameter, previous in zip(
+                self._parameters, self._snapshot, strict=True
+            )
+        ]
+        weight_norm = get_total_norm(
+            [parameter.detach() for parameter in self._parameters]
         )
-        weights = torch.stack(
-            [parameter.detach().norm() for parameter in self._parameters]
-        )
-        weight_norm = torch.linalg.vector_norm(weights)
-        self._update_ratio = torch.linalg.vector_norm(updates) / torch.clamp(
+        self._update_ratio = get_total_norm(updates) / torch.clamp(
             weight_norm, min=torch.finfo(weight_norm.dtype).tiny
         )
         self._snapshot = None

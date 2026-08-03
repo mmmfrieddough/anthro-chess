@@ -323,6 +323,176 @@ measured at the smallest width and batch this project runs, against a
 denominator that both inflate. **A share measured at `model_dim` 64 is a
 statement about `model_dim` 64.**
 
+## The Table Re-Read Against A Device-Bound Step
+
+Everything above was measured on a step where the host spent 4.8 ms building a
+batch and the card sat at roughly 11% utilization. The loader work removed that
+cost, so every verdict above was re-taken. **Most of them changed, and the two
+that changed most changed sign.**
+
+The arms below run through the same `anthro train` command against the same
+prepared corpus, one CUDA device, with the eager loader. Each arm was
+implemented as a patch applied at process start and discarded afterwards, so
+nothing here except the two settings named at the end reached the codebase.
+
+### Read this as workloads, not as widths
+
+The original table's workload was `model_dim` 64 at batch 16. The obvious
+correction is to re-read it wide. That is half the correction, and the smaller
+half. Holding batch at 16 and moving only width:
+
+| `model_dim` | data | transfer | forward and backward | optimizer | compute share |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 1.60 ms | 0.72 ms | 4.45 ms | 0.22 ms | 63.7% |
+| 256 | 1.74 ms | 1.14 ms | 4.75 ms | 0.25 ms | 60.2% |
+| 512 | 1.56 ms | 0.71 ms | 4.35 ms | 0.36 ms | 62.4% |
+| 1024 | 1.54 ms | 0.72 ms | 6.86 ms | 0.85 ms | 68.8% |
+
+**Compute is flat from width 64 to 512.** Sixty-four times the matmul work in
+the transformer for no additional time, because at batch 16 the step is issuing
+kernels rather than doing arithmetic, and a wider kernel that is not full costs
+what an empty one costs. Only at 1024 does it begin to move.
+
+So width alone does not take this step out of launch-bound territory, and a
+re-read at `model_dim` 512 and batch 16 would have repeated the original
+mistake in a new place. What fills the kernels is **batch**. Three workloads
+are therefore reported, and the third is the one the arms turn on:
+
+| Workload | baseline | step | what it is |
+| --- | ---: | ---: | --- |
+| 64 × 16 | 157,361 pos/s | 6.93 ms | the original table's workload |
+| 1024 × 16 | 136,366 pos/s | 7.99 ms | wide, still launch-bound |
+| 1024 × 256 | 204,675 pos/s | 65.69 ms | wide and device-bound, 71.8% compute |
+
+The first line is also the loader result in isolation: the same configuration
+the original table measured at 86,799 positions per second now runs at 157,361,
+so batch construction alone was holding back 81% of this workload.
+
+### The arms
+
+Median of three paired rounds, each arm compared against a baseline run beside
+it rather than against a pooled mean, because this host is shared and drifts.
+Baseline spread was 0.29% at 64 × 16 and 1.42% at 1024 × 256; at 1024 × 16 it
+was 10%, which is why that column carries no verdict of its own.
+
+| Candidate | Old verdict | 64 × 16 | 1024 × 16 | 1024 × 256 |
+| --- | --- | ---: | ---: | ---: |
+| bfloat16 autocast | 7% slower | −15.4% | −0.2% | **+70.4%** |
+| bfloat16 with TF32 | 9% slower | −11.3% | — | **+73.0%** |
+| TF32 float32 matmul | +0.24%, noise | −0.2% | +2.9% | **+21.1%** |
+| Fused optimizer update | +2.3% | **+33.4%** | — | +1.0% |
+| Page-locked staging | 8–57% slower | −3.1% | — | −8.3% |
+| Host prefetch thread | 35% slower | −30.8% | — | −5.4% |
+| `torch.compile(dynamic=True)` | rejected | −69.6% | — | −41.7% |
+
+The fused optimizer is quoted the way the original table quoted it, as an
+unfused baseline raised by turning it on. The other rows are the arm against
+the shipped default, so a negative number is an arm that lost.
+
+**bfloat16 is the reversal, and it is a batch effect rather than a width one.**
+The middle column is what says so: at `model_dim` 1024 and batch 16 it is worth
+nothing, and the same model at batch 256 is worth 70%. Half precision has an
+arithmetic advantage to express only once there is arithmetic to do. It also
+returns 37% of reserved memory at that workload, 10.7 GiB to 6.7 GiB, so the
+memory argument the dial was originally kept for survives intact beside a
+throughput argument that now points the same way.
+
+**TF32 is the second reversal and the smaller one.** Noise at both batch-16
+workloads, +21.1% at batch 256. It was removed on the strength of a reading
+taken where tensor cores had nothing to accelerate. It is re-added by this
+change, off by default.
+
+**The fused optimizer inverts.** It was the only win in the original table at
++2.3%; on the same workload with the host cost removed it is worth 33.4%,
+because the launches it saves are now a visible share of a step rather than
+hidden behind batch construction. At batch 256 it is worth 1.0%, inside that
+arm's own spread. Nothing here argues for a dial — the fused form is never
+slower — but it does retire the claim that it is this backend's main prize.
+
+**Page-locked staging is no longer catastrophic and still never wins.** The
+original 8–57% loss was dominated by allocating page-locked buffers for varying
+bucket shapes; against an array-emitting loader it costs 3.1% and 8.3%. Still
+rejected, now for an ordinary reason rather than a pathological one.
+
+**The prefetch thread still loses**, and the original diagnosis no longer
+explains it. GIL contention over Python-object traversal was the stated cause,
+and that traversal is gone; a background thread still costs 30.8% at 64 × 16.
+Overlapping the loader needs a worker process, which the shard-backed loader
+already is.
+
+**`torch.compile` fails for a different reason than it used to.** It still hits
+Dynamo's recompile limit of 8, but the ragged `legal_action_ids` iteration that
+was blamed has been removed, and the limit is now reached through
+`MoveModelBatch.reach`:
+
+```
+return max(self.chunk_start_plies) + self.action_targets.shape[1]
+```
+
+A Python-level `max` over a per-batch tuple. Same failure mode, next ragged
+structure in line. The verdict is unchanged and the follow-up is `#275`.
+
+### What the instrumentation costs
+
+The synchronization probe was expected to be dead weight here. It is not.
+
+| Workload | step | added by synchronizing per micro-batch |
+| --- | ---: | ---: |
+| 64 × 16 | 6.93 ms | +0.05 ms (0.8%) |
+| 1024 × 16 | 7.99 ms | +0.85 ms (10.7%) |
+| 1024 × 256 | 65.69 ms | +14.69 ms (22.4%) |
+
+The original −0.11 ms was correct and was a statement about a host-bound step:
+the device was idle waiting, so a synchronization had nothing to wait for. Once
+the device is busy, the loader's own time overlaps device work in the deferred
+arm, and synchronizing every step serializes them. **The probe is what keeps that
+22.4% from being invisible**, so it stays.
+
+The per-step health monitor was measured the same way, and the wall-clock
+figure is the honest one: its host time is subtracted from the throughput
+window, so an arm with the monitor disabled has nothing to subtract and reads
+as slower through the window metric. Against total run time it costs 4.0% at
+64 × 16 and 0.6% at 1024 × 256.
+
+Most of that was one avoidable thing. `observe_gradients` computed a norm per
+parameter tensor in a list comprehension — 47 tensors, so about 49 launches on
+a step that issues roughly 665 — where `torch.nn.utils.get_total_norm` does the
+same reduction through `torch._foreach_norm`. Through the real runner that is
+0.80 ms to 0.46 ms of host time per step, against 0.29 ms predicted from
+isolation, and 0.89% of a wide run's wall clock. The change is made here.
+
+### What changed in the codebase
+
+Two settings and one simplification, which is the whole of what these readings
+justify:
+
+- `matmul_precision` is re-added, `highest` by default and `high` for TF32. It
+  is a declared setting that decides the arithmetic every gradient is computed
+  in, so unlike the fused optimizer it is one a continuation has to match.
+- `precision` keeps its default and gains a throughput argument at batch 256
+  that `docs/training-and-runtime.md` previously did not have.
+- The gradient and update norms go through `get_total_norm`.
+
+Nothing was deleted. The probe earns its size at the workload this project is
+moving toward, and the health monitor earns its size once its norms are cheap.
+
+### What this re-read does not settle
+
+**The corpus-scale loader is still the constraint, and this table cannot see
+it.** These arms use the eager loader, where the corpus is resident and the
+step is 71.8% compute at 1024 × 256. Under the shard-backed loader on the
+million-game selection the same workload is 22.7% compute, because the parent
+waits ~88 ms per batch for decoded shards, and raising workers from 8 to 24
+moved that by less than 20%. Batch construction is fixed; the phase in front of
+it is not, and no device-side setting in this table can be read against a step
+that is waiting on data. That is `#276` rather than anything here.
+
+**Which default is right is not answered here either.** A 70% throughput
+result is a reason to re-examine the precision default at the batch capacity
+selection lands on, not a reason to change it now: none of these runs was long
+enough to say what bfloat16 does to the loss curve, and that comparison belongs
+with `#54`.
+
 ## What This Does Not Show
 
 - **Nothing about quality.** No run here was long enough to move a held-out
@@ -331,13 +501,13 @@ statement about `model_dim` 64.**
   through their own device boundary, landed separately, and none of the figures
   here describe what a benchmark sweep costs on this host.
 - **Nothing about the second card**, or about how this scales across both.
-- **Nothing about a larger model**, with one exception. Every conclusion above
-  is bound to a `model_dim` of 64 except the embedding backward, which has since
-  been swept across width and batch in the section above. TF32 and mixed
-  precision are exactly the settings expected to start mattering as capacity
-  grows, which is why the precision dial was kept; the correct move is to
-  re-measure at the new size rather than to assume either result carries. The
-  embedding sweep is what that costs and what it is worth: one finding, retired.
+- **Nothing about a larger model**, with two exceptions, both since measured.
+  The embedding backward was swept across width and batch above. The whole
+  optimization table was re-read at width and batch in the section above, which
+  is where TF32 and mixed precision stopped being noise; the expectation that
+  they would start mattering with capacity was right about the direction and
+  wrong about the axis, because it is batch rather than width that fills a
+  kernel.
 
 ## What To Do Next
 
@@ -367,3 +537,7 @@ A third and smaller one is now visible and was not before: the per-step
 gradient norm costs the same order as the optimizer on a launch-bound step.
 Measuring what the health monitor costs on the device, rather than only on the
 host, would say whether its cadence should become a dial.
+
+Both were done, and the section above records what they found. The batch axis
+is where the device-side options went from worthless to decisive, and the
+health monitor needed a cheaper reduction rather than a cadence dial.
