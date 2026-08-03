@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import chess
 import pytest
@@ -22,6 +22,7 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.curves import CurveQuantity
 from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.reference import (
@@ -62,7 +63,6 @@ from anthro_chess.evaluation.rollout import (
     RolloutBenchmarkConfig,
     RolloutBenchmarkError,
     RolloutBenchmarkResult,
-    benchmark_rollout,
 )
 from anthro_chess.runtime import RuntimeConfig
 
@@ -148,15 +148,20 @@ def _run(
     config: ResolvedConfig[RolloutBenchmarkConfig],
     *,
     runner: Any | None = None,
+    checkpoint: CheckpointReference | None = CHECKPOINT,
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
 ) -> RolloutBenchmarkResult:
-    return benchmark_rollout(
-        config,
-        runner=runner or TrajectoryRunner(),
-        checkpoint=CHECKPOINT,
-        store=store,
-        detail=detail,
+    return cast(
+        RolloutBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["rollout"],
+            config,
+            store=store,
+            detail=detail,
+            runner=runner or TrajectoryRunner(),
+            checkpoint=checkpoint,
+        ),
     )
 
 
@@ -1391,7 +1396,7 @@ def test_a_supplied_runner_needs_a_checkpoint_reference() -> None:
     """A result with no checkpoint identity cannot be compared to anything."""
 
     with pytest.raises(RolloutBenchmarkError, match="checkpoint reference"):
-        benchmark_rollout(_config(), runner=TrajectoryRunner())
+        _run(_config(), runner=TrajectoryRunner(), checkpoint=None)
 
 
 def test_a_grid_axis_cannot_be_empty_or_repeat_a_value() -> None:

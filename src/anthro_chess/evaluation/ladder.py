@@ -50,7 +50,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
@@ -88,7 +88,7 @@ from anthro_chess.evaluation.games import (
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
-    ResultRecorder,
+    ResultRecording,
     pool_dataset_reference,
     resolve_model,
 )
@@ -96,11 +96,9 @@ from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     DatasetReference,
-    DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultsStore,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
@@ -651,8 +649,7 @@ def benchmark_ladder(
     resolved_config: ResolvedConfig[LadderBenchmarkConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
     runner: ActionModelRunner | None = None,
     checkpoint: CheckpointReference | None = None,
 ) -> LadderBenchmarkResult:
@@ -761,7 +758,8 @@ def benchmark_ladder(
         records=tuple(records),
     )
     _log_summary(result)
-    return _record(result, resolved_config, store=store, detail=detail)
+    _record(result, recording)
+    return result
 
 
 def seat_keys(config: LadderBenchmarkConfig) -> tuple[SeatKey, ...]:
@@ -1326,11 +1324,8 @@ def _base_workload(
 
 def _record(
     result: LadderBenchmarkResult,
-    resolved_config: ResolvedConfig[LadderBenchmarkConfig],
-    *,
-    store: ResultsStore | None,
-    detail: DetailStore | None,
-) -> LadderBenchmarkResult:
+    recording: ResultRecording,
+) -> None:
     """Write one envelope per seat, per temperature row, and per response.
 
     Three units rather than one record, because they are scoped differently. A
@@ -1339,46 +1334,41 @@ def _record(
     declares its own workload and so owns its own series.
     """
 
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        result.checkpoint,
         kind=LADDER_KIND,
         benchmark=LADDER_BENCHMARK,
-        checkpoint=result.checkpoint,
-        store=store,
-        detail=detail,
-        error=LadderBenchmarkError,
-    ) as recorder:
-        for seat in result.seats:
-            measurements = _seat_measurements(seat)
-            if not measurements:
-                continue
-            recorder.add(
-                measurements,
-                payload=partial(_seat_payload, result, seat),
-                description=f"Rating-ladder seat: {seat.label}",
-                slug=f"seat-{_slug(seat.label)}",
-                data=result.dataset,
-                execution=seat.execution,
-            )
-        for reading in result.readings:
-            recorder.add(
-                _reading_measurements(reading),
-                payload=partial(_reading_payload, result, reading),
-                description=f"Rating ladder: {reading.label}",
-                slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
-                data=result.dataset,
-                execution=reading.execution,
-            )
-        if result.response is not None:
-            recorder.add(
-                _response_measurements(result.response),
-                payload=result.response.as_record,
-                description="Rating-ladder temperature response",
-                slug="temperature-response",
-                data=result.dataset,
-                execution=result.response.execution,
-            )
-    return replace(result, **recorder.fields)
+    )
+    for seat in result.seats:
+        measurements = _seat_measurements(seat)
+        if not measurements:
+            continue
+        recorder.add(
+            measurements,
+            payload=partial(_seat_payload, result, seat),
+            description=f"Rating-ladder seat: {seat.label}",
+            slug=f"seat-{_slug(seat.label)}",
+            data=result.dataset,
+            execution=seat.execution,
+        )
+    for reading in result.readings:
+        recorder.add(
+            _reading_measurements(reading),
+            payload=partial(_reading_payload, result, reading),
+            description=f"Rating ladder: {reading.label}",
+            slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
+            data=result.dataset,
+            execution=reading.execution,
+        )
+    if result.response is not None:
+        recorder.add(
+            _response_measurements(result.response),
+            payload=result.response.as_record,
+            description="Rating-ladder temperature response",
+            slug="temperature-response",
+            data=result.dataset,
+            execution=result.response.execution,
+        )
 
 
 def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:

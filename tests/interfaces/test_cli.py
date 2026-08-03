@@ -1043,7 +1043,11 @@ def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None
 
     from anthro_chess.chess import ACTION_VOCABULARY_SIZE
     from anthro_chess.data import DecisionContext
-    from anthro_chess.evaluation import RolloutBenchmarkConfig, benchmark_rollout
+    from anthro_chess.evaluation import RolloutBenchmarkConfig
+    from anthro_chess.evaluation.benchmarks import (
+        benchmark_registry,
+        run_benchmark,
+    )
     from anthro_chess.evaluation.results import CheckpointReference
     from anthro_chess.interfaces.cli import _render_rollout
 
@@ -1072,7 +1076,8 @@ def test_eval_rollout_renders_every_cell_with_its_series(tmp_path: Path) -> None
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
     )
-    result = benchmark_rollout(
+    result = run_benchmark(
+        benchmark_registry()["rollout"],
         resolved,
         runner=Runner(),
         checkpoint=CheckpointReference(label="fixture-checkpoint", step=1),
@@ -1123,7 +1128,11 @@ def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
 
     from anthro_chess.chess import ACTION_VOCABULARY_SIZE, RESIGNATION_ACTION_ID
     from anthro_chess.data import DecisionContext
-    from anthro_chess.evaluation import LadderBenchmarkConfig, benchmark_ladder
+    from anthro_chess.evaluation import LadderBenchmarkConfig
+    from anthro_chess.evaluation.benchmarks import (
+        benchmark_registry,
+        run_benchmark,
+    )
     from anthro_chess.evaluation.results import CheckpointReference
     from anthro_chess.interfaces.cli import _render_ladder
 
@@ -1152,7 +1161,8 @@ def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
     )
-    result = benchmark_ladder(
+    result = run_benchmark(
+        benchmark_registry()["ladder"],
         resolved,
         runner=Runner(),
         checkpoint=CheckpointReference(label="fixture-checkpoint", step=1),

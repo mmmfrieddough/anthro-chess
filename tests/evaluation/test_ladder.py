@@ -6,7 +6,7 @@ import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -18,6 +18,7 @@ from anthro_chess.chess import (
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.ladder import (
     LADDER_KIND,
@@ -27,7 +28,6 @@ from anthro_chess.evaluation.ladder import (
     LadderPairing,
     SeatConditioning,
     SeatKey,
-    benchmark_ladder,
     fit_ratings,
     seat_keys,
 )
@@ -139,12 +139,16 @@ def _run(
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
 ) -> LadderBenchmarkResult:
-    return benchmark_ladder(
-        config,
-        runner=runner or GradedRunner(),
-        checkpoint=CHECKPOINT,
-        store=store,
-        detail=detail,
+    return cast(
+        LadderBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["ladder"],
+            config,
+            store=store,
+            detail=detail,
+            runner=runner or GradedRunner(),
+            checkpoint=CHECKPOINT,
+        ),
     )
 
 

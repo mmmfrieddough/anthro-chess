@@ -16,6 +16,14 @@ carried absolute ones, and the suite grew a dual-shape reader rather than the
 drift being caught. So the tail lives here instead, written once, and a
 cross-cutting addition to what a reading records is one edit rather than seven.
 
+The split within it is between what belongs to the invocation and what belongs
+to the reading. :class:`ResultRecording` is the first: the driver opens one per
+invocation and holds it across the whole call, so the store, the detail tier,
+the configuration, the stamp and the error conversion are decided once.
+:class:`ResultRecorder` is the second, and a benchmark opens one as soon as it
+knows what it measured — the checkpoint and the series its readings join, which
+are the only parts a driver cannot know for it.
+
 Only the tail. A rigid interface over the measuring itself would be worse than
 the duplication it removed.
 """
@@ -23,6 +31,7 @@ the duplication it removed.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -130,58 +139,66 @@ def pool_dataset_reference(
     )
 
 
-class ResultRecorder:
-    """One benchmark's recording tail: detail payloads, envelopes, and appends.
+class ResultRecording:
+    """Everything a benchmark records through that is not the benchmark's.
 
-    Used as a context manager, because the error conversion it owns has to
-    cover the whole block rather than only the calls made into it: a benchmark
-    builds its measurements there too, and
+    Held open across the measuring rather than around the tail, because the
+    error conversion has to cover more than the calls made into it: a benchmark
+    builds its measurements outside them, and
     :func:`~anthro_chess.evaluation.results.measurement` raises the same errors
     the store does. A sweep converts only the error types a benchmark's registry
     entry declares, so one that escapes ends the sweep instead of failing one
     step.
-
-    One unit of a reading is one :meth:`add`. The bulk payload and the
-    committed envelope are written together there because both are scoped by
-    ``kind``, which decides the series the envelope joins *and* the directory
-    the payload lands in; naming it twice would let the two drift apart, which
-    is the failure this module exists to end rather than to relocate.
-
-    The payload is a callable rather than a value because the store is often
-    absent — ``--no-record`` is how a shakedown reading is taken — and some of
-    these payloads cost real work to assemble.
     """
+
+    #: When this reading was taken. Stamped in :meth:`measuring` rather than at
+    #: construction, because the driver opens the recording before the
+    #: measuring, and a ladder stamped when its invocation began would claim to
+    #: have been recorded hours before it was.
+    recorded_at: datetime
 
     def __init__(
         self,
         resolved_config: ResolvedConfig[Any],
         *,
-        kind: str,
-        benchmark: BenchmarkReference,
-        checkpoint: CheckpointReference,
         store: ResultsStore | None,
         detail: DetailStore | None,
         error: type[Exception],
     ) -> None:
-        self.recorded_at = datetime.now(tz=UTC)
-        self._stamp = self.recorded_at.strftime("%Y%m%dT%H%M%SZ")
-        self._kind = kind
-        self._benchmark = benchmark
-        self._checkpoint = checkpoint
-        self._store = store
-        self._detail = detail
-        self._error = error
-        self._configuration = configuration_reference(
+        self.configuration = configuration_reference(
             resolved_config.as_record(),
             source=resolved_config.provenance.source,
             overrides=resolved_config.provenance.overrides,
         )
-        self._envelopes: list[ResultEnvelope] = []
-        self._characterizations: list[NoiseCharacterization] = []
-        self._detail_paths: list[Path] = []
+        self.store = store
+        self.detail = detail
+        self.envelopes: list[ResultEnvelope] = []
+        self.characterizations: list[NoiseCharacterization] = []
+        self.detail_paths: list[Path] = []
+        self._error = error
         self._recorded_paths: tuple[Path, ...] = ()
 
-    def __enter__(self) -> ResultRecorder:
+    def measuring(
+        self,
+        checkpoint: CheckpointReference,
+        *,
+        kind: str,
+        benchmark: BenchmarkReference,
+    ) -> ResultRecorder:
+        """Return what a reading is added through, once it has an identity.
+
+        Both arguments arrive here rather than at construction: no checkpoint
+        is known until the benchmark has loaded one, and the series a reading
+        joins is the benchmark's declaration rather than the driver's.
+
+        One reading, one stamp: this is the end of the measuring, which is
+        where every benchmark used to take it.
+        """
+
+        self.recorded_at = datetime.now(tz=UTC)
+        return ResultRecorder(self, checkpoint, kind, benchmark)
+
+    def __enter__(self) -> ResultRecording:
         return self
 
     def __exit__(
@@ -205,6 +222,54 @@ class ResultRecorder:
             raise self._error(str(failure)) from failure
         if isinstance(error, ResultRecordError | ResultsStoreError):
             raise self._error(str(error)) from error
+
+    def _append(self) -> None:
+        if self.store is None:
+            return
+        recorded = [self.store.append(item) for item in self.envelopes]
+        recorded.extend(
+            self.store.append_characterization(item) for item in self.characterizations
+        )
+        self._recorded_paths = tuple(recorded)
+
+    @property
+    def fields(self) -> dict[str, Any]:
+        """Return what was written, to splat into :func:`dataclasses.replace`.
+
+        Read after the block, since the appending happens on the way out. A
+        record type here would exist only to be unpacked at the one call site
+        that assembles a result; the cost of the dict is that the three keys are
+        unchecked against the seven result classes, so a renamed field there
+        surfaces as a ``TypeError`` from ``replace`` rather than as a type
+        error.
+        """
+
+        return {
+            "envelopes": tuple(self.envelopes),
+            "recorded_paths": self._recorded_paths,
+            "detail_paths": tuple(self.detail_paths),
+        }
+
+
+@dataclass(frozen=True)
+class ResultRecorder:
+    """One benchmark's readings, added against the checkpoint it measured.
+
+    One unit of a reading is one :meth:`add`. The bulk payload and the
+    committed envelope are written together there because both are scoped by
+    ``kind``, which decides the series the envelope joins *and* the directory
+    the payload lands in; naming it twice would let the two drift apart, which
+    is the failure this module exists to end rather than to relocate.
+
+    The payload is a callable rather than a value because the store is often
+    absent — ``--no-record`` is how a shakedown reading is taken — and some of
+    these payloads cost real work to assemble.
+    """
+
+    _recording: ResultRecording
+    _checkpoint: CheckpointReference
+    _kind: str
+    _benchmark: BenchmarkReference
 
     def add(
         self,
@@ -231,17 +296,17 @@ class ResultRecorder:
         reference = self._write(series, payload, description=description, slug=slug)
         if not measurements:
             return
-        self._envelopes.append(
+        self._recording.envelopes.append(
             build_result(
                 kind=series,
                 benchmark=benchmark or self._benchmark,
                 checkpoint=self._checkpoint,
-                configuration=self._configuration,
+                configuration=self._recording.configuration,
                 data=data,
                 execution=execution,
                 measurements=measurements,
                 detail=reference,
-                recorded_at=self.recorded_at,
+                recorded_at=self._recording.recorded_at,
             )
         )
 
@@ -253,50 +318,26 @@ class ResultRecorder:
         description: str,
         slug: str | None,
     ) -> DetailReference | None:
-        if self._detail is None:
+        detail = self._recording.detail
+        if detail is None:
             return None
-        name = f"{self._stamp}.json" if slug is None else f"{self._stamp}-{slug}.json"
+        stamp = self._recording.recorded_at.strftime("%Y%m%dT%H%M%SZ")
+        name = f"{stamp}.json" if slug is None else f"{stamp}-{slug}.json"
         relative = Path(kind) / self._checkpoint.label / name
-        reference = self._detail.write(relative, payload(), description=description)
-        self._detail_paths.append(self._detail.root / relative)
+        reference = detail.write(relative, payload(), description=description)
+        self._recording.detail_paths.append(detail.root / relative)
         return reference
 
     def characterize(self, characterization: NoiseCharacterization | None) -> None:
         """Keep one noise floor to append beside the envelopes, if there is one."""
 
         if characterization is not None:
-            self._characterizations.append(characterization)
-
-    def _append(self) -> None:
-        if self._store is None:
-            return
-        recorded = [self._store.append(item) for item in self._envelopes]
-        recorded.extend(
-            self._store.append_characterization(item)
-            for item in self._characterizations
-        )
-        self._recorded_paths = tuple(recorded)
-
-    @property
-    def fields(self) -> dict[str, Any]:
-        """Return what was written, to splat into :func:`dataclasses.replace`.
-
-        Read after the block, since the appending happens on the way out. A
-        record type here would exist only to be unpacked at each call site; the
-        cost of the dict is that the three keys are unchecked against the seven
-        result classes, so a renamed field there surfaces as a ``TypeError``
-        from ``replace`` rather than as a type error.
-        """
-
-        return {
-            "envelopes": tuple(self._envelopes),
-            "recorded_paths": self._recorded_paths,
-            "detail_paths": tuple(self._detail_paths),
-        }
+            self._recording.characterizations.append(characterization)
 
 
 __all__ = [
     "ResultRecorder",
+    "ResultRecording",
     "checkpoint_reference",
     "pool_dataset_reference",
     "resolve_model",

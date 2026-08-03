@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import chess
 import pytest
@@ -13,14 +13,15 @@ import pytest
 from anthro_chess.chess import decode_move, is_terminal_action
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.novelty import (
     NOVELTY_KIND,
     NOVELTY_RECIPE_VERSION,
     NoveltyBenchmarkConfig,
     NoveltyBenchmarkError,
+    NoveltyBenchmarkResult,
     PerturbationConfig,
     PerturbationRecipe,
-    benchmark_novelty,
     derive_arm,
 )
 from anthro_chess.evaluation.results import DetailStore, ResultsStore
@@ -60,6 +61,25 @@ LONG_LINE = (
 #: a genuine suffix rather than the whole game.
 ONSET = 6
 WINDOW = 4
+
+
+def _measure(
+    resolved_config: ResolvedConfig[NoveltyBenchmarkConfig],
+    *,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> NoveltyBenchmarkResult:
+    """Measure the benchmark the way both callers do, through the driver."""
+
+    return cast(
+        NoveltyBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["novelty"],
+            resolved_config,
+            store=store,
+            detail=detail,
+        ),
+    )
 
 
 def _rows(normalized_row: Callable[..., dict[str, Any]]) -> list[dict[str, Any]]:
@@ -246,7 +266,7 @@ def test_the_benchmark_reports_retention_against_its_own_control(
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    result = benchmark_novelty(
+    result = _measure(
         _config(pool, checkpoint, doses=[0.0, 0.5, 1.0]),
         store=store,
         detail=detail,
@@ -338,7 +358,7 @@ def test_predicates_and_phase_slices_reach_the_detail_tier(
     )
     detail = DetailStore(tmp_path / "detail")
 
-    result = benchmark_novelty(_config(pool, checkpoint), detail=detail)
+    result = _measure(_config(pool, checkpoint), detail=detail)
 
     control = result.control
     # Material gain is the predicate common enough to appear on quiet play, and
@@ -383,7 +403,7 @@ def test_nothing_is_recorded_without_a_store(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    result = benchmark_novelty(_config(pool, checkpoint))
+    result = _measure(_config(pool, checkpoint))
 
     # A shakedown reading is evidence about the instrument rather than about
     # the model, so it computes everything and commits nothing.
@@ -406,7 +426,7 @@ def test_a_view_too_short_for_the_window_fails_loudly(
     )
 
     with pytest.raises(NoveltyBenchmarkError, match="no measurable position"):
-        benchmark_novelty(_config(pool, checkpoint, onset_plies=500))
+        _measure(_config(pool, checkpoint, onset_plies=500))
 
 
 def test_cli_reads_a_sweep_without_recording_it(

@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
@@ -126,7 +126,7 @@ from anthro_chess.evaluation.pool import (
     load_pool,
 )
 from anthro_chess.evaluation.recording import (
-    ResultRecorder,
+    ResultRecording,
     pool_dataset_reference,
     resolve_model,
 )
@@ -151,11 +151,9 @@ from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
     DatasetReference,
-    DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultsStore,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
@@ -795,8 +793,7 @@ def benchmark_rollout(
     resolved_config: ResolvedConfig[RolloutBenchmarkConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
     runner: ActionModelRunner | None = None,
     checkpoint: CheckpointReference | None = None,
 ) -> RolloutBenchmarkResult:
@@ -869,7 +866,8 @@ def benchmark_rollout(
         reference=reference,
         reference_view=reference_view,
     )
-    return _record(result, resolved_config, store=store, detail=detail)
+    _record(result, recording)
+    return result
 
 
 def _measure_cell(
@@ -1706,11 +1704,8 @@ def _execution_record(
 
 def _record(
     result: RolloutBenchmarkResult,
-    resolved_config: ResolvedConfig[RolloutBenchmarkConfig],
-    *,
-    store: ResultsStore | None,
-    detail: DetailStore | None,
-) -> RolloutBenchmarkResult:
+    recording: ResultRecording,
+) -> None:
     """Write one envelope per cell, per curve reading, and per exact walk.
 
     Three kinds of record from one run, because they are three units. A cell is
@@ -1722,53 +1717,46 @@ def _record(
     series recorded beside it.
     """
 
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        result.checkpoint,
         kind=ROLLOUT_KIND,
         benchmark=ROLLOUT_BENCHMARK,
-        checkpoint=result.checkpoint,
-        store=store,
-        detail=detail,
-        error=RolloutBenchmarkError,
-    ) as recorder:
-        for cell in result.cells:
-            recorder.add(
-                _measurements(cell),
-                payload=partial(_cell_payload, cell),
-                description=f"Generated-play rollout cell: {cell.label}",
-                slug=(
-                    f"{cell.arm.value}-r{cell.target_rating}-t{_slug(cell.temperature)}"
-                ),
-                # Provenance rather than series identity: the pool games were
-                # an input to generation, not the content measured, so they
-                # reach the fingerprint through the workload's position source
-                # instead of through a data component.
-                data=result.dataset if cell.arm is RolloutArm.HUMAN_PREFIX else None,
-                execution=cell.execution,
-            )
-        for reading in result.readings:
-            recorder.add(
-                _curve_measurements(reading),
-                payload=partial(_reading_payload, result, reading),
-                description=f"Human-reference curves: {reading.label}",
-                slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
-                # The reference view is provenance here for the same reason the
-                # prefix view is on a cell: the human games shaped what was
-                # compared against, and the workload carries identity.
-                data=result.dataset,
-                execution=reading.execution,
-            )
-            if reading.exact is None:
-                continue
-            recorder.add(
-                _exact_measurements(reading),
-                payload=reading.exact.as_record,
-                description=f"Exact shallow repertoire: {reading.label}",
-                slug=(f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}"),
-                data=result.dataset,
-                execution=reading.exact.execution,
-            )
-    return replace(result, **recorder.fields)
+    )
+    for cell in result.cells:
+        recorder.add(
+            _measurements(cell),
+            payload=partial(_cell_payload, cell),
+            description=f"Generated-play rollout cell: {cell.label}",
+            slug=(f"{cell.arm.value}-r{cell.target_rating}-t{_slug(cell.temperature)}"),
+            # Provenance rather than series identity: the pool games were
+            # an input to generation, not the content measured, so they
+            # reach the fingerprint through the workload's position source
+            # instead of through a data component.
+            data=result.dataset if cell.arm is RolloutArm.HUMAN_PREFIX else None,
+            execution=cell.execution,
+        )
+    for reading in result.readings:
+        recorder.add(
+            _curve_measurements(reading),
+            payload=partial(_reading_payload, result, reading),
+            description=f"Human-reference curves: {reading.label}",
+            slug=f"{reading.arm.value}-curves-t{_slug(reading.temperature)}",
+            # The reference view is provenance here for the same reason the
+            # prefix view is on a cell: the human games shaped what was
+            # compared against, and the workload carries identity.
+            data=result.dataset,
+            execution=reading.execution,
+        )
+        if reading.exact is None:
+            continue
+        recorder.add(
+            _exact_measurements(reading),
+            payload=reading.exact.as_record,
+            description=f"Exact shallow repertoire: {reading.label}",
+            slug=(f"{reading.arm.value}-repertoire-t{_slug(reading.temperature)}"),
+            data=result.dataset,
+            execution=reading.exact.execution,
+        )
 
 
 def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:

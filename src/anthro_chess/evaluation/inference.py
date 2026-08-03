@@ -28,7 +28,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -44,15 +44,13 @@ from anthro_chess.evaluation.execution import (
     execution_record,
     synchronize,
 )
-from anthro_chess.evaluation.recording import ResultRecorder, checkpoint_reference
+from anthro_chess.evaluation.recording import ResultRecording, checkpoint_reference
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
-    DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultsStore,
     WorkloadComponent,
     measurement,
 )
@@ -319,14 +317,13 @@ def benchmark_inference(
     resolved_config: ResolvedConfig[InferenceBenchmarkConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
 ) -> InferenceBenchmarkResult:
     """Measure one checkpoint's move latency, throughput, and cold start.
 
-    Passing no ``store`` measures everything and records nothing, which is what
-    an exploratory reading on a busy machine wants: a figure taken beside a
-    training run is real but does not belong in the committed history.
+    A recording opened without a store measures everything and records nothing,
+    which is what an exploratory reading on a busy machine wants: a figure taken
+    beside a training run is real but does not belong in the committed history.
     """
 
     config = resolved_config.value
@@ -394,24 +391,18 @@ def benchmark_inference(
         throughput_sweep=throughput_sweep,
     )
 
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        checkpoint,
         kind=INFERENCE_KIND,
         benchmark=INFERENCE_BENCHMARK,
-        checkpoint=checkpoint,
-        store=store,
-        detail=detail,
-        error=InferenceBenchmarkError,
-    ) as recorder:
-        recorder.add(
-            _measurements(result, execution.workload_component()),
-            payload=result.as_record,
-            description=(
-                "Latency depth sweep, batch-size sweep, and stage attribution."
-            ),
-            execution=execution,
-        )
-    return replace(result, **recorder.fields)
+    )
+    recorder.add(
+        _measurements(result, execution.workload_component()),
+        payload=result.as_record,
+        description="Latency depth sweep, batch-size sweep, and stage attribution.",
+        execution=execution,
+    )
+    return result
 
 
 class _HistoryFactory:
