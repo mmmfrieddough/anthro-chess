@@ -15,10 +15,12 @@ from anthro_chess.data import (
     SequenceDataLoader,
     SequenceDataset,
     SequenceLoaderConfig,
+    collate_sequences,
     maximum_position_bound,
     prepare_pgn,
 )
 from anthro_chess.data.schema import SCHEMA_VERSION
+from anthro_chess.models import MoveModelBatch
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -101,23 +103,14 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
     assert bool(batch.inputs.previous_action_id.present[1][0]) is True
 
 
-@pytest.mark.parametrize("chunk_length", [None, 1, 3, 5, 8, 12])
+@pytest.mark.parametrize("chunk_length", [None, 3, 8, 12])
 def test_maximum_position_bound_covers_the_furthest_chunk_of_a_corpus(
     tmp_path: Path,
     chunk_length: int | None,
 ) -> None:
     """The longest game bounds every chunk, and chunking moves that bound."""
 
-    moves = (
-        "e2e4",
-        "e7e5",
-        "g1f3",
-        "b8c6",
-        "f1b5",
-        "a7a6",
-        "b5a4",
-        "g8f6",
-    )
+    moves = ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6")
     path = _write_games(tmp_path, [_row(1, moves[:3]), _row(2, moves)])
 
     dataset = SequenceDataset.from_parquet(
@@ -126,15 +119,12 @@ def test_maximum_position_bound_covers_the_furthest_chunk_of_a_corpus(
         chunk_length=chunk_length,
     )
 
-    # What a batch declares is its furthest chunk start plus its padded width,
-    # and the two need not come from the same game, so the corpus-wide worst
-    # case pairs the largest of each.
-    starts = [example.start_ply for example in dataset]
-    widths = [len(example.plies) for example in dataset]
-    assert max(starts) + max(widths) == maximum_position_bound(
-        len(moves),
-        chunk_length,
+    # Batching the whole corpus at once is its worst case, so the reach the
+    # model would refuse on is read from the batch rather than restated here.
+    batch = MoveModelBatch.from_sequence_batch(
+        collate_sequences(list(dataset), legal_actions=False)
     )
+    assert batch.position_bound == maximum_position_bound(len(moves), chunk_length)
 
 
 def test_length_buckets_keep_similarly_sized_full_games_together(

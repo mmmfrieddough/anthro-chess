@@ -808,12 +808,7 @@ def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
 
 
 def maximum_position_bound(maximum_game_plies: int, chunk_length: int | None) -> int:
-    """Return the furthest position bound batches over a corpus can declare.
-
-    ``MoveModelBatch.position_bound`` is one batch's own reach: its furthest
-    chunk start plus its padded width. Chunking is what separates that from
-    game length, so a caller comparing a corpus against a model's declared
-    context has to account for it here rather than compare game lengths.
+    """Return the furthest ``MoveModelBatch.position_bound`` a corpus can reach.
 
     Both loaders cut non-overlapping chunks, so a game of ``L`` plies starts
     its last chunk at ``(L - 1) // C * C`` and has no chunk wider than

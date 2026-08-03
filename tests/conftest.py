@@ -263,10 +263,7 @@ def _write_corpus(
                 # training run reads the longest game from here to decide
                 # whether the model can encode this corpus at all.
                 "games": {
-                    "accepted": len(rows),
                     "plies": {
-                        "total": sum(row["ply_count"] for row in rows),
-                        "minimum_per_game": min(row["ply_count"] for row in rows),
                         "maximum_per_game": max(row["ply_count"] for row in rows),
                     },
                 },

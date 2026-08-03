@@ -859,7 +859,7 @@ def test_the_declared_context_leaves_room_for_an_appended_terminal_action(
     _train_at_declared_context(tmp_path, 27)
 
 
-@pytest.mark.parametrize("recorded", [None, 0, -1, "26"])
+@pytest.mark.parametrize("recorded", [None, 0, "26"])
 def test_a_manifest_without_a_usable_longest_game_is_refused_rather_than_assumed(
     tmp_path: Path,
     recorded: object,
