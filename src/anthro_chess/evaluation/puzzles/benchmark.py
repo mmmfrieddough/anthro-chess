@@ -367,7 +367,7 @@ def benchmark_puzzles(
             ),
             data=data,
         )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 def score_puzzle_set(

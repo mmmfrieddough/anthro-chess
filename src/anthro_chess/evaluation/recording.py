@@ -26,11 +26,10 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any
-
-import torch
+from typing import TYPE_CHECKING, Any
 
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.data.artifacts import game_ids_sha256
 from anthro_chess.evaluation.pool import FrozenPool
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -54,7 +53,9 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.views import ViewSelection
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
 from anthro_chess.inference.runner import ModelRunnerError
-from anthro_chess.runtime import ActionModelRunner
+
+if TYPE_CHECKING:
+    from anthro_chess.runtime import ActionModelRunner
 
 
 def checkpoint_reference(
@@ -71,18 +72,6 @@ def checkpoint_reference(
         run_id=run_id,
         parameter_sha256=runner.parameter_sha256(),
     )
-
-
-def runner_device(runner: object) -> torch.device:
-    """Return the device a runner executes on, defaulting to the CPU.
-
-    A stand-in runner need not carry a device. The environment half of a record
-    is attribution rather than identity, so a missing device is recorded as the
-    CPU rather than failing the measurement.
-    """
-
-    device = getattr(runner, "device", None)
-    return device if isinstance(device, torch.device) else torch.device("cpu")
 
 
 def resolve_model(
@@ -131,13 +120,12 @@ def pool_dataset_reference(
     identity = pool.manifest.get("pool")
     if not isinstance(identity, Mapping):
         raise error("evaluation pool manifest has no pool identity")
-    record = selection.as_record()
     return dataset_reference(
         pool_id=str(identity["id"]),
         pool_version=int(identity["version"]),
         view=selection.name,
         selected_games=selection.selected_games,
-        game_ids_sha256=str(record["game_ids_sha256"]),
+        game_ids_sha256=game_ids_sha256(selection.game_ids),
         components=[component],
     )
 
@@ -191,6 +179,7 @@ class ResultRecorder:
         self._envelopes: list[ResultEnvelope] = []
         self._characterizations: list[NoiseCharacterization] = []
         self._detail_paths: list[Path] = []
+        self._recorded_paths: tuple[Path, ...] = ()
 
     def __enter__(self) -> ResultRecorder:
         return self
@@ -201,6 +190,19 @@ class ResultRecorder:
         error: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        """Append what was recorded, or convert whatever stopped it.
+
+        The append happens here rather than in a method the caller has to
+        remember, because forgetting it would write nothing and report
+        success. A reading that failed appends nothing at all: a partial
+        record of a broken measurement is worse than none.
+        """
+
+        try:
+            if error is None:
+                self._append()
+        except (ResultRecordError, ResultsStoreError) as failure:
+            raise self._error(str(failure)) from failure
         if isinstance(error, ResultRecordError | ResultsStoreError):
             raise self._error(str(error)) from error
 
@@ -265,26 +267,30 @@ class ResultRecorder:
         if characterization is not None:
             self._characterizations.append(characterization)
 
-    def commit(self) -> dict[str, Any]:
-        """Append everything recorded, and return the fields it wrote.
+    def _append(self) -> None:
+        if self._store is None:
+            return
+        recorded = [self._store.append(item) for item in self._envelopes]
+        recorded.extend(
+            self._store.append_characterization(item)
+            for item in self._characterizations
+        )
+        self._recorded_paths = tuple(recorded)
 
-        Fields to splat into :func:`dataclasses.replace` rather than a record of
-        its own, which would exist only to be unpacked at each call site. The
-        cost is that the three keys are unchecked against the seven result
-        classes, so a renamed field there surfaces as a ``TypeError`` from
-        ``replace`` rather than as a type error.
+    @property
+    def fields(self) -> dict[str, Any]:
+        """Return what was written, to splat into :func:`dataclasses.replace`.
+
+        Read after the block, since the appending happens on the way out. A
+        record type here would exist only to be unpacked at each call site; the
+        cost of the dict is that the three keys are unchecked against the seven
+        result classes, so a renamed field there surfaces as a ``TypeError``
+        from ``replace`` rather than as a type error.
         """
 
-        recorded: list[Path] = []
-        if self._store is not None:
-            recorded = [self._store.append(item) for item in self._envelopes]
-            recorded.extend(
-                self._store.append_characterization(item)
-                for item in self._characterizations
-            )
         return {
             "envelopes": tuple(self._envelopes),
-            "recorded_paths": tuple(recorded),
+            "recorded_paths": self._recorded_paths,
             "detail_paths": tuple(self._detail_paths),
         }
 
@@ -294,5 +300,4 @@ __all__ = [
     "checkpoint_reference",
     "pool_dataset_reference",
     "resolve_model",
-    "runner_device",
 ]

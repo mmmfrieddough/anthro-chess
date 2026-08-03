@@ -353,7 +353,7 @@ def benchmark_inference(
             ),
             execution=execution,
         )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 class _HistoryFactory:

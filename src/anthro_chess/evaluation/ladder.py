@@ -72,7 +72,7 @@ from anthro_chess.evaluation.decisions import (
     summarize_decisions,
 )
 from anthro_chess.evaluation.dependency import ConditioningKind
-from anthro_chess.evaluation.execution import execution_record
+from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.games import (
     GENERATION_VERSION,
     GameRecord,
@@ -90,7 +90,6 @@ from anthro_chess.evaluation.recording import (
     ResultRecorder,
     pool_dataset_reference,
     resolve_model,
-    runner_device,
 )
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -1353,7 +1352,7 @@ def _record(
                 data=result.dataset,
                 execution=result.response.execution,
             )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:

@@ -88,7 +88,7 @@ from anthro_chess.evaluation.curves import (
     distribution_distance,
     estimate_curve,
 )
-from anthro_chess.evaluation.execution import execution_record
+from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.games import (
     GAME_ANALYSIS_VERSION,
     GENERATION_VERSION,
@@ -128,7 +128,6 @@ from anthro_chess.evaluation.recording import (
     ResultRecorder,
     pool_dataset_reference,
     resolve_model,
-    runner_device,
 )
 from anthro_chess.evaluation.reference import (
     CURVE_SPEC_VERSION,
@@ -1758,7 +1757,7 @@ def _record(
                 data=result.dataset,
                 execution=reading.exact.execution,
             )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:

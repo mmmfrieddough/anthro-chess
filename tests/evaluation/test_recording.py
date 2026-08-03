@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,7 @@ from anthro_chess.evaluation.results import (
     DatasetReference,
     DetailStore,
     FloorEntry,
+    Measurement,
     ResultEnvelope,
     ResultsStore,
     build_characterization,
@@ -30,12 +31,9 @@ from anthro_chess.evaluation.results.store import LOCK_FILE_NAME
 Digest = Callable[..., DataComponent]
 
 KIND = "held-out-prediction"
-OTHER_KIND = "rating-dependency"
 BENCHMARK = BenchmarkReference(name="move-validation", version=1)
-OTHER_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 CHECKPOINT = CheckpointReference(label="checkpoint-a", step=8000)
 METRIC = "held_out.move_loss"
-OTHER_METRIC = "dependency.rating_absent_degradation"
 
 
 class _Config(ConfigModel):
@@ -95,6 +93,25 @@ def _dataset(component: DataComponent) -> DatasetReference:
     )
 
 
+def _add_reading(
+    recorder: ResultRecorder,
+    component: DataComponent,
+    *,
+    payload: Callable[[], Mapping[str, object]] = dict,
+    measurements: Sequence[Measurement] | None = None,
+) -> None:
+    """Record one ordinary unit, which is what most of these tests need."""
+
+    recorder.add(
+        [measurement(METRIC, 3.5, data=component)]
+        if measurements is None
+        else measurements,
+        payload=payload,
+        description="Slice tables for one evaluation.",
+        data=_dataset(component),
+    )
+
+
 def test_a_reading_lands_in_the_store_and_the_detail_tier(
     tmp_path: Path,
     resolved: ResolvedConfig[_Config],
@@ -105,13 +122,8 @@ def test_a_reading_lands_in_the_store_and_the_detail_tier(
     detail = DetailStore(tmp_path / "detail")
 
     with _recorder(resolved, store=store, detail=detail) as recorder:
-        recorder.add(
-            [measurement(METRIC, 3.5, data=component)],
-            payload=lambda: {"slices": []},
-            description="Slice tables for one evaluation.",
-            data=_dataset(component),
-        )
-        result = replace(_Result(), **recorder.commit())
+        _add_reading(recorder, component, payload=lambda: {"slices": []})
+    result = _Result(**recorder.fields)
 
     (envelope,) = result.envelopes
     (recorded,) = result.recorded_paths
@@ -136,24 +148,25 @@ def test_one_kind_scopes_both_the_series_and_the_payload_directory(
 ) -> None:
     # The two are named once and cannot drift apart. A benchmark writing more
     # than one kind from a single reading is why the override exists at all.
+    other_kind = "rating-dependency"
     component = move_prediction_component()
     detail = DetailStore(tmp_path / "detail")
 
     with _recorder(resolved, detail=detail) as recorder:
         recorder.add(
-            [measurement(OTHER_METRIC, 0.5, data=component)],
+            [measurement("dependency.rating_absent_degradation", 0.5, data=component)],
             payload=dict,
             description="Cross-conditioning tables.",
-            kind=OTHER_KIND,
-            benchmark=OTHER_BENCHMARK,
+            kind=other_kind,
+            benchmark=BenchmarkReference(name=other_kind, version=1),
             data=_dataset(component),
         )
-        result = replace(_Result(), **recorder.commit())
+    result = _Result(**recorder.fields)
 
     (envelope,) = result.envelopes
     (written,) = result.detail_paths
-    assert envelope.kind == OTHER_KIND
-    assert written.parent == detail.root / OTHER_KIND / CHECKPOINT.label
+    assert envelope.kind == other_kind
+    assert written.parent == detail.root / other_kind / CHECKPOINT.label
 
 
 def test_a_payload_is_not_built_when_there_is_no_detail_store(
@@ -171,13 +184,8 @@ def test_a_payload_is_not_built_when_there_is_no_detail_store(
         return {}
 
     with _recorder(resolved) as recorder:
-        recorder.add(
-            [measurement(METRIC, 3.5, data=component)],
-            payload=payload,
-            description="Slice tables.",
-            data=_dataset(component),
-        )
-        result = replace(_Result(), **recorder.commit())
+        _add_reading(recorder, component, payload=payload)
+    result = _Result(**recorder.fields)
 
     assert built == 0
     assert len(result.envelopes) == 1
@@ -191,16 +199,10 @@ def test_measuring_without_a_store_still_writes_the_detail_payload(
     move_prediction_component: Digest,
 ) -> None:
     component = move_prediction_component()
-    detail = DetailStore(tmp_path / "detail")
 
-    with _recorder(resolved, detail=detail) as recorder:
-        recorder.add(
-            [measurement(METRIC, 3.5, data=component)],
-            payload=lambda: {"slices": []},
-            description="Slice tables.",
-            data=_dataset(component),
-        )
-        result = replace(_Result(), **recorder.commit())
+    with _recorder(resolved, detail=DetailStore(tmp_path / "detail")) as recorder:
+        _add_reading(recorder, component)
+    result = _Result(**recorder.fields)
 
     assert len(result.envelopes) == 1
     assert result.recorded_paths == ()
@@ -223,7 +225,7 @@ def test_measuring_nothing_keeps_the_payload_and_commits_no_record(
             description="Held-out resignation.",
             slug="held-out-resignation",
         )
-        result = replace(_Result(), **recorder.commit())
+    result = _Result(**recorder.fields)
 
     assert result.envelopes == ()
     assert result.recorded_paths == ()
@@ -235,12 +237,10 @@ def test_a_slug_distinguishes_the_payloads_one_reading_writes(
     tmp_path: Path,
     resolved: ResolvedConfig[_Config],
 ) -> None:
-    detail = DetailStore(tmp_path / "detail")
-
-    with _recorder(resolved, detail=detail) as recorder:
+    with _recorder(resolved, detail=DetailStore(tmp_path / "detail")) as recorder:
         recorder.add((), payload=dict, description="One cell.", slug="cell-r1200")
         recorder.add((), payload=dict, description="Another.", slug="cell-r1800")
-        result = replace(_Result(), **recorder.commit())
+    result = _Result(**recorder.fields)
 
     first, second = result.detail_paths
     assert first.name.endswith("-cell-r1200.json")
@@ -272,17 +272,12 @@ def test_a_noise_floor_is_appended_after_the_envelopes(
     )
 
     with _recorder(resolved, store=store) as recorder:
-        recorder.add(
-            [measurement(METRIC, 3.5, data=component)],
-            payload=dict,
-            description="Slice tables.",
-            data=_dataset(component),
-        )
+        _add_reading(recorder, component)
         recorder.characterize(characterization)
         # A benchmark whose floor is disabled hands over nothing rather than
         # branching at every call site.
         recorder.characterize(None)
-        result = replace(_Result(), **recorder.commit())
+    result = _Result(**recorder.fields)
 
     first, second = result.recorded_paths
     assert first.parent == store.records_directory
@@ -297,7 +292,8 @@ def test_a_store_failure_becomes_the_benchmark_s_own_error(
 ) -> None:
     # A sweep converts only the error types a benchmark's registry entry
     # declares, so a store error escaping as itself would end the whole sweep
-    # rather than failing one step.
+    # rather than failing one step. The append happens on the way out of the
+    # block, so this is the conversion covering it there.
     component = move_prediction_component()
     root = tmp_path / "results"
     root.mkdir(parents=True)
@@ -305,13 +301,26 @@ def test_a_store_failure_becomes_the_benchmark_s_own_error(
 
     with pytest.raises(_BenchmarkError, match="another process is writing"):
         with _recorder(resolved, store=ResultsStore(root)) as recorder:
-            recorder.add(
-                [measurement(METRIC, 3.5, data=component)],
-                payload=dict,
-                description="Slice tables.",
-                data=_dataset(component),
-            )
-            recorder.commit()
+            _add_reading(recorder, component)
+
+
+def test_a_failed_reading_appends_nothing(
+    tmp_path: Path,
+    resolved: ResolvedConfig[_Config],
+    move_prediction_component: Digest,
+) -> None:
+    # A partial record of a broken measurement is worse than none, so a block
+    # that raised leaves the store as it found it.
+    component = move_prediction_component()
+    store = ResultsStore(tmp_path / "results")
+
+    with pytest.raises(RuntimeError):
+        with _recorder(resolved, store=store) as recorder:
+            _add_reading(recorder, component)
+            raise RuntimeError("the pool went away")
+
+    assert store.results() == ()
+    assert recorder.fields["recorded_paths"] == ()
 
 
 def test_building_a_measurement_is_covered_by_the_same_conversion(

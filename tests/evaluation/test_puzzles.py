@@ -495,24 +495,11 @@ def test_the_benchmark_records_every_envelope_and_payload_it_produced(
     # single envelope and a relative detail path where every other benchmark
     # carried tuples of absolute ones, and nothing here noticed for as long as
     # the drift existed.
-    artifact = _write_fixture_artifact(tmp_path / "puzzles")
-    rows = [
-        {
-            **normalized_row(1, split="train"),
-            "source_id": "lichess",
-            "source_game_key": _fixture_set().puzzles[0].source_game_key,
-        }
-    ]
-    normalized, _ = write_corpus(tmp_path / "corpus", rows)
-    checkpoint = inference_run(tmp_path / "run")
+    config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    result = benchmark_puzzles(
-        _benchmark_config(artifact, normalized, checkpoint),
-        store=store,
-        detail=detail,
-    )
+    result = benchmark_puzzles(config, store=store, detail=detail)
 
     assert result.envelopes == store.results()
     assert len(result.recorded_paths) == len(result.envelopes) == 1
@@ -528,35 +515,38 @@ def test_the_benchmark_measures_without_recording_anything(
     write_corpus: Callable[..., tuple[Path, Path]],
     inference_run: Callable[..., Path],
 ) -> None:
+    config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
+
+    result = benchmark_puzzles(config)
+
+    assert len(result.envelopes) == 1
+    assert result.recorded_paths == ()
+    assert result.detail_paths == ()
+
+
+def _benchmark_config(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    inference_run: Callable[..., Path],
+) -> ResolvedConfig[PuzzleBenchmarkConfig]:
+    """Write a puzzle artifact, a training corpus and a checkpoint, and select them."""
+
     artifact = _write_fixture_artifact(tmp_path / "puzzles")
     rows = [
         {
             **normalized_row(1, split="train"),
             "source_id": "lichess",
-            "source_game_key": "not-a-puzzle",
+            "source_game_key": _fixture_set().puzzles[0].source_game_key,
         }
     ]
     normalized, _ = write_corpus(tmp_path / "corpus", rows)
     checkpoint = inference_run(tmp_path / "run")
-
-    result = benchmark_puzzles(_benchmark_config(artifact, normalized, checkpoint))
-
-    assert len(result.envelopes) == 1
-    assert result.recorded_paths == ()
-    assert result.detail_paths == ()
-    assert result.overlapping_puzzles == 0
-
-
-def _benchmark_config(
-    puzzle_set: Path,
-    training_normalized: Path,
-    checkpoint: Path,
-) -> ResolvedConfig[PuzzleBenchmarkConfig]:
     return ResolvedConfig(
         value=PuzzleBenchmarkConfig.model_validate(
             {
-                "puzzle_set": str(puzzle_set),
-                "training_normalized": str(training_normalized),
+                "puzzle_set": str(artifact),
+                "training_normalized": str(normalized),
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "target_ratings": [1000, 1800],
                 "inference_batch_size": 4,

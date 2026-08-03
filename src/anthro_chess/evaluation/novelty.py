@@ -530,7 +530,7 @@ def benchmark_novelty(
                     recorded_at=recorder.recorded_at,
                 )
             )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 def _derive_game(

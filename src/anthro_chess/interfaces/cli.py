@@ -1615,6 +1615,14 @@ def _run_eval_run(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _recorded_lines(recorded_paths: Sequence[Path]) -> list[str]:
+    """Return how one benchmark's render reports where its reading was written."""
+
+    if not recorded_paths:
+        return ["", "Recorded: nothing; this run did not write to the store"]
+    return ["", *(f"Recorded: {path}" for path in recorded_paths)]
+
+
 def _render_evaluation(result: CheckpointEvaluationResult) -> str:
     from anthro_chess.evaluation.aggregation import PHASE_DIMENSION
 
@@ -1686,10 +1694,7 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
                 ),
             ]
         )
-    if result.recorded_paths:
-        lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
-    else:
-        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
 
 
@@ -1904,10 +1909,7 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             ),
         ]
     )
-    if result.recorded_paths:
-        lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
-    else:
-        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
 
 
@@ -2018,10 +2020,7 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
             f"{sample.decisions_per_second:8.1f} decisions/s"
             for sample in result.throughput_sweep
         )
-    if result.recorded_paths:
-        lines.extend(["", *(f"Recorded: {path}" for path in result.recorded_paths)])
-    else:
-        lines.extend(["", "Recorded: nothing; this run did not write to the store"])
+    lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
 
 

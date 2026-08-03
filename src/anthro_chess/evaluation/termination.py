@@ -67,7 +67,7 @@ from anthro_chess.evaluation.curves import (
     compare_curves,
     distribution_distance,
 )
-from anthro_chess.evaluation.execution import execution_record
+from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.games import (
     GENERATION_VERSION,
     GameRecord,
@@ -90,7 +90,6 @@ from anthro_chess.evaluation.recording import (
     ResultRecorder,
     pool_dataset_reference,
     resolve_model,
-    runner_device,
 )
 from anthro_chess.evaluation.reference import (
     ReferenceConfig,
@@ -1485,7 +1484,7 @@ def _record(
                 # so the content is what it is scoped by.
                 data=held_out.dataset,
             )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 def _generated_measurements(reading: GeneratedReading) -> tuple[Measurement, ...]:

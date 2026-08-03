@@ -516,7 +516,7 @@ def evaluate_checkpoint(
                 ),
                 data=data,
             )
-        return replace(result, **recorder.commit())
+    return replace(result, **recorder.fields)
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
