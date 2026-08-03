@@ -76,10 +76,14 @@ name = "ladder-openings"
 maximum_games = 16
 
 [generation]
-# Long enough for a real game to finish and short enough that two seats
-# shuffling in a drawn endgame do not run the suite for hours. A game that hits
-# the limit has no result and informs no pairwise comparison; it is counted
-# rather than adjudicated into a draw.
+# A round number that sits just past the end of the trained ply range: with the
+# eight-ply prefix above this takes its last decision at ply index 307, and the
+# longest game in the corpus the model trained on is 301 plies. Raising it would
+# score games from ply indices the model has no training signal at, and lowering
+# it buys no throughput. A game that hits the limit has no result and informs no
+# pairwise comparison; it is counted rather than adjudicated into a draw, and
+# about half of them do — a reading about the seats rather than about this value.
+# Settled in `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md`.
 maximum_generated_plies = 300
 games_per_position = 1
 swap_colors = true

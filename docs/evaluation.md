@@ -1437,6 +1437,15 @@ game at all: a game that reaches the ply limit has no result and informs no
 comparison, so it is counted rather than adjudicated into a draw, and a suite
 where nothing finished fails loudly as a generation problem.
 
+**Read the unfinished count as a reading, not as overhead.** About half a
+full-size ladder's games reach the limit, and they are its most expensive games,
+but the limit sits past the longest game in the corpus the model trained on — a
+model that finished games the way its corpus does would reach it essentially
+never. The count is therefore a statement about the seats, and it is the ladder
+quantity that has discriminated most sharply between checkpoints so far. It is
+concentrated in the sampling seats, which is where the temperature response is
+read.
+
 Each seat's own error profile is recorded beside its strength, computed through
 the shared decision decomposition rather than a private one, since that layer
 already groups decisions by the dials they were made under and a ladder's seats
@@ -1464,6 +1473,9 @@ declared grid playing.
 why the ablated arm sits inside it, and what the round robin costs.
 `docs/decisions/0027-settled-rating-ladder-grid.md` settles the grid at its
 declared size and records what that is worth against what it costs.
+`docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md` settles the ply
+limit against the corpus's longest game and owns why the unfinished half is a
+reading rather than a dial to move.
 
 Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
 of Anthro target ratings against one or more fixed external engine

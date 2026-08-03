@@ -367,6 +367,13 @@ Include `Closes #<issue-number>` so merging into the default branch closes the
 implementation issue automatically. Do not close the implementation issue
 manually because the pull request is ready; the merge should close it.
 
+Scope the change knows it is leaving behind is filed as its own issue before the
+merge, with the dependency attached, rather than described in a closing comment.
+A comment on a closed issue is invisible to later sessions, so remaining work
+recorded there is indistinguishable from work nobody found. When a pull request
+can name what it did not do, open that issue or leave the parent open; deferring
+the question to review leaves it filed nowhere.
+
 For an issue labeled `verification: gpu-required`, a session without the
 specified GPU may still open a ready-for-review pull request after the
 implementation and all available checks are complete. The pull request must
@@ -428,3 +435,5 @@ Before substantive changes:
     training run learns.
 11. Account for the diff's size and new surface before marking the pull request
     ready.
+12. File the scope the change knows it is leaving behind before the merge closes
+    the issue.
