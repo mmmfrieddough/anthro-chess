@@ -45,11 +45,11 @@ from pathlib import Path
 from typing import Any
 
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.inference import (
     COLD_START_METRICS,
     InferenceBenchmarkConfig,
     InferenceBenchmarkError,
-    benchmark_inference,
 )
 from anthro_chess.evaluation.results import (
     PROCESS_REPLICATE_METHOD,
@@ -139,12 +139,15 @@ def sample_execution_noise(
     if repeats < 1:
         raise ExecutionNoiseError("a process has to take at least one reading")
 
+    inference = benchmark_registry()["inference"]
     readings: list[Mapping[str, float]] = []
     execution: ExecutionRecord | None = None
     checkpoint: CheckpointReference | None = None
     for _ in range(repeats):
         try:
-            result = benchmark_inference(resolved_config, run_root=run_root)
+            # Through the driver, with no store: the envelopes are assembled
+            # and nothing is appended, which is what this sampler wants.
+            result = run_benchmark(inference, resolved_config, run_root=run_root)
         except InferenceBenchmarkError as error:
             raise ExecutionNoiseError(str(error)) from error
         (envelope,) = result.envelopes

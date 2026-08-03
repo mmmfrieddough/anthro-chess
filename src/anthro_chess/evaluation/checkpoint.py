@@ -77,7 +77,7 @@ from anthro_chess.evaluation.pool import (
     load_pool,
 )
 from anthro_chess.evaluation.recording import (
-    ResultRecorder,
+    ResultRecording,
     checkpoint_reference,
     pool_dataset_reference,
 )
@@ -87,10 +87,8 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailStore,
     Measurement,
     ResultEnvelope,
-    ResultsStore,
     measurement,
     paired_contributions,
     projection_content_digest,
@@ -388,14 +386,13 @@ def evaluate_checkpoint(
     resolved_config: ResolvedConfig[CheckpointEvaluationConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
 ) -> CheckpointEvaluationResult:
     """Evaluate one checkpoint over a frozen pool and record the result.
 
-    Passing no ``store`` computes everything and records nothing, which is
-    what an exploratory reading wants: the committed tier should hold results
-    somebody meant to keep.
+    A recording opened without a store computes everything and records nothing,
+    which is what an exploratory reading wants: the committed tier should hold
+    results somebody meant to keep.
     """
 
     config = resolved_config.value
@@ -450,73 +447,69 @@ def evaluate_checkpoint(
         error=CheckpointEvaluationError,
     )
 
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        checkpoint,
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
+    )
+    noise = _characterize_noise(
+        config,
+        inputs,
+        positions,
+        adjudication,
+        component,
+        recorded_at=recording.recorded_at,
+    )
+    recorder.characterize(noise)
+    result = CheckpointEvaluationResult(
         checkpoint=checkpoint,
-        store=store,
-        detail=detail,
-        error=CheckpointEvaluationError,
-    ) as recorder:
-        noise = _characterize_noise(
-            config,
-            inputs,
-            positions,
-            adjudication,
-            component,
-            recorded_at=recorder.recorded_at,
-        )
-        recorder.characterize(noise)
-        result = CheckpointEvaluationResult(
-            checkpoint=checkpoint,
-            dataset=data,
-            view=inputs.selection,
-            leakage=leakage,
-            slices=slices,
-            adjudication=adjudication,
-            dependency=dependency,
-            noise=noise,
-        )
+        dataset=data,
+        view=inputs.selection,
+        leakage=leakage,
+        slices=slices,
+        adjudication=adjudication,
+        dependency=dependency,
+        noise=noise,
+    )
+    recorder.add(
+        slice_measurements(slices, component),
+        payload=lambda: {
+            **result.as_record(),
+            "positions": (
+                [position.as_record() for position in positions]
+                if config.detail.per_position
+                else None
+            ),
+        },
+        description="Slice tables and view provenance for one evaluation.",
+        data=data,
+    )
+    if adjudication is not None:
         recorder.add(
-            slice_measurements(slices, component),
-            payload=lambda: {
-                **result.as_record(),
-                "positions": (
-                    [position.as_record() for position in positions]
-                    if config.detail.per_position
-                    else None
-                ),
-            },
-            description="Slice tables and view provenance for one evaluation.",
+            adjudication.measurements(component),
+            kind=ADJUDICATION_KIND,
+            benchmark=ADJUDICATION_BENCHMARK,
+            payload=adjudication.as_record,
+            description=(
+                "Per-predicate human and model rates with rating-band "
+                "drill-down and opportunity counts."
+            ),
             data=data,
         )
-        if adjudication is not None:
-            recorder.add(
-                adjudication.measurements(component),
-                kind=ADJUDICATION_KIND,
-                benchmark=ADJUDICATION_BENCHMARK,
-                payload=adjudication.as_record,
-                description=(
-                    "Per-predicate human and model rates with rating-band "
-                    "drill-down and opportunity counts."
-                ),
-                data=data,
-            )
-        if dependency is not None:
-            recorder.add(
-                _dependency_measurements(dependency, component),
-                kind=DEPENDENCY_KIND,
-                benchmark=DEPENDENCY_BENCHMARK,
-                payload=partial(_dependency_payload, dependency, config.noise),
-                description=(
-                    "Cross-conditioning and within-game dependency tables, "
-                    "and the aligned per-game values a later paired floor "
-                    "needs."
-                ),
-                data=data,
-            )
-    return replace(result, **recorder.fields)
+    if dependency is not None:
+        recorder.add(
+            _dependency_measurements(dependency, component),
+            kind=DEPENDENCY_KIND,
+            benchmark=DEPENDENCY_BENCHMARK,
+            payload=partial(_dependency_payload, dependency, config.noise),
+            description=(
+                "Cross-conditioning and within-game dependency tables, "
+                "and the aligned per-game values a later paired floor "
+                "needs."
+            ),
+            data=data,
+        )
+    return result
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:

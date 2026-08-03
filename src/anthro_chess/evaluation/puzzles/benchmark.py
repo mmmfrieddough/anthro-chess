@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
@@ -34,18 +34,16 @@ from anthro_chess.evaluation.puzzles.dataset import (
     PuzzleSetError,
     load_puzzle_set,
 )
-from anthro_chess.evaluation.recording import ResultRecorder, checkpoint_reference
+from anthro_chess.evaluation.recording import ResultRecording, checkpoint_reference
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailStore,
     Measurement,
     ResultEnvelope,
     ResultRecordError,
-    ResultsStore,
     ResultsStoreError,
     dataset_reference,
     measurement,
@@ -291,8 +289,7 @@ def benchmark_puzzles(
     resolved_config: ResolvedConfig[PuzzleBenchmarkConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
 ) -> PuzzleBenchmarkResult:
     """Measure and optionally record puzzle response for one checkpoint."""
 
@@ -354,26 +351,22 @@ def benchmark_puzzles(
         overlapping_puzzles=overlapping,
         overlap_rate=overlap_rate,
     )
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        checkpoint,
         kind=PUZZLE_KIND,
         benchmark=PUZZLE_BENCHMARK,
-        checkpoint=checkpoint,
-        store=store,
-        detail=detail,
-        error=PuzzleBenchmarkError,
-    ) as recorder:
-        recorder.add(
-            _measurements(result, component),
-            payload=partial(_detail_payload, result, scored_ratings, config.noise),
-            description=(
-                "Puzzle-rating grid, human reference curve, rating-band "
-                "response, source-game overlap provenance, and paired "
-                "comparison inputs."
-            ),
-            data=data,
-        )
-    return replace(result, **recorder.fields)
+    )
+    recorder.add(
+        _measurements(result, component),
+        payload=partial(_detail_payload, result, scored_ratings, config.noise),
+        description=(
+            "Puzzle-rating grid, human reference curve, rating-band "
+            "response, source-game overlap provenance, and paired "
+            "comparison inputs."
+        ),
+        data=data,
+    )
+    return result
 
 
 def score_puzzle_set(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import chess
 import pytest
@@ -14,16 +15,17 @@ from pydantic import ValidationError
 import anthro_chess.evaluation.inference as inference_module
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.inference import (
     INFERENCE_KIND,
     InferenceBenchmarkConfig,
     InferenceBenchmarkError,
+    InferenceBenchmarkResult,
     LatencyWorkloadConfig,
     ThroughputWorkloadConfig,
     _HistoryFactory,
     _measure_latency,
     _percentile,
-    benchmark_inference,
 )
 from anthro_chess.evaluation.results import (
     PROCESS_REPLICATE_METHOD,
@@ -87,6 +89,25 @@ FAST_THROUGHPUT = ThroughputWorkloadConfig(
 )
 
 
+def _measure(
+    resolved_config: ResolvedConfig[InferenceBenchmarkConfig],
+    *,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> InferenceBenchmarkResult:
+    """Measure the benchmark the way both callers do, through the driver."""
+
+    return cast(
+        InferenceBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["inference"],
+            resolved_config,
+            store=store,
+            detail=detail,
+        ),
+    )
+
+
 def _config(
     checkpoint: Path, **overrides: object
 ) -> ResolvedConfig[InferenceBenchmarkConfig]:
@@ -111,7 +132,7 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    result = benchmark_inference(_config(checkpoint), store=store, detail=detail)
+    result = _measure(_config(checkpoint), store=store, detail=detail)
 
     latency = result.reference_latency
     assert latency.history_plies == FAST_LATENCY.reference_plies
@@ -175,7 +196,7 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
 
     monkeypatch.setattr(inference_module, "_decide", slow_first_decision)
 
-    result = benchmark_inference(_config(checkpoint))
+    result = _measure(_config(checkpoint))
 
     delay_ms = delay_seconds * 1000.0
     assert served == 1
@@ -351,7 +372,7 @@ def test_the_recorded_execution_reproduces_its_own_series_identity(
 ) -> None:
     checkpoint = inference_run(tmp_path / "run", seed=10)
 
-    (envelope,) = benchmark_inference(_config(checkpoint)).envelopes
+    (envelope,) = _measure(_config(checkpoint)).envelopes
 
     assert envelope.execution is not None
     assert envelope.execution.device == "cpu"
@@ -367,8 +388,8 @@ def test_a_declared_workload_change_starts_a_new_series(
     inference_run: Callable[..., Path],
 ) -> None:
     checkpoint = inference_run(tmp_path / "run", seed=12)
-    shallow = benchmark_inference(_config(checkpoint)).envelopes[0]
-    deeper = benchmark_inference(
+    shallow = _measure(_config(checkpoint)).envelopes[0]
+    deeper = _measure(
         _config(
             checkpoint,
             latency=FAST_LATENCY.model_copy(update={"reference_plies": 0}),
@@ -391,8 +412,8 @@ def test_extending_a_sweep_does_not_end_the_headline_series(
     """The sweep is drill-down. Only the reference point decides identity."""
 
     checkpoint = inference_run(tmp_path / "run", seed=13)
-    narrow = benchmark_inference(_config(checkpoint)).envelopes[0]
-    wide = benchmark_inference(
+    narrow = _measure(_config(checkpoint)).envelopes[0]
+    wide = _measure(
         _config(
             checkpoint,
             latency=FAST_LATENCY.model_copy(update={"sweep_plies": (0, 2, 4)}),
@@ -414,7 +435,7 @@ def test_the_reference_point_is_measured_even_when_the_sweep_omits_it(
 ) -> None:
     checkpoint = inference_run(tmp_path / "run", seed=14)
 
-    result = benchmark_inference(
+    result = _measure(
         _config(
             checkpoint,
             latency=FAST_LATENCY.model_copy(update={"sweep_plies": (0,)}),

@@ -8,6 +8,7 @@ import json
 from collections.abc import Callable, Sequence
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
 
 import chess
 import pytest
@@ -18,7 +19,7 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
-from anthro_chess.evaluation.benchmarks import benchmark_registry
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles import (
     Puzzle,
@@ -35,11 +36,11 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     PUZZLE_KIND,
     PuzzleBenchmarkConfig,
     PuzzleBenchmarkError,
+    PuzzleBenchmarkResult,
     _accepted_actions,
     _paired_contributions,
     _score_rating,
     _training_overlap,
-    benchmark_puzzles,
     score_puzzle_set,
 )
 from anthro_chess.evaluation.puzzles.dataset import (
@@ -51,6 +52,25 @@ from anthro_chess.evaluation.results import (
     PairedContributions,
     ResultsStore,
 )
+
+
+def _measure(
+    resolved_config: ResolvedConfig[PuzzleBenchmarkConfig],
+    *,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> PuzzleBenchmarkResult:
+    """Measure the benchmark the way both callers do, through the driver."""
+
+    return cast(
+        PuzzleBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["puzzles"],
+            resolved_config,
+            store=store,
+            detail=detail,
+        ),
+    )
 
 
 def _context_key(context: DecisionContext) -> tuple[object, ...]:
@@ -501,7 +521,7 @@ def test_the_benchmark_records_every_envelope_and_payload_it_produced(
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    result = benchmark_puzzles(config, store=store, detail=detail)
+    result = _measure(config, store=store, detail=detail)
 
     assert result.envelopes == store.results()
     assert len(result.recorded_paths) == len(result.envelopes) == 1
@@ -519,7 +539,7 @@ def test_the_benchmark_measures_without_recording_anything(
 ) -> None:
     config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
 
-    result = benchmark_puzzles(config)
+    result = _measure(config)
 
     assert len(result.envelopes) == 1
     assert result.recorded_paths == ()
@@ -547,7 +567,7 @@ def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
         PuzzleBenchmarkError,
         match="puzzle artifact is missing",
     ) as raised:
-        benchmark_puzzles(config)
+        _measure(config)
 
     assert isinstance(raised.value, benchmark_registry()["puzzles"].errors)
 

@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from anthro_chess.config import ConfigModel, ConfigProvenance, ResolvedConfig
-from anthro_chess.evaluation.recording import ResultRecorder
+from anthro_chess.evaluation.recording import ResultRecorder, ResultRecording
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -63,21 +64,44 @@ def resolved() -> ResolvedConfig[_Config]:
     )
 
 
-def _recorder(
+def _recording(
     resolved: ResolvedConfig[_Config],
     *,
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
-) -> ResultRecorder:
-    return ResultRecorder(
+) -> ResultRecording:
+    """Return what a driver opens around one invocation."""
+
+    return ResultRecording(
         resolved,
-        kind=KIND,
-        benchmark=BENCHMARK,
-        checkpoint=CHECKPOINT,
         store=store,
         detail=detail,
         error=_BenchmarkError,
     )
+
+
+def _measuring(recording: ResultRecording) -> ResultRecorder:
+    """Return what a benchmark opens once it knows what it measured."""
+
+    return recording.measuring(CHECKPOINT, kind=KIND, benchmark=BENCHMARK)
+
+
+def test_a_reading_is_stamped_at_the_end_of_the_measuring(
+    resolved: ResolvedConfig[_Config],
+) -> None:
+    """The driver opens the recording before the measuring; the stamp waits.
+
+    A ladder stamped when its invocation began would claim to have been
+    recorded hours before it was, and would name its detail payloads for that
+    moment too.
+    """
+
+    recording = _recording(resolved)
+    measuring_ended = datetime.now(tz=UTC)
+
+    _measuring(recording)
+
+    assert recording.recorded_at >= measuring_ended
 
 
 def _dataset(component: DataComponent) -> DatasetReference:
@@ -121,9 +145,10 @@ def test_a_reading_lands_in_the_store_and_the_detail_tier(
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    with _recorder(resolved, store=store, detail=detail) as recorder:
+    with _recording(resolved, store=store, detail=detail) as recording:
+        recorder = _measuring(recording)
         _add_reading(recorder, component, payload=lambda: {"slices": []})
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     (envelope,) = result.envelopes
     (recorded,) = result.recorded_paths
@@ -152,7 +177,8 @@ def test_one_kind_scopes_both_the_series_and_the_payload_directory(
     component = move_prediction_component()
     detail = DetailStore(tmp_path / "detail")
 
-    with _recorder(resolved, detail=detail) as recorder:
+    with _recording(resolved, detail=detail) as recording:
+        recorder = _measuring(recording)
         recorder.add(
             [measurement("dependency.rating_absent_degradation", 0.5, data=component)],
             payload=dict,
@@ -161,7 +187,7 @@ def test_one_kind_scopes_both_the_series_and_the_payload_directory(
             benchmark=BenchmarkReference(name=other_kind, version=1),
             data=_dataset(component),
         )
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     (envelope,) = result.envelopes
     (written,) = result.detail_paths
@@ -183,9 +209,10 @@ def test_a_payload_is_not_built_when_there_is_no_detail_store(
         built += 1
         return {}
 
-    with _recorder(resolved) as recorder:
+    with _recording(resolved) as recording:
+        recorder = _measuring(recording)
         _add_reading(recorder, component, payload=payload)
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     assert built == 0
     assert len(result.envelopes) == 1
@@ -200,9 +227,10 @@ def test_measuring_without_a_store_still_writes_the_detail_payload(
 ) -> None:
     component = move_prediction_component()
 
-    with _recorder(resolved, detail=DetailStore(tmp_path / "detail")) as recorder:
+    with _recording(resolved, detail=DetailStore(tmp_path / "detail")) as recording:
+        recorder = _measuring(recording)
         _add_reading(recorder, component)
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     assert len(result.envelopes) == 1
     assert result.recorded_paths == ()
@@ -218,14 +246,15 @@ def test_measuring_nothing_keeps_the_payload_and_commits_no_record(
     detail = DetailStore(tmp_path / "detail")
     store = ResultsStore(tmp_path / "results")
 
-    with _recorder(resolved, store=store, detail=detail) as recorder:
+    with _recording(resolved, store=store, detail=detail) as recording:
+        recorder = _measuring(recording)
         recorder.add(
             (),
             payload=lambda: {"resignations": 0},
             description="Held-out resignation.",
             slug="held-out-resignation",
         )
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     assert result.envelopes == ()
     assert result.recorded_paths == ()
@@ -237,10 +266,11 @@ def test_a_slug_distinguishes_the_payloads_one_reading_writes(
     tmp_path: Path,
     resolved: ResolvedConfig[_Config],
 ) -> None:
-    with _recorder(resolved, detail=DetailStore(tmp_path / "detail")) as recorder:
+    with _recording(resolved, detail=DetailStore(tmp_path / "detail")) as recording:
+        recorder = _measuring(recording)
         recorder.add((), payload=dict, description="One cell.", slug="cell-r1200")
         recorder.add((), payload=dict, description="Another.", slug="cell-r1800")
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     first, second = result.detail_paths
     assert first.name.endswith("-cell-r1200.json")
@@ -271,13 +301,14 @@ def test_a_noise_floor_is_appended_after_the_envelopes(
         ],
     )
 
-    with _recorder(resolved, store=store) as recorder:
+    with _recording(resolved, store=store) as recording:
+        recorder = _measuring(recording)
         _add_reading(recorder, component)
         recorder.characterize(characterization)
         # A benchmark whose floor is disabled hands over nothing rather than
         # branching at every call site.
         recorder.characterize(None)
-    result = _Result(**recorder.fields)
+    result = _Result(**recording.fields)
 
     first, second = result.recorded_paths
     assert first.parent == store.records_directory
@@ -300,7 +331,8 @@ def test_a_store_failure_becomes_the_benchmark_s_own_error(
     (root / LOCK_FILE_NAME).write_text("1234\n", encoding="utf-8")
 
     with pytest.raises(_BenchmarkError, match="another process is writing"):
-        with _recorder(resolved, store=ResultsStore(root)) as recorder:
+        with _recording(resolved, store=ResultsStore(root)) as recording:
+            recorder = _measuring(recording)
             _add_reading(recorder, component)
 
 
@@ -315,12 +347,13 @@ def test_a_failed_reading_appends_nothing(
     store = ResultsStore(tmp_path / "results")
 
     with pytest.raises(RuntimeError):
-        with _recorder(resolved, store=store) as recorder:
+        with _recording(resolved, store=store) as recording:
+            recorder = _measuring(recording)
             _add_reading(recorder, component)
             raise RuntimeError("the pool went away")
 
     assert store.results() == ()
-    assert recorder.fields["recorded_paths"] == ()
+    assert recording.fields["recorded_paths"] == ()
 
 
 def test_building_a_measurement_is_covered_by_the_same_conversion(
@@ -330,7 +363,8 @@ def test_building_a_measurement_is_covered_by_the_same_conversion(
     # the recorder: a benchmark builds its measurements there, and `measurement`
     # raises the same errors the store does.
     with pytest.raises(_BenchmarkError, match="unregistered.metric"):
-        with _recorder(resolved) as recorder:
+        with _recording(resolved) as recording:
+            recorder = _measuring(recording)
             recorder.add(
                 [measurement("unregistered.metric", 1.0)],
                 payload=dict,
@@ -345,7 +379,8 @@ def test_an_envelope_that_cannot_reproduce_its_series_is_converted_too(
     # This metric consumes a projection, so the envelope needs the dataset the
     # digest came from. `build_result` verifies that rather than trusting it.
     with pytest.raises(_BenchmarkError, match="content digest"):
-        with _recorder(resolved) as recorder:
+        with _recording(resolved) as recording:
+            recorder = _measuring(recording)
             recorder.add(
                 [measurement(METRIC, 3.5, data=move_prediction_component())],
                 payload=dict,
@@ -360,5 +395,5 @@ def test_an_error_the_recording_tail_does_not_own_is_left_alone(
     # is not a recording failure, and dressing it as one would report a broken
     # instrument as a bad write.
     with pytest.raises(RuntimeError, match="the pool went away"):
-        with _recorder(resolved):
+        with _recording(resolved):
             raise RuntimeError("the pool went away")

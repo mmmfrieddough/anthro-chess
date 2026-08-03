@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 
@@ -88,7 +88,7 @@ from anthro_chess.evaluation.policy import (
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
-    ResultRecorder,
+    ResultRecording,
     pool_dataset_reference,
     resolve_model,
 )
@@ -103,11 +103,9 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     DataComponent,
     DatasetReference,
-    DetailStore,
     ExecutionRecord,
     Measurement,
     ResultEnvelope,
-    ResultsStore,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
@@ -755,8 +753,7 @@ def benchmark_termination(
     resolved_config: ResolvedConfig[TerminationBenchmarkConfig],
     *,
     run_root: Path | None = None,
-    store: ResultsStore | None = None,
-    detail: DetailStore | None = None,
+    recording: ResultRecording,
     runner: ActionModelRunner | None = None,
     checkpoint: CheckpointReference | None = None,
 ) -> TerminationBenchmarkResult:
@@ -805,7 +802,8 @@ def benchmark_termination(
         held_out=held_out,
         unavailable=unavailable,
     )
-    return _record(result, resolved_config, store=store, detail=detail)
+    _record(result, recording)
+    return result
 
 
 def mix_curve_spec(ratings: Sequence[int]) -> CurveSpec:
@@ -1433,11 +1431,8 @@ def _mix_execution(
 
 def _record(
     result: TerminationBenchmarkResult,
-    resolved_config: ResolvedConfig[TerminationBenchmarkConfig],
-    *,
-    store: ResultsStore | None,
-    detail: DetailStore | None,
-) -> TerminationBenchmarkResult:
+    recording: ResultRecording,
+) -> None:
     """Write one envelope per generated reading, per mix, and per held-out pass.
 
     Three units and therefore three records. A generated reading is scoped by
@@ -1446,53 +1441,48 @@ def _record(
     scored, since it generated nothing at all.
     """
 
-    with ResultRecorder(
-        resolved_config,
+    recorder = recording.measuring(
+        result.checkpoint,
         kind=TERMINATION_KIND,
         benchmark=TERMINATION_BENCHMARK,
-        checkpoint=result.checkpoint,
-        store=store,
-        detail=detail,
-        error=TerminationBenchmarkError,
-    ) as recorder:
-        for reading in result.generated:
-            recorder.add(
-                _generated_measurements(reading),
-                payload=reading.as_record,
-                description=f"Game termination: {reading.label}",
-                slug=f"generated-t{_slug(reading.temperature)}",
-                # Provenance rather than identity: the human reference shaped
-                # the guardrail's comparison rate and the deficit's bands, but
-                # what identifies the series is the recipe the games were
-                # played under, per decision 0020.
-                data=result.dataset,
-                execution=reading.execution,
-            )
-        for mix in result.mixes:
-            recorder.add(
-                _mix_measurements(mix),
-                payload=mix.as_record,
-                description=f"Termination mix: {mix.label}",
-                slug=f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}",
-                data=result.dataset,
-                execution=mix.execution,
-            )
-        held_out = result.held_out
-        if held_out is not None:
-            # A pass that measured nothing still writes its payload, which is
-            # what `add` does with empty measurements: the reading itself is
-            # the evidence for why there is nothing to commit.
-            recorder.add(
-                _held_out_measurements(held_out),
-                payload=held_out.as_record,
-                description="Held-out resignation prediction",
-                slug="held-out-resignation",
-                # Series identity here, not provenance: this reading is a
-                # deterministic pass over fixed content and generated nothing,
-                # so the content is what it is scoped by.
-                data=held_out.dataset,
-            )
-    return replace(result, **recorder.fields)
+    )
+    for reading in result.generated:
+        recorder.add(
+            _generated_measurements(reading),
+            payload=reading.as_record,
+            description=f"Game termination: {reading.label}",
+            slug=f"generated-t{_slug(reading.temperature)}",
+            # Provenance rather than identity: the human reference shaped
+            # the guardrail's comparison rate and the deficit's bands, but
+            # what identifies the series is the recipe the games were
+            # played under, per decision 0020.
+            data=result.dataset,
+            execution=reading.execution,
+        )
+    for mix in result.mixes:
+        recorder.add(
+            _mix_measurements(mix),
+            payload=mix.as_record,
+            description=f"Termination mix: {mix.label}",
+            slug=f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}",
+            data=result.dataset,
+            execution=mix.execution,
+        )
+    held_out = result.held_out
+    if held_out is not None:
+        # A pass that measured nothing still writes its payload, which is
+        # what `add` does with empty measurements: the reading itself is
+        # the evidence for why there is nothing to commit.
+        recorder.add(
+            _held_out_measurements(held_out),
+            payload=held_out.as_record,
+            description="Held-out resignation prediction",
+            slug="held-out-resignation",
+            # Series identity here, not provenance: this reading is a
+            # deterministic pass over fixed content and generated nothing,
+            # so the content is what it is scoped by.
+            data=held_out.dataset,
+        )
 
 
 def _generated_measurements(reading: GeneratedReading) -> tuple[Measurement, ...]:

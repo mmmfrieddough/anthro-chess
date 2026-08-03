@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -14,12 +14,13 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.evaluation import (
     CheckpointEvaluationConfig,
     CheckpointEvaluationError,
+    CheckpointEvaluationResult,
     LeakageError,
     PoolConfig,
-    evaluate_checkpoint,
     freeze_pool,
 )
 from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, RULE_CASE_DIMENSION
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.checkpoint import (
     ADJUDICATION_KIND,
     DEPENDENCY_KIND,
@@ -88,6 +89,25 @@ def corpus(
     return build
 
 
+def _evaluate(
+    resolved_config: ResolvedConfig[CheckpointEvaluationConfig],
+    *,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> CheckpointEvaluationResult:
+    """Evaluate one checkpoint the way both callers do, through the driver."""
+
+    return cast(
+        CheckpointEvaluationResult,
+        run_benchmark(
+            benchmark_registry()["run"],
+            resolved_config,
+            store=store,
+            detail=detail,
+        ),
+    )
+
+
 def test_evaluation_records_sliced_results_over_the_frozen_pool(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
@@ -101,7 +121,7 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    result = evaluate_checkpoint(
+    result = _evaluate(
         _config(pool, checkpoint),
         store=store,
         detail=detail,
@@ -175,8 +195,8 @@ def test_repeated_evaluation_reproduces_every_measurement(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    first = evaluate_checkpoint(_config(pool, checkpoint))
-    second = evaluate_checkpoint(_config(pool, checkpoint))
+    first = _evaluate(_config(pool, checkpoint))
+    second = _evaluate(_config(pool, checkpoint))
 
     assert first.slices.as_record() == second.slices.as_record()
     assert first.dependency is not None
@@ -222,7 +242,7 @@ def test_evaluation_records_human_referenced_forced_outcomes(
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
-    result = evaluate_checkpoint(
+    result = _evaluate(
         _config(pool, checkpoint),
         store=store,
         detail=detail,
@@ -259,7 +279,7 @@ def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
     )
     store = ResultsStore(tmp_path / "results")
 
-    result = evaluate_checkpoint(_config(pool, checkpoint), store=store)
+    result = _evaluate(_config(pool, checkpoint), store=store)
 
     noise = result.noise
     assert noise is not None
@@ -297,9 +317,9 @@ def test_a_noise_floor_is_reproducible_and_can_be_declined(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    first = evaluate_checkpoint(_config(pool, checkpoint))
-    second = evaluate_checkpoint(_config(pool, checkpoint))
-    disabled = evaluate_checkpoint(
+    first = _evaluate(_config(pool, checkpoint))
+    second = _evaluate(_config(pool, checkpoint))
+    disabled = _evaluate(
         _config(pool, checkpoint, noise={"enabled": False}),
     )
 
@@ -320,7 +340,7 @@ def test_dependency_tests_report_degradation_without_a_verdict(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    result = evaluate_checkpoint(_config(pool, checkpoint))
+    result = _evaluate(_config(pool, checkpoint))
 
     dependency = result.dependency
     assert dependency is not None
@@ -375,7 +395,7 @@ def test_dependency_detail_retains_what_a_paired_floor_needs(
     )
     detail = DetailStore(tmp_path / "detail")
 
-    result = evaluate_checkpoint(_config(pool, checkpoint), detail=detail)
+    result = _evaluate(_config(pool, checkpoint), detail=detail)
 
     envelope = next(item for item in result.envelopes if item.kind == DEPENDENCY_KIND)
     assert envelope.detail is not None
@@ -412,7 +432,7 @@ def test_absent_conditioning_changes_what_the_model_is_shown(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    result = evaluate_checkpoint(_config(pool, checkpoint))
+    result = _evaluate(_config(pool, checkpoint))
 
     dependency = result.dependency
     assert dependency is not None
@@ -434,8 +454,8 @@ def test_a_prefix_view_scores_fewer_plies_and_starts_its_own_series(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    full = evaluate_checkpoint(_config(pool, checkpoint))
-    prefix = evaluate_checkpoint(
+    full = _evaluate(_config(pool, checkpoint))
+    prefix = _evaluate(
         _config(pool, checkpoint, view={"name": "prefix", "prefix_plies": 4})
     )
 
@@ -478,7 +498,7 @@ def test_leakage_check_refuses_a_checkpoint_trained_on_pool_games(
     )
 
     with pytest.raises(LeakageError, match="appear in the checkpoint's train split"):
-        evaluate_checkpoint(_config(pool, checkpoint))
+        _evaluate(_config(pool, checkpoint))
 
 
 def test_leakage_compares_content_when_the_corpora_differ(
@@ -524,13 +544,13 @@ def test_leakage_compares_content_when_the_corpora_differ(
         manifest=disjoint_manifest,
     )
 
-    result = evaluate_checkpoint(_config(pool, clean_checkpoint))
+    result = _evaluate(_config(pool, clean_checkpoint))
 
     assert result.leakage.algorithm == "content-hash-intersection-v1"
     assert result.leakage.same_source_corpus is False
     assert result.leakage.overlapping_games == 0
     with pytest.raises(LeakageError, match="content-hash-intersection-v1"):
-        evaluate_checkpoint(_config(pool, overlapping_checkpoint))
+        _evaluate(_config(pool, overlapping_checkpoint))
 
 
 def test_leakage_check_reports_a_training_corpus_this_machine_cannot_read(
@@ -550,7 +570,7 @@ def test_leakage_check_reports_a_training_corpus_this_machine_cannot_read(
     torch.save(payload, checkpoint)
 
     with pytest.raises(LeakageError, match="leakage.training_normalized"):
-        evaluate_checkpoint(_config(pool, checkpoint))
+        _evaluate(_config(pool, checkpoint))
 
 
 def test_evaluation_rejects_an_incompatible_checkpoint(
@@ -568,7 +588,7 @@ def test_evaluation_rejects_an_incompatible_checkpoint(
     torch.save(payload, checkpoint)
 
     with pytest.raises(CheckpointEvaluationError, match="encoding is incompatible"):
-        evaluate_checkpoint(_config(pool, checkpoint))
+        _evaluate(_config(pool, checkpoint))
 
 
 def test_cli_runs_an_evaluation_without_recording_it(

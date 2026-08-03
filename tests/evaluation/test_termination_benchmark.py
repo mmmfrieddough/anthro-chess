@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import chess
 import pytest
@@ -33,6 +33,7 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.games import (
     DecisionRecord,
     GameOutcome,
@@ -77,7 +78,6 @@ from anthro_chess.evaluation.termination import (
     TerminationBenchmarkError,
     TerminationBenchmarkResult,
     TimeControlClass,
-    benchmark_termination,
     generated_ending,
     human_ending,
 )
@@ -309,12 +309,16 @@ def _run(
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
 ) -> TerminationBenchmarkResult:
-    return benchmark_termination(
-        config,
-        runner=runner or ShufflingRunner(),
-        checkpoint=CHECKPOINT,
-        store=store,
-        detail=detail,
+    return cast(
+        TerminationBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["termination"],
+            config,
+            store=store,
+            detail=detail,
+            runner=runner or ShufflingRunner(),
+            checkpoint=CHECKPOINT,
+        ),
     )
 
 

@@ -29,6 +29,7 @@ from anthro_chess.evaluation.games import (
     SeatRecord,
     build_game_record,
 )
+from anthro_chess.evaluation.recording import ResultRecording
 from anthro_chess.evaluation.suite import (
     StepOutcome,
     StepStatus,
@@ -73,10 +74,21 @@ class FakeResult:
 
     config: FakeConfig | None = None
     recorded: bool = False
-    envelopes: tuple[FakeEnvelope, ...] = (FakeEnvelope(),)
+    envelopes: tuple[FakeEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
     games: tuple[GameRecord, ...] = ()
+
+
+class FakeStore:
+    """The one call the driver makes on a store: appending what was read."""
+
+    def __init__(self) -> None:
+        self.appended: list[Any] = []
+
+    def append(self, envelope: Any) -> Path:
+        self.appended.append(envelope)
+        return Path(f"appended-{len(self.appended)}.json")
 
 
 @dataclass
@@ -92,16 +104,17 @@ class Recorder:
             resolved: ResolvedConfig[FakeConfig],
             *,
             run_root: Path | None = None,
-            store: Any = None,
-            detail: Any = None,
+            recording: ResultRecording,
         ) -> FakeResult:
             self.calls.append(name)
             if name in self.failing:
                 raise FakeError(f"{name} could not be read")
+            # What was read goes into the recording, the way a real benchmark
+            # adds it; the driver is what puts it back on the result.
+            recording.envelopes.append(cast("Any", FakeEnvelope()))
             return FakeResult(
                 config=resolved.value,
-                recorded=store is not None,
-                recorded_paths=(Path(f"{name}.json"),) if store is not None else (),
+                recorded=recording.store is not None,
                 games=self.games,
             )
 
@@ -172,6 +185,7 @@ def _registry(recorder: Recorder) -> dict[str, Benchmark]:
             schema=FakeConfig,
             artifact_fields=("pool",),
             errors=(FakeError,),
+            error=FakeError,
             invoke=recorder.invoke("alpha"),
             games=lambda result: result.games,
             retains_games=lambda config: config.detail.retain_games,
@@ -181,6 +195,7 @@ def _registry(recorder: Recorder) -> dict[str, Benchmark]:
             schema=FakeConfig,
             artifact_fields=(),
             errors=(FakeError,),
+            error=FakeError,
             invoke=recorder.invoke("beta"),
         ),
         "gamma": Benchmark(
@@ -188,6 +203,7 @@ def _registry(recorder: Recorder) -> dict[str, Benchmark]:
             schema=None,
             artifact_fields=(),
             errors=(FakeError, OSError),
+            error=FakeError,
             invoke=recorder.reader("gamma"),
             records_results=False,
             games_from="alpha",
@@ -402,12 +418,12 @@ def test_recording_is_decided_per_benchmark_within_one_sweep(
         ),
         registry=_registry(recorder),
     )
+    store = FakeStore()
     run = run_suite(
         plan,
         sweep_root=tmp_path / "sweep",
-        # The driver hands these through to the benchmark rather than using
-        # them, and only for the steps whose readings this sweep commits.
-        store=cast("Any", object()),
+        # Reached only for the steps whose readings this sweep commits.
+        store=cast("Any", store),
         detail=cast("Any", object()),
     )
 
