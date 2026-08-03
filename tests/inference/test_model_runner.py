@@ -281,7 +281,6 @@ def test_selection_rejects_missing_stale_and_escaping_records(tmp_path: Path) ->
         ("action", "action vocabulary is incompatible"),
         ("encoding", "model-facing encoding is incompatible"),
         ("model", "model is incompatible"),
-        ("resolved-config", "configuration disagrees"),
         ("precision", "parameter precision is unsupported"),
     ],
 )
@@ -312,9 +311,6 @@ def test_runner_rejects_incompatible_artifact_contracts(
             run_record["model"],
         ):
             model["rating_conditioning"] = "history-rating"
-    elif mutation == "resolved-config":
-        payload["metadata"]["resolved_config"]["config"]["model"]["model_dim"] = 18
-        run_record["resolved_config"]["config"]["model"]["model_dim"] = 18
     else:
         payload["metadata"]["execution"]["precision"] = "float16"
         payload["metadata"]["execution"]["parameter_dtype"] = "float16"
@@ -328,6 +324,25 @@ def test_runner_rejects_incompatible_artifact_contracts(
         CheckpointModelRunner.load(
             ModelRunnerConfig(checkpoint_path=checkpoint_path, device="cpu")
         )
+
+
+def test_a_checkpoint_rebuilds_at_the_context_length_its_run_declared(
+    tmp_path: Path,
+) -> None:
+    """The identity is the only record the runner rebuilds from.
+
+    A value missing from it becomes that field's default, which the model then
+    enforces as its own bound — accepting histories the run never trained on,
+    or refusing ones it declared.
+    """
+
+    checkpoint = _write_run(tmp_path / "run", seed=5, maximum_context_plies=512)
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+    )
+
+    assert runner._model.config.maximum_context_plies == 512  # noqa: SLF001
 
 
 def test_runner_rejects_unavailable_explicit_device(tmp_path: Path) -> None:
@@ -444,7 +459,12 @@ def test_model_runner_config_rejects_ambiguous_or_unknown_selection() -> None:
         ModelRunnerConfig(run_path=Path("run"), checkpoint="newest.pt")
 
 
-def _write_run(path: Path, *, seed: int) -> Path:
+def _write_run(
+    path: Path,
+    *,
+    seed: int,
+    maximum_context_plies: int | None = None,
+) -> Path:
     torch.manual_seed(seed)
     path.mkdir(parents=True)
     config = MoveModelConfig(
@@ -456,6 +476,10 @@ def _write_run(path: Path, *, seed: int) -> Path:
         feedforward_dim=8,
         dropout=0.0,
     )
+    if maximum_context_plies is not None:
+        config = config.model_copy(
+            update={"maximum_context_plies": maximum_context_plies}
+        )
     model = CausalMoveModel(config)
     model_identity = model.identity()
     resolved_config = {
