@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
@@ -220,26 +221,36 @@ class LatencySample:
 class ThroughputSample:
     """One batch size's measured decision throughput.
 
-    Two figures, because they answer different questions and differ by close to
-    an order of magnitude. The headline resolves whole batched decisions the way
-    the generated benchmarks do, and is what sizes one of those runs. The
-    forward figure re-runs an already-built batch, which isolates launch cost
-    for a kernel or precision change and excludes the term that grows with
-    history. Reporting only the second is what let the suite's cost unit be read
-    as the cost of playing.
+    Two figures, because they answer different questions and differ by over an
+    order of magnitude at the larger batches. `docs/evaluation.md` owns which is
+    which; in short, the headline resolves whole batched decisions and sizes a
+    generated run, and the forward figure re-runs an already-built batch and
+    sizes a kernel change.
+
+    Every batch is timed on its own so the reported rates can come from the
+    median rather than the mean, which stops one descheduled batch carrying
+    either. That does not narrow run-to-run spread, which is a property of the
+    machine between invocations and is what a characterized execution floor
+    exists to qualify.
     """
 
     batch_size: int
     batches: int
-    #: Taken from the median batch rather than the mean, so one descheduled
-    #: batch cannot carry the reported rate. It does not narrow run-to-run
-    #: spread, which is a property of the machine between invocations and is
-    #: what a characterized execution floor exists to qualify.
-    decisions_per_second: float
     batch_median_ms: float
     batch_mean_ms: float
-    forward_decisions_per_second: float
     forward_median_ms: float
+
+    @property
+    def decisions_per_second(self) -> float:
+        """Return whole batched decisions per second at the median batch."""
+
+        return _rate(self.batch_size, self.batch_median_ms)
+
+    @property
+    def forward_decisions_per_second(self) -> float:
+        """Return decisions per second through the forward pass alone."""
+
+        return _rate(self.batch_size, self.forward_median_ms)
 
     def as_record(self) -> dict[str, Any]:
         """Return the machine-readable per-batch-size record."""
@@ -529,15 +540,19 @@ def _measure_latency(
             config.warmup_decisions + index,
         )
         _reset(session, history)
-        started = time.perf_counter()
-        context = _decision_context(session)
-        assembled = time.perf_counter()
-        logits = _predict(runner, context)
-        synchronize(device)
-        predicted = time.perf_counter()
-        _decide_from_logits(session, logits)
-        synchronize(device)
-        finished = time.perf_counter()
+        # The session's own three steps, cut apart where it cuts them, so the
+        # attribution is a division of the measured window rather than a second
+        # opinion about it.
+        with _measured_decision():
+            started = time.perf_counter()
+            context = session.decision_context()
+            assembled = time.perf_counter()
+            logits = runner.predict(context)
+            synchronize(device)
+            predicted = time.perf_counter()
+            session.decide_from_logits(logits)
+            synchronize(device)
+            finished = time.perf_counter()
         durations.append((finished - started) * 1000.0)
         context_durations.append((assembled - started) * 1000.0)
         predict_durations.append((predicted - assembled) * 1000.0)
@@ -572,11 +587,18 @@ def _measure_throughput(
 ) -> ThroughputSample:
     """Measure decisions per second for one declared batch size.
 
-    The headline loop is the one the generated benchmarks run: collect every
-    pending context, resolve them in one padded forward pass, and hand each
-    result back for masking and sampling. Building the batch is part of that
-    and is the term that grows with history, so timing a batch built once and
-    reused would exclude the cost this benchmark exists to price.
+    The headline loop is the runtime half of the one the generated benchmarks
+    run: collect every pending context, resolve them in one padded forward
+    pass, and hand each result back for masking and sampling. Building the
+    batch is part of that and is the term that grows with history, so timing a
+    batch built once and reused would exclude the cost this benchmark exists to
+    price.
+
+    Deliberately the runtime half rather than :meth:`ModelPlayer.decide_batch`,
+    which drives that loop for the generated benchmarks and then builds a
+    validated record of every decision. That record is what playing a *scored*
+    game costs, not what playing a move costs, and folding it in would move a
+    checkpoint's cost series whenever the game-record schema changed.
     """
 
     sessions = tuple(GameSession(runner, config=runtime) for _ in range(batch_size))
@@ -600,25 +622,20 @@ def _measure_throughput(
 
     forward_durations = _measure_forward(runner, sessions, histories_used, config)
 
-    median_ms = _percentile(durations, 50)
-    forward_median_ms = _percentile(forward_durations, 50)
-    decisions_per_second = _rate(batch_size, median_ms)
-    forward_per_second = _rate(batch_size, forward_median_ms)
+    sample = ThroughputSample(
+        batch_size=batch_size,
+        batches=config.batches,
+        batch_median_ms=_percentile(durations, 50),
+        batch_mean_ms=_mean(durations),
+        forward_median_ms=_percentile(forward_durations, 50),
+    )
     logger.info(
         "Measured batch %s throughput: %.1f decisions/s (forward alone %.1f)",
         batch_size,
-        decisions_per_second,
-        forward_per_second,
+        sample.decisions_per_second,
+        sample.forward_decisions_per_second,
     )
-    return ThroughputSample(
-        batch_size=batch_size,
-        batches=config.batches,
-        decisions_per_second=decisions_per_second,
-        batch_median_ms=median_ms,
-        batch_mean_ms=_mean(durations),
-        forward_decisions_per_second=forward_per_second,
-        forward_median_ms=forward_median_ms,
-    )
+    return sample
 
 
 def _measure_forward(
@@ -636,20 +653,21 @@ def _measure_forward(
     """
 
     _reset_batch(sessions, histories_used)
-    batch = MoveModelBatch.from_decision_contexts(
-        [_decision_context(session) for session in sessions],
-        device=runner.device,
-    )
-    for _ in range(config.warmup_batches):
-        _action_logits(runner, batch)
-    synchronize(runner.device)
-
-    durations: list[float] = []
-    for _ in range(config.batches):
-        started = time.perf_counter()
-        _action_logits(runner, batch)
+    with _measured_decision():
+        batch = MoveModelBatch.from_decision_contexts(
+            [session.decision_context() for session in sessions],
+            device=runner.device,
+        )
+        for _ in range(config.warmup_batches):
+            runner.action_logits(batch)
         synchronize(runner.device)
-        durations.append((time.perf_counter() - started) * 1000.0)
+
+        durations: list[float] = []
+        for _ in range(config.batches):
+            started = time.perf_counter()
+            runner.action_logits(batch)
+            synchronize(runner.device)
+            durations.append((time.perf_counter() - started) * 1000.0)
     return durations
 
 
@@ -657,10 +675,20 @@ def _reset_batch(
     sessions: Sequence[GameSession],
     histories_used: Sequence[Sequence[chess.Move]],
 ) -> None:
-    """Return every session to its declared history, outside the timed window."""
+    """Return every session to its declared history, outside the timed window.
+
+    Through the same ``sync_position`` the generated benchmarks call before
+    every decision, which takes back the one ply the last batch played and
+    keeps the encoded prefix. Rebuilding the session instead re-encoded all
+    forty plies to discard thirty-nine of them, and at the wider batch sizes
+    that setup cost several times the measurement it was preparing.
+    """
 
     for session, history in zip(sessions, histories_used, strict=True):
-        _reset(session, history)
+        try:
+            session.sync_position(moves=tuple(history))
+        except DecisionRuntimeError as error:  # pragma: no cover - walks are legal
+            raise InferenceBenchmarkError(str(error)) from error
 
 
 def _decide_batch(
@@ -669,20 +697,11 @@ def _decide_batch(
 ) -> None:
     """Resolve one decision for every session through a single forward pass."""
 
-    contexts = [_decision_context(session) for session in sessions]
-    try:
+    with _measured_decision():
+        contexts = [session.decision_context() for session in sessions]
         logits = runner.predict_batch(contexts)
-    except ModelRunnerError as error:
-        raise InferenceBenchmarkError(f"a measured batch failed: {error}") from error
-    for session, row in zip(sessions, logits, strict=True):
-        _decide_from_logits(session, row)
-
-
-def _action_logits(runner: CheckpointModelRunner, batch: MoveModelBatch) -> None:
-    try:
-        runner.action_logits(batch)
-    except ModelRunnerError as error:  # pragma: no cover - the batch already ran
-        raise InferenceBenchmarkError(str(error)) from error
+        for session, row in zip(sessions, logits, strict=True):
+            session.decide_from_logits(row)
 
 
 def _rate(batch_size: int, batch_ms: float) -> float:
@@ -783,39 +802,21 @@ def _reset(session: GameSession, history: Sequence[chess.Move]) -> None:
 
 
 def _decide(session: GameSession) -> None:
-    try:
+    with _measured_decision():
         session.decide()
-    except DecisionRuntimeError as error:
-        raise InferenceBenchmarkError(f"a measured decision failed: {error}") from error
 
 
-def _decision_context(session: GameSession) -> DecisionContext:
-    """Return the session's own encoded trajectory for the pending decision.
+@contextmanager
+def _measured_decision() -> Iterator[None]:
+    """Report a failure inside a measured window as this benchmark's error.
 
-    The session assembles this from plies it encoded as it advanced, rather
-    than encoding the history again. Re-encoding from scratch is two orders of
-    magnitude more expensive and is work the engine never does, so timing that
-    instead reported encoding as a leading cost that grew with history when the
-    assembly it replaced is around one percent of a decision.
+    Every timed block drives the session and the runner together, so both
+    failures mean the same thing here and read the same way to a caller.
     """
 
     try:
-        return session.decision_context()
-    except DecisionRuntimeError as error:
-        raise InferenceBenchmarkError(f"a measured decision failed: {error}") from error
-
-
-def _predict(runner: _TimedRunner, context: DecisionContext) -> Tensor:
-    try:
-        return runner.predict(context)
-    except ModelRunnerError as error:
-        raise InferenceBenchmarkError(f"a measured decision failed: {error}") from error
-
-
-def _decide_from_logits(session: GameSession, logits: Tensor) -> None:
-    try:
-        session.decide_from_logits(logits)
-    except DecisionRuntimeError as error:
+        yield
+    except (DecisionRuntimeError, ModelRunnerError) as error:
         raise InferenceBenchmarkError(f"a measured decision failed: {error}") from error
 
 

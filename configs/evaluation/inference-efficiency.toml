@@ -34,19 +34,15 @@ target_rating = 1500
 # Move twenty: a real midgame decision rather than an opening position whose
 # short history would flatter a full-history model.
 reference_plies = 40
-# Reaches the 300-ply cap the generated benchmarks play their games to. Most of
-# those games sit in the upper half of that range, so a sweep stopping at 80
-# leaves a reader extrapolating across the band it was asked about.
+# Reaches the 300-ply cap the generated benchmarks play their games to.
 sweep_plies = [0, 20, 40, 60, 80, 120, 160, 200, 250, 300]
-# These buy resolution rather than a different quantity, which is why sample
-# counts are outside series identity. The whole command is around 20 s on one
+# Sample counts buy resolution rather than a different quantity, which is why
+# they are outside series identity. The whole command is around 20 s on one
 # CUDA device at these counts.
 decisions = 100
 warmup_decisions = 5
 
 [throughput]
-# Eight is what the generated benchmarks run concurrently, so the headline
-# figure prices the batch the suite actually pays for.
 reference_batch_size = 8
 sweep_batch_sizes = [1, 4, 8, 16, 32, 64]
 history_plies = 40

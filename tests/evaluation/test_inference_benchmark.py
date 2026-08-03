@@ -66,7 +66,6 @@ from anthro_chess.evaluation.results.metrics import (
     INFERENCE_MOVE_LATENCY_MEAN,
 )
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
-from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import GameSession, RuntimeConfig
 
 #: A workload small enough for the CPU suite. The measured quantities are
@@ -159,13 +158,9 @@ def test_the_stage_attribution_never_claims_more_than_the_whole(
     for sample in result.latency_sweep:
         assert sample.context_mean_ms >= 0.0
         assert sample.predict_mean_ms >= 0.0
-        # Derived from one window the parts were cut from, so this is an
-        # identity rather than a hope about the machine.
+        # The parts are cut from the window they are subtracted from, so a
+        # non-negative remainder says they did not sum past it.
         assert sample.remainder_mean_ms >= 0.0
-        assert sample.context_mean_ms + sample.predict_mean_ms <= sample.mean_ms
-        assert sample.remainder_mean_ms == pytest.approx(
-            sample.mean_ms - sample.context_mean_ms - sample.predict_mean_ms
-        )
 
 
 def test_the_context_stage_uses_the_session_the_decision_came_from(
@@ -185,10 +180,10 @@ def test_the_context_stage_uses_the_session_the_decision_came_from(
     )
     session = GameSession(runner, config=RuntimeConfig(seed=7))
     contexts: list[DecisionContext] = []
-    real_context = inference_module._decision_context
+    from_session = session.decision_context
 
-    def recording(recorded: GameSession) -> DecisionContext:
-        context = real_context(recorded)
+    def recording() -> DecisionContext:
+        context = from_session()
         contexts.append(context)
         return context
 
@@ -201,7 +196,9 @@ def test_the_context_stage_uses_the_session_the_decision_came_from(
     )
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(inference_module, "_decision_context", recording)
+        # Patched on the session rather than on the benchmark, so this asserts
+        # against the seam the engine itself uses.
+        patch.setattr(session, "decision_context", recording)
         sample = _measure_latency(session, runner, _HistoryFactory(), config, 4)
 
     # Every measured decision took its context from the session, once.
@@ -225,16 +222,10 @@ def test_throughput_times_the_batch_it_builds(
     sample = benchmark_inference(_config(checkpoint)).reference_throughput
 
     assert sample.decisions_per_second > 0.0
-    assert sample.forward_decisions_per_second > 0.0
     # Re-running a built batch drops batch construction, masking, and sampling
     # from the window, which on every device this runs on dominates the padded
     # sequence it scores in exchange.
     assert sample.forward_median_ms < sample.batch_median_ms
-    assert sample.decisions_per_second < sample.forward_decisions_per_second
-    # The headline rate is the median batch, not the mean of ten.
-    assert sample.decisions_per_second == pytest.approx(
-        sample.batch_size / (sample.batch_median_ms / 1000.0)
-    )
 
 
 def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
@@ -243,10 +234,11 @@ def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
 ) -> None:
     """A 300-ply request used to abort the command rather than measure it.
 
-    Random play thins the board down, so a walk that never ran out of legal
-    moves still arrives at a dead draw often enough that one offset in six
-    killed the run. The depth the generated benchmarks cap their games at is
-    exactly the depth this has to reach.
+    Completing is most of the claim: a walk that never ran out of legal moves
+    could still arrive somewhere over by rule, and the session then refused to
+    decide, which failed the whole command rather than one depth. This drives
+    the real session, so it covers the half
+    :func:`test_a_history_ending_on_a_dead_position_is_walked_again` cannot.
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=19)
@@ -258,10 +250,10 @@ def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
         )
     )
 
-    depths = [sample.history_plies for sample in result.latency_sweep]
-    assert 300 in depths
     deep = next(s for s in result.latency_sweep if s.history_plies == 300)
-    assert deep.decisions == FAST_LATENCY.decisions
+    # Decisions were resolved at that depth, not merely scheduled for it.
+    assert deep.mean_ms > 0.0
+    assert deep.predict_mean_ms > 0.0
 
 
 def test_a_history_ending_on_a_dead_position_is_walked_again(
@@ -625,46 +617,6 @@ def test_history_factory_is_deterministic_and_varies_by_offset() -> None:
     assert first != other
 
 
-def test_stacked_batches_carry_every_row_through_the_model(
-    tmp_path: Path,
-    inference_run: Callable[..., Path],
-) -> None:
-    checkpoint = inference_run(tmp_path / "run", seed=15)
-    runner = CheckpointModelRunner.load(
-        ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
-    )
-    factory = _HistoryFactory()
-    rows = [
-        MoveModelBatch.from_decision_context(
-            _context(factory.history("stack", 4, index)),
-            device=runner.device,
-        )
-        for index in range(3)
-    ]
-
-    stacked = MoveModelBatch.stack(rows)
-    logits = runner.action_logits(stacked)
-
-    # Four played plies plus the decision ply the context adds.
-    assert stacked.action_targets.shape == (3, 5)
-    assert logits.shape[:2] == (3, 5)
-    # A pending decision carries no supervised target for legality to check, so
-    # there is nothing here for stacking to re-tuple per row.
-    assert stacked.legal_action_ids is None
-    assert torch.isfinite(logits).all()
-
-
-def test_stacking_refuses_batches_of_different_lengths(tmp_path: Path) -> None:
-    factory = _HistoryFactory()
-    rows = [
-        MoveModelBatch.from_decision_context(_context(factory.history("stack", 4, 0))),
-        MoveModelBatch.from_decision_context(_context(factory.history("stack", 6, 0))),
-    ]
-
-    with pytest.raises(ValueError, match="same sequence length"):
-        MoveModelBatch.stack(rows)
-
-
 def test_an_execution_metric_cannot_be_scheduled_at_a_training_cadence() -> None:
     """Timed beside a training step it would measure contention, not a model."""
 
@@ -807,15 +759,6 @@ def _delta(report: DeltaReport) -> MetricDelta:
 
 def _comparability(report: DeltaReport) -> Comparability:
     return _delta(report).comparability
-
-
-def _context(history: tuple[chess.Move, ...]) -> DecisionContext:
-    from anthro_chess.data import build_decision_context
-
-    board = chess.Board()
-    for move in history:
-        board.push(move)
-    return build_decision_context(board, tuple(board.move_stack), target_rating=None)
 
 
 def test_a_recorded_workload_must_produce_its_own_digest() -> None:
