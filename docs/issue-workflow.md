@@ -49,9 +49,25 @@ available, because its implementation can be completed without a GPU.
 
 Public issue forms are intake, not an implementation queue. They must not
 automatically assign `type: task`, a milestone, a tracker relationship, or a
-dependency relationship. An issue missing any eligibility metadata remains
-intake awaiting maintainer triage. A maintainer promotes it into the queue only
-by deliberately assigning all required metadata and any genuine blockers.
+dependency relationship: a submission from outside the project has not yet been
+judged real, in scope, or correctly placed, and a form cannot assert that it
+has been.
+
+Making that judgement is project-side work, and working in this repository is
+being on that side. An issue filed from work done here is therefore a finding
+rather than a submission, and is filed with its metadata already on it — the
+`area:` and `type:` labels, the milestone it belongs to, its tracker, and any
+genuine blocker. Leaving it bare defers nothing: it moves the work to someone
+holding less context than whoever wrote the evidence into the body, and leaves
+the finding unfindable until they get to it.
+
+Two things keep that honest. The milestone is where the work belongs rather
+than the one that would make it selectable, so a finding outside the current
+stage goes in a later milestone or none; and a blocker is a real order
+constraint rather than a preference, by the rule below. What stays with the
+maintainer is what it is everywhere else here — reviewing and merging — and an
+issue still has to carry every field to be picked up, so one filed bare is
+intake either way.
 
 Contributor blank issues are disabled so public intake uses the focused forms.
 Repository maintainers can still open a blank issue when GitHub permissions
