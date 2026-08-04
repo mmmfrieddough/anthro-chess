@@ -107,13 +107,20 @@ class DependencyTestConfig(ConfigModel):
     minimum_prefix_decisions: int = Field(default=5, ge=1)
 
     def conditioning_values(self) -> tuple[int, ...]:
-        """Return the deduplicated conditioning ratings, in ascending order."""
+        """Return the deduplicated conditioning ratings, in ascending order.
 
-        if len(self.cross_conditioning_ratings) < 2:
+        Counted after deduplication, because it is distinct ratings the table
+        needs: a grid naming one rating twice would put every slice's best
+        result on the only column there is, and would collapse the anchor
+        comparison onto a distribution and itself.
+        """
+
+        values = tuple(sorted(set(self.cross_conditioning_ratings)))
+        if len(values) < 2:
             raise ValueError(
-                "cross-conditioning needs at least two conditioning ratings"
+                "cross-conditioning needs at least two distinct conditioning ratings"
             )
-        return tuple(sorted(set(self.cross_conditioning_ratings)))
+        return values
 
 
 @dataclass(frozen=True)

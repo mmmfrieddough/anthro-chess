@@ -269,6 +269,15 @@ def test_game_contributions_are_withheld_when_a_signal_is_missing() -> None:
     assert result.contributions == ()
 
 
+def test_a_conditioning_grid_needs_two_distinct_ratings() -> None:
+    """A rating named twice is one column, not two."""
+
+    config = DependencyTestConfig(cross_conditioning_ratings=(1500, 1500))
+
+    with pytest.raises(ValueError, match="two distinct conditioning ratings"):
+        config.conditioning_values()
+
+
 def test_dependency_tests_need_a_rated_position() -> None:
     contexts = {(1, 0): _context(1, 0, rating=None, band=None)}
 
