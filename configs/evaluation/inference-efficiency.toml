@@ -16,6 +16,12 @@
 # `throughput.history_plies`, either seed, or the runtime dials starts a new
 # series rather than continuing the existing one. Sample counts and the sweeps
 # are not: raising them measures the same quantity more precisely.
+#
+# Both throughput figures are reported and they are not interchangeable. The
+# headline resolves whole batched decisions the way the generated benchmarks do,
+# including the batch construction that grows with history; the forward figure
+# re-runs a batch built once, which isolates launch cost and is the wrong number
+# for sizing a generated run.
 
 [runtime]
 # Fixed so the measured decisions are reproducible. Temperature is recorded in
@@ -28,13 +34,17 @@ target_rating = 1500
 # Move twenty: a real midgame decision rather than an opening position whose
 # short history would flatter a full-history model.
 reference_plies = 40
-sweep_plies = [0, 20, 40, 60, 80]
-decisions = 30
+# Reaches the 300-ply cap the generated benchmarks play their games to.
+sweep_plies = [0, 20, 40, 60, 80, 120, 160, 200, 250, 300]
+# Sample counts buy resolution rather than a different quantity, which is why
+# they are outside series identity. The whole command is around 20 s on one
+# CUDA device at these counts.
+decisions = 100
 warmup_decisions = 5
 
 [throughput]
 reference_batch_size = 8
-sweep_batch_sizes = [1, 4, 8, 16]
+sweep_batch_sizes = [1, 4, 8, 16, 32, 64]
 history_plies = 40
-batches = 10
+batches = 30
 warmup_batches = 3

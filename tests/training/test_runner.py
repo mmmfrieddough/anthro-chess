@@ -108,6 +108,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         "determinism": "strict",
         "gradient_accumulation_steps": 1,
         "fused_optimizer": False,
+        "matmul_precision": "highest",
         "phase_profiling": False,
     }
     # Which machine, kept apart from what was selected on it. Nothing compares
@@ -216,6 +217,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
         "device": "cpu",
         "fused_optimizer": False,
         "gradient_accumulation_steps": 1,
+        "matmul_precision": "highest",
         "parameter_dtype": "float32",
         "phase_profiling": False,
         "precision": "float32",
@@ -322,6 +324,54 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
     provenance = set(_EXECUTION_PROVENANCE_KEYS)
     assert compatibility.isdisjoint(provenance)
     assert set(record) == compatibility | provenance
+    # Which side each arithmetic setting falls on, which is the declared
+    # against derived line the two sets are documented by.
+    assert {"precision", "matmul_precision"} <= compatibility
+    assert "fused_optimizer" in provenance
+
+
+def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dial is a process-wide Torch setting, so the run has to hand it back.
+
+    Leaving it set would make every later benchmark in the same process inherit
+    a training run's arithmetic, which is the kind of cross-contamination no
+    reading would report.
+    """
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    torch.set_float32_matmul_precision("highest")
+    config_path = _write_training_config(
+        tmp_path / "config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        output=tmp_path / "run",
+        validation=False,
+        extra='matmul_precision = "high"\n',
+    )
+    # What the forward pass actually ran under, sampled from inside the loop.
+    # Asserting only the restored value would pass against a runner that never
+    # set it at all.
+    observed: list[str] = []
+    original_forward = CausalMoveModel.forward
+
+    def recording_forward(self: CausalMoveModel, batch: MoveModelBatch) -> torch.Tensor:
+        observed.append(torch.get_float32_matmul_precision())
+        return original_forward(self, batch)
+
+    monkeypatch.setattr(CausalMoveModel, "forward", recording_forward)
+    result = run_training(load_config(TrainingConfig, path=config_path))
+
+    assert observed and set(observed) == {"high"}
+    assert torch.get_float32_matmul_precision() == "highest"
+    checkpoint = load_training_checkpoint(result.checkpoint_path)
+    assert checkpoint["metadata"]["execution"]["matmul_precision"] == "high"
 
 
 def test_resume_reads_execution_provenance_it_does_not_recognize(
@@ -761,6 +811,7 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
         "device": backend,
         "fused_optimizer": backend == "cuda",
         "gradient_accumulation_steps": 1,
+        "matmul_precision": "highest",
         "parameter_dtype": "float32",
         "phase_profiling": False,
         "precision": "float32",
