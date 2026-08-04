@@ -7,6 +7,7 @@ import math
 import random
 from collections.abc import Callable, Sequence
 
+import numpy as np
 import pytest
 
 from anthro_chess.evaluation.curves import (
@@ -22,6 +23,10 @@ from anthro_chess.evaluation.curves import (
     Observation,
     PairedRateObservation,
     RatingResponse,
+    _categories,
+    _read,
+    _reduce,
+    _Side,
     compare_curves,
     compare_reference_rate,
     curve_overlays,
@@ -535,6 +540,86 @@ def test_a_comparison_carries_the_floor_its_own_distances_are_read_against() -> 
         assert SCALAR_SPEC.name in floor.source
 
 
+@pytest.mark.parametrize("quantity", list(CurveQuantity))
+@pytest.mark.parametrize("per_rating,resamples", [(8, 4), (60, 24)])
+def test_the_bootstrap_reads_one_human_curve_across_every_resample(
+    quantity: CurveQuantity,
+    per_rating: int,
+    resamples: int,
+) -> None:
+    """The floor pass broadcasts the point pass's human curve, not a copy of it.
+
+    Only the model side is resampled, so the human curve the floor is read
+    against is one row against the model's many. This reaches past the public
+    interface because a mis-broadcast produces a floor that is wrong rather than
+    absent, and no fixture comparison has an oracle for a floor's value.
+    """
+
+    scalar = quantity is CurveQuantity.SCALAR
+    spec = SCALAR_SPEC if scalar else CATEGORICAL_SPEC
+    generator = random.Random(31)
+
+    def value(rating: float) -> float | str:
+        if scalar:
+            return _length(rating) + generator.gauss(0.0, 3.0)
+        return "sicilian" if generator.random() < rating / 4000.0 else "other"
+
+    human = tuple(
+        Observation(item.rating, value(item.rating)) for item in _human_reference()
+    )
+    model = tuple(
+        Observation(rating, value(rating))
+        for rating in GRID
+        for _ in range(per_rating if rating < GRID[-1] else 2)
+    )
+    categories = _categories(spec, human, model)
+    human_side = _Side.prepare(human, spec, categories)
+    model_side = _Side.prepare(model, spec, categories)
+    model_weights = (
+        np.random.default_rng(13)
+        .multinomial(
+            model_side.size,
+            np.full(model_side.size, 1.0 / model_side.size),
+            size=resamples,
+        )
+        .astype(np.float64)
+    )
+
+    point = _read(
+        spec,
+        human_side,
+        model_side,
+        np.ones((1, human_side.size)),
+        np.ones((1, model_side.size)),
+    )
+    broadcast = _reduce(spec, point.radii, point.human, model_side, model_weights)
+    repeated = _read(
+        spec,
+        human_side,
+        model_side,
+        np.ones((resamples, human_side.size)),
+        model_weights,
+    )
+
+    # A zero stride is the whole optimization: the human curve was estimated
+    # once and repeated by view, rather than computed for every replicate.
+    assert broadcast.human.values.strides[0] == 0
+    # The model side is thin at the top of the grid so that resampling drops
+    # that point in some replicates and not others, which is the only case
+    # where the one human row meets a support mask varying beneath it. Assert
+    # the fixture achieved that rather than trusting it to.
+    assert 0 < int(broadcast.supported[:, -1].sum()) < resamples
+    # Not bitwise: numpy dispatches the local fit's matrix product differently
+    # at one replicate than at many, so the two paths agree to floating-point
+    # noise rather than exactly. The floor is a spread over these readings, so
+    # only their agreement matters here.
+    assert broadcast.conditional == pytest.approx(repeated.conditional, rel=1e-12)
+    assert broadcast.pooled == pytest.approx(repeated.pooled, rel=1e-12)
+    assert broadcast.model_variation == pytest.approx(
+        repeated.model_variation, rel=1e-12
+    )
+
+
 def test_a_model_side_that_cannot_vary_reports_a_floor_of_exactly_zero() -> None:
     """Re-measuring a deterministic reading replays it, so nothing moves.
 
@@ -985,7 +1070,13 @@ def test_a_floor_only_comparison_skips_the_null_levels() -> None:
 
 
 def test_a_floor_only_comparison_reports_the_same_distances() -> None:
-    """Skipping the nulls is a cost decision, not a different measurement."""
+    """Skipping the nulls is a cost decision, not a different measurement.
+
+    That covers the floors as well as the distances, which is why the model
+    side draws its resampling weights before the human side draws the ones only
+    the nulls consume. Draw them the other way round and a sweep that skips the
+    nulls to save time reports a different floor for its trouble.
+    """
 
     generated = _generated(
         lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0)
@@ -996,6 +1087,11 @@ def test_a_floor_only_comparison_reports_the_same_distances() -> None:
 
     assert floors_only.conditional_distance == pytest.approx(full.conditional_distance)
     assert floors_only.pooled_distance == pytest.approx(full.pooled_distance)
+    assert full.floors is not None
+    assert floors_only.floors is not None
+    assert floors_only.floors.conditional.value == full.floors.conditional.value
+    assert floors_only.floors.pooled.value == full.floors.pooled.value
+    assert floors_only.floors.model_variation.value == full.floors.model_variation.value
 
 
 def test_one_side_can_be_estimated_without_a_counterpart() -> None:

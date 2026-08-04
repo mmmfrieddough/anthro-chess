@@ -1134,7 +1134,43 @@ def _read(
     """Estimate both curves and reduce them, for every replicate at once."""
 
     radii = _radii(human, human_weights, spec.neighbours)
-    human_local = _local(human, human_weights, radii)
+    return _reduce(
+        spec, radii, _local(human, human_weights, radii), model, model_weights
+    )
+
+
+def _reduce(
+    spec: CurveSpec,
+    radii: np.ndarray,
+    human_local: _Local,
+    model: _Side,
+    model_weights: np.ndarray,
+) -> _Reading:
+    """Reduce an already-estimated human curve against a model side.
+
+    The human estimate may carry one replicate against a model side carrying
+    many. That is what a bootstrap resampling the model alone reads: the human
+    curve it holds fixed is the point pass's own, so it is broadcast across the
+    replicates rather than re-estimated identically once per resample.
+
+    Widening it here rather than letting each reduction broadcast on its own is
+    what keeps a ``_Reading`` one shape throughout. ``np.broadcast_to`` returns
+    a read-only view, so the saving this exists for survives it: the human curve
+    is still estimated once, and only its shape is repeated.
+    """
+
+    replicates = int(model_weights.shape[0])
+    grid_points = int(human_local.games.shape[1])
+    radii = np.broadcast_to(radii, (replicates, grid_points))
+    human_local = _Local(
+        values=np.broadcast_to(
+            human_local.values, (replicates, grid_points, human_local.values.shape[2])
+        ),
+        effective_sample_size=np.broadcast_to(
+            human_local.effective_sample_size, (replicates, grid_points)
+        ),
+        games=np.broadcast_to(human_local.games, (replicates, grid_points)),
+    )
     model_local = _local(model, model_weights, radii)
 
     supported = (model_local.games > 0) & (human_local.games > 0)
@@ -1370,25 +1406,33 @@ def _resample(
         return floors, None
     if resamples < 2 or model.size < 2:
         return floors, None
-    human_weights = generator.multinomial(
-        human.size, np.full(human.size, 1.0 / human.size), size=resamples
-    ).astype(np.float64)
+    # The model side draws first, and the human side draws only when the null
+    # levels that consume it were asked for. Both halves of that matter. Drawing
+    # a whole multinomial over the reference for a floor-only caller to discard
+    # is the largest cost left in that call; and taking the model's draw before
+    # it is what keeps ``references`` a cost decision rather than a measurement
+    # one, since the floor is then read off the same resamples either way.
     model_weights = generator.multinomial(
         model.size, np.full(model.size, 1.0 / model.size), size=resamples
     ).astype(np.float64)
     paired = (
-        _read(spec, human, model, human_weights, model_weights) if references else None
-    )
-    if model_varies:
-        # The human reference held exactly as measured, so this varies only in
-        # which games the model produced.
-        model_only = _read(
+        _read(
             spec,
             human,
             model,
-            np.ones((resamples, human.size), dtype=np.float64),
+            generator.multinomial(
+                human.size, np.full(human.size, 1.0 / human.size), size=resamples
+            ).astype(np.float64),
             model_weights,
         )
+        if references
+        else None
+    )
+    if model_varies:
+        # The human reference held exactly as measured, so this varies only in
+        # which games the model produced — and the point pass already estimated
+        # it at these radii.
+        model_only = _reduce(spec, point.radii, point.human, model, model_weights)
         # The generated games are the independent replicates behind these
         # floors. The resample count only says how finely their spread was
         # read, so it is the model side's size that decides how far the bound
