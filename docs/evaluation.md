@@ -2324,16 +2324,61 @@ hide a regression in another:
 
 **Batch-one move latency**, reported as percentiles rather than a mean. This is
 what a person waiting for a move experiences. It is measured end to end through
-the decision runtime, spanning encoding, model execution, legal masking, and
-sampling, because that is what a move actually costs; timing the forward pass
-alone would report a number no player ever sees and would stay healthy while the
-encoder regressed. A mean is reported alongside for capacity arithmetic, but the
-median says what play usually feels like and the tail says whether it ever
-stalls.
+the decision runtime, spanning encoding, batch construction, model execution,
+legal masking, and sampling, because that is what a move actually costs; timing
+the forward pass alone would report a number no player ever sees and would stay
+healthy while the encoder regressed. A mean is reported alongside for capacity
+arithmetic, but the median says what play usually feels like and the tail says
+whether it ever stalls.
+
+A stage attribution accompanies that mean, cut from the measured decisions
+rather than taken beside them: the benchmark times the context assembly, then
+the prediction call, then everything that follows, inside the single window it
+reports. Timing the stages separately is what let the parts sum past the whole,
+and what let a from-scratch re-encode — work the engine never does, and two
+orders of magnitude above what it does do — render as a leading term.
+
+There is deliberately no encode stage, and that is the substantive finding
+rather than an omission. A session encodes one ply as it advances rather than
+encoding a history per decision, so the only encode a decision pays for is that
+single ply; it is flat in history length and falls inside the remainder
+alongside masking and sampling. Prediction — batch construction, the forward
+pass, and the host copy — is the overwhelming majority of a decision, and
+assembling the context is around one percent of it.
 
 **Declared-batch throughput**, in decisions per second at one declared batch
 size. Batching trades latency for throughput, so quoting a serving figure as an
 interactive one is the usual way that trade gets hidden.
+
+Two figures are reported here and they are not interchangeable. The headline
+resolves **whole batched decisions** through the same loop the generated
+benchmarks run — collect every pending context, resolve them in one padded
+forward pass, mask and sample each result — so it carries the batch construction
+that grows with history and dominates a generated decision. The **forward pass
+alone** is measured on a batch built once and re-run, which isolates launch cost
+for a kernel or precision change; that is the right number for that question and
+the wrong one for sizing a run, since it exceeds the whole-decision figure by
+over an order of magnitude at larger batches. It also scores the whole padded
+sequence rather than the one row per game a decision reads, which makes it a
+companion to the batched figure rather than a component of it. Each declares
+which it is, in the rendered output and in the metric registry, because the
+failure worth splitting them over was the isolated figure being read —
+including by the author of the reading — as the cost of playing a move.
+
+Both are taken from the median batch rather than the mean, so one descheduled
+batch cannot carry the reported rate. That does not narrow run-to-run spread,
+which is a property of the machine between invocations; qualifying a delta
+against that is what a characterized execution floor is for, and this benchmark
+reports readings rather than floors.
+
+The depth sweep reaches the 300-ply cap the generated benchmarks play to, since
+around half a full-size ladder's games reach that cap and they are its most
+expensive ones, so a sweep stopping at 80 leaves a reader extrapolating across
+exactly the band whose cost it was asked about.
+Reaching that depth requires the synthetic history to arrive somewhere a session
+can still decide from: random play thins the board down, so a walk that never
+ran out of legal moves still lands on a position that is over by rule often
+enough to abort a run.
 
 **Cold start**, split into model-load time and the first decision after loading.
 Lazy kernel compilation and allocator warmup land in the first decision rather
