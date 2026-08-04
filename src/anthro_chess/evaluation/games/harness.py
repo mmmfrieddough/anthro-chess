@@ -172,6 +172,22 @@ class GenerationConfig(ConfigModel):
     concurrency: Annotated[StrictInt, Field(ge=1)] = 1
 
 
+def replicates_vary(temperatures: Sequence[float]) -> bool:
+    """Return whether another replicate of these seats plays different games.
+
+    Selection at temperature zero is greedy rather than drawn, so a pairing
+    whose every seat is at zero replays one game per position and a fresh seed
+    draws nothing. One sampling seat is enough to restore the variation.
+
+    This is the same question twice over. It decides how many replicates are
+    worth playing, and it decides what re-measuring the result would mean —
+    which is what a noise floor beside that result claims to bound — so the two
+    read it from here rather than each carrying its own copy of the rule.
+    """
+
+    return any(temperature != 0.0 for temperature in temperatures)
+
+
 def collapse_replicates(
     seeds: tuple[int, ...],
     generation: GenerationConfig,
@@ -197,7 +213,7 @@ def collapse_replicates(
     sampling seat is enough to make the games differ.
     """
 
-    if any(temperature != 0.0 for temperature in temperatures):
+    if replicates_vary(temperatures):
         return seeds, generation
     return seeds[:1], generation.model_copy(update={"games_per_position": 1})
 

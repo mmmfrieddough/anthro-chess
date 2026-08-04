@@ -79,6 +79,7 @@ from anthro_chess.evaluation.games import (
     StartPosition,
     collapse_replicates,
     generate_games,
+    replicates_vary,
     standard_positions,
 )
 from anthro_chess.evaluation.policy import (
@@ -1017,6 +1018,7 @@ def _mix_readings(
                     model=model,
                     resamples=config.reference.resamples,
                     seed=config.reference.seed,
+                    model_varies=replicates_vary((reading.temperature,)),
                 )
             except CurveComparisonError as error:
                 unavailable[f"mix:{time_control.name}:t{reading.temperature:g}"] = str(

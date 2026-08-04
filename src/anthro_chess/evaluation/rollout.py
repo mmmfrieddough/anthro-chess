@@ -105,6 +105,7 @@ from anthro_chess.evaluation.games import (
     collapse_replicates,
     generate_games,
     prefix_positions,
+    replicates_vary,
     standard_positions,
     summarize_games,
 )
@@ -649,9 +650,10 @@ class RolloutReading:
     comparisons: dict[ComparedQuantity, CurveComparison]
     execution: ExecutionRecord
     #: Each seed's own conditional distance per quantity, and the floor that
-    #: spread implies. The bootstrap floor carried on every measurement is an
+    #: spread implies. Where a measurement carries a bootstrap floor it is an
     #: estimate of this quantity; recording both is what makes it checkable
-    #: rather than trusted.
+    #: rather than trusted. A temperature-zero reading has one seed and states
+    #: its floor instead, so neither number is present there.
     seed_spread: dict[ComparedQuantity, SeedSpread] = field(default_factory=dict)
     #: Quantities no game on one side had a value for, with the reason. A real
     #: state rather than an error: a checkpoint whose every game leaves the book
@@ -1156,6 +1158,10 @@ def _curve_reading(
     for cell in cells:
         model.extend(generated_games(cell.features, rating=cell.target_rating))
     ratings = tuple(sorted({cell.target_rating for cell in cells}))
+    # Both seats play at the reading's own temperature, so this is the whole of
+    # what decides whether another run of it would produce different games —
+    # and therefore whether it has any evaluation noise for a floor to bound.
+    varies = replicates_vary((temperature,))
     comparisons: dict[ComparedQuantity, CurveComparison] = {}
     unavailable: dict[ComparedQuantity, str] = {}
     for quantity in iter_quantities():
@@ -1180,6 +1186,7 @@ def _curve_reading(
                 model=generated,
                 resamples=config.reference.resamples,
                 seed=config.reference.seed,
+                model_varies=varies,
             )
         except CurveComparisonError as error:
             raise RolloutBenchmarkError(
@@ -1194,7 +1201,9 @@ def _curve_reading(
         comparisons=comparisons,
         seed_spread=_seed_spread(config, cells, reference, ratings),
         unavailable=unavailable,
-        divergence=_divergence_by_depth(config, cells, reference, ratings, book=book),
+        divergence=_divergence_by_depth(
+            config, cells, reference, ratings, book=book, model_varies=varies
+        ),
         exact=_exact_repertoire(
             config,
             arm,
@@ -1220,6 +1229,7 @@ def _divergence_by_depth(
     ratings: Sequence[int],
     *,
     book: OpeningBook | None,
+    model_varies: bool,
 ) -> tuple[DepthDivergence, ...]:
     """Recompute the opening distance with classification truncated per ply.
 
@@ -1273,6 +1283,7 @@ def _divergence_by_depth(
                 model=model,
                 resamples=config.divergence.resamples,
                 seed=config.reference.seed,
+                model_varies=model_varies,
                 references=False,
             )
         except CurveComparisonError:
@@ -1878,14 +1889,18 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
 def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
     """Return one reading's committed distances, each with the floor to beat.
 
-    The floor is the comparison's own bootstrap over the games this reading
-    generated, and deliberately not the spread across seeds. Both estimate
-    evaluation noise, but only the bootstrap estimates it *at the sample size
-    the reading was taken at*: each seed plays a fraction of the games, so the
-    spread across seeds measures the noise of a much smaller reading and runs
-    roughly the square root of the seed count too wide. Measured against forty
-    independent draws, the bootstrap reproduces the true spread to within a few
-    percent at fixed size, so the seeds stay a diagnostic rather than a floor.
+    Where the reading's games could have been drawn otherwise, the floor is the
+    comparison's own bootstrap over them, and deliberately not the spread across
+    seeds. Both estimate evaluation noise, but only the bootstrap estimates it
+    *at the sample size the reading was taken at*: each seed plays a fraction of
+    the games, so the spread across seeds measures the noise of a much smaller
+    reading and runs roughly the square root of the seed count too wide.
+    Measured against forty independent draws, the bootstrap reproduces the true
+    spread to within a few percent at fixed size, so the seeds stay a diagnostic
+    rather than a floor.
+
+    A temperature-zero reading has no such draw. Its floors are stated at zero
+    rather than estimated, per decision 0032, and neither estimator applies.
     """
 
     workload = reading.execution.workload_component()
