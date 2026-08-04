@@ -171,7 +171,7 @@ by default, while an explicit seed makes games and benchmarks reproducible.
 See
 [`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
 
-Training should make full use of the causal attention mask. A complete game, or
+Training should make full use of causal attention. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions
 are trained in parallel while each timestep only attends to prior timesteps.
 

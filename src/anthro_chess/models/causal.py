@@ -7,6 +7,7 @@ from typing import cast
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -104,10 +105,83 @@ class RatingConditioner(nn.Module):
         )
 
 
+class CausalSelfAttention(nn.Module):
+    """Attend over earlier timesteps, stating causality as the flag it is.
+
+    ``scaled_dot_product_attention`` reads ``is_causal`` as the mask rather than
+    as a hint accompanying one, which is what the encoder wrapper this replaced
+    could not do. Flash and cuDNN attention refuse a non-null ``attn_mask``, so
+    handing one over is what put them out of reach.
+    """
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.heads = config.attention_heads
+        self.head_dim = config.model_dim // config.attention_heads
+        self.dropout = config.dropout
+        self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
+        self.output_projection = nn.Linear(config.model_dim, config.model_dim)
+        # What the wrapper's attention initialized itself to. ``nn.Linear``'s
+        # own default is a generic one, and restating this is what keeps a
+        # fresh model drawn the way it was before.
+        nn.init.xavier_uniform_(self.qkv_projection.weight)
+        nn.init.zeros_(self.qkv_projection.bias)
+        nn.init.zeros_(self.output_projection.bias)
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        """Return attended features for every timestep, batch dimension first."""
+
+        query, key, value = (
+            self.qkv_projection(hidden)
+            .unflatten(-1, (3, self.heads, self.head_dim))
+            .permute(2, 0, 3, 1, 4)
+            .unbind(0)
+        )
+        attended = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=True,
+        )
+        return cast(
+            Tensor,
+            self.output_projection(attended.transpose(1, 2).flatten(-2)),
+        )
+
+
+class TransformerBlock(nn.Module):
+    """One pre-norm residual pair: causal attention, then a feed-forward."""
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.attention_norm = nn.LayerNorm(config.model_dim)
+        self.attention = CausalSelfAttention(config)
+        self.feedforward_norm = nn.LayerNorm(config.model_dim)
+        self.feedforward = nn.Sequential(
+            nn.Linear(config.model_dim, config.feedforward_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.feedforward_dim, config.model_dim),
+        )
+        # Dropout carries no state, so both residuals read the same module.
+        self.residual_dropout = nn.Dropout(config.dropout)
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        """Return the block's output for a whole batch of timesteps."""
+
+        hidden = hidden + self.residual_dropout(
+            self.attention(self.attention_norm(hidden))
+        )
+        hidden = hidden + self.residual_dropout(
+            self.feedforward(self.feedforward_norm(hidden))
+        )
+        return hidden
+
+
 class CausalMoveModel(nn.Module):
     """Predict human action logits from exact state and causal trajectory."""
 
-    causal_mask: Tensor
     position_table: Tensor
 
     def __init__(self, config: MoveModelConfig | None = None) -> None:
@@ -124,37 +198,21 @@ class CausalMoveModel(nn.Module):
             nn.GELU(),
             nn.LayerNorm(self.config.model_dim),
         )
-        layer = nn.TransformerEncoderLayer(
-            d_model=self.config.model_dim,
-            nhead=self.config.attention_heads,
-            dim_feedforward=self.config.feedforward_dim,
-            dropout=self.config.dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
+        self.transformer_blocks = nn.ModuleList(
+            TransformerBlock(self.config) for _ in range(self.config.transformer_layers)
         )
-        self.transformer = nn.TransformerEncoder(
-            layer,
-            num_layers=self.config.transformer_layers,
-            norm=nn.LayerNorm(self.config.model_dim),
-            enable_nested_tensor=False,
-        )
+        # A pre-norm block leaves its output unnormalized for whatever follows,
+        # so the stack ends with one. Named rather than the last element of a
+        # sequence, because a checkpoint key that moves with the layer count
+        # cannot be read without also reading the configuration.
+        self.transformer_norm = nn.LayerNorm(self.config.model_dim)
         self.rating_conditioner = RatingConditioner(self.config)
         self.action_head = nn.Linear(
             self.config.model_dim,
             ACTION_VOCABULARY_SIZE,
         )
-        # Derived constants, not state: a pure function of the configuration, so
-        # neither belongs in a checkpoint. The mask is additive rather than
-        # boolean because attention converts a boolean one to exactly this on
-        # the way in, once per forward pass.
-        self.register_buffer(
-            "causal_mask",
-            nn.Transformer.generate_square_subsequent_mask(
-                self.config.maximum_context_plies
-            ),
-            persistent=False,
-        )
+        # A derived constant, not state: a pure function of the configuration,
+        # so it does not belong in a checkpoint.
         self.register_buffer(
             "position_table",
             _sinusoidal_table(
@@ -206,16 +264,9 @@ class CausalMoveModel(nn.Module):
         # only to keys that are themselves real, and a padded query's output is
         # discarded by target and by loss mask downstream. Leaving it out also
         # removes the all-padding-row hazard a key padding mask carries.
-        #
-        # ``is_causal=True`` does not stand in for the mask. The encoder reads
-        # the flag as a hint accompanying one, and refuses it alone.
-        width = hidden.shape[1]
-        hidden = self.transformer(
-            hidden,
-            mask=self.causal_mask[:width, :width].to(hidden.dtype),
-            is_causal=True,
-        )
-        return cast(Tensor, hidden)
+        for block in self.transformer_blocks:
+            hidden = block(hidden)
+        return cast(Tensor, self.transformer_norm(hidden))
 
     def identity(self) -> dict[str, object]:
         """Return compatibility metadata for future runs and checkpoints.
@@ -228,7 +279,10 @@ class CausalMoveModel(nn.Module):
 
         return {
             "name": "anthro-causal-move-model",
-            "version": 4,
+            # Version 5 renamed every transformer parameter, so this is what
+            # refuses an older checkpoint by name rather than letting it fail
+            # as missing state-dict keys.
+            "version": 5,
             "config": self.config.model_dump(mode="json"),
             "action_vocabulary": action_vocabulary_identity(),
             "encoding": encoding_identity(),

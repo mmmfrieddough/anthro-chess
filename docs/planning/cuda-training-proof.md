@@ -551,6 +551,55 @@ selection lands on, not a reason to change it now: none of these runs was long
 enough to say what bfloat16 does to the loss curve, and that comparison belongs
 with `#54`.
 
+## The Encoder Wrapper, Replaced By Explicit Blocks
+
+`nn.TransformerEncoder` and `nn.TransformerEncoderLayer` were replaced by an
+explicit block over `F.scaled_dot_product_attention(is_causal=True)`. The
+reason it was proposed does not survive measurement here, and a different one
+does.
+
+**The compile argument did not reproduce.** `#203` reported the wrapper failing
+`fullgraph` with `Could not guard on data-dependent expression Eq(u0, 1)`. On
+this host and Torch build, the wrapper reports one graph and zero breaks, and
+compiles under `fullgraph=True` — both as the model called it, `mask=` together
+with `is_causal=True`, and with `mask=` alone. Whatever produced that failure is
+not reproducible from this checkout, so the change does not rest on it.
+
+**What it does rest on is backend selection.** Flash and cuDNN attention refuse
+a non-null `attn_mask`, which asking `sdpa_kernel([SDPBackend.FLASH_ATTENTION])`
+for each form confirms directly: the additive mask raises `No available kernel`
+and `is_causal=True` is accepted. Handing attention a mask costs the two fastest
+kernels, whatever else the mask is doing.
+
+Forward, backward, and a fused Adam step on one 4090, one fixed batch held
+across arms, 40 steps after 12 warmup, five paired rounds, median reported.
+Worst run-to-run spread in any cell was 1.7%.
+
+| `model_dim` × batch × plies | wrapper | explicit blocks | delta |
+| --- | ---: | ---: | ---: |
+| 64 × 16 × 192 | 4.190 ms | 3.561 ms | 15.0% |
+| 512 × 16 × 192 | 5.617 ms | 5.271 ms | 6.2% |
+| 512 × 256 × 96 | 41.373 ms | 34.684 ms | 16.2% |
+| 1024 × 256 × 96 | 102.995 ms | 90.629 ms | 12.0% |
+
+A repeat taken while the card was shared reproduced the three larger workloads
+at 6.2%, 16.3%, and 12.3%. Its smallest-workload row carried 20% to 25%
+run-to-run spread and is not readable, which is the same fragility the re-read
+above records at batch 16.
+
+Under `torch.compile` the gap narrows to 3.2–8.2%, because inductor fuses away
+some of what the wrapper paid in Python. `reduce-overhead` behaves the same as
+the default mode at every workload but the smallest, where it is worth 17.8%.
+None of this is reachable by a real training step yet: `chunk_start_plies` still
+specializes every compiled graph, which is `#275`.
+
+**One finding is about the model rather than the clock.**
+`nn.TransformerEncoder` builds its stack with `copy.deepcopy` of one prototype
+layer, so every layer of the two-layer baseline began training identical to the
+others. Explicit construction draws each block. That makes the replacement a
+change to what a run learns rather than a refactor, so it was read against a
+control arm; `#203` holds the reading.
+
 ## What This Does Not Show
 
 - **Nothing about quality.** No run here was long enough to move a held-out
