@@ -238,6 +238,8 @@ def run_training(
         torch.cuda.manual_seed_all(config.seed)
     previous_deterministic = torch.are_deterministic_algorithms_enabled()
     torch.use_deterministic_algorithms(config.determinism == "strict")
+    previous_matmul_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision(config.matmul_precision)
     try:
         model = CausalMoveModel(config.model).to(
             device=device,
@@ -356,6 +358,7 @@ def run_training(
                     batch_size=train.loader.config.batch_size,
                     gradient_accumulation_steps=config.gradient_accumulation_steps,
                     determinism=config.determinism,
+                    matmul_precision=config.matmul_precision,
                     profile_phases=config.profile_phases,
                 ),
                 device=device,
@@ -511,6 +514,7 @@ def run_training(
         raise TrainingError(f"training failed: {error}") from error
     finally:
         torch.use_deterministic_algorithms(previous_deterministic)
+        torch.set_float32_matmul_precision(previous_matmul_precision)
         # A shard-backed loader holds worker processes and an open shard; both
         # outlive the run unless the run releases them, including the run that
         # is failing.
@@ -1018,10 +1022,14 @@ def _fused_optimizer(device: torch.device) -> bool:
     Derived from the backend rather than configured, because there is one right
     answer per backend and a dial with a single correct setting is a dial
     nobody should have to find. Adam over this model's parameter list is
-    otherwise dozens of small elementwise launches, and on CUDA the launches
-    cost more than the arithmetic: fusing them was worth 17.7% of a whole
-    training step, which is larger than every precision and transfer option
-    measured for this milestone put together.
+    otherwise dozens of small elementwise launches, and on a launch-bound step
+    the launches cost more than the arithmetic.
+
+    What that is worth turns out to be a property of the workload rather than
+    of the backend, and it ranges from decisive to nothing measurable across
+    the two this project runs. Neither end argues for a dial: the fused form is
+    never slower, so the setting that wins on a launch-bound step is free on
+    every other. `docs/planning/cuda-training-proof.md` owns both readings.
 
     Elementwise and deterministic either way, so this stays compatible with the
     strict correctness path. It does reassociate some floating-point work, so
@@ -1037,11 +1045,21 @@ def _fused_optimizer(device: torch.device) -> bool:
 #: checkpoint written under one value is not a checkpoint another value can
 #: continue. Adding to this set changes what a stored checkpoint means, which
 #: is `CHECKPOINT_VERSION`'s job.
-_EXECUTION_COMPATIBILITY_KEYS = ("precision", "parameter_dtype", "determinism")
+_EXECUTION_COMPATIBILITY_KEYS = (
+    "precision",
+    "parameter_dtype",
+    "matmul_precision",
+    "determinism",
+)
 
 #: The execution settings recorded to describe the run that wrote a checkpoint.
 #: A continuation is free to differ in every one of them, so adding one is not
 #: a breaking change and a checkpoint written before one existed still resumes.
+#:
+#: The line between this set and the one above is declared against derived. A
+#: fused optimizer arrives with the backend and cannot be asked for on its own,
+#: so it describes where a run happened; matmul precision is chosen, and what it
+#: chooses is the arithmetic every gradient is computed in.
 _EXECUTION_PROVENANCE_KEYS = (
     "device",
     "backend",
@@ -1070,6 +1088,7 @@ def _execution_record(
         "determinism": config.determinism,
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
         "fused_optimizer": _fused_optimizer(device),
+        "matmul_precision": config.matmul_precision,
         "phase_profiling": config.profile_phases,
     }
 
