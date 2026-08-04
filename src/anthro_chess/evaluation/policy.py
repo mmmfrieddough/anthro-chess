@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch import Tensor
@@ -171,6 +171,25 @@ class ActiveBatch:
     game_ids: tuple[int, ...]
     ply_indices: tuple[int, ...]
     ratings: tuple[int | None, ...]
+
+    def rescored(self, logits: Tensor, batch: MoveModelBatch) -> ActiveBatch:
+        """Return these rows again, read off a second pass over one batch.
+
+        Comparing conditioning treatments runs the model repeatedly over one
+        batch, and only the logits and the rating the model saw can differ
+        between the passes: which rows are enabled, what they target, which
+        actions are legal there, and which position each row is are properties
+        of the batch rather than of the treatment. Carrying them across pays
+        the mask build, the per-row validation, and the enabled-row scan once
+        for the batch instead of once per treatment.
+        """
+
+        _validate_logit_shape(logits, batch)
+        return replace(
+            self,
+            logits=_active_logits(logits, batch),
+            ratings=_active_ratings(batch),
+        )
 
 
 def score_positions(active: ActiveBatch) -> tuple[PositionPolicy, ...]:
@@ -380,11 +399,7 @@ def active_batch(logits: Tensor, batch: MoveModelBatch) -> ActiveBatch:
     if legal_action_ids is None:
         raise ValueError("scoring a policy needs the batch's legal actions")
 
-    active_logits = (
-        logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
-    )
-    if not torch.all(torch.isfinite(active_logits)):
-        raise ValueError("enabled action logits must all be finite")
+    active_logits = _active_logits(logits, batch)
 
     # Game ids stay in their own dtype. They are unsigned 64-bit hashes, and
     # folding them into the stack below would wrap every id past the signed
@@ -422,11 +437,6 @@ def active_batch(logits: Tensor, batch: MoveModelBatch) -> ActiveBatch:
         bool(present_rows[batch_index][sequence_index])
         for batch_index, sequence_index in active_indices
     ]
-    if any(
-        present and value < 0
-        for value, present in zip(rating_values, rating_present, strict=True)
-    ):
-        raise ValueError("present player ratings must be nonnegative")
 
     legal_rows: list[tuple[int, ...]] = []
     game_ids: list[int] = []
@@ -442,21 +452,82 @@ def active_batch(logits: Tensor, batch: MoveModelBatch) -> ActiveBatch:
         game_ids.append(game_id_rows[batch_index][sequence_index])
         ply_indices.append(ply_index_rows[batch_index][sequence_index])
 
-    legal_mask = torch.zeros_like(active_logits, dtype=torch.bool)
-    for offset, legal_actions in enumerate(legal_rows):
-        legal_mask[offset, torch.tensor(legal_actions, dtype=torch.long)] = True
-
     return ActiveBatch(
         logits=active_logits,
-        legal_mask=legal_mask,
+        legal_mask=_legal_mask(legal_rows, active_logits),
         legal_rows=tuple(legal_rows),
         targets=targets,
         game_ids=tuple(game_ids),
         ply_indices=tuple(ply_indices),
-        ratings=tuple(
-            value if present else None
-            for value, present in zip(rating_values, rating_present, strict=True)
-        ),
+        ratings=_ratings(rating_values, rating_present),
+    )
+
+
+def _legal_mask(legal_rows: Sequence[Sequence[int]], active_logits: Tensor) -> Tensor:
+    """Return one row per enabled position, marking its legal actions.
+
+    Written in a single indexed assignment rather than a row at a time. A row
+    holds a few dozen legal actions and a batch holds hundreds of rows -- the
+    evaluation defaults reach 610 enabled rows at the median -- so a per-row
+    write spends more of the host building index tensors and dispatching
+    kernels than on the mask itself, about four times more at that shape.
+    """
+
+    legal_mask = torch.zeros_like(active_logits, dtype=torch.bool)
+    rows = torch.repeat_interleave(
+        torch.arange(len(legal_rows), dtype=torch.long),
+        torch.tensor([len(row) for row in legal_rows], dtype=torch.long),
+    )
+    columns = torch.tensor(
+        [action for row in legal_rows for action in row], dtype=torch.long
+    )
+    legal_mask[rows, columns] = True
+    return legal_mask
+
+
+def _active_logits(logits: Tensor, batch: MoveModelBatch) -> Tensor:
+    """Return the enabled rows on the host, checked on the copy being made."""
+
+    active_logits = (
+        logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
+    )
+    if not torch.all(torch.isfinite(active_logits)):
+        raise ValueError("enabled action logits must all be finite")
+    return active_logits
+
+
+def _active_ratings(batch: MoveModelBatch) -> tuple[int | None, ...]:
+    """Return the rating each enabled row carries, in one device read."""
+
+    rating = batch.inputs.target_rating
+    values, present = (
+        torch.stack(
+            (
+                rating.values.to(dtype=torch.long),
+                rating.present.to(dtype=torch.long),
+            )
+        )[:, batch.action_loss_mask]
+        .detach()
+        .cpu()
+        .tolist()
+    )
+    return _ratings(values, [bool(value) for value in present])
+
+
+def _ratings(
+    values: Sequence[int],
+    present: Sequence[bool],
+) -> tuple[int | None, ...]:
+    """Return the rating the model saw at each enabled row, absent as ``None``."""
+
+    if any(
+        is_present and value < 0
+        for value, is_present in zip(values, present, strict=True)
+    ):
+        raise ValueError("present player ratings must be nonnegative")
+    return tuple(
+        value if is_present else None
+        for value, is_present in zip(values, present, strict=True)
     )
 
 

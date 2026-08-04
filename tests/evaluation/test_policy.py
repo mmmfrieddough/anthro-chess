@@ -22,7 +22,7 @@ from anthro_chess.evaluation.policy import (
     score_terminal_actions,
     top_action,
 )
-from anthro_chess.models import MoveModelBatch
+from anthro_chess.models import MoveModelBatch, OptionalTensor
 
 
 def test_policy_records_hand_computable_legality_and_rank(
@@ -146,6 +146,81 @@ def test_one_active_batch_serves_every_reading_of_one_forward_pass(
     assert [item.as_record() for item in terminals] == [
         item.as_record() for item in score_terminal_actions(active_batch(logits, batch))
     ]
+
+
+def test_the_legal_mask_marks_exactly_the_actions_each_row_allows(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """The mask is written in one indexed assignment over every enabled row.
+
+    Rows hold different numbers of legal actions, so a build that lost track of
+    which action belongs to which row would still produce a mask of the right
+    total weight. This reads the rows back apart.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, None), (("d2d4",), None, 1600))
+    )
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+
+    active = active_batch(logits, batch)
+
+    assert len(active.legal_rows) == int(batch.action_loss_mask.sum().item())
+    assert [
+        tuple(torch.nonzero(row, as_tuple=True)[0].tolist())
+        for row in active.legal_mask
+    ] == list(active.legal_rows)
+
+
+def test_rescoring_matches_aligning_the_second_pass_from_scratch(
+    sequence_batch: Callable[..., SequenceBatch],
+    device_read_trap: Callable[[Any], Any],
+) -> None:
+    """A second conditioning treatment reuses the alignment and lies nowhere.
+
+    Only the logits and the rating the model saw differ between treatments, so
+    everything else is carried across. ``ratings`` is the field that would go
+    stale: it comes from the conditioning the second pass replaced, so a
+    carried copy would report the first treatment's rating under the second
+    one's name.
+
+    The comparison is against the whole rebuilt value rather than field by
+    field, so a field added to ``ActiveBatch`` later is held to the same
+    standard without anyone remembering to add an assertion. The second pass
+    runs under the read trap because carrying the alignment must not cost the
+    per-position reads it exists to remove.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, None))
+    )
+    conditioned = replace(
+        batch,
+        inputs=replace(
+            batch.inputs,
+            target_rating=OptionalTensor(
+                values=torch.full_like(batch.inputs.target_rating.values, 2100),
+                present=batch.inputs.target_rating.present,
+            ),
+        ),
+    )
+    first = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+    second = torch.full_like(first, 0.5)
+
+    rescored = active_batch(first, batch).rescored(
+        device_read_trap(second),
+        device_read_trap(conditioned),
+    )
+
+    rebuilt = active_batch(second, conditioned)
+    assert rescored.ratings == (2100, None)
+    assert torch.equal(rescored.logits, rebuilt.logits)
+    assert torch.equal(rescored.legal_mask, rebuilt.legal_mask)
+    assert rescored == replace(
+        rebuilt,
+        logits=rescored.logits,
+        legal_mask=rescored.legal_mask,
+    )
 
 
 def test_legal_policy_normalizes_over_legal_actions_only(
