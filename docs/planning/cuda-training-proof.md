@@ -545,6 +545,11 @@ moved that by less than 20%. Batch construction is fixed; the phase in front of
 it is not, and no device-side setting in this table can be read against a step
 that is waiting on data. That is `#276` rather than anything here.
 
+The flat worker sweep was real and its reading was wrong. The loader kept only
+`prefetch_batches` jobs outstanding, so a pool larger than that dial never ran
+and nothing about decode capacity was being measured;
+`corpus-scale-loading.md` records what that cost and what removing it returned.
+
 **Which default is right is not answered here either.** A 70% throughput
 result is a reason to re-examine the precision default at the batch capacity
 selection lands on, not a reason to change it now: none of these runs was long

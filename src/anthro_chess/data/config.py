@@ -203,6 +203,12 @@ class StreamingLoaderConfig(ConfigModel):
     with none, building a batch ahead would cost the memory and save nothing,
     so exactly one is held.
 
+    The two add rather than compete: the loader keeps one outstanding job per
+    worker and ``prefetch_batches`` more on top, because a worker whose next
+    job is not already queued waits for the consumer to come back for the one
+    it just finished. Their sum is what is resident, so raising the pool raises
+    the memory held in flight as much as raising the depth does.
+
     The remaining bound is not configured here at all. Materialization reads
     one row group at a time, so preparation's shard and row-group sizing is
     what caps the columnar read; ``docs/data.md`` owns that end.

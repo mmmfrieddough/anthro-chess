@@ -64,9 +64,11 @@ drop_last = false
 # a machine capability rather than a property of the run: it changes how fast
 # the same batches arrive and never which examples share one, so lower it on a
 # host with fewer cores and a run may still be resumed with a different value.
-# Eight is where decoding stopped being the largest phase of a step on the
-# measured host; past that the remaining data time is the parent's own share
-# and more workers do not move it.
+# Eight is what this batch needs and no more. Raise it with the batch rather
+# than on its own: what a pool absorbs is decode, and decode grows with the
+# batch while the device work barely does, so a pool sized against a small
+# batch is spare capacity. `docs/planning/corpus-scale-loading.md` has the
+# sweep across batch 16, 64, and 256.
 [train.streaming]
 planning_window_examples = 16384
 workers = 8

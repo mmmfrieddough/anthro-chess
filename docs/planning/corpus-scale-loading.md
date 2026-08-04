@@ -52,8 +52,10 @@ shard digests come from the manifest check that already ran.
 
 Loader throughput on its own, over seven shards of this corpus at batch 16, was
 **13,300 plies/s** decoding in process and **68,500 plies/s** at eight worker
-processes, plateauing there against the parent's own share of the work. Worker
-counts of 0, 4, 8, 12, and 16 produced byte-identical batch sequences.
+processes, plateauing there against what was then read as the parent's own
+share of the work. That plateau was the queue depth rather than the parent, and
+"The Worker Dial Was Inert" below is what measured it. Worker counts of 0, 4,
+8, 12, and 16 produced byte-identical batch sequences.
 
 ## The Run
 
@@ -87,16 +89,190 @@ else:
 
 Decoding is the largest phase at four workers and stops being so at eight,
 where the three phases are within half a second of each other. Past eight the
-data time does not move, because what remains is the parent's own share —
-taking a batch's rows out of the columnar table and reading a packed batch back
-from a worker — which no number of workers reduces. The standalone plateau at
-68,500 plies/s is the same ceiling seen from the other side.
+data time does not move, and the reason recorded here — that what remains is
+the parent's own share, which no number of workers reduces — was wrong. The
+next section is what measured it. The standalone plateau at 68,500 plies/s is
+the same ceiling seen from the other side.
 
-Eight is therefore what the checked-in configuration carries. On a CPU run of
-the same configuration the balance is different: compute was 12.4 s against
-1.35 s of data, so the loader had roughly twice its rate spare. A larger model
-moves it back that way, which is worth remembering when capacity scaling
-changes the shape of a step.
+On a CPU run of the same configuration the balance is different: compute was
+12.4 s against 1.35 s of data, so the loader had roughly twice its rate spare.
+A larger model moves it back that way, which is worth remembering when capacity
+scaling changes the shape of a step.
+
+## The Worker Dial Was Inert, And Why
+
+`workers` bounded nothing. The loader submitted jobs only until
+`prefetch_batches` of them were outstanding, so a dial documented as how far
+ahead batches are built also decided how many worker processes could ever be
+running. Above it a worker never received a job at all; at it, every worker sat
+idle from the moment its result was ready until the consumer came back for it.
+
+Loader throughput on its own — no model, no device, 400 batches at batch 64 on
+the million-game selection, active positions per second:
+
+| workers | prefetch | positions/s |
+| ---: | ---: | ---: |
+| 8 | 8 | 142,266 |
+| 16 | 8 | 142,774 |
+| 24 | 8 | 141,374 |
+| 8 | 16 | 214,426 |
+| 8 | 24 | 214,530 |
+| 16 | 16 | 210,364 |
+| 24 | 24 | 280,411 |
+| 32 | 32 | 326,329 |
+| 24 | 48 | 369,849 |
+
+The first three rows are the flat sweep that `cuda-training-proof.md` read as
+something serial in the parent. The fourth row is the **same eight workers**
+with the depth doubled and nothing else changed, 51% faster than the first,
+which is what says the sweep was measuring the depth rather than decode
+capacity. Eight workers saturate near 214,000 however deep the queue goes past
+that; only then does the pool become the dial.
+
+The loader now keeps `workers + prefetch_batches` jobs outstanding — one per
+worker so none of them waits on the consumer, and the declared depth on top of
+those. **The depth is a rate, not an order**: two 200-step runs under strict
+determinism, one on each side of the change, reached bit-identical parameters
+across all 47 tensors and the same validation record.
+
+### What that returned to a run
+
+Three paired rounds at the shape the Milestone 5 baseline selected, each arm
+beside its partner rather than against a pooled mean, because this host is
+shared and drifts:
+
+```console
+uv run anthro train --config configs/training/lichess-blitz-1m.toml --no-record \
+  --set steps=3000 --set checkpoint_every_steps=3000 \
+  --set profile_phases=false \
+  --set train.loader.batch_size=64 --set validation.loader.batch_size=64
+```
+
+Phase profiling off, so the figure is wall clock rather than an instrumented
+split. Every other reading below is the same command with the settings it
+names.
+
+| round | before | after | paired |
+| ---: | ---: | ---: | ---: |
+| 1 | 139,696 /s | 219,144 /s | +56.9% |
+| 2 | 137,767 /s | 217,828 /s | +58.1% |
+| 3 | 129,328 /s | 170,194 /s | +31.6% |
+
+Median **+58.1%**, at the workers and prefetch depth the configuration already
+carried. Mean step time falls from 30.7 ms to 19.4 ms.
+
+The third round is the one worth reading. Another session's evaluation sweep
+was running on this host for it, and the treated arm lost far more than the
+baseline did — which follows, because the arm that lost is the only one using
+the cores the sweep took. **A shared host is where this change is worth least**,
+and +31.6% is the floor these three rounds establish rather than an outlier to
+discard. A fourth round taken later, against a quiet host and four commits
+further along, read 138,894 against 219,623.
+
+## Where The Data Phase Goes
+
+The phase counters cannot answer this — they carry the instrument bias the
+closing note below describes — so the split comes from timing the loader by
+itself instead:
+`build_sharded_index` and `StreamingSequenceDataLoader` from this configuration,
+then `_job` and `_materialize_batch` timed apart around a `next(loader)` loop
+with no model and no device in the process at all. Per batch at batch 64, over
+120 batches of the million-game selection:
+
+| part | cost | where |
+| --- | ---: | --- |
+| bucket assembly | 2.4 ms | parent |
+| decode | 151.5 ms | worker |
+| collation | 5.9 ms | worker |
+| interprocess round trip | 3.2 ms | both |
+
+A batch here is 62 games and 4,088 plies. **Decode is 93% of the 163 ms**, and
+it is the part that parallelizes, which is what made the depth defect worth
+this much: it was discarding the pool that exists to absorb the one term large
+enough to need it. The parent's own serial share is the 2.4 ms of bucket
+assembly plus its half of the round trip, or about 4 ms, so the parent runs out
+near 250 batches per second — far above where the pool does.
+
+Decode is 2.4 ms per game, and the games are whole rather than chunked, so
+nothing is decoded that a batch does not use. Making a game cheaper to encode
+is a different change from this one, and it is what a pool eventually runs out
+of room to hide.
+
+## Is The Step Still Host-Bound
+
+At batch 64, with phase profiling on so the phases can be told apart, and
+reading the per-step columns rather than the shares:
+
+| workers | data | transfer | forward and backward | optimizer | data ÷ compute |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8, before | 24.75 ms | 0.96 ms | 5.06 ms | 0.28 ms | 4.90x |
+| 8 | 15.65 ms | 0.89 ms | 5.41 ms | 0.28 ms | 2.89x |
+| 16 | 9.47 ms | 1.03 ms | 5.20 ms | 0.28 ms | 1.82x |
+| 24 | 8.49 ms | 1.38 ms | 7.60 ms | 0.39 ms | 1.12x |
+
+The first row is the reading `#181` was filed on, reproduced at this shape:
+data 4.90 times compute. **Still host-bound at eight workers, and at parity by
+twenty-four.** Not device-bound — a step at 24 workers still spends about as
+long waiting for a batch as computing one, and the honest form of the claim is
+that waiting stopped dominating rather than that it stopped mattering.
+
+Three more paired rounds at batch 64, both arms carrying the fix and differing
+only in the pool, say the same thing in wall clock: 197,395 against 230,909,
+187,828 against 236,482, and 208,981 against 323,623 — a further 17% to 55%.
+The spread is the point rather than noise around a single number, because a
+larger pool is worth whatever share of the host is free, and the first two
+rounds ran against another session's evaluation sweep while the third did not.
+
+### The batch is what decides whether the pool matters
+
+The same three arms at the batch this configuration declares, and at the batch
+`#276` measures:
+
+| batch | arm | data | forward and backward | data ÷ compute | positions/s |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 16 | before, 8 workers | 3.24 ms | 4.11 ms | 0.79x | 129,243 |
+| 16 | 8 workers | 1.48 ms | 4.13 ms | 0.36x | 167,302 |
+| 16 | 24 workers | 1.27 ms | 4.13 ms | 0.31x | 171,402 |
+| 256 | before, 8 workers | 98.99 ms | 7.36 ms | 13.45x | 141,879 |
+| 256 | 8 workers | 65.76 ms | 7.60 ms | 8.66x | 207,849 |
+| 256 | 24 workers | 34.90 ms | 8.57 ms | 4.07x | 379,651 |
+
+**At batch 16 the step was never data-bound**, and tripling the pool there is
+worth 2.5% — inside this host's spread, so `workers` stays at eight. At batch
+256 the same triple is worth 83%, because what a pool absorbs is decode and
+decode scales with the batch while the device work barely does. The dial to
+raise is the pool, and the thing that decides when is the batch.
+
+The depth fix is worth having at every one of them: +29% at batch 16, +58% at
+64, +46% at 256, and it is the only change here that does not depend on
+choosing a number.
+
+Over a longer run — 15,000 steps at batch 64 and 24 workers, 11,240 of them
+inside the steady-state window, so the phases are measured across minutes
+rather than seconds:
+
+| phase | seconds | per step | share |
+| --- | ---: | ---: | ---: |
+| data | 93.61 s | 6.24 ms | 43.2% |
+| transfer | 19.26 s | 1.28 ms | 8.9% |
+| forward and backward | 91.50 s | 6.10 ms | 42.2% |
+| optimizer | 4.97 s | 0.33 ms | 2.3% |
+
+**Data is 1.02 times compute**, against the 4.05 the issue was filed on, and
+the data figure is the biased one. The same run without the instrument reads
+290,245 active positions per second. This is the shape the rest of the
+milestone can be read against — but the loader is still half of it, so a
+device-side setting measured here is still measured at half strength.
+
+Startup is 131 s of that run's 428 s and is excluded from the window rather
+than averaged into it, which is the only reason a reading this short is worth
+quoting. Most of it is the preview cadence, below.
+
+Read every `data` figure in this document as an upper bound. Phase profiling
+synchronizes the device at each boundary, so the parent cannot overlap its wait
+on the loader with device work it already queued, and `data_seconds` is
+measured as exactly that wait. That is why every improvement above is quoted
+from the wall-clock arms rather than from a phase table.
 
 ## What The First Table's Two Rows Say
 

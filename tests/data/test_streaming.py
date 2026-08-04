@@ -495,6 +495,34 @@ def test_workers_produce_the_batches_the_plan_named(
     assert shared == alone
 
 
+def test_a_pool_larger_than_the_prefetch_depth_still_has_jobs_outstanding(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """One outstanding job per worker, and the prefetch depth on top of them.
+
+    Read off the deque, because what a pool is being given is not observable
+    from the batches that come back — only from timing, which a test cannot
+    hold still.
+    """
+
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 64), games_per_shard=64
+    )
+    config = SequenceLoaderConfig(split="train", batch_size=2, length_bucket_width=4)
+    streaming = StreamingLoaderConfig(workers=3, prefetch_batches=2)
+
+    loader = _loader(corpus, config, streaming)
+    try:
+        next(loader)
+        outstanding = len(loader._inflight)
+    finally:
+        loader.close()
+
+    assert outstanding == streaming.workers + streaming.prefetch_batches
+
+
 def test_identity_follows_the_manifest_the_shards_the_split_and_the_selection(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
