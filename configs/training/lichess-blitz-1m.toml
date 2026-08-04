@@ -9,7 +9,7 @@
 #
 # Normalized and manifest paths are machine-specific and must be supplied at
 # run time, the same convention the other training configs follow.
-output_directory = "artifacts/training-blitz-1m"
+run_name = "training-blitz-1m"
 seed = 17
 steps = 8000
 learning_rate = 0.001
