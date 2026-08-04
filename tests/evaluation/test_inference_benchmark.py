@@ -233,11 +233,11 @@ def test_throughput_times_the_batch_it_builds(
     tmp_path: Path,
     inference_run: Callable[..., Path],
 ) -> None:
-    """The suite's cost unit has to include the term that grows with history.
+    """The suite's cost unit has to include what a decision actually builds.
 
-    Timing a batch built once and reused excluded batch construction, which is
-    the dominant cost of a generated decision and the one that rises with ply
-    depth. That figure is still reported, as its own declared quantity.
+    Timing a batch built once and reused excluded batch construction, masking,
+    and sampling — the work a generated decision pays for every ply. That figure
+    is still reported, as its own declared quantity.
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=18)

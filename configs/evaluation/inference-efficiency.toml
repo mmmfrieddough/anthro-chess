@@ -19,9 +19,9 @@
 #
 # Both throughput figures are reported and they are not interchangeable. The
 # headline resolves whole batched decisions the way the generated benchmarks do,
-# including the batch construction that grows with history; the forward figure
-# re-runs a batch built once, which isolates launch cost and is the wrong number
-# for sizing a generated run.
+# including the batch construction, masking and sampling a decision pays for;
+# the forward figure re-runs a batch built once, which isolates launch cost and
+# is the wrong number for sizing a generated run.
 
 [runtime]
 # Fixed so the measured decisions are reproducible. Temperature is recorded in

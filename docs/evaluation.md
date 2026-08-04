@@ -2410,7 +2410,7 @@ Two figures are reported here and they are not interchangeable. The headline
 resolves **whole batched decisions** through the same loop the generated
 benchmarks run — collect every pending context, resolve them in one padded
 forward pass, mask and sample each result — so it carries the batch construction
-that grows with history and dominates a generated decision. The **forward pass
+and the masking and sampling a generated decision pays for. The **forward pass
 alone** is measured on a batch built once and re-run, which isolates launch cost
 for a kernel or precision change; that is the right number for that question and
 the wrong one for sizing a run, since it exceeds the whole-decision figure by

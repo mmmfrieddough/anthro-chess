@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
@@ -13,8 +13,8 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
+    DecisionColumn,
     DecisionContext,
-    PlyContext,
     SequenceBatch,
 )
 from anthro_chess.data.loading import LegalActionTensor
@@ -23,30 +23,6 @@ from anthro_chess.data.loading import LegalActionTensor
 #: built from them name their columns alike, so the rules are written once and
 #: the type checker holds both families to every name they use.
 _Batch: TypeAlias = "SequenceBatch | MoveModelBatch"
-
-
-def _validated_plies(context: DecisionContext) -> tuple[PlyContext, ...]:
-    """Return one decision history after rejecting misaligned inputs."""
-
-    plies = context.plies
-    if tuple(ply.ply_index for ply in plies) != tuple(range(len(plies))):
-        raise ValueError("decision context plies must be a complete zero-based history")
-    if plies[0].previous_action_id is not None or any(
-        ply.previous_action_id is None for ply in plies[1:]
-    ):
-        raise ValueError("decision context previous actions must align with history")
-    if any(
-        value is not None
-        for ply in plies
-        for value in (
-            ply.time_initial_ms,
-            ply.time_increment_ms,
-            ply.player_clock_ms,
-            ply.opponent_clock_ms,
-        )
-    ):
-        raise ValueError("the current move model does not support timing inputs")
-    return plies
 
 
 @dataclass(frozen=True)
@@ -204,90 +180,92 @@ class MoveModelBatch:
         inputs the same history would present alone. A caller reads each
         decision at its own history length rather than at a shared last
         column.
+
+        Each history arrives as the buffers it accumulated while it was played,
+        so a row is a memory copy rather than a walk of the plies behind it and
+        every column of every history crosses to the device together.
         """
 
         if not contexts:
             raise ValueError("a decision batch needs at least one context")
         tensor_device = torch.device(device) if device is not None else None
-        histories = tuple(_validated_plies(context) for context in contexts)
-        lengths = tuple(len(plies) for plies in histories)
+        histories = tuple(context.columns for context in contexts)
+        lengths = tuple(history.length for history in histories)
+        count = len(contexts)
         width = max(lengths)
 
-        def padded(
-            select: Callable[[PlyContext], int | None],
-            fill: int | None = 0,
-        ) -> tuple[tuple[int | None, ...], ...]:
-            return tuple(
-                tuple(select(ply) for ply in plies) + (fill,) * (width - len(plies))
-                for plies in histories
+        boards = np.zeros((count, width, BOARD_SQUARE_COUNT), dtype=np.uint8)
+        packed = np.zeros((len(DecisionColumn), count, width), dtype=np.int64)
+        attention = np.zeros((count, width), dtype=np.bool_)
+        ratings = np.zeros((count, width), dtype=np.int64)
+        rated = np.zeros((count, width), dtype=np.bool_)
+        for index, history in enumerate(histories):
+            length = history.length
+            boards[index, :length] = np.frombuffer(
+                history.piece_ids, dtype=np.uint8
+            ).reshape(length, BOARD_SQUARE_COUNT)
+            packed[:, index, :length] = (
+                np.frombuffer(history.values, dtype=np.int64)
+                .reshape(length, len(DecisionColumn))
+                .T
             )
+            attention[index, :length] = True
+            # Only the decision being made is rated, which is the last real
+            # timestep of its own row rather than a shared final column.
+            target_rating = contexts[index].target_rating
+            if target_rating is not None:
+                ratings[index, length - 1] = target_rating
+                rated[index, length - 1] = True
 
-        def required(rows: tuple[tuple[int | None, ...], ...]) -> Tensor:
-            return torch.as_tensor(rows, dtype=torch.long, device=tensor_device)
+        def transferred(values: np.ndarray) -> Tensor:
+            return torch.from_numpy(values).to(device=tensor_device)
 
-        def optional(rows: tuple[tuple[int | None, ...], ...]) -> OptionalTensor:
-            return OptionalTensor(
-                required(
-                    tuple(
-                        tuple(value if value is not None else 0 for value in row)
-                        for row in rows
-                    )
-                ),
-                torch.as_tensor(
-                    tuple(tuple(value is not None for value in row) for row in rows),
-                    dtype=torch.bool,
-                    device=tensor_device,
-                ),
-            )
+        # Already the width the model indexes with, so the columns cross once
+        # and are read where they land. The board is the payload worth
+        # narrowing and is widened on the far side of its own copy.
+        crossed = transferred(packed)
 
-        boards = np.zeros((len(contexts), width, BOARD_SQUARE_COUNT), dtype=np.uint8)
-        for index, plies in enumerate(histories):
-            boards[index, : len(plies)] = np.frombuffer(
-                b"".join([ply.board.piece_ids for ply in plies]),
-                dtype=np.uint8,
-            ).reshape(len(plies), BOARD_SQUARE_COUNT)
-        ratings = tuple(
-            (None,) * (length - 1)
-            + (context.target_rating,)
-            + (None,) * (width - length)
-            for context, length in zip(contexts, lengths, strict=True)
-        )
+        def column(name: DecisionColumn) -> Tensor:
+            return crossed[name]
+
+        def present(name: DecisionColumn) -> Tensor:
+            return crossed[name].to(torch.bool)
+
         result = cls(
             inputs=MoveModelInputs(
-                piece_ids=torch.from_numpy(boards)
-                .to(device=tensor_device)
-                .to(torch.long),
-                side_to_move=required(padded(lambda ply: ply.board.side_to_move)),
-                castling_rights=required(padded(lambda ply: ply.board.castling_rights)),
-                en_passant_square=optional(
-                    padded(lambda ply: ply.board.en_passant_square, fill=None)
+                piece_ids=transferred(boards).to(torch.long),
+                side_to_move=column(DecisionColumn.SIDE_TO_MOVE),
+                castling_rights=column(DecisionColumn.CASTLING_RIGHTS),
+                en_passant_square=OptionalTensor(
+                    column(DecisionColumn.EN_PASSANT_SQUARE),
+                    present(DecisionColumn.EN_PASSANT_PRESENT),
                 ),
-                halfmove_clock=required(padded(lambda ply: ply.board.halfmove_clock)),
-                fullmove_number=required(padded(lambda ply: ply.board.fullmove_number)),
-                previous_action_id=optional(
-                    padded(lambda ply: ply.previous_action_id, fill=None)
+                halfmove_clock=column(DecisionColumn.HALFMOVE_CLOCK),
+                fullmove_number=column(DecisionColumn.FULLMOVE_NUMBER),
+                previous_action_id=OptionalTensor(
+                    column(DecisionColumn.PREVIOUS_ACTION_ID),
+                    present(DecisionColumn.PREVIOUS_ACTION_PRESENT),
                 ),
-                target_rating=optional(ratings),
+                target_rating=OptionalTensor(
+                    transferred(ratings),
+                    transferred(rated),
+                ),
             ),
             action_targets=torch.zeros(
-                (len(contexts), width), dtype=torch.long, device=tensor_device
+                (count, width), dtype=torch.long, device=tensor_device
             ),
             action_loss_mask=torch.zeros(
-                (len(contexts), width), dtype=torch.bool, device=tensor_device
+                (count, width), dtype=torch.bool, device=tensor_device
             ),
-            attention_mask=torch.as_tensor(
-                tuple(
-                    (True,) * length + (False,) * (width - length) for length in lengths
-                ),
-                dtype=torch.bool,
-                device=tensor_device,
-            ),
+            attention_mask=transferred(attention),
             legal_action_ids=None,
             game_ids=torch.zeros(
-                (len(contexts), width), dtype=torch.long, device=tensor_device
+                (count, width), dtype=torch.long, device=tensor_device
             ),
-            ply_indices=required(padded(lambda ply: ply.ply_index)),
-            chunk_start_plies=tuple(plies[0].ply_index for plies in histories),
+            ply_indices=column(DecisionColumn.PLY_INDEX),
+            chunk_start_plies=tuple(
+                int(start) for start in packed[DecisionColumn.PLY_INDEX, :, 0]
+            ),
         )
         result.validate()
         return result
