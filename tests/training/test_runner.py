@@ -351,7 +351,7 @@ def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
         tmp_path / "config",
         normalized=prepared.normalized_path,
         manifest=prepared.manifest_path,
-        output=tmp_path / "run",
+        run_name="run",
         validation=False,
         extra='matmul_precision = "high"\n',
     )
@@ -366,7 +366,10 @@ def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
         return original_forward(self, batch)
 
     monkeypatch.setattr(CausalMoveModel, "forward", recording_forward)
-    result = run_training(load_config(TrainingConfig, path=config_path))
+    result = run_training(
+        load_config(TrainingConfig, path=config_path),
+        output_directory=tmp_path / "run",
+    )
 
     assert observed and set(observed) == {"high"}
     assert torch.get_float32_matmul_precision() == "highest"
