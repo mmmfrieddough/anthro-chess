@@ -66,6 +66,7 @@ from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
     PositionPolicy,
+    active_batch,
     legal_policy_log_probabilities,
     policy_divergence,
     score_action_sets,
@@ -243,9 +244,8 @@ class _ScoringSession:
         positions: list[PositionPolicy] = []
         for batch in self._batches():
             conditioned = self._condition(batch, conditioning)
-            positions.extend(
-                score_positions(self._runner.action_logits(conditioned), conditioned)
-            )
+            active = active_batch(self._runner.action_logits(conditioned), conditioned)
+            positions.extend(score_positions(active))
         if not positions:
             raise CheckpointEvaluationError(
                 "the configured view selected no positions to score"
@@ -261,9 +261,9 @@ class _ScoringSession:
         adjudicated: list[ActionSetPolicy] = []
         subsets = action_sets(self._inputs)
         for batch in self._batches():
-            logits = self._runner.action_logits(batch)
-            positions.extend(score_positions(logits, batch))
-            adjudicated.extend(score_action_sets(logits, batch, subsets))
+            active = active_batch(self._runner.action_logits(batch), batch)
+            positions.extend(score_positions(active))
+            adjudicated.extend(score_action_sets(active, subsets))
         if not positions:
             raise CheckpointEvaluationError(
                 "the configured view selected no positions to score"
@@ -303,12 +303,11 @@ class _ScoringSession:
             policies = []
             for conditioning in treatments:
                 conditioned = self._condition(batch, conditioning)
-                policies.append(
-                    legal_policy_log_probabilities(
-                        self._runner.action_logits(conditioned),
-                        conditioned,
-                    )
+                active = active_batch(
+                    self._runner.action_logits(conditioned),
+                    conditioned,
                 )
+                policies.append(legal_policy_log_probabilities(active))
             true, low, high = policies
             for offset, key in enumerate(keys):
                 signals[key] = _trajectory_signal(
@@ -823,7 +822,7 @@ def _shuffled_ratings(
 def _batch_keys(batch: MoveModelBatch) -> tuple[PositionKey, ...]:
     """Return the identity of every enabled position, in one device read."""
 
-    # Game ids stay in their own unsigned dtype; see ``_active_batch``.
+    # Game ids stay in their own unsigned dtype; see ``active_batch``.
     game_ids = batch.game_ids.detach().cpu().tolist()
     enabled, ply_indices = (
         torch.stack(

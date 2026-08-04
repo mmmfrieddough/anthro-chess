@@ -213,6 +213,34 @@ class PositionSlices:
         }
 
 
+@dataclass(frozen=True)
+class PositionLabels:
+    """Everything exact chess logic says about one evaluated position.
+
+    The two halves are derived together because they are the same work: the
+    characteristics read the predicates, and both read the position's legal
+    moves. Splitting them made each caller generate that list again.
+    """
+
+    predicates: Mapping[PositionPredicate, PredicateMatch]
+    characteristics: frozenset[PositionCharacteristic]
+
+
+def position_labels(board: chess.Board) -> PositionLabels:
+    """Return one position's rule-sensitive labels from a single reading."""
+
+    legal_moves = tuple(board.legal_moves)
+    predicates = match_position_predicates(board, legal_moves=legal_moves)
+    return PositionLabels(
+        predicates=predicates,
+        characteristics=board_characteristics(
+            board,
+            predicates=predicates,
+            legal_moves=legal_moves,
+        ),
+    )
+
+
 def game_phase(piece_ids: Sequence[int], fullmove_number: int) -> GamePhase:
     """Return the phase implied by remaining material and move number.
 
@@ -324,37 +352,43 @@ def board_characteristics(
     board: chess.Board,
     *,
     predicates: Mapping[PositionPredicate, PredicateMatch] | None = None,
+    legal_moves: Sequence[chess.Move] | None = None,
 ) -> frozenset[PositionCharacteristic]:
     """Return the rule-sensitive properties exact chess logic finds.
 
     This is the expensive slice, so it is applied to the positions a benchmark
-    actually scores rather than computed for every ply of a pool.
+    actually scores rather than computed for every ply of a pool. A caller that
+    has already generated the position's legal moves passes them rather than
+    paying for a second generation of the same list.
     """
 
-    legal_moves = list(board.legal_moves)
+    moves = tuple(board.legal_moves) if legal_moves is None else legal_moves
     observed: set[PositionCharacteristic] = set()
     if board.is_check():
         observed.add(PositionCharacteristic.CHECK)
     resolved = (
-        match_position_predicates(board, legal_moves=legal_moves)
+        match_position_predicates(board, legal_moves=moves)
         if predicates is None
         else predicates
     )
     if PositionPredicate.ONLY_MOVE in resolved:
         observed.add(PositionCharacteristic.ONLY_MOVE)
-    if not legal_moves:
+    if not moves:
+        # Checkmate and stalemate both need a position with no legal move, so
+        # asking which one this is belongs behind that test rather than in
+        # front of every position that has one.
         observed.add(PositionCharacteristic.TERMINAL)
-    if board.is_checkmate():
-        observed.add(PositionCharacteristic.CHECKMATE)
-    if board.is_stalemate():
-        observed.add(PositionCharacteristic.STALEMATE)
+        if board.is_checkmate():
+            observed.add(PositionCharacteristic.CHECKMATE)
+        elif board.is_stalemate():
+            observed.add(PositionCharacteristic.STALEMATE)
     if board.has_castling_rights(chess.WHITE) or board.has_castling_rights(chess.BLACK):
         observed.add(PositionCharacteristic.CASTLING_RIGHTS)
-    if any(board.is_castling(move) for move in legal_moves):
+    if any(board.is_castling(move) for move in moves):
         observed.add(PositionCharacteristic.CASTLING_AVAILABLE)
-    if any(board.is_en_passant(move) for move in legal_moves):
+    if any(board.is_en_passant(move) for move in moves):
         observed.add(PositionCharacteristic.EN_PASSANT)
-    if any(move.promotion is not None for move in legal_moves):
+    if any(move.promotion is not None for move in moves):
         observed.add(PositionCharacteristic.PROMOTION)
     if any(
         board.is_pinned(board.turn, square)
@@ -422,15 +456,21 @@ def match_position_predicates(
 
     passed = board.copy(stack=True)
     passed.push(chess.Move.null())
-    opponent_mates, opponent_stalemates = _terminal_moves(passed)
-    if opponent_mates:
+    if _has_terminal_reply(passed, checkmate=True):
         safe = _moves_avoiding_reply(board, moves, checkmate=True)
         matches[PositionPredicate.MATE_THREATENED] = PredicateMatch(
             predicate=PositionPredicate.MATE_THREATENED,
             successful_action_ids=frozenset(action_ids[move] for move in safe),
         )
 
-    if opponent_stalemates and _material_balance_for_side_to_move(board) > 0:
+    # The material test gates the stalemate resource and costs a piece count,
+    # while resolving whether the opponent has a stalemate at all costs a
+    # legal-move generation per reply. Asking the cheap question first leaves
+    # the expensive one unasked wherever its answer could not matter.
+    if _material_balance_for_side_to_move(board) > 0 and _has_terminal_reply(
+        passed,
+        checkmate=False,
+    ):
         safe = _moves_avoiding_reply(board, moves, checkmate=False)
         matches[PositionPredicate.STALEMATE_REPLY] = PredicateMatch(
             predicate=PositionPredicate.STALEMATE_REPLY,
@@ -441,19 +481,43 @@ def match_position_predicates(
 
 def _terminal_moves(
     board: chess.Board,
-    legal_moves: Sequence[chess.Move] | None = None,
+    legal_moves: Sequence[chess.Move],
 ) -> tuple[tuple[chess.Move, ...], tuple[chess.Move, ...]]:
-    moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
+    """Return which of ``legal_moves`` deliver mate and which force stalemate.
+
+    Both outcomes need a reply position with no legal move at all, so that one
+    question is asked first and exact chess logic is only asked to tell the two
+    apart where the answer can be either.
+    """
+
     mates: list[chess.Move] = []
     stalemates: list[chess.Move] = []
-    for move in moves:
+    for move in legal_moves:
         board.push(move)
-        if board.is_checkmate():
-            mates.append(move)
-        elif board.is_stalemate():
-            stalemates.append(move)
+        if not any(board.generate_legal_moves()):
+            if board.is_checkmate():
+                mates.append(move)
+            elif board.is_stalemate():
+                stalemates.append(move)
         board.pop()
     return tuple(mates), tuple(stalemates)
+
+
+def _has_terminal_reply(board: chess.Board, *, checkmate: bool) -> bool:
+    """Return whether any legal move from ``board`` ends the game that way.
+
+    Every caller asks whether such a reply exists rather than which moves are
+    it, so the first one found settles the question and the rest of the scan
+    never happens.
+    """
+
+    for move in board.legal_moves:
+        board.push(move)
+        ended = board.is_checkmate() if checkmate else board.is_stalemate()
+        board.pop()
+        if ended:
+            return True
+    return False
 
 
 def _moves_avoiding_reply(
@@ -465,10 +529,9 @@ def _moves_avoiding_reply(
     safe: list[chess.Move] = []
     for move in legal_moves:
         board.push(move)
-        replies, stalemates = _terminal_moves(board)
-        terminal_replies = replies if checkmate else stalemates
+        threatened = _has_terminal_reply(board, checkmate=checkmate)
         board.pop()
-        if not terminal_replies:
+        if not threatened:
             safe.append(move)
     return tuple(safe)
 

@@ -26,6 +26,7 @@ from anthro_chess.evaluation import (
     rating_band_name,
 )
 from anthro_chess.evaluation.results.metrics import ADJUDICATED_PREDICATE_NAMES
+from anthro_chess.evaluation.slices import position_labels
 
 
 def _phase(fen: str) -> GamePhase:
@@ -175,7 +176,12 @@ def test_rule_case_characteristics_are_derived_from_exact_logic() -> None:
     }
 
     for fen, expected in cases.items():
-        assert board_characteristics(chess.Board(fen)) == expected, fen
+        board = chess.Board(fen)
+        assert board_characteristics(board) == expected, fen
+        # One reading of a board answers both halves of its labels, sharing the
+        # legal moves and the predicate matches that deriving each alone would
+        # generate twice. A shared reading that drifted would move a metric.
+        assert position_labels(board).characteristics == expected, fen
 
 
 def test_forward_predicates_cover_exact_forced_outcomes() -> None:
@@ -200,11 +206,15 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
     }
 
     for fen, expected in cases.items():
-        observed = match_position_predicates(chess.Board(fen))
+        board = chess.Board(fen)
+        observed = match_position_predicates(board)
         assert {
             predicate: len(match.successful_action_ids)
             for predicate, match in observed.items()
         } == expected, fen
+        # See the characteristics case table above: one reading of a board
+        # answers both halves of its labels, and has to agree with each.
+        assert dict(position_labels(board).predicates) == dict(observed), fen
 
     # Classification carries real weight in a report: a decidable predicate has
     # an answer exact chess logic supplies outright, while a heuristic one is

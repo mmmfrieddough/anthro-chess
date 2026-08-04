@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from anthro_chess.evaluation.aggregation import UNRATED_SLICE
@@ -12,6 +12,7 @@ from anthro_chess.evaluation.curves import (
     PointReferenceComparison,
     compare_reference_rate,
 )
+from anthro_chess.evaluation.dependency import PositionKey
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
 from anthro_chess.evaluation.policy import ActionSetPolicy
 from anthro_chess.evaluation.results import DataComponent, Measurement, measurement
@@ -197,7 +198,8 @@ def build_adjudication_report(
 
     by_key = {(item.game_id, item.ply_index, item.name): item for item in scored}
     positions: list[AdjudicatedPosition] = []
-    for key, matches in inputs.predicates.items():
+    for key in inputs.plies:
+        matches = inputs.labels(key).predicates
         ply = inputs.plies[key]
         rating_band = inputs.slices[key].rating_band or UNRATED_SLICE
         for predicate, match in matches.items():
@@ -260,16 +262,23 @@ def build_adjudication_report(
 
 def action_sets(
     inputs: ScoringInputs,
-) -> Mapping[tuple[int, int], Mapping[str, frozenset[int]]]:
-    """Return the successful subsets the policy scorer consumes."""
+    keys: Collection[PositionKey] | None = None,
+) -> Mapping[PositionKey, Mapping[str, frozenset[int]]]:
+    """Return the successful subsets the policy scorer consumes.
+
+    ``keys`` narrows the result to the positions a reading keeps. A benchmark
+    that scores a window inside longer games passes it, because resolving the
+    predicates of a position it will discard is the whole cost of the position
+    and buys nothing.
+    """
 
     return {
         key: {
             predicate.value: match.successful_action_ids
             for predicate, match in matches.items()
         }
-        for key, matches in inputs.predicates.items()
-        if matches
+        for key in (inputs.plies if keys is None else keys)
+        if (matches := inputs.labels(key).predicates)
     }
 
 

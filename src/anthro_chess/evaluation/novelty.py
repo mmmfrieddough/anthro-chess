@@ -78,6 +78,7 @@ from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
     PositionPolicy,
+    active_batch,
     score_action_sets,
     score_positions,
 )
@@ -712,19 +713,18 @@ def _score_arm(
 
     positions: list[PositionPolicy] = []
     predicate_scores: list[ActionSetPolicy] = []
-    subsets = action_sets(inputs)
+    subsets = action_sets(inputs, measured)
     for batch in _batches(inputs, runner):
-        logits = runner.action_logits(batch)
+        active = active_batch(runner.action_logits(batch), batch)
         positions.extend(
             item
-            for item in score_positions(logits, batch)
+            for item in score_positions(active)
             if (item.game_id, item.ply_index) in measured
         )
-        predicate_scores.extend(
-            item
-            for item in score_action_sets(logits, batch, subsets)
-            if (item.game_id, item.ply_index) in measured
-        )
+        # No window filter here, unlike the scored positions above: the scorer
+        # reads a subset only where one was named, and the subsets were named
+        # over the window.
+        predicate_scores.extend(score_action_sets(active, subsets))
     if not positions:
         raise NoveltyBenchmarkError(
             f"the novelty arm at dose {dose} scored no position inside its window"
@@ -792,7 +792,7 @@ def _predicate_opportunities(
     for item in scored:
         key = (item.game_id, item.ply_index)
         predicate = PositionPredicate(item.name)
-        match = inputs.predicates[key].get(predicate)
+        match = inputs.labels(key).predicates.get(predicate)
         if match is None:
             continue
         grouped[predicate].append(

@@ -14,10 +14,12 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE, MOVE_ACTION_COUNT
 from anthro_chess.data import SequenceBatch
 from anthro_chess.evaluation.policy import (
     TOP_ILLEGAL_ACTIONS,
+    active_batch,
     legal_policy_log_probabilities,
     policy_divergence,
     score_action_sets,
     score_positions,
+    score_terminal_actions,
     top_action,
 )
 from anthro_chess.models import MoveModelBatch
@@ -39,7 +41,7 @@ def test_policy_records_hand_computable_legality_and_rank(
     logits[0, 0, others[2]] = 1.2
     logits[0, 0, illegal] = 5.0
 
-    (position,) = score_positions(logits, batch)
+    (position,) = score_positions(active_batch(logits, batch))
 
     probabilities = torch.softmax(logits[0, 0].double(), dim=-1)
     legal_mass = float(probabilities[list(legal_actions)].sum().item())
@@ -82,7 +84,7 @@ def test_target_rank_counts_only_stronger_legal_actions(
     logits[0, 0, target] = 1.0
     logits[0, 0, _first_illegal_action(legal_actions)] = 9.0
 
-    (position,) = score_positions(logits, batch)
+    (position,) = score_positions(active_batch(logits, batch))
 
     assert position.target_rank == 1
     assert position.within_top(1) is True
@@ -103,8 +105,7 @@ def test_named_action_sets_report_raw_mass_and_the_legal_greedy_choice(
     logits[0, 0, illegal] = 9.0
 
     (score,) = score_action_sets(
-        logits,
-        batch,
+        active_batch(logits, batch),
         {(100, 0): {"forced": {target}}},
     )
 
@@ -114,6 +115,37 @@ def test_named_action_sets_report_raw_mass_and_the_legal_greedy_choice(
     assert score.raw_probability_mass == pytest.approx(
         float(probabilities[target].item())
     )
+
+
+def test_one_active_batch_serves_every_reading_of_one_forward_pass(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Aligning a batch is the host cost of scoring it, and it is paid once.
+
+    A pass reading several quantities off the same logits builds the aligned
+    rows once and hands them to each scorer, so nothing a scorer does may
+    depend on having built them itself.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(sequence_batch((("e2e4",), 1500, None)))
+    assert batch.legal_action_ids is not None
+    target = int(batch.action_targets[0, 0].item())
+    logits = torch.zeros((1, 1, ACTION_VOCABULARY_SIZE))
+    logits[0, 0, target] = 2.0
+    named = {(100, 0): {"forced": {target}}}
+    shared = active_batch(logits, batch)
+
+    positions = score_positions(shared)
+    subsets = score_action_sets(shared, named)
+    terminals = score_terminal_actions(shared)
+
+    assert [item.as_record() for item in positions] == [
+        item.as_record() for item in score_positions(active_batch(logits, batch))
+    ]
+    assert subsets == score_action_sets(active_batch(logits, batch), named)
+    assert [item.as_record() for item in terminals] == [
+        item.as_record() for item in score_terminal_actions(active_batch(logits, batch))
+    ]
 
 
 def test_legal_policy_normalizes_over_legal_actions_only(
@@ -128,7 +160,7 @@ def test_legal_policy_normalizes_over_legal_actions_only(
     logits[0, 0, legal_actions[0]] = 4.0
     logits[0, 0, _first_illegal_action(legal_actions)] = 9.0
 
-    first, second = legal_policy_log_probabilities(logits, batch)
+    first, second = legal_policy_log_probabilities(active_batch(logits, batch))
 
     assert first.shape == (len(legal_actions),)
     assert float(torch.exp(first).sum().item()) == pytest.approx(1.0)
@@ -149,7 +181,7 @@ def test_scoring_rejects_legal_actions_that_do_not_align(
     logits = torch.zeros((1, 1, ACTION_VOCABULARY_SIZE))
 
     with pytest.raises(ValueError, match="sorted and unique"):
-        score_positions(logits, misaligned)
+        score_positions(active_batch(logits, misaligned))
 
 
 def test_scoring_needs_a_batch_that_carries_legal_actions(
@@ -164,7 +196,7 @@ def test_scoring_needs_a_batch_that_carries_legal_actions(
     logits = torch.zeros((1, 1, ACTION_VOCABULARY_SIZE))
 
     with pytest.raises(ValueError, match="needs the batch's legal actions"):
-        score_positions(logits, batch)
+        score_positions(active_batch(logits, batch))
 
 
 def test_scoring_preserves_a_game_id_past_the_signed_maximum(
@@ -186,7 +218,7 @@ def test_scoring_preserves_a_game_id_past_the_signed_maximum(
     )
     logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
 
-    (position,) = score_positions(logits, batch)
+    (position,) = score_positions(active_batch(logits, batch))
 
     assert position.game_id == identifier
 
@@ -201,7 +233,7 @@ def test_scoring_rejects_non_finite_logits_at_an_enabled_position(
     logits[0, 0, 0] = corruption
 
     with pytest.raises(ValueError, match="enabled action logits must all be finite"):
-        score_positions(logits, batch)
+        score_positions(active_batch(logits, batch))
 
 
 def test_scoring_ignores_non_finite_logits_where_no_action_is_scored(
@@ -223,7 +255,7 @@ def test_scoring_ignores_non_finite_logits_where_no_action_is_scored(
     for batch_index, sequence_index in disabled:
         logits[batch_index, sequence_index, 0] = math.inf
 
-    scored = score_positions(logits, batch)
+    scored = score_positions(active_batch(logits, batch))
 
     assert len(scored) == int(batch.action_loss_mask.sum().item())
 
@@ -245,10 +277,13 @@ def test_scoring_never_asks_the_device_for_a_scalar(
     )
     logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
 
-    scored = score_positions(device_read_trap(logits), device_read_trap(batch))
+    scored = score_positions(
+        active_batch(device_read_trap(logits), device_read_trap(batch))
+    )
 
     assert [position.as_record() for position in scored] == [
-        position.as_record() for position in score_positions(logits, batch)
+        position.as_record()
+        for position in score_positions(active_batch(logits, batch))
     ]
 
 
@@ -263,7 +298,7 @@ def test_the_trap_still_reports_non_finite_logits(
     logits[0, 0, 0] = math.inf
 
     with pytest.raises(ValueError, match="finite"):
-        score_positions(device_read_trap(logits), device_read_trap(batch))
+        score_positions(active_batch(device_read_trap(logits), device_read_trap(batch)))
 
 
 def _first_illegal_action(legal_actions: tuple[int, ...]) -> int:
