@@ -24,7 +24,11 @@ from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
-from anthro_chess.evaluation.curves import CurveQuantity
+from anthro_chess.evaluation.curves import (
+    CURVE_BOOTSTRAP_METHOD,
+    CURVE_DETERMINISTIC_METHOD,
+    CurveQuantity,
+)
 from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.reference import (
     DECLARED_NEIGHBOURS,
@@ -610,6 +614,51 @@ def test_a_distance_carries_the_floor_it_has_to_clear(
         assert conditional.value >= 0.0
         assert conditional.noise_floor is not None
         assert conditional.noise_floor.kind == "evaluation"
+
+
+def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """Both seats greedy means another run replays the reading exactly.
+
+    A bootstrap over those games reports how far a different draw would have
+    landed instead, and issue #257 measured what that costs: identical
+    distances carried floors fourteen orders of magnitude apart depending only
+    on how many copies of each forced game the suite had played.
+    """
+
+    result = _run(
+        _compared(
+            reference_pool,
+            grid={"target_ratings": (1200, 1800), "temperatures": (0.0, 1.0)},
+        )
+    )
+
+    greedy = result.reading(RolloutArm.STANDARD_START, 0.0)
+    sampled = result.reading(RolloutArm.STANDARD_START, 1.0)
+    assert greedy.comparisons
+    for comparison in greedy.comparisons.values():
+        assert comparison.floors is not None
+        assert comparison.floors.method == CURVE_DETERMINISTIC_METHOD
+        assert comparison.floors.conditional.value == 0.0
+        assert comparison.floors.pooled.value == 0.0
+    # The null levels answer a different question and survive: a finite sample
+    # still fails to match the reference exactly, whether or not another run
+    # would redraw it.
+    assert any(
+        comparison.references is not None for comparison in greedy.comparisons.values()
+    )
+    assert sampled.comparisons
+    for comparison in sampled.comparisons.values():
+        assert comparison.floors is not None
+        assert comparison.floors.method == CURVE_BOOTSTRAP_METHOD
+    # The per-ply divergence sweep is the same reading truncated, so it reaches
+    # the same answer rather than bootstrapping the identical games twenty times.
+    assert greedy.divergence
+    for point in greedy.divergence:
+        assert point.conditional_floor == 0.0
+        assert point.pooled_floor == 0.0
 
 
 def test_the_seeds_re_measure_each_distance_independently(

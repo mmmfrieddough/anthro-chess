@@ -84,6 +84,12 @@ CURVE_COMPARISON_VERSION = 1
 #: being characterized separately and looked up.
 CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-games"
 
+#: How a curve comparison states the floor of a model side that cannot vary.
+#: Re-measuring such a side replays the same games, so its evaluation noise is
+#: exactly zero rather than estimated, and the floor says so instead of
+#: bootstrapping games another seed was never going to change.
+CURVE_DETERMINISTIC_METHOD = "deterministic-model-side"
+
 #: Resamples behind a comparison's own floor. Lower than a scalar metric's
 #: bootstrap because one resample here re-estimates whole curves rather than
 #: recomputing a mean, and the floor is read to a couple of significant figures.
@@ -425,6 +431,11 @@ class CurveFloors:
     floor depends on how many games this particular reading generated. So it is
     estimated here and carried on the measurement rather than characterized
     once and stored separately.
+
+    ``method`` says how these floors were arrived at, because not every model
+    side is resampled to reach one. A side that cannot vary is stated at zero
+    and carries no resamples, and the two cases are not distinguishable from
+    the values alone: a bootstrap over plentiful games also lands near zero.
     """
 
     conditional: NoiseFloor
@@ -432,12 +443,13 @@ class CurveFloors:
     model_variation: NoiseFloor
     resamples: int
     coverage: float
+    method: str
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one comparison's floors."""
 
         return {
-            "method": CURVE_BOOTSTRAP_METHOD,
+            "method": self.method,
             "resamples": self.resamples,
             "coverage": self.coverage,
             "conditional": self.conditional.model_dump(mode="json"),
@@ -770,6 +782,7 @@ def compare_curves(
     coverage: float = DEFAULT_COVERAGE,
     confidence: float = DEFAULT_CONFIDENCE,
     floor_kind: NoiseFloorKind = "evaluation",
+    model_varies: bool = True,
     references: bool = True,
 ) -> CurveComparison:
     """Compare a generated curve against the human reference it should match.
@@ -781,10 +794,15 @@ def compare_curves(
 
     ``floor_kind`` says what re-measuring this comparison's model side would
     mean. The default suits a generated model side, where another run draws
-    fresh games and the spread across those draws is evaluation noise. A caller
-    whose model side is a deterministic pass over fixed inputs should say so,
-    since re-measuring it changes nothing and its floor describes the input
-    draw instead.
+    fresh games and the spread across those draws is evaluation noise.
+
+    ``model_varies`` says whether re-measuring the model side draws different
+    games at all. A caller whose model side is deterministic — greedy seats at
+    temperature zero, or a fixed pass over fixed inputs — passes ``False``, and
+    the floor is then stated at zero rather than bootstrapped: another
+    measurement replays these games, so there is no evaluation noise to bound
+    and resampling them would report the spread of a draw that is not going to
+    be redrawn.
 
     ``references`` may be turned off by a caller that needs only the floor.
     The null levels cost a permutation pass per replicate on top of the
@@ -822,6 +840,7 @@ def compare_curves(
         coverage=coverage,
         confidence=confidence,
         floor_kind=floor_kind,
+        model_varies=model_varies,
         references=references,
     )
 
@@ -1297,6 +1316,7 @@ def _resample(
     coverage: float,
     confidence: float,
     floor_kind: NoiseFloorKind,
+    model_varies: bool,
     references: bool = True,
 ) -> tuple[CurveFloors | None, CurveReferences | None]:
     """Estimate this comparison's own floors and null levels in one pass.
@@ -1309,8 +1329,11 @@ def _resample(
     human sampling error is common-mode and cancels in their difference:
     including it would inflate every floor and hide real movement. Only the
     model side is resampled, which is why the floor is evaluation noise rather
-    than data-sampling noise. For a generated model side the two coincide
+    than data-sampling noise. For a model side that varies the two coincide
     anyway, since a fresh draw of games is exactly what another seed produces.
+
+    That coincidence is what ``model_varies`` denies, and ``compare_curves``
+    documents what a caller passing it is claiming.
 
     A **reference** says what the distance would read at with nothing to find,
     which is an absolute statement about one reading rather than a difference.
@@ -1322,8 +1345,31 @@ def _resample(
     license every delta as a finding.
     """
 
+    method = CURVE_BOOTSTRAP_METHOD if model_varies else CURVE_DETERMINISTIC_METHOD
+    source = f"{spec.name} v{spec.version} {method}"
+
+    floors: CurveFloors | None = None
+    if not model_varies:
+        # Exact rather than estimated, and the same for all three readings:
+        # none of them can move when the games behind them cannot. Nothing
+        # about it depends on resampling, so it stands where a bootstrap could
+        # not — a model side too thin to resample is still replayed exactly.
+        exact = NoiseFloor(value=0.0, kind=floor_kind, source=source)
+        floors = CurveFloors(
+            conditional=exact,
+            pooled=exact,
+            model_variation=exact,
+            resamples=0,
+            coverage=coverage,
+            method=method,
+        )
+
+    # Everything below is resampling, which only a bootstrap floor or a null
+    # level needs. A stated floor asked for on its own leaves nothing to draw.
+    if not model_varies and not references:
+        return floors, None
     if resamples < 2 or model.size < 2:
-        return None, None
+        return floors, None
     human_weights = generator.multinomial(
         human.size, np.full(human.size, 1.0 / human.size), size=resamples
     ).astype(np.float64)
@@ -1333,41 +1379,49 @@ def _resample(
     paired = (
         _read(spec, human, model, human_weights, model_weights) if references else None
     )
-    # The human reference held exactly as measured, so this varies only in
-    # which games the model produced.
-    model_only = _read(
-        spec,
-        human,
-        model,
-        np.ones((resamples, human.size), dtype=np.float64),
-        model_weights,
-    )
-
-    floors: list[NoiseFloor] = []
-    source = f"{spec.name} v{spec.version} {CURVE_BOOTSTRAP_METHOD}"
-    # The generated games are the independent replicates behind these floors.
-    # The resample count only says how finely their spread was read, so it is
-    # the model side's size that decides how far the bound sits above it.
-    freedom = int(model.size) - 1
-    for values in (
-        model_only.conditional,
-        model_only.pooled,
-        model_only.model_variation,
-    ):
-        observed = values[np.isfinite(values)]
-        if observed.size < 2:
-            return None, None
-        floors.append(
-            NoiseFloor(
-                value=floor_from_dispersion(
-                    float(np.std(observed, ddof=1)),
-                    degrees_of_freedom=freedom,
-                    coverage=coverage,
-                    confidence=confidence,
-                ),
-                kind=floor_kind,
-                source=source,
+    if model_varies:
+        # The human reference held exactly as measured, so this varies only in
+        # which games the model produced.
+        model_only = _read(
+            spec,
+            human,
+            model,
+            np.ones((resamples, human.size), dtype=np.float64),
+            model_weights,
+        )
+        # The generated games are the independent replicates behind these
+        # floors. The resample count only says how finely their spread was
+        # read, so it is the model side's size that decides how far the bound
+        # sits above it.
+        freedom = int(model.size) - 1
+        bootstrapped: list[NoiseFloor] = []
+        for values in (
+            model_only.conditional,
+            model_only.pooled,
+            model_only.model_variation,
+        ):
+            observed = values[np.isfinite(values)]
+            if observed.size < 2:
+                return None, None
+            bootstrapped.append(
+                NoiseFloor(
+                    value=floor_from_dispersion(
+                        float(np.std(observed, ddof=1)),
+                        degrees_of_freedom=freedom,
+                        coverage=coverage,
+                        confidence=confidence,
+                    ),
+                    kind=floor_kind,
+                    source=source,
+                )
             )
+        floors = CurveFloors(
+            conditional=bootstrapped[0],
+            pooled=bootstrapped[1],
+            model_variation=bootstrapped[2],
+            resamples=resamples,
+            coverage=coverage,
+            method=method,
         )
 
     levels = (
@@ -1383,16 +1437,7 @@ def _resample(
             coverage=coverage,
         )
     )
-    return (
-        CurveFloors(
-            conditional=floors[0],
-            pooled=floors[1],
-            model_variation=floors[2],
-            resamples=resamples,
-            coverage=coverage,
-        ),
-        levels,
-    )
+    return floors, levels
 
 
 def _references(
@@ -1665,6 +1710,7 @@ def _leave_one_out_error(
 __all__ = [
     "CURVE_BOOTSTRAP_METHOD",
     "CURVE_COMPARISON_VERSION",
+    "CURVE_DETERMINISTIC_METHOD",
     "DEFAULT_NEIGHBOUR_CANDIDATES",
     "DEFAULT_RESAMPLES",
     "HUMAN_REFERENCE_LABEL",
