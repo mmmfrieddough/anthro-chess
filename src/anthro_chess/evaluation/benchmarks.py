@@ -23,6 +23,7 @@ owns the other half, which is everything after a benchmark has finished.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -33,7 +34,11 @@ from anthro_chess.evaluation import roots
 
 if TYPE_CHECKING:
     from anthro_chess.evaluation.games import GameRecord
-    from anthro_chess.evaluation.results import DetailStore, ResultsStore
+    from anthro_chess.evaluation.results import (
+        BenchmarkReference,
+        DetailStore,
+        ResultsStore,
+    )
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,11 @@ class Benchmark:
     #: :func:`run_benchmark`. A step configured by another step's output takes
     #: that payload instead and is invoked by whatever produced it.
     invoke: Callable[..., Any]
+    #: What this benchmark's cost record is filed under. Declared rather than
+    #: taken from whichever reading the benchmark opens first, because the
+    #: checkpoint evaluation produces three readings and the cost of running it
+    #: belongs to none of them. ``None`` only where nothing is recorded at all.
+    cost: BenchmarkReference | None = None
     #: Whether the benchmark writes results to the store at all. Decision
     #: decomposition does not: it has no result kind, and a decomposition over
     #: one payload is a diagnostic rather than a series.
@@ -108,8 +118,15 @@ def benchmark_registry() -> dict[str, Benchmark]:
         benchmark_termination,
         evaluate_checkpoint,
     )
+    from anthro_chess.evaluation.checkpoint import CHECKPOINT_COST_BENCHMARK
     from anthro_chess.evaluation.decisions import DecisionDecompositionError
+    from anthro_chess.evaluation.inference import INFERENCE_BENCHMARK
+    from anthro_chess.evaluation.ladder import LADDER_BENCHMARK
+    from anthro_chess.evaluation.novelty import NOVELTY_BENCHMARK
+    from anthro_chess.evaluation.puzzles.benchmark import PUZZLE_BENCHMARK
     from anthro_chess.evaluation.results import ResultsStoreError
+    from anthro_chess.evaluation.rollout import ROLLOUT_BENCHMARK
+    from anthro_chess.evaluation.termination import TERMINATION_BENCHMARK
 
     store_errors = (ResultsStoreError,)
     return {
@@ -122,6 +139,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(InferenceBenchmarkError, *store_errors),
                 error=InferenceBenchmarkError,
                 invoke=benchmark_inference,
+                cost=INFERENCE_BENCHMARK,
             ),
             Benchmark(
                 name="run",
@@ -130,6 +148,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(CheckpointEvaluationError, LeakageError, *store_errors),
                 error=CheckpointEvaluationError,
                 invoke=evaluate_checkpoint,
+                cost=CHECKPOINT_COST_BENCHMARK,
             ),
             Benchmark(
                 name="novelty",
@@ -138,6 +157,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(NoveltyBenchmarkError, *store_errors),
                 error=NoveltyBenchmarkError,
                 invoke=benchmark_novelty,
+                cost=NOVELTY_BENCHMARK,
             ),
             Benchmark(
                 name="puzzles",
@@ -146,6 +166,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(PuzzleBenchmarkError, *store_errors),
                 error=PuzzleBenchmarkError,
                 invoke=benchmark_puzzles,
+                cost=PUZZLE_BENCHMARK,
             ),
             Benchmark(
                 name="rollout",
@@ -154,6 +175,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(RolloutBenchmarkError, *store_errors),
                 error=RolloutBenchmarkError,
                 invoke=benchmark_rollout,
+                cost=ROLLOUT_BENCHMARK,
                 games=_rollout_games,
                 retains_games=lambda config: bool(config.detail.retain_games),
             ),
@@ -174,6 +196,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(TerminationBenchmarkError, *store_errors),
                 error=TerminationBenchmarkError,
                 invoke=benchmark_termination,
+                cost=TERMINATION_BENCHMARK,
             ),
             Benchmark(
                 name="ladder",
@@ -182,6 +205,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 errors=(LadderBenchmarkError, *store_errors),
                 error=LadderBenchmarkError,
                 invoke=benchmark_ladder,
+                cost=LADDER_BENCHMARK,
             ),
         )
     }
@@ -232,13 +256,20 @@ def run_benchmark(
     shared call, which is a pre-loaded runner for the three that accept one.
     Neither the sweep nor a command passes any: it is how something that has
     already loaded a checkpoint measures with it rather than loading a second.
+
+    What the invocation cost is timed here, because here is the only place that
+    sees an invocation begin. The window closes before the append rather than
+    after it, so seven benchmarks that interleave their detail writes and their
+    bootstrap floors differently are still timed over the same thing.
     """
 
     # Imported here for the reason the registry is built here: recording pulls
     # in the model stack, and a suite selection is planned and printed without
     # it.
+    from anthro_chess.evaluation.cost import cost_device
     from anthro_chess.evaluation.recording import ResultRecording
 
+    started = time.perf_counter()
     with ResultRecording(
         resolved_config,
         store=store,
@@ -251,6 +282,10 @@ def run_benchmark(
             recording=recording,
             **measured,
         )
+        seconds = time.perf_counter() - started
+        device = cost_device(resolved_config.value, measured.get("runner"))
+        if benchmark.cost is not None and device is not None:
+            recording.cost(benchmark.cost, seconds=seconds, device=device)
     return replace(result, **recording.fields)
 
 

@@ -188,8 +188,8 @@ from anthro_chess.evaluation.results.metrics import (
     MOVE_PREDICTION_PROJECTION,
 )
 from anthro_chess.evaluation.results.noise import floor_from_dispersion
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 from anthro_chess.runtime.session import (
     BatchedActionModelRunner,
@@ -353,14 +353,9 @@ class RolloutDetailConfig(ConfigModel):
     retain_games: StrictBool = True
 
 
-class RolloutBenchmarkConfig(ConfigModel):
+class RolloutBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval rollout``."""
 
-    model: ModelRunnerConfig = ModelRunnerConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
     #: The base runtime settings every seat plays under. Rating, temperature,
     #: and seed are supplied per cell and per game, so setting them here would
     #: be overridden; the rest, such as whether resignation is enabled, applies

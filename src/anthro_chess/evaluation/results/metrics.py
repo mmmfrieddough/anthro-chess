@@ -645,6 +645,23 @@ TRAINING_EFFICIENCY_FAMILY = register_family(
     )
 )
 
+#: Split from both efficiency families because it describes the instrument
+#: rather than the product. Inference efficiency answers whether the engine is
+#: fast enough to play against; this answers what reading it cost the harness,
+#: which is a scope question about the suite. One family holding both would put
+#: a benchmark that got slower and a model that got slower on the same shelf.
+BENCHMARK_COST_FAMILY = register_family(
+    MetricFamily(
+        identifier="benchmark-cost",
+        title="Benchmark cost",
+        summary=(
+            "What one benchmark invocation cost to take, on the machine that "
+            "took it and under the configuration it was given. Read to decide "
+            "what a sweep can afford rather than to judge a checkpoint."
+        ),
+    )
+)
+
 INFERENCE_EFFICIENCY_FAMILY = register_family(
     MetricFamily(
         identifier="inference-efficiency",
@@ -2149,6 +2166,24 @@ TRAINING_PEAK_DEVICE_MEMORY_BYTES = _training_efficiency_metric(
         "rather than allocated, because cached free blocks still decide "
         "whether a larger configuration fits."
     ),
+)
+
+BENCHMARK_WALL_CLOCK_SECONDS = register_metric(
+    MetricDefinition(
+        identifier="benchmark.wall_clock_seconds",
+        family=BENCHMARK_COST_FAMILY.identifier,
+        direction=MetricDirection.LOWER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Wall-clock seconds one benchmark invocation spent in process, from "
+            "the driver's first statement to the moment it finished assembling "
+            "what it recorded. Interpreter startup, configuration loading and "
+            "the store append are outside it, so a sweep's total is the sum of "
+            "its steps plus what the driver itself pays."
+        ),
+        cost=MetricCost.MEASURED_EXECUTION,
+        execution_sensitive=True,
+    )
 )
 
 TRAINING_STEP_SYNC_COST_SECONDS = _training_efficiency_metric(

@@ -134,9 +134,9 @@ from anthro_chess.evaluation.scoring import (
     build_scoring_inputs,
     rows_identity_sha256,
 )
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import material_balance, rating_band_name
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
@@ -346,14 +346,9 @@ class TerminationDetailConfig(ConfigModel):
     retain_decisions: StrictBool = True
 
 
-class TerminationBenchmarkConfig(ConfigModel):
+class TerminationBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval termination``."""
 
-    model: ModelRunnerConfig = ModelRunnerConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
     #: The base runtime settings every seat plays under. Whether the terminal
     #: actions are enabled at all is the setting that matters most here, and it
     #: joins the declared workload: a suite played with resignation disabled

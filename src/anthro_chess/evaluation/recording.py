@@ -24,6 +24,11 @@ the configuration, the stamp and the error conversion are decided once.
 knows what it measured — the checkpoint and the series its readings join, which
 are the only parts a driver cannot know for it.
 
+What the invocation cost is the first cross-cutting addition this split was
+built for, and it lands entirely on the invocation half: the driver times the
+call and asks the recording for a cost record, and no benchmark says anything.
+See ``docs/decisions/0031-committed-benchmark-cost.md``.
+
 Only the tail. A rigid interface over the measuring itself would be worse than
 the duplication it removed.
 """
@@ -37,8 +42,11 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
+import torch
+
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data.artifacts import game_ids_sha256
+from anthro_chess.evaluation.cost import benchmark_cost_result
 from anthro_chess.evaluation.pool import FrozenPool
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -175,6 +183,7 @@ class ResultRecording:
         self.envelopes: list[ResultEnvelope] = []
         self.characterizations: list[NoiseCharacterization] = []
         self.detail_paths: list[Path] = []
+        self._settings = resolved_config.value
         self._error = error
         self._recorded_paths: tuple[Path, ...] = ()
 
@@ -197,6 +206,41 @@ class ResultRecording:
 
         self.recorded_at = datetime.now(tz=UTC)
         return ResultRecorder(self, checkpoint, kind, benchmark)
+
+    def cost(
+        self,
+        benchmark: BenchmarkReference,
+        *,
+        seconds: float,
+        device: torch.device,
+    ) -> None:
+        """Record what the invocation cost, unless it measured nothing at all.
+
+        Called by the driver, which is the only thing that knows when the
+        invocation began. A benchmark that produced no envelope produced no
+        reading, and the seconds it spent finding that out belong to no series.
+
+        The checkpoint and the environment are read off what was recorded
+        rather than kept beside it: every envelope carries both, they are the
+        same for all of them, and a second copy is one more thing that can
+        disagree with the list it shadows.
+        """
+
+        if not self.envelopes:
+            return
+        reading = self.envelopes[-1]
+        self.envelopes.append(
+            benchmark_cost_result(
+                benchmark=benchmark,
+                checkpoint=reading.checkpoint,
+                configuration=self.configuration,
+                config=self._settings,
+                device=device,
+                seconds=seconds,
+                environment=reading.environment,
+                recorded_at=self.recorded_at,
+            )
+        )
 
     def __enter__(self) -> ResultRecording:
         return self

@@ -34,6 +34,7 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.games import (
     DecisionRecord,
     GameOutcome,
@@ -939,8 +940,12 @@ def test_every_reading_is_recorded_under_its_own_kind(
         detail=detail,
     )
     assert len(result.recorded_paths) == len(result.envelopes)
-    assert {envelope.kind for envelope in result.envelopes} == {TERMINATION_KIND}
-    assert len(result.detail_paths) == len(result.envelopes)
+    assert {envelope.kind for envelope in result.envelopes} == {
+        TERMINATION_KIND,
+        BENCHMARK_COST_KIND,
+    }
+    # Every reading writes a detail payload; the cost record has none to write.
+    assert len(result.detail_paths) == len(result.envelopes) - 1
     for path in result.detail_paths:
         assert path.is_file()
 

@@ -23,6 +23,7 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.curves import CurveQuantity
 from anthro_chess.evaluation.games import GameTermination
 from anthro_chess.evaluation.reference import (
@@ -162,6 +163,14 @@ def _run(
             runner=runner or TrajectoryRunner(),
             checkpoint=checkpoint,
         ),
+    )
+
+
+def _readings(result: RolloutBenchmarkResult) -> tuple[ResultEnvelope, ...]:
+    """Return the rollout's own records, without what the invocation cost."""
+
+    return tuple(
+        envelope for envelope in result.envelopes if envelope.kind == ROLLOUT_KIND
     )
 
 
@@ -463,7 +472,7 @@ def test_every_generated_play_metric_is_reported_by_the_benchmark(
     )
 
     reported = {
-        item.metric for envelope in result.envelopes for item in envelope.measurements
+        item.metric for envelope in _readings(result) for item in envelope.measurements
     }
     registered = {
         metric.identifier
@@ -907,7 +916,7 @@ def test_the_matrix_produces_one_result_per_cell() -> None:
     )
 
     assert len(result.cells) == 4
-    assert len(result.envelopes) == 4
+    assert len(_readings(result)) == 4
     assert {
         (cell.arm, cell.target_rating, cell.temperature) for cell in result.cells
     } == {
@@ -1047,7 +1056,7 @@ def test_a_metric_averaged_over_a_subset_reports_that_subset_as_its_sample() -> 
         _config(generation={"games_per_position": 2, "maximum_generated_plies": 6})
     )
 
-    (envelope,) = result.envelopes
+    (envelope,) = _readings(result)
     distribution = result.cells[0].distribution
     assert distribution.games == 2
     # Nothing repeated and nothing finished inside six plies, so both subsets
@@ -1068,7 +1077,7 @@ def test_a_finished_game_counts_toward_the_rates_computed_over_results() -> None
         runner=ResigningRunner(),
     )
 
-    (envelope,) = result.envelopes
+    (envelope,) = _readings(result)
     assert _sample(envelope, GENERATED_PLAY_DECISIVE_GAME_RATE) == 1
     decisive = envelope.measurement(GENERATED_PLAY_DECISIVE_GAME_RATE.identifier)
     assert decisive is not None
@@ -1294,7 +1303,7 @@ def test_the_prefix_arm_records_its_human_games_as_provenance(pool: Path) -> Non
     assert result.dataset.selected_games == 2
     by_arm = {
         envelope.execution.workload["positions"]["kind"]: envelope
-        for envelope in result.envelopes
+        for envelope in _readings(result)
         if envelope.execution is not None
     }
     assert by_arm[RolloutArm.HUMAN_PREFIX.value].data is not None
@@ -1352,8 +1361,12 @@ def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
         detail=detail,
     )
 
-    (envelope,) = result.envelopes
-    assert envelope.kind == ROLLOUT_KIND
+    (envelope,) = _readings(result)
+    # The rollout's own record, and one saying what the invocation cost.
+    assert {item.kind for item in result.envelopes} == {
+        ROLLOUT_KIND,
+        BENCHMARK_COST_KIND,
+    }
     assert envelope.detail is not None
     assert envelope.execution is not None
     (path,) = result.detail_paths

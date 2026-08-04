@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-from pydantic import Field, StrictBool
+from pydantic import StrictBool
 from torch import Tensor
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
@@ -116,9 +116,10 @@ from anthro_chess.evaluation.scoring import (
     rows_identity_sha256,
     slice_measurements,
 )
+from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
-from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch, OptionalTensor
 
@@ -130,6 +131,13 @@ ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
+#: One invocation produces three readings, and its cost belongs to none of
+#: them: the scoring pass, the dependency treatments, and the adjudication all
+#: happen once. The cost record names the whole evaluation instead.
+CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
+    name="checkpoint-evaluation",
+    version=CHECKPOINT_EVALUATION_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,17 +163,12 @@ class DetailConfig(ConfigModel):
     per_position: StrictBool = False
 
 
-class CheckpointEvaluationConfig(ConfigModel):
+class CheckpointEvaluationConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval run``."""
 
     pool: Path
     view: ViewConfig = ViewConfig(name="canonical")
-    model: ModelRunnerConfig = ModelRunnerConfig()
     loader: EvaluationLoaderConfig = EvaluationLoaderConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
     dependency: DependencyTestConfig = DependencyTestConfig()
     leakage: LeakageConfig = LeakageConfig()
     detail: DetailConfig = DetailConfig()

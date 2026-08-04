@@ -58,7 +58,8 @@ from anthro_chess.evaluation.benchmarks import (
     resolve_benchmark,
     run_benchmark,
 )
-from anthro_chess.inference.config import LATEST_CHECKPOINT, ModelRunnerConfig
+from anthro_chess.evaluation.selection import CheckpointSelection
+from anthro_chess.inference.config import LATEST_CHECKPOINT
 
 if TYPE_CHECKING:
     from anthro_chess.evaluation.results import DetailStore, ResultsStore
@@ -135,20 +136,11 @@ class SuiteBenchmarkConfig(ConfigModel):
     scales: tuple[SuiteScale, ...] = (SuiteScale.REDUCED, SuiteScale.FULL)
 
 
-class SuiteConfig(ConfigModel):
+class SuiteConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval suite``."""
 
     name: str = Field(
         default="checkpoint", min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$"
-    )
-    #: The one checkpoint every benchmark in the sweep measures. It replaces
-    #: whatever model selection a benchmark's own file carries, which is what
-    #: makes this an entry point taking a checkpoint rather than a batch of
-    #: unrelated runs.
-    model: ModelRunnerConfig = ModelRunnerConfig()
-    checkpoint_label: str | None = Field(
-        default=None,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
     )
     #: Keyed by benchmark name so one step can be adjusted from the command
     #: line without restating the sweep.
@@ -663,14 +655,19 @@ def _resolve_benchmark(
 
 
 def _with_checkpoint(
-    resolved: ResolvedConfig[Any],
+    resolved: ResolvedConfig[CheckpointSelection],
     suite: SuiteConfig,
-) -> ResolvedConfig[Any]:
+) -> ResolvedConfig[CheckpointSelection]:
     """Replace a benchmark's model selection with the sweep's checkpoint.
 
     Replaced rather than merged: a suite takes one checkpoint, and a merge
     would let a benchmark file that pinned its own run quietly measure
     something else than the rest of the sweep did.
+
+    Both sides are a :class:`CheckpointSelection`, which is what makes the
+    update checkable: ``model_copy`` does not validate, so a schema naming its
+    selection anything else would take this as a stray attribute and go on
+    measuring its own checkpoint.
     """
 
     from anthro_chess.config import ConfigProvenance

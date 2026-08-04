@@ -19,6 +19,7 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
+from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.ladder import (
     LADDER_KIND,
@@ -493,13 +494,18 @@ def test_recorded_results_carry_one_series_per_unit(tmp_path: Path) -> None:
 
     result = _run(_config(), store=store, detail=detail)
 
-    envelopes = result.envelopes
+    envelopes = _readings(result)
     # One per seat, one per temperature row, and none for the response, which a
     # single-temperature grid cannot measure.
     assert len(envelopes) == len(result.seats) + len(result.readings)
-    assert all(envelope.kind == LADDER_KIND for envelope in envelopes)
+    # The ladder's own records, and one saying what the invocation cost.
+    assert {envelope.kind for envelope in result.envelopes} == {
+        LADDER_KIND,
+        BENCHMARK_COST_KIND,
+    }
     assert all(envelope.execution is not None for envelope in envelopes)
-    assert len(result.recorded_paths) == len(envelopes)
+    # Every reading is committed, and what the invocation cost beside them.
+    assert len(result.recorded_paths) == len(envelopes) + 1
     assert len(result.detail_paths) == len(envelopes)
     for envelope in envelopes:
         envelope.verify()
@@ -586,7 +592,7 @@ def test_every_result_declares_the_reference_temperature(tmp_path: Path) -> None
         detail=DetailStore(tmp_path / "detail"),
     )
 
-    for envelope in result.envelopes:
+    for envelope in _readings(result):
         assert envelope.execution is not None
         assert envelope.execution.workload["reference_temperature"] == 1.0
 
@@ -661,6 +667,14 @@ def test_every_ladder_metric_is_registered_in_the_rating_behavior_family() -> No
         LADDER_TEMPERATURE_RESPONSE.identifier,
         LADDER_DEPARTURE_POLICY_REGRET.identifier,
     } <= identifiers
+
+
+def _readings(result: LadderBenchmarkResult) -> tuple[ResultEnvelope, ...]:
+    """Return the ladder's own records, without what the invocation cost."""
+
+    return tuple(
+        envelope for envelope in result.envelopes if envelope.kind == LADDER_KIND
+    )
 
 
 def _envelope_with(
