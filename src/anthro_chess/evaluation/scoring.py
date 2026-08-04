@@ -13,7 +13,7 @@ the validation split of a training corpus both arrive as normalized rows.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
 
@@ -63,19 +63,22 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
-    PositionCharacteristic,
-    PositionPredicate,
+    PositionLabels,
     PositionSlices,
-    PredicateMatch,
-    board_characteristics,
     board_from_encoding,
-    match_position_predicates,
+    position_labels,
     position_slices,
 )
 
 
 class EvaluationLoaderConfig(ConfigModel):
-    """Batching for evaluation, which never shuffles and never drops a game."""
+    """Batching for evaluation, which never shuffles and never drops a game.
+
+    Neither field is free to retune for speed. Every position is scored exactly
+    once at any batch size, but the forward pass is not bitwise reproducible
+    across batch shapes, so two readings taken at different batch sizes agree
+    only to a few significant digits rather than exactly.
+    """
 
     batch_size: int = Field(default=8, ge=1)
     length_bucket_width: int | None = Field(default=32, ge=1)
@@ -94,18 +97,36 @@ class ScoringInputs:
     loader_config: SequenceLoaderConfig
     plies: Mapping[PositionKey, PlyEncoding]
     slices: Mapping[PositionKey, PositionSlices]
-    characteristics: Mapping[PositionKey, frozenset[PositionCharacteristic]]
-    predicates: Mapping[
-        PositionKey,
-        Mapping[PositionPredicate, PredicateMatch],
-    ]
     contexts: Mapping[PositionKey, PositionContext]
+    _labels: dict[PositionKey, PositionLabels] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def position_count(self) -> int:
         """Return how many decisions one scoring pass covers."""
 
         return len(self.plies)
+
+    def labels(self, key: PositionKey) -> PositionLabels:
+        """Return one position's rule-sensitive labels, deriving them once.
+
+        Rebuilding a board and resolving its predicates costs about thirty
+        times encoding the ply did, and the benchmarks built on these inputs
+        read the result for a window of the positions they score or for none
+        of them. Deriving on demand keeps that cost proportional to what a
+        reading actually asks about, and the memo keeps a position that several
+        readers ask about from being resolved twice.
+        """
+
+        labels = self._labels.get(key)
+        if labels is None:
+            labels = position_labels(board_from_encoding(self.plies[key].board))
+            self._labels[key] = labels
+        return labels
 
 
 def build_scoring_inputs(
@@ -116,7 +137,11 @@ def build_scoring_inputs(
     length_bucket_width: int | None,
     identity_sha256: str,
 ) -> ScoringInputs:
-    """Encode normalized rows once and derive every per-position label."""
+    """Encode normalized rows once and derive the slices every reading needs.
+
+    The rule-sensitive labels are left to :meth:`ScoringInputs.labels`, which
+    resolves them where a reading asks for them.
+    """
 
     ordered = sorted(
         (dict(row) for row in rows),
@@ -125,11 +150,6 @@ def build_scoring_inputs(
     examples: list[SequenceExample] = []
     plies: dict[PositionKey, PlyEncoding] = {}
     slices: dict[PositionKey, PositionSlices] = {}
-    characteristics: dict[PositionKey, frozenset[PositionCharacteristic]] = {}
-    predicates: dict[
-        PositionKey,
-        Mapping[PositionPredicate, PredicateMatch],
-    ] = {}
     contexts: dict[PositionKey, PositionContext] = {}
     for row in ordered:
         encoded = encode_game(encoding_input(row))
@@ -146,13 +166,6 @@ def build_scoring_inputs(
             plies[key] = ply
             derived = position_slices(ply, DEFAULT_RATING_BANDS)
             slices[key] = derived
-            board = board_from_encoding(ply.board)
-            matched = match_position_predicates(board)
-            predicates[key] = matched
-            characteristics[key] = board_characteristics(
-                board,
-                predicates=matched,
-            )
             contexts[key] = PositionContext(
                 game_id=ply.game_id,
                 ply_index=ply.ply_index,
@@ -181,8 +194,6 @@ def build_scoring_inputs(
         loader_config=loader_config,
         plies=plies,
         slices=slices,
-        characteristics=characteristics,
-        predicates=predicates,
         contexts=contexts,
     )
 
@@ -196,7 +207,7 @@ def aggregate_positions(
     aggregator = SliceAggregator()
     for position in positions:
         key = (position.game_id, position.ply_index)
-        aggregator.add(position, inputs.slices[key], inputs.characteristics[key])
+        aggregator.add(position, inputs.slices[key], inputs.labels(key).characteristics)
     return aggregator.compute()
 
 

@@ -155,8 +155,14 @@ class TerminalActionPolicy:
 
 
 @dataclass(frozen=True)
-class _ActiveBatch:
-    """The enabled rows of one batch, aligned and validated once."""
+class ActiveBatch:
+    """The enabled rows of one batch, aligned and validated once.
+
+    Building this is what scoring a batch costs the host: a device read, a
+    validation of every enabled row, and a legal mask the width of the action
+    vocabulary. It is a value rather than a step inside each scorer so that a
+    caller reading several quantities off one forward pass pays for it once.
+    """
 
     logits: Tensor
     legal_mask: Tensor
@@ -167,13 +173,9 @@ class _ActiveBatch:
     ratings: tuple[int | None, ...]
 
 
-def score_positions(
-    logits: Tensor,
-    batch: MoveModelBatch,
-) -> tuple[PositionPolicy, ...]:
+def score_positions(active: ActiveBatch) -> tuple[PositionPolicy, ...]:
     """Return one policy record per enabled action target in a batch."""
 
-    active = _active_batch(logits, batch)
     if not active.legal_rows:
         return ()
 
@@ -238,13 +240,11 @@ def score_positions(
 
 
 def score_action_sets(
-    logits: Tensor,
-    batch: MoveModelBatch,
+    active: ActiveBatch,
     action_sets: Mapping[tuple[int, int], Mapping[str, Collection[int]]],
 ) -> tuple[ActionSetPolicy, ...]:
     """Score named legal-action subsets without retaining whole policies."""
 
-    active = _active_batch(logits, batch)
     if not active.legal_rows:
         return ()
 
@@ -284,10 +284,7 @@ def score_action_sets(
     return tuple(scored)
 
 
-def score_terminal_actions(
-    logits: Tensor,
-    batch: MoveModelBatch,
-) -> tuple[TerminalActionPolicy, ...]:
+def score_terminal_actions(active: ActiveBatch) -> tuple[TerminalActionPolicy, ...]:
     """Return the raw terminal-action mass at every scored decision.
 
     Raw rather than legal-masked, deliberately. The runtime samples from the
@@ -296,7 +293,6 @@ def score_terminal_actions(
     the quantity by whatever legality problem the checkpoint happens to have.
     """
 
-    active = _active_batch(logits, batch)
     if not active.legal_rows:
         return ()
 
@@ -322,10 +318,7 @@ def score_terminal_actions(
     return tuple(scored)
 
 
-def legal_policy_log_probabilities(
-    logits: Tensor,
-    batch: MoveModelBatch,
-) -> tuple[Tensor, ...]:
+def legal_policy_log_probabilities(active: ActiveBatch) -> tuple[Tensor, ...]:
     """Return each position's log policy over its own legal actions.
 
     Comparing two conditioning values needs the distribution the runtime would
@@ -333,7 +326,6 @@ def legal_policy_log_probabilities(
     Each tensor is ordered by the position's sorted legal action ids.
     """
 
-    active = _active_batch(logits, batch)
     masked = active.logits.masked_fill(~active.legal_mask, -torch.inf)
     normalized = torch.log_softmax(masked, dim=-1)
     return tuple(
@@ -371,7 +363,7 @@ def _logit(probability: float) -> float:
     return math.log(clamped / (1.0 - clamped))
 
 
-def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
+def active_batch(logits: Tensor, batch: MoveModelBatch) -> ActiveBatch:
     """Gather the enabled rows onto the host in two device reads.
 
     Every quantity below is derived from the same batch, so asking the device
@@ -454,7 +446,7 @@ def _active_batch(logits: Tensor, batch: MoveModelBatch) -> _ActiveBatch:
     for offset, legal_actions in enumerate(legal_rows):
         legal_mask[offset, torch.tensor(legal_actions, dtype=torch.long)] = True
 
-    return _ActiveBatch(
+    return ActiveBatch(
         logits=active_logits,
         legal_mask=legal_mask,
         legal_rows=tuple(legal_rows),

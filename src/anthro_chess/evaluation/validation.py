@@ -11,7 +11,7 @@ from torch import Tensor, nn
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import SequenceBatch
-from anthro_chess.evaluation.policy import PositionPolicy, score_positions
+from anthro_chess.evaluation.policy import PositionPolicy, active_batch, score_positions
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
     RatingBand,
@@ -112,7 +112,7 @@ class MoveValidationAccumulator:
     def update(self, logits: Tensor, batch: MoveModelBatch) -> None:
         """Add one aligned raw-logit batch to the validation result."""
 
-        self.add(score_positions(logits, batch))
+        self.add(score_positions(active_batch(logits, batch)))
 
     def add(self, positions: Iterable[PositionPolicy]) -> None:
         """Add already-scored positions, so callers can score a batch once."""

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from anthro_chess.evaluation.adjudication import build_adjudication_report
+from anthro_chess.evaluation.adjudication import action_sets, build_adjudication_report
 from anthro_chess.evaluation.policy import ActionSetPolicy
 from anthro_chess.evaluation.scoring import build_scoring_inputs
 from anthro_chess.evaluation.slices import PositionPredicate
@@ -45,7 +45,7 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
             ),
             best_rank=1 if predicate is PositionPredicate.MATE_AVAILABLE else 4,
         )
-        for predicate in inputs.predicates[key]
+        for predicate in inputs.labels(key).predicates
     )
 
     report = build_adjudication_report(scores, inputs)
@@ -83,3 +83,36 @@ def test_no_realized_predicate_is_explicitly_unavailable(
     )
 
     assert build_adjudication_report((), inputs) is None
+
+
+def test_action_sets_narrow_to_the_positions_a_reading_keeps(
+    normalized_row: Callable[..., dict[str, Any]],
+) -> None:
+    """A benchmark scoring a window inside longer games asks for the window.
+
+    Resolving the predicates of a position whose score is discarded is that
+    position's whole cost, so the subsets a scorer consumes are built over the
+    keys it will keep rather than over the view.
+    """
+
+    rows = [
+        normalized_row(
+            game_id,
+            split="test",
+            rating=1500,
+            initial_position=FORCED_FEN,
+            moves=("f7f8",),
+        )
+        for game_id in (43, 44)
+    ]
+    inputs = build_scoring_inputs(
+        rows,
+        split="test",
+        batch_size=1,
+        length_bucket_width=None,
+        identity_sha256="e" * 64,
+    )
+    wide = action_sets(inputs)
+
+    assert set(wide) == {(43, 0), (44, 0)}
+    assert action_sets(inputs, [(44, 0)]) == {(44, 0): wide[(44, 0)]}

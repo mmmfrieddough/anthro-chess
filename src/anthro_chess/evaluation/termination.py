@@ -85,6 +85,7 @@ from anthro_chess.evaluation.games import (
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     TerminalActionPolicy,
+    active_batch,
     score_terminal_actions,
 )
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
@@ -1116,7 +1117,9 @@ def _score_decisions(
     loader = SequenceDataLoader(inputs.dataset, inputs.loader_config)
     for sequence_batch in loader:
         batch = MoveModelBatch.from_sequence_batch(sequence_batch, device=device)
-        scored.extend(score_terminal_actions(runner.action_logits(batch), batch))
+        scored.extend(
+            score_terminal_actions(active_batch(runner.action_logits(batch), batch))
+        )
     if not scored:
         raise TerminationBenchmarkError(
             "the configured held-out view selected no positions to score"

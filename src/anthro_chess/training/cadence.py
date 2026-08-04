@@ -46,7 +46,7 @@ from anthro_chess.data.artifacts import (
 )
 from anthro_chess.data.schema import NormalizedColumn, SplitName
 from anthro_chess.evaluation.aggregation import SliceTable
-from anthro_chess.evaluation.policy import PositionPolicy, score_positions
+from anthro_chess.evaluation.policy import PositionPolicy, active_batch, score_positions
 from anthro_chess.evaluation.pool import pool_game
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
@@ -361,7 +361,7 @@ def score_preview(
                     sequence_batch,
                     device=device,
                 )
-                positions.extend(score_positions(model(batch), batch))
+                positions.extend(score_positions(active_batch(model(batch), batch)))
     finally:
         model.train(was_training)
     if not positions:
