@@ -115,6 +115,17 @@ reads them. Under the shard-backed loader at eight workers, input preparation
 falls from 7.3 ms to 1.6 ms per step and forward and backward is the largest
 phase again.
 
+What survived in that phase was mostly not the copy either. The tensor boundary
+validated the tensors it had just built, on the device, on every micro-batch:
+ten whole-column rules, about forty kernels, and one read back. It now checks
+the loader's arrays instead, before they cross, because the copy only widens and
+those are the same values. Batch construction and transfer falls from 1.34 ms to
+0.44 ms per step, and the phase stops being the one that host contention moves —
+across six counterbalanced rounds on this shared host the checked-on-device arm
+ranged 0.71 ms to 1.80 ms while the checked-on-arrays arm held 0.40 ms to
+1.01 ms. Forty small kernel launches are host work, and host work is what a busy
+machine takes away.
+
 Separating optimizer work from forward and backward was worth doing, and not
 for the reason expected: at 4.9% of a step it looked like the last place worth
 touching, and it turned out to hold the only throughput win found here.
@@ -448,7 +459,7 @@ already is.
 **`torch.compile` fails for a different reason than it used to.** It still hits
 Dynamo's recompile limit of 8, but the ragged `legal_action_ids` iteration that
 was blamed has been removed, and the limit is now reached through
-`MoveModelBatch.reach`:
+`MoveModelBatch.position_bound`:
 
 ```
 return max(self.chunk_start_plies) + self.action_targets.shape[1]

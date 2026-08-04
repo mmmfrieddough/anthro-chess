@@ -164,6 +164,25 @@ def test_the_tensor_boundary_widens_the_columns_the_model_indexes_with(
     assert batch.game_ids.tolist() == source.game_ids.tolist()
 
 
+def test_the_tensor_boundary_rejects_a_corrupted_source_column(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """The factory checks the arrays it was handed, not the tensors it built.
+
+    The copy only widens, so those are the same values. What must not change is
+    that the factory asks at all.
+    """
+
+    source = sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+    piece_ids = source.inputs.piece_ids.copy()
+    piece_ids.flat[0] = 13
+
+    with pytest.raises(ValueError, match="piece ids are outside"):
+        MoveModelBatch.from_sequence_batch(
+            replace(source, inputs=replace(source.inputs, piece_ids=piece_ids))
+        )
+
+
 def test_an_active_target_outside_the_vocabulary_is_rejected(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
