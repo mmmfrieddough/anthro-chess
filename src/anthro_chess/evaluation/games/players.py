@@ -50,6 +50,12 @@ class DecisionRequest:
     The board carries its own move stack, so a seat that needs the trajectory
     reads it from there rather than from a parallel history that could drift
     out of step with the position.
+
+    It is the game's live board and a seat must not mutate it. Handing over a
+    copy instead costs a copy of the whole move stack per decision, which grows
+    with the game while nothing on this side of it does: a model seat replays
+    the history into its own session, and a seat driving an outside process
+    already copies before letting the process near it.
     """
 
     board: chess.Board

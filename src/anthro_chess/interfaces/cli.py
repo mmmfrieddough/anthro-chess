@@ -1648,8 +1648,8 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
                 "on a batch built once and"
             ),
             (
-                "  re-run: it excludes batch construction, which is the term "
-                "that grows with history."
+                "  re-run: it excludes the batch construction, masking and "
+                "sampling a decision pays for."
             ),
             "",
             "Cold start, reported apart from steady state:",

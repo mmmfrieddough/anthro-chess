@@ -1,4 +1,5 @@
 import json
+from array import array
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,6 +14,7 @@ from anthro_chess.chess import (
 )
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
+    DecisionColumn,
     DecisionHistory,
     EncodingError,
     GameEncodingInput,
@@ -357,6 +359,68 @@ def test_reused_prefix_encodes_exactly_what_a_full_rebuild_would() -> None:
             moves,
             target_rating=1500,
         )
+
+
+def test_the_column_form_describes_the_same_timesteps_as_the_plies() -> None:
+    """The two forms of a decision context are written apart and must agree."""
+
+    # Reaches a capture, both castling rights, and an en-passant square, so
+    # every column has something other than its zero value to carry.
+    history = DecisionHistory(
+        moves=tuple(
+            chess.Move.from_uci(text)
+            for text in ("e2e4", "d7d5", "e4d5", "e7e5", "g1f3", "f8e7", "f1e2")
+        )
+    )
+    context = history.context(target_rating=1500)
+    columns = context.columns
+    stride = len(DecisionColumn)
+
+    assert columns.length == len(context.plies)
+    assert len(columns.piece_ids) == columns.length * BOARD_SQUARE_COUNT
+    values = array("q")
+    values.frombytes(columns.values)
+    assert len(values) == columns.length * stride
+
+    for index, ply in enumerate(context.plies):
+        board = ply.board
+        row = values[index * stride : (index + 1) * stride]
+        squares = columns.piece_ids[
+            index * BOARD_SQUARE_COUNT : (index + 1) * BOARD_SQUARE_COUNT
+        ]
+        assert squares == board.piece_ids
+        assert row[DecisionColumn.PLY_INDEX] == ply.ply_index
+        assert row[DecisionColumn.SIDE_TO_MOVE] == board.side_to_move
+        assert row[DecisionColumn.CASTLING_RIGHTS] == board.castling_rights
+        assert bool(row[DecisionColumn.EN_PASSANT_PRESENT]) == (
+            board.en_passant_square is not None
+        )
+        assert row[DecisionColumn.EN_PASSANT_SQUARE] == (board.en_passant_square or 0)
+        assert row[DecisionColumn.HALFMOVE_CLOCK] == board.halfmove_clock
+        assert row[DecisionColumn.FULLMOVE_NUMBER] == board.fullmove_number
+        assert bool(row[DecisionColumn.PREVIOUS_ACTION_PRESENT]) == (
+            ply.previous_action_id is not None
+        )
+        assert row[DecisionColumn.PREVIOUS_ACTION_ID] == (ply.previous_action_id or 0)
+
+    # The en-passant square is what a zero-filled column cannot stand in for,
+    # so the case the test was built around is checked to have occurred.
+    assert any(ply.board.en_passant_square is not None for ply in context.plies)
+
+
+def test_a_rule_counter_larger_than_play_produces_carries_through() -> None:
+    """A root FEN a caller supplied bounds nothing, so neither may the columns."""
+
+    history = DecisionHistory(initial_fen="8/8/8/8/8/8/6k1/K7 w - - 100000 40000")
+    context = history.context(target_rating=None)
+
+    ply = context.plies[0]
+    assert ply.board.halfmove_clock == 100_000
+    assert ply.board.fullmove_number == 40_000
+    values = array("q")
+    values.frombytes(context.columns.values)
+    assert values[DecisionColumn.HALFMOVE_CLOCK] == 100_000
+    assert values[DecisionColumn.FULLMOVE_NUMBER] == 40_000
 
 
 def test_only_the_plies_past_the_divergence_point_are_encoded() -> None:

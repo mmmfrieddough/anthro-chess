@@ -639,6 +639,13 @@ conversion wraps a column and copies it rather than visiting every timestep.
 Widening to what a model indexes with belongs on the far side of that copy, so
 what crosses to a device is the width the loader chose.
 
+A live game's history carries the same column form and accumulates it while the
+game is played, one row per ply beside the ply it encodes. What that buys is not
+shared with the loader, which sees each ply once: a game asks for a batch after
+every ply, so building one from the plies would re-walk the whole prefix per
+decision and make a game quadratic in its own length. Extending buffers instead
+makes a decision's batch a memory copy, flat in the history behind it.
+
 Per-ply legal actions are reconstructed only when a caller reads them. Scoring
 is the only consumer and training is not one, so a training loader asks for none
 and the encoding it drives builds none — which is most of what decoding a game

@@ -412,7 +412,7 @@ def _pending_decision(
         run=run,
         slot=slot,
         request=DecisionRequest(
-            board=run.state.board.copy(stack=True),
+            board=run.state.board,
             initial_position=run.plan.position.initial_position,
             ply_index=len(run.state.action_ids),
         ),

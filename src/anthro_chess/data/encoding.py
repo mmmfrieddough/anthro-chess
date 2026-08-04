@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from array import array
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import IntEnum
 from hashlib import sha256
 
 import chess
@@ -227,16 +229,66 @@ class PlyEncoding(PlyContext):
         }
 
 
+class DecisionColumn(IntEnum):
+    """Where each per-ply input sits in a :class:`DecisionColumns` row.
+
+    Every column is an integer, including the two presence flags, so one row of
+    a history is one contiguous block and a batch of histories is one array and
+    one device copy.
+
+    Held at the width the model indexes with rather than narrowed to what the
+    values need, unlike the loader's columns. A rule counter arrives off a FEN a
+    caller supplied, so nothing bounds it the way a corpus bounds the loader's,
+    and a narrower column would refuse positions the runtime accepts today. The
+    board is the exception and stays a byte per square: its values are the
+    encoding's own and cannot leave 0-12.
+    """
+
+    PLY_INDEX = 0
+    SIDE_TO_MOVE = 1
+    CASTLING_RIGHTS = 2
+    EN_PASSANT_SQUARE = 3
+    EN_PASSANT_PRESENT = 4
+    HALFMOVE_CLOCK = 5
+    FULLMOVE_NUMBER = 6
+    PREVIOUS_ACTION_ID = 7
+    PREVIOUS_ACTION_PRESENT = 8
+
+
+@dataclass(frozen=True)
+class DecisionColumns:
+    """One history's target-free inputs as flat buffers, in ply order.
+
+    ``piece_ids`` is ``length`` boards of :data:`BOARD_SQUARE_COUNT` bytes and
+    ``values`` is ``length`` rows of :class:`DecisionColumn` in native-order
+    ``int64``. Both are snapshots of buffers the history appended to as it
+    advanced, so tensorizing a decision copies memory rather than walking every
+    ply behind it.
+    """
+
+    length: int
+    piece_ids: bytes
+    values: bytes
+
+
 @dataclass(frozen=True)
 class DecisionContext:
-    """A complete target-free trajectory ending at the current decision."""
+    """A complete target-free trajectory ending at the current decision.
+
+    ``plies`` and ``columns`` are the same timesteps in the two shapes their
+    readers want: objects for a caller inspecting one position, and buffers for
+    the tensor boundary. Both are written per ply as the history grows.
+    """
 
     target_rating: int | None
     plies: tuple[PlyContext, ...]
+    columns: DecisionColumns
 
     def __post_init__(self) -> None:
         if not self.plies:
             raise ValueError("a decision context needs at least one timestep")
+        if self.columns.length != len(self.plies):
+            raise ValueError("a decision context's two forms must be the same length")
 
 
 def encoding_identity() -> dict[str, object]:
@@ -359,6 +411,84 @@ def encode_game(
     return tuple(encodings)
 
 
+class _EncodedPrefix:
+    """The plies one history has encoded, in object and column form.
+
+    Both forms are written by the same append, so the columns are never derived
+    from the objects a second time and cannot come to describe a different
+    history than they do. Keeping them here rather than at the tensor boundary
+    is what makes a decision's cost flat in the history behind it: ply *n*
+    extends *n-1* rows of columns instead of building *n* of them.
+    """
+
+    def __init__(self) -> None:
+        self._plies: list[PlyContext] = []
+        self._piece_ids = bytearray()
+        self._values: array[int] = array("q")
+
+    def __len__(self) -> int:
+        return len(self._plies)
+
+    @property
+    def plies(self) -> tuple[PlyContext, ...]:
+        """Return every encoded timestep in ply order."""
+
+        return tuple(self._plies)
+
+    def append(self, ply: PlyContext) -> None:
+        """Encode one further timestep into both forms."""
+
+        board = ply.board
+        en_passant = board.en_passant_square
+        previous = ply.previous_action_id
+        self._plies.append(ply)
+        self._piece_ids += board.piece_ids
+        # In DecisionColumn order.
+        self._values.extend(
+            (
+                ply.ply_index,
+                board.side_to_move,
+                board.castling_rights,
+                0 if en_passant is None else en_passant,
+                en_passant is not None,
+                board.halfmove_clock,
+                board.fullmove_number,
+                0 if previous is None else previous,
+                previous is not None,
+            )
+        )
+
+    def truncate(self, plies: int) -> None:
+        """Discard everything past the first ``plies`` timesteps."""
+
+        del self._plies[plies:]
+        del self._piece_ids[plies * BOARD_SQUARE_COUNT :]
+        del self._values[plies * len(DecisionColumn) :]
+
+    def truncated_copy(self, plies: int) -> _EncodedPrefix:
+        """Return a private prefix over this one's first ``plies`` timesteps."""
+
+        copied = _EncodedPrefix()
+        copied._plies = self._plies[:plies]
+        copied._piece_ids = self._piece_ids[: plies * BOARD_SQUARE_COUNT]
+        copied._values = self._values[: plies * len(DecisionColumn)]
+        return copied
+
+    def columns(self) -> DecisionColumns:
+        """Return an immutable snapshot of the column form.
+
+        Buffers a later ply appends to cannot be handed out, so this copies
+        them. That is one memory copy per decision against a walk of every ply
+        in it.
+        """
+
+        return DecisionColumns(
+            length=len(self._plies),
+            piece_ids=bytes(self._piece_ids),
+            values=self._values.tobytes(),
+        )
+
+
 class DecisionHistory:
     """One game's exact board and the encoded context it has accumulated.
 
@@ -380,11 +510,11 @@ class DecisionHistory:
         moves: Sequence[chess.Move] = (),
     ) -> None:
         target = _validated_moves(moves)
-        board, plies = _fresh_root(initial_fen)
-        _extend(board, plies, target, 0)
+        board, prefix = _fresh_root(initial_fen)
+        _extend(board, prefix, target, 0)
         self._initial_fen = initial_fen
         self._board = board
-        self._plies = plies
+        self._prefix = prefix
         self._moves = target
 
     @property
@@ -415,7 +545,7 @@ class DecisionHistory:
         """Apply one legal move, encoding only the position it creates."""
 
         target = (*self._moves, move)
-        _extend(self._board, self._plies, target, len(self._moves))
+        _extend(self._board, self._prefix, target, len(self._moves))
         self._moves = target
 
     def synchronize(
@@ -438,16 +568,16 @@ class DecisionHistory:
             # The ordinary case in a game being played forward. Nothing already
             # encoded is affected, so the live state is extended in place
             # rather than rebuilt beside itself and swapped in.
-            _extend(self._board, self._plies, target, reused)
+            _extend(self._board, self._prefix, target, reused)
             self._moves = target
             return reused
-        board, plies = (
+        board, prefix = (
             self._resume_at(reused) if same_root else _fresh_root(initial_fen)
         )
-        _extend(board, plies, target, reused)
+        _extend(board, prefix, target, reused)
         self._initial_fen = initial_fen
         self._board = board
-        self._plies = plies
+        self._prefix = prefix
         self._moves = target
         return reused
 
@@ -455,9 +585,13 @@ class DecisionHistory:
         """Return the full target-free context for the current position."""
 
         _validate_optional_nonnegative_integer("target_rating", target_rating)
-        return DecisionContext(target_rating, tuple(self._plies))
+        return DecisionContext(
+            target_rating,
+            self._prefix.plies,
+            self._prefix.columns(),
+        )
 
-    def _resume_at(self, reused: int) -> tuple[chess.Board, list[PlyContext]]:
+    def _resume_at(self, reused: int) -> tuple[chess.Board, _EncodedPrefix]:
         """Return a private board and encoded prefix rewound to one ply count.
 
         Unwinding the live board is what keeps a takeback cheap: the moves
@@ -468,7 +602,7 @@ class DecisionHistory:
         board = self._board.copy(stack=True)
         for _ in range(len(self._moves) - reused):
             board.pop()
-        return board, list(self._plies[: reused + 1])
+        return board, self._prefix.truncated_copy(reused + 1)
 
 
 def build_decision_context(
@@ -494,19 +628,21 @@ def build_decision_context(
     return replayed.context(target_rating=target_rating)
 
 
-def _fresh_root(initial_fen: str) -> tuple[chess.Board, list[PlyContext]]:
+def _fresh_root(initial_fen: str) -> tuple[chess.Board, _EncodedPrefix]:
     """Return an empty history rooted at one position, with that root encoded."""
 
     try:
         board = chess.Board(initial_fen)
     except ValueError as error:
         raise EncodingError(f"invalid initial position: {error}") from error
-    return board, [_history_context(ply_index=0, board=board, previous_action_id=None)]
+    prefix = _EncodedPrefix()
+    prefix.append(_history_context(ply_index=0, board=board, previous_action_id=None))
+    return board, prefix
 
 
 def _extend(
     board: chess.Board,
-    plies: list[PlyContext],
+    prefix: _EncodedPrefix,
     moves: tuple[chess.Move, ...],
     start: int,
 ) -> None:
@@ -526,7 +662,7 @@ def _extend(
             previous_action_id = _encode_observed_move(move, ply_index)
             board.push(move)
             applied += 1
-            plies.append(
+            prefix.append(
                 _history_context(
                     ply_index=ply_index + 1,
                     board=board,
@@ -534,7 +670,7 @@ def _extend(
                 )
             )
     except EncodingError:
-        del plies[len(plies) - applied :]
+        prefix.truncate(len(prefix) - applied)
         for _ in range(applied):
             board.pop()
         raise

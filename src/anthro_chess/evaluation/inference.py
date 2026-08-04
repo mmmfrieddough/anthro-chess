@@ -11,9 +11,10 @@ Both are measured end to end through :class:`GameSession`, spanning encoding,
 batch construction, model execution, legal masking, and sampling, because that
 is what a decision actually costs. Timing the forward pass alone would report a
 number no player ever experiences and would go on looking healthy while batch
-construction regressed — and batch construction, not the forward pass, is what
-grows with history length. The isolated forward is still reported, as its own
-declared quantity, because it is the right number for sizing a kernel change.
+construction regressed — which is the regression this benchmark caught, when
+building a batch was linear in the history it was built from. The isolated
+forward is still reported, as its own declared quantity, because it is the
+right number for sizing a kernel change.
 
 The workload is synthetic and self-contained: positions come from a seeded
 random-legal-move walk rather than from the evaluation pool. Latency depends
@@ -577,9 +578,8 @@ def _measure_throughput(
     The headline loop is the runtime half of the one the generated benchmarks
     run: collect every pending context, resolve them in one padded forward
     pass, and hand each result back for masking and sampling. Building the
-    batch is part of that and is the term that grows with history, so timing a
-    batch built once and reused would exclude the cost this benchmark exists to
-    price.
+    batch is part of that, so timing a batch built once and reused would exclude
+    the cost this benchmark exists to price.
 
     Deliberately the runtime half rather than :meth:`ModelPlayer.decide_batch`,
     which drives that loop for the generated benchmarks and then builds a
