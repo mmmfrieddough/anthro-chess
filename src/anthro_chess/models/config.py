@@ -17,13 +17,13 @@ class MoveModelConfig(ConfigModel):
     transformer_layers: int = Field(default=2, ge=1)
     feedforward_dim: int = Field(default=128, ge=1)
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
-    #: One past the furthest ply index the model can encode, and the size of
-    #: both tables derived from it. A shape assertion rather than a dial: the
-    #: longest game in the million-game blitz corpus is 306 plies, which this
-    #: covers at every chunk length. ``data.maximum_position_bound`` owns what
-    #: a corpus actually reaches, and a training run refuses to start when that
-    #: passes this. It costs memory only — attention is quadratic in the padded
-    #: batch width, which this does not set.
+    #: One past the furthest ply index the model can encode, and the length of
+    #: the position table derived from it. A shape assertion rather than a dial:
+    #: the longest game in the million-game blitz corpus is 306 plies, which
+    #: this covers at every chunk length. ``data.maximum_position_bound`` owns
+    #: what a corpus actually reaches, and a training run refuses to start when
+    #: that passes this. It costs one row of that table per ply — attention is
+    #: quadratic in the padded batch width, which this does not set.
     maximum_context_plies: int = Field(default=1024, ge=1)
 
     @model_validator(mode="after")

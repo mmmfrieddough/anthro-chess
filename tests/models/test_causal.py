@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import chess
 import pytest
 import torch
+import torch._dynamo
+from torch import nn
+from torch._dynamo.testing import CompileCounter
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -26,7 +30,10 @@ from anthro_chess.models import (
     MoveModelBatch,
     MoveModelConfig,
 )
+from anthro_chess.models.causal import TransformerBlock
 from anthro_chess.training import masked_action_cross_entropy
+
+from accelerators import training_accelerator_parameters
 
 
 def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
@@ -113,7 +120,7 @@ def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
     assert logits.shape == (2, 3, ACTION_VOCABULARY_SIZE)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    assert model.identity()["version"] == 4
+    assert model.identity()["version"] == 5
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
     assert (
@@ -152,31 +159,153 @@ def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
     assert torch.count_nonzero(padded_logits[0, 1:]) > 0
 
 
-def test_derived_tables_are_sized_from_the_declared_context_and_never_saved() -> None:
-    """Both are a function of the configuration, so neither is state to restore.
+def test_the_position_table_is_sized_from_the_declared_context_and_never_saved() -> (
+    None
+):
+    """It is a function of the configuration, so it is not state to restore.
 
-    The mask is additive rather than boolean because attention converts a
-    boolean one to exactly this on the way in, once per forward pass.
+    Causality used to be a second table beside it, sized the same way and
+    quadratic where this one is linear. Attention states it as a flag now, so
+    the only derived table left is this one.
     """
 
     config = _tiny_config()
     model = CausalMoveModel(config)
     declared = config.maximum_context_plies
 
-    assert model.causal_mask.shape == (declared, declared)
-    assert model.causal_mask.dtype == torch.float32
-    assert torch.equal(
-        model.causal_mask.isinf(),
-        torch.ones((declared, declared), dtype=torch.bool).triu(1),
-    )
-    # Nothing is fully masked: every query keeps at least its own timestep.
-    assert bool((~model.causal_mask.isinf()).any(dim=-1).all())
     assert model.position_table.shape == (declared, config.model_dim)
-    assert not {"causal_mask", "position_table"} & set(model.state_dict())
+    assert "position_table" not in set(model.state_dict())
     # The weights outlive the bound, so a differently bounded model loads them.
     CausalMoveModel(_tiny_config(maximum_context_plies=32)).load_state_dict(
         model.state_dict()
     )
+
+
+def test_the_block_stack_computes_what_the_encoder_wrapper_it_replaced_did() -> None:
+    """The function stayed where it was; the parameter names and the mask moved.
+
+    The wrapper had to be handed a materialized triangular mask *and* the
+    causal flag, because it reads the flag as a hint accompanying a mask rather
+    than as a substitute for one. The blocks ask attention for the causal form
+    directly and arrive at the same numbers.
+
+    Two layers because that is what every training configuration runs, and
+    because a stack is where the residual order and the trailing normalization
+    could disagree with the wrapper while one block alone still matched.
+    """
+
+    torch.manual_seed(23)
+    config = _tiny_config(transformer_layers=2)
+    model = CausalMoveModel(config).eval()
+    wrapper = _encoder_wrapper(config, model).eval()
+    hidden = torch.randn(3, 11, config.model_dim)
+    causal = nn.Transformer.generate_square_subsequent_mask(hidden.shape[1])
+
+    with torch.no_grad():
+        explicit = hidden
+        for block in model.transformer_blocks:
+            explicit = block(explicit)
+        explicit = model.transformer_norm(explicit)
+        wrapped = wrapper(hidden, mask=causal, is_causal=True)
+
+    torch.testing.assert_close(explicit, wrapped, rtol=1e-5, atol=1e-5)
+
+
+def test_every_layer_is_drawn_on_its_own_rather_than_copied() -> None:
+    """The one thing about a fresh model this change did move.
+
+    ``nn.TransformerEncoder`` built its stack by deep-copying one prototype
+    layer, so the configured two-layer model began training with two identical
+    layers. Explicit construction draws each block, and a later collapse back
+    to a cloned prototype would be a silent return to a degenerate start.
+    """
+
+    torch.manual_seed(31)
+    model = CausalMoveModel(_tiny_config(transformer_layers=2))
+
+    first, second = (
+        cast(TransformerBlock, block).attention.qkv_projection.weight
+        for block in model.transformer_blocks
+    )
+
+    assert not torch.equal(first, second)
+
+
+def test_the_dropout_setting_reaches_attention_and_the_block_around_it() -> None:
+    """Four framework-owned dropout sites became four written-out ones.
+
+    Every configuration sets this to zero, so a site wired to nothing would be
+    invisible until the first run that turns the dial up. Attention is checked
+    on its own because its dropout is the one inside the fused attention call
+    rather than a module the block composes.
+    """
+
+    torch.manual_seed(37)
+    config = _tiny_config(dropout=0.5)
+    block = cast(TransformerBlock, CausalMoveModel(config).transformer_blocks[0])
+    hidden = torch.randn(2, 7, config.model_dim)
+
+    with torch.no_grad():
+        attention = [block.attention.train()(hidden) for _ in range(2)]
+        trained = [block.train()(hidden) for _ in range(2)]
+        evaluated = [block.eval()(hidden) for _ in range(2)]
+
+    assert not torch.equal(attention[0], attention[1])
+    assert not torch.equal(trained[0], trained[1])
+    torch.testing.assert_close(evaluated[0], evaluated[1], rtol=0.0, atol=0.0)
+
+
+def test_the_forward_pass_compiles_whole_and_once_across_a_run_of_widths() -> None:
+    """Length buckets vary the padded width, and none of them is a recompile.
+
+    ``fullgraph`` is what makes a graph break an error here rather than a
+    silently slower run. The remaining Python-level guard is the batch's own
+    ``chunk_start_plies``, which is `#275`; every row below starts at ply zero,
+    as a full-game selection feeds them, so width is what varies.
+    """
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    model = CausalMoveModel(_tiny_config(maximum_context_plies=64)).eval()
+    compiled = torch.compile(model, backend=counter, fullgraph=True, dynamic=True)
+
+    with torch.no_grad():
+        logits = [compiled(_batch_of_width(width)) for width in (4, 6, 8, 12, 20, 30)]
+
+    assert counter.frame_count == 1
+    assert [tuple(value.shape) for value in logits] == [
+        (1, width, ACTION_VOCABULARY_SIZE) for width in (4, 6, 8, 12, 20, 30)
+    ]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("backend", training_accelerator_parameters())
+@pytest.mark.parametrize("mode", ["default", "reduce-overhead"])
+def test_the_compiled_forward_pass_agrees_with_the_eager_one(
+    backend: str,
+    mode: str,
+) -> None:
+    """What `fullgraph` and CUDA graphs are worth is only worth having if equal.
+
+    ``reduce-overhead`` replays a captured graph instead of reissuing the
+    step's kernels, which is where the whole-graph property pays; it is also
+    the mode most able to return something subtly wrong, so it is compared
+    against eager rather than merely run.
+    """
+
+    torch._dynamo.reset()
+    torch.manual_seed(29)
+    model = CausalMoveModel(_tiny_config(maximum_context_plies=64)).to(backend).eval()
+    batch = _batch_of_width(12, device=backend)
+    compiled = torch.compile(model, fullgraph=True, mode=mode)
+
+    with torch.no_grad():
+        expected = model(batch)
+        # Twice: a captured graph is replayed on the second call, not the first.
+        compiled(batch)
+        actual = compiled(batch)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("start_ply", [0, 2], ids=["from-ply-zero", "chunk-past-zero"])
@@ -392,14 +521,105 @@ def _sequence_batch(
     return collate_sequences(examples)
 
 
-def _tiny_config(maximum_context_plies: int = 8) -> MoveModelConfig:
+def _batch_of_width(
+    plies: int,
+    *,
+    device: str | None = None,
+) -> MoveModelBatch:
+    """Return one full game of ``plies`` plies, played by an arbitrary rule.
+
+    Which moves they are does not matter to a shape or a graph, and picking
+    them by rule is what lets a caller ask for a width rather than write one.
+    """
+
+    board = chess.Board()
+    moves = []
+    for _ in range(plies):
+        move = next(iter(board.legal_moves))
+        moves.append(move.uci())
+        board.push(move)
+    return MoveModelBatch.from_sequence_batch(
+        _sequence_batch(tuple(moves)), device=device
+    )
+
+
+def _encoder_wrapper(
+    config: MoveModelConfig,
+    model: CausalMoveModel,
+) -> nn.TransformerEncoder:
+    """Return the replaced wrapper, holding the explicit blocks' own weights.
+
+    This characterizes one migration rather than stating an invariant, and it
+    is the only thing in the project still naming the framework's private
+    parameter layout. A later change to what a block computes — a different
+    position encoding, a normalized query, another feed-forward — retires this
+    helper and the test above it rather than updating either. Its failure means
+    the blocks stopped being the wrapper, which after that point is the
+    intent rather than a defect.
+    """
+
+    layer = nn.TransformerEncoderLayer(
+        d_model=config.model_dim,
+        nhead=config.attention_heads,
+        dim_feedforward=config.feedforward_dim,
+        dropout=config.dropout,
+        activation="gelu",
+        batch_first=True,
+        norm_first=True,
+    )
+    wrapper = nn.TransformerEncoder(
+        layer,
+        num_layers=config.transformer_layers,
+        norm=nn.LayerNorm(config.model_dim),
+        enable_nested_tensor=False,
+    )
+    state: dict[str, torch.Tensor] = {
+        "norm.weight": model.transformer_norm.weight,
+        "norm.bias": model.transformer_norm.bias,
+    }
+    for index, module in enumerate(model.transformer_blocks):
+        block = cast(TransformerBlock, module)
+        feedforward_in = cast(nn.Linear, block.feedforward[0])
+        feedforward_out = cast(nn.Linear, block.feedforward[3])
+        state |= {
+            f"layers.{index}.norm1.weight": block.attention_norm.weight,
+            f"layers.{index}.norm1.bias": block.attention_norm.bias,
+            f"layers.{index}.self_attn.in_proj_weight": (
+                block.attention.qkv_projection.weight
+            ),
+            f"layers.{index}.self_attn.in_proj_bias": (
+                block.attention.qkv_projection.bias
+            ),
+            f"layers.{index}.self_attn.out_proj.weight": (
+                block.attention.output_projection.weight
+            ),
+            f"layers.{index}.self_attn.out_proj.bias": (
+                block.attention.output_projection.bias
+            ),
+            f"layers.{index}.norm2.weight": block.feedforward_norm.weight,
+            f"layers.{index}.norm2.bias": block.feedforward_norm.bias,
+            f"layers.{index}.linear1.weight": feedforward_in.weight,
+            f"layers.{index}.linear1.bias": feedforward_in.bias,
+            f"layers.{index}.linear2.weight": feedforward_out.weight,
+            f"layers.{index}.linear2.bias": feedforward_out.bias,
+        }
+    wrapper.load_state_dict(state)
+    return wrapper
+
+
+def _tiny_config(
+    maximum_context_plies: int = 8,
+    *,
+    transformer_layers: int = 1,
+    dropout: float = 0.0,
+) -> MoveModelConfig:
     return MoveModelConfig(
         piece_embedding_dim=2,
         action_embedding_dim=4,
         model_dim=16,
         attention_heads=2,
-        transformer_layers=1,
+        transformer_layers=transformer_layers,
         feedforward_dim=24,
-        dropout=0.0,
+        dropout=dropout,
         maximum_context_plies=maximum_context_plies,
     )

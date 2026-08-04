@@ -147,8 +147,8 @@ receive a compact embedding of the exact board state, previous move, dynamic
 clock features when available, and static game settings.
 
 Training should preserve efficient causal-transformer behavior: feed full game
-sequences or sequence chunks in parallel with a causal mask instead of training
-one ply at a time in an autoregressive loop.
+sequences or sequence chunks in parallel under causal attention instead of
+training one ply at a time in an autoregressive loop.
 
 Avoid expanding every board into many sequence tokens unless testing proves that
 the compact approach is insufficient.

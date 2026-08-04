@@ -82,12 +82,12 @@ to build a perfect chess taxonomy.
 
 Training should use full game sequences, or fixed-length chunks of game
 sequences, whenever practical. The transformer should receive one timestep per
-ply and use a causal attention mask so every ply prediction can be trained in a
-single parallel forward pass while still preventing access to future moves.
+ply and attend causally so every ply prediction can be trained in a single
+parallel forward pass while still preventing access to future moves.
 
 The loader supports full games and contiguous chunks, groups sequences into
 configurable length buckets, pads only within the current batch, and emits
-separate padding, action-loss, nullable-context, and causal-attention masks.
+separate padding, action-loss, and nullable-context masks.
 Deterministic ordering is derived from an explicit seed and epoch. A
 serializable dataset identity plus next-batch cursor permits exact continuation
 without preserving opaque worker state.
@@ -110,16 +110,16 @@ objective. The shared masked action objective lives in `anthro_chess.training`;
 deterministic structural and tiny-overfit checks exercise those same model and
 loss APIs.
 
-Two things the batch once carried are derived where they are used instead,
-because neither is a property of the data. Causality belongs to the model, so
-the mask that hides a timestep's own future is held there rather than packed
-per batch and copied to the device — still passed to attention, because the
-framework's causal flag is a hint accompanying a mask rather than a substitute
-for one. Legal actions are packed only where something reads them, which is
-policy scoring and the construction-time legality check, so a training batch
-carries none and a scoring batch carries them as before.
+Causality is not a property of the data and no longer travels as one. The
+batch once carried a mask hiding each timestep's own future; the model now
+states causality as a flag on the attention call, so no such tensor is built
+per batch, copied to the device, or held as a buffer anywhere.
 
-The model also declares how far it can encode, which sizes those derived tables
+Legal actions are packed only where something reads them, which is policy
+scoring and the construction-time legality check, so a training batch carries
+none and a scoring batch carries them as before.
+
+The model also declares how far it can encode, which sizes the position table
 and bounds which batches it accepts. A run compares that declaration against the
 longest game its corpus manifest already records, carried through the
 selection's chunk length: a chunk keeps its game's own ply indices, so a late
