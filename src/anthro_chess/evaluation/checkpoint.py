@@ -282,11 +282,14 @@ class _ScoringSession:
         time. Retaining the true-conditioning policy from the primary pass
         would save a forward pass and cost a distribution per position held
         for the whole run, which is gigabytes over a full pool.
+
+        The two anchors are the true-conditioning pass' own rows under other
+        ratings, so the alignment that pass built is carried to them rather
+        than rebuilt twice.
         """
 
         signals: dict[PositionKey, TrajectorySignal] = {}
-        treatments = (
-            _TRUE_CONDITIONING,
+        anchors = (
             Conditioning(
                 name=f"constant-{anchor_low}",
                 kind=ConditioningKind.CONSTANT,
@@ -299,17 +302,21 @@ class _ScoringSession:
             ),
         )
         for batch in self._batches():
-            keys = _batch_keys(batch)
+            true_batch = self._condition(batch, _TRUE_CONDITIONING)
+            active = active_batch(self._runner.action_logits(true_batch), true_batch)
+            true = legal_policy_log_probabilities(active)
             policies = []
-            for conditioning in treatments:
+            for conditioning in anchors:
                 conditioned = self._condition(batch, conditioning)
-                active = active_batch(
+                rescored = active.rescored(
                     self._runner.action_logits(conditioned),
                     conditioned,
                 )
-                policies.append(legal_policy_log_probabilities(active))
-            true, low, high = policies
-            for offset, key in enumerate(keys):
+                policies.append(legal_policy_log_probabilities(rescored))
+            low, high = policies
+            for offset, key in enumerate(
+                zip(active.game_ids, active.ply_indices, strict=True)
+            ):
                 signals[key] = _trajectory_signal(
                     legal_actions=self._inputs.plies[key].enabled_actions(),
                     target_action_id=self._inputs.plies[key].target_action_id,
@@ -817,33 +824,6 @@ def _shuffled_ratings(
         for key, value in zip(keys, values, strict=True)
         if value is not None
     }
-
-
-def _batch_keys(batch: MoveModelBatch) -> tuple[PositionKey, ...]:
-    """Return the identity of every enabled position, in one device read."""
-
-    # Game ids stay in their own unsigned dtype; see ``active_batch``.
-    game_ids = batch.game_ids.detach().cpu().tolist()
-    enabled, ply_indices = (
-        torch.stack(
-            (
-                batch.action_loss_mask.to(dtype=torch.long),
-                batch.ply_indices.to(dtype=torch.long),
-            )
-        )
-        .detach()
-        .cpu()
-        .tolist()
-    )
-    return tuple(
-        (
-            game_ids[batch_index][sequence_index],
-            ply_indices[batch_index][sequence_index],
-        )
-        for batch_index, row in enumerate(enabled)
-        for sequence_index, active in enumerate(row)
-        if active
-    )
 
 
 def _trajectory_signal(
