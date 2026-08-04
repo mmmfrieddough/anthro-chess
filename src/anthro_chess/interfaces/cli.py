@@ -1760,6 +1760,8 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
     own rules and share nothing but the quantity that names the row.
     """
 
+    from anthro_chess.evaluation.curves import CURVE_DETERMINISTIC_METHOD
+
     if not reading.comparisons:
         # Headings over nothing read as a table that found nothing rather than
         # one that was never filled. The unavailable lines say which quantities.
@@ -1807,6 +1809,18 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
             " it against another checkpoint",
         ]
     )
+    if any(
+        comparison.floors is not None
+        and comparison.floors.method == CURVE_DETERMINISTIC_METHOD
+        for comparison in reading.comparisons.values()
+    ):
+        # A floor of zero here is the reading's own answer rather than a
+        # bootstrap that happened to land small, and the two look identical in
+        # the column.
+        lines.append(
+            "  floors are exactly zero: greedy seats replay these games, so "
+            "re-running this reading moves nothing"
+        )
     replicates = max(
         (len(spread.distances) for spread in reading.seed_spread.values()),
         default=0,

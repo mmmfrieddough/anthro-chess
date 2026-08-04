@@ -10,7 +10,9 @@ from collections.abc import Callable, Sequence
 import pytest
 
 from anthro_chess.evaluation.curves import (
+    CURVE_BOOTSTRAP_METHOD,
     CURVE_COMPARISON_VERSION,
+    CURVE_DETERMINISTIC_METHOD,
     HUMAN_REFERENCE_LABEL,
     CurveComparison,
     CurveComparisonError,
@@ -121,6 +123,7 @@ def _compare(
     human: Sequence[Observation] | None = None,
     resamples: int = 80,
     references: bool = True,
+    model_varies: bool = True,
 ) -> CurveComparison:
     return compare_curves(
         spec=SCALAR_SPEC,
@@ -128,6 +131,7 @@ def _compare(
         model=model,
         resamples=resamples,
         seed=17,
+        model_varies=model_varies,
         references=references,
     )
 
@@ -531,6 +535,79 @@ def test_a_comparison_carries_the_floor_its_own_distances_are_read_against() -> 
         assert SCALAR_SPEC.name in floor.source
 
 
+def test_a_model_side_that_cannot_vary_reports_a_floor_of_exactly_zero() -> None:
+    """Re-measuring a deterministic reading replays it, so nothing moves.
+
+    Bootstrapping the games instead answers how far a different *draw* would
+    have landed, which no delta between two checkpoints read on these same
+    games is exposed to.
+    """
+
+    model = _generated(
+        lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0)
+    )
+    comparison = _compare(model, model_varies=False)
+
+    assert comparison.floors is not None
+    assert comparison.floors.method == CURVE_DETERMINISTIC_METHOD
+    assert comparison.floors.resamples == 0
+    for floor in (
+        comparison.floors.conditional,
+        comparison.floors.pooled,
+        comparison.floors.model_variation,
+    ):
+        assert floor.value == 0.0
+        assert floor.kind == "evaluation"
+        assert floor.source is not None
+        assert CURVE_DETERMINISTIC_METHOD in floor.source
+
+
+def test_a_stated_floor_survives_a_model_side_too_thin_to_bootstrap() -> None:
+    """Being replayed is not a sample-size question, so nothing thins it.
+
+    A bootstrap needs games to resample and gives up below two. A reading that
+    another run reproduces move for move has a floor of zero however few games
+    it played, and withholding one there would report the exactly-known case as
+    unknown.
+    """
+
+    thin = _generated(lambda rating, _: _length(rating), per_rating=1, grid=GRID[:1])
+    comparison = _compare(thin, model_varies=False)
+
+    assert comparison.floors is not None
+    assert comparison.floors.conditional.value == 0.0
+    assert comparison.references is None
+
+
+def test_declaring_the_model_side_fixed_leaves_the_reading_itself_alone() -> None:
+    """Only the floor's claim changes, which is the point of the distinction.
+
+    The distances, the null levels, and the curve are all properties of the
+    games played. Saying that another run would replay them says nothing about
+    what they read at.
+
+    Read at a thin sample, which is where issue #257's defect showed: the
+    bootstrap reports a floor of whole plies against a distance that a second
+    run would reproduce exactly.
+    """
+
+    model = _generated(
+        lambda rating, generator: _length(rating) + generator.gauss(0.0, 3.0),
+        per_rating=2,
+    )
+    varying = _compare(model)
+    fixed = _compare(model, model_varies=False)
+
+    assert fixed.conditional_distance == varying.conditional_distance
+    assert fixed.pooled_distance == varying.pooled_distance
+    assert fixed.model_variation == varying.model_variation
+    assert fixed.references is not None
+    assert varying.references is not None
+    assert fixed.references.conditional == varying.references.conditional
+    assert varying.floors is not None
+    assert varying.floors.conditional.value > 1.0
+
+
 def test_the_reference_size_does_not_move_the_floor() -> None:
     """A floor qualifies a delta, and both checkpoints share one reference.
 
@@ -668,6 +745,10 @@ def test_curve_points_are_stored_as_data_for_the_detail_tier() -> None:
         comparison.references.flat if comparison.references else None
     )
     assert encoded["floors"]["conditional"]["kind"] == "evaluation"
+    # How the floor was arrived at, because a bootstrap over plentiful games
+    # and a deterministic reading's exact zero are not distinguishable from the
+    # value alone.
+    assert encoded["floors"]["method"] == CURVE_BOOTSTRAP_METHOD
     assert encoded["human_games"] == comparison.human_games
     assert encoded["pooled"]["human"]["games"] > 0
 

@@ -35,6 +35,7 @@ from anthro_chess.evaluation.games.harness import (
     collapse_replicates,
     generate_games,
     prefix_positions,
+    replicates_vary,
     standard_positions,
 )
 from anthro_chess.evaluation.games.players import (
@@ -110,6 +111,7 @@ __all__ = [
     "parse_game_records",
     "prefix_positions",
     "read_game_records",
+    "replicates_vary",
     "standard_positions",
     "summarize_games",
     "termination_from_outcome",

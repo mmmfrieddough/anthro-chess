@@ -172,6 +172,22 @@ class GenerationConfig(ConfigModel):
     concurrency: Annotated[StrictInt, Field(ge=1)] = 1
 
 
+def replicates_vary(temperatures: Sequence[float]) -> bool:
+    """Return whether another replicate of these seats plays different games.
+
+    Selection at temperature zero is greedy rather than drawn, so a pairing
+    whose every seat is at zero replays one game per position and a fresh seed
+    draws nothing. One sampling seat is enough to restore the variation.
+
+    This is the same question twice over. It decides how many replicates are
+    worth playing, and it decides what re-measuring the result would mean —
+    which is what a noise floor beside that result claims to bound — so the two
+    read it from here rather than each carrying its own copy of the rule.
+    """
+
+    return any(temperature != 0.0 for temperature in temperatures)
+
+
 def collapse_replicates(
     seeds: tuple[int, ...],
     generation: GenerationConfig,
@@ -180,24 +196,18 @@ def collapse_replicates(
 ) -> tuple[tuple[int, ...], GenerationConfig]:
     """Return the replicates worth playing at these seats' temperatures.
 
-    Selection at temperature zero is greedy rather than drawn, so a pairing
-    whose every seat is at zero replays one game per position however many
-    replicates it is asked for: the seed selects nothing and each game per
-    position repeats the one before it. Seeds and games per position are
-    precision dials — decision 0020 keeps both out of series identity for that
-    reason — and a point mass offers no precision to buy, so such a suite plays
-    one replicate and reports the sample it realized rather than the sample it
-    was configured for.
+    Seeds and games per position are precision dials — decision 0020 keeps both
+    out of series identity for that reason — so where ``replicates_vary`` says
+    a fresh replicate would only repeat the one before it, there is no precision
+    left to buy: such a suite plays one replicate and reports the sample it
+    realized rather than the sample it was configured for.
 
     Colour swapping is deliberately left alone. It is a declared setting rather
     than a sample count, so dropping it would measure a different quantity
     instead of the same one more cheaply.
-
-    A single non-zero temperature is enough to restore both dials, because one
-    sampling seat is enough to make the games differ.
     """
 
-    if any(temperature != 0.0 for temperature in temperatures):
+    if replicates_vary(temperatures):
         return seeds, generation
     return seeds[:1], generation.model_copy(update={"games_per_position": 1})
 

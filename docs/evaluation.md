@@ -484,6 +484,17 @@ That is why a generated-play floor is evaluation noise even though it is
 computed by a bootstrap, and why rollout metrics need no separate expensive
 characterization.
 
+They coincide only where re-running redraws the games. Greedy seats replay
+theirs, so a temperature-zero reading is the deterministic case the first bullet
+already names: another seed reproduces it exactly, and its evaluation noise is
+zero rather than small. A bootstrap over those games still returns a number, and
+that number is data-sampling noise wearing an evaluation floor's label — it says
+how far a different draw of games would have landed, which two checkpoints read
+on the identical games are not exposed to. Such a reading therefore states a
+floor of zero rather than estimating one, and records that it was stated.
+`docs/decisions/0032-a-replayed-reading-has-no-evaluation-noise.md` owns the
+rule and why reporting no floor at all would understate what is known.
+
 A floor that qualifies a delta must exclude anything the two sides of that delta
 share. Two checkpoints are compared against the *same fixed* human reference, so
 the reference's own sampling error is common-mode and cancels; including it can
@@ -2095,6 +2106,15 @@ of the seed count too narrow. Checked against forty independent draws at a fixed
 size, the bootstrap reproduces the true spread to within a few percent, which is
 what a floor has to do.
 
+The temperature-zero row is the exception, and it states its floor rather than
+bootstrapping one. Its seats are greedy, so another run of it replays the same
+games and the distances do not move at all; resampling games that cannot be
+redrawn reports the sample size the suite happened to play instead of anything
+the reading has. Every one of that row's floors is therefore exactly zero, and
+the artifact records which of the two ways it arrived there, since a bootstrap
+over plentiful games also lands near zero and the values alone cannot tell them
+apart.
+
 The declared bandwidth is one value for every quantity rather than one each.
 Selected over thousands of matched-rating games of the frozen blitz pool, only
 game length, opening, and move diversity have an interior cross-validation
@@ -2553,12 +2573,15 @@ rather than the committed one: a candidate arm is not project history, and an
 arm nobody adopted would otherwise become some later report's baseline.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
-because of which floors exist. Every floor that qualifies a checkpoint delta
-today is a data-sampling floor, whether the reading bootstrapped it or a report
-paired it, and such a floor says the delta survives a different draw of
-evaluation games rather than that the change produced it. Two arms differ by
-their initialization seeds as well as by the change, so clearing a data-sampling
-floor establishes that two models differ, not that the change is why. That is
+because of which floors exist. Almost every floor that qualifies a checkpoint
+delta today is a data-sampling floor, whether the reading bootstrapped it or a
+report paired it, and such a floor says the delta survives a different draw of
+evaluation games rather than that the change produced it. The exception claims
+less rather than more: a replayed reading states a floor of zero, which says its
+games cannot be redrawn at all and therefore says nothing about a draw that
+could be. Two arms differ by their initialization seeds as well as by the
+change, so clearing either kind establishes that two models differ, not that the
+change is why. That is
 not a theoretical gap. Measured at proof scale, two arms differing only by their
 initialization seed cleared 14 of 54 floored metrics and read better on every
 held-out and legality metric; decision 0029 holds the reading.
