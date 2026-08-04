@@ -132,17 +132,21 @@ this record did not have.
 and settled the limit where it stands, inside the same free-until-the-core
 window as the grid.
 
-The **missing floor** is the more consequential of the two, and is still open.
-The ladder states ordering, slope, and span with nothing beside them saying what
-it can resolve, which is the same reading-surface gap several other families
-carry. It is what makes "the transfer is flat" and "the sample is thin"
-indistinguishable from the output, and it is the reason this record declines to
-trade sample for time.
+The **missing floor** was the more consequential of the two. The ladder stated
+ordering, slope, and span with nothing beside them saying what it could resolve,
+which is what made "the transfer is flat" and "the sample is thin"
+indistinguishable from the output, and which is the reason this record declines
+to trade sample for time.
+`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` has since taken it.
+That does not reopen the grid: it makes the precision lever this record points
+at legible, since raising seeds or openings now moves a number the reading
+prints rather than an unstated quantity.
 
 ## References
 
 - `docs/decisions/0022-one-joint-rating-ladder-fit.md`
 - `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md`
+- `docs/decisions/0034-qualifying-a-rating-ladder-reading.md`
 - `docs/decisions/0013-benchmark-result-comparability.md`
 - `docs/decisions/0020-declared-settings-scope-generated-series.md`
 - `docs/evaluation.md`, "The Implemented Ladder"

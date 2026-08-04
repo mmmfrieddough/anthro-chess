@@ -2306,6 +2306,18 @@ LADDER_SCORE_RATE = _ladder_metric(
     ),
 )
 
+LADDER_SCORED_GAME_RATE = _ladder_metric(
+    "ladder.scored_game_rate",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Share of one seat's games that reached a result rather than the ply "
+        "limit. Directional where the rest of the ladder is not: the limit sits "
+        "past the longest game in the corpus, so a seat playing the way its "
+        "corpus does would reach it essentially never, and the share rising is "
+        "the model learning to finish games."
+    ),
+)
+
 LADDER_PREFERRED_SELECTION_RATE = _ladder_metric(
     "ladder.preferred_selection_rate",
     MetricDirection.INFORMATIONAL,

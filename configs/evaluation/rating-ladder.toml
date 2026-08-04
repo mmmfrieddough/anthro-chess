@@ -17,8 +17,8 @@
 # `generation.maximum_generated_plies`, `generation.swap_colors`,
 # `generation.claim_draws`, and `runtime.resignation_enabled`. Values that
 # decide only how precisely are not: `grid.seeds`,
-# `generation.games_per_position`, and `generation.concurrency` can all be
-# raised without ending a series.
+# `generation.games_per_position`, `generation.concurrency`, and everything
+# under `[resolution]` can all be raised without ending a series.
 #
 # Cost scales with the square of the seat count. Four ratings at three
 # temperatures plus three ablated seats is fifteen seats and one hundred and
@@ -97,6 +97,20 @@ concurrency = 8
 # has no finite maximum-likelihood rating, so this turns a runaway fit into a
 # reportable extreme. It joins series identity because it can change a value.
 maximum_spread = 1200.0
+
+[resolution]
+# What the reading can resolve, estimated by redrawing each pairing's games and
+# running the fit again. One resample is one whole reading, which is what
+# reaches ordering and the ladder error: neither has a derivative for a standard
+# error to be propagated through. Pairings of two greedy seats replay rather
+# than redraw and are held fixed.
+#
+# Every value here is precision on the floor rather than on the reading, so none
+# of it enters series identity. A refit of this grid costs a few milliseconds,
+# so the resample count is the plain bootstrap default rather than a reduced one
+# — the whole estimate is seconds against a two-hour ladder. Settled in
+# `docs/decisions/0034-qualifying-a-rating-ladder-reading.md`.
+resamples = 1000
 
 [detail]
 # Whole games, machine-local. Each is written once, under the seat that held

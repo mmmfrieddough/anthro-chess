@@ -2174,6 +2174,15 @@ def _optional_value(value: float | None, spec: str = ".2f") -> str:
 
 
 def _render_ladder(result: LadderBenchmarkResult) -> str:
+    from anthro_chess.evaluation.results.metrics import (
+        LADDER_ADJACENT_RATING_ORDER_ACCURACY,
+        LADDER_FITTED_RATING,
+        LADDER_FITTED_RATING_SLOPE,
+        LADDER_FITTED_RATING_SPAN,
+        LADDER_RATING_ERROR,
+        LADDER_RATING_ORDER_ACCURACY,
+    )
+
     fit = result.fit
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
@@ -2187,6 +2196,7 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             f"on the {fit.anchor_basis} basis"
         ),
     ]
+    lines.extend(_render_ladder_resolution(result))
     if fit.clamped:
         lines.append(
             "  clamped        "
@@ -2205,22 +2215,60 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
                 "",
                 f"Ladder at {reading.label}  "
                 f"(series {reading.execution.workload_sha256[:12]})",
-                f"    {'configured':>10}{'fitted':>10}{'error':>9}",
+                f"    {'configured':>10}{'fitted':>10}{'error':>9}{'resolves':>12}",
             ]
         )
         lines.extend(
             f"    {rating:>10}{fitted:>10.0f}{fitted - rating:>+9.0f}"
+            + _resolves_column(
+                result,
+                f"{rating}@t{reading.temperature:g}",
+                LADDER_FITTED_RATING.identifier,
+                0,
+            )
             for rating, fitted in zip(reading.ratings, reading.fitted, strict=True)
         )
         lines.extend(
             [
                 (
-                    f"  ordering       {reading.order_accuracy:.3f} pairwise, "
-                    f"{reading.adjacent_order_accuracy:.3f} adjacent"
+                    f"  ordering       {reading.order_accuracy:.3f}"
+                    + _resolves(
+                        result,
+                        reading.label,
+                        LADDER_RATING_ORDER_ACCURACY.identifier,
+                        3,
+                    )
+                    + f" pairwise, {reading.adjacent_order_accuracy:.3f}"
+                    + _resolves(
+                        result,
+                        reading.label,
+                        LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier,
+                        3,
+                    )
+                    + " adjacent"
                 ),
                 (
-                    f"  transfer       slope {reading.slope:.3f}, span "
-                    f"{reading.span:.0f}, ladder error {reading.ladder_error:.1f}"
+                    f"  transfer       slope {reading.slope:.3f}"
+                    + _resolves(
+                        result,
+                        reading.label,
+                        LADDER_FITTED_RATING_SLOPE.identifier,
+                        3,
+                    )
+                    + f", span {reading.span:.0f}"
+                    + _resolves(
+                        result,
+                        reading.label,
+                        LADDER_FITTED_RATING_SPAN.identifier,
+                        0,
+                    )
+                    + f", ladder error {reading.ladder_error:.1f}"
+                    + _resolves(
+                        result,
+                        reading.label,
+                        LADDER_RATING_ERROR.identifier,
+                        1,
+                    )
                 ),
             ]
         )
@@ -2237,6 +2285,7 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             f"Unavailable: {name}: {reason}"
             for name, reason in sorted(result.unavailable.items())
         )
+    lines.extend(_render_ladder_unqualifiable(result))
     if result.recorded_paths:
         lines.extend(
             ["", f"Recorded: {len(result.recorded_paths)} result(s) to the store"]
@@ -2246,6 +2295,96 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
+    """State how the ± beside every number below was arrived at.
+
+    Printed once, above the readings, because a stated floor and an estimated
+    one look identical at the point of use and mean different things.
+    """
+
+    resolution = result.resolution
+    if resolution is None:
+        return ["Resolution: not estimated; this run switched it off"]
+    lines = [f"Resolution: {resolution.method}"]
+    if not resolution.resamples:
+        lines.append(
+            "  stated         every pairing replays, so the floor beside each "
+            "number is exactly zero"
+        )
+        return lines
+    lines.append(
+        f"  resamples      {resolution.resamples}, over "
+        f"{resolution.redrawn_games} redrawn game(s)"
+    )
+    if resolution.replayed_pairings:
+        lines.append(
+            f"  held fixed     {resolution.replayed_pairings} pairing(s) that "
+            "replay rather than redraw"
+        )
+    if resolution.non_convergent_resamples:
+        lines.append(
+            f"  unconverged    {resolution.non_convergent_resamples} resample(s) "
+            "ran out of iterations"
+        )
+    return lines
+
+
+def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
+    """Name every reported number that has no floor, and why it cannot."""
+
+    resolution = result.resolution
+    if resolution is None or not resolution.unqualifiable:
+        return []
+    lines = ["", "Unqualifiable"]
+    for (scope, metric), reason in sorted(resolution.unqualifiable.items()):
+        lines.extend(
+            textwrap.wrap(
+                f"{scope} {metric}: {reason}",
+                width=116,
+                initial_indent="    ",
+                subsequent_indent="      ",
+            )
+        )
+    return lines
+
+
+def _resolves(
+    result: LadderBenchmarkResult,
+    scope: str,
+    metric: str,
+    precision: int,
+) -> str:
+    """Return what one reported number can resolve, as a suffix to print."""
+
+    resolution = result.resolution
+    if resolution is None:
+        return ""
+    floor = resolution.floor(scope, metric)
+    if floor is not None:
+        return f" ±{floor.value:.{precision}f}"
+    return " (unqualifiable)" if (scope, metric) in resolution.unqualifiable else ""
+
+
+def _resolves_column(
+    result: LadderBenchmarkResult,
+    scope: str,
+    metric: str,
+    precision: int,
+    width: int = 12,
+) -> str:
+    """Return the same, as a fixed-width column.
+
+    Dashed rather than annotated where nothing qualifies the number, because a
+    reason long enough to be useful is long enough to break the table. The
+    ``Unqualifiable`` block below names every dash and says why.
+    """
+
+    resolution = result.resolution
+    floor = None if resolution is None else resolution.floor(scope, metric)
+    value = "-" if floor is None else f"±{floor.value:.{precision}f}"
+    return value.rjust(width)
+
+
 def _render_ladder_seats(result: LadderBenchmarkResult) -> list[str]:
     """Show each seat's score beside its error profile.
 
@@ -2253,22 +2392,48 @@ def _render_ladder_seats(result: LadderBenchmarkResult) -> list[str]:
     that preserves the score rate while moving the preferred-selection rate has
     changed the shape of the mistakes rather than their number, and that is
     invisible in either column alone.
+
+    The scored share sits between them because it is neither: it is what the
+    seat's own play did to the ply limit, and on the readings taken so far it
+    has discriminated between checkpoints more sharply than the strength column
+    beside it. Both it and the fitted rating carry their own resolution, since
+    each is estimated from a different amount of this seat's play.
     """
+
+    from anthro_chess.evaluation.results.metrics import (
+        LADDER_FITTED_RATING,
+        LADDER_SCORED_GAME_RATE,
+    )
 
     lines = [
         "",
         "Seats",
-        f"    {'seat':<16}{'games':>7}{'score':>8}{'fitted':>9}"
-        f"{'preferred':>11}{'regret':>9}{'rank':>7}",
+        f"    {'seat':<16}{'games':>7}{'scored':>8}{'±':>8}{'score':>8}"
+        f"{'fitted':>9}{'±':>8}{'preferred':>11}{'regret':>9}{'rank':>7}",
     ]
     for seat in result.seats:
         profile = seat.decisions
         lines.append(
-            f"    {seat.label:<16}{seat.games:>7}{seat.score_rate:>8.3f}"
+            f"    {seat.label:<16}{seat.games:>7}{seat.scored_game_rate:>8.3f}"
+            + _resolves_column(
+                result,
+                seat.label,
+                LADDER_SCORED_GAME_RATE.identifier,
+                3,
+                width=8,
+            )
+            + f"{seat.score_rate:>8.3f}"
             + (
                 f"{seat.fitted_rating:>9.0f}"
                 if seat.fitted_rating is not None
                 else f"{'-':>9}"
+            )
+            + _resolves_column(
+                result,
+                seat.label,
+                LADDER_FITTED_RATING.identifier,
+                0,
+                width=8,
             )
             + (
                 f"{profile.preferred_selection_rate:>11.3f}"
@@ -2283,6 +2448,13 @@ def _render_ladder_seats(result: LadderBenchmarkResult) -> list[str]:
 def _render_temperature_response(result: LadderBenchmarkResult) -> list[str]:
     """Report what temperature cost, and how much conditioning resisted it."""
 
+    from anthro_chess.evaluation.ladder import RESPONSE_SCOPE
+    from anthro_chess.evaluation.results.metrics import (
+        LADDER_ABLATED_TEMPERATURE_RESPONSE,
+        LADDER_TEMPERATURE_RESPONSE,
+        LADDER_TEMPERATURE_RESPONSE_ATTENUATION,
+    )
+
     response = result.response
     if response is None:
         return []
@@ -2290,15 +2462,36 @@ def _render_temperature_response(result: LadderBenchmarkResult) -> list[str]:
         "",
         f"Temperature response  (series {response.execution.workload_sha256[:12]})",
         (
-            f"  conditioned    {response.conditioned_response:+.1f} rating points "
-            "per unit temperature"
+            f"  conditioned    {response.conditioned_response:+.1f}"
+            + _resolves(
+                result,
+                RESPONSE_SCOPE,
+                LADDER_TEMPERATURE_RESPONSE.identifier,
+                1,
+            )
+            + " rating points per unit temperature"
         ),
     ]
     if response.ablated_response is not None:
-        lines.append(f"  ablated        {response.ablated_response:+.1f}")
+        lines.append(
+            f"  ablated        {response.ablated_response:+.1f}"
+            + _resolves(
+                result,
+                RESPONSE_SCOPE,
+                LADDER_ABLATED_TEMPERATURE_RESPONSE.identifier,
+                1,
+            )
+        )
     if response.attenuation is not None:
         lines.append(
-            f"  attenuation    {response.attenuation:+.3f} of the ablated drift avoided"
+            f"  attenuation    {response.attenuation:+.3f}"
+            + _resolves(
+                result,
+                RESPONSE_SCOPE,
+                LADDER_TEMPERATURE_RESPONSE_ATTENUATION.identifier,
+                3,
+            )
+            + " of the ablated drift avoided"
         )
     elif response.attenuation_unavailable is not None:
         lines.append(

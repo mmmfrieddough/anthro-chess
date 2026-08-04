@@ -22,7 +22,10 @@ from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
 from anthro_chess.evaluation.ladder import (
+    LADDER_BOOTSTRAP_METHOD,
+    LADDER_DETERMINISTIC_METHOD,
     LADDER_KIND,
+    RESPONSE_SCOPE,
     LadderBenchmarkConfig,
     LadderBenchmarkError,
     LadderBenchmarkResult,
@@ -50,6 +53,7 @@ from anthro_chess.evaluation.results.metrics import (
     LADDER_RATING_ERROR,
     LADDER_RATING_ORDER_ACCURACY,
     LADDER_SCORE_RATE,
+    LADDER_SCORED_GAME_RATE,
     LADDER_SELECTED_RANK,
     LADDER_TEMPERATURE_RESPONSE,
     RATING_BEHAVIOR_FAMILY,
@@ -126,6 +130,10 @@ def _config(**overrides: Any) -> ResolvedConfig[LadderBenchmarkConfig]:
     }
     fields["grid"] = {**_BASE_GRID, **overrides.pop("grid", {})}
     fields["generation"] = {**_BASE_GENERATION, **overrides.pop("generation", {})}
+    # Resamples buy precision on the floor rather than deciding its shape, and
+    # the shape is what these tests read. The shipped default is checked once,
+    # against the schema, rather than paid for in every fixture run.
+    fields["resolution"] = {"resamples": 100, **overrides.pop("resolution", {})}
     fields.update(overrides)
     return ResolvedConfig(
         value=LadderBenchmarkConfig.model_validate(fields),
@@ -172,12 +180,14 @@ def _round_robin(
         expected = 1.0 / (
             1.0 + 10.0 ** ((strengths[second] - strengths[first]) / 400.0)
         )
+        wins = round(expected * games)
         pairings.append(
             LadderPairing(
                 first=first,
                 second=second,
-                games=games,
-                first_points=round(expected * games),
+                first_wins=wins,
+                draws=0,
+                first_losses=games - wins,
             )
         )
     return tuple(pairings)
@@ -279,8 +289,9 @@ def test_a_seat_that_never_loses_is_clamped_and_named() -> None:
         LadderPairing(
             first=first,
             second=second,
-            games=20,
-            first_points=0.0 if second == perfect else 10.0,
+            first_wins=0 if second == perfect else 10,
+            draws=0,
+            first_losses=20 if second == perfect else 10,
         )
         for first, second in itertools.combinations(seats, 2)
     )
@@ -664,9 +675,194 @@ def test_every_ladder_metric_is_registered_in_the_rating_behavior_family() -> No
     assert {
         LADDER_FITTED_RATING.identifier,
         LADDER_RATING_ORDER_ACCURACY.identifier,
+        LADDER_SCORED_GAME_RATE.identifier,
         LADDER_TEMPERATURE_RESPONSE.identifier,
         LADDER_DEPARTURE_POLICY_REGRET.identifier,
     } <= identifiers
+
+
+def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
+    """A floor on the seats alone would leave the headline numbers bare.
+
+    Ordering, slope, span, ladder error and both temperature responses are
+    functions of the fitted ratings, so each inherits their sampling error and
+    each has to say what it is.
+    """
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.7, 1.0),
+                "reference_temperature": 1.0,
+            }
+        )
+    )
+    resolution = result.resolution
+
+    assert resolution is not None
+    assert resolution.method == LADDER_BOOTSTRAP_METHOD
+    reading = result.reading(1.0)
+    row_metrics = (
+        LADDER_RATING_ORDER_ACCURACY,
+        LADDER_ADJACENT_RATING_ORDER_ACCURACY,
+        LADDER_RATING_ERROR,
+        LADDER_FITTED_RATING_SLOPE,
+        LADDER_FITTED_RATING_SPAN,
+    )
+    for definition in row_metrics:
+        floor = resolution.floor(reading.label, definition.identifier)
+        assert floor is not None, definition.identifier
+        assert floor.kind == "evaluation"
+    for seat in result.seats:
+        for definition in (LADDER_FITTED_RATING, LADDER_SCORED_GAME_RATE):
+            assert resolution.floor(seat.label, definition.identifier) is not None
+    for definition in (
+        LADDER_TEMPERATURE_RESPONSE,
+        LADDER_ABLATED_TEMPERATURE_RESPONSE,
+    ):
+        assert resolution.floor(RESPONSE_SCOPE, definition.identifier) is not None
+
+
+def test_a_recorded_ladder_measurement_carries_its_own_floor(tmp_path: Path) -> None:
+    """The floor travels on the measurement, not on the series.
+
+    Seeds and games per pairing are deliberately outside a ladder's identity,
+    so a floor filed against the series would later be applied to a reading
+    taken at a different sample size.
+    """
+
+    result = _run(
+        _config(),
+        store=ResultsStore(tmp_path / "store"),
+        detail=DetailStore(tmp_path / "detail"),
+    )
+
+    qualified = {
+        measurement.metric
+        for envelope in _readings(result)
+        for measurement in envelope.measurements
+        if measurement.noise_floor is not None
+    }
+
+    assert LADDER_FITTED_RATING.identifier in qualified
+    assert LADDER_SCORED_GAME_RATE.identifier in qualified
+    assert LADDER_RATING_ORDER_ACCURACY.identifier in qualified
+    assert LADDER_FITTED_RATING_SLOPE.identifier in qualified
+    # The error profile is a mean over decisions rather than an output of the
+    # fit, so the refit does not reach it and its delta reports the noise as
+    # unknown — which is what a floor somebody could still produce reads as.
+    assert LADDER_POLICY_REGRET.identifier not in qualified
+
+
+def test_a_ladder_nothing_would_redraw_states_a_floor_of_zero() -> None:
+    """A grid of greedy seats replays, so its evaluation noise is exactly zero.
+
+    Bootstrapping it would report the spread of a draw that another seed was
+    never going to take, and a floor built from that hides real movement.
+    """
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.0,),
+                "reference_temperature": 0.0,
+            }
+        )
+    )
+    resolution = result.resolution
+
+    assert resolution is not None
+    assert resolution.method == LADDER_DETERMINISTIC_METHOD
+    assert resolution.resamples == 0
+    assert resolution.redrawn_games == 0
+    assert resolution.replayed_pairings == len(result.pairings)
+    assert resolution.floors
+    assert all(floor.value == 0.0 for floor in resolution.floors.values())
+
+
+def test_a_pairing_that_replays_is_held_fixed_while_the_rest_redraw() -> None:
+    """One greedy pairing in a mixed grid contributes no spread to bound."""
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.0, 1.0),
+                "reference_temperature": 1.0,
+            },
+            ablation={"enabled": False},
+        )
+    )
+    resolution = result.resolution
+    greedy = [
+        pairing
+        for pairing in result.pairings
+        if pairing.first.temperature == 0.0 and pairing.second.temperature == 0.0
+    ]
+
+    assert resolution is not None
+    assert resolution.method == LADDER_BOOTSTRAP_METHOD
+    assert resolution.replayed_pairings == len(greedy)
+    assert resolution.redrawn_games == sum(
+        pairing.played for pairing in result.pairings if pairing not in greedy
+    )
+
+
+def test_a_thicker_sample_resolves_a_ladder_more_finely() -> None:
+    """The floor has to answer to the games behind it, or it measures nothing.
+
+    Same grid, same seats, four times the replicates. A floor that did not
+    tighten would be describing the configuration rather than the sample.
+    """
+
+    thin = _run(_config(grid={"seeds": (0,)}, generation={"games_per_position": 1}))
+    thick = _run(_config(grid={"seeds": (0, 1)}, generation={"games_per_position": 4}))
+
+    assert thin.resolution is not None
+    assert thick.resolution is not None
+    assert thick.games > thin.games
+    seat = SeatKey(SeatConditioning.CONDITIONED, 1200, 1.0)
+    thin_floor = thin.resolution.floor(seat.label, LADDER_FITTED_RATING.identifier)
+    thick_floor = thick.resolution.floor(seat.label, LADDER_FITTED_RATING.identifier)
+    assert thin_floor is not None
+    assert thick_floor is not None
+    assert thick_floor.value < thin_floor.value
+
+
+def test_a_clamped_seat_is_named_unqualifiable_rather_than_given_a_zero() -> None:
+    """A bound is not an estimate, and a resample of one reproduces the bound.
+
+    Every resample of a seat that won every game wins every game again, so its
+    spread is zero and a floor built from it would license any delta at all.
+    """
+
+    result = _run(
+        _config(
+            grid={
+                "target_ratings": (1200, 2000),
+                "temperatures": (0.0, 1.0),
+                "reference_temperature": 1.0,
+            },
+            fit={"maximum_spread": 200.0},
+            ablation={"enabled": False},
+        )
+    )
+    resolution = result.resolution
+
+    assert resolution is not None
+    assert result.fit.clamped
+    for seat in result.fit.clamped:
+        key = (seat.label, LADDER_FITTED_RATING.identifier)
+        assert key not in resolution.floors
+        assert "bound rather than an estimate" in resolution.unqualifiable[key]
+
+
+def test_the_shipped_ladder_resamples_a_thousand_times() -> None:
+    """A refit costs milliseconds, so the default is the plain bootstrap one."""
+
+    assert LadderBenchmarkConfig().resolution.resamples == 1000
 
 
 def _readings(result: LadderBenchmarkResult) -> tuple[ResultEnvelope, ...]:

@@ -40,6 +40,16 @@ the convergence state and the clamped seats named, because the reading is
 establishing the instrument and the baseline. Neither is an error and neither is
 a calibration verdict.
 
+**Every reported number carries what it can resolve.** A flat ladder and a
+sample too thin to see a slope in look identical without one, which is the
+distinction the first full-size reading could not draw. Ordering, slope, span,
+ladder error and both temperature responses are functions of the fitted
+ratings, so the floor beside them is estimated the only way that reaches all of
+them at once: redraw the games each pairing played, refit, and read the spread
+of everything the fit yields. Pairings whose seats are all greedy replay rather
+than redraw and are held fixed, so a reading is qualified against the games that
+would actually have differed.
+
 Nothing here waits in wall-clock time. Every game comes from the shared
 generation harness under an explicit seed, so a suite reproduces exactly and a
 single game reproduces on its own from the seed its record carries.
@@ -49,6 +59,7 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -56,6 +67,7 @@ from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
+import numpy as np
 import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
@@ -84,8 +96,10 @@ from anthro_chess.evaluation.games import (
     collapse_replicates,
     generate_games,
     prefix_positions,
+    replicates_vary,
     standard_positions,
 )
+from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
 from anthro_chess.evaluation.recording import (
     ResultRecording,
@@ -98,11 +112,14 @@ from anthro_chess.evaluation.results import (
     DatasetReference,
     ExecutionRecord,
     Measurement,
+    NoiseFloor,
     ResultEnvelope,
+    floor_from_dispersion,
     measurement,
 )
 from anthro_chess.evaluation.results.fingerprints import (
     FingerprintError,
+    WorkloadComponent,
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -117,11 +134,13 @@ from anthro_chess.evaluation.results.metrics import (
     LADDER_RATING_ERROR,
     LADDER_RATING_ORDER_ACCURACY,
     LADDER_SCORE_RATE,
+    LADDER_SCORED_GAME_RATE,
     LADDER_SELECTED_RANK,
     LADDER_TEMPERATURE_RESPONSE,
     LADDER_TEMPERATURE_RESPONSE_ATTENUATION,
     MOVE_PREDICTION_PROJECTION,
 )
+from anthro_chess.evaluation.results.records import NoiseFloorKind
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
@@ -141,6 +160,27 @@ RATING_SCALE = 400.0
 #: How the fit is identified in a declared workload. A different pairing model
 #: is a different quantity even over identical games.
 FIT_MODEL = "bradley-terry"
+
+#: How the ladder estimates what its own reading can resolve. Every quantity it
+#: reports is an output of one fit rather than a per-game average, so the
+#: resample redraws each pairing's games and runs the fit again; the spread of
+#: the refits is the spread of everything downstream of them.
+LADDER_BOOTSTRAP_METHOD = "refit-over-resampled-games"
+
+#: How the ladder states the floor of a reading nothing would redraw. A grid of
+#: greedy seats replays every game it played, so its evaluation noise is exactly
+#: zero rather than small, per decision 0032.
+LADDER_DETERMINISTIC_METHOD = "deterministic-seats"
+
+#: The noise a ladder floor bounds. A rollout has no fixed data to re-measure
+#: on — the games are the draw — so resampling them and re-running under another
+#: seed estimate the same quantity, and that quantity is what qualifies a delta
+#: between two checkpoints.
+LADDER_FLOOR_KIND: NoiseFloorKind = "evaluation"
+
+#: What the temperature response's floors are filed under. Seats and rows name
+#: themselves; the response spans the whole grid and has no narrower scope.
+RESPONSE_SCOPE = "response"
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +380,11 @@ class LadderBenchmarkConfig(CheckpointSelection):
     openings: LadderOpeningsConfig = LadderOpeningsConfig()
     ablation: LadderAblationConfig = LadderAblationConfig()
     fit: LadderFitConfig = LadderFitConfig()
+    #: How the reading is qualified. A precision setting rather than a
+    #: measurement one — it decides how finely the floor beside a number is
+    #: read, never the number — so it stays out of series identity like the
+    #: seeds and the games per pairing.
+    resolution: NoiseConfig = NoiseConfig()
     detail: LadderDetailConfig = LadderDetailConfig()
 
 
@@ -347,20 +392,43 @@ class LadderBenchmarkConfig(CheckpointSelection):
 class LadderPairing:
     """Every game two seats played against each other.
 
-    Scored games only. A game that hit the ply limit has no result, so it
-    informs no pairwise comparison; it is counted separately rather than
-    adjudicated into a draw, which would report the ply limit as a level of
-    play.
+    How the games ended rather than what they came to. A point total is what
+    the fit reads, but it is not what another seed would redraw: a resample of
+    this pairing draws outcomes, and half a point is not one of them. The
+    totals are derived so the two cannot disagree.
+
+    A game that hit the ply limit has no result, so it informs no pairwise
+    comparison; it is counted separately rather than adjudicated into a draw,
+    which would report the ply limit as a level of play.
     """
 
     first: SeatKey
     second: SeatKey
-    games: int
-    first_points: float
+    first_wins: int
+    draws: int
+    first_losses: int
     unfinished: int = 0
     #: The seeds this pairing actually played, which ``collapse_replicates``
     #: cuts to one when both seats are greedy.
     seeds: tuple[int, ...] = ()
+
+    @property
+    def games(self) -> int:
+        """Return how many of this pairing's games were scored."""
+
+        return self.first_wins + self.draws + self.first_losses
+
+    @property
+    def first_points(self) -> float:
+        """Return the first seat's points, counting a draw as a half."""
+
+        return self.first_wins + 0.5 * self.draws
+
+    @property
+    def played(self) -> int:
+        """Return every game played, whether or not it reached a result."""
+
+        return self.games + self.unfinished
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one pairing."""
@@ -370,6 +438,9 @@ class LadderPairing:
             "second": self.second.as_record(),
             "games": self.games,
             "first_points": self.first_points,
+            "first_wins": self.first_wins,
+            "draws": self.draws,
+            "first_losses": self.first_losses,
             "unfinished": self.unfinished,
             "seeds": list(self.seeds),
         }
@@ -432,6 +503,18 @@ class LadderSeat:
         return self.points / self.games if self.games else 0.0
 
     @property
+    def played(self) -> int:
+        """Return every game this seat played, scored or not."""
+
+        return self.games + self.unfinished
+
+    @property
+    def scored_game_rate(self) -> float:
+        """Return the share of this seat's games that reached a result."""
+
+        return self.games / self.played if self.played else 0.0
+
+    @property
     def label(self) -> str:
         """Return the short human label a report prints."""
 
@@ -446,6 +529,7 @@ class LadderSeat:
             "points": self.points,
             "score_rate": self.score_rate,
             "unfinished": self.unfinished,
+            "scored_game_rate": self.scored_game_rate,
             "fitted_rating": self.fitted_rating,
             "workload_sha256": self.execution.workload_sha256,
             "workload": dict(self.execution.workload),
@@ -561,6 +645,69 @@ class TemperatureResponse:
 
 
 @dataclass(frozen=True)
+class LadderResolution:
+    """What each quantity the ladder reports can resolve, and how that is known.
+
+    One estimate for the whole ladder rather than one per reported number,
+    because there is one ladder: ordering, slope, span, ladder error and both
+    temperature responses are functions of the same fitted ratings, so a
+    resample that redraws the games moves all of them together and their floors
+    come off the same refits.
+
+    A quantity may have none, and that is a state rather than a gap. A seat the
+    fit clamped has no finite maximum-likelihood rating, so its number is a
+    bound rather than an estimate and no resample can say how precise it is:
+    every resample of a seat that won every game wins every game again.
+    ``unqualifiable`` names those and says why, so a reader is not left holding
+    a number with nothing beside it.
+    """
+
+    #: Floors keyed by the scope they were read at and the metric they qualify.
+    #: The scope is a seat's label, a temperature row's label, or ``response``.
+    floors: Mapping[tuple[str, str], NoiseFloor]
+    #: Why a quantity has no floor, keyed the same way.
+    unqualifiable: Mapping[tuple[str, str], str]
+    method: str
+    #: Resamples behind every floor. Zero on a stated floor, which does not
+    #: depend on resampling and stands where a bootstrap could not.
+    resamples: int
+    #: Games in the pairings a fresh seed would redraw, which is what the
+    #: dispersion bound's degrees of freedom count. Games in a pairing of greedy
+    #: seats are excluded: they replay, so they contribute no spread to bound.
+    redrawn_games: int
+    replayed_pairings: int
+    #: Resamples whose refit ran out of iterations. A diagnostic beside the
+    #: floors rather than a filter on them: the spread of an estimator that is
+    #: struggling is still the spread of the number the benchmark reports, and a
+    #: reader deciding how much to trust the floor needs to see it.
+    non_convergent_resamples: int
+
+    def floor(self, scope: str, metric: str) -> NoiseFloor | None:
+        """Return the floor beside one reported quantity, if it has one."""
+
+        return self.floors.get((scope, metric))
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of the whole resolution estimate."""
+
+        return {
+            "method": self.method,
+            "resamples": self.resamples,
+            "redrawn_games": self.redrawn_games,
+            "replayed_pairings": self.replayed_pairings,
+            "non_convergent_resamples": self.non_convergent_resamples,
+            "floors": [
+                {"scope": scope, "metric": metric, "floor": floor.value}
+                for (scope, metric), floor in sorted(self.floors.items())
+            ],
+            "unqualifiable": [
+                {"scope": scope, "metric": metric, "reason": reason}
+                for (scope, metric), reason in sorted(self.unqualifiable.items())
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class LadderBenchmarkResult:
     """Everything one ladder measured, and where it was written."""
 
@@ -570,6 +717,8 @@ class LadderBenchmarkResult:
     fit: RatingFit
     readings: tuple[LadderReading, ...] = ()
     response: TemperatureResponse | None = None
+    #: What the reading can resolve. Absent only where it was switched off.
+    resolution: LadderResolution | None = None
     #: Why a temperature row or the response could not be read, when one could
     #: not. A real state rather than an error: a row whose seats never finished
     #: a game has no ladder, and saying so beats reporting a zero.
@@ -623,6 +772,9 @@ class LadderBenchmarkResult:
             "pairings": [pairing.as_record() for pairing in self.pairings],
             "readings": [reading.as_record() for reading in self.readings],
             "response": None if self.response is None else self.response.as_record(),
+            "resolution": (
+                None if self.resolution is None else self.resolution.as_record()
+            ),
             "unavailable": dict(sorted(self.unavailable.items())),
             "view": None if self.view is None else self.view.as_record(),
             "dataset": (
@@ -706,15 +858,7 @@ def benchmark_ladder(
         if config.detail.retain_games:
             records.extend(played)
 
-    fit = fit_ratings(
-        seats,
-        pairings,
-        anchor_seats=_anchor_seats(config),
-        anchor_rating=_mean([float(value) for value in config.grid.target_ratings]),
-        maximum_iterations=config.fit.maximum_iterations,
-        tolerance=config.fit.tolerance,
-        maximum_spread=config.fit.maximum_spread,
-    )
+    fit = _fit(config, seats, pairings)
     profiles = _error_profiles(DecisionSet(tuple(samples), unscored))
     device = runner_device(loaded)
     workload = _base_workload(config, source)
@@ -740,6 +884,14 @@ def benchmark_ladder(
         device=device,
         unavailable=unavailable,
     )
+    resolution = _resolution(
+        config,
+        seats,
+        pairings,
+        fit,
+        workload,
+        device=device,
+    )
     result = LadderBenchmarkResult(
         checkpoint=identity,
         seats=measured_seats,
@@ -747,6 +899,7 @@ def benchmark_ladder(
         fit=fit,
         readings=readings,
         response=response,
+        resolution=resolution,
         unavailable=unavailable,
         view=view,
         dataset=dataset,
@@ -985,8 +1138,9 @@ def _score_pairing(
     to how colors are assigned cannot silently transpose a result.
     """
 
-    points = 0.0
-    scored = 0
+    wins = 0
+    draws = 0
+    losses = 0
     unfinished = 0
     for record in played:
         result = record.outcome.result
@@ -999,17 +1153,18 @@ def _score_pairing(
             raise LadderBenchmarkError(
                 "a generated game names a seat outside the pairing that played it"
             )
-        scored += 1
         if result == "1/2-1/2":
-            points += 0.5
-            continue
-        if (white if result == "1-0" else black) == first:
-            points += 1.0
+            draws += 1
+        elif (white if result == "1-0" else black) == first:
+            wins += 1
+        else:
+            losses += 1
     return LadderPairing(
         first=first,
         second=second,
-        games=scored,
-        first_points=points,
+        first_wins=wins,
+        draws=draws,
+        first_losses=losses,
         unfinished=unfinished,
         seeds=seeds,
     )
@@ -1162,6 +1317,256 @@ def _temperature_response(
         attenuation=attenuation,
         attenuation_unavailable=reason,
         execution=execution_record(device, dict(workload)),
+    )
+
+
+def _resolution(
+    config: LadderBenchmarkConfig,
+    seats: Sequence[SeatKey],
+    pairings: Sequence[LadderPairing],
+    fit: RatingFit,
+    workload: Mapping[str, Any],
+    *,
+    device: torch.device,
+) -> LadderResolution | None:
+    """Return what this reading can resolve, quantity by quantity.
+
+    Refitting a resample rather than perturbing the numbers the fit produced.
+    Ordering is a step function of rating differences and a ladder error is a
+    mean of absolute ones, so neither has a derivative for uncertainty to be
+    propagated through; running the whole reduction again on redrawn games
+    reaches every quantity by the same route the reading itself took.
+
+    A pairing is redrawn at the count of games it *played* rather than the
+    count it scored, so a game reaching the ply limit is an outcome the redraw
+    can produce. That is what makes the scored-game count a measured quantity
+    rather than a denominator, and it is the quantity that has discriminated
+    most sharply between checkpoints so far.
+
+    The draw is over a pairing's games without regard to which opening each came
+    from, which is the estimator the generated-play family already uses and
+    which errs wide here: the openings are frozen, so a fresh seed replays the
+    same set and the spread between openings is not something a re-run redraws.
+    ``docs/decisions/0034-qualifying-a-rating-ladder-reading.md`` owns why the
+    stratified alternative was not taken and what sizing it needs.
+    """
+
+    settings = config.resolution
+    if not settings.enabled:
+        return None
+    redrawn = {
+        index: pairing
+        for index, pairing in enumerate(pairings)
+        if pairing.played
+        and replicates_vary((pairing.first.temperature, pairing.second.temperature))
+    }
+    method = LADDER_BOOTSTRAP_METHOD if redrawn else LADDER_DETERMINISTIC_METHOD
+    source = f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} {method}"
+    observed = _quantities(config, seats, pairings, fit, workload, device=device)
+    clamped = {seat.label for seat in fit.clamped}
+    unqualifiable = {
+        (label, LADDER_FITTED_RATING.identifier): (
+            "the seat won or lost every game, so the fit clamped it at the "
+            "declared spread; the number is a bound rather than an estimate and "
+            "a resample of it reproduces the same bound"
+        )
+        for label in clamped
+    }
+    if not redrawn:
+        # Nothing to draw. Every seat is greedy, so a fresh seed replays the
+        # ladder move for move and the delta between two such readings is
+        # attributable to the weights alone.
+        return LadderResolution(
+            floors={
+                key: NoiseFloor(value=0.0, kind=LADDER_FLOOR_KIND, source=source)
+                for key in observed
+                if key not in unqualifiable
+            },
+            unqualifiable=unqualifiable,
+            method=method,
+            resamples=0,
+            redrawn_games=0,
+            replayed_pairings=len(pairings),
+            non_convergent_resamples=0,
+        )
+
+    generator = np.random.default_rng(settings.seed)
+    outcomes = {
+        index: _resample_outcomes(pairing, generator, settings.resamples)
+        for index, pairing in redrawn.items()
+    }
+    replicates: dict[tuple[str, str], list[float]] = {key: [] for key in observed}
+    non_convergent = 0
+    for resample in range(settings.resamples):
+        resampled = [
+            _resampled_pairing(pairing, outcomes[index][resample])
+            if index in outcomes
+            else pairing
+            for index, pairing in enumerate(pairings)
+        ]
+        try:
+            replicate = _fit(config, seats, resampled)
+        except LadderBenchmarkError:
+            # A resample that left fewer than two seats with a scored game is
+            # not a fit at all. It is dropped rather than failing the reading,
+            # and the quantities it would have carried lose a replicate.
+            continue
+        non_convergent += not replicate.converged
+        for key, value in _quantities(
+            config, seats, resampled, replicate, workload, device=device
+        ).items():
+            if key in replicates:
+                replicates[key].append(value)
+
+    freedom = sum(pairing.played for pairing in redrawn.values()) - 1
+    floors: dict[tuple[str, str], NoiseFloor] = {}
+    for key in observed:
+        if key in unqualifiable:
+            continue
+        values = [value for value in replicates[key] if math.isfinite(value)]
+        if len(values) < 2:
+            unqualifiable[key] = (
+                "fewer than two resamples produced this quantity, so there is "
+                "no spread to read"
+            )
+            continue
+        floors[key] = NoiseFloor(
+            value=floor_from_dispersion(
+                statistics.stdev(values),
+                degrees_of_freedom=freedom,
+                coverage=settings.coverage,
+                confidence=settings.confidence,
+            ),
+            kind=LADDER_FLOOR_KIND,
+            source=source,
+        )
+    return LadderResolution(
+        floors=floors,
+        unqualifiable=unqualifiable,
+        method=method,
+        resamples=settings.resamples,
+        redrawn_games=freedom + 1,
+        replayed_pairings=len(pairings) - len(redrawn),
+        non_convergent_resamples=non_convergent,
+    )
+
+
+def _quantities(
+    config: LadderBenchmarkConfig,
+    seats: Sequence[SeatKey],
+    pairings: Sequence[LadderPairing],
+    fit: RatingFit,
+    workload: Mapping[str, Any],
+    *,
+    device: torch.device,
+) -> dict[tuple[str, str], float]:
+    """Return every quantity one fit yields, keyed by scope and metric.
+
+    The reading's own reductions rather than a second copy of them, so a floor
+    cannot end up describing a slightly different quantity from the number it
+    sits beside.
+    """
+
+    values: dict[tuple[str, str], float] = {}
+    for seat in seats:
+        rating = fit.rating(seat)
+        if rating is not None:
+            values[(seat.label, LADDER_FITTED_RATING.identifier)] = rating
+        games = _seat_games(seat, pairings)
+        played = games + _seat_unfinished(seat, pairings)
+        if games:
+            values[(seat.label, LADDER_SCORE_RATE.identifier)] = (
+                _seat_points(seat, pairings) / games
+            )
+        if played:
+            values[(seat.label, LADDER_SCORED_GAME_RATE.identifier)] = games / played
+    for reading in _readings(config, fit, workload, device=device, unavailable={}):
+        scope = reading.label
+        values[(scope, LADDER_RATING_ORDER_ACCURACY.identifier)] = (
+            reading.order_accuracy
+        )
+        values[(scope, LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier)] = (
+            reading.adjacent_order_accuracy
+        )
+        values[(scope, LADDER_RATING_ERROR.identifier)] = reading.ladder_error
+        values[(scope, LADDER_FITTED_RATING_SLOPE.identifier)] = reading.slope
+        values[(scope, LADDER_FITTED_RATING_SPAN.identifier)] = reading.span
+    response = _temperature_response(
+        config,
+        fit,
+        workload,
+        device=device,
+        unavailable={},
+    )
+    if response is not None:
+        values[(RESPONSE_SCOPE, LADDER_TEMPERATURE_RESPONSE.identifier)] = (
+            response.conditioned_response
+        )
+        if response.ablated_response is not None:
+            values[(RESPONSE_SCOPE, LADDER_ABLATED_TEMPERATURE_RESPONSE.identifier)] = (
+                response.ablated_response
+            )
+        if response.attenuation is not None:
+            values[
+                (RESPONSE_SCOPE, LADDER_TEMPERATURE_RESPONSE_ATTENUATION.identifier)
+            ] = response.attenuation
+    return values
+
+
+def _resample_outcomes(
+    pairing: LadderPairing,
+    generator: np.random.Generator,
+    resamples: int,
+) -> np.ndarray:
+    """Return one pairing's redrawn outcome counts, one row per resample.
+
+    A multinomial rather than an index draw. Resampling a pairing's games with
+    replacement and counting how each one ended is the same distribution, and
+    this way one pairing costs one draw rather than one per resample.
+    """
+
+    played = pairing.played
+    return generator.multinomial(
+        played,
+        (
+            pairing.first_wins / played,
+            pairing.draws / played,
+            pairing.first_losses / played,
+            pairing.unfinished / played,
+        ),
+        size=resamples,
+    )
+
+
+def _resampled_pairing(pairing: LadderPairing, counts: np.ndarray) -> LadderPairing:
+    """Return one pairing as a resample drew it."""
+
+    return LadderPairing(
+        first=pairing.first,
+        second=pairing.second,
+        first_wins=int(counts[0]),
+        draws=int(counts[1]),
+        first_losses=int(counts[2]),
+        unfinished=int(counts[3]),
+        seeds=pairing.seeds,
+    )
+
+
+def _fit(
+    config: LadderBenchmarkConfig,
+    seats: Sequence[SeatKey],
+    pairings: Sequence[LadderPairing],
+) -> RatingFit:
+    """Fit one ladder under this configuration's declared fit controls."""
+
+    return fit_ratings(
+        seats,
+        pairings,
+        anchor_seats=_anchor_seats(config),
+        anchor_rating=_mean([float(value) for value in config.grid.target_ratings]),
+        maximum_iterations=config.fit.maximum_iterations,
+        tolerance=config.fit.tolerance,
+        maximum_spread=config.fit.maximum_spread,
     )
 
 
@@ -1335,7 +1740,7 @@ def _record(
         benchmark=LADDER_BENCHMARK,
     )
     for seat in result.seats:
-        measurements = _seat_measurements(seat)
+        measurements = _seat_measurements(seat, result.resolution)
         if not measurements:
             continue
         recorder.add(
@@ -1348,7 +1753,7 @@ def _record(
         )
     for reading in result.readings:
         recorder.add(
-            _reading_measurements(reading),
+            _reading_measurements(reading, result.resolution),
             payload=partial(_reading_payload, result, reading),
             description=f"Rating ladder: {reading.label}",
             slug=f"ladder-t{_slug(f'{reading.temperature:g}')}",
@@ -1357,7 +1762,7 @@ def _record(
         )
     if result.response is not None:
         recorder.add(
-            _response_measurements(result.response),
+            _response_measurements(result.response, result.resolution),
             payload=result.response.as_record,
             description="Rating-ladder temperature response",
             slug="temperature-response",
@@ -1366,7 +1771,10 @@ def _record(
         )
 
 
-def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:
+def _seat_measurements(
+    seat: LadderSeat,
+    resolution: LadderResolution | None,
+) -> tuple[Measurement, ...]:
     """Return one seat's committed strength reading and error profile.
 
     A seat the fit could not place reports nothing rather than a zero, and the
@@ -1374,6 +1782,11 @@ def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:
     rather than in place of it: a temperature that preserves average score while
     moving the profile has changed the shape of the mistakes, which no strength
     number can show.
+
+    The error profile carries no floor. It is a mean over decisions rather than
+    an output of the fit, so the refit the other floors come from does not reach
+    it, and a delta in one reports its noise as unknown — which is what a floor
+    somebody could still produce should read as.
     """
 
     workload = seat.execution.workload_component()
@@ -1382,6 +1795,10 @@ def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:
         values.append((LADDER_FITTED_RATING.identifier, seat.fitted_rating, seat.games))
     if seat.games:
         values.append((LADDER_SCORE_RATE.identifier, seat.score_rate, seat.games))
+    if seat.played:
+        values.append(
+            (LADDER_SCORED_GAME_RATE.identifier, seat.scored_game_rate, seat.played)
+        )
     profile = seat.decisions
     if profile is not None and profile.decisions:
         values.extend(
@@ -1414,18 +1831,18 @@ def _seat_measurements(seat: LadderSeat) -> tuple[Measurement, ...]:
                     profile.departures,
                 )
             )
-    return tuple(
-        measurement(identifier, value, workload=workload, sample_size=sample_size)
-        for identifier, value, sample_size in values
-    )
+    return _measurements(seat.label, values, workload, resolution)
 
 
-def _reading_measurements(reading: LadderReading) -> tuple[Measurement, ...]:
+def _reading_measurements(
+    reading: LadderReading,
+    resolution: LadderResolution | None,
+) -> tuple[Measurement, ...]:
     """Return one temperature row's committed transfer-function reading."""
 
     workload = reading.execution.workload_component()
     seats = len(reading.ratings)
-    values: tuple[tuple[str, float, int], ...] = (
+    values: list[tuple[str, float, int | None]] = [
         (LADDER_RATING_ORDER_ACCURACY.identifier, reading.order_accuracy, seats),
         (
             LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier,
@@ -1435,18 +1852,18 @@ def _reading_measurements(reading: LadderReading) -> tuple[Measurement, ...]:
         (LADDER_RATING_ERROR.identifier, reading.ladder_error, seats),
         (LADDER_FITTED_RATING_SLOPE.identifier, reading.slope, seats),
         (LADDER_FITTED_RATING_SPAN.identifier, reading.span, seats),
-    )
-    return tuple(
-        measurement(identifier, value, workload=workload, sample_size=sample_size)
-        for identifier, value, sample_size in values
-    )
+    ]
+    return _measurements(reading.label, values, workload, resolution)
 
 
-def _response_measurements(response: TemperatureResponse) -> tuple[Measurement, ...]:
+def _response_measurements(
+    response: TemperatureResponse,
+    resolution: LadderResolution | None,
+) -> tuple[Measurement, ...]:
     """Return the committed temperature response and its attenuation."""
 
     workload = response.execution.workload_component()
-    values: list[tuple[str, float, int]] = [
+    values: list[tuple[str, float, int | None]] = [
         (
             LADDER_TEMPERATURE_RESPONSE.identifier,
             response.conditioned_response,
@@ -1469,8 +1886,34 @@ def _response_measurements(response: TemperatureResponse) -> tuple[Measurement, 
                 len(response.per_rating),
             )
         )
+    return _measurements(RESPONSE_SCOPE, values, workload, resolution)
+
+
+def _measurements(
+    scope: str,
+    values: Sequence[tuple[str, float, int | None]],
+    workload: WorkloadComponent,
+    resolution: LadderResolution | None,
+) -> tuple[Measurement, ...]:
+    """Return one unit's measurements, each beside what the reading can resolve.
+
+    The floor travels on the measurement rather than being characterized against
+    the series. Sample size is deliberately outside a ladder's identity — more
+    seeds estimate the same ladder more precisely — so a floor filed against the
+    series would be looked up later beside a reading taken at a different size,
+    and be wrong by whatever the two sizes differ by.
+    """
+
     return tuple(
-        measurement(identifier, value, workload=workload, sample_size=sample_size)
+        measurement(
+            identifier,
+            value,
+            workload=workload,
+            sample_size=sample_size,
+            noise_floor=(
+                None if resolution is None else resolution.floor(scope, identifier)
+            ),
+        )
         for identifier, value, sample_size in values
     )
 
@@ -1509,6 +1952,9 @@ def _reading_payload(
     payload["fit"] = result.fit.as_record()
     payload["pairings"] = [pairing.as_record() for pairing in result.pairings]
     payload["unavailable"] = dict(sorted(result.unavailable.items()))
+    payload["resolution"] = (
+        None if result.resolution is None else result.resolution.as_record()
+    )
     return payload
 
 
@@ -1558,6 +2004,17 @@ def _log_summary(result: LadderBenchmarkResult) -> None:
         "converged" if result.fit.converged else "did not converge",
         result.fit.iterations,
     )
+    resolution = result.resolution
+    if resolution is not None:
+        logger.info(
+            "Resolution: %s over %s redrawn game(s), %s replayed pairing(s); "
+            "%s quantity(s) qualified, %s unqualifiable",
+            resolution.method,
+            resolution.redrawn_games,
+            resolution.replayed_pairings,
+            len(resolution.floors),
+            len(resolution.unqualifiable),
+        )
     for reading in result.readings:
         logger.info(
             "Ladder at %s: order %.3f, adjacent %.3f, error %.1f, slope %.3f",
@@ -1651,8 +2108,12 @@ __all__ = [
     "FIT_MODEL",
     "LADDER_BENCHMARK",
     "LADDER_BENCHMARK_VERSION",
+    "LADDER_BOOTSTRAP_METHOD",
+    "LADDER_DETERMINISTIC_METHOD",
+    "LADDER_FLOOR_KIND",
     "LADDER_KIND",
     "RATING_SCALE",
+    "RESPONSE_SCOPE",
     "LadderAblationConfig",
     "LadderBenchmarkConfig",
     "LadderBenchmarkError",
@@ -1663,6 +2124,7 @@ __all__ = [
     "LadderOpeningsConfig",
     "LadderPairing",
     "LadderReading",
+    "LadderResolution",
     "LadderSeat",
     "RatingFit",
     "CONDITIONING_TREATMENTS",
