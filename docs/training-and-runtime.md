@@ -397,10 +397,20 @@ syntax.
 
 Before a checkpoint is ready for public model hosting, complete training runs
 may live in a shared machine-local directory outside repository worktrees.
-Use `ANTHRO_CHESS_RUN_ROOT` for that location. The CLI maps configured relative
-run paths beneath this root and maps configured relative dataset paths beneath
-`ANTHRO_CHESS_DATA_ROOT`. An explicit absolute path or command-line path
-override takes precedence. Resolved paths are retained in the run artifact.
+Use `ANTHRO_CHESS_RUN_ROOT` for that location. A training configuration names
+its run rather than placing it, and the run is written beneath this root under
+that name, so what a configuration decides is what the directory is called and
+what the environment decides is which filesystem holds it. The CLI maps
+configured relative dataset paths beneath `ANTHRO_CHESS_DATA_ROOT` the same way,
+and an explicit absolute dataset path takes precedence. Resolved paths are
+retained in the run artifact.
+
+`anthro train --output-directory` writes one run somewhere else outright. It is
+for the run that belongs in a particular place — a scratch measurement, a
+comparison staged beside its control — and not for routine use, because a run
+placed by hand is a run the run root no longer accounts for. A run is identified
+by the directory holding it, so placing one by hand also renames it: readings
+recorded against it use that directory's name, not the configured one.
 
 Both roots are optional, because a fresh clone resolves checked-in relative
 paths inside the worktree and several commands depend on that. What is not

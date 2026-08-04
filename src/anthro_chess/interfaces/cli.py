@@ -99,6 +99,20 @@ _FORMAT_FLAG.add_argument(
 )
 
 
+def _named_directory(value: str) -> Path:
+    """Parse a directory that has to end in a name.
+
+    A run is identified by its directory's name, so `.` or a trailing separator
+    would leave it nameless and fail at the first recorded reading — after the
+    training it was measuring has already run.
+    """
+
+    path = Path(value)
+    if not path.name:
+        raise argparse.ArgumentTypeError(f"{value!r} does not name a directory")
+    return path
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level command parser."""
     parser = argparse.ArgumentParser(
@@ -833,6 +847,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Run declared evaluation cadences and measure efficiency without "
             "writing either to the store."
+        ),
+    )
+    train_parser.add_argument(
+        "--output-directory",
+        type=_named_directory,
+        help=(
+            "Write the run here instead of beneath ANTHRO_CHESS_RUN_ROOT. For "
+            "the occasional run that belongs somewhere specific; ordinary runs "
+            "are placed by the run root."
         ),
     )
     train_parser.set_defaults(handler=_run_train)
@@ -1606,14 +1629,27 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
             f"(min {latency.minimum_ms:.1f}, max {latency.maximum_ms:.1f})",
             "",
             "Where a decision spends its mean latency:",
-            f"  encode    {latency.encode_mean_ms:8.1f} ms",
-            f"  model     {latency.model_mean_ms:8.1f} ms",
-            f"  remainder {latency.remainder_mean_ms:8.1f} ms (masking and sampling)",
+            f"  context   {latency.context_mean_ms:8.3f} ms "
+            "(assemble the encoded trajectory)",
+            f"  predict   {latency.predict_mean_ms:8.3f} ms "
+            "(batch build, forward, host copy)",
+            f"  remainder {latency.remainder_mean_ms:8.3f} ms "
+            "(masking, sampling, encoding the new ply)",
             "",
             (
-                f"Throughput at batch {throughput.batch_size}: "
+                f"Whole batched decisions at batch {throughput.batch_size}: "
                 f"{throughput.decisions_per_second:.1f} decisions/s "
-                f"({throughput.batch_mean_ms:.1f} ms per batch)"
+                f"(median batch {throughput.batch_median_ms:.1f} ms, "
+                f"mean {throughput.batch_mean_ms:.1f} ms)"
+            ),
+            (
+                f"  forward pass alone {throughput.forward_decisions_per_second:.1f} "
+                f"decisions/s ({throughput.forward_median_ms:.1f} ms per batch), "
+                "on a batch built once and"
+            ),
+            (
+                "  re-run: it excludes batch construction, which is the term "
+                "that grows with history."
             ),
             "",
             "Cold start, reported apart from steady state:",
@@ -1629,10 +1665,11 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
             for sample in result.latency_sweep
         )
     if len(result.throughput_sweep) > 1:
-        lines.extend(["", "Throughput by batch size:"])
+        lines.extend(["", "Throughput by batch size (whole decisions, forward alone):"])
         lines.extend(
             f"  batch {sample.batch_size:>4}  "
-            f"{sample.decisions_per_second:8.1f} decisions/s"
+            f"{sample.decisions_per_second:8.1f} decisions/s  "
+            f"{sample.forward_decisions_per_second:8.1f} decisions/s"
             for sample in result.throughput_sweep
         )
     lines.extend(_recorded_lines(result.recorded_paths))
@@ -3191,7 +3228,17 @@ def _run_train(arguments: argparse.Namespace) -> int:
             else resolve_optional_detail_root(arguments.detail_root)
         )
         detail = None if detail_root is None else DetailStore(detail_root)
-        result = run_training(resolved, store=store, detail=detail)
+        # The run root places a named run; without one a fresh clone resolves
+        # inside the working directory, which several commands depend on.
+        placement = _run_root() or Path("artifacts")
+        result = run_training(
+            resolved,
+            output_directory=(
+                arguments.output_directory or placement / resolved.value.run_name
+            ),
+            store=store,
+            detail=detail,
+        )
     except (ConfigError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2
@@ -3273,16 +3320,7 @@ def _resolve_training_roots(
     update: dict[str, object] = {}
     override_keys = {item.partition("=")[0] for item in overrides}
 
-    run_root = _run_root()
     data_root = optional_root(DATA_ROOT_VARIABLE)
-
-    output_directory = config.output_directory
-    if (
-        not output_directory.is_absolute()
-        and "output_directory" not in override_keys
-        and run_root is not None
-    ):
-        update["output_directory"] = _rooted_artifact_path(run_root, output_directory)
 
     selections: tuple[tuple[str, SequenceDataConfig | None], ...] = (
         ("train", config.train),

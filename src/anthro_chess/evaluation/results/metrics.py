@@ -1494,6 +1494,7 @@ def _inference_metric(
     identifier: str,
     direction: MetricDirection,
     summary: str,
+    definition_version: int = 1,
 ) -> MetricDefinition:
     """Register one inference-efficiency metric.
 
@@ -1507,7 +1508,7 @@ def _inference_metric(
             identifier=identifier,
             family=INFERENCE_EFFICIENCY_FAMILY.identifier,
             direction=direction,
-            definition_version=1,
+            definition_version=definition_version,
             summary=summary,
             cost=MetricCost.MEASURED_EXECUTION,
             execution_sensitive=True,
@@ -1547,10 +1548,27 @@ INFERENCE_BATCH_THROUGHPUT = _inference_metric(
     "inference.batch_throughput_per_second",
     MetricDirection.HIGHER_IS_BETTER,
     (
-        "Decisions resolved per second at the declared batch size. Separate "
-        "from latency because batching trades one for the other, and reading a "
-        "serving figure as an interactive one is the usual way that trade "
-        "gets hidden."
+        "Whole batched decisions resolved per second at the declared batch "
+        "size, taken from the median batch. Spans context collection, batch "
+        "construction, the forward pass, legal masking, and sampling, which is "
+        "the loop the generated benchmarks run. Separate from latency because "
+        "batching trades one for the other, and reading a serving figure as an "
+        "interactive one is the usual way that trade gets hidden."
+    ),
+    definition_version=2,
+)
+
+INFERENCE_FORWARD_THROUGHPUT = _inference_metric(
+    "inference.forward_throughput_per_second",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Decisions per second through the forward pass alone, on a batch built "
+        "once and re-run, taken from the median batch. Excludes batch "
+        "construction, so it isolates launch cost for a kernel or precision "
+        "change rather than saying what playing a move costs. It scores the "
+        "whole padded sequence rather than the one row per game a decision "
+        "reads, so it is a companion to the batched figure rather than a "
+        "component of it."
     ),
 )
 

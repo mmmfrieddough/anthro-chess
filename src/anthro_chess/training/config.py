@@ -44,7 +44,11 @@ MatmulPrecision = Literal["highest", "high"]
 class TrainingConfig(ConfigModel):
     """Configuration for a bounded action-model training run."""
 
-    output_directory: Path = Path("artifacts/training")
+    #: What the run root names the run's directory, rather than where it goes:
+    #: the caller decides that, so a checked-in value cannot put a run on the
+    #: wrong filesystem. The pattern holds the name to one path component,
+    #: which is what keeps it from escaping the root it is joined to.
+    run_name: str = Field(default="training", pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     seed: int = Field(default=17, ge=0)
     steps: int = Field(default=10, ge=1)
     learning_rate: float = Field(default=1e-3, gt=0.0)

@@ -340,6 +340,7 @@ split = "train"
     def fake_run(
         resolved: ResolvedConfig[TrainingConfig],
         *,
+        output_directory: Path,
         store: object = None,
         detail: object = None,
     ) -> TrainingResult:
@@ -369,14 +370,26 @@ split = "train"
     ) in command_output
 
 
+@pytest.mark.parametrize(
+    ("extra_argv", "expected_name"),
+    [
+        ([], "example-run"),
+        # The shape that used to escape the run root, pinned rather than left
+        # resting on the absence of an opt-out branch.
+        (["--set", 'run_name="probe"'], "probe"),
+    ],
+    ids=["declared-in-config", "named-on-the-command-line"],
+)
 def test_train_uses_machine_roots_for_checked_in_artifact_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    extra_argv: list[str],
+    expected_name: str,
 ) -> None:
     config = tmp_path / "training.toml"
     config.write_text(
         """
-output_directory = "artifacts/example-run"
+run_name = "example-run"
 
 [train]
 normalized = "artifacts/example-data/normalized"
@@ -395,19 +408,20 @@ split = "train"
     def fake_run(
         resolved: ResolvedConfig[TrainingConfig],
         *,
+        output_directory: Path,
         store: object = None,
         detail: object = None,
     ) -> TrainingResult:
-        assert resolved.value.output_directory == run_root / "example-run"
+        assert output_directory == run_root / expected_name
         assert resolved.value.train.normalized == data_root / "example-data/normalized"
         assert (
             resolved.value.train.manifest
             == data_root / "example-data/manifests/manifest.json"
         )
         return TrainingResult(
-            run_path=run_root / "example-run/run.json",
-            metrics_path=run_root / "example-run/metrics.jsonl",
-            checkpoint_path=run_root / "example-run/checkpoints/step-00000001.pt",
+            run_path=run_root / expected_name / "run.json",
+            metrics_path=run_root / expected_name / "metrics.jsonl",
+            checkpoint_path=run_root / expected_name / "checkpoints/step-00000001.pt",
             steps=1,
             initial_parameter_sha256="a",
             final_parameter_sha256="b",
@@ -416,7 +430,7 @@ split = "train"
 
     monkeypatch.setattr("anthro_chess.training.run_training", fake_run)
 
-    assert main(["train", "--config", str(config)]) == 0
+    assert main(["train", "--config", str(config), *extra_argv]) == 0
 
 
 def test_train_roots_a_shard_backed_selection_and_keeps_how_it_reads(
@@ -426,7 +440,7 @@ def test_train_roots_a_shard_backed_selection_and_keeps_how_it_reads(
     config = tmp_path / "training.toml"
     config.write_text(
         """
-output_directory = "artifacts/example-run"
+run_name = "example-run"
 
 [train]
 normalized = "artifacts/example-data/normalized"
@@ -449,6 +463,7 @@ workers = 2
     def fake_run(
         resolved: ResolvedConfig[TrainingConfig],
         *,
+        output_directory: Path,
         store: object = None,
         detail: object = None,
     ) -> TrainingResult:
@@ -499,10 +514,11 @@ split = "train"
     def fake_run(
         resolved: ResolvedConfig[TrainingConfig],
         *,
+        output_directory: Path,
         store: object = None,
         detail: object = None,
     ) -> TrainingResult:
-        assert resolved.value.output_directory == explicit_output
+        assert output_directory == explicit_output
         assert resolved.value.train.normalized == explicit_normalized
         assert resolved.value.train.manifest == explicit_manifest
         return TrainingResult(
@@ -523,8 +539,8 @@ split = "train"
                 "train",
                 "--config",
                 str(config),
-                "--set",
-                f'output_directory="{explicit_output}"',
+                "--output-directory",
+                str(explicit_output),
                 "--set",
                 f'train.normalized="{explicit_normalized}"',
                 "--set",
@@ -533,6 +549,80 @@ split = "train"
         )
         == 0
     )
+
+
+def test_train_without_a_run_root_writes_beneath_the_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh clone still resolves a named run inside the checkout."""
+
+    config = tmp_path / "training.toml"
+    config.write_text(
+        """
+run_name = "example-run"
+
+[train]
+normalized = "artifacts/example-data/normalized"
+manifest = "artifacts/example-data/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT", raising=False)
+    monkeypatch.delenv("ANTHRO_CHESS_DATA_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(
+        resolved: ResolvedConfig[TrainingConfig],
+        *,
+        output_directory: Path,
+        store: object = None,
+        detail: object = None,
+    ) -> TrainingResult:
+        assert output_directory == Path("artifacts/example-run")
+        return TrainingResult(
+            run_path=Path("artifacts/example-run/run.json"),
+            metrics_path=Path("artifacts/example-run/metrics.jsonl"),
+            checkpoint_path=Path("artifacts/example-run/checkpoints/step-1.pt"),
+            steps=1,
+            initial_parameter_sha256="a",
+            final_parameter_sha256="b",
+            validation=None,
+        )
+
+    monkeypatch.setattr("anthro_chess.training.run_training", fake_run)
+
+    assert main(["train", "--config", str(config)]) == 0
+
+
+@pytest.mark.parametrize("run_name", ["../escape", "nested/run", "..", "/absolute"])
+def test_train_refuses_a_run_name_that_is_not_one_path_component(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    run_name: str,
+) -> None:
+    """A name places a run inside the root; it does not get to leave it."""
+
+    config = tmp_path / "training.toml"
+    config.write_text(
+        f"""
+run_name = "{run_name}"
+
+[train]
+normalized = "artifacts/example-data/normalized"
+manifest = "artifacts/example-data/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+""",
+        encoding="utf-8",
+    )
+
+    assert main(["train", "--config", str(config)]) == 2
+    assert "run_name" in capsys.readouterr().err
 
 
 def _record_fixture_results(store_root: Path) -> None:

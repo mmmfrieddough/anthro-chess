@@ -12,7 +12,7 @@
 # one. The CUDA backward pass has a deterministic implementation for every
 # operation this model needs, so the correctness path is available here and a
 # repeated run reaches the same weights.
-output_directory = "artifacts/training-cuda-smoke"
+run_name = "training-cuda-smoke"
 seed = 17
 steps = 3
 learning_rate = 0.003

@@ -1,4 +1,4 @@
-output_directory = "artifacts/training-mps-smoke"
+run_name = "training-mps-smoke"
 seed = 17
 steps = 3
 learning_rate = 0.003
