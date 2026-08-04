@@ -107,12 +107,18 @@ This stage builds the instrument; it does not yet take readings anyone acts on.
 Model iteration starts in stage 5, so no benchmark history accumulated here is
 protected and no checkpoint produced here is worth preserving. Breaking a
 comparability series, bumping the preprocessing version, changing the action
-vocabulary, and regenerating the corpus are all free during this stage, and
-work should not be deferred or resequenced to avoid them. Batching an expensive
-corpus regeneration is still worthwhile, but that is an argument about compute
+vocabulary, and regenerating the corpus are all free, and work should not be
+deferred or resequenced to avoid them. Batching an expensive corpus
+regeneration is still worthwhile, but that is an argument about compute
 rather than about history. The comparability machinery itself is built to full
 strength anyway, because it has to be trustworthy before the first reading that
 matters. See `docs/decisions/0013-benchmark-result-comparability.md`.
+
+That freedom is keyed to model iteration rather than to this stage, so it runs
+through stage 4 as well. It ends at the evaluation core designation, which fixes
+the core's per-axis statistical power permanently. Work that breaks containment
+or ends a benchmark series is cheap up to that event and expensive after it,
+which is why the corpus and pool work that does so belongs before it.
 
 This stage also establishes the evaluation-data contract the later benchmarks
 share: a `test` partition training never consumes, one frozen pool drawn from
@@ -233,8 +239,14 @@ says how to tell an improvement from run-to-run noise, so every model-affecting
 change otherwise sets its own evidence standard. That definition should compose
 the machinery this stage and stage 3 already built rather than add tooling.
 
-Nothing in this stage freezes an evaluation reference or buys capacity. Both
-belong to stage 5 and are blocked on this one.
+This stage ends by freezing the evaluation reference, because that is the event
+the disposability window closes at rather than a stage boundary. Deciding
+engine-assisted filtering, widening the corpus across the measurement axes,
+cutting the second pool generation, and designating the core all land here, in
+that order: each breaks containment or ends a benchmark series, and all of them
+are free until the designation and permanent after it.
+
+Buying capacity is what belongs to stage 5 and is blocked on this one.
 
 ### 5. Scale And Improve
 
@@ -258,21 +270,18 @@ size; a capacity answer costs several runs at larger sizes against a fixed
 memory ceiling. Establishing the plateau first is both the cheaper question and
 the control that makes the capacity comparison readable.
 
-The data work has an order that later comparisons depend on. Training selection
-becomes a filterable dial over one broad corpus first, so the value of adding a
-data source can be measured against a single evaluation reference instead of
-against two incomparable ones. The corpus then widens across the axes the
-project intends to keep measuring, sized by evaluation power rather than
-training volume. Cutting the resulting pool generation is the point at which the
+The data work that establishes the reference happens in stage 4, in an order
+later comparisons depend on: training selection becomes a filterable dial over
+one broad corpus, the corpus widens across the axes the project intends to keep
+measuring, and cutting the resulting pool generation is the point at which the
 long-lived evaluation core is designated and benchmarks begin reporting against
-both it and the growing current pool. Scaling volume within those axes follows,
-with the earlier baseline re-scored against the new reference so the whole arc
-stays on one comparable scale.
+both it and the growing current pool. What remains here is scaling volume within
+those axes, with the earlier baseline re-scored against the reference so the
+whole arc stays on one comparable scale.
 
-This ordering is why the core is not frozen during stage 3. A reference
+That ordering is why the core is not frozen during stage 3. A reference
 designated against the narrow first corpus could never measure the axes added
-later, and there is almost no benchmark history to protect before this stage
-begins.
+later, and there is almost no benchmark history to protect before it exists.
 
 Decisions that would remove games from the corpus belong before the widening
 rather than after it. Expansion has to preserve containment, so a rejection
@@ -290,12 +299,12 @@ once ordering already exists.
 Timing is not one piece of work, and its parts have different deadlines. They
 are split across this stage and the next rather than staged together.
 
-**Timed-game breadth belongs to this stage and cannot slip.** Time control and
-timing-data presence are among the axes the corpus widens across, and the
-evaluation core is designated from the result. A core holding no timed games
-across speeds could never measure timing behavior, for the life of the project,
-so this half is irreversible and lands with the breadth pass rather than with
-the feature it serves. Benchmarks slice by speed from that point on.
+**Timed-game breadth belongs to the stage-4 breadth pass and cannot slip.** Time
+control and timing-data presence are among the axes the corpus widens across,
+and the evaluation core is designated from the result. A core holding no timed
+games across speeds could never measure timing behavior, for the life of the
+project, so this half is irreversible and lands with the breadth pass rather
+than with the feature it serves. Benchmarks slice by speed from that point on.
 
 **Conditioning the policy on time control comes last in this stage**, after the
 move-only path is useful on its own. It is what releases training selection to
