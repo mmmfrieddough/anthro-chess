@@ -147,31 +147,43 @@ or an explicitly selected checkpoint across supported backends.
 
 Which device-side optimizations this runner offers is decided by measurement
 rather than by what the hardware nominally supports, and the bar is that a
-setting has to be worth its own existence. Reduced-precision float32 matrix
-multiplication, page-locked batch staging, graph compilation, and host-side
-prefetching were each implemented, measured on the workload this milestone
-actually runs, and then removed: none of them returned more than noise, and
-most of them cost. What survived is a fused optimizer update on backends that
-have one, which is derived from the backend rather than configured because
-there is one right answer per backend.
+setting has to be worth its own existence. Page-locked batch staging, graph
+compilation, and host-side prefetching were each implemented, measured, and
+removed: none of them returned more than noise, and most of them cost. A fused
+optimizer update survives on backends that have one, derived from the backend
+rather than configured because there is one right answer per backend.
 
-That result is worth stating as a shape rather than a list. At the model size
-this milestone starts from, the accelerator is not the constraint — building
-batches out of ragged Python structures on the host is — so device-side options
-have very little to act on, and the same root cause explains why compilation
-and prefetching failed as well as why the batch is slow to build.
-`docs/planning/cuda-training-proof.md` records every reading, so the next
-attempt starts from evidence rather than from the same first principles.
+**What a device-side setting is worth here is a property of the workload, not
+of the backend**, and that is the more useful statement than any list. A step
+that spends itself issuing kernels rather than doing arithmetic has nothing for
+a precision or tensor-core setting to act on, and at a small batch this model's
+step is exactly that regardless of how wide the model is. Every one of these
+settings was first measured on such a step and read as worthless; re-measured
+at a batch that fills the device, two of them are decisive.
+`docs/planning/cuda-training-proof.md` records both readings side by side,
+which is what stops the next attempt from re-deriving either.
 
-Mixed precision survived that bar on a different axis. Selecting it autocasts
-the forward pass while parameters and optimizer state stay float32, so a
-checkpoint is identical in shape to a full-precision one and loads anywhere one
-does. bfloat16 rather than float16 because its exponent range matches float32,
-which is why no gradient scaler exists anywhere in this system and why the
-checkpoint's scaler slot is empty on every supported path. It costs throughput
-and returns activation memory, and activation memory is what decides whether a
-larger model fits on a fixed card — so it stays available, and stays off by
-default at a size where memory is not yet the constraint.
+Two precision settings therefore stay available and stay off by default.
+**Mixed precision** autocasts the forward pass while parameters and optimizer
+state stay float32, so a checkpoint is identical in shape to a full-precision
+one and loads anywhere one does. bfloat16 rather than float16 because its
+exponent range matches float32, which is why no gradient scaler exists anywhere
+in this system and why the checkpoint's scaler slot is empty on every supported
+path. **Reduced-precision float32 matmul** — TF32 — rounds a matrix
+multiplication's inputs while accumulating in float32.
+
+Both are off by default because the default batch is the one where they return
+nothing, and neither default is a claim that they are not worth turning on.
+Mixed precision also returns activation memory, which is what decides whether a
+larger model fits on a fixed card, so it has a second argument the matmul
+setting does not. Which default is right at the batch capacity selection lands
+on is a question for that work, because throughput is not the only thing a
+precision change moves.
+
+Unlike the fused optimizer, both are declared rather than derived, and what
+they declare is the arithmetic every gradient is computed in. So both are
+settings a continuation has to match: a run that changed either partway would
+have no way to say which half produced its weights.
 
 `docs/planning/memory-envelope.md` measures what that trade is worth on a 24 GiB
 card, and records the envelope of width, batch, and sequence length it bounds. It
@@ -483,6 +495,13 @@ synchronizing arm, interleaved with the deferred one, and the difference is
 reported. On one Apple Silicon MPS run it was worth about 1.5 ms of a 39.8 ms
 step without gradient accumulation, and nothing measurable at four accumulation
 micro-batches, where the device is busy enough that the host never gets ahead.
+
+That probe measures a shipped decision rather than a dial, which is a fair
+reason to ask whether it earns its size, and the answer is that it does: what
+it reads swings by more than an order of magnitude between the batch this
+project trains today and one that fills the device, so it is not a number a run
+can be assumed to know without measuring. `docs/planning/cuda-training-proof.md`
+holds both readings and what the probe itself costs to take.
 
 The same rule governs the offline scoring pass and the per-move inference path,
 and there it is not a tradeoff at all. Batch validation, the finite-logit

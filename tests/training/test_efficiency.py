@@ -57,6 +57,7 @@ def _coordinates(**overrides: object) -> dict[str, object]:
         "batch_size": 4,
         "gradient_accumulation_steps": 2,
         "determinism": "relaxed",
+        "matmul_precision": "highest",
         "profile_phases": False,
     }
     record.update(overrides)
@@ -489,6 +490,9 @@ def test_the_conditions_are_recorded_without_reaching_the_digest() -> None:
 
     assert execution.coordinates["effective_batch_size"] == 8
     assert execution.coordinates["determinism"] == "relaxed"
+    # A setting that moves throughput has to be here or a report shows the jump
+    # with nothing moved to attribute it to.
+    assert execution.coordinates["matmul_precision"] == "highest"
     # The architecture is a coordinate, digested only into its own field.
     assert execution.coordinates["model_sha256"] != MODEL_IDENTITY
     assert "warmup_steps" not in execution.coordinates
@@ -496,6 +500,9 @@ def test_the_conditions_are_recorded_without_reaching_the_digest() -> None:
     # None of it reaches series identity.
     assert execution.workload == {"benchmark_version": 1}
     assert execution.workload_sha256 == _execution(batch_size=64).workload_sha256
+    assert (
+        execution.workload_sha256 == _execution(matmul_precision="high").workload_sha256
+    )
 
 
 def test_the_environment_is_recorded_outside_series_identity() -> None:
