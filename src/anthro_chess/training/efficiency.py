@@ -705,6 +705,7 @@ def coordinate_record(
     batch_size: int,
     gradient_accumulation_steps: int,
     determinism: str,
+    matmul_precision: str,
     profile_phases: bool,
 ) -> dict[str, Any]:
     """Return the conditions a run was measured under, for attribution.
@@ -723,6 +724,7 @@ def coordinate_record(
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "effective_batch_size": batch_size * gradient_accumulation_steps,
         "determinism": determinism,
+        "matmul_precision": matmul_precision,
         "phase_profiling": profile_phases,
     }
 
