@@ -1889,8 +1889,8 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
 def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
     """Return one reading's committed distances, each with the floor to beat.
 
-    Where the reading's games could have been drawn otherwise, the floor is the
-    comparison's own bootstrap over them, and deliberately not the spread across
+    The floor is the comparison's own bootstrap over the games this reading
+    generated, and deliberately not the spread across
     seeds. Both estimate evaluation noise, but only the bootstrap estimates it
     *at the sample size the reading was taken at*: each seed plays a fraction of
     the games, so the spread across seeds measures the noise of a much smaller
@@ -1899,8 +1899,9 @@ def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
     spread to within a few percent at fixed size, so the seeds stay a diagnostic
     rather than a floor.
 
-    A temperature-zero reading has no such draw. Its floors are stated at zero
-    rather than estimated, per decision 0032, and neither estimator applies.
+    A temperature-zero reading has no draw to estimate from at all. Its floors
+    are stated at zero rather than bootstrapped, per decision 0032, and neither
+    estimator applies.
     """
 
     workload = reading.execution.workload_component()

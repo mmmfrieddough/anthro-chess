@@ -2573,12 +2573,15 @@ rather than the committed one: a candidate arm is not project history, and an
 arm nobody adopted would otherwise become some later report's baseline.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
-because of which floors exist. Every floor that qualifies a checkpoint delta
-today is a data-sampling floor, whether the reading bootstrapped it or a report
-paired it, and such a floor says the delta survives a different draw of
-evaluation games rather than that the change produced it. Two arms differ by
-their initialization seeds as well as by the change, so clearing a data-sampling
-floor establishes that two models differ, not that the change is why. That is
+because of which floors exist. Almost every floor that qualifies a checkpoint
+delta today is a data-sampling floor, whether the reading bootstrapped it or a
+report paired it, and such a floor says the delta survives a different draw of
+evaluation games rather than that the change produced it. The exception claims
+less rather than more: a replayed reading states a floor of zero, which says its
+games cannot be redrawn at all and therefore says nothing about a draw that
+could be. Two arms differ by their initialization seeds as well as by the
+change, so clearing either kind establishes that two models differ, not that the
+change is why. That is
 not a theoretical gap. Measured at proof scale, two arms differing only by their
 initialization seed cleared 14 of 54 floored metrics and read better on every
 held-out and legality metric; decision 0029 holds the reading.

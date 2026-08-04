@@ -443,7 +443,7 @@ class CurveFloors:
     model_variation: NoiseFloor
     resamples: int
     coverage: float
-    method: str = CURVE_BOOTSTRAP_METHOD
+    method: str
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one comparison's floors."""
@@ -803,12 +803,6 @@ def compare_curves(
     measurement replays these games, so there is no evaluation noise to bound
     and resampling them would report the spread of a draw that is not going to
     be redrawn.
-
-    The two are orthogonal but not independently sensible. ``floor_kind`` names
-    which noise source the floor belongs to; ``model_varies`` is a statement
-    about re-measurement, which is the definition of evaluation noise alone. A
-    caller declaring some other kind is describing a quantity re-measurement
-    does not bound, and should leave ``model_varies`` at its default.
 
     ``references`` may be turned off by a caller that needs only the floor.
     The null levels cost a permutation pass per replicate on top of the
@@ -1338,11 +1332,8 @@ def _resample(
     than data-sampling noise. For a model side that varies the two coincide
     anyway, since a fresh draw of games is exactly what another seed produces.
 
-    That coincidence is what ``model_varies`` denies. A deterministic model side
-    is replayed rather than redrawn, so its evaluation noise is exactly zero and
-    the floor states it: resampling those games would report how far a different
-    *draw* would have landed, which is data-sampling noise, and a delta between
-    two checkpoints read on the same games is not exposed to it.
+    That coincidence is what ``model_varies`` denies, and ``compare_curves``
+    documents what a caller passing it is claiming.
 
     A **reference** says what the distance would read at with nothing to find,
     which is an absolute statement about one reading rather than a difference.
@@ -1354,24 +1345,23 @@ def _resample(
     license every delta as a finding.
     """
 
+    method = CURVE_BOOTSTRAP_METHOD if model_varies else CURVE_DETERMINISTIC_METHOD
+    source = f"{spec.name} v{spec.version} {method}"
+
     floors: CurveFloors | None = None
     if not model_varies:
         # Exact rather than estimated, and the same for all three readings:
         # none of them can move when the games behind them cannot. Nothing
         # about it depends on resampling, so it stands where a bootstrap could
         # not — a model side too thin to resample is still replayed exactly.
-        exact = NoiseFloor(
-            value=0.0,
-            kind=floor_kind,
-            source=f"{spec.name} v{spec.version} {CURVE_DETERMINISTIC_METHOD}",
-        )
+        exact = NoiseFloor(value=0.0, kind=floor_kind, source=source)
         floors = CurveFloors(
             conditional=exact,
             pooled=exact,
             model_variation=exact,
             resamples=0,
             coverage=coverage,
-            method=CURVE_DETERMINISTIC_METHOD,
+            method=method,
         )
 
     # Everything below is resampling, which only a bootstrap floor or a null
@@ -1399,7 +1389,6 @@ def _resample(
             np.ones((resamples, human.size), dtype=np.float64),
             model_weights,
         )
-        source = f"{spec.name} v{spec.version} {CURVE_BOOTSTRAP_METHOD}"
         # The generated games are the independent replicates behind these
         # floors. The resample count only says how finely their spread was
         # read, so it is the model side's size that decides how far the bound
@@ -1432,6 +1421,7 @@ def _resample(
             model_variation=bootstrapped[2],
             resamples=resamples,
             coverage=coverage,
+            method=method,
         )
 
     levels = (
