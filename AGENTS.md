@@ -26,7 +26,7 @@ that rebuild the data side from the pinned sources.
 ## Where to look
 
 Read `docs/documentation.md`, the rows below that match the work, and the
-matching records in `docs/decisions/` (0001-0035).
+matching records in `docs/decisions/` (0001-0036).
 
 | Open when | File |
 | --- | --- |
