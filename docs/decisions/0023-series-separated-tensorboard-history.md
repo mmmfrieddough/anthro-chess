@@ -4,7 +4,7 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted.
+Accepted. Refines `0014-evaluation-result-storage.md`.
 
 ## Context
 

@@ -325,13 +325,13 @@ that there is now a configuration the project might actually want which is
 reachable only through the dial.
 
 One incidental number fell out of that attribution and is recorded here only so
-it does not have to be rediscovered. `masked_action_cross_entropy` selects with
-a boolean mask, which materializes a second near-full copy of the logits and its
+it does not have to be rediscovered. `masked_action_cross_entropy` selected with
+a boolean mask, which materialized a second near-full copy of the logits and its
 gradient; computing the same loss over a flattened view with `ignore_index`
-avoids the copy and, measured in isolation at the three shapes above, saves
-15.2%, 15.7% and 16.2% of the loss step. Against a whole run that is a few
-percent — worth someone's time, not a tier of this envelope, and not changed
-here.
+avoided the copy and, measured in isolation at the three shapes above, saved
+15.2%, 15.7% and 16.2% of the loss step. That is the form the loss takes today —
+`training/losses.py` selects with `torch.where` against an ignore index — so the
+saving is already in the envelope's baseline rather than available on top of it.
 
 ## What This Does Not Show
 

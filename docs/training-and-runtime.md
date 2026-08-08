@@ -554,9 +554,9 @@ validation a runner performs runs before it is written, so a selection that
 would fail to load is refused where it is made instead of at the next process
 start.
 
-The runner resolves its own device selection, separate from the training one
-because the two accept different backends: inference and every benchmark
-resolving through it accept CUDA, and training does not yet. `auto` takes an
+The runner resolves its own device selection, separate from the training one so
+that where a benchmark runs is not bound to where its checkpoint was trained.
+Both accept CUDA. `auto` takes an
 available accelerator and otherwise CPU, while an explicit accelerator fails
 rather than falling back, and the failure distinguishes a Torch build without
 that backend from a host without such a device. The two are different problems

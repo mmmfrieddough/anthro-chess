@@ -19,9 +19,9 @@ and determinism selection, an end-to-end minimal training proof, compatible
 checkpoint-backed full-history inference, an untimed game-session runtime with
 exact legal action selection, a directly invoked minimal UCI process, an
 independent-client playable UCI integration proof, and a locked development
-environment. Packaged releases remain planned work; validation metrics exist
-within the training path but the broader evaluation harness is not yet
-implemented.
+environment, and an evaluation suite of eight benchmarks that record what they
+measured and what it cost. Packaged releases remain planned work, and stating a
+resolution beside every reading the suite reports is still in progress.
 
 No trained Anthro Chess model is available yet, including through Hugging Face.
 
