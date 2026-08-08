@@ -216,6 +216,40 @@ def parameter_sha256(model: torch.nn.Module) -> str:
     return digest.hexdigest()
 
 
+def training_identity_sha256(compatibility: Mapping[str, object]) -> str:
+    """Return the digest of the configuration that decided a checkpoint's weights.
+
+    The compatibility record is already the split between the settings a
+    continuation has to match and the ones that merely describe a run, so it is
+    what a training noise floor is scoped to. The initialization seed is dropped
+    from it, because that is the axis such a floor measures: keeping it would
+    give every replicate its own scope and leave no floor able to qualify
+    anything.
+    """
+
+    configuration = compatibility.get("training_config")
+    if not isinstance(configuration, Mapping):
+        raise CheckpointError(
+            "checkpoint compatibility metadata has no training configuration"
+        )
+    identity = dict(compatibility)
+    identity["training_config"] = {
+        key: value for key, value in configuration.items() if key != "seed"
+    }
+    try:
+        payload = json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise CheckpointError(
+            f"checkpoint compatibility metadata cannot be digested: {error}"
+        ) from error
+    return sha256(payload.encode()).hexdigest()
+
+
 #: The accelerator RNG key each backend adds beside the host state. A backend
 #: absent from here keeps only the host stream, which is what CPU wants.
 _ACCELERATOR_RNG_KEYS = {"mps": "torch_mps", "cuda": "torch_cuda"}

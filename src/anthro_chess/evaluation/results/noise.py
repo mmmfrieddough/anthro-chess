@@ -40,12 +40,16 @@ view, or a metric definition moves, the floor stops matching and the report
 says the floor is unknown, rather than silently applying a stale constant to a
 measurement it no longer describes.
 
-An execution floor is keyed by one thing more. Decision 0018 keeps the machine
-out of an efficiency series on purpose, so that a latency history stays
-continuous across a hardware change; but the noise in a timing measurement *is*
-the machine, so a floor measured on a laptop describes nothing about a reading
-taken on a workstation. Such a floor therefore carries the execution it was
-characterized under, and a report applies it only where that environment
+Two kinds are keyed by one thing more, for the same reason in two places.
+Decision 0018 keeps the machine out of an efficiency series on purpose, so that
+a latency history stays continuous across a hardware change; but the noise in a
+timing measurement *is* the machine, so a floor measured on a laptop describes
+nothing about a reading taken on a workstation. Decisions 0018 and 0021 keep the
+training run out of series identity for the same reason, and the noise in a
+training measurement *is* the configuration, so a floor characterized from one
+configuration's seed replicates describes nothing about a delta between models
+of another size, corpus, or arithmetic. Such a floor therefore carries the scope
+it was characterized under, and a report applies it only where that scope
 matches on both sides of the delta.
 """
 
@@ -69,15 +73,17 @@ from anthro_chess.evaluation.results.records import (
     Identifier,
     NoiseFloor,
     NoiseFloorKind,
+    ResultEnvelope,
     ResultModel,
     Sha256Hex,
     canonical_json,
 )
 
+#: Version 4 added the training scope a training floor is only valid within.
 #: Version 3 replaced the point-estimate dispersion in a floor with a
 #: conservative upper bound, and records the confidence that bound carries.
 #: Version 2 added the execution scope an execution floor is only valid within.
-CHARACTERIZATION_VERSION = 3
+CHARACTERIZATION_VERSION = 4
 
 #: Two-sided normal coverage for a 95% interval. A floor is a claim about how
 #: far apart two measurements land when nothing changed, so it needs a stated
@@ -197,6 +203,12 @@ class NoiseCharacterization(ResultModel):
     #: of where it ran, and scoping one of those to a machine would discard a
     #: floor that is still perfectly valid.
     execution: ExecutionRecord | None = None
+    #: The training configuration a training floor describes, as the digest a
+    #: result records for the checkpoint it scored. Present only for that kind,
+    #: on the same terms as ``execution``: seed variance is a property of the
+    #: configuration that was trained, and every other kind is measured on
+    #: whatever weights it was handed.
+    training: Sha256Hex | None = None
     floors: tuple[FloorEntry, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -211,13 +223,14 @@ class NoiseCharacterization(ResultModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_execution_scope(self) -> NoiseCharacterization:
-        """Keep the machine scope and the noise kind agreed.
+    def _validate_scope(self) -> NoiseCharacterization:
+        """Keep the scope a floor carries and the noise kind agreed.
 
         An execution floor without its execution would be applied to every
-        machine that ever recorded the series, which is the one thing this kind
-        must not do. An execution record on any other kind would narrow a floor
-        that does not depend on where it was measured.
+        machine that ever recorded the series, and a training floor without its
+        training identity to every configuration that ever recorded it, which is
+        the one thing either kind must not do. A scope on a kind that does not
+        depend on it would narrow a floor that is valid wherever its series is.
         """
 
         if self.kind == "execution":
@@ -237,11 +250,30 @@ class NoiseCharacterization(ResultModel):
                 f"a {self.kind} floor does not depend on where it was measured, "
                 "so it carries no execution scope"
             )
+        if self.kind == "training":
+            if self.training is None:
+                raise ValueError(
+                    "a training floor is a property of the configuration its "
+                    "replicates shared, so it must record the training identity "
+                    "it was characterized under"
+                )
+        elif self.training is not None:
+            raise ValueError(
+                f"a {self.kind} floor does not depend on what was trained, so "
+                "it carries no training scope"
+            )
         return self
 
-    def environment_key(self) -> str:
-        """Return the machine identity this characterization is valid on."""
+    def scope_key(self) -> str:
+        """Return the scope this characterization is valid within.
 
+        The empty string means no scope, and is what every kind other than
+        ``execution`` and ``training`` carries; a floor keyed on it resolves for
+        every reading of its series.
+        """
+
+        if self.kind == "training":
+            return self.training or ""
         return environment_key(self.execution)
 
     def entry(self, metric: str) -> FloorEntry | None:
@@ -287,10 +319,10 @@ class NoiseFloorIndex:
     on either side of the seam. A fingerprint with no characterization
     resolves to nothing at all rather than to zero.
 
-    An execution floor additionally has to match the machine, since that is
-    what it measured. A reading from another machine, or a delta whose two
-    sides ran on different ones, resolves to no execution floor rather than to
-    a borrowed one.
+    A scoped floor additionally has to match what it measured: the machine for
+    an execution floor, the training configuration for a training floor. A
+    reading from outside that scope, or a delta whose two sides sit on either
+    side of it, resolves to no floor of that kind rather than to a borrowed one.
     """
 
     def __init__(
@@ -311,7 +343,7 @@ class NoiseFloorIndex:
                     self._bridges.series(entry.fingerprint),
                     entry.metric,
                     characterization.kind,
-                    characterization.environment_key(),
+                    characterization.scope_key(),
                 )
                 recorded = (
                     characterization.recorded_at,
@@ -330,23 +362,30 @@ class NoiseFloorIndex:
         fingerprint: str,
         *,
         executions: Sequence[ExecutionRecord | None] = (),
+        trainings: Sequence[str | None] = (),
     ) -> tuple[NoiseFloor, ...]:
         """Return every characterized floor for one metric's series, by kind.
 
-        ``executions`` are the executions the floors would qualify — both
-        operands of a delta, or the single reading being annotated. A
-        machine-scoped floor is returned only when every one of them was
-        measured on the machine it was characterized on.
+        ``executions`` and ``trainings`` are the scopes the floors would
+        qualify — both operands of a delta, or the single reading being
+        annotated. A scoped floor is returned only when every one of them sits
+        inside the scope it was characterized under, so a reading that records
+        no scope of a kind never resolves a floor of that kind.
         """
 
         series = self._bridges.series(fingerprint)
-        measured = {environment_key(execution) for execution in executions}
+        measured = {
+            "execution": {environment_key(execution) for execution in executions},
+            "training": {training or "" for training in trainings},
+        }
+        # ``measured`` covers only the scoped kinds; the ``not key[3]`` test is
+        # what keeps an unscoped kind from reaching the lookup.
         return tuple(
             self._by_series[key][1]
             for key in sorted(self._by_series)
             if key[0] == series
             and key[1] == metric
-            and (not key[3] or measured == {key[3]})
+            and (not key[3] or measured[key[2]] == {key[3]})
         )
 
 
@@ -703,6 +742,7 @@ def build_characterization(
     confidence: float = DEFAULT_CONFIDENCE,
     environment: EnvironmentRecord | None = None,
     execution: ExecutionRecord | None = None,
+    training: str | None = None,
     processes: int | None = None,
     recorded_at: datetime | None = None,
 ) -> NoiseCharacterization:
@@ -723,6 +763,7 @@ def build_characterization(
             environment=environment or EnvironmentRecord.capture(),
             processes=processes,
             execution=execution,
+            training=training,
             floors=ordered,
         )
     except ValueError as error:
@@ -736,6 +777,29 @@ def build_characterization(
     )
     identified.verify()
     return identified
+
+
+def training_scope(readings: Sequence[ResultEnvelope]) -> str:
+    """Return the training configuration every replicate reading was trained under.
+
+    Reading the scope off the replicates is what makes it a fact about them
+    rather than a caller's assertion.
+    """
+
+    identities = {reading.checkpoint.training_sha256 for reading in readings}
+    named = [identity for identity in identities if identity is not None]
+    if len(named) != len(identities):
+        raise NoiseCharacterizationError(
+            "a training floor is scoped to the configuration its replicates "
+            "shared, and at least one named checkpoint records no training "
+            "identity; re-record those readings before characterizing"
+        )
+    if len(named) != 1:
+        raise NoiseCharacterizationError(
+            "the named checkpoints were trained under different configurations, "
+            "so their spread is not one configuration's seed variance"
+        )
+    return named[0]
 
 
 def replicate_floors(
@@ -798,4 +862,5 @@ __all__ = [
     "process_replicate_floors",
     "replicate_dispersion",
     "replicate_floors",
+    "training_scope",
 ]

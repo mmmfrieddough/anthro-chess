@@ -80,6 +80,7 @@ from anthro_chess.evaluation.results.noise import (
     process_replicate_floors,
     replicate_dispersion,
     replicate_floors,
+    training_scope,
 )
 from anthro_chess.evaluation.results.paired import (
     NO_DETAIL_ROOT,
@@ -266,6 +267,7 @@ __all__ = [
     "resolve_store_root",
     "results_for_checkpoint",
     "series_fingerprint",
+    "training_scope",
     "WORKLOAD_DIGEST_ALGORITHM",
     "WorkloadComponent",
     "workload_digest",

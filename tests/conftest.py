@@ -424,6 +424,12 @@ def sequence_batch() -> Callable[..., SequenceBatch]:
     return _sequence_batch
 
 
+#: The training identity a fixture result records for the configuration that
+#: produced its weights. Shared by default so two fixture readings compare as
+#: two checkpoints of one configuration, which is what a training floor
+#: qualifies; a test about the scope passes its own.
+FIXTURE_TRAINING_SHA256 = "3c" * 32
+
 FIXTURE_ENVIRONMENT = EnvironmentRecord(
     package_version="0.0.0-fixture",
     git_revision="0" * 40,
@@ -512,6 +518,13 @@ def move_prediction_component() -> Callable[..., DataComponent]:
 
 
 @pytest.fixture
+def training_scope() -> str:
+    """Return the training identity :func:`recorded_result` records by default."""
+
+    return FIXTURE_TRAINING_SHA256
+
+
+@pytest.fixture
 def recorded_result(
     move_prediction_component: Callable[..., DataComponent],
 ) -> Callable[..., ResultEnvelope]:
@@ -527,6 +540,7 @@ def recorded_result(
         measurements: Sequence[Measurement] | None = None,
         recorded_at: datetime | None = None,
         kind: str = "held-out-prediction",
+        training_sha256: str | None = FIXTURE_TRAINING_SHA256,
     ) -> ResultEnvelope:
         data = component if component is not None else move_prediction_component()
         values = (
@@ -540,7 +554,11 @@ def recorded_result(
         return build_result(
             kind=kind,
             benchmark=BenchmarkReference(name="move-validation", version=1),
-            checkpoint=CheckpointReference(label=label, step=step),
+            checkpoint=CheckpointReference(
+                label=label,
+                step=step,
+                training_sha256=training_sha256,
+            ),
             data=dataset_reference(
                 pool_id="fixture-pool",
                 pool_version=1,

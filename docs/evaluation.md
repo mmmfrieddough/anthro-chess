@@ -577,6 +577,26 @@ terms rather than lingering as stale constants. A floor characterized on a pool
 that has since been regenerated stops matching and the report says the floor is
 unknown, which is the honest answer.
 
+### Training Noise
+
+Training noise should be characterized early, while runs are short. It is the
+most valuable of the three and the only one that becomes harder to obtain over
+time: once runs are long and expensive, several repeat runs stop being
+affordable, and the project loses the ability to distinguish a small improvement
+from seed luck for the rest of its life.
+
+The floor is a property of the training configuration its replicates shared
+rather than of the pool they were scored on, and the series fingerprint carries
+nothing about the training run by design — decisions 0018 and 0021 keep it out
+so that a delta across model size stays interpretable. A training
+characterization therefore records the training identity it was measured under,
+a report applies it only where that identity matches on both sides of the delta,
+and anywhere else the noise is reported as unknown. A reading recorded without
+that identity matches nothing, and replicates that do not all share one are
+refused rather than characterized.
+`docs/decisions/0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`
+owns that rule and what the scope deliberately leaves out.
+
 ### Execution Noise
 
 Timing is where a floor matters most and where the usual estimators do not
@@ -690,12 +710,6 @@ so no data-sampling floor can exist for it — but evaluation and training noise
 are read from repeated measurements instead, and either still describes such a
 metric. A report refuses only the sampling floor and judges the delta against
 any other kind it has.
-
-Training noise should be characterized early, while runs are short. It is the
-most valuable of the three and the only one that becomes harder to obtain over
-time: once runs are long and expensive, several repeat runs stop being
-affordable, and the project loses the ability to distinguish a small improvement
-from seed luck for the rest of its life.
 
 Sampling-noise estimates are also what size the evaluation inputs. A
 conservative independent-input estimate is suitable before representative
@@ -2757,10 +2771,8 @@ A claim therefore rests on one of two things: a delta far enough outside seed
 variance that nothing else explains it, or a training floor characterized from
 arms trained at several seeds, which `uv run anthro eval noise characterize`
 already produces. Such a floor describes the training configuration its arms
-shared, and no series fingerprint carries that — the scoping problem decision
-0025 solved for the machine, unsolved for this kind and open as `#235` — so it
-is read beside the comparison it was characterized for rather than committed to
-the store.
+shared, records it, and is resolved only within it, so characterizing one once
+qualifies every later comparison against that same base.
 Anything narrower is reported as what it is, a delta not distinguished from seed
 variance, rather than as an improvement. A family with no floor at all can show
 that nothing else moved; it cannot carry the claim.
