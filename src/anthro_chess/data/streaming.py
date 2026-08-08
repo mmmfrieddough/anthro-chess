@@ -383,7 +383,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._table_group = None
 
     def _fill(self) -> None:
-        depth = self.streaming.prefetch_batches if self.streaming.workers else 1
+        # One job per worker plus the declared depth, never the depth alone:
+        # that would leave a larger pool with nothing to do. The reason the two
+        # add is in `StreamingLoaderConfig`.
+        workers = self.streaming.workers
+        depth = workers + self.streaming.prefetch_batches if workers else 1
         while len(self._inflight) < depth:
             planned = next(self._plan, None)
             if planned is None:
