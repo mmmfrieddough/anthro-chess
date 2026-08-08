@@ -212,6 +212,15 @@ class MetricDelta:
     #: other, and automation that cannot see the difference will read a real
     #: improvement as noise.
     paired_floor_unavailable: str | None = None
+    #: The floor kinds this delta declined to borrow, because one side offered
+    #: one and the other offered nothing of that kind. Reported rather than
+    #: absorbed into the ``unknown`` verdict for the same reason as the field
+    #: above: a floor that qualifies one operand says nothing about the
+    #: difference, and where a benchmark withholds a floor per reading it also
+    #: says the other operand was never an estimate. Automation reading only
+    #: the verdict would send somebody to characterize a series that is
+    #: already characterized.
+    one_sided_floors: tuple[str, ...] = ()
     #: Which coordinates moved. ``None`` for a metric with no execution
     #: context, where the model is the only thing that can have moved.
     attribution: Attribution | None = None
@@ -247,6 +256,7 @@ class MetricDelta:
             "bridges": list(self.bridges),
             "note": self.note,
             "paired_floor_unavailable": self.paired_floor_unavailable,
+            "one_sided_floors": list(self.one_sided_floors),
             "attribution": (
                 None if self.attribution is None else self.attribution.as_record()
             ),
@@ -789,10 +799,10 @@ def _confounded_legend(report: DeltaReport) -> list[str]:
 def _noise_legend(report: DeltaReport) -> list[str]:
     """Explain the noise column, when any row actually carries one."""
 
+    rows = [metric for family in report.families for metric in family.metrics]
     verdicts = {
         metric.noise
-        for family in report.families
-        for metric in family.metrics
+        for metric in rows
         if metric.noise is not NoiseVerdict.NOT_APPLICABLE
     }
     if not verdicts:
@@ -807,6 +817,13 @@ def _noise_legend(report: DeltaReport) -> list[str]:
             f"{legend} 'unqualifiable' means resampling that metric's units "
             "cannot estimate its dispersion, so no sampling floor can exist "
             "for it; the metric registry says why."
+        )
+    if any(metric.one_sided_floors for metric in rows):
+        legend = (
+            f"{legend} A row naming a withheld floor is unknown for the other "
+            "reason: one side of that delta measured noise the other did not, "
+            "so a floor exists but describes one operand rather than the "
+            "difference."
         )
     return textwrap.wrap(
         legend,
@@ -911,9 +928,17 @@ def _render_noise(metric: MetricDelta) -> str:
     rather than only in the row's note, because it is the verdict itself that
     the substitution weakens: such a floor is the wider of the two, so "within"
     beside it covers real improvements as well as noise.
+
+    A verdict the floors did not decide names none of them, even where some
+    applied. A delta that clears what it has but carries a withheld kind is
+    unknown because of the kind that is missing, so naming the one that bound
+    would point a reader at the quantity that is not in question.
     """
 
-    if metric.noise_floor_kind is None:
+    if metric.noise_floor_kind is None or metric.noise not in (
+        NoiseVerdict.WITHIN,
+        NoiseVerdict.CLEARED,
+    ):
         return metric.noise.value
     kind = _NOISE_KIND_LABELS.get(metric.noise_floor_kind, metric.noise_floor_kind)
     if (
@@ -1324,7 +1349,7 @@ def _metric_delta(
     # of the same quantity, so the substitution is named rather than left for a
     # reader to infer from a floor that looks like every other floor.
     unpaired = paired.unavailable if definition.paired_sampling_floor else None
-    applicable = _applicable_floors(
+    applicable, one_sided = _applicable_floors(
         definition,
         baseline_measurement,
         current_measurement,
@@ -1351,6 +1376,7 @@ def _metric_delta(
             definition,
             delta,
             None if binding is None else binding.value,
+            withheld=one_sided,
         ),
         noise_floor=None if binding is None else binding.value,
         noise_floor_kind=None if binding is None else binding.kind,
@@ -1365,9 +1391,11 @@ def _metric_delta(
             if comparison.comparability is Comparability.BRIDGED
             else None,
             None if unpaired is None else f"paired floor unavailable: {unpaired}",
+            _one_sided_note(one_sided),
             _hidden_note(hidden_series),
         ),
         paired_floor_unavailable=unpaired,
+        one_sided_floors=one_sided,
     )
 
 
@@ -1375,6 +1403,20 @@ def _annotations(*notes: str | None) -> str | None:
     """Join the annotations a row carries, or ``None`` when it carries none."""
 
     return "; ".join(note for note in notes if note is not None) or None
+
+
+def _one_sided_note(kinds: Sequence[str]) -> str | None:
+    """Say which floors were refused because only one side of the delta had one.
+
+    Stated rather than left to the bare ``unknown`` it usually produces, because
+    the two absences are different work: nobody has characterized the series, or
+    somebody has characterized half of this comparison.
+    """
+
+    if not kinds:
+        return None
+    noun = "floor" if len(kinds) == 1 else "floors"
+    return f"{', '.join(kinds)} {noun} withheld: only one side of this delta has one"
 
 
 def _hidden_note(hidden_series: int) -> str | None:
@@ -1486,8 +1528,8 @@ def _applicable_floors(
     *,
     comparison_floor: NoiseFloor | None,
     executions: Sequence[ExecutionRecord | None] = (),
-) -> tuple[NoiseFloor, ...]:
-    """Return one floor per noise kind that applies to this comparison.
+) -> tuple[tuple[NoiseFloor, ...], tuple[str, ...]]:
+    """Return the floors that apply to this comparison, and the kinds refused.
 
     Two sources can supply a floor. A benchmark whose floor is a function of
     its own configuration attaches it to the measurement, which is the only
@@ -1500,6 +1542,14 @@ def _applicable_floors(
     sides ran on different machines is covered by no characterized execution
     floor, and reporting the noise as unknown there is the honest answer.
 
+    An attached floor one side offered and the other did not is refused for the
+    same reason: it describes one operand rather than the difference, and
+    nothing here says it is the wider of the two. The side that offered nothing
+    may be noisier, and where a benchmark withholds a floor per reading it may
+    not be an estimate at all. Those kinds are returned beside the floors so a
+    report can say which qualification it declined to borrow, since keeping the
+    widest of what is left would otherwise look like an ordinary reading.
+
     A metric that declares why resampling its units cannot estimate its
     dispersion is refused a data-sampling floor here, whichever source offered
     one, for the same reason: it would answer a question the metric does not
@@ -1510,12 +1560,25 @@ def _applicable_floors(
 
     metric = definition.identifier
     widest: dict[str, NoiseFloor] = {}
+    indexed = floors.floors(metric, current.fingerprint, executions=executions)
+    baseline_kind = None if baseline.noise_floor is None else baseline.noise_floor.kind
+    current_kind = None if current.noise_floor is None else current.noise_floor.kind
+    # What a source spanning the whole delta covers: a series characterization,
+    # the paired estimator, or both measurements offering the same kind.
+    spanning = {floor.kind for floor in indexed}
+    if comparison_floor is not None:
+        spanning.add(comparison_floor.kind)
+    if baseline_kind is not None and baseline_kind == current_kind:
+        spanning.add(baseline_kind)
+    one_sided = {
+        kind for kind in (baseline_kind, current_kind) if kind is not None
+    } - spanning
     candidates = [
         floor
         for floor in (current.noise_floor, baseline.noise_floor)
-        if floor is not None
+        if floor is not None and floor.kind not in one_sided
     ]
-    candidates.extend(floors.floors(metric, current.fingerprint, executions=executions))
+    candidates.extend(indexed)
     if comparison_floor is not None:
         # A paired floor is the data-sampling uncertainty of this exact delta.
         # An independently characterized sampling floor answers a different,
@@ -1528,11 +1591,14 @@ def _applicable_floors(
         candidates = [
             floor for floor in candidates if floor.kind != SAMPLING_FLOOR_KIND
         ]
+        # Already refused, with a reason the row states more precisely than
+        # this one would.
+        one_sided -= {SAMPLING_FLOOR_KIND}
     for floor in candidates:
         existing = widest.get(floor.kind)
         if existing is None or floor.value > existing.value:
             widest[floor.kind] = floor
-    return tuple(widest[kind] for kind in sorted(widest))
+    return tuple(widest[kind] for kind in sorted(widest)), tuple(sorted(one_sided))
 
 
 def _movement(direction: MetricDirection, delta: float) -> Movement:
@@ -1550,14 +1616,30 @@ def _noise_verdict(
     definition: MetricDefinition,
     delta: float,
     floor: float | None,
+    *,
+    withheld: Sequence[str] = (),
 ) -> NoiseVerdict:
-    """Judge one delta, distinguishing a missing floor from an impossible one."""
+    """Judge one delta, distinguishing a missing floor from an impossible one.
+
+    ``withheld`` are the floor kinds this delta declined to borrow from one
+    side. A withheld kind is noise one operand demonstrably carries and this
+    comparison cannot size, so what remains cannot license a finding however
+    comfortably the delta clears it. ``within`` survives — a delta inside any
+    one floor is not a finding whatever else is unmeasured — and only the
+    verdict that claims every source has been cleared is withdrawn.
+
+    It also outranks the impossible-floor answer. ``unqualifiable`` says to stop
+    waiting for a floor, and a kind withheld here is one a re-recorded baseline
+    would supply.
+    """
 
     if floor is None:
-        if definition.no_sampling_floor_reason is not None:
+        if definition.no_sampling_floor_reason is not None and not withheld:
             return NoiseVerdict.UNQUALIFIABLE
         return NoiseVerdict.UNKNOWN
-    return NoiseVerdict.CLEARED if abs(delta) > floor else NoiseVerdict.WITHIN
+    if abs(delta) <= floor:
+        return NoiseVerdict.WITHIN
+    return NoiseVerdict.UNKNOWN if withheld else NoiseVerdict.CLEARED
 
 
 def _selection(

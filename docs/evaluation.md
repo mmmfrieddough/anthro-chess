@@ -658,6 +658,24 @@ has to clear every noise source, and the report names which one that was. A
 delta inside its floor is still shown with its value, so a small regression that
 repeats across checkpoints stays visible instead of being filtered away.
 
+**A floor has to describe both operands.** Widest-of-the-two chooses between two
+descriptions of the same delta, so it needs two. Where a floor is attached to a
+measurement it belongs to that reading, and a kind one side attached and the
+other did not qualifies one operand rather than the difference — the report
+withholds it and names the kind it declined. Nothing says the missing side is
+quieter, and a benchmark that withholds a floor per reading is saying that side
+is not an estimate at all. A characterized floor is a property of the series and
+a paired floor is a property of the comparison, so neither can be one-sided.
+
+Withholding reaches the verdict, not only the note. A delta cannot be reported
+as clearing every noise source while one of them is a kind this comparison could
+not size, so such a row is unknown however comfortably it clears the floors that
+remain. A delta *within* one of them is still within it, since a delta inside
+any floor is not a finding whatever else went unmeasured.
+`docs/decisions/0036-a-one-sided-floor-does-not-qualify-a-delta.md` owns the
+rule, and why an unpaired substitution above is annotated where this is
+withheld.
+
 **No floor at all is two situations, not one.** A floor may be missing because
 nobody has characterized it yet, which is work somebody could do, or because the
 metric counts something resampling cannot estimate, which is not. A metric of

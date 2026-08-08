@@ -352,6 +352,243 @@ def test_a_delta_is_annotated_against_its_noise_floor(
     assert _row(cleared, "held_out.move_loss").noise is NoiseVerdict.CLEARED
 
 
+def test_a_floor_only_one_side_offers_does_not_qualify_the_delta(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A floor beside one operand says nothing about the difference.
+
+    The rating ladder is where this arrives. A seat that scored nothing or
+    scored everything has no finite maximum-likelihood rating, so its number is
+    a declared bound and every resample of it reproduces the bound; the reading
+    withholds a floor for it deliberately. Judging a delta against the other
+    checkpoint's floor would call a difference from a number that was never an
+    estimate a finding.
+    """
+
+    component = move_prediction_component()
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement("held_out.move_loss", 3.5, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.0,
+                data=component,
+                noise_floor=NoiseFloor(
+                    value=0.1,
+                    kind="evaluation",
+                    source="eight re-measurements of one checkpoint",
+                ),
+            )
+        ],
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex())
+    row = _row(report, "held_out.move_loss")
+
+    # A delta of -0.5 against a floor of 0.1 would have read as cleared.
+    assert row.noise is NoiseVerdict.UNKNOWN
+    assert row.noise_floor is None
+    assert row.noise_floors == ()
+    assert row.one_sided_floors == ("evaluation",)
+    assert row.note is not None
+    assert "evaluation floor withheld" in row.note
+    assert "evaluation floor withheld" in render_report(report)
+
+
+def test_a_withheld_floor_stops_the_surviving_kinds_licensing_a_finding(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Clearing the floors that remain is not clearing every noise source.
+
+    ``cleared`` claims a delta is larger than every characterized source. A
+    withheld kind is one this comparison cannot size but one operand
+    demonstrably carries, so a narrower survivor deciding the verdict would put
+    the false finding back through a different door.
+    """
+
+    component = move_prediction_component()
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="training",
+                method="independent-replicates",
+                replicates=4,
+                source="four seeds",
+                floors=[
+                    FloorEntry(
+                        metric="held_out.move_loss",
+                        fingerprint=series_fingerprint(
+                            "held_out.move_loss",
+                            component,
+                        ),
+                        floor=0.05,
+                        dispersion=0.02,
+                        dispersion_bound=0.02,
+                        degrees_of_freedom=3,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement("held_out.move_loss", 3.5, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.3,
+                data=component,
+                noise_floor=NoiseFloor(
+                    value=0.5,
+                    kind="evaluation",
+                    source="eight re-measurements of one checkpoint",
+                ),
+            )
+        ],
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex(), floors=floors)
+    row = _row(report, "held_out.move_loss")
+
+    # A delta of -0.2 clears the training floor of 0.05, and sits inside the
+    # evaluation noise one side reported.
+    assert row.noise is NoiseVerdict.UNKNOWN
+    assert row.one_sided_floors == ("evaluation",)
+    # The training floor did apply and is still reported; what it did not do is
+    # decide the verdict, so the column does not name it as though it had.
+    assert row.noise_floor == pytest.approx(0.05)
+    rendered = render_report(report)
+    assert "unknown (training)" not in rendered
+    # The legend wraps to the terminal width, so it is read unwrapped here.
+    assert "a floor exists but describes one operand" in " ".join(rendered.split())
+
+
+def test_a_withheld_floor_outranks_the_impossible_sampling_floor_verdict(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """``unqualifiable`` says stop waiting; a withheld kind says do the work.
+
+    The metric here can carry no sampling floor by what it counts, so a row of
+    it normally reads ``unqualifiable``. A withheld evaluation floor is a
+    different statement about a different kind, and it is the actionable one: a
+    re-recorded baseline supplies it.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_cross_conditioning_match_rate"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.25, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(
+                metric,
+                0.75,
+                data=component,
+                noise_floor=NoiseFloor(
+                    value=0.1,
+                    kind="evaluation",
+                    source="eight re-measurements of one checkpoint",
+                ),
+            )
+        ],
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex())
+    row = _row(report, metric)
+
+    assert row.noise is NoiseVerdict.UNKNOWN
+    assert row.one_sided_floors == ("evaluation",)
+
+
+def test_a_characterized_floor_covers_a_side_that_attached_none(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Only an attached floor can be one-sided; a characterized one spans both.
+
+    A characterization is a property of the series rather than of a reading, so
+    it describes both operands however few of them carried a floor of their
+    own. Refusing the kind here would withdraw a qualification the report
+    legitimately has.
+    """
+
+    component = move_prediction_component()
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="evaluation",
+                method="repeat-measurement",
+                replicates=8,
+                source="eight re-measurements of one checkpoint",
+                floors=[
+                    FloorEntry(
+                        metric="held_out.move_loss",
+                        fingerprint=series_fingerprint(
+                            "held_out.move_loss",
+                            component,
+                        ),
+                        floor=0.75,
+                        dispersion=0.2,
+                        dispersion_bound=0.2,
+                        degrees_of_freedom=7,
+                        sampling_units=8,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement("held_out.move_loss", 3.5, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.0,
+                data=component,
+                noise_floor=NoiseFloor(
+                    value=0.1,
+                    kind="evaluation",
+                    source="this reading's own resample",
+                ),
+            )
+        ],
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex(), floors=floors)
+    row = _row(report, "held_out.move_loss")
+
+    # The delta is -0.5, inside the wider characterized floor of 0.75.
+    assert row.noise is NoiseVerdict.WITHIN
+    assert row.noise_floor == pytest.approx(0.75)
+    assert row.one_sided_floors == ()
+
+
 def test_a_paired_floor_replaces_independent_sampling_floors(
     tmp_path: Path,
     recorded_result: ResultFactory,
