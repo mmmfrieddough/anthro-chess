@@ -75,6 +75,31 @@ It is fine to document exact details when they are stable external contracts,
 hard to discover from code, generated from the source of truth, or necessary
 for humans to use the project correctly.
 
+## Retiring Docs During Implementation
+
+A statement this change made false is a defect this change introduced. Correct
+it in the same commit, in whatever document carries it — not only in the ones
+this change was already touching. Nothing checks documentation against the code,
+so a false sentence reports green for as long as it takes someone to read it:
+`README.md` described the evaluation harness as unimplemented while eight
+benchmarks sat in the registry, and `docs/training-and-runtime.md` said training
+could not select CUDA while `training/devices.py` accepted it.
+
+A measurement that supersedes an earlier one **replaces** it. Do not annotate
+the old reading and leave it standing. A retraction marker looks like the
+cautious option and is the expensive one: the reader pays for the error and then
+again for its correction, and the two drift apart as the text around them moves.
+
+Where a superseded reading is still worth something — a rejected approach whose
+cost someone would otherwise re-derive, a number that took GPU time to get —
+keep one sentence saying what it established and drop the narrative around it.
+The full account stays in the pull request that produced it. `docs/evaluation.md`
+already says a reading "is reported where the change is reviewed", and that is as
+true of an engineering measurement as of a shakedown one.
+
+These are the counterweight to the section above and the one below it. Those say
+when to write; these say when a line stops being documentation.
+
 ## Adding Detail
 
 Add more detail when it:
