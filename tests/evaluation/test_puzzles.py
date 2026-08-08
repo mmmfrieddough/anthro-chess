@@ -40,6 +40,7 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     PuzzleBenchmarkError,
     PuzzleBenchmarkResult,
     _accepted_actions,
+    _decision_tasks,
     _paired_contributions,
     _score_rating,
     _training_overlap,
@@ -110,6 +111,7 @@ class _ControlledRunner:
                 )
                 solution_index += 1
         self._fail_continuations = fail_continuations
+        self.contexts: list[DecisionContext] = []
 
     def predict_batch(
         self,
@@ -117,6 +119,7 @@ class _ControlledRunner:
     ) -> tuple[Tensor, ...]:
         predictions: list[Tensor] = []
         for context in contexts:
+            self.contexts.append(context)
             target, alternative, solution_index = self._decisions[_context_key(context)]
             high = int(context.target_rating or 0) >= 1600
             preferred = (
@@ -439,13 +442,43 @@ def test_first_move_and_full_line_stay_separate_and_output_is_deterministic() ->
     assert sum(band.puzzles for band in high.bands) == 2
 
 
+def test_one_replay_serves_every_configured_rating() -> None:
+    # Object identity rather than equality, because that is the whole claim:
+    # a rebuilt derivation produces contexts that compare equal to these and
+    # cost the replay, the legal actions and the accepted actions again.
+    puzzle_set = _fixture_set()
+    runner = _ControlledRunner(puzzle_set.puzzles, fail_continuations=True)
+    ratings = (1000, 1400, 2000)
+
+    score_puzzle_set(
+        puzzle_set,
+        runner,
+        target_ratings=ratings,
+        temperature=0.0,
+        batch_size=1,
+    )
+
+    passes = [
+        [context for context in runner.contexts if context.target_rating == rating]
+        for rating in ratings
+    ]
+    decisions = sum(len(puzzle.solution_moves) for puzzle in puzzle_set.puzzles)
+    assert [len(contexts) for contexts in passes] == [decisions] * len(ratings)
+    for shared in zip(*passes, strict=True):
+        first = shared[0]
+        assert all(context.plies is first.plies for context in shared)
+        assert all(context.columns is first.columns for context in shared)
+
+
 def test_puzzle_details_retain_source_game_aligned_checkpoint_contributions() -> None:
     puzzle_set = _fixture_set()
     runner = _ControlledRunner(puzzle_set.puzzles, fail_continuations=True)
+    tasks = _decision_tasks(puzzle_set)
     scored = tuple(
         _score_rating(
             puzzle_set,
             runner,
+            tasks,
             target_rating=rating,
             temperature=0.0,
             batch_size=2,
