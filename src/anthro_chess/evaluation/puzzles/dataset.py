@@ -32,6 +32,8 @@ PUZZLE_FILE_NAME = "puzzles.csv"
 PUZZLE_METADATA_FILE_NAME = "manifest.json"
 PUZZLE_SELECTION_ALGORITHM = "sha256-rank-per-exact-rating-v1"
 PUZZLE_SIZING_METHOD = "two-independent-proportions-worst-case-v1"
+PUZZLE_DETECTION_CONFIDENCE = 0.95
+PUZZLE_DETECTION_POWER = 0.80
 PUZZLE_LICENSE = {
     "name": "Creative Commons Zero v1.0 Universal",
     "spdx_id": "CC0-1.0",
@@ -159,6 +161,47 @@ class PuzzleSet:
             "version": self.version,
             "entries": len(self.puzzles),
             "sha256": self.content_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class PuzzleSelection:
+    """The puzzles one reading scores, and the spec that reproduces them."""
+
+    puzzles: tuple[Puzzle, ...]
+    puzzles_per_rating: int | None
+    eligible_puzzles: int
+
+    @property
+    def selected_puzzles(self) -> int:
+        """Return how many puzzles survived subsampling."""
+
+        return len(self.puzzles)
+
+    @property
+    def subsampled(self) -> bool:
+        """Return whether the dial actually dropped anything.
+
+        A dial set at or above what every rating holds selected the whole set,
+        so it is that reading rather than one of its own.
+        """
+
+        return self.selected_puzzles < self.eligible_puzzles
+
+    @property
+    def minimum_detectable_difference(self) -> float:
+        """Return the smallest rate difference this many puzzles can resolve."""
+
+        return conservative_detectable_difference(self.selected_puzzles)
+
+    def as_record(self) -> dict[str, object]:
+        """Return the stable spec record stored in benchmark artifacts."""
+
+        return {
+            "algorithm": PUZZLE_SELECTION_ALGORITHM,
+            "puzzles_per_rating": self.puzzles_per_rating,
+            "selected_puzzles": self.selected_puzzles,
+            "eligible_puzzles": self.eligible_puzzles,
         }
 
 
@@ -337,6 +380,42 @@ def puzzle_set_identity(path: str | Path) -> dict[str, object]:
     return load_puzzle_set(path).identity()
 
 
+def select_puzzles(
+    puzzle_set: PuzzleSet,
+    puzzles_per_rating: int | None,
+) -> PuzzleSelection:
+    """Keep the lowest-ranked puzzles at each exact rating, as the build does.
+
+    Ranking by the same hash within the same strata makes a subsample the set a
+    build with this ``puzzles_per_rating`` would have written: the design stays
+    uniform over exact ratings, and smaller readings nest inside larger ones on
+    any machine.
+    """
+
+    kept = puzzle_set.puzzles
+    if puzzles_per_rating is not None:
+        by_rating: dict[int, list[Puzzle]] = {}
+        for puzzle in puzzle_set.puzzles:
+            by_rating.setdefault(puzzle.rating, []).append(puzzle)
+        kept = tuple(
+            sorted(
+                (
+                    puzzle
+                    for group in by_rating.values()
+                    for puzzle in sorted(
+                        group, key=lambda item: _puzzle_rank(item.puzzle_id)
+                    )[:puzzles_per_rating]
+                ),
+                key=lambda puzzle: puzzle.puzzle_id,
+            )
+        )
+    return PuzzleSelection(
+        puzzles=kept,
+        puzzles_per_rating=puzzles_per_rating,
+        eligible_puzzles=len(puzzle_set.puzzles),
+    )
+
+
 def conservative_detectable_difference(sample_size: int) -> float:
     """Return the 95%-confidence, 80%-power worst-case two-rate difference."""
 
@@ -429,7 +508,7 @@ def _candidate(
     if not puzzle_id or source_game_key is None:
         return None
     return _SelectedPuzzle(
-        rank=int.from_bytes(sha256(puzzle_id.encode()).digest(), "big"),
+        rank=_puzzle_rank(puzzle_id),
         puzzle_id=puzzle_id,
         initial_fen=row["FEN"],
         moves=row["Moves"],
@@ -551,6 +630,12 @@ def _load_metadata(path: Path) -> Mapping[str, Any]:
     return metadata
 
 
+def _puzzle_rank(puzzle_id: str) -> int:
+    """Rank uniformly by puzzle id so a subsample stays representative."""
+
+    return int.from_bytes(sha256(puzzle_id.encode()).digest(), "big")
+
+
 def _sizing_record(selection: PuzzleSelectionConfig) -> dict[str, object]:
     ratings = selection.maximum_rating_exclusive - selection.minimum_rating
     overall = ratings * selection.puzzles_per_rating
@@ -558,8 +643,8 @@ def _sizing_record(selection: PuzzleSelectionConfig) -> dict[str, object]:
     local = local_ratings * selection.puzzles_per_rating
     return {
         "method": PUZZLE_SIZING_METHOD,
-        "confidence": 0.95,
-        "power": 0.80,
+        "confidence": PUZZLE_DETECTION_CONFIDENCE,
+        "power": PUZZLE_DETECTION_POWER,
         "worst_case_probability": 0.5,
         "overall_puzzles": overall,
         "overall_minimum_detectable_difference": (

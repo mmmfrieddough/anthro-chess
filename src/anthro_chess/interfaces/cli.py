@@ -23,6 +23,7 @@ from anthro_chess.machine import (
     DATA_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
     MachineReport,
+    RetainedRun,
     inspect_machine,
     optional_root,
     required_root,
@@ -938,6 +939,25 @@ def _run_machine(arguments: argparse.Namespace) -> int:
     return 1 if report.problems else 0
 
 
+#: Minute resolution in UTC. The column exists to order runs and to expose a
+#: recent stamp on stale contents, and neither needs seconds or a local zone.
+_STAMP_FORMAT = "%Y-%m-%dT%H:%MZ"
+
+
+def _load_verdict(run: RetainedRun) -> str:
+    """State whether a run can be loaded from, and why not when it cannot.
+
+    Silent when the report could not determine it, because the one reason
+    covers every run and is already reported beside the roots.
+    """
+
+    if run.loadable is None:
+        return ""
+    if run.loadable:
+        return "  loadable"
+    return f"  not loadable: {run.blocker}"
+
+
 def _render_machine(report: MachineReport) -> str:
     lines: list[str] = ["roots"]
     width = max(len(root.variable) for root in report.roots)
@@ -951,13 +971,23 @@ def _render_machine(report: MachineReport) -> str:
         lines.append(f"  {root.variable:<{width}}  {state}")
 
     lines.append("")
-    lines.append("retained runs")
+    lines.append("retained runs, newest first")
     if not report.runs:
         lines.append(f"  none beneath {_root_note(report, RUN_ROOT_VARIABLE)}")
-    for run in report.runs:
+    stamps = [
+        ""
+        if run.latest_modified is None
+        else run.latest_modified.strftime(_STAMP_FORMAT)
+        for run in report.runs
+    ]
+    run_width = max((len(run.name) for run in report.runs), default=0)
+    stamp_width = max((len(stamp) for stamp in stamps), default=0)
+    for run, stamp in zip(report.runs, stamps, strict=True):
         latest = run.latest_checkpoint or "no latest pointer"
-        record = "" if run.has_run_record else ", no run record"
-        lines.append(f"  {run.name}  {run.checkpoints} checkpoint(s), {latest}{record}")
+        lines.append(
+            f"  {run.name:<{run_width}}  {stamp:<{stamp_width}}  "
+            f"{run.checkpoints} checkpoint(s), {latest}{_load_verdict(run)}"
+        )
 
     lines.append("")
     lines.append("data artifacts")
@@ -1554,11 +1584,29 @@ def _render_ratio(value: float, reference: float) -> str:
 
 
 def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
+    from anthro_chess.evaluation.puzzles.dataset import (
+        PUZZLE_DETECTION_CONFIDENCE,
+        PUZZLE_DETECTION_POWER,
+    )
+
+    selection = result.selection
+    scope = (
+        f"{selection.selected_puzzles} of {selection.eligible_puzzles} "
+        f"puzzle(s), {selection.puzzles_per_rating} per rating"
+        if selection.subsampled
+        else f"{selection.selected_puzzles} puzzle(s)"
+    )
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
         (
             f"Puzzle set: {result.dataset.pool_id} v{result.dataset.pool_version} "
-            f"({result.dataset.selected_games} puzzle(s))"
+            f"({scope})"
+        ),
+        (
+            f"Resolution: {selection.minimum_detectable_difference * 100:.2f} pp "
+            f"for independent readings at {PUZZLE_DETECTION_CONFIDENCE:.0%} "
+            f"confidence, {PUZZLE_DETECTION_POWER:.0%} power; a paired "
+            "comparison resolves finer"
         ),
         f"Reference temperature: {result.reference_temperature:.3f}",
         "",

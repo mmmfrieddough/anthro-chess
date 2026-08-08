@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections import Counter
 from collections.abc import Callable, Sequence
 from hashlib import sha256
 from operator import attrgetter
@@ -15,6 +16,7 @@ import chess
 import pytest
 import torch
 import zstandard
+from pydantic import ValidationError
 from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
@@ -49,6 +51,8 @@ from anthro_chess.evaluation.puzzles.benchmark import (
 from anthro_chess.evaluation.puzzles.dataset import (
     PUZZLE_FILE_NAME,
     PUZZLE_METADATA_FILE_NAME,
+    PUZZLE_SELECTION_ALGORITHM,
+    select_puzzles,
 )
 from anthro_chess.evaluation.results import (
     DetailStore,
@@ -247,6 +251,70 @@ def test_external_set_matches_its_identity_and_validates_lines(
 def test_statistical_size_resolves_small_overall_and_local_differences() -> None:
     assert conservative_detectable_difference(20_000) == pytest.approx(0.0140, abs=1e-4)
     assert conservative_detectable_difference(4_000) == pytest.approx(0.0313, abs=1e-4)
+
+
+def test_a_subsample_is_the_set_a_smaller_build_would_have_written(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+) -> None:
+    """The dial reads the same design at a smaller size, not a slice of it.
+
+    A flat count over the whole set would leave some exact ratings unscored
+    and overweight others, which is the source-population bias the build
+    removed. Ranking within each rating by the hash the build ranks by keeps
+    the design, and keeps smaller readings nested inside larger ones.
+    """
+
+    ratings = (1200, 1300, 1400)
+    puzzle_set = load_puzzle_set(
+        write_puzzle_artifact(tmp_path / "set", ratings=ratings, puzzles_per_rating=6)
+    )
+
+    full = select_puzzles(puzzle_set, None)
+    quad = select_puzzles(puzzle_set, 4)
+    pair = select_puzzles(puzzle_set, 2)
+
+    assert full.puzzles == puzzle_set.puzzles
+    assert full.puzzles_per_rating is None
+    assert Counter(puzzle.rating for puzzle in pair.puzzles) == dict.fromkeys(
+        ratings, 2
+    )
+    assert set(pair.puzzles) < set(quad.puzzles) < set(full.puzzles)
+    for rating in ratings:
+        ranked = sorted(
+            (puzzle for puzzle in puzzle_set.puzzles if puzzle.rating == rating),
+            key=lambda puzzle: sha256(puzzle.puzzle_id.encode()).digest(),
+        )
+        kept = [puzzle for puzzle in pair.puzzles if puzzle.rating == rating]
+        assert set(kept) == set(ranked[:2])
+
+    assert pair.as_record() == {
+        # The build's own algorithm identity, because this is that selection.
+        "algorithm": PUZZLE_SELECTION_ALGORITHM,
+        "puzzles_per_rating": 2,
+        "selected_puzzles": 6,
+        "eligible_puzzles": 18,
+    }
+    assert pair.minimum_detectable_difference == conservative_detectable_difference(6)
+    assert pair.subsampled and not full.subsampled
+
+
+def test_a_dial_that_leaves_one_puzzle_per_rating_is_refused() -> None:
+    """A stratum of one can only redraw itself, so its floor is always zero.
+
+    The retained paired contributions stratify by exact puzzle rating, so a
+    setting that leaves one puzzle at each rating would report a bootstrap
+    spread of exactly zero and a floor that licenses every delta.
+    """
+
+    with pytest.raises(ValidationError):
+        PuzzleBenchmarkConfig.model_validate(
+            {
+                "puzzle_set": "puzzles",
+                "training_normalized": "corpus",
+                "puzzles_per_rating": 1,
+            }
+        )
 
 
 def test_preparation_selects_uniform_exact_ratings_and_records_coverage(
@@ -474,10 +542,11 @@ def test_one_replay_serves_every_configured_rating() -> None:
 def test_puzzle_details_retain_source_game_aligned_checkpoint_contributions() -> None:
     puzzle_set = _fixture_set()
     runner = _ControlledRunner(puzzle_set.puzzles, fail_continuations=True)
-    tasks = _decision_tasks(puzzle_set)
+    tasks = _decision_tasks(puzzle_set.puzzles)
     scored = tuple(
         _score_rating(
             puzzle_set,
+            puzzle_set.puzzles,
             runner,
             tasks,
             target_rating=rating,
@@ -542,7 +611,7 @@ def test_training_overlap_joins_source_keys_and_excludes_test_games(
     ]
     normalized, _ = write_corpus(tmp_path, rows)
 
-    training_games, overlapping = _training_overlap(puzzle_set, normalized)
+    training_games, overlapping = _training_overlap(puzzle_set.puzzles, normalized)
 
     assert training_games == 2
     assert overlapping == 1
@@ -596,6 +665,61 @@ def test_the_benchmark_measures_without_recording_anything(
     assert result.detail_paths == ()
 
 
+def test_a_configured_subsample_measures_and_records_only_what_it_selected(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, object]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    write_puzzle_artifact: Callable[..., Path],
+    inference_run: Callable[..., Path],
+) -> None:
+    """A smaller reading is its own series, not a partial full one.
+
+    The puzzles scored are the data component, so a subsample has to carry a
+    different component and view from the full reading; sharing either would
+    let a reduced sweep continue a full one's line. What it must *not* change
+    is the curve it is read on, which is why the bandwidths are compared here.
+    """
+
+    artifact = write_puzzle_artifact(
+        tmp_path / "puzzles",
+        ratings=(1200, 1400),
+        puzzles_per_rating=4,
+    )
+    arguments = (tmp_path, normalized_row, write_corpus, inference_run)
+
+    full = _measure(_benchmark_config(*arguments, puzzle_set=artifact))
+    reduced = _measure(
+        _benchmark_config(*arguments, puzzle_set=artifact, puzzles_per_rating=2)
+    )
+    # A dial that drops nothing selected the canonical set, whatever it asked
+    # for, and has to land on the series that reading already has.
+    undialled = _measure(
+        _benchmark_config(*arguments, puzzle_set=artifact, puzzles_per_rating=4)
+    )
+
+    assert full.selection.selected_puzzles == 8
+    assert reduced.selection.selected_puzzles == 4
+    assert reduced.selection.eligible_puzzles == 8
+    assert reduced.dataset.selected_games == 4
+    assert reduced.dataset.view == "per-rating-2"
+    assert full.dataset.view == "canonical"
+    assert undialled.dataset == full.dataset
+    assert reduced.dataset.components != full.dataset.components
+    assert reduced.dataset.game_ids_sha256 != full.dataset.game_ids_sha256
+    assert reduced.as_record()["selection"] == reduced.selection.as_record()
+    # The reference the response is smoothed against is the whole set at both
+    # sizes, so the reduced reading sits on the full one's curve rather than a
+    # differently smoothed one.
+    assert [point.bandwidth for point in reduced.ratings[0].curve] == [
+        point.bandwidth for point in full.ratings[0].curve
+    ]
+    # The puzzle count every measurement reports is the realized one, not the
+    # artifact's, or a reduced reading would claim a resolution it never had.
+    (reading,) = [item for item in reduced.envelopes if item.kind == PUZZLE_KIND]
+    sizes = {item.sample_size for item in reading.measurements}
+    assert sizes == {4, len(reduced.ratings), 4 * len(reduced.ratings)}
+
+
 def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, object]],
@@ -629,6 +753,7 @@ def _benchmark_config(
     inference_run: Callable[..., Path],
     *,
     puzzle_set: Path | None = None,
+    puzzles_per_rating: int | None = None,
 ) -> ResolvedConfig[PuzzleBenchmarkConfig]:
     """Write a puzzle artifact, a training corpus and a checkpoint, and select them."""
 
@@ -650,6 +775,7 @@ def _benchmark_config(
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "target_ratings": [1000, 1800],
                 "inference_batch_size": 4,
+                "puzzles_per_rating": puzzles_per_rating,
             }
         ),
         provenance=ConfigProvenance(source=None, overrides=()),

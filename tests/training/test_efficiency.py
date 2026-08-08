@@ -44,6 +44,8 @@ from anthro_chess.training.efficiency import (
     workload_record,
 )
 
+from accelerators import requires_training_accelerator
+
 CPU = torch.device("cpu")
 
 MODEL_IDENTITY = {"name": "fixture-model", "version": 1}
@@ -361,6 +363,68 @@ def test_a_cpu_run_reports_no_device_memory() -> None:
 
     assert monitor.peak_allocated_memory_bytes is None
     assert monitor.peak_driver_memory_bytes is None
+
+
+@pytest.mark.gpu
+@requires_training_accelerator("cuda")
+def test_cuda_peak_memory_holds_a_transient_freed_before_the_step_ends() -> None:
+    """The reported peak is the step's high-water mark, not its boundary.
+
+    A step's activations are gone by the time it ends, so a monitor reading the
+    *current* allocator figure at ``end_step`` reports what survives the step
+    rather than what it needed. On a real CUDA run of the shipped baseline at
+    batch 16 that read 23.6 MB where the step had reached 134.6 MB, against
+    207.6 MB reserved — a pair that says the allocator holds nine times what it
+    uses.
+    """
+
+    device = torch.device("cuda")
+    monitor = TrainingEfficiencyMonitor(TrainingEfficiencyConfig(), device=device)
+    monitor.begin_optimization(starting_step=0)
+    resident = torch.zeros(1024, dtype=torch.float32, device=device)
+    boundary = monitor.peak_allocated_memory_bytes
+    assert boundary is not None
+
+    monitor.begin_interval(1)
+    monitor.begin_step()
+    transient = torch.zeros(8 * 1024 * 1024, dtype=torch.float32, device=device)
+    transient_bytes = transient.element_size() * transient.numel()
+    del transient
+    monitor.end_step()
+
+    assert resident.numel() == 1024  # the step's own allocation is not the peak
+    peak = monitor.peak_allocated_memory_bytes
+    assert peak is not None
+    assert peak >= boundary + transient_bytes
+    driver = monitor.peak_driver_memory_bytes
+    assert driver is not None
+    assert driver >= peak
+
+
+@pytest.mark.gpu
+@requires_training_accelerator("cuda")
+def test_cuda_peak_memory_ignores_what_the_process_did_before_the_run() -> None:
+    """A run reports its own peak rather than the process's.
+
+    CUDA keeps its high-water marks per process and never decays them, so a
+    second run in one process would otherwise inherit the first one's peak and
+    a resumed run would report whatever its checkpoint load transiently held.
+    """
+
+    device = torch.device("cuda")
+    earlier = torch.zeros(16 * 1024 * 1024, dtype=torch.float32, device=device)
+    earlier_bytes = earlier.element_size() * earlier.numel()
+    del earlier
+
+    monitor = TrainingEfficiencyMonitor(TrainingEfficiencyConfig(), device=device)
+    monitor.begin_optimization(starting_step=0)
+    monitor.begin_interval(1)
+    monitor.begin_step()
+    monitor.end_step()
+
+    peak = monitor.peak_allocated_memory_bytes
+    assert peak is not None
+    assert peak < earlier_bytes
 
 
 def test_derived_quantities_follow_the_window_rather_than_the_run() -> None:
