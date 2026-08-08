@@ -1947,17 +1947,22 @@ def test_eval_suite_runs_the_ladder_only_at_full_scale(
     assert "ladder" in {step["benchmark"] for step in plan["steps"]}
 
 
-def _retained_run(root: Path, name: str, step: int = 8000) -> Path:
+def _retained_run(
+    root: Path,
+    name: str,
+    record: dict[str, Any],
+    step: int = 8000,
+) -> Path:
     """Write the marker files a run is recognized and selected by.
 
-    Nothing here loads, because neither the report nor the selection record
-    reads weights: both check that the run record and checkpoint exist and
-    stop there.
+    No weights are written, because neither the report nor the selection
+    record reads any: the report compares the run record against the contract
+    this code loads, and the selection record checks the two files exist.
     """
 
     checkpoints = root / name / "checkpoints"
     checkpoints.mkdir(parents=True)
-    (root / name / "run.json").write_text("{}", encoding="utf-8")
+    (root / name / "run.json").write_text(json.dumps(record), encoding="utf-8")
     (checkpoints / f"step-{step:08d}.pt").write_bytes(b"")
     (checkpoints / "latest.json").write_text(
         json.dumps({"global_step": step, "path": f"step-{step:08d}.pt"}),
@@ -1980,9 +1985,10 @@ def test_machine_reports_the_runs_and_artifacts_the_roots_hold(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    loadable_run_record: dict[str, Any],
 ) -> None:
     _unconfigured(monkeypatch)
-    _retained_run(tmp_path / "runs", "trained")
+    _retained_run(tmp_path / "runs", "trained", loadable_run_record)
     (tmp_path / "datasets" / "corpus" / "manifests").mkdir(parents=True)
     (tmp_path / "datasets" / "corpus" / "manifests" / "manifest.json").write_text(
         "{}", encoding="utf-8"
@@ -1993,8 +1999,45 @@ def test_machine_reports_the_runs_and_artifacts_the_roots_hold(
     assert main(["machine"]) == 0
 
     output = capsys.readouterr().out
-    assert "trained  1 checkpoint(s), step-00008000.pt" in output
+    assert "1 checkpoint(s), step-00008000.pt  loadable" in output
     assert "corpus  corpus" in output
+
+
+def test_machine_says_which_retained_runs_this_code_can_still_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    loadable_run_record: dict[str, Any],
+) -> None:
+    """Trying runs one at a time is what this replaces, at 14 seconds a miss."""
+
+    _unconfigured(monkeypatch)
+    runs = tmp_path / "runs"
+    _retained_run(runs, "current", loadable_run_record)
+    retired = _retained_run(runs, "retired", loadable_run_record)
+    (retired / "run.json").write_text(
+        json.dumps(
+            {
+                **loadable_run_record,
+                "model": {**loadable_run_record["model"], "version": 4},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(runs))
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+    (tmp_path / "datasets").mkdir()
+
+    assert main(["machine"]) == 0
+
+    lines = {
+        line.split()[0]: line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("  current") or line.startswith("  retired")
+    }
+    assert lines["current"].endswith("  loadable")
+    # The reason, so a stale run root is distinguishable from a broken install.
+    assert "not loadable: model identity 4" in lines["retired"]
 
 
 def test_machine_reports_a_half_configured_pair_as_a_failure(
@@ -2033,9 +2076,10 @@ def test_machine_json_carries_the_whole_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    loadable_run_record: dict[str, Any],
 ) -> None:
     _unconfigured(monkeypatch)
-    _retained_run(tmp_path / "runs", "trained")
+    _retained_run(tmp_path / "runs", "trained", loadable_run_record)
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
 
@@ -2052,9 +2096,10 @@ def test_model_select_records_the_machine_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    loadable_run_record: dict[str, Any],
 ) -> None:
     _unconfigured(monkeypatch)
-    _retained_run(tmp_path / "runs", "trained")
+    _retained_run(tmp_path / "runs", "trained", loadable_run_record)
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
     (tmp_path / "datasets").mkdir()

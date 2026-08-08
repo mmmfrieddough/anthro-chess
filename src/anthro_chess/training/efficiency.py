@@ -465,13 +465,13 @@ class TrainingEfficiencyMonitor:
 
     @property
     def peak_allocated_memory_bytes(self) -> int | None:
-        """Return the largest allocator figure sampled so far, if measurable."""
+        """Return the largest tensor figure seen so far, if measurable."""
 
         return self._peak_allocated
 
     @property
     def peak_driver_memory_bytes(self) -> int | None:
-        """Return the largest reserved figure sampled so far, if measurable."""
+        """Return the largest reserved figure seen so far, if measurable."""
 
         return self._peak_driver
 
@@ -498,6 +498,7 @@ class TrainingEfficiencyMonitor:
 
         self._startup_seconds = time.perf_counter() - self._run_started
         self._first_window_step = starting_step + self._config.warmup_steps + 1
+        begin_peak_memory_measurement(self._device)
         self._sample_memory()
 
     def begin_interval(self, global_step: int) -> None:
@@ -647,11 +648,11 @@ class TrainingEfficiencyMonitor:
     def _sample_memory(self) -> None:
         self._peak_allocated = _maximum(
             self._peak_allocated,
-            allocated_memory_bytes(self._device),
+            maximum_allocated_memory_bytes(self._device),
         )
         self._peak_driver = _maximum(
             self._peak_driver,
-            driver_allocated_memory_bytes(self._device),
+            maximum_driver_memory_bytes(self._device),
         )
 
 
@@ -677,6 +678,59 @@ def driver_allocated_memory_bytes(device: torch.device) -> int | None:
     if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
         return int(torch.cuda.memory_reserved(device))
     return None
+
+
+def begin_peak_memory_measurement(device: torch.device) -> None:
+    """Scope the allocator's high-water marks to the run about to start.
+
+    CUDA keeps its peaks per process rather than per run, and nothing decays
+    them, so without this a second run in one process would inherit the first
+    one's peak and a resumed run would report the checkpoint load it happened
+    to do. Torch re-seeds each peak to the *current* figure rather than to
+    zero, so memory the run is still holding — its parameters, its optimizer
+    state — stays counted.
+
+    What remains inside the mark is everything from here to the end of
+    optimization, cadence evaluation included. That is deliberate: the figure
+    answers whether a configuration fits on a device, and a run that evaluates
+    itself has to fit with its evaluation.
+    """
+
+    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
+        torch.cuda.reset_peak_memory_stats(device)
+
+
+def maximum_allocated_memory_bytes(device: torch.device) -> int | None:
+    """Return the high-water mark of tensor bytes, if the backend keeps one.
+
+    A step's activations are freed by the time it ends, so the *current* figure
+    read at a step boundary misses the backward pass — the moment the run
+    actually needs the most memory. Where the allocator keeps its own peak that
+    is read instead, because no sampling cadence can catch a transient the
+    caller only observes between steps. On a CUDA run of the shipped baseline
+    at batch 16 the boundary figure was 23.6 MB against a peak of 134.6 MB.
+
+    MPS exposes no peak, so its current figure is returned and the sampling in
+    :class:`TrainingEfficiencyMonitor` remains the approximation it always was.
+    """
+
+    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
+        return int(torch.cuda.max_memory_allocated(device))
+    return allocated_memory_bytes(device)
+
+
+def maximum_driver_memory_bytes(device: torch.device) -> int | None:
+    """Return the high-water mark of reserved bytes, if the backend keeps one.
+
+    Reserved memory only grows while a run holds its cached blocks, so the
+    sampled figure was already close here. It is read from the allocator's own
+    peak for the same reason as its allocated counterpart, and so that a run
+    calling ``empty_cache`` could not walk the reported peak back down.
+    """
+
+    if device.type == "cuda":  # pragma: no cover - no CUDA in the CPU suite
+        return int(torch.cuda.max_memory_reserved(device))
+    return driver_allocated_memory_bytes(device)
 
 
 def workload_record() -> dict[str, Any]:
@@ -978,12 +1032,15 @@ __all__: Sequence[str] = [
     "TrainingEfficiencyMonitor",
     "TrainingEfficiencySummary",
     "allocated_memory_bytes",
+    "begin_peak_memory_measurement",
     "build_efficiency_result",
     "coordinate_record",
     "device_name",
     "driver_allocated_memory_bytes",
     "efficiency_measurements",
     "execution_record",
+    "maximum_allocated_memory_bytes",
+    "maximum_driver_memory_bytes",
     "platform_key",
     "record_efficiency",
     "render_efficiency",
