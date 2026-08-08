@@ -54,6 +54,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     PairedContributions,
     ResultsStore,
+    metric_definition,
 )
 
 
@@ -502,6 +503,11 @@ def test_puzzle_details_retain_source_game_aligned_checkpoint_contributions() ->
             sum(item.result.greedy_first_move_accuracy for item in scored) / 2
         )
     )
+    # A report can only report a paired floor as missing where the metric says
+    # it should have had one, so retaining a metric here and not declaring it
+    # there would restore the silence rather than announce itself.
+    for metric in retained.metrics:
+        assert metric_definition(metric).paired_sampling_floor
 
 
 def test_training_overlap_joins_source_keys_and_excludes_test_games(

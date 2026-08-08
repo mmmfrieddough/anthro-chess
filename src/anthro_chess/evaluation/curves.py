@@ -1390,7 +1390,12 @@ def _resample(
         # none of them can move when the games behind them cannot. Nothing
         # about it depends on resampling, so it stands where a bootstrap could
         # not — a model side too thin to resample is still replayed exactly.
-        exact = NoiseFloor(value=0.0, kind=floor_kind, source=source)
+        exact = NoiseFloor(
+            value=0.0,
+            kind=floor_kind,
+            source=source,
+            estimator=method,
+        )
         floors = CurveFloors(
             conditional=exact,
             pooled=exact,
@@ -1457,6 +1462,7 @@ def _resample(
                     ),
                     kind=floor_kind,
                     source=source,
+                    estimator=method,
                 )
             )
         floors = CurveFloors(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -19,6 +20,7 @@ from pydantic import Field, model_validator
 
 from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
+    PAIRED_BOOTSTRAP_METHOD,
     dispersion_bound,
 )
 from anthro_chess.evaluation.results.records import (
@@ -145,46 +147,83 @@ def paired_contributions(
     )
 
 
+@dataclass(frozen=True)
+class PairedFloor:
+    """One comparison's paired floor for one metric, or why it has none.
+
+    Both fields are reported rather than one. A caller holding ``None`` where a
+    floor was expected cannot tell a benchmark that never pairs from a pair
+    whose inputs did not survive the machine boundary, and those are the two
+    situations a reader most needs told apart: only the second is a reading
+    qualified by the wrong estimator.
+    """
+
+    floor: NoiseFloor | None = None
+    #: Why no paired floor could be built, in a phrase a report can print.
+    #: ``None`` only when ``floor`` is set.
+    unavailable: str | None = None
+
+
+#: The fields two retained payloads have to agree on before their per-unit
+#: values describe one comparison, named so a report can say which one differs.
+_COMPARABLE_FIELDS = ("unit", "stratum", "resamples", "seed", "coverage", "confidence")
+
+
 class PairedFloorIndex:
     """Resolve paired data-sampling floors from machine-local result details."""
 
     def __init__(self, detail: DetailStore) -> None:
         self._detail = detail
-        self._contributions: dict[str, PairedContributions | None] = {}
-        self._floors: dict[tuple[str, str], dict[str, NoiseFloor]] = {}
+        self._contributions: dict[str, tuple[PairedContributions | None, str]] = {}
+        self._floors: dict[tuple[str, str], tuple[dict[str, NoiseFloor], str]] = {}
 
     def floor(
         self,
         baseline: ResultEnvelope,
         current: ResultEnvelope,
         metric: str,
-    ) -> NoiseFloor | None:
-        """Return the paired floor for one result comparison, when retained."""
+    ) -> PairedFloor:
+        """Return the paired floor for one result comparison, or why there is none."""
 
         key = (baseline.result_id, current.result_id)
         if key not in self._floors:
             self._floors[key] = self._comparison_floors(baseline, current)
-        return self._floors[key].get(metric)
+        floors, unavailable = self._floors[key]
+        retained = floors.get(metric)
+        if retained is not None:
+            return PairedFloor(floor=retained)
+        return PairedFloor(
+            unavailable=unavailable
+            or f"no reading retained a per-unit contribution for {metric}"
+        )
 
     def _comparison_floors(
         self,
         baseline: ResultEnvelope,
         current: ResultEnvelope,
-    ) -> dict[str, NoiseFloor]:
-        left = self._load(baseline)
-        right = self._load(current)
+    ) -> tuple[dict[str, NoiseFloor], str]:
+        left, left_absence = self._load(baseline)
+        right, right_absence = self._load(current)
+        if left is None and right is None and left_absence == right_absence:
+            # The usual shape of the failure, and the one worth reading as one
+            # sentence: neither side of a comparison taken on another machine
+            # has anything here to difference.
+            return {}, f"both readings {left_absence}"
         if left is None or right is None:
-            return {}
-        if (
-            left.unit != right.unit
-            or set(left.unit_ids) != set(right.unit_ids)
-            or left.stratum != right.stratum
-            or left.resamples != right.resamples
-            or left.seed != right.seed
-            or left.coverage != right.coverage
-            or left.confidence != right.confidence
-        ):
-            return {}
+            missing = [
+                f"the {side} reading {absence}"
+                for side, contributions, absence in (
+                    ("baseline", left, left_absence),
+                    ("current", right, right_absence),
+                )
+                if contributions is None
+            ]
+            return {}, " and ".join(missing)
+        for field in _COMPARABLE_FIELDS:
+            if getattr(left, field) != getattr(right, field):
+                return {}, f"the retained contributions disagree on {field}"
+        if set(left.unit_ids) != set(right.unit_ids):
+            return {}, "the retained contributions cover different units"
 
         right_index = {unit_id: index for index, unit_id in enumerate(right.unit_ids)}
         right_order = np.asarray(
@@ -198,7 +237,7 @@ class PairedFloorIndex:
             else tuple(right.strata[index] for index in right_order)
         )
         if left_strata != right_strata:
-            return {}
+            return {}, "the retained contributions assign units to different strata"
         left_weights = left.weights
         right_weights = (
             None
@@ -210,10 +249,10 @@ class PairedFloorIndex:
         # sides weight their units differently and their difference is not the
         # delta either measurement reports.
         if left_weights != right_weights:
-            return {}
+            return {}, "the retained contributions weight their units differently"
         common = sorted(set(left.metrics) & set(right.metrics))
         if not common:
-            return {}
+            return {}, "the two readings retain no metric in common"
         baseline_values = np.column_stack(
             [np.asarray(left.metrics[metric], dtype=np.float64) for metric in common]
         )
@@ -260,17 +299,40 @@ class PairedFloorIndex:
                     "paired bootstrap resamples of "
                     f"{len(left.unit_ids)} matching {left.unit} units"
                 ),
+                estimator=PAIRED_BOOTSTRAP_METHOD,
             )
             for metric, dispersion in zip(common, dispersions, strict=True)
-        }
+        }, ""
 
-    def _load(self, envelope: ResultEnvelope) -> PairedContributions | None:
+    def _load(
+        self,
+        envelope: ResultEnvelope,
+    ) -> tuple[PairedContributions | None, str]:
+        """Return one reading's retained contributions, or why it has none.
+
+        A payload this machine does not hold is an absence rather than a store
+        fault. The detail tier is machine-local while the summary tier is
+        committed, so a reading recorded elsewhere always resolves to nothing
+        here, and raising would end a whole report over one row's floor. A
+        payload that is present and wrong still raises: that is the store
+        disagreeing with itself rather than a file that never arrived.
+        """
+
         cached = self._contributions.get(envelope.result_id)
-        if envelope.result_id in self._contributions:
+        if cached is not None:
             return cached
+        loaded = self._read(envelope)
+        self._contributions[envelope.result_id] = loaded
+        return loaded
+
+    def _read(
+        self,
+        envelope: ResultEnvelope,
+    ) -> tuple[PairedContributions | None, str]:
         if envelope.detail is None:
-            self._contributions[envelope.result_id] = None
-            return None
+            return None, "recorded no detail payload"
+        if not self._detail.holds(envelope.detail):
+            return None, "recorded a detail payload this machine does not hold"
         payload = self._detail.read(envelope.detail)
         if not isinstance(payload, Mapping):
             raise ResultsStoreError(
@@ -278,16 +340,14 @@ class PairedFloorIndex:
             )
         raw = payload.get(PAIRED_CONTRIBUTIONS_KEY)
         if raw is None:
-            self._contributions[envelope.result_id] = None
-            return None
+            return None, "retained no per-unit contributions"
         try:
             contributions = PairedContributions.model_validate(raw)
         except ValueError as error:
             raise ResultsStoreError(
                 f"invalid paired contributions for {envelope.result_id}: {error}"
             ) from error
-        self._contributions[envelope.result_id] = contributions
-        return contributions
+        return contributions, ""
 
     @staticmethod
     def _verify_means(
@@ -376,6 +436,7 @@ __all__ = [
     "PAIRED_CONTRIBUTIONS_KEY",
     "PAIRED_CONTRIBUTIONS_VERSION",
     "PairedContributions",
+    "PairedFloor",
     "PairedFloorIndex",
     "paired_contributions",
 ]

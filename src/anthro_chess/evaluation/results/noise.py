@@ -95,6 +95,15 @@ BOOTSTRAP_METHOD = "bootstrap-over-games"
 REPLICATE_METHOD = "independent-replicates"
 PROCESS_REPLICATE_METHOD = "repeated-process-replicates"
 
+#: The estimator a comparison-scoped data-sampling floor is produced by, named
+#: here beside the others so the two ways of estimating that one kind are
+#: written down in one place. ``BOOTSTRAP_METHOD`` resamples one reading's own
+#: games and reports a width about 1.9x too wide for a delta between two
+#: checkpoints scored on the same ones;
+#: ``docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md``
+#: owns why that is an error rather than a coarser estimate.
+PAIRED_BOOTSTRAP_METHOD = "paired-bootstrap-over-units"
+
 
 class NoiseCharacterizationError(ValueError):
     """Raised when a noise floor cannot be estimated or recorded."""
@@ -246,7 +255,12 @@ class NoiseCharacterization(ResultModel):
     def as_floor(self, entry: FloorEntry) -> NoiseFloor:
         """Return the floor in the shape a measurement and a report read."""
 
-        return NoiseFloor(value=entry.floor, kind=self.kind, source=self.source)
+        return NoiseFloor(
+            value=entry.floor,
+            kind=self.kind,
+            source=self.source,
+            estimator=self.method,
+        )
 
     def verify(self) -> None:
         """Reject a record too large for the committed summary tier."""
@@ -766,6 +780,7 @@ __all__ = [
     "CHARACTERIZATION_VERSION",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_COVERAGE",
+    "PAIRED_BOOTSTRAP_METHOD",
     "PROCESS_REPLICATE_METHOD",
     "REPLICATE_METHOD",
     "FloorEntry",

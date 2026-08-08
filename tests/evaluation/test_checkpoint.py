@@ -33,6 +33,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     PairedContributions,
     ResultsStore,
+    metric_definition,
 )
 from anthro_chess.evaluation.slices import (
     GamePhase,
@@ -424,6 +425,12 @@ def test_dependency_detail_retains_what_a_paired_floor_needs(
             for weight, value in zip(retained.weights, contributions, strict=True)
         ) / sum(retained.weights)
         assert weighted == pytest.approx(values[metric], abs=1e-12)
+        # A report can only say that a floor is not the paired one when the
+        # metric declares that it should have been, so what is retained here
+        # and what the registry declares cannot drift apart. Retaining without
+        # declaring is the silent direction: the pairing would keep working
+        # here and stop being missed anywhere it failed.
+        assert metric_definition(metric).paired_sampling_floor
     # The two quantities no resampling of games can recompute stay out.
     assert "dependency.rating_cross_conditioning_match_rate" not in retained.metrics
     assert "dependency.rating_within_game_response" not in retained.metrics

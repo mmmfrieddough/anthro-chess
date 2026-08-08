@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 
 from anthro_chess.evaluation.results import (
+    BOOTSTRAP_METHOD,
+    PAIRED_BOOTSTRAP_METHOD,
     PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     BridgeIndex,
@@ -630,6 +632,174 @@ def test_a_paired_floor_is_withheld_when_the_weights_disagree(
 
     assert row.noise is NoiseVerdict.UNKNOWN
     assert row.noise_floors == ()
+    assert row.paired_floor_unavailable == (
+        "the retained contributions weight their units differently"
+    )
+
+
+def test_an_unpaired_floor_standing_in_for_a_paired_one_is_reported_as_one(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """The substitution changes the verdict, so it cannot be left to inference.
+
+    The same two readings and the same characterized floor are reported twice
+    here: once where the retained contributions are on this machine, and once
+    where the current reading's payload is not. Nothing about the measurement
+    differs between them. What differs is that the second is judged against a
+    floor estimated over one reading's own games, which drops the covariance
+    two checkpoints scored on the same games share — and it turns a delta the
+    paired estimator clears into noise.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_shuffled_degradation"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.5, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement(metric, 0.9, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+    # Wide across units and identical between checkpoints, which is what the
+    # two estimators disagree about: resampling either side alone sees the
+    # spread, and resampling their difference sees none of it.
+    units = tuple(f"game-{index}" for index in range(40))
+    offsets = [0.5 * (index - (len(units) - 1) / 2) for index in range(len(units))]
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(mean: float) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="pool-game",
+                unit_ids=units,
+                metrics={metric: [mean + offset for offset in offsets]},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={"detail": detail.write("baseline.json", retained(0.5))}
+    )
+    current = current.model_copy(
+        update={"detail": detail.write("current.json", retained(0.9))}
+    )
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="data-sampling",
+                method=BOOTSTRAP_METHOD,
+                replicates=1_000,
+                source="bootstrap over 40 game(s) of pool view 'canonical'",
+                floors=[
+                    FloorEntry(
+                        metric=metric,
+                        fingerprint=series_fingerprint(metric, component),
+                        floor=1.0,
+                        dispersion=0.3,
+                        dispersion_bound=0.36,
+                        degrees_of_freedom=39,
+                        sampling_units=40,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+
+    paired = _row(
+        build_delta_report(
+            [baseline, current],
+            BridgeIndex(),
+            floors=floors,
+            comparison_floors=PairedFloorIndex(detail),
+        ),
+        metric,
+    )
+    (tmp_path / "detail" / "current.json").unlink()
+    degraded_report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        floors=floors,
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    degraded = _row(degraded_report, metric)
+
+    assert paired.noise is NoiseVerdict.CLEARED
+    assert [floor.estimator for floor in paired.noise_floors] == [
+        PAIRED_BOOTSTRAP_METHOD
+    ]
+    assert paired.paired_floor_unavailable is None
+
+    # A payload this machine does not hold is the ordinary state of a reading
+    # recorded elsewhere, so it degrades the row rather than ending the report.
+    assert degraded.noise is NoiseVerdict.WITHIN
+    assert [floor.estimator for floor in degraded.noise_floors] == [BOOTSTRAP_METHOD]
+    assert degraded.paired_floor_unavailable == (
+        "the current reading recorded a detail payload this machine does not hold"
+    )
+    rendered = render_report(degraded_report)
+    assert "within (sampling, unpaired)" in rendered
+    assert "paired floor unavailable" in rendered
+
+
+def test_a_report_with_no_detail_root_says_the_paired_floor_needs_one(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Reporting without a detail tier is the loudest form of the same loss.
+
+    Nothing is read, so no reading can pair, and every metric defined against a
+    paired floor is qualified by something else or by nothing. That has to say
+    so: it is a configuration a caller can fix, and it is indistinguishable
+    from an ordinary reading otherwise.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_anchor_policy_divergence"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[measurement(metric, 0.5, data=component)],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[measurement(metric, 0.9, data=component)],
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex())
+    row = _row(report, metric)
+
+    assert row.noise is NoiseVerdict.UNKNOWN
+    assert row.paired_floor_unavailable == "no detail-tier root is configured"
+    assert row.as_record()["paired_floor_unavailable"] == (
+        "no detail-tier root is configured"
+    )
+
+
+def test_a_metric_whose_floor_was_never_paired_reports_no_degradation(
+    recorded_result: ResultFactory,
+) -> None:
+    """Most metrics have no pair to lose, and must not be annotated as if they did."""
+
+    report = build_delta_report(
+        [
+            recorded_result(label="checkpoint-a", recorded_at=BASELINE_AT),
+            recorded_result(label="checkpoint-b", recorded_at=CURRENT_AT),
+        ],
+        BridgeIndex(),
+    )
+    row = _row(report, "held_out.move_loss")
+
+    assert row.paired_floor_unavailable is None
+    assert row.note is None
 
 
 def test_a_payload_written_before_weights_existed_still_resolves() -> None:
