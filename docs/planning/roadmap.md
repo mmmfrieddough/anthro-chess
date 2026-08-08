@@ -35,161 +35,67 @@ before.
 
 Make the repository ready for implementation work.
 
-This stage should establish the package structure, entry points, test runner,
-development tooling, configuration conventions, and issue-tracking workflow. It
-should also keep the docs and decisions easy for future agents to follow.
-
-Detailed setup tasks should move into GitHub issues once they are actionable.
+Closed. Package structure, entry points, test runner, tooling, configuration
+conventions, and the issue workflow.
 
 ### 1. Minimal Training Loop
 
 Prove that the project can train a model correctly from real chess data.
 
-This stage should include small checked-in fixtures, a bounded reproducible
-many-game Lichess corpus, deterministic board-state reconstruction,
-model-facing encodings, dataloading, a basic model, move-prediction loss,
-training configuration, validation metrics, and practical checkpoint/resume
-support.
+Closed. Fixtures, a bounded reproducible Lichess corpus, deterministic
+board-state reconstruction, model-facing encodings, dataloading, a model,
+move-prediction loss, and checkpoint/resume support.
+`docs/training-and-runtime.md` owns the staged training-correctness protocol
+this established and the acceptance form the result was read against.
 
-Start with the simplest training target that proves the loop works. Timing data
-should be preserved in the data pipeline where available, but Milestone 1 keeps
-timing inputs and outputs out of the model and training objective. Timing
-behavior is added after the move-only path is useful and measurable.
-
-Before scaling the first run, establish the staged training-correctness
-protocol in `docs/training-and-runtime.md`: inspect fixed model inputs, prove a
-stripped-down deterministic path can overfit a tiny sample, exercise causal
-sequence behavior, and then demonstrate held-out signal above simple
-baselines. Add context and optimization features from that trusted baseline
-rather than introducing several unverified changes at once.
-
-Prefer full-game, length-bucketed batches for the first proof so training
-matches full-history inference while limiting padding waste. Tune
-bucket-specific batch sizes, gradient accumulation, and GPU headroom from
-measured model memory and throughput rather than hardcoding a speculative
-device budget in the data layer. Treat independent midgame chunks as a
-scalability option that must be compared with full-history training before it
-becomes a default.
-
-The output of this milestone does not need to be a strong chess opponent or
-provide the final playable interface. It does need to demonstrate learned move
-structure beyond randomness made legal by masking, including held-out
-performance above appropriate simple move-selection baselines. That checkpoint
-should be credible input to the playable proof rather than only evidence that
-the training command runs.
+Two sequencing decisions from this stage still hold. Timing data is preserved
+in the pipeline wherever a source carries it, but timing inputs and outputs stay
+out of the model and the objective until stage 6, after the move-only path is
+useful and measurable. And independent midgame chunks remain a scalability
+option that has to be compared against full-history training before becoming a
+default, rather than a default nobody compared.
 
 ### 2. Playable Proof
 
 Connect model output to an actual playable chess game.
 
-This stage should build the basic inference runtime: exact game-state updates,
-legal move generation, illegal-move masking, action sampling, configuration,
-and local runtime APIs. It should also connect the runtime to a real chessboard
-experience.
-
-UCI is the preferred compatibility path for local chess GUIs. The first UCI
-implementation only needs enough polish to play games reliably, keep stdout
-reserved for protocol messages, and expose the core options that already exist.
-
-The goal is a proof that the model can choose legal moves in a real game loop
-and begin to play somewhat sensible chess. It is acceptable for the model to be
-weak at this stage.
+Closed. The inference runtime — exact game-state updates, legal move
+generation, illegal-move masking, action sampling — and a UCI process a real
+GUI plays against. `docs/interfaces.md` and
+`docs/decisions/0006-direct-uci-invocation.md` own what that path is and why it
+is invoked directly.
 
 ### 3. Evaluation Harness
 
-Turn evaluation into a first-class project system early.
+Turn evaluation into a first-class project system early, so model versions can
+be compared without relying on subjective playtesting.
 
-Basic validation metrics should exist during the minimal training loop, but
-this stage should make evaluation coherent enough to compare model versions
-without relying on subjective playtesting.
+Closed. The evaluation-data contract, the results store and metric registry,
+comparability fingerprints, live training observability, and the first
+generation of benchmarks. `docs/evaluation.md` owns the current set and the
+shape several of them share;
+`docs/decisions/0013-benchmark-result-comparability.md` and
+`docs/decisions/0017-derived-termination-and-terminal-actions.md` own the two
+choices that changed an identity.
 
-This stage builds the instrument; it does not yet take readings anyone acts on.
-Model iteration starts in stage 5, so no benchmark history accumulated here is
-protected and no checkpoint produced here is worth preserving. Breaking a
-comparability series, bumping the preprocessing version, changing the action
-vocabulary, and regenerating the corpus are all free, and work should not be
-deferred or resequenced to avoid them. Batching an expensive corpus
-regeneration is still worthwhile, but that is an argument about compute
-rather than about history. The comparability machinery itself is built to full
-strength anyway, because it has to be trustworthy before the first reading that
-matters. See `docs/decisions/0013-benchmark-result-comparability.md`.
+**Rating measurement belongs with the harness rather than with the scaling
+work.** This argument is kept because it answers a position that was actually
+held, and a re-sequencing proposal would otherwise re-litigate it from nothing.
+That position was that rating measurement needs a model worth measuring, which
+is circular: this benchmark is the instrument that establishes whether a model
+is worth measuring, and deferring it means the first reading lands on an
+already-scaled checkpoint with no baseline to read it against. A degenerate
+result on a weak checkpoint is a reportable outcome rather than an error, and it
+is not a calibration verdict. Anchoring the resulting scale against an external
+engine is a different question needing an external binary, and stays later.
 
-That freedom is keyed to model iteration rather than to this stage, so it runs
-through stage 4 as well. It ends at the evaluation core designation, which fixes
-the core's per-axis statistical power permanently. Work that breaks containment
-or ends a benchmark series is cheap up to that event and expensive after it,
-which is why the corpus and pool work that does so belongs before it.
-
-This stage also establishes the evaluation-data contract the later benchmarks
-share: a `test` partition training never consumes, one frozen pool drawn from
-it, and derived views each benchmark selects through. Game-level opening
-classification from an owned versioned book lands here too, because rollout
-distribution comparison needs family aggregation; the per-ply multi-label form
-for preference conditioning stays in stage 6.
-
-Alongside the data contract, this stage builds the result infrastructure the
-benchmarks share: a durable results store benchmarks append to, a metric
-registry with stable identities and declared directions, an artifact envelope
-carrying provenance, and per-series comparability fingerprints. Reports and
-charts are views over the store rather than one-off comparisons of files, which
-is what makes checkpoint history queryable rather than reconstructed. Noise
-characterization belongs here too, and training-noise characterization
-specifically should happen while runs are still short, because it only becomes
-harder to afford later. This work should land before the individual benchmarks
-so they do not each invent an incompatible result shape.
-
-Live training observability arrives in this stage as well, so a run in progress
-can be followed without waiting for it to finish.
-
-The initial harness should emphasize reusable benchmarks that can run against
-future models:
-
-- held-out move prediction metrics;
-- rating-sliced validation metrics;
-- dependency tests showing whether conditioning inputs change behavior in the
-  intended direction;
-- illegal-move probability and legal-mask diagnostics;
-- controlled training-efficiency comparisons using active positions per second,
-  memory, and quality versus processed positions and wall-clock time;
-- batch-one end-to-end move latency and declared-batch inference throughput,
-  with cold-start time reported separately;
-- generated-game rollout checks once the runtime can play.
-
-Several of these benchmarks share one shape: measure a quantity on generated
-games and on human games, and compare the two against rating. Opening
-repertoire, book depth, game length, results, repetition, and termination all
-fit it, so the comparison machinery is built once rather than four times.
-`docs/evaluation.md` owns that shape and the estimation constraints it carries.
-
-How games end becomes measurable in this stage. Deriving termination categories
-during preprocessing turns resignation from an unreachable vocabulary slot into
-a learned action with real labels, and adds a draw-claim action so untimed games
-have a terminator that is not a hardcoded move limit. Both change the action
-vocabulary identity, so they land as one bump rather than two, to pay the
-corpus regeneration once. See
-`docs/decisions/0017-derived-termination-and-terminal-actions.md`.
-
-This stage should establish whether the model uses its conditioning inputs,
-whether behavior shifts across settings, and what strength those settings
-actually produce: the transfer function from configured rating to fitted
-empirical rating, and its temperature response.
-
-Rating measurement belongs here rather than with the scaling work. The earlier
-argument was that it needs a model worth measuring, but that is circular: this
-benchmark is the instrument that establishes whether a model is worth
-measuring, and deferring it means the first reading lands on an already-scaled
-checkpoint with no baseline to compare against. A degenerate result on a weak
-checkpoint is a reportable outcome rather than an error, and it is not a
-calibration verdict. Anchoring the resulting scale against an external engine
-stays in stage 5, since it needs an external binary and answers a different
-question.
-
-Human-likeness evaluation beyond simple distribution metrics belongs later in
-the process. A compact human-vs-engine classifier can be useful once the model
-can generate coherent games, but it should not block the basic bot or become a
-separate anti-cheat project.
-
-Timing diagnostics arrive with timing itself, in the stage that adds it.
+Three things were deferred out of this stage and have not arrived.
+Human-likeness evaluation beyond distribution metrics — a compact human-vs-engine classifier —
+becomes useful once the model generates coherent games, but should not block the
+basic bot or turn into a separate anti-cheat project. Timing diagnostics arrive
+with timing itself, in the stage that adds it. And the per-ply multi-label form
+of opening classification stays in stage 6; the game-level form landed here only
+because rollout distribution comparison needs family aggregation.
 
 ### 4. Efficient Loop And Trusted Readings
 
@@ -202,6 +108,17 @@ to guide the decisions stage 5 wants to make. None of that is scaling work, and
 all of it sits upstream of scaling work: a capacity comparison read from a suite
 whose cost is unknown, and whose readings mostly state no resolution, produces a
 number nobody can act on.
+
+Some of stage 3's freedom runs through this stage and ends inside it. No
+benchmark history is protected and no checkpoint is worth preserving until the
+evaluation core is designated, so breaking a comparability series, bumping the
+preprocessing version, changing the action vocabulary, and regenerating the
+corpus all stay cheap, and work should not be deferred or resequenced to avoid
+them. Batching an expensive corpus regeneration is still worthwhile, but that is
+an argument about compute rather than about history. Designation fixes the
+core's per-axis statistical power permanently, which is why the corpus and pool
+work that breaks containment belongs before it. See
+`docs/decisions/0013-benchmark-result-comparability.md`.
 
 This stage has two halves. The first makes an experiment cheaper. The training
 step should stop spending longer building a batch than the device spends
