@@ -224,6 +224,35 @@ def test_detail_store_refuses_to_escape_its_root(tmp_path: Path) -> None:
         detail.write("../escaped.json", {})
 
 
+def test_a_refused_detail_write_is_the_store_s_own_error(tmp_path: Path) -> None:
+    detail = DetailStore(tmp_path / "detail")
+    destination = detail.root / "checkpoint-a" / "positions.json"
+    destination.mkdir(parents=True)
+
+    with pytest.raises(ResultsStoreError, match="cannot write"):
+        detail.write("checkpoint-a/positions.json", {"positions": []})
+
+    # The caller carries on past this error, so nothing else will ever remove
+    # the half-written copy.
+    assert list(destination.parent.glob(".*.tmp")) == []
+
+
+def test_a_record_that_cannot_be_read_back_is_the_store_s_own_error(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    # Appending compares against what is already recorded before it writes, so
+    # the read is as much a part of the append as the write is.
+    store = ResultsStore(tmp_path / "results")
+    result = recorded_result()
+    path = store.append(result)
+    path.unlink()
+    path.mkdir()
+
+    with pytest.raises(ResultsStoreError, match="cannot read"):
+        store.append(result)
+
+
 def test_bridges_are_recorded_beside_results_and_can_be_revoked(
     tmp_path: Path,
 ) -> None:

@@ -336,6 +336,23 @@ def test_a_store_failure_becomes_the_benchmark_s_own_error(
             _add_reading(recorder, component)
 
 
+def test_a_detail_write_failure_becomes_the_benchmark_s_own_error(
+    tmp_path: Path,
+    resolved: ResolvedConfig[_Config],
+    move_prediction_component: Digest,
+) -> None:
+    # An append fails on the way out of the block; a detail write fails inside
+    # it, while the benchmark is still measuring.
+    component = move_prediction_component()
+    root = tmp_path / "detail"
+    root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(_BenchmarkError, match="cannot create"):
+        with _recording(resolved, detail=DetailStore(root)) as recording:
+            recorder = _measuring(recording)
+            _add_reading(recorder, component)
+
+
 def test_a_failed_reading_appends_nothing(
     tmp_path: Path,
     resolved: ResolvedConfig[_Config],
