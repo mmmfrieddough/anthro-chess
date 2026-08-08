@@ -168,6 +168,18 @@ class PairedFloor:
 #: values describe one comparison, named so a report can say which one differs.
 _COMPARABLE_FIELDS = ("unit", "stratum", "resamples", "seed", "coverage", "confidence")
 
+#: The outcome for a metric a matched pair never retained, which is most of
+#: them: pairing is the estimator for the deterministic fixed-input families
+#: alone. Shared across rows rather than built per row, and stated without the
+#: metric's name because the row a report prints it on already carries it.
+_UNRETAINED = PairedFloor(unavailable="neither reading retained this metric")
+
+
+def _unpairable(reason: str) -> tuple[dict[str, PairedFloor], PairedFloor]:
+    """Return the outcome every metric of an unpairable comparison shares."""
+
+    return {}, PairedFloor(unavailable=reason)
+
 
 class PairedFloorIndex:
     """Resolve paired data-sampling floors from machine-local result details."""
@@ -175,7 +187,8 @@ class PairedFloorIndex:
     def __init__(self, detail: DetailStore) -> None:
         self._detail = detail
         self._contributions: dict[str, tuple[PairedContributions | None, str]] = {}
-        self._floors: dict[tuple[str, str], tuple[dict[str, NoiseFloor], str]] = {}
+        self._floors: dict[tuple[str, str], tuple[dict[str, PairedFloor], PairedFloor]]
+        self._floors = {}
 
     def floor(
         self,
@@ -188,52 +201,21 @@ class PairedFloorIndex:
         key = (baseline.result_id, current.result_id)
         if key not in self._floors:
             self._floors[key] = self._comparison_floors(baseline, current)
-        floors, unavailable = self._floors[key]
-        retained = floors.get(metric)
-        if retained is not None:
-            return PairedFloor(floor=retained)
-        if unavailable:
-            return PairedFloor(unavailable=unavailable)
-        return PairedFloor(unavailable=self._metric_absence(baseline, current, metric))
-
-    def _metric_absence(
-        self,
-        baseline: ResultEnvelope,
-        current: ResultEnvelope,
-        metric: str,
-    ) -> str:
-        """Name the side that retained nothing, for a pair that otherwise matched.
-
-        Which side it is decides what a maintainer does about it, and the two
-        sides disagreeing about what they retain is what a change in the
-        retained set looks like from a store holding readings from either side
-        of it.
-        """
-
-        left, _ = self._load(baseline)
-        right, _ = self._load(current)
-        assert left is not None and right is not None  # both loaded to get here
-        missing = [
-            side
-            for side, contributions in (("baseline", left), ("current", right))
-            if metric not in contributions.metrics
-        ]
-        if len(missing) == 1:
-            return f"the {missing[0]} reading retained no contribution for {metric}"
-        return f"neither reading retained a contribution for {metric}"
+        outcomes, otherwise = self._floors[key]
+        return outcomes.get(metric, otherwise)
 
     def _comparison_floors(
         self,
         baseline: ResultEnvelope,
         current: ResultEnvelope,
-    ) -> tuple[dict[str, NoiseFloor], str]:
+    ) -> tuple[dict[str, PairedFloor], PairedFloor]:
         left, left_absence = self._load(baseline)
         right, right_absence = self._load(current)
         if left is None and right is None and left_absence == right_absence:
             # The usual shape of the failure, and the one worth reading as one
             # sentence: neither side of a comparison taken on another machine
             # has anything here to difference.
-            return {}, f"both readings {left_absence}"
+            return _unpairable(f"both readings {left_absence}")
         if left is None or right is None:
             missing = [
                 f"the {side} reading {absence}"
@@ -243,12 +225,12 @@ class PairedFloorIndex:
                 )
                 if contributions is None
             ]
-            return {}, " and ".join(missing)
+            return _unpairable(" and ".join(missing))
         for field in _COMPARABLE_FIELDS:
             if getattr(left, field) != getattr(right, field):
-                return {}, f"the retained contributions disagree on {field}"
+                return _unpairable(f"the retained contributions disagree on {field}")
         if set(left.unit_ids) != set(right.unit_ids):
-            return {}, "the retained contributions cover different units"
+            return _unpairable("the retained contributions cover different units")
 
         right_index = {unit_id: index for index, unit_id in enumerate(right.unit_ids)}
         right_order = np.asarray(
@@ -262,7 +244,9 @@ class PairedFloorIndex:
             else tuple(right.strata[index] for index in right_order)
         )
         if left_strata != right_strata:
-            return {}, "the retained contributions assign units to different strata"
+            return _unpairable(
+                "the retained contributions assign units to different strata"
+            )
         left_weights = left.weights
         right_weights = (
             None
@@ -274,10 +258,12 @@ class PairedFloorIndex:
         # sides weight their units differently and their difference is not the
         # delta either measurement reports.
         if left_weights != right_weights:
-            return {}, "the retained contributions weight their units differently"
+            return _unpairable(
+                "the retained contributions weight their units differently"
+            )
         common = sorted(set(left.metrics) & set(right.metrics))
         if not common:
-            return {}, "the two readings retain no metric in common"
+            return _unpairable("the two readings retain no metric in common")
         baseline_values = np.column_stack(
             [np.asarray(left.metrics[metric], dtype=np.float64) for metric in common]
         )
@@ -306,28 +292,43 @@ class PairedFloorIndex:
         # resamples the delta itself, so the spread it reports is already the
         # spread of a difference rather than of one side of one.
         freedom = len(left.unit_ids) - 1
-        return {
-            metric: NoiseFloor(
-                value=float(
-                    left.coverage
-                    * dispersion_bound(
-                        float(dispersion),
-                        degrees_of_freedom=freedom,
-                        confidence=left.confidence,
-                    )
-                ),
-                kind="data-sampling",
-                source=(
-                    f"{left.resamples} "
-                    f"{'stratified ' if left.stratum is not None else ''}"
-                    f"{'weighted ' if left_weights is not None else ''}"
-                    "paired bootstrap resamples of "
-                    f"{len(left.unit_ids)} matching {left.unit} units"
-                ),
-                estimator=PAIRED_BOOTSTRAP_METHOD,
+        outcomes = {
+            metric: PairedFloor(
+                floor=NoiseFloor(
+                    value=float(
+                        left.coverage
+                        * dispersion_bound(
+                            float(dispersion),
+                            degrees_of_freedom=freedom,
+                            confidence=left.confidence,
+                        )
+                    ),
+                    kind="data-sampling",
+                    source=(
+                        f"{left.resamples} "
+                        f"{'stratified ' if left.stratum is not None else ''}"
+                        f"{'weighted ' if left_weights is not None else ''}"
+                        "paired bootstrap resamples of "
+                        f"{len(left.unit_ids)} matching {left.unit} units"
+                    ),
+                    estimator=PAIRED_BOOTSTRAP_METHOD,
+                )
             )
             for metric, dispersion in zip(common, dispersions, strict=True)
-        }, ""
+        }
+        # Which side retained nothing decides what is done about it, and two
+        # matched readings disagreeing about what they retain is what a change
+        # in the retained set looks like from a store holding readings from
+        # either side of it.
+        for side, unmatched in (
+            ("current", set(left.metrics) - set(right.metrics)),
+            ("baseline", set(right.metrics) - set(left.metrics)),
+        ):
+            for metric in unmatched:
+                outcomes[metric] = PairedFloor(
+                    unavailable=f"the {side} reading did not retain this metric"
+                )
+        return outcomes, _UNRETAINED
 
     def _load(
         self,

@@ -810,7 +810,7 @@ def test_a_metric_only_one_side_retained_names_the_side_that_did_not(
 
     assert _row(report, shared).paired_floor_unavailable is None
     assert _row(report, metric).paired_floor_unavailable == (
-        f"the current reading retained no contribution for {metric}"
+        "the current reading did not retain this metric"
     )
 
 

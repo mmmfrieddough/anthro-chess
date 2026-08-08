@@ -199,12 +199,12 @@ class MetricDefinition:
     #: on the same frozen units and retains their per-unit contributions.
     #:
     #: It is what makes a missing paired floor reportable. An unpaired floor is
-    #: not a coarser reading of the same quantity — it drops the covariance two
-    #: checkpoints scored on one sample share, and reports a width about 1.9x
-    #: too wide — so a report has to be able to say that the floor beside a
-    #: delta is not the one the metric is defined against. Without the
-    #: declaration it cannot: two readings whose contributions never reached
-    #: this machine look exactly like two readings that never had any.
+    #: not a coarser reading of the same quantity but a wider one by the factor
+    #: ``docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md``
+    #: measures, so a report has to be able to say that the floor beside a delta
+    #: is not the one the metric is defined against. Without the declaration it
+    #: cannot: two readings whose contributions never reached this machine look
+    #: exactly like two readings that never had any.
     paired_sampling_floor: bool = False
 
 

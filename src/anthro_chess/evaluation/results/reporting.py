@@ -207,7 +207,7 @@ class MetricDelta:
     #: defined against, when it should have been. ``None`` for a metric whose
     #: floor was never paired, and for one whose pair was found. Reported as
     #: its own field rather than only in the note because it changes what the
-    #: verdict beside it means: an unpaired floor is about 1.9x too wide, so
+    #: verdict beside it means: the substituted floor is the wider one, so
     #: ``within`` on such a row is a weaker statement than ``within`` on any
     #: other, and automation that cannot see the difference will read a real
     #: improvement as noise.
@@ -909,7 +909,7 @@ def _render_noise(metric: MetricDelta) -> str:
 
     A sampling floor standing in for the paired one is named in the column
     rather than only in the row's note, because it is the verdict itself that
-    the substitution weakens: such a floor is about 1.9x too wide, so "within"
+    the substitution weakens: such a floor is the wider of the two, so "within"
     beside it covers real improvements as well as noise.
     """
 
@@ -1264,11 +1264,11 @@ def _metric_delta(
             baseline=None,
             current=current[1].value,
             comparability=Comparability.INCOMPARABLE,
-            note=_note(
+            note=_annotations(
                 "no baseline recorded"
                 if baseline_label is None
                 else f"not measured for {baseline_label}",
-                hidden_series,
+                _hidden_note(hidden_series),
             ),
             series=bridges.series(current[1].fingerprint),
         )
@@ -1293,12 +1293,12 @@ def _metric_delta(
             baseline=baseline_measurement.value,
             current=current_measurement.value,
             comparability=comparison.comparability,
-            note=_note(
+            note=_annotations(
                 "different measurement; the declared workload changed"
                 if attribution is not None
                 and attribution.workload is AxisChange.CHANGED
                 else "incomparable; these results are not on the same series",
-                hidden_series,
+                _hidden_note(hidden_series),
             ),
             attribution=attribution,
             series=bridges.series(current_measurement.fingerprint),
@@ -1398,20 +1398,13 @@ def _hidden_note(hidden_series: int) -> str | None:
     )
 
 
-def _note(note: str, hidden_series: int) -> str:
-    """Annotate a note the caller already has with the hidden-series warning."""
-
-    hidden = _hidden_note(hidden_series)
-    return note if hidden is None else f"{note}; {hidden}"
-
-
 def _incomparable_delta(
     definition: MetricDefinition,
     *,
     baseline: float | None,
     current: float | None,
     comparability: Comparability,
-    note: str,
+    note: str | None,
     series: str | None = None,
     attribution: Attribution | None = None,
 ) -> MetricDelta:
