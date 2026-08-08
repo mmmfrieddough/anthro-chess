@@ -19,6 +19,7 @@ from anthro_chess.evaluation import (
     PoolConfig,
     freeze_pool,
 )
+from anthro_chess.evaluation import leakage as leakage_module
 from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, RULE_CASE_DIMENSION
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.checkpoint import (
@@ -613,6 +614,74 @@ def test_leakage_compares_content_when_the_corpora_differ(
     assert result.leakage.overlapping_games == 0
     with pytest.raises(LeakageError, match="content-hash-intersection-v1"):
         _evaluate(_config(pool, overlapping_checkpoint))
+
+
+def test_a_repeated_leakage_check_reuses_the_scan_it_already_made(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep checks one checkpoint against one pool once per benchmark."""
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    first = _evaluate(_config(pool, checkpoint))
+
+    def unreadable(*args: object, **kwargs: object) -> list[dict[str, Any]]:
+        raise AssertionError("a repeated leakage check re-read the corpus")
+
+    monkeypatch.setattr(leakage_module, "read_normalized_rows", unreadable)
+    second = _evaluate(_config(pool, checkpoint))
+
+    assert second.leakage.algorithm == "game-id-intersection-v1"
+    assert second.leakage.as_record() == first.leakage.as_record()
+
+
+def test_a_repeated_content_comparison_reuses_its_scans_too(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The branch that costs a full corpus read is the one worth reusing."""
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [
+            normalized_row(1, split="train", plies=8),
+            normalized_row(2, split="test", plies=10, rating=1500),
+            normalized_row(3, split="test", plies=8, rating=2100),
+        ],
+    )
+    pool = _freeze(tmp_path, normalized, manifest)
+    # A separate preparation of unrelated games, so ids mean nothing across the
+    # two and the comparison has to read what each side contains.
+    disjoint, disjoint_manifest = write_corpus(
+        tmp_path / "disjoint",
+        [
+            normalized_row(21, split="train", plies=4, result="0-1"),
+            normalized_row(22, split="validation", plies=8),
+        ],
+        source_id="disjoint",
+    )
+    checkpoint = training_run(
+        tmp_path / "run", normalized=disjoint, manifest=disjoint_manifest
+    )
+    first = _evaluate(_config(pool, checkpoint))
+
+    def unreadable(*args: object, **kwargs: object) -> list[dict[str, Any]]:
+        raise AssertionError("a repeated content comparison re-read a corpus")
+
+    monkeypatch.setattr(leakage_module, "read_normalized_rows", unreadable)
+    second = _evaluate(_config(pool, checkpoint))
+
+    assert second.leakage.algorithm == "content-hash-intersection-v1"
+    assert second.leakage.as_record() == first.leakage.as_record()
 
 
 def test_leakage_check_reports_a_training_corpus_this_machine_cannot_read(

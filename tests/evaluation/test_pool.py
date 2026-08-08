@@ -15,6 +15,7 @@ from anthro_chess.evaluation import (
     freeze_pool,
     load_pool,
 )
+from anthro_chess.evaluation import pool as pool_module
 
 
 def _resolved(
@@ -203,9 +204,69 @@ def test_load_pool_round_trips_and_exposes_game_level_facts(
     assert pool.game_ids == (4, 5)
     by_id = {game.game_id: game for game in pool.games}
     assert by_id[4].ply_count == 4
-    assert by_id[4].has_clocks is True
-    assert by_id[5].has_clocks is False
+    assert by_id[4].result == "0-1"
+    assert by_id[5].ply_count == 8
     assert by_id[5].has_ratings is True
+
+
+def test_a_second_load_reuses_the_parsed_games_without_reading_again(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep loads one pool once per benchmark, and the parse is the cost."""
+
+    normalized, manifest = corpus(tmp_path)
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+    first = load_pool(tmp_path / "pool")
+
+    def unreadable(*args: object, **kwargs: object) -> list[dict[str, Any]]:
+        raise AssertionError("a repeated load re-read the pool")
+
+    monkeypatch.setattr(pool_module, "read_normalized_rows", unreadable)
+    second = load_pool(tmp_path / "pool")
+
+    assert second.games == first.games
+
+
+def test_a_reused_load_still_verifies_the_recorded_identity(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """Reuse saves the parse and nothing else the load exists to do."""
+
+    normalized, manifest = corpus(tmp_path)
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+    load_pool(tmp_path / "pool")
+
+    manifest_path = tmp_path / "pool/manifest.json"
+    record = json.loads(manifest_path.read_text())
+    record["identity"]["game_ids_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(record))
+
+    with pytest.raises(EvaluationPoolError, match="recorded identity"):
+        load_pool(tmp_path / "pool")
+
+
+def test_a_pool_rewritten_in_place_is_loaded_again_rather_than_remembered(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Reuse is keyed on the artifact's checksum, not on where it sits."""
+
+    normalized, manifest = corpus(tmp_path)
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+    assert load_pool(tmp_path / "pool").game_ids == (4, 5)
+
+    replacement, replacement_manifest = write_corpus(
+        tmp_path / "replacement",
+        [normalized_row(9, split="test")],
+    )
+    freeze_pool(_resolved(replacement, replacement_manifest), tmp_path / "pool")
+
+    assert load_pool(tmp_path / "pool").game_ids == (9,)
 
 
 def test_load_pool_rejects_a_tampered_artifact(

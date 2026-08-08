@@ -54,7 +54,6 @@ from anthro_chess.chess import (
 )
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import SequenceDataLoader
-from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.data.termination import TERMINATION_CATEGORIES, TerminationCategory
 from anthro_chess.evaluation.curves import (
@@ -88,7 +87,12 @@ from anthro_chess.evaluation.policy import (
     active_batch,
     score_terminal_actions,
 )
-from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
+from anthro_chess.evaluation.pool import (
+    EvaluationPoolError,
+    FrozenPool,
+    load_pool,
+    pool_rows,
+)
 from anthro_chess.evaluation.recording import (
     ResultRecording,
     pool_dataset_reference,
@@ -131,6 +135,7 @@ from anthro_chess.evaluation.results.metrics import (
     TERMINATION_UNTIMED_NON_TERMINATION_RATE,
 )
 from anthro_chess.evaluation.scoring import (
+    SCORED_COLUMNS,
     EvaluationLoaderConfig,
     ScoringError,
     build_scoring_inputs,
@@ -151,6 +156,16 @@ TERMINATION_BENCHMARK = BenchmarkReference(
 )
 
 logger = logging.getLogger(__name__)
+
+#: What both views read from a pool row: the encoder's inputs for the held-out
+#: scoring pass, the derived termination the human mix is built from, and the
+#: result the resignation deficit is replayed against.
+_ENDING_COLUMNS = (
+    *SCORED_COLUMNS,
+    NormalizedColumn.RESULT.value,
+    NormalizedColumn.TERMINATION_CATEGORY.value,
+    NormalizedColumn.TERMINAL_ACTION_STATUS.value,
+)
 
 #: Endings only a human platform produces. The model has no clock to lose, no
 #: opponent to agree with, and no way to walk away, so these can only ever be
@@ -771,7 +786,9 @@ def benchmark_termination(
         error=TerminationBenchmarkError,
     )
     pool = _load_pool(config)
-    reference, reference_view, dataset = _load_reference(config, pool)
+    reference, reference_view, dataset, reference_excluded = _load_reference(
+        config, pool
+    )
 
     generated = tuple(
         _measure_generated(config, loaded, identity, reference, temperature)
@@ -792,7 +809,7 @@ def benchmark_termination(
         checkpoint=identity,
         reference_view=reference_view,
         reference_games=len(reference),
-        reference_excluded=_reference_exclusions(config, pool),
+        reference_excluded=reference_excluded,
         dataset=dataset,
         generated=generated,
         mixes=mixes,
@@ -1250,8 +1267,13 @@ def _load_pool(config: TerminationBenchmarkConfig) -> FrozenPool:
 def _load_reference(
     config: TerminationBenchmarkConfig,
     pool: FrozenPool,
-) -> tuple[tuple[HumanEnding, ...], ViewSelection, DatasetReference]:
-    """Read the human endings the mix and the deficit are measured against."""
+) -> tuple[tuple[HumanEnding, ...], ViewSelection, DatasetReference, dict[str, int]]:
+    """Read the human endings the mix and the deficit are measured against.
+
+    Why a game was dropped is returned alongside the endings rather than
+    recomputed for the record: deriving it a second time re-read every pool
+    row to reach the same answer this pass already had.
+    """
 
     selection = apply_view(pool.games, config.reference.view)
     if not selection.game_ids:
@@ -1296,41 +1318,23 @@ def _load_reference(
             required,
             DECLARED_MIX_NEIGHBOURS,
         )
-    return tuple(endings), selection, _dataset_reference(pool, selection, rows)
-
-
-def _reference_exclusions(
-    config: TerminationBenchmarkConfig,
-    pool: FrozenPool,
-) -> dict[str, int]:
-    """Return why reference games were dropped, recomputed for the record."""
-
-    selection = apply_view(pool.games, config.reference.view)
-    excluded: dict[str, int] = {}
-    for row in _rows_for(pool, selection.game_ids):
-        _, reason = human_ending(row, config.reference)
-        if reason is not None:
-            excluded[reason] = excluded.get(reason, 0) + 1
-    return excluded
+    return (
+        tuple(endings),
+        selection,
+        _dataset_reference(pool, selection, rows),
+        excluded,
+    )
 
 
 def _rows_for(pool: FrozenPool, game_ids: Sequence[int]) -> tuple[dict[str, Any], ...]:
     """Return the selected pool rows, in ascending game-id order."""
 
-    wanted = set(game_ids)
-    try:
-        rows = [
-            row
-            for row in read_normalized_rows(pool.games_path)
-            if int(row[NormalizedColumn.GAME_ID]) in wanted
-        ]
-    except DataLoadingError as error:
-        raise TerminationBenchmarkError(str(error)) from error
-    if len(rows) != len(wanted):
-        raise TerminationBenchmarkError(
-            "the evaluation pool does not contain every selected game"
-        )
-    return tuple(sorted(rows, key=lambda row: int(row[NormalizedColumn.GAME_ID])))
+    return pool_rows(
+        pool,
+        game_ids,
+        _ENDING_COLUMNS,
+        error=TerminationBenchmarkError,
+    )
 
 
 def _dataset_reference(

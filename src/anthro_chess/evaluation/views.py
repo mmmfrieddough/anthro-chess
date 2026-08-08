@@ -27,7 +27,6 @@ class ViewConfig(ConfigModel):
     seed: str = Field(default="anthro-evaluation-view-v1", min_length=1)
     minimum_plies: int | None = Field(default=None, ge=1)
     maximum_plies: int | None = Field(default=None, ge=1)
-    require_clocks: StrictBool = False
     require_ratings: StrictBool = False
     prefix_plies: int | None = Field(default=None, ge=1)
 
@@ -98,8 +97,6 @@ def _exclusion_reason(game: PoolGame, config: ViewConfig) -> str | None:
         return "above_maximum_plies"
     if config.prefix_plies is not None and game.ply_count < config.prefix_plies:
         return "shorter_than_prefix"
-    if config.require_clocks and not game.has_clocks:
-        return "missing_clocks"
     if config.require_ratings and not game.has_ratings:
         return "missing_ratings"
     return None

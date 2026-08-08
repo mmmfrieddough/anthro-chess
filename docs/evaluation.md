@@ -724,8 +724,8 @@ position counts by phase, color, legal-move-count bucket, and rating band, so a
 thin slice is visible before a benchmark reports a number computed from it.
 
 **Views** are per-benchmark deterministic selections over the pool: filtering by
-ply count, clock presence, or rating presence; projecting to prefixes;
-subsampling by hash rank. Each benchmark records its resolved view spec,
+ply count or rating presence; projecting to prefixes; subsampling by hash rank.
+Each benchmark records its resolved view spec,
 including the digest of the selected game ids, in its own artifact. Views are
 derivations, never new stored data. A benchmark needing something the view layer
 cannot derive is a signal that the field belongs in the normalized schema.

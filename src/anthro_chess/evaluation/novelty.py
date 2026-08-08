@@ -57,7 +57,6 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 from anthro_chess.chess import decode_move, encode_move, is_terminal_action
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DataLoadingError, SequenceDataLoader
-from anthro_chess.data.artifacts import read_normalized_rows
 from anthro_chess.data.schema import SPLIT_NAMES, NormalizedColumn, SplitName
 from anthro_chess.evaluation.adjudication import action_sets, merge_game_totals
 from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, SliceTable
@@ -82,7 +81,12 @@ from anthro_chess.evaluation.policy import (
     score_action_sets,
     score_positions,
 )
-from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
+from anthro_chess.evaluation.pool import (
+    EvaluationPoolError,
+    FrozenPool,
+    load_pool,
+    pool_rows,
+)
 from anthro_chess.evaluation.recording import (
     ResultRecording,
     checkpoint_reference,
@@ -120,6 +124,7 @@ from anthro_chess.evaluation.results.noise import (
     NoiseCharacterizationError,
 )
 from anthro_chess.evaluation.scoring import (
+    SCORED_COLUMNS,
     EvaluationLoaderConfig,
     ScoringInputs,
     aggregate_positions,
@@ -661,20 +666,15 @@ def _project_row(row: Mapping[str, Any], actions: Sequence[int]) -> dict[str, An
     derivation reached. The clock trace is projected rather than recomputed:
     this benchmark reads no timing, and inventing move times for moves nobody
     played would put fabricated data in the one place a later timing benchmark
-    would trust.
+    would trust. The other two per-ply clock columns are never read here, so
+    the pool read leaves them behind rather than truncating them for nobody.
     """
 
     updated = dict(row)
     plies = len(actions)
     updated[NormalizedColumn.ACTION_IDS.value] = list(actions)
-    for column in (
-        NormalizedColumn.CLOCK_REMAINING_MS,
-        NormalizedColumn.CLOCK_STATUS,
-        NormalizedColumn.CLOCK_PRECISION_MS,
-    ):
-        values = updated.get(column.value)
-        if values is not None:
-            updated[column.value] = list(values)[:plies]
+    clocks = updated[NormalizedColumn.CLOCK_REMAINING_MS.value]
+    updated[NormalizedColumn.CLOCK_REMAINING_MS.value] = list(clocks)[:plies]
     updated[NormalizedColumn.PLY_COUNT.value] = plies
     return updated
 
@@ -1091,16 +1091,12 @@ def _load_inputs(
         raise NoveltyBenchmarkError(
             f"view {config.view.name!r} selected no games from the pool"
         )
-    wanted = set(selection.game_ids)
-    rows = tuple(
-        dict(row)
-        for row in read_normalized_rows(pool.games_path)
-        if int(row[NormalizedColumn.GAME_ID]) in wanted
+    rows = pool_rows(
+        pool,
+        selection.game_ids,
+        SCORED_COLUMNS,
+        error=NoveltyBenchmarkError,
     )
-    if len(rows) != len(wanted):
-        raise NoveltyBenchmarkError(
-            "the evaluation pool does not contain every selected game"
-        )
     return pool, selection, rows
 
 

@@ -9,16 +9,13 @@ def _game(
     game_id: int,
     *,
     plies: int = 40,
-    clocks: bool = True,
     ratings: bool = True,
 ) -> PoolGame:
     return PoolGame(
         game_id=game_id,
         ply_count=plies,
         result="1-0",
-        has_clocks=clocks,
         has_ratings=ratings,
-        content_sha256=f"{game_id:064d}",
     )
 
 
@@ -88,17 +85,15 @@ def test_filters_exclude_games_and_report_why() -> None:
         _game(1, plies=4),
         _game(2, plies=40),
         _game(3, plies=400),
-        _game(4, clocks=False),
-        _game(5, ratings=False),
+        _game(4, ratings=False),
     )
 
     selection = apply_view(
         pool,
         ViewConfig(
-            name="timed",
+            name="rated",
             minimum_plies=10,
             maximum_plies=100,
-            require_clocks=True,
             require_ratings=True,
         ),
     )
@@ -107,7 +102,6 @@ def test_filters_exclude_games_and_report_why() -> None:
     assert selection.excluded_games == {
         "below_minimum_plies": 1,
         "above_maximum_plies": 1,
-        "missing_clocks": 1,
         "missing_ratings": 1,
     }
 

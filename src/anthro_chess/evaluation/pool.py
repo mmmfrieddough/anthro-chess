@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -43,6 +43,23 @@ POOL_GAMES_FILE_NAME = "games.parquet"
 POOL_MANIFEST_FILE_NAME = "manifest.json"
 logger = logging.getLogger(__name__)
 
+#: The columns a :class:`PoolGame` is derived from. Reading the schema's
+#: remaining columns only to discard them is most of what a load costs.
+_POOL_GAME_COLUMNS = (
+    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.PLY_COUNT.value,
+    NormalizedColumn.RESULT.value,
+    NormalizedColumn.WHITE_NORMALIZED_RATING.value,
+    NormalizedColumn.BLACK_NORMALIZED_RATING.value,
+)
+
+#: Games parsed by an earlier load in this process, keyed on the artifact
+#: checksum every load computes anyway. One sweep loads the same pool five to
+#: twelve times and the parse is nearly the whole cost. Keying on content
+#: rather than on the path makes a hit proof that the same bytes were parsed,
+#: so a pool rewritten in place is reloaded rather than remembered.
+_POOL_GAMES: dict[str, tuple[PoolGame, ...]] = {}
+
 
 class EvaluationPoolError(ValueError):
     """Raised when a pool cannot be built from or loaded for a selection."""
@@ -69,9 +86,7 @@ class PoolGame:
     game_id: int
     ply_count: int
     result: str
-    has_clocks: bool
     has_ratings: bool
-    content_sha256: str
 
 
 @dataclass(frozen=True)
@@ -87,6 +102,36 @@ class FrozenPool:
         """Return the pool's game ids in ascending order."""
 
         return tuple(sorted(game.game_id for game in self.games))
+
+
+def pool_rows(
+    pool: FrozenPool,
+    game_ids: Sequence[int],
+    columns: Sequence[str],
+    *,
+    error: type[Exception],
+) -> tuple[dict[str, Any], ...]:
+    """Read a view's selected games, projected to what the caller consumes.
+
+    Naming the columns is the point of gathering the read here: the pool
+    carries the whole normalized schema, a benchmark reads a third of it at
+    most, and the per-ply clock and action columns it skips are most of what a
+    full read costs. A required argument rather than an optional one, so a new
+    benchmark cannot pay for the whole schema by saying nothing.
+    """
+
+    wanted = set(game_ids)
+    try:
+        rows = [
+            row
+            for row in read_normalized_rows(pool.games_path, columns)
+            if int(row[NormalizedColumn.GAME_ID]) in wanted
+        ]
+    except DataLoadingError as loading_error:
+        raise error(str(loading_error)) from loading_error
+    if len(rows) != len(wanted):
+        raise error("the evaluation pool does not contain every selected game")
+    return tuple(sorted(rows, key=lambda row: int(row[NormalizedColumn.GAME_ID])))
 
 
 @dataclass(frozen=True)
@@ -208,8 +253,11 @@ def _freeze_pool(
             "algorithm": "sorted-game-id-sha256-v1",
             "game_ids_sha256": identity,
             "games": [
-                {"game_id": game.game_id, "content_sha256": game.content_sha256}
-                for game in games
+                {
+                    "game_id": int(row[NormalizedColumn.GAME_ID]),
+                    "content_sha256": _row_sha256(row),
+                }
+                for row in selected
             ],
         },
         "leakage": {
@@ -243,7 +291,12 @@ def _freeze_pool(
 
 
 def load_pool(directory: str | Path) -> FrozenPool:
-    """Load a frozen pool and verify it against its recorded identity."""
+    """Load a frozen pool and verify it against its recorded identity.
+
+    A load repeated in the same process reuses the games an earlier one
+    parsed, but skips none of the verification: the manifest is re-read, the
+    artifact re-checksummed, and the recorded identity re-derived every time.
+    """
 
     try:
         return _load_pool(directory)
@@ -284,7 +337,14 @@ def _load_pool(directory: str | Path) -> FrozenPool:
     if observed != output["sha256"]:
         raise EvaluationPoolError(f"evaluation pool checksum mismatch: {games_path}")
 
-    games = tuple(pool_game(row) for row in read_normalized_rows(games_path))
+    games = _POOL_GAMES.get(observed)
+    if games is None:
+        games = tuple(
+            pool_game(row)
+            for row in read_normalized_rows(games_path, _POOL_GAME_COLUMNS)
+        )
+        _POOL_GAMES[observed] = games
+
     recorded = manifest.get("identity")
     if not isinstance(recorded, Mapping):
         raise EvaluationPoolError(f"{manifest_path} has no identity record")
@@ -304,21 +364,23 @@ def pool_game(row: Mapping[str, Any]) -> PoolGame:
     games the same way a canonical reading does.
     """
 
-    clock_statuses = row[NormalizedColumn.CLOCK_STATUS]
     return PoolGame(
         game_id=int(row[NormalizedColumn.GAME_ID]),
         ply_count=int(row[NormalizedColumn.PLY_COUNT]),
         result=str(row[NormalizedColumn.RESULT]),
-        has_clocks=any(status == "present" for status in clock_statuses),
         has_ratings=(
             row[NormalizedColumn.WHITE_NORMALIZED_RATING] is not None
             and row[NormalizedColumn.BLACK_NORMALIZED_RATING] is not None
         ),
-        content_sha256=_row_sha256(row),
     )
 
 
 def _row_sha256(row: Mapping[str, Any]) -> str:
+    """Digest one game's content for the freeze-time identity block.
+
+    Nothing reads this after a pool is written.
+    """
+
     content = {
         str(column): row[column]
         for column in (
