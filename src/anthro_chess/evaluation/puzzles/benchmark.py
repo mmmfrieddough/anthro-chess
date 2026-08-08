@@ -252,19 +252,16 @@ class PuzzleBenchmarkResult:
 
 @dataclass(frozen=True)
 class _DecisionTask:
-    """One puzzle decision, derived once and read at every target rating.
+    """One puzzle decision, derived once and scored at every target rating.
 
-    Everything a decision needs but its conditioning follows from the puzzle
-    alone, so the replay, the legal actions and the accepted actions are built
-    once for the whole rating grid. ``context`` is held rating-free and the
-    rating is applied per pass, which is the only thing that varies across it.
+    ``accepted_indices`` positions the accepted actions within
+    ``legal_action_ids``, which is the coordinate the scored logits arrive in.
     """
 
     puzzle_id: str
-    accepted_action_ids: tuple[int, ...]
     accepted_indices: tuple[int, ...]
     legal_action_ids: tuple[int, ...]
-    context: DecisionContext
+    rating_free_context: DecisionContext
 
 
 @dataclass(frozen=True)
@@ -449,7 +446,10 @@ def _score_rating(
     for start in range(0, len(tasks), batch_size):
         batch = tasks[start : start + batch_size]
         logits = runner.predict_batch(
-            [replace(task.context, target_rating=target_rating) for task in batch]
+            [
+                replace(task.rating_free_context, target_rating=target_rating)
+                for task in batch
+            ]
         )
         if len(logits) != len(batch):
             raise PuzzleBenchmarkError(
@@ -601,12 +601,11 @@ def _decision_tasks(puzzle_set: PuzzleSet) -> tuple[_DecisionTask, ...]:
             tasks.append(
                 _DecisionTask(
                     puzzle_id=puzzle.puzzle_id,
-                    accepted_action_ids=accepted,
                     accepted_indices=tuple(
                         legal.index(action_id) for action_id in accepted
                     ),
                     legal_action_ids=legal,
-                    context=history.context(target_rating=None),
+                    rating_free_context=history.context(target_rating=None),
                 )
             )
     return tuple(tasks)
@@ -628,18 +627,16 @@ def _score_decision(
     candidates = torch.as_tensor(task.legal_action_ids, dtype=torch.long)
     candidate_logits = observed[candidates]
     greedy_index = int(torch.argmax(candidate_logits).item())
-    greedy_action = task.legal_action_ids[greedy_index]
-    accepted_indices = torch.as_tensor(task.accepted_indices, dtype=torch.long)
+    greedy_correct = float(greedy_index in task.accepted_indices)
     if temperature == 0.0:
-        probability = 1.0 if greedy_action in task.accepted_action_ids else 0.0
+        probability = greedy_correct
     else:
+        accepted = torch.as_tensor(task.accepted_indices, dtype=torch.long)
         probability = float(
-            torch.softmax(candidate_logits / temperature, dim=0)[accepted_indices]
-            .sum()
-            .item()
+            torch.softmax(candidate_logits / temperature, dim=0)[accepted].sum().item()
         )
     return _DecisionScore(
-        greedy_correct=float(greedy_action in task.accepted_action_ids),
+        greedy_correct=greedy_correct,
         sampled_probability=probability,
     )
 
