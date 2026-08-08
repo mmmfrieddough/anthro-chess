@@ -1027,7 +1027,7 @@ def _fused_optimizer(device: torch.device) -> bool:
     of the backend, and it ranges from decisive to nothing measurable across
     the two this project runs. Neither end argues for a dial: the fused form is
     never slower, so the setting that wins on a launch-bound step is free on
-    every other. `docs/planning/cuda-training-proof.md` owns both readings.
+    every other. `docs/training-and-runtime.md` owns both readings.
 
     Elementwise and deterministic either way, so this stays compatible with the
     strict correctness path. It does reassociate some floating-point work, so

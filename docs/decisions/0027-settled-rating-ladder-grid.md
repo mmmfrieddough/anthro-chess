@@ -27,7 +27,7 @@ made the ladder a constraint on the project rather than a benchmark in it. The
 estimate came from a per-game cost that was mostly a defect: a device
 synchronization on every generated move, since removed. Measured afterwards at
 declared size on two checkpoints, the ladder cost **2.01 h and 1.83 h**, about
-0.7 s per game. `docs/planning/first-full-suite-reading.md` records the reading.
+0.7 s per game. `#146` records the reading.
 
 A grid cut was attractive while the number was 42 hours, and it was attractive
 *now* rather than later for a second reason: decision 0013 protects nothing
@@ -152,5 +152,5 @@ prints rather than an unstated quantity.
 - `docs/decisions/0013-benchmark-result-comparability.md`
 - `docs/decisions/0020-declared-settings-scope-generated-series.md`
 - `docs/evaluation.md`, "The Implemented Ladder"
-- `docs/planning/first-full-suite-reading.md`
+- `#146` — the reading this rests on
 - `configs/evaluation/rating-ladder.toml`

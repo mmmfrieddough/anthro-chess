@@ -701,6 +701,19 @@ never which examples share one, so they stay out of the identity a resumed run
 has to match. Preparation's shard and row-group sizing is the remaining bound,
 because a row group is the unit a batch's rows are read from.
 
+**The depth is a rate, not an order.** That is worth stating because the two
+dials were once coupled in a way that made it look otherwise. Jobs were
+submitted only until `prefetch_batches` of them were outstanding, so the depth
+also capped how many workers could ever hold a job: above it a worker never
+received one, and a sweep of worker counts at a fixed depth measured the depth
+rather than decode capacity. Doubling the depth at the *same* eight workers was
+51% faster than adding workers had been. The loader now keeps
+`workers + prefetch_batches` jobs outstanding, one per worker so none waits on
+the consumer. Two 200-step runs under strict determinism, one either side of
+that change, reached bit-identical parameters across all 47 tensors and the same
+validation record — which is what says a throughput dial did not become an
+ordering one.
+
 ## Approximate Scale
 
 The project should reason about data in plies as well as games. A rough
