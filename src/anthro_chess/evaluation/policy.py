@@ -353,15 +353,15 @@ def legal_policy_log_probabilities(active: ActiveBatch) -> tuple[Tensor, ...]:
     vocabulary, because a row's legal actions are 1.6% of it at the evaluation
     defaults and the other 98.4% are filled with ``-inf`` only to contribute
     zero to the sum. Doing it full width builds two vocabulary-wide float64
-    tensors per call, which is seven times the whole function's cost at that
-    shape and almost all of it allocation.
+    tensors per call, which costs four times what the rest of the call costs
+    put together at that shape, and almost all of that is allocation.
 
     Reducing by segment lands on different last bits than the full-width form,
     around 3e-15 absolute. It is the more reproducible of the two despite that:
     a fixed sequential sum over a few dozen entries does not depend on the
     vector width the build was compiled for, while the dense kernel's reduction
-    tree does, so the full-width form disagrees with itself across machines by
-    the same margin this changed it by.
+    tree does, so the full-width form disagreed with itself across builds by
+    the same order this changed it by.
     """
 
     counts = tuple(len(legal_actions) for legal_actions in active.legal_rows)
