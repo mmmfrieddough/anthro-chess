@@ -4,7 +4,9 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted as initial design direction.
+Accepted as initial design direction. Refined by
+`0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,
+which gives a stored training floor the scope this record withheld one for.
 
 ## Context
 
@@ -118,13 +120,11 @@ which the existing noise command already produces from arms trained at several
 seeds. Like the control, that characterization belongs to a configuration rather
 than to a change, so a base worth several changes pays for it once.
 
-A characterized training floor is read beside the comparison it was made for and
-is not committed to the store. It describes the configuration its arms shared,
-and a series fingerprint carries nothing about the training configuration by
-design, so a committed one would be resolved for every later delta on the same
-pool and view — including between models of a different size entirely. That is
-the scoping problem decision 0025 solved for the machine, unsolved for this kind
-and filed as `#235`.
+A characterized training floor is committed to the store like any other. It
+describes the configuration its arms shared, and it now records that
+configuration and is resolved only within it; decision 0040 owns that scope and
+the reasoning, and until it existed such a floor was read beside its comparison
+and withheld from the store.
 
 A narrower delta is reported as not distinguished from seed variance rather than
 presented as an improvement, and a family with no floor at all can show that

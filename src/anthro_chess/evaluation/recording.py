@@ -88,6 +88,7 @@ def checkpoint_reference(
         step=runner.global_step,
         run_id=run_id,
         parameter_sha256=runner.parameter_sha256(),
+        training_sha256=runner.training_sha256,
     )
 
 
