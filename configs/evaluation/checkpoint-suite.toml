@@ -71,11 +71,11 @@ reduced = [
 
 [benchmarks.run]
 # The canonical held-out reading, and the second most expensive step of the
-# reduced sweep. The view is not the whole story: the rating
-# dependency test scores the same games again under each corrupted and each
-# fixed conditioning, so this step pays roughly nine passes over whatever the
-# view selects. The passes stay — dropping one would drop a measurement rather
-# than shrink it — so the view is what carries the reduction.
+# reduced sweep. The view is not the whole story: the rating dependency test
+# scores the same games again under each corrupted and each fixed conditioning,
+# so at the default conditioning grid this step pays nine passes over whatever
+# the view selects. The passes stay — dropping one would drop a measurement
+# rather than shrink it — so the view is what carries the reduction.
 config = "configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
 reduced = ["view.maximum_games=400"]
 
