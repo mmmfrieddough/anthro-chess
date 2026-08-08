@@ -59,6 +59,17 @@ jobs:
             echo "::error file=AGENTS.md::bare console script above needs the 'uv run' prefix"; exit 1
           fi
 
+      - name: Decision record numbers are unique
+        run: |
+          dupes="$(ls docs/decisions | sed -n 's/^\([0-9]\{4\}\)-.*/\1/p' | sort | uniq -d)"
+          if [ -n "$dupes" ]; then
+            for n in $dupes; do
+              echo "::error file=docs/decisions::number $n is used by:" \
+                "$(ls docs/decisions/"$n"-* | tr '\n' ' ')"
+            done
+            exit 1
+          fi
+
       - name: Verify lockfile
         run: uv lock --check
 

@@ -1,4 +1,4 @@
-# 0029: The Human Reference Is Bandwidth, Not Sample Size
+# 0037: The Human Reference Is Bandwidth, Not Sample Size
 
 Date: 2026-08-02
 

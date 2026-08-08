@@ -1,4 +1,4 @@
-# 0035: The Encoding Owns Token Vocabularies, The Model Owns Transforms
+# 0038: The Encoding Owns Token Vocabularies, The Model Owns Transforms
 
 Date: 2026-08-08
 
