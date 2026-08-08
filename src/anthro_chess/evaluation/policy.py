@@ -366,10 +366,7 @@ def legal_policy_log_probabilities(active: ActiveBatch) -> tuple[Tensor, ...]:
 
     counts = tuple(len(legal_actions) for legal_actions in active.legal_rows)
     gathered = active.logits[active.legal_mask]
-    rows = torch.repeat_interleave(
-        torch.arange(len(counts), dtype=torch.long),
-        torch.tensor(counts, dtype=torch.long),
-    )
+    rows = _gathered_rows(counts)
     row_maximum = torch.full((len(counts),), -torch.inf, dtype=gathered.dtype)
     row_maximum.scatter_reduce_(0, rows, gathered, reduce="amax")
     shifted = gathered - row_maximum[rows]
@@ -499,15 +496,27 @@ def _legal_mask(legal_rows: Sequence[Sequence[int]], active_logits: Tensor) -> T
     """
 
     legal_mask = torch.zeros_like(active_logits, dtype=torch.bool)
-    rows = torch.repeat_interleave(
-        torch.arange(len(legal_rows), dtype=torch.long),
-        torch.tensor([len(row) for row in legal_rows], dtype=torch.long),
-    )
+    rows = _gathered_rows([len(row) for row in legal_rows])
     columns = torch.tensor(
         [action for row in legal_rows for action in row], dtype=torch.long
     )
     legal_mask[rows, columns] = True
     return legal_mask
+
+
+def _gathered_rows(counts: Sequence[int]) -> Tensor:
+    """Return which position each entry of a flattened legal block belongs to.
+
+    Shared by the two places that need it because they have to agree: this is
+    what writes the mask row by row, and reading back through that mask yields
+    the entries in the same order, so a normalize by segment can only cut them
+    apart correctly by rebuilding the same vector.
+    """
+
+    return torch.repeat_interleave(
+        torch.arange(len(counts), dtype=torch.long),
+        torch.tensor(counts, dtype=torch.long),
+    )
 
 
 def _active_logits(logits: Tensor, batch: MoveModelBatch) -> Tensor:
