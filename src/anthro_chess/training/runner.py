@@ -63,6 +63,7 @@ from anthro_chess.training.checkpoints import (
     parameter_sha256,
     restore_rng_state,
     save_training_checkpoint,
+    training_identity_sha256,
 )
 from anthro_chess.training.config import TrainingConfig
 from anthro_chess.training.devices import (
@@ -419,6 +420,7 @@ def run_training(
             step=config.steps,
             run_id=run_id,
             parameter_sha256=final_parameter_sha256,
+            training_sha256=training_identity_sha256(compatibility),
         )
         efficiency_summary = efficiency_monitor.summary(
             processed_positions=optimization.processed_positions,
@@ -562,6 +564,7 @@ def _optimize(
 ) -> _OptimizationResult:
     model.train()
     monitor = efficiency.monitor
+    training_sha256 = training_identity_sha256(compatibility)
     saved_checkpoint: Path | None = None
     data_seconds = 0.0
     transfer_seconds = 0.0
@@ -771,6 +774,7 @@ def _optimize(
                     step=global_step,
                     run_id=run_id,
                     parameter_sha256=parameter_sha256(model),
+                    training_sha256=training_sha256,
                 )
                 for entry in due:
                     reading = schedule.run(

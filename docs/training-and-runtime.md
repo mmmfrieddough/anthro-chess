@@ -402,6 +402,12 @@ stays the checkpoint version's deliberate act. Compatibility identities are the
 opposite case, and every one of them is compared, so an identity a checkpoint
 does not carry is an unknown rather than a match.
 
+That split has a second reader. Digested without the initialization seed, it is
+the identity a benchmark result records for the configuration that produced the
+weights it scored, and the scope a stored training noise floor is resolved
+within — so a setting added to what a continuation must match becomes part of
+what such a floor describes. `docs/evaluation.md` owns why.
+
 Which backends can run the stripped-down correctness path is a property of the
 locked Torch build and this model, not a preference. CPU and CUDA both supply a
 deterministic implementation for every operation the backward pass needs, so

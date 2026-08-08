@@ -28,7 +28,10 @@ from anthro_chess.training import (
     load_training_checkpoint,
     run_training,
 )
-from anthro_chess.training.checkpoints import save_training_checkpoint
+from anthro_chess.training.checkpoints import (
+    save_training_checkpoint,
+    training_identity_sha256,
+)
 from anthro_chess.training.devices import (
     STRICT_DETERMINISM_BACKENDS,
     DeviceCapabilities,
@@ -36,6 +39,7 @@ from anthro_chess.training.devices import (
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
+    _compatibility_record,
     _execution_record,
     _training_device,
 )
@@ -330,6 +334,62 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
     # against derived line the two sets are documented by.
     assert {"precision", "matmul_precision"} <= compatibility
     assert "fused_optimizer" in provenance
+
+
+def test_the_training_identity_holds_everything_but_the_seed(
+    tmp_path: Path,
+) -> None:
+    """The scope a training noise floor is stored under, and what it excludes.
+
+    Seed replicates are the arms such a floor is characterized from, so they
+    have to land on one identity; anything else that decides the weights has to
+    move it, or the floor would qualify a configuration it never measured.
+    """
+
+    config = load_config(
+        TrainingConfig,
+        path=_write_training_config(
+            tmp_path,
+            normalized=tmp_path / "missing.parquet",
+            manifest=tmp_path / "missing-manifest.json",
+            run_name="run",
+            validation=False,
+        ),
+    ).value
+    provenance = {
+        "manifest_sha256": "a" * 64,
+        "dataset_sha256": "c" * 64,
+        "loader_configuration_sha256": "d" * 64,
+    }
+    data = {"train": provenance, "validation": None}
+    identity = training_identity_sha256(
+        _compatibility_record(config, data=data, model={"parameters": 276_002})
+    )
+
+    reseeded = training_identity_sha256(
+        _compatibility_record(
+            config.model_copy(update={"seed": config.seed + 1}),
+            data=data,
+            model={"parameters": 276_002},
+        )
+    )
+    resized = training_identity_sha256(
+        _compatibility_record(config, data=data, model={"parameters": 9_000_000})
+    )
+    retrained = training_identity_sha256(
+        _compatibility_record(
+            config,
+            data={
+                "train": {**provenance, "dataset_sha256": "e" * 64},
+                "validation": None,
+            },
+            model={"parameters": 276_002},
+        )
+    )
+
+    assert reseeded == identity
+    assert resized != identity
+    assert retrained != identity
 
 
 def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(

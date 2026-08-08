@@ -18,6 +18,7 @@ from anthro_chess.evaluation.noise import (
     characterize_sampling_noise,
 )
 from anthro_chess.evaluation.results import (
+    BOOTSTRAP_METHOD,
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
     PROCESS_REPLICATE_METHOD,
@@ -41,14 +42,20 @@ from anthro_chess.evaluation.results import (
     replicate_dispersion,
     replicate_floors,
     series_fingerprint,
+    training_scope,
 )
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_MOVE_LATENCY_BY_PERCENTILE,
 )
+from anthro_chess.evaluation.results.records import ResultEnvelope
 
 Digest = Callable[..., DataComponent]
 
 RECORDED_AT = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+#: Any digest serves; a scope test turns only on whether the two sides of a
+#: delta carry the same one.
+TRAINING_SCOPE = "1a" * 32
+OTHER_TRAINING_SCOPE = "2b" * 32
 METRIC = "held_out.move_loss"
 OTHER_METRIC = "legality.mask_penalty"
 EFFICIENCY_METRIC = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
@@ -328,6 +335,7 @@ def test_a_characterization_round_trips_through_the_store(
         method="independent-replicates",
         replicates=5,
         source="five smoke-scale seeds",
+        training=TRAINING_SCOPE,
         floors=[_entry(move_prediction_component())],
         recorded_at=RECORDED_AT,
     )
@@ -353,6 +361,7 @@ def test_a_different_characterization_cannot_take_a_recorded_identity(
         method="independent-replicates",
         replicates=5,
         source="five seeds",
+        training=TRAINING_SCOPE,
         floors=[_entry(component)],
         recorded_at=RECORDED_AT,
     )
@@ -376,13 +385,18 @@ def test_a_floor_is_found_through_the_series_it_was_characterized_on(
                 method="independent-replicates",
                 replicates=3,
                 source="three seeds",
+                training=TRAINING_SCOPE,
                 floors=[_entry(component, floor=0.2)],
                 recorded_at=RECORDED_AT,
             )
         ]
     )
 
-    found = index.floors(METRIC, series_fingerprint(METRIC, component))
+    found = index.floors(
+        METRIC,
+        series_fingerprint(METRIC, component),
+        trainings=(TRAINING_SCOPE, TRAINING_SCOPE),
+    )
 
     assert [floor.value for floor in found] == [0.2]
     assert found[0].kind == "training"
@@ -462,6 +476,7 @@ def test_a_re_characterized_floor_replaces_the_older_one(
                 method="independent-replicates",
                 replicates=3,
                 source="three seeds",
+                training=TRAINING_SCOPE,
                 floors=[_entry(component, floor=0.5)],
                 recorded_at=RECORDED_AT,
             ),
@@ -470,13 +485,18 @@ def test_a_re_characterized_floor_replaces_the_older_one(
                 method="independent-replicates",
                 replicates=6,
                 source="six seeds",
+                training=TRAINING_SCOPE,
                 floors=[_entry(component, floor=0.2)],
                 recorded_at=datetime(2026, 7, 8, 12, 0, tzinfo=UTC),
             ),
         ]
     )
 
-    found = index.floors(METRIC, series_fingerprint(METRIC, component))
+    found = index.floors(
+        METRIC,
+        series_fingerprint(METRIC, component),
+        trainings=(TRAINING_SCOPE, TRAINING_SCOPE),
+    )
 
     assert [floor.value for floor in found] == [0.2]
 
@@ -500,13 +520,18 @@ def test_kinds_are_kept_apart_rather_than_conflated(
                 method="independent-replicates",
                 replicates=4,
                 source="four seeds",
+                training=TRAINING_SCOPE,
                 floors=[_entry(component, floor=0.3)],
                 recorded_at=RECORDED_AT,
             ),
         ]
     )
 
-    found = index.floors(METRIC, series_fingerprint(METRIC, component))
+    found = index.floors(
+        METRIC,
+        series_fingerprint(METRIC, component),
+        trainings=(TRAINING_SCOPE, TRAINING_SCOPE),
+    )
 
     assert {floor.kind for floor in found} == {"data-sampling", "training"}
 
@@ -673,6 +698,149 @@ def test_a_floor_that_does_not_depend_on_the_machine_carries_no_scope() -> None:
             floors=[_efficiency_entry()],
             recorded_at=RECORDED_AT,
         )
+
+
+def _training_characterization(
+    component: DataComponent,
+    *,
+    training: str = TRAINING_SCOPE,
+    floor: float = 0.3,
+) -> NoiseCharacterization:
+    return build_characterization(
+        kind="training",
+        method="independent-replicates",
+        replicates=4,
+        source="four seeds of one configuration",
+        training=training,
+        floors=[_entry(component, floor=floor)],
+        recorded_at=RECORDED_AT,
+    )
+
+
+def test_a_training_floor_must_record_the_configuration_it_describes(
+    move_prediction_component: Digest,
+) -> None:
+    """Without it the floor would qualify every configuration on the pool.
+
+    Decisions 0018 and 0021 keep the training run out of series identity on
+    purpose, so the fingerprint alone cannot stop one configuration's seed
+    variance from qualifying a delta between models of another size entirely.
+    """
+
+    with pytest.raises(NoiseCharacterizationError, match="replicates shared"):
+        build_characterization(
+            kind="training",
+            method="independent-replicates",
+            replicates=4,
+            source="four seeds",
+            floors=[_entry(move_prediction_component())],
+            recorded_at=RECORDED_AT,
+        )
+
+
+def test_a_floor_that_does_not_depend_on_what_was_trained_carries_no_scope(
+    move_prediction_component: Digest,
+) -> None:
+    with pytest.raises(NoiseCharacterizationError, match="no training scope"):
+        build_characterization(
+            kind="data-sampling",
+            method="bootstrap-over-games",
+            replicates=1_000,
+            source="one pool",
+            training=TRAINING_SCOPE,
+            floors=[_entry(move_prediction_component())],
+            recorded_at=RECORDED_AT,
+        )
+
+
+def test_a_training_floor_does_not_travel_to_another_configuration(
+    move_prediction_component: Digest,
+) -> None:
+    component = move_prediction_component()
+    index = NoiseFloorIndex([_training_characterization(component)])
+    fingerprint = series_fingerprint(METRIC, component)
+
+    assert index.floors(METRIC, fingerprint, trainings=(TRAINING_SCOPE,) * 2)
+    assert (
+        index.floors(METRIC, fingerprint, trainings=(OTHER_TRAINING_SCOPE,) * 2) == ()
+    )
+
+
+def test_a_delta_spanning_two_configurations_has_no_training_floor(
+    move_prediction_component: Digest,
+) -> None:
+    component = move_prediction_component()
+    index = NoiseFloorIndex([_training_characterization(component)])
+    fingerprint = series_fingerprint(METRIC, component)
+
+    assert (
+        index.floors(
+            METRIC,
+            fingerprint,
+            trainings=(TRAINING_SCOPE, OTHER_TRAINING_SCOPE),
+        )
+        == ()
+    )
+
+
+def test_replicates_that_do_not_share_a_configuration_characterize_nothing(
+    recorded_result: Callable[..., ResultEnvelope],
+) -> None:
+    """The scope on a stored floor is a fact about its replicates, not a claim."""
+
+    here = recorded_result(training_sha256=TRAINING_SCOPE)
+    elsewhere = recorded_result(training_sha256=OTHER_TRAINING_SCOPE)
+    unrecorded = recorded_result(training_sha256=None)
+
+    assert training_scope([here, here]) == TRAINING_SCOPE
+    with pytest.raises(NoiseCharacterizationError, match="records no training"):
+        training_scope([here, unrecorded])
+    with pytest.raises(NoiseCharacterizationError, match="different configurations"):
+        training_scope([here, elsewhere])
+
+
+def test_a_reading_with_no_training_identity_borrows_no_training_floor(
+    move_prediction_component: Digest,
+) -> None:
+    """Unknown noise is the honest answer for a reading recorded before the scope."""
+
+    component = move_prediction_component()
+    index = NoiseFloorIndex([_training_characterization(component)])
+    fingerprint = series_fingerprint(METRIC, component)
+
+    assert index.floors(METRIC, fingerprint) == ()
+    assert index.floors(METRIC, fingerprint, trainings=(None, None)) == ()
+    assert index.floors(METRIC, fingerprint, trainings=(TRAINING_SCOPE, None)) == ()
+
+
+def test_a_scope_mismatch_withholds_one_kind_rather_than_the_reading(
+    move_prediction_component: Digest,
+) -> None:
+    """Only the scoped kind is refused; an unscoped one is valid on its series."""
+
+    component = move_prediction_component()
+    index = NoiseFloorIndex(
+        [
+            _training_characterization(component),
+            build_characterization(
+                kind="data-sampling",
+                method=BOOTSTRAP_METHOD,
+                replicates=1_000,
+                source="one pool",
+                floors=[_entry(component, floor=0.01)],
+                recorded_at=RECORDED_AT,
+            ),
+        ]
+    )
+    fingerprint = series_fingerprint(METRIC, component)
+
+    found = index.floors(
+        METRIC,
+        fingerprint,
+        trainings=(OTHER_TRAINING_SCOPE,) * 2,
+    )
+
+    assert [floor.kind for floor in found] == ["data-sampling"]
 
 
 def test_an_execution_floor_applies_where_it_was_measured() -> None:

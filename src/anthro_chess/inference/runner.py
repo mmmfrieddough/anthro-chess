@@ -27,6 +27,7 @@ from anthro_chess.training.checkpoints import (
     CheckpointError,
     load_training_checkpoint,
     parameter_sha256,
+    training_identity_sha256,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,7 @@ class CheckpointModelRunner:
         global_step: int,
         processed_positions: int,
         metadata: Mapping[str, Any],
+        training_sha256: str,
     ) -> None:
         self._model = model
         self.selection = selection
@@ -132,6 +134,7 @@ class CheckpointModelRunner:
         self.global_step = global_step
         self.processed_positions = processed_positions
         self.metadata = dict(metadata)
+        self.training_sha256 = training_sha256
 
     def parameter_sha256(self) -> str:
         """Return the digest identifying the loaded parameters."""
@@ -157,6 +160,7 @@ class CheckpointModelRunner:
             checkpoint = load_training_checkpoint(selection.checkpoint_path)
             run_record = _load_run_record(selection.run_record_path)
             model_config = _validate_artifact_contract(checkpoint, run_record)
+            training_sha256 = training_identity_sha256(checkpoint["compatibility"])
             device = resolve_inference_device(config.device, capabilities=capabilities)
             model = CausalMoveModel(model_config)
             model.load_state_dict(checkpoint["model_state"], strict=True)
@@ -181,6 +185,7 @@ class CheckpointModelRunner:
             global_step=int(checkpoint["global_step"]),
             processed_positions=checkpoint["counters"]["processed_positions"],
             metadata=checkpoint["metadata"],
+            training_sha256=training_sha256,
         )
 
     def action_logits(self, batch: MoveModelBatch) -> Tensor:

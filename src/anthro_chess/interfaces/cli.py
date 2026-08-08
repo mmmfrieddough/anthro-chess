@@ -2859,6 +2859,7 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
         metric_definition,
         replicate_floors,
         resolve_store_root,
+        training_scope,
     )
 
     if arguments.kind == "execution":
@@ -2893,7 +2894,9 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
         results = store.results()
         bridges = BridgeIndex(store.bridges())
         wanted = [metric_definition(name).identifier for name in arguments.metric]
-        replicates, skipped = _collect_replicates(results, bridges, labels, wanted)
+        replicates, skipped, drawn = _collect_replicates(
+            results, bridges, labels, wanted
+        )
         if not replicates:
             print(
                 "anthro eval noise characterize: no metric is measured on the "
@@ -2914,6 +2917,7 @@ def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
             coverage=coverage,
             confidence=confidence,
             source=arguments.source,
+            training=(training_scope(drawn) if arguments.kind == "training" else None),
             floors=replicate_floors(
                 replicates,
                 coverage=coverage,
@@ -3129,12 +3133,20 @@ def _collect_replicates(
     bridges: BridgeIndex,
     labels: Sequence[str],
     metrics: Sequence[str],
-) -> tuple[dict[str, list[tuple[str, float]]], list[tuple[str, str]]]:
+) -> tuple[
+    dict[str, list[tuple[str, float]]],
+    list[tuple[str, str]],
+    tuple[ResultEnvelope, ...],
+]:
     """Gather one measurement per named checkpoint for every eligible metric.
 
     A metric is eligible only when every named checkpoint measured it on the
     same series. Replicates drawn from different series would describe the
     spread of two different measurements rather than the noise in one.
+
+    The readings the values came from are returned beside them, because a
+    checkpoint may have several recorded results and only the ones a floor was
+    actually built from describe what that floor covers.
     """
 
     from anthro_chess.evaluation.results import (
@@ -3158,19 +3170,22 @@ def _collect_replicates(
     )
     replicates: dict[str, list[tuple[str, float]]] = {}
     skipped: list[tuple[str, str]] = []
+    drawn: list[ResultEnvelope] = []
     for metric in candidates:
         found = [latest_measurement(by_label[label], metric) for label in labels]
         if any(item is None for item in found):
             if metrics:
                 skipped.append((metric, "not measured for every named checkpoint"))
             continue
-        values = [item[1] for item in found if item is not None]
+        selected = [item for item in found if item is not None]
+        values = [value for _, value in selected]
         series = {bridges.series(value.fingerprint) for value in values}
         if len(series) > 1:
             skipped.append((metric, "the named checkpoints are not on one series"))
             continue
         replicates[metric] = [(value.fingerprint, value.value) for value in values]
-    return replicates, skipped
+        drawn.extend(envelope for envelope, _ in selected)
+    return replicates, skipped, tuple(drawn)
 
 
 def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
@@ -3214,10 +3229,12 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
             f"confidence {record.confidence:.0%}  "
             f"{record.source}"
         )
+        # A scoped floor is only valid within what it measured, and two rows
+        # identical in every other column differ only here.
         if record.execution is not None:
-            # An execution floor is only valid where it was measured, so where
-            # that was belongs beside it rather than in the record alone.
             print(f"  valid on {record.execution.environment_label()}")
+        if record.training is not None:
+            print(f"  valid for training configuration {record.training[:16]}")
         for entry in record.floors:
             units = (
                 "" if entry.sampling_units is None else f"  n={entry.sampling_units}"
