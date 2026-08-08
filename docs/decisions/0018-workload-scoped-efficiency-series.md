@@ -4,7 +4,9 @@ Date: 2026-07-29
 
 ## Status
 
-Accepted.
+Accepted. Refined by `0021-efficiency-identity-excludes-compared-conditions.md`
+and `0025-machine-scoped-execution-noise-floors.md`, and extended by
+`0031-committed-benchmark-cost.md`.
 
 ## Context
 

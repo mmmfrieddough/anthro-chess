@@ -25,8 +25,13 @@ that rebuild the data side from the pinned sources.
 
 ## Where to look
 
-Read `docs/documentation.md`, the rows below that match the work, and the
-matching records in `docs/decisions/` (0001-0038).
+Read `docs/documentation.md` and the rows below that match the work.
+
+`docs/decisions/` (0001-0038) holds why a choice was made, not what the rule is;
+the rule lives in the code, config, or doc that enforces it. Open a record when
+the reasoning behind a constraint matters — before changing or re-litigating
+one — rather than as a matter of course. Every record names the later ones that
+refined or superseded it, so the one you land on says where to go next.
 
 | Open when | File |
 | --- | --- |

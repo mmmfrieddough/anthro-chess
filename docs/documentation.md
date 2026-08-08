@@ -108,12 +108,31 @@ Do not add a decision record for every evolving thought. Normal design intent
 belongs in the topic docs. Build order belongs in `docs/planning/roadmap.md`.
 Small implementation facts belong in code, tests, or nearby comments.
 
+A record holds **why**, not what. The operative rule — the threshold, the
+constant, the shape of the check — belongs in code, config, or the topic doc
+that owns it, and the record explains the reasoning nothing else can carry.
+`src/anthro_chess/evaluation/results/noise.py` is the pattern: the constant is
+declared there and a comment says which record "owns why that is an error rather
+than a coarser estimate". So a record is consulted when the reasoning behind a
+constraint matters — before re-litigating it, or when a rule looks arbitrary —
+rather than read as a matter of course to find out what the rule is. A record
+that has become the only place a rule is stated has been miswritten, and the
+rule belongs in the code or doc that enforces it.
+
 Use the existing records in `docs/decisions/` as the format. Early records may
 say "Accepted as initial design direction" when the choice is strong enough to
 guide implementation but still open to being superseded by later evidence.
 
 If a later choice reverses an old one, add a new decision record that supersedes
 it instead of rewriting history.
+
+**Cross-references are two-way, and the backward edge is the load-bearing one.**
+A record that refines, extends, supersedes, or draws a boundary against an
+earlier one names it in its own `## Status` section, and adds the matching line
+to the `## Status` of the record it names. Invalidating a decision means editing
+the decision that was invalidated: a reader arriving at the older record has no
+other way to learn that a later one changed it, and would apply a stale rule
+confidently. CI fails when an edge points only one way.
 
 ## Research Notes
 

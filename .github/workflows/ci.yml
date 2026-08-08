@@ -70,6 +70,27 @@ jobs:
             exit 1
           fi
 
+      - name: Decision record cross-references are two-way
+        run: |
+          fail=0
+          for f in docs/decisions/*.md; do
+            src=$(basename "$f" .md)
+            for tgt in $(sed -n '/^## Status$/,/^## /p' "$f" \
+                         | grep -oE '0[0-9]{3}-[a-z0-9-]+' | sort -u); do
+              [ "$tgt" = "$src" ] && continue
+              if [ ! -f "docs/decisions/$tgt.md" ]; then
+                echo "::error file=$f::Status names $tgt, which is not a decision record"
+                fail=1; continue
+              fi
+              if ! sed -n '/^## Status$/,/^## /p' "docs/decisions/$tgt.md" \
+                   | grep -qF "$src"; then
+                echo "::error file=docs/decisions/$tgt.md::$src names this record in its Status; add the matching line here"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
       - name: Verify lockfile
         run: uv lock --check
 

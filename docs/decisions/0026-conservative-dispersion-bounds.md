@@ -4,7 +4,10 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted. Refines `0025-machine-scoped-execution-noise-floors.md`.
+Accepted. Refines `0025-machine-scoped-execution-noise-floors.md`. Refined by
+`0032-a-replayed-reading-has-no-evaluation-noise.md`, and extended by
+`0028-qualifying-the-rating-dependency-family.md` and
+`0034-qualifying-a-rating-ladder-reading.md`.
 
 ## Context
 

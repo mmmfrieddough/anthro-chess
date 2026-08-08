@@ -5,7 +5,8 @@ Date: 2026-08-04
 ## Status
 
 Accepted. Settles the estimator half of `#223` and supersedes its recommendation
-to reconsider the checkpoint-pair machinery.
+to reconsider the checkpoint-pair machinery. Applied to reporting by
+`0035-a-degraded-floor-is-annotated-rather-than-withheld.md`.
 
 ## Context
 
