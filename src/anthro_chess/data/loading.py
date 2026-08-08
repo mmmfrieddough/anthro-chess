@@ -92,9 +92,7 @@ class SequenceInputs:
 
     ``en_passant_token`` and ``previous_action_token`` are the embedding rows
     :mod:`anthro_chess.data.encoding` assigns, absence included, rather than a
-    value beside a presence flag. Absence is a row of the same table for both,
-    so naming it here costs a column instead of two and leaves nothing for a
-    reader to reassemble.
+    value beside a presence flag.
     """
 
     piece_ids: np.ndarray
@@ -559,7 +557,7 @@ class SequenceDataLoader(SequenceBatchSource):
 def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     """Pad and pack sequence examples into arrays, inventing no targets.
 
-    Every column is written into a zero-filled array of its own width, so a
+    Every column is written into a prefilled array of its own width, so a
     padded timestep costs a memset rather than a Python object and the result
     is what a tensor can wrap. Each width is what that column's values need and
     no more, because this is what a worker sends and what crosses to a device.
@@ -627,13 +625,17 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         piece_ids=piece_ids,
         side_to_move=required(lambda ply: ply.board.side_to_move, np.uint8),
         castling_rights=required(lambda ply: ply.board.castling_rights, np.uint8),
+        # A padded timestep has no en-passant square and no previous action, so
+        # each is filled with the row that names absence. Only the second one
+        # differs from a zero fill, and both say so rather than one relying on
+        # a coincidence.
         en_passant_token=required(
-            lambda ply: en_passant_token(ply.board.en_passant_square), np.uint8
+            lambda ply: en_passant_token(ply.board.en_passant_square),
+            np.uint8,
+            padding=en_passant_token(None),
         ),
         halfmove_clock=required(lambda ply: ply.board.halfmove_clock, np.int16),
         fullmove_number=required(lambda ply: ply.board.fullmove_number, np.int16),
-        # A padded timestep has no previous action either, so it takes the same
-        # row rather than the one a zero fill would leave pointing at a move.
         previous_action_token=required(
             lambda ply: previous_action_token(ply.previous_action_id),
             np.int16,

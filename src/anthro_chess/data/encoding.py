@@ -28,6 +28,9 @@ BOARD_SQUARE_COUNT = 64
 #: "no en-passant square" and square ``s`` is token ``s + 1``, which is what
 #: :func:`en_passant_token` writes and what a model sizing that table reads.
 EN_PASSANT_TOKEN_COUNT = BOARD_SQUARE_COUNT + 1
+#: The same, for the action preceding a timestep. The row past the vocabulary
+#: is "no previous action", which is what :func:`previous_action_token` writes.
+PREVIOUS_ACTION_TOKEN_COUNT = ACTION_VOCABULARY_SIZE + 1
 
 _ENCODING_SCHEMA = {
     "identity": {
@@ -238,10 +241,7 @@ class DecisionColumn(IntEnum):
     """Where each per-ply input sits in a :class:`DecisionColumns` row.
 
     Every column is an integer, so one row of a history is one contiguous block
-    and a batch of histories is one array and one device copy. The two nullable
-    inputs travel as the embedding row each names rather than as a value beside
-    a presence flag, which is what :func:`en_passant_token` and
-    :func:`previous_action_token` decide.
+    and a batch of histories is one array and one device copy.
 
     Held at the width the model indexes with rather than narrowed to what the
     values need, unlike the loader's columns. A rule counter arrives off a FEN a
@@ -318,14 +318,7 @@ def previous_action_token(action_id: int | None) -> int:
 
 
 def encoding_identity() -> dict[str, object]:
-    """Return the compatibility identity for manifests and model artifacts.
-
-    Unchanged by which integer a nullable model input travels as. This names
-    the normalized per-ply record and the action vocabulary read off it, and a
-    checkpoint's weights mean what they meant as long as those hold: an
-    embedding row keeps its meaning when the row index arrives already
-    computed rather than assembled on the way in.
-    """
+    """Return the compatibility identity for manifests and model artifacts."""
 
     return {
         "name": ENCODING_NAME,

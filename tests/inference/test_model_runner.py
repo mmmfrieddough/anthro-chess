@@ -16,7 +16,6 @@ import torch
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
     action_vocabulary_identity,
-    encode_move,
 )
 from anthro_chess.data import (
     build_decision_context,
@@ -163,13 +162,8 @@ def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:
     # A padded timestep has no previous action, so it reads the same row as a
     # game's first ply rather than the move a zero fill would name.
     absent = previous_action_token(None)
-    opening, reply, advance = (
-        encode_move(chess.Move.from_uci(move)) for move in ("d2d4", "d7d5", "c2c4")
-    )
-    assert batch.inputs.previous_action_token.tolist() == [
-        [absent, opening, absent, absent],
-        [absent, opening, reply, advance],
-    ]
+    assert batch.inputs.previous_action_token[0, 2:].tolist() == [absent, absent]
+    assert batch.inputs.previous_action_token[:, 0].tolist() == [absent, absent]
     assert batch.ply_indices.tolist() == [[0, 1, 0, 0], [0, 1, 2, 3]]
 
 

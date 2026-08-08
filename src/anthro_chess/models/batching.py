@@ -14,6 +14,7 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EN_PASSANT_TOKEN_COUNT,
+    PREVIOUS_ACTION_TOKEN_COUNT,
     DecisionColumn,
     DecisionContext,
     SequenceBatch,
@@ -37,12 +38,7 @@ class OptionalTensor:
 
 @dataclass(frozen=True)
 class MoveModelInputs:
-    """Tensorized exact state and context shaped batch by sequence.
-
-    The two token columns are embedding rows the encoding already chose, so a
-    forward pass indexes them rather than deriving them from a value and a
-    presence flag on every step.
-    """
+    """Tensorized exact state and context shaped batch by sequence."""
 
     piece_ids: Tensor
     side_to_move: Tensor
@@ -396,9 +392,7 @@ def _reject_invalid_values(batch: _Batch) -> None:
         (
             "previous action is outside the action vocabulary",
             (previous_actions.min() < 0)
-            # The row past the vocabulary is "no previous action" and is the
-            # only index above it a batch may carry.
-            | (previous_actions.max() > ACTION_VOCABULARY_SIZE),
+            | (previous_actions.max() >= PREVIOUS_ACTION_TOKEN_COUNT),
         ),
         (
             "active action target is outside the action vocabulary",

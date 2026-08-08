@@ -13,7 +13,11 @@ from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
     action_vocabulary_identity,
 )
-from anthro_chess.data import EN_PASSANT_TOKEN_COUNT, encoding_identity
+from anthro_chess.data import (
+    EN_PASSANT_TOKEN_COUNT,
+    PREVIOUS_ACTION_TOKEN_COUNT,
+    encoding_identity,
+)
 from anthro_chess.models.batching import MoveModelBatch, OptionalTensor
 from anthro_chess.models.config import MoveModelConfig
 
@@ -48,10 +52,8 @@ class BoardEncoder(nn.Module):
 
         inputs = batch.inputs
         piece_features = self.piece_embedding(inputs.piece_ids).flatten(-2)
-        # ``log1p`` stays here rather than travelling in the batch: it is how
-        # this encoder chooses to feed a counter, the way the rating
-        # conditioner below chooses the same for a rating, and the loader would
-        # have to widen two integer columns to floats to carry the result.
+        # A transform rather than a token vocabulary, so it stays here while
+        # the two nullable inputs moved. Decision 0035 says why.
         rule_counts = torch.log1p(
             torch.stack(
                 (
@@ -187,7 +189,7 @@ class CausalMoveModel(nn.Module):
         self.config = config or MoveModelConfig()
         self.board_encoder = BoardEncoder(self.config)
         self.previous_action_embedding = nn.Embedding(
-            ACTION_VOCABULARY_SIZE + 1,
+            PREVIOUS_ACTION_TOKEN_COUNT,
             self.config.action_embedding_dim,
         )
         context_input_dim = self.config.model_dim + self.config.action_embedding_dim

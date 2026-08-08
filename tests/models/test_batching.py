@@ -10,7 +10,11 @@ import pytest
 import torch
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
-from anthro_chess.data import EN_PASSANT_TOKEN_COUNT, SequenceBatch
+from anthro_chess.data import (
+    EN_PASSANT_TOKEN_COUNT,
+    PREVIOUS_ACTION_TOKEN_COUNT,
+    SequenceBatch,
+)
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.models.batching import OptionalTensor
 
@@ -40,23 +44,6 @@ def _corrupted(batch: MoveModelBatch, field: str, value: int) -> MoveModelBatch:
     replacement = original.clone()
     replacement.view(-1)[0] = value
     return _with_inputs(batch, **{field: replacement})
-
-
-def _corrupted_optional(
-    batch: MoveModelBatch,
-    field: str,
-    value: int,
-) -> MoveModelBatch:
-    """Return the batch with one *present* entry of a nullable input rewritten."""
-
-    original: OptionalTensor = getattr(batch.inputs, field)
-    values = original.values.clone()
-    present = torch.ones_like(original.present)
-    values.view(-1)[0] = value
-    return _with_inputs(
-        batch,
-        **{field: OptionalTensor(values=values, present=present)},
-    )
 
 
 def test_a_valid_batch_is_accepted(
@@ -117,18 +104,20 @@ def test_a_valid_batch_is_accepted(
             id="en-passant",
         ),
         pytest.param(
-            # One past the row that names "no previous action", which is the
-            # highest index the embedding has.
             lambda batch: _corrupted(
-                batch,
-                "previous_action_token",
-                ACTION_VOCABULARY_SIZE + 1,
+                batch, "previous_action_token", PREVIOUS_ACTION_TOKEN_COUNT
             ),
             "previous action is outside the action vocabulary",
             id="previous-action",
         ),
         pytest.param(
-            lambda batch: _corrupted_optional(batch, "target_rating", -1),
+            lambda batch: _with_inputs(
+                batch,
+                target_rating=OptionalTensor(
+                    values=torch.full_like(batch.inputs.target_rating.values, -1),
+                    present=torch.ones_like(batch.inputs.target_rating.present),
+                ),
+            ),
             "target ratings must be nonnegative",
             id="negative-rating",
         ),

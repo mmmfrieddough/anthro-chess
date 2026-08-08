@@ -15,7 +15,6 @@ from anthro_chess.chess import (
 )
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
-    EN_PASSANT_TOKEN_COUNT,
     DecisionColumn,
     DecisionHistory,
     EncodingError,
@@ -421,7 +420,6 @@ def test_a_nullable_input_travels_as_the_row_that_names_its_absence() -> None:
     assert en_passant_token(None) == 0
     assert en_passant_token(chess.A1) == 1
     assert en_passant_token(chess.H8) == BOARD_SQUARE_COUNT
-    assert EN_PASSANT_TOKEN_COUNT == BOARD_SQUARE_COUNT + 1
 
     assert previous_action_token(None) == ACTION_VOCABULARY_SIZE
     assert previous_action_token(0) == 0

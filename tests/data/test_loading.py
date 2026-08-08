@@ -16,6 +16,7 @@ from anthro_chess.data import (
     SequenceDataset,
     SequenceLoaderConfig,
     collate_sequences,
+    en_passant_token,
     maximum_position_bound,
     prepare_pgn,
     previous_action_token,
@@ -73,7 +74,9 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
     assert batch.legal_action_ids[1][0]
     assert batch.legal_action_ids[1][1:] == ((), ())
     assert batch.inputs.piece_ids[1][1].tolist() == [0] * 64
-    # The padded row's two trailing timesteps have no previous action either.
+    # The padded row's two trailing timesteps have no en-passant square and no
+    # previous action either, so both read the row that names absence.
+    assert batch.inputs.en_passant_token[1].tolist() == [en_passant_token(None)] * 3
     assert (
         batch.inputs.previous_action_token[1].tolist()
         == [previous_action_token(None)] * 3
