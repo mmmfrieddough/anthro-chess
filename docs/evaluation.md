@@ -1079,6 +1079,56 @@ accuracy number. One scoring pass computes both, along with the per-position
 quantities later benchmarks need, so decision decomposition and rollout
 comparisons share this code path instead of recomputing a policy of their own.
 
+### Opening Family And The Rare-Opening Tail
+
+`docs/decisions/0016-sampling-axes-versus-measured-distributions.md` declines to
+resample or reweight training by opening family, and accepts whatever
+sample-efficiency cost the long tail of rare openings carries on the belief that
+the cost is small. This slice is what makes that belief falsifiable. It is a
+benchmark and never a loss term; weighting the loss by family is the operation
+that record closes.
+
+Per-family loss alone settles nothing. Rare openings are genuinely harder to
+predict, so higher loss on the rare ones is the expected result whether or not
+they are undertrained, and only the relationship between loss and *training*
+frequency separates the two. So the whole reading hangs off one opt-in: counting
+how often the training split saw each family, which costs a replay per game. An
+ordinary reading does not pay it and does not slice by opening at all.
+
+When it is asked for, every scored position carries its game's classified
+family, and the per-family table reports move loss, mask penalty, and top-k
+accuracy through the same slice machinery every other dimension uses. The label
+is a game-level one — a Sicilian's endgame counts toward the Sicilian — which
+dilutes the reading with positions the opening stopped constraining plies ago.
+That is why the table is read for its shape across families rather than for any
+one family's level.
+
+Families are then grouped into a small set of tiers by their share of the
+training selection, plus one tier for families that selection never held and one
+for games the book never named. The tiers are what reaches the committed store,
+because the per-family table is unbounded, and they are ordinary slices of the
+same scoring pass, so the bootstrap qualifies each of them the way it qualifies
+a phase or a rating band. Read across the tiers: loss
+that is still falling as frequency rises, all the way into the rarest, is the
+shape that says more data on rare families would help. Beside them the detail
+tier carries the same statement as one number — the fitted slope of loss against
+log training frequency over the tail families — and, for each scored family, the
+tier and training share to join against its row in the slice table.
+
+A tier is a share of the *training* corpus, and a series fingerprint's data
+component covers only the games scored. Those two pin each other only when one
+corpus supplies both, so the reading is refused outright on a checkpoint that
+trained somewhere other than where the pool came from, rather than committing a
+series whose slice membership nothing recorded. For the same reason the tier
+boundaries are code-owned rather than configurable: a configured boundary would
+move families between series without changing any metric identity.
+
+Reopening decision 0016 needs a second signal beside this one — a generated
+opening distribution underrepresenting the tail relative to humans beyond the
+noise floor, which the repertoire comparison below supplies. Either alone is
+weak, and even both together argue for more data before they argue for
+reweighting.
+
 ## Legality Metrics
 
 Runtime legal masking guarantees that Anthro Chess does not submit illegal

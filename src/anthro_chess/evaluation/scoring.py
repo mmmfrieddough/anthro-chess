@@ -30,6 +30,7 @@ from anthro_chess.data import (
 )
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn, SplitName
 from anthro_chess.evaluation.aggregation import (
+    OPENING_TIER_DIMENSION,
     PHASE_DIMENSION,
     RATING_DIMENSION,
     RULE_CASE_DIMENSION,
@@ -38,6 +39,11 @@ from anthro_chess.evaluation.aggregation import (
 )
 from anthro_chess.evaluation.dependency import PositionContext, PositionKey
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
+from anthro_chess.evaluation.opening_frequency import OpeningFrequency
+from anthro_chess.evaluation.openings import (
+    OpeningClassificationError,
+    classify_action_ids,
+)
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.results import (
     DataComponent,
@@ -47,6 +53,7 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import (
     HELD_OUT_LEGAL_MOVE_LOSS,
     HELD_OUT_MOVE_LOSS,
+    HELD_OUT_MOVE_LOSS_BY_OPENING_TIER,
     HELD_OUT_MOVE_LOSS_BY_PHASE,
     HELD_OUT_MOVE_LOSS_BY_RATING_BAND,
     HELD_OUT_TOP_K_ACCURACY,
@@ -104,12 +111,42 @@ class ScoringInputs:
         repr=False,
         compare=False,
     )
+    _opening_families: dict[int, str] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def position_count(self) -> int:
         """Return how many decisions one scoring pass covers."""
 
         return len(self.plies)
+
+    def opening_family(self, game_id: int) -> str:
+        """Return one scored game's opening family, classifying it once.
+
+        Classification replays a game against the book, so it is derived on
+        demand for the same reason the rule-sensitive labels are. A reading
+        that asks about one game asks about all of them, so the first call
+        classifies the whole selection rather than indexing the rows to look
+        one up later.
+        """
+
+        if not self._opening_families:
+            for row in self.rows:
+                try:
+                    label = classify_action_ids(
+                        row[NormalizedColumn.ACTION_IDS],
+                        initial_position=str(row[NormalizedColumn.INITIAL_POSITION]),
+                    )
+                except OpeningClassificationError as error:
+                    raise ScoringError(str(error)) from error
+                self._opening_families[int(row[NormalizedColumn.GAME_ID])] = (
+                    label.family
+                )
+        return self._opening_families[game_id]
 
     def labels(self, key: PositionKey) -> PositionLabels:
         """Return one position's rule-sensitive labels, deriving them once.
@@ -201,19 +238,41 @@ def build_scoring_inputs(
 def aggregate_positions(
     positions: Iterable[PositionPolicy],
     inputs: ScoringInputs,
+    *,
+    opening_frequency: OpeningFrequency | None = None,
 ) -> SliceTable:
-    """Aggregate scored positions into every slice they belong to."""
+    """Aggregate scored positions into every slice they belong to.
+
+    ``opening_frequency`` adds both opening dimensions. They hang off it rather
+    than off the scoring pass because classifying a game costs a replay, the
+    per-family table means nothing without the frequency axis to read it
+    against, and a pass over perturbed or generated move sequences would be
+    labelling something the book never described.
+    """
 
     aggregator = SliceAggregator()
     for position in positions:
         key = (position.game_id, position.ply_index)
-        aggregator.add(position, inputs.slices[key], inputs.labels(key).characteristics)
+        family: str | None = None
+        tier: str | None = None
+        if opening_frequency is not None:
+            family = inputs.opening_family(position.game_id)
+            tier = opening_frequency.tier(family)
+        aggregator.add(
+            position,
+            inputs.slices[key],
+            inputs.labels(key).characteristics,
+            opening_family=family,
+            opening_tier=tier,
+        )
     return aggregator.compute()
 
 
 def per_game_totals(
     positions: Iterable[PositionPolicy],
     inputs: ScoringInputs,
+    *,
+    opening_frequency: OpeningFrequency | None = None,
 ) -> tuple[GameTotals, ...]:
     """Return what each scored game contributes to every reported metric.
 
@@ -229,7 +288,13 @@ def per_game_totals(
     return tuple(
         GameTotals(
             game_id=game_id,
-            metrics=_slice_metric_totals(aggregate_positions(group, inputs)),
+            metrics=_slice_metric_totals(
+                aggregate_positions(
+                    group,
+                    inputs,
+                    opening_frequency=opening_frequency,
+                )
+            ),
         )
         for game_id, group in sorted(grouped.items())
     )
@@ -308,7 +373,15 @@ _SLICED_METRICS: tuple[tuple[str, Mapping[str, MetricDefinition], str], ...] = (
     (PHASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_PHASE, "mask_penalty"),
     (RATING_DIMENSION, HELD_OUT_MOVE_LOSS_BY_RATING_BAND, "move_loss"),
     (RULE_CASE_DIMENSION, LEGALITY_MASK_PENALTY_BY_RULE_CASE, "mask_penalty"),
+    (OPENING_TIER_DIMENSION, HELD_OUT_MOVE_LOSS_BY_OPENING_TIER, "move_loss"),
 )
+
+#: Dimensions a scoring pass cannot label on its own. The opening tiers need a
+#: family count over the training selection, which only the end-of-run reading
+#: opts into, so a caller validating a declared metric list against
+#: :func:`slice_metric_identifiers` rejects one rather than accepting a metric
+#: that would then report nothing.
+_EXTERNALLY_LABELLED_DIMENSIONS = frozenset({OPENING_TIER_DIMENSION})
 
 
 def _slice_metric_totals(slices: SliceTable) -> dict[str, MetricTotal]:
@@ -344,13 +417,15 @@ def _slice_metric_totals(slices: SliceTable) -> dict[str, MetricTotal]:
 
 
 def slice_metric_identifiers() -> frozenset[str]:
-    """Return every metric identifier a slice table can produce."""
+    """Return every metric a scoring pass alone can produce."""
 
     identifiers = {definition.identifier for definition, _ in _OVERALL_METRICS}
     identifiers.update(
         definition.identifier for definition in HELD_OUT_TOP_K_ACCURACY.values()
     )
-    for _, definitions, _ in _SLICED_METRICS:
+    for dimension, definitions, _ in _SLICED_METRICS:
+        if dimension in _EXTERNALLY_LABELLED_DIMENSIONS:
+            continue
         identifiers.update(definition.identifier for definition in definitions.values())
     return frozenset(identifiers)
 

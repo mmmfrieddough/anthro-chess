@@ -20,7 +20,12 @@ from anthro_chess.evaluation import (
     freeze_pool,
 )
 from anthro_chess.evaluation import leakage as leakage_module
-from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, RULE_CASE_DIMENSION
+from anthro_chess.evaluation.aggregation import (
+    OPENING_FAMILY_DIMENSION,
+    OPENING_TIER_DIMENSION,
+    PHASE_DIMENSION,
+    RULE_CASE_DIMENSION,
+)
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.checkpoint import (
     ADJUDICATION_KIND,
@@ -29,12 +34,16 @@ from anthro_chess.evaluation.checkpoint import (
 )
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
+from anthro_chess.evaluation.opening_frequency import UNCLASSIFIED_TIER
 from anthro_chess.evaluation.results import (
     PAIRED_CONTRIBUTIONS_KEY,
     DetailStore,
     PairedContributions,
     ResultsStore,
     metric_definition,
+)
+from anthro_chess.evaluation.results.metrics import (
+    HELD_OUT_MOVE_LOSS_BY_OPENING_TIER,
 )
 from anthro_chess.evaluation.slices import (
     GamePhase,
@@ -192,6 +201,122 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     assert payload["view"]["selected_games"] == 6
     assert payload["positions"] is None
     held_out.verify()
+
+
+def test_an_ordinary_reading_never_classifies_an_opening(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """Classifying costs a replay per game, and the table needs the axis."""
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    result = _evaluate(_config(pool, checkpoint), store=store)
+
+    assert result.slices.dimensions[OPENING_FAMILY_DIMENSION] == {}
+    assert result.slices.dimensions[OPENING_TIER_DIMENSION] == {}
+    assert result.opening_frequency is None
+    assert result.opening_tail is None
+    held_out = next(item for item in store.results() if item.kind == HELD_OUT_KIND)
+    committed = {item.metric for item in held_out.measurements}
+    assert not committed & {
+        definition.identifier
+        for definition in HELD_OUT_MOVE_LOSS_BY_OPENING_TIER.values()
+    }
+
+
+def test_counting_training_frequency_commits_the_tier_series(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+    detail = DetailStore(tmp_path / "detail")
+
+    result = _evaluate(
+        _config(pool, checkpoint, openings={"training_frequency": True}),
+        store=store,
+        detail=detail,
+    )
+
+    assert result.opening_frequency is not None
+    # Both training games play the shared opening line, so the one family the
+    # corpus holds is every training game and the test pool's other games are
+    # unnamed.
+    assert result.opening_frequency.family_games == {"Ruy Lopez": 2}
+    assert set(result.slices.dimensions[OPENING_TIER_DIMENSION]) == {
+        "common_opening",
+        UNCLASSIFIED_TIER,
+    }
+
+    held_out = next(item for item in store.results() if item.kind == HELD_OUT_KIND)
+    metrics = {item.metric: item for item in held_out.measurements}
+    common = result.slices.slice_summary(OPENING_TIER_DIMENSION, "common_opening")
+    assert common is not None
+    assert metrics["held_out.move_loss_common_opening"].value == pytest.approx(
+        common.move_loss
+    )
+    assert metrics["held_out.move_loss_common_opening"].sample_size == (
+        common.position_count
+    )
+    # A tier series is an ordinary slice of the same pass, so the bootstrap
+    # qualifies it like every other one.
+    assert result.noise is not None
+    assert "held_out.move_loss_common_opening" in {
+        floor.metric for floor in result.noise.floors
+    }
+    held_out.verify()
+
+    assert result.opening_tail is not None
+    assert [row.family for row in result.opening_tail.families] == ["Ruy Lopez"]
+    assert held_out.detail is not None
+    payload = detail.read(held_out.detail)
+    tail = payload["opening_tail"]
+    assert isinstance(tail, Mapping)
+    assert tail["families"][0]["training_share"] == pytest.approx(1.0)
+    assert payload["opening_frequency"]["split"] == "train"
+
+
+def test_a_foreign_training_corpus_refuses_the_frequency_axis(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """A tier is a share of a corpus the scored games' digest cannot pin."""
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    # Ratings no pool game carries, so the content comparison the leakage check
+    # falls back to across corpora finds nothing shared.
+    other_normalized, other_manifest = write_corpus(
+        tmp_path / "other",
+        [
+            normalized_row(101, split="train", plies=10, rating=1234),
+            normalized_row(102, split="test", plies=6, rating=1345),
+        ],
+        source_id="other",
+    )
+    checkpoint = training_run(
+        tmp_path / "run",
+        normalized=other_normalized,
+        manifest=other_manifest,
+    )
+
+    with pytest.raises(CheckpointEvaluationError, match="the same one"):
+        _evaluate(_config(pool, checkpoint, openings={"training_frequency": True}))
 
 
 def test_repeated_evaluation_reproduces_every_measurement(
@@ -809,6 +934,7 @@ def _config(
     view: dict[str, Any] | None = None,
     noise: dict[str, Any] | None = None,
     dependency: dict[str, Any] | None = None,
+    openings: dict[str, Any] | None = None,
 ) -> ResolvedConfig[CheckpointEvaluationConfig]:
     return ResolvedConfig(
         value=CheckpointEvaluationConfig.model_validate(
@@ -823,6 +949,7 @@ def _config(
                     **(dependency or {}),
                 },
                 "noise": noise or {"resamples": 100},
+                "openings": openings or {},
             }
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
