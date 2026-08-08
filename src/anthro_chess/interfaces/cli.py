@@ -2543,9 +2543,10 @@ def _render_temperature_response(result: LadderBenchmarkResult) -> list[str]:
 
 
 def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
-    from anthro_chess.data.artifacts import read_normalized_rows
     from anthro_chess.evaluation import EvaluationPoolError, ViewConfig, load_pool
+    from anthro_chess.evaluation.pool import pool_rows
     from anthro_chess.evaluation.reference import (
+        REFERENCE_COLUMNS,
         ReferenceConfig,
         ReferenceError,
         human_reference,
@@ -2563,12 +2564,12 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
                 require_ratings=True,
             ),
         )
-        wanted = set(selection.game_ids)
-        rows = [
-            row
-            for row in read_normalized_rows(pool.games_path)
-            if int(row["game_id"]) in wanted
-        ]
+        rows = pool_rows(
+            pool,
+            selection.game_ids,
+            REFERENCE_COLUMNS,
+            error=ValueError,
+        )
         reference = human_reference(
             rows,
             ReferenceConfig(maximum_rating_gap=arguments.maximum_rating_gap),

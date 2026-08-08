@@ -235,6 +235,23 @@ def per_game_totals(
     )
 
 
+#: The columns :func:`encoding_input` reads. Declared beside the reader rather
+#: than in each benchmark, because a benchmark that projects its pool read has
+#: to project to at least these and would otherwise drift from them silently.
+SCORED_COLUMNS = (
+    NormalizedColumn.SCHEMA_VERSION.value,
+    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.RULESET.value,
+    NormalizedColumn.INITIAL_POSITION.value,
+    NormalizedColumn.ACTION_IDS.value,
+    NormalizedColumn.WHITE_NORMALIZED_RATING.value,
+    NormalizedColumn.BLACK_NORMALIZED_RATING.value,
+    NormalizedColumn.TIME_INITIAL_MS.value,
+    NormalizedColumn.TIME_INCREMENT_MS.value,
+    NormalizedColumn.CLOCK_REMAINING_MS.value,
+)
+
+
 def encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
     """Return the encoder input for one normalized row."""
 

@@ -77,7 +77,6 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from anthro_chess.chess import MOVE_ACTION_COUNT, decode_move
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.evaluation.curves import (
     CurveComparison,
@@ -125,6 +124,7 @@ from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
     load_pool,
+    pool_rows,
 )
 from anthro_chess.evaluation.recording import (
     ResultRecording,
@@ -134,6 +134,7 @@ from anthro_chess.evaluation.recording import (
 from anthro_chess.evaluation.reference import (
     CURVE_SPEC_VERSION,
     DECLARED_NEIGHBOURS,
+    REFERENCE_COLUMNS,
     ComparableGame,
     ComparedQuantity,
     HumanReference,
@@ -207,6 +208,13 @@ ROLLOUT_BENCHMARK = BenchmarkReference(
 )
 
 logger = logging.getLogger(__name__)
+
+#: What the prefix arm reads from a pool row: the moves it continues from,
+#: and nothing beyond what the provenance digest already declares.
+_PREFIX_COLUMNS = (
+    NormalizedColumn.GAME_ID.value,
+    *MOVE_PREDICTION_PROJECTION.columns,
+)
 
 
 class RolloutBenchmarkError(ValueError):
@@ -1013,19 +1021,15 @@ def _load_prefix_positions(
             f"view {view_config.name!r} selected no games from the pool"
         )
 
-    wanted = set(selection.game_ids)
-    try:
-        rows = [
-            _prefix_row(row, config.prefix.plies)
-            for row in read_normalized_rows(pool.games_path)
-            if int(row[NormalizedColumn.GAME_ID]) in wanted
-        ]
-    except DataLoadingError as error:
-        raise RolloutBenchmarkError(str(error)) from error
-    if len(rows) != len(wanted):
-        raise RolloutBenchmarkError(
-            "the evaluation pool does not contain every selected game"
+    rows = [
+        _prefix_row(row, config.prefix.plies)
+        for row in pool_rows(
+            pool,
+            selection.game_ids,
+            _PREFIX_COLUMNS,
+            error=RolloutBenchmarkError,
         )
+    ]
     games = sorted(
         (
             int(row[NormalizedColumn.GAME_ID.value]),
@@ -1065,15 +1069,12 @@ def _load_reference(
             f"view {config.reference.view.name!r} selected no human games to "
             "compare against"
         )
-    wanted = set(selection.game_ids)
-    try:
-        rows = [
-            row
-            for row in read_normalized_rows(pool.games_path)
-            if int(row[NormalizedColumn.GAME_ID]) in wanted
-        ]
-    except DataLoadingError as error:
-        raise RolloutBenchmarkError(str(error)) from error
+    rows = pool_rows(
+        pool,
+        selection.game_ids,
+        REFERENCE_COLUMNS,
+        error=RolloutBenchmarkError,
+    )
     try:
         reference = human_reference(rows, config.reference, book=book)
     except ReferenceError as error:

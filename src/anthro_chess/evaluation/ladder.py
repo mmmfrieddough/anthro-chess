@@ -72,7 +72,6 @@ import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data.artifacts import DataLoadingError, read_normalized_rows
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.evaluation.decisions import (
     DecisionCell,
@@ -100,7 +99,12 @@ from anthro_chess.evaluation.games import (
     standard_positions,
 )
 from anthro_chess.evaluation.noise import NoiseConfig
-from anthro_chess.evaluation.pool import EvaluationPoolError, FrozenPool, load_pool
+from anthro_chess.evaluation.pool import (
+    EvaluationPoolError,
+    FrozenPool,
+    load_pool,
+    pool_rows,
+)
 from anthro_chess.evaluation.recording import (
     ResultRecording,
     pool_dataset_reference,
@@ -189,6 +193,13 @@ LADDER_FLOOR_KIND: NoiseFloorKind = "evaluation"
 RESPONSE_SCOPE = "response"
 
 logger = logging.getLogger(__name__)
+
+#: What the opening projection reads from a pool row: the moves it continues from,
+#: and nothing beyond what the provenance digest already declares.
+_OPENING_COLUMNS = (
+    NormalizedColumn.GAME_ID.value,
+    *MOVE_PREDICTION_PROJECTION.columns,
+)
 
 
 class LadderBenchmarkError(ValueError):
@@ -1739,19 +1750,15 @@ def _position_source(
         raise LadderBenchmarkError(
             f"view {view_config.name!r} selected no opening games from the pool"
         )
-    wanted = set(selection.game_ids)
-    try:
-        rows = [
-            _prefix_row(row, config.openings.plies)
-            for row in read_normalized_rows(pool.games_path)
-            if int(row[NormalizedColumn.GAME_ID]) in wanted
-        ]
-    except DataLoadingError as error:
-        raise LadderBenchmarkError(str(error)) from error
-    if len(rows) != len(wanted):
-        raise LadderBenchmarkError(
-            "the evaluation pool does not contain every selected opening game"
+    rows = [
+        _prefix_row(row, config.openings.plies)
+        for row in pool_rows(
+            pool,
+            selection.game_ids,
+            _OPENING_COLUMNS,
+            error=LadderBenchmarkError,
         )
+    ]
     games = sorted(
         (
             int(row[NormalizedColumn.GAME_ID.value]),

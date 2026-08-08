@@ -35,7 +35,6 @@ from anthro_chess.data import (
     DataLoadingError,
     SequenceDataLoader,
 )
-from anthro_chess.data.artifacts import read_normalized_rows
 from anthro_chess.data.schema import (
     SPLIT_NAMES,
     NormalizedColumn,
@@ -76,6 +75,7 @@ from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
     load_pool,
+    pool_rows,
 )
 from anthro_chess.evaluation.recording import (
     ResultRecording,
@@ -109,6 +109,7 @@ from anthro_chess.evaluation.results.noise import (
     NoiseCharacterizationError,
 )
 from anthro_chess.evaluation.scoring import (
+    SCORED_COLUMNS,
     EvaluationLoaderConfig,
     ScoringInputs,
     aggregate_positions,
@@ -546,16 +547,15 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
             f"view {config.view.name!r} selected no games from the pool"
         )
 
-    wanted = set(selection.game_ids)
     rows = [
         _truncate(row, selection.prefix_plies)
-        for row in read_normalized_rows(pool.games_path)
-        if int(row[NormalizedColumn.GAME_ID]) in wanted
-    ]
-    if len(rows) != len(wanted):
-        raise CheckpointEvaluationError(
-            "the evaluation pool does not contain every selected game"
+        for row in pool_rows(
+            pool,
+            selection.game_ids,
+            SCORED_COLUMNS,
+            error=CheckpointEvaluationError,
         )
+    ]
     scoring = build_scoring_inputs(
         rows,
         split=_pool_split(pool),
@@ -812,12 +812,8 @@ def _truncate(row: Mapping[str, Any], prefix_plies: int | None) -> dict[str, Any
     for column in (
         NormalizedColumn.ACTION_IDS,
         NormalizedColumn.CLOCK_REMAINING_MS,
-        NormalizedColumn.CLOCK_STATUS,
-        NormalizedColumn.CLOCK_PRECISION_MS,
     ):
-        values = updated.get(column.value)
-        if values is not None:
-            updated[column.value] = list(values)[:prefix_plies]
+        updated[column.value] = list(updated[column.value])[:prefix_plies]
     updated[NormalizedColumn.PLY_COUNT.value] = len(
         updated[NormalizedColumn.ACTION_IDS.value]
     )

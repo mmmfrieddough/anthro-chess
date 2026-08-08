@@ -30,6 +30,7 @@ from typing import Any
 
 from anthro_chess.data.artifacts import (
     DataLoadingError,
+    file_sha256,
     normalized_shard_paths,
     read_normalized_rows,
 )
@@ -60,6 +61,16 @@ _CONTENT_COLUMNS = (
 _CONTENT_KEY_COLUMNS = tuple(
     column for column in _CONTENT_COLUMNS if column != NormalizedColumn.SPLIT.value
 )
+
+#: Scans from earlier in this process. A sweep checks one checkpoint against
+#: one pool once per benchmark, and each check re-reads every training row to
+#: re-derive the same non-overlap. Both dictionaries are keyed on the
+#: checksums of the files a scan read and on what it selected from them, so a
+#: hit is proof that the same bytes were scanned; checksumming the corpus
+#: costs 0.1 s against the 40 s read it saves, and a corpus rewritten in place
+#: is scanned again rather than remembered.
+_TRAINING_IDS: dict[tuple[str, ...], set[int]] = {}
+_CONTENT_KEYS: dict[tuple[str, ...], set[str]] = {}
 
 
 class LeakageError(ValueError):
@@ -216,16 +227,26 @@ def _training_paths(
     return paths
 
 
+def _scan_key(paths: Sequence[Path], selected: str) -> tuple[str, ...]:
+    """Identify a scan by the bytes it read and what it kept from them."""
+
+    return (selected, *(file_sha256(path) for path in paths))
+
+
 def _training_game_ids(paths: Sequence[Path], split: str) -> tuple[set[int], int]:
-    identifiers: set[int] = set()
-    for path in paths:
-        for row in _read(path, _IDENTITY_COLUMNS):
-            if row[NormalizedColumn.SPLIT.value] == split:
-                identifiers.add(int(row[NormalizedColumn.GAME_ID.value]))
-    if not identifiers:
-        raise LeakageError(
-            f"the checkpoint's training corpus holds no {split} split games"
-        )
+    key = _scan_key(paths, split)
+    identifiers = _TRAINING_IDS.get(key)
+    if identifiers is None:
+        identifiers = set()
+        for path in paths:
+            for row in _read(path, _IDENTITY_COLUMNS):
+                if row[NormalizedColumn.SPLIT.value] == split:
+                    identifiers.add(int(row[NormalizedColumn.GAME_ID.value]))
+        if not identifiers:
+            raise LeakageError(
+                f"the checkpoint's training corpus holds no {split} split games"
+            )
+        _TRAINING_IDS[key] = identifiers
     return identifiers, len(identifiers)
 
 
@@ -233,20 +254,35 @@ def _training_content_keys(
     paths: Sequence[Path],
     split: str,
 ) -> tuple[set[str], int]:
-    keys: set[str] = set()
-    for path in paths:
-        for row in _read(path, _CONTENT_COLUMNS):
-            if row[NormalizedColumn.SPLIT.value] == split:
-                keys.add(_content_key(row))
-    if not keys:
-        raise LeakageError(
-            f"the checkpoint's training corpus holds no {split} split games"
-        )
+    key = _scan_key(paths, split)
+    keys = _CONTENT_KEYS.get(key)
+    if keys is None:
+        keys = set()
+        for path in paths:
+            for row in _read(path, _CONTENT_COLUMNS):
+                if row[NormalizedColumn.SPLIT.value] == split:
+                    keys.add(_content_key(row))
+        if not keys:
+            raise LeakageError(
+                f"the checkpoint's training corpus holds no {split} split games"
+            )
+        _CONTENT_KEYS[key] = keys
     return keys, len(keys)
 
 
 def _pool_content_keys(pool: FrozenPool) -> set[str]:
-    return {_content_key(row) for row in _read(pool.games_path, _CONTENT_KEY_COLUMNS)}
+    # An empty selection: a pool holds one split and every row of it counts.
+    # Sharing the training side's dictionary is safe because the checksums are
+    # part of the key, so a hit across the two can only be the same bytes read
+    # the same way.
+    key = _scan_key((pool.games_path,), "")
+    keys = _CONTENT_KEYS.get(key)
+    if keys is None:
+        keys = {
+            _content_key(row) for row in _read(pool.games_path, _CONTENT_KEY_COLUMNS)
+        }
+        _CONTENT_KEYS[key] = keys
+    return keys
 
 
 def _content_key(row: Mapping[str, Any]) -> str:

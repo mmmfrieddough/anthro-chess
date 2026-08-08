@@ -246,6 +246,19 @@ class HumanReference:
         }
 
 
+#: The columns :func:`human_reference` reads, beside the game id every pool
+#: read needs. Declared here so a caller projecting its pool read cannot drift
+#: from what this function goes on to index.
+REFERENCE_COLUMNS = (
+    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.WHITE_NORMALIZED_RATING.value,
+    NormalizedColumn.BLACK_NORMALIZED_RATING.value,
+    NormalizedColumn.ACTION_IDS.value,
+    NormalizedColumn.INITIAL_POSITION.value,
+    NormalizedColumn.RESULT.value,
+)
+
+
 def human_reference(
     rows: Sequence[Mapping[str, Any]],
     config: ReferenceConfig,
