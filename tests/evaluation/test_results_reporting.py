@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from anthro_chess.evaluation.results import (
@@ -46,6 +47,10 @@ from anthro_chess.evaluation.results import (
     render_provenance,
     render_report,
     series_fingerprint,
+)
+from anthro_chess.evaluation.results.paired import (
+    draw_multiplicity,
+    stratum_buckets,
 )
 from anthro_chess.evaluation.results.reporting import (
     MAXIMUM_LINE_WIDTH,
@@ -2094,3 +2099,36 @@ def test_short_identifiers_keep_the_column_at_its_minimum() -> None:
     assert _header(rendered).index("better") == (
         indent + MINIMUM_METRIC_COLUMN_WIDTH + separator
     )
+
+
+def test_a_rescaled_stratified_draw_removes_the_plug_in_understatement() -> None:
+    """A plug-in draw of `n` reports `(n-1)/n` of the variance it should.
+
+    Decision 0039 measures what that costs where a stratum is small, and names
+    the correction: take one fewer and scale the counts back up. Two units to a
+    stratum is where it is worst and is what the reduced puzzle sweep scores.
+    """
+
+    values = np.asarray([0.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float64)
+    buckets = stratum_buckets(["low", "low", "mid", "mid", "high", "high"])
+    means = {
+        rescale: np.asarray(
+            [
+                draw_multiplicity(
+                    np.random.default_rng(seed),
+                    units=len(values),
+                    buckets=buckets,
+                    rescale=rescale,
+                )
+                @ values
+                / len(values)
+                for seed in range(4000)
+            ]
+        )
+        for rescale in (False, True)
+    }
+
+    # Each stratum holds one zero and one one, so a stratified mean has
+    # variance 1/12 exactly; the plug-in draw reports half of it.
+    assert float(np.var(means[True])) == pytest.approx(1.0 / 12.0, rel=0.05)
+    assert float(np.var(means[False])) == pytest.approx(1.0 / 24.0, rel=0.05)

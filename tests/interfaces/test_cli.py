@@ -1170,6 +1170,14 @@ def test_eval_puzzles_reports_the_resolution_it_bought(
     printed = capsys.readouterr().out
     assert "4 of 8 puzzle(s), 2 per rating" in printed
     assert re.search(r"Resolution: \d+\.\d\d pp for independent readings", printed)
+    # Decision 0040: the slope and the ordering are what a below-resolution
+    # reading was once written up from, so neither is printed unqualified.
+    assert re.search(r"Greedy slope=-?\d+\.\d{4} \((±|spread unknown)", printed)
+    assert re.search(r"order=\d\.\d{3} \((±|spread unknown)", printed)
+    assert "Response resolution: 1000 stratified refits of 4 redrawn puzzle(s)" in (
+        printed
+    )
+    assert re.search(r"fitted puzzle rating: (±\d|spread unknown)", printed)
     assert max(len(text) for text in printed.splitlines()) <= 120
 
 
@@ -2240,3 +2248,43 @@ def test_a_missing_data_root_says_what_it_would_have_to_hold(
     error = capsys.readouterr().err
     assert "ANTHRO_CHESS_DATA_ROOT" in error
     assert "corpora" in error
+
+
+def test_eval_puzzles_says_when_it_estimated_no_response_resolution(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    write_puzzle_artifact: Callable[..., Path],
+    inference_run: Callable[..., Path],
+) -> None:
+    """A run that could not estimate a resolution has to say so, not go quiet."""
+
+    artifact = write_puzzle_artifact(
+        tmp_path / "puzzles",
+        ratings=(1200, 1400),
+        puzzles_per_rating=4,
+    )
+    normalized, _ = write_corpus(
+        tmp_path / "corpus",
+        [{**normalized_row(1, split="train"), "source_id": "lichess"}],
+    )
+    checkpoint = inference_run(tmp_path / "run")
+    config = tmp_path / "puzzles.toml"
+    config.write_text(
+        f'puzzle_set = "{artifact}"\n'
+        f'training_normalized = "{normalized}"\n'
+        "target_ratings = [1000, 1800]\n"
+        "\n[noise]\n"
+        "enabled = false\n"
+        "\n[model]\n"
+        f'checkpoint_path = "{checkpoint}"\n'
+        'device = "cpu"\n',
+        encoding="utf-8",
+    )
+
+    assert main(["eval", "puzzles", "--config", str(config), "--no-record"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "Response resolution: not estimated" in printed
+    assert "(±" not in printed

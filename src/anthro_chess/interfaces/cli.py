@@ -1746,27 +1746,69 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             f"curve gap={rating.greedy_curve_distance:.3f}/"
             f"{rating.sampled_curve_distance:.3f}"
         )
+    resolution = result.resolution
+
+    if resolution is None:
+        spreads = ("", "", "", "")
+    else:
+        spreads = (
+            f" ({_spread(resolution.greedy_rating_slope, 4)})",
+            f" ({_spread(resolution.greedy_order_accuracy, 3)})",
+            f" ({_spread(resolution.sampled_rating_slope, 4)})",
+            f" ({_spread(resolution.sampled_order_accuracy, 3)})",
+        )
     lines.extend(
         [
             "",
             (
-                f"Greedy slope={result.greedy_rating_slope:.4f}, "
-                f"order={result.greedy_order_accuracy:.3f}"
+                f"Greedy slope={result.greedy_rating_slope:.4f}{spreads[0]}, "
+                f"order={result.greedy_order_accuracy:.3f}{spreads[1]}"
             ),
             (
-                f"Sampled slope={result.sampled_rating_slope:.4f}, "
-                f"order={result.sampled_order_accuracy:.3f}"
-            ),
-            (
-                f"Training overlap: {result.overlapping_puzzles}/"
-                f"{result.dataset.selected_games} puzzle source games "
-                f"({result.overlap_rate:.3%}) across "
-                f"{result.training_games} training/validation games"
+                f"Sampled slope={result.sampled_rating_slope:.4f}{spreads[2]}, "
+                f"order={result.sampled_order_accuracy:.3f}{spreads[3]}"
             ),
         ]
     )
+    if resolution is None:
+        lines.append(
+            "Response resolution: not estimated; this run switched noise "
+            "estimation off, or the scored puzzles are too thin to redraw"
+        )
+    else:
+        # The widest of the configured grid rather than all of them, because
+        # the line has to hold at any grid size and the detail payload keeps
+        # each one. They differ by a few percent on a real reading.
+        lines.extend(
+            [
+                (
+                    f"Response resolution: {resolution.resamples} stratified "
+                    f"refits of {resolution.puzzles} redrawn puzzle(s), "
+                    f"{resolution.coverage:.3g}x coverage at "
+                    f"{resolution.confidence:.0%} confidence"
+                ),
+                (
+                    "  fitted puzzle rating: "
+                    f"{_spread(resolution.widest_greedy_fit, 1)} greedy, "
+                    f"{_spread(resolution.widest_sampled_fit, 1)} sampled, "
+                    "widest over the configured grid"
+                ),
+            ]
+        )
+    lines.append(
+        f"Training overlap: {result.overlapping_puzzles}/"
+        f"{result.dataset.selected_games} puzzle source games "
+        f"({result.overlap_rate:.3%}) across "
+        f"{result.training_games} training/validation games"
+    )
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
+
+
+def _spread(value: float | None, digits: int) -> str:
+    """Render a resampled spread, naming an unmoved quantity rather than zero."""
+
+    return "spread unknown" if value is None else f"±{value:.{digits}f}"
 
 
 def _render_inference(result: InferenceBenchmarkResult) -> str:

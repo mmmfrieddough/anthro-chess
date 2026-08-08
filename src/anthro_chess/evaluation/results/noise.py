@@ -484,6 +484,30 @@ def bounded_floor(
     return bound, coverage * math.sqrt(2.0) * bound
 
 
+def bounded_spread(
+    dispersion: float,
+    *,
+    degrees_of_freedom: int,
+    coverage: float = DEFAULT_COVERAGE,
+    confidence: float = DEFAULT_CONFIDENCE,
+) -> float:
+    """Return the covered bound on one quantity's own spread.
+
+    The same coverage and confidence as a floor, without the ``sqrt(2)``: this
+    describes one quantity rather than the difference between two independent
+    replicates of it. An estimator that resamples a difference directly, or
+    that qualifies a single reading's own number, wants this one.
+    """
+
+    if coverage <= 0.0 or not math.isfinite(coverage):
+        raise NoiseCharacterizationError("coverage must be a finite, positive factor")
+    return coverage * dispersion_bound(
+        dispersion,
+        degrees_of_freedom=degrees_of_freedom,
+        confidence=confidence,
+    )
+
+
 #: Convergence controls for the incomplete gamma function the chi-squared
 #: quantile inverts. The project depends on neither SciPy nor NumPy in this
 #: layer — the results package is importable from a bare install — so the
@@ -880,6 +904,7 @@ __all__ = [
     "NoiseFloorIndex",
     "ProcessDispersion",
     "bounded_floor",
+    "bounded_spread",
     "build_characterization",
     "dispersion_bound",
     "environment_key",

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import cast
 
 import chess
+import numpy as np
 import pytest
 import torch
 import zstandard
@@ -43,8 +44,11 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     PuzzleBenchmarkResult,
     _accepted_actions,
     _decision_tasks,
+    _fit_curve,
     _paired_contributions,
+    _response_resolution,
     _score_rating,
+    _ScoredRating,
     _training_overlap,
     score_puzzle_set,
 )
@@ -581,6 +585,103 @@ def test_puzzle_details_retain_source_game_aligned_checkpoint_contributions() ->
         assert metric_definition(metric).paired_sampling_floor
 
 
+def _scored_over_strata(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+    target_ratings: Sequence[int],
+    puzzles_per_rating: int = 4,
+) -> tuple[PuzzleSet, tuple[_ScoredRating, ...]]:
+    """Score a set holding ``puzzles_per_rating`` puzzles at each exact rating."""
+
+    puzzle_set = load_puzzle_set(
+        write_puzzle_artifact(
+            tmp_path / "puzzles",
+            ratings=(1200, 1400),
+            puzzles_per_rating=puzzles_per_rating,
+        )
+    )
+    runner = _ControlledRunner(puzzle_set.puzzles, fail_continuations=True)
+    tasks = _decision_tasks(puzzle_set.puzzles)
+    return puzzle_set, tuple(
+        _score_rating(
+            puzzle_set,
+            puzzle_set.puzzles,
+            runner,
+            tasks,
+            target_rating=rating,
+            temperature=0.0,
+            batch_size=4,
+        )
+        for rating in target_ratings
+    )
+
+
+def test_the_response_resolution_refits_puzzles_redrawn_within_rating_strata(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+) -> None:
+    """A rating response is a comparison within one reading over one draw.
+
+    Every configured rating is scored on the same puzzles, so one redraw has to
+    move all of them together for the spread to describe the response rather
+    than several unrelated readings.
+    """
+
+    target_ratings = (1000, 1800)
+    _, scored = _scored_over_strata(tmp_path, write_puzzle_artifact, target_ratings)
+
+    resolution = _response_resolution(scored, NoiseConfig())
+
+    assert resolution is not None
+    assert (resolution.puzzles, resolution.resamples) == (8, 1000)
+    low, high = resolution.ratings
+    # The controlled runner answers every low-rating decision wrongly, so no
+    # redraw of it can move that fit, and a spread of zero there would claim
+    # the opposite of what was observed.
+    assert low.greedy_fitted_puzzle_rating is None
+    assert high.greedy_fitted_puzzle_rating is not None
+    assert high.greedy_fitted_puzzle_rating > 0.0
+    assert resolution.greedy_rating_slope is not None
+    assert resolution.greedy_rating_slope > 0.0
+
+
+def test_a_reading_that_estimates_no_noise_reports_no_response_resolution(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+) -> None:
+    target_ratings = (1000, 1800)
+    _, scored = _scored_over_strata(tmp_path, write_puzzle_artifact, target_ratings)
+
+    assert _response_resolution(scored, NoiseConfig(enabled=False)) is None
+
+
+def test_the_tabulated_fit_inverse_reproduces_the_bisected_one(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+) -> None:
+    """The resolution refits by inverting a curve rather than by bisecting.
+
+    That is sound only while the two agree, since the spread it reports has to
+    belong to the quantity printed beside it.
+    """
+
+    target_ratings = (1000, 1800)
+    puzzle_set, scored = _scored_over_strata(
+        tmp_path,
+        write_puzzle_artifact,
+        target_ratings,
+    )
+    puzzle_ratings = [puzzle.rating for puzzle in puzzle_set.puzzles]
+    fitted, totals = _fit_curve(puzzle_ratings)
+
+    for scored_rating in scored:
+        outcomes = [score.greedy_line for score in scored_rating.scores]
+        assert float(np.interp(sum(outcomes), totals, fitted)) == pytest.approx(
+            scored_rating.result.greedy_fitted_puzzle_rating,
+            abs=1e-2,
+        )
+
+
 def test_training_overlap_joins_source_keys_and_excludes_test_games(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, object]],
@@ -782,3 +883,19 @@ def _benchmark_config(
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
     )
+
+
+def test_a_rating_holding_one_puzzle_gets_no_response_resolution(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+) -> None:
+    """A stratum of one leaves nothing for the rescaled draw to take."""
+
+    _, scored = _scored_over_strata(
+        tmp_path,
+        write_puzzle_artifact,
+        (1000, 1800),
+        puzzles_per_rating=1,
+    )
+
+    assert _response_resolution(scored, NoiseConfig()) is None
