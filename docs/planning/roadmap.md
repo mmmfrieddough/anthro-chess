@@ -90,8 +90,8 @@ is not a calibration verdict. Anchoring the resulting scale against an external
 engine is a different question needing an external binary, and stays later.
 
 Three things were deferred out of this stage and have not arrived.
-Human-likeness evaluation beyond distribution metrics — a compact human-vs-engine classifier —
-becomes useful once the model generates coherent games, but should not block the
+Human-likeness evaluation beyond distribution metrics — a compact
+human-vs-engine classifier — becomes useful once the model generates coherent games, but should not block the
 basic bot or turn into a separate anti-cheat project. Timing diagnostics arrive
 with timing itself, in the stage that adds it. And the per-ply multi-label form
 of opening classification stays in stage 6; the game-level form landed here only
