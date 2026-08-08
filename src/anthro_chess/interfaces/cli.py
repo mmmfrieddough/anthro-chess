@@ -2174,6 +2174,7 @@ def _optional_value(value: float | None, spec: str = ".2f") -> str:
 
 
 def _render_ladder(result: LadderBenchmarkResult) -> str:
+    from anthro_chess.evaluation.ladder import SeatConditioning, SeatKey
     from anthro_chess.evaluation.results.metrics import (
         LADDER_ADJACENT_RATING_ORDER_ACCURACY,
         LADDER_FITTED_RATING,
@@ -2196,12 +2197,11 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             f"on the {fit.anchor_basis} basis"
         ),
     ]
-    lines.extend(_render_ladder_resolution(result))
     if fit.clamped:
         lines.append(
             "  clamped        "
             + ", ".join(seat.label for seat in fit.clamped)
-            + " (won or lost every game, so the fit has no finite estimate)"
+            + " (pinned at the declared spread rather than fitted within it)"
         )
     if fit.unscored:
         lines.append(
@@ -2209,6 +2209,7 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             + ", ".join(seat.label for seat in fit.unscored)
             + " (no scored game)"
         )
+    lines.extend(_render_ladder_resolution(result))
     for reading in result.readings:
         lines.extend(
             [
@@ -2222,7 +2223,9 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             f"    {rating:>10}{fitted:>10.0f}{fitted - rating:>+9.0f}"
             + _resolves_column(
                 result,
-                f"{rating}@t{reading.temperature:g}",
+                SeatKey(
+                    SeatConditioning.CONDITIONED, rating, reading.temperature
+                ).label,
                 LADDER_FITTED_RATING.identifier,
                 0,
             )
@@ -2302,18 +2305,27 @@ def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
     one look identical at the point of use and mean different things.
     """
 
+    from anthro_chess.evaluation.ladder import LADDER_DETERMINISTIC_METHOD
+
     resolution = result.resolution
     if resolution is None:
         return ["Resolution: not estimated; this run switched it off"]
     lines = [f"Resolution: {resolution.method}"]
-    if not resolution.resamples:
+    if resolution.method == LADDER_DETERMINISTIC_METHOD:
         lines.append(
             "  stated         every pairing replays, so the floor beside each "
             "number is exactly zero"
         )
         return lines
+    if not resolution.resamples:
+        lines.append(
+            f"  too thin       {resolution.redrawn_games} redrawn game(s) show "
+            "no spread to bound, so nothing here is qualified"
+        )
+        return lines
     lines.append(
-        f"  resamples      {resolution.resamples}, over "
+        f"  resamples      {resolution.fitted_resamples} of "
+        f"{resolution.resamples} fitted, over "
         f"{resolution.redrawn_games} redrawn game(s)"
     )
     if resolution.replayed_pairings:
@@ -2332,6 +2344,8 @@ def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
 def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
     """Name every reported number that has no floor, and why it cannot."""
 
+    from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
+
     resolution = result.resolution
     if resolution is None or not resolution.unqualifiable:
         return []
@@ -2340,7 +2354,7 @@ def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
         lines.extend(
             textwrap.wrap(
                 f"{scope} {metric}: {reason}",
-                width=116,
+                width=MAXIMUM_LINE_WIDTH,
                 initial_indent="    ",
                 subsequent_indent="      ",
             )
@@ -2375,8 +2389,10 @@ def _resolves_column(
     """Return the same, as a fixed-width column.
 
     Dashed rather than annotated where nothing qualifies the number, because a
-    reason long enough to be useful is long enough to break the table. The
-    ``Unqualifiable`` block below names every dash and says why.
+    reason long enough to be useful is long enough to break the table. Where
+    there is a number to qualify, the ``Unqualifiable`` block below names the
+    dash and says why; a seat the fit could not place at all is dashed in both
+    columns and explained by the ``unplaced`` line above.
     """
 
     resolution = result.resolution

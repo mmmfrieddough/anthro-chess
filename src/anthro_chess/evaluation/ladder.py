@@ -668,9 +668,17 @@ class LadderResolution:
     #: Why a quantity has no floor, keyed the same way.
     unqualifiable: Mapping[tuple[str, str], str]
     method: str
-    #: Resamples behind every floor. Zero on a stated floor, which does not
-    #: depend on resampling and stands where a bootstrap could not.
+    #: What every floor here claims. Both scale it, so a stored width cannot be
+    #: read or compared against another reading's without them.
+    coverage: float
+    confidence: float
+    #: Resamples drawn. Zero on a stated floor, which does not depend on
+    #: resampling and stands where a bootstrap could not.
     resamples: int
+    #: Resamples that produced a fit. Below ``resamples`` where a draw left
+    #: fewer than two seats with a scored game, which is a thin reading rather
+    #: than an error but is not what the configured count says it is.
+    fitted_resamples: int
     #: Games in the pairings a fresh seed would redraw, which is what the
     #: dispersion bound's degrees of freedom count. Games in a pairing of greedy
     #: seats are excluded: they replay, so they contribute no spread to bound.
@@ -692,7 +700,10 @@ class LadderResolution:
 
         return {
             "method": self.method,
+            "coverage": self.coverage,
+            "confidence": self.confidence,
             "resamples": self.resamples,
+            "fitted_resamples": self.fitted_resamples,
             "redrawn_games": self.redrawn_games,
             "replayed_pairings": self.replayed_pairings,
             "non_convergent_resamples": self.non_convergent_resamples,
@@ -1024,14 +1035,9 @@ def fit_ratings(
         if math.isclose(strengths[seat], floor, rel_tol=1e-9)
         or math.isclose(strengths[seat], ceiling, rel_tol=1e-9)
     }
-    if not converged:
-        logger.info(
-            "Rating fit did not converge within %s iteration(s); reporting the "
-            "last estimate, which is a result about the ladder rather than an "
-            "error",
-            maximum_iterations,
-        )
-
+    # Convergence is returned rather than logged here. The reading logs its own
+    # state once, and this runs a thousand more times inside the resample that
+    # qualifies it, where a line per fit would bury the reading's own.
     ratings = {seat: _rating(strength) for seat, strength in strengths.items()}
     basis = [seat for seat in anchor_seats if seat in ratings]
     anchor_basis = "reference-temperature"
@@ -1363,15 +1369,7 @@ def _resolution(
     method = LADDER_BOOTSTRAP_METHOD if redrawn else LADDER_DETERMINISTIC_METHOD
     source = f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} {method}"
     observed = _quantities(config, seats, pairings, fit, workload, device=device)
-    clamped = {seat.label for seat in fit.clamped}
-    unqualifiable = {
-        (label, LADDER_FITTED_RATING.identifier): (
-            "the seat won or lost every game, so the fit clamped it at the "
-            "declared spread; the number is a bound rather than an estimate and "
-            "a resample of it reproduces the same bound"
-        )
-        for label in clamped
-    }
+    unqualifiable = _unbounded_seats(seats, pairings)
     if not redrawn:
         # Nothing to draw. Every seat is greedy, so a fresh seed replays the
         # ladder move for move and the delta between two such readings is
@@ -1384,9 +1382,37 @@ def _resolution(
             },
             unqualifiable=unqualifiable,
             method=method,
+            coverage=settings.coverage,
+            confidence=settings.confidence,
             resamples=0,
+            fitted_resamples=0,
             redrawn_games=0,
             replayed_pairings=len(pairings),
+            non_convergent_resamples=0,
+        )
+
+    redrawn_games = sum(pairing.played for pairing in redrawn.values())
+    if redrawn_games < 2:
+        # One game shows no spread, and a bound needs a degree of freedom to be
+        # computed at all. Saying so beats failing a reading whose games are
+        # already played.
+        return LadderResolution(
+            floors={},
+            unqualifiable={
+                key: (
+                    "the pairings a fresh seed would redraw hold one game "
+                    "between them, which shows no spread to bound"
+                )
+                for key in observed
+            }
+            | unqualifiable,
+            method=method,
+            coverage=settings.coverage,
+            confidence=settings.confidence,
+            resamples=0,
+            fitted_resamples=0,
+            redrawn_games=redrawn_games,
+            replayed_pairings=len(pairings) - len(redrawn),
             non_convergent_resamples=0,
         )
 
@@ -1397,6 +1423,7 @@ def _resolution(
     }
     replicates: dict[tuple[str, str], list[float]] = {key: [] for key in observed}
     non_convergent = 0
+    fitted = 0
     for resample in range(settings.resamples):
         resampled = [
             _resampled_pairing(pairing, outcomes[index][resample])
@@ -1411,6 +1438,7 @@ def _resolution(
             # not a fit at all. It is dropped rather than failing the reading,
             # and the quantities it would have carried lose a replicate.
             continue
+        fitted += 1
         non_convergent += not replicate.converged
         for key, value in _quantities(
             config, seats, resampled, replicate, workload, device=device
@@ -1418,7 +1446,6 @@ def _resolution(
             if key in replicates:
                 replicates[key].append(value)
 
-    freedom = sum(pairing.played for pairing in redrawn.values()) - 1
     floors: dict[tuple[str, str], NoiseFloor] = {}
     for key in observed:
         if key in unqualifiable:
@@ -1430,10 +1457,26 @@ def _resolution(
                 "no spread to read"
             )
             continue
+        dispersion = statistics.stdev(values)
+        if dispersion == 0.0:
+            # Not a measured absence of noise. The games were redrawn a
+            # thousand times and this number did not move, which says the
+            # resample could not move it rather than that a re-run would not:
+            # a step function saturated at its bound, or a quantity computed
+            # from a seat the fit pinned. A floor of zero here reads as perfect
+            # resolution and licenses every delta, which is the failure a floor
+            # exists to prevent. The genuine zero is stated, not estimated, and
+            # comes out of the branch above.
+            unqualifiable[key] = (
+                "every resample returned the same value, so the redraw could "
+                "not move it and there is no spread to bound; a stated floor of "
+                "zero is a different claim and is reported as one"
+            )
+            continue
         floors[key] = NoiseFloor(
             value=floor_from_dispersion(
-                statistics.stdev(values),
-                degrees_of_freedom=freedom,
+                dispersion,
+                degrees_of_freedom=redrawn_games - 1,
                 coverage=settings.coverage,
                 confidence=settings.confidence,
             ),
@@ -1444,11 +1487,41 @@ def _resolution(
         floors=floors,
         unqualifiable=unqualifiable,
         method=method,
+        coverage=settings.coverage,
+        confidence=settings.confidence,
         resamples=settings.resamples,
-        redrawn_games=freedom + 1,
+        fitted_resamples=fitted,
+        redrawn_games=redrawn_games,
         replayed_pairings=len(pairings) - len(redrawn),
         non_convergent_resamples=non_convergent,
     )
+
+
+def _unbounded_seats(
+    seats: Sequence[SeatKey],
+    pairings: Sequence[LadderPairing],
+) -> dict[tuple[str, str], str]:
+    """Return the seats whose fitted rating is a bound rather than an estimate.
+
+    A seat that scored nothing or scored everything has no finite
+    maximum-likelihood rating, so the fit reports the declared spread instead.
+    Read from the seat's own record rather than from ``RatingFit.clamped``,
+    which also fires where the spread merely binds on an ordinary record — that
+    seat's rating moves under resampling and is qualified like any other.
+    """
+
+    unqualifiable: dict[tuple[str, str], str] = {}
+    for seat in seats:
+        games = _seat_games(seat, pairings)
+        points = _seat_points(seat, pairings)
+        if not games or 0.0 < points < games:
+            continue
+        unqualifiable[(seat.label, LADDER_FITTED_RATING.identifier)] = (
+            "the seat scored nothing or scored everything, so it has no finite "
+            "maximum-likelihood rating and the fit reports the declared spread; "
+            "every resample of it sweeps the same way and reproduces the bound"
+        )
+    return unqualifiable
 
 
 def _quantities(

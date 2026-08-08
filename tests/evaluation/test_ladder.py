@@ -90,6 +90,23 @@ class GradedRunner:
 
 
 @dataclass
+class SweepingRunner:
+    """A stand-in policy that resigns at once below 2000 and never above it.
+
+    The top seat therefore wins every game it plays, which is the record whose
+    maximum-likelihood rating is unbounded — a bound rather than an estimate,
+    and the one case a resample cannot say anything about. The two weak seats
+    still split their own pairing, so exactly one seat sweeps.
+    """
+
+    def predict(self, context: DecisionContext) -> torch.Tensor:
+        weak = (context.target_rating or 0) < 2000
+        logits = torch.full((ACTION_VOCABULARY_SIZE,), -30.0 if weak else 0.0)
+        logits[RESIGNATION_ACTION_ID] = 0.0 if weak else -30.0
+        return logits
+
+
+@dataclass
 class NeverEndingRunner:
     """A stand-in policy that plays on and never resigns.
 
@@ -702,26 +719,36 @@ def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
 
     assert resolution is not None
     assert resolution.method == LADDER_BOOTSTRAP_METHOD
+    # Nothing was silently dropped, and the floors say what they claim.
+    assert resolution.fitted_resamples == resolution.resamples
+    assert resolution.coverage > 0.0
+    assert 0.0 < resolution.confidence < 1.0
     reading = result.reading(1.0)
-    row_metrics = (
-        LADDER_RATING_ORDER_ACCURACY,
-        LADDER_ADJACENT_RATING_ORDER_ACCURACY,
+    for definition in (
         LADDER_RATING_ERROR,
         LADDER_FITTED_RATING_SLOPE,
         LADDER_FITTED_RATING_SPAN,
-    )
-    for definition in row_metrics:
+    ):
         floor = resolution.floor(reading.label, definition.identifier)
         assert floor is not None, definition.identifier
         assert floor.kind == "evaluation"
     for seat in result.seats:
-        for definition in (LADDER_FITTED_RATING, LADDER_SCORED_GAME_RATE):
-            assert resolution.floor(seat.label, definition.identifier) is not None
+        assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
     for definition in (
         LADDER_TEMPERATURE_RESPONSE,
         LADDER_ABLATED_TEMPERATURE_RESPONSE,
     ):
         assert resolution.floor(RESPONSE_SCOPE, definition.identifier) is not None
+    # An ordering over two configured ratings is one binary comparison, and a
+    # fixture that finishes every game has a scored share the redraw cannot
+    # move. Either answer is allowed for those; a bare number is not.
+    named = [
+        (reading.label, LADDER_RATING_ORDER_ACCURACY.identifier),
+        (reading.label, LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier),
+        *((seat.label, LADDER_SCORED_GAME_RATE.identifier) for seat in result.seats),
+    ]
+    for key in named:
+        assert (key in resolution.floors) != (key in resolution.unqualifiable), key
 
 
 def test_a_recorded_ladder_measurement_carries_its_own_floor(tmp_path: Path) -> None:
@@ -747,7 +774,7 @@ def test_a_recorded_ladder_measurement_carries_its_own_floor(tmp_path: Path) -> 
 
     assert LADDER_FITTED_RATING.identifier in qualified
     assert LADDER_SCORED_GAME_RATE.identifier in qualified
-    assert LADDER_RATING_ORDER_ACCURACY.identifier in qualified
+    assert LADDER_RATING_ERROR.identifier in qualified
     assert LADDER_FITTED_RATING_SLOPE.identifier in qualified
     # The error profile is a mean over decisions rather than an output of the
     # fit, so the refit does not reach it and its delta reports the noise as
@@ -817,8 +844,8 @@ def test_a_thicker_sample_resolves_a_ladder_more_finely() -> None:
     tighten would be describing the configuration rather than the sample.
     """
 
-    thin = _run(_config(grid={"seeds": (0,)}, generation={"games_per_position": 1}))
-    thick = _run(_config(grid={"seeds": (0, 1)}, generation={"games_per_position": 4}))
+    thin = _run(_config(grid={"seeds": (0,)}))
+    thick = _run(_config(grid={"seeds": (0, 1, 2, 3)}))
 
     assert thin.resolution is not None
     assert thick.resolution is not None
@@ -831,38 +858,92 @@ def test_a_thicker_sample_resolves_a_ladder_more_finely() -> None:
     assert thick_floor.value < thin_floor.value
 
 
-def test_a_clamped_seat_is_named_unqualifiable_rather_than_given_a_zero() -> None:
+def test_a_seat_with_no_finite_rating_is_named_rather_than_given_a_zero() -> None:
     """A bound is not an estimate, and a resample of one reproduces the bound.
 
-    Every resample of a seat that won every game wins every game again, so its
+    Every resample of a seat that lost every game loses every game again, so its
     spread is zero and a floor built from it would license any delta at all.
     """
 
-    result = _run(
-        _config(
-            grid={
-                "target_ratings": (1200, 2000),
-                "temperatures": (0.0, 1.0),
-                "reference_temperature": 1.0,
-            },
-            fit={"maximum_spread": 200.0},
-            ablation={"enabled": False},
-        )
-    )
+    result = _run(_config(), runner=SweepingRunner())
+    resolution = result.resolution
+
+    assert resolution is not None
+    swept = [seat for seat in result.seats if seat.points in (0.0, float(seat.games))]
+    assert swept
+    for seat in swept:
+        key = (seat.label, LADDER_FITTED_RATING.identifier)
+        assert key not in resolution.floors
+        assert "no finite maximum-likelihood rating" in resolution.unqualifiable[key]
+
+
+def test_a_spread_that_merely_binds_still_qualifies_its_seat() -> None:
+    """`clamped` is not the same question as `has no finite estimate`.
+
+    A narrow declared spread pins a seat with an ordinary win-and-loss record.
+    That rating still moves under resampling, so withholding its floor would
+    throw away a real one and say something false about why.
+    """
+
+    result = _run(_config(fit={"maximum_spread": 30.0}))
     resolution = result.resolution
 
     assert resolution is not None
     assert result.fit.clamped
     for seat in result.fit.clamped:
-        key = (seat.label, LADDER_FITTED_RATING.identifier)
-        assert key not in resolution.floors
-        assert "bound rather than an estimate" in resolution.unqualifiable[key]
+        measured = result.seat(seat)
+        if measured.points in (0.0, float(measured.games)):
+            continue
+        assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
 
 
-def test_the_shipped_ladder_resamples_a_thousand_times() -> None:
-    """A refit costs milliseconds, so the default is the plain bootstrap one."""
+def test_a_quantity_the_redraw_could_not_move_is_named_rather_than_zeroed() -> None:
+    """An estimated zero and a stated zero are different claims.
 
-    assert LadderBenchmarkConfig().resolution.resamples == 1000
+    A floor of zero from a bootstrap reads as perfect resolution and clears
+    every delta, so a quantity every resample reproduced exactly reports no
+    floor and says why. Only a ladder that replays states a zero.
+    """
+
+    result = _run(_config(), runner=SweepingRunner())
+    resolution = result.resolution
+
+    assert resolution is not None
+    assert resolution.method == LADDER_BOOTSTRAP_METHOD
+    assert all(floor.value > 0.0 for floor in resolution.floors.values())
+    reading = result.reading(1.0)
+    key = (reading.label, LADDER_RATING_ORDER_ACCURACY.identifier)
+    assert key not in resolution.floors
+    assert "every resample returned the same value" in resolution.unqualifiable[key]
+
+
+def test_a_single_redrawn_game_reports_no_floor_rather_than_failing() -> None:
+    """One game shows no spread, and a bound needs a degree of freedom.
+
+    The games are already played by the time this is asked, so the answer is a
+    reading that says it resolves nothing rather than a raised error.
+    """
+
+    result = _run(
+        _config(
+            grid={"seeds": (0,)},
+            generation={"games_per_position": 1, "swap_colors": False},
+            ablation={"enabled": False},
+        ),
+        runner=SweepingRunner(),
+    )
+    resolution = result.resolution
+    reading = result.reading(1.0)
+
+    assert resolution is not None
+    assert resolution.redrawn_games == 1
+    assert not resolution.floors
+    assert (
+        "no spread to bound"
+        in resolution.unqualifiable[
+            (reading.label, LADDER_FITTED_RATING_SLOPE.identifier)
+        ]
+    )
 
 
 def _readings(result: LadderBenchmarkResult) -> tuple[ResultEnvelope, ...]:

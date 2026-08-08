@@ -58,9 +58,10 @@ reduction — it *is* the reduction, run again. Every quantity is reached by the
 route the reading itself took, which is also what keeps a floor from describing
 a slightly different quantity from the number it sits beside.
 
-It is affordable. A refit of the declared 15-seat, 105-pairing grid costs about
-2.9 ms in this checkout, so the shipped thousand resamples cost roughly three
-seconds against a ladder that has run in about two hours.
+It is affordable. The whole estimate over the declared 15-seat, 105-pairing grid
+— a thousand redraws, a thousand refits, and the reductions read off each —
+measured 4.4 s in this checkout, against a ladder that has run in about two
+hours.
 
 ### The Floor Is Evaluation Noise, And Travels On The Measurement
 
@@ -107,20 +108,40 @@ case where they most need to know what it can bear. What is reported beside the
 floors is how many resamples also failed to converge, which is the thing that
 says how much to trust them.
 
-**A seat the fit clamped is not qualified, and the output says so.** Its number
-is the declared spread rather than an estimate, and no resample can improve on
-that: every resample of a seat that won every game wins every game again, so its
-spread is exactly zero and a floor built from it would license any delta at all.
-That is the `0.0000` ambiguity #175 raises, arriving through the one mechanism
-where the answer is knowable before a resample is drawn — so it is settled
-structurally, from `RatingFit.clamped`, rather than by inspecting the output of
-the bootstrap.
+**A seat with no finite rating is not qualified, and the output says so.** A
+seat that scored nothing or scored everything has no finite maximum-likelihood
+rating, so the fit reports the declared spread instead; every resample of it
+sweeps the same way and reproduces the same bound. Read from the seat's own
+record rather than from `RatingFit.clamped`, which fires wherever the spread
+binds — including on an ordinary win-and-loss record under a narrow spread,
+where the rating does move under resampling and is qualified like anything else.
 
-The reading names each such quantity and why, in its own result and in `anthro
-eval ladder`. `no_sampling_floor_reason` is not the vehicle: that declaration is
-a property of a metric in the registry and refuses only the data-sampling kind,
-where this is a property of one seat in one reading and refuses the evaluation
-kind.
+### A Zero That Was Estimated Is Not A Zero That Was Stated
+
+The rule above catches the case that is knowable before a resample is drawn. It
+is not the only route to a dispersion of exactly zero, and the others are not
+knowable in advance: an ordering is a step function that saturates at one as
+soon as the fit separates the seats, which is the expected outcome for a
+checkpoint that works, and a row quantity computed from a pinned seat inherits
+its stillness.
+
+**A quantity a redraw could not move is not qualified either.** A floor of zero
+from a bootstrap says every delta is a finding, which is precisely the failure a
+floor exists to prevent, and it is the `0.0000` ambiguity #175 raises. What the
+resample observed is that it could not move this number, not that a re-run would
+not — a wider sample generally can, which makes `unknown` the right verdict and
+work somebody could still do.
+
+The genuine zero is the stated one: a ladder whose every pairing replays, which
+comes out of the branch above carrying `deterministic-seats` as its method. The
+two are then distinguishable at the point of use, which is the whole point —
+before this, a floor of zero was one number for two situations.
+
+The reading names each unqualified quantity and why, in its own result and in
+`anthro eval ladder`. `no_sampling_floor_reason` is not the vehicle: that
+declaration is a property of a metric in the registry and refuses only the
+data-sampling kind, where this is a property of one quantity in one reading and
+refuses the evaluation kind.
 
 ### The Scored-Game Count Joins The Headline
 
@@ -134,10 +155,11 @@ A rate rather than a count, because sample size is deliberately outside series
 identity: a count would move when the seeds did, and stop being comparable
 across two readings of the same ladder.
 
-It is directional where the rest of the family is not. Decision 0030 puts the
-ply limit past the longest game in the corpus, so a seat playing the way its
-corpus does reaches it essentially never, and the share rising is the model
-learning to finish games rather than a dial being turned.
+It carries a direction, which most of the family does not — it joins ordering
+and the ladder error there. Decision 0030 puts the ply limit past the longest
+game in the corpus, so a seat playing the way its corpus does reaches it
+essentially never, and the share rising is the model learning to finish games
+rather than a dial being turned.
 
 ## Consequences
 
@@ -160,6 +182,14 @@ no spread at all, so a reduced grid run at one seed would report a floor of zero
 where the unstratified draw reports one that is merely too wide. A floor that
 understates is the failure floors exist to prevent, and choosing between them
 needs the measurement rather than an argument.
+
+**Withholding a floor protects a reading, not a comparison.** A report takes the
+widest floor of each kind offered by either side of a delta, so a seat that is a
+bound at one checkpoint and an estimate at the other is qualified by the
+estimate — a difference against a number that was never an estimate reads as
+cleared. The protection here holds where both sides withhold. Narrowing that
+rule belongs to the reporting layer, which serves every family, so it is filed
+rather than taken here.
 
 **The error profile is not qualified.** A seat's preferred-selection rate,
 policy regret and selected rank are means over decisions rather than outputs of

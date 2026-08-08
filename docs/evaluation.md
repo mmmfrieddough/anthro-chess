@@ -1524,8 +1524,8 @@ never. The count is therefore a statement about the seats, and it is the ladder
 quantity that has discriminated most sharply between checkpoints so far. It is
 concentrated in the sampling seats, which is where the temperature response is
 read. It is reported per seat as the share of that seat's games that reached a
-result, and it is the one ladder quantity carrying a direction the project is
-willing to name.
+result, which is one of the three ladder quantities carrying a direction the
+project is willing to name.
 
 Each seat's own error profile is recorded beside its strength, computed through
 the shared decision decomposition rather than a private one, since that layer
