@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 DATA_ROOT_VARIABLE = "ANTHRO_CHESS_DATA_ROOT"
@@ -60,8 +61,9 @@ ARTIFACT_ROOT_PAIR = (DATA_ROOT_VARIABLE, RUN_ROOT_VARIABLE)
 #: is a property of the installation rather than a misconfiguration, so it is
 #: reported apart from the problems and does not fail the command.
 MODEL_EXTRA_NOTE = (
-    "checkpoint pointers and the default model selection were not resolved "
-    "because the optional model dependencies are not installed"
+    "checkpoint pointers, whether each run's record still loads, and the "
+    "default model selection were not resolved because the optional model "
+    "dependencies are not installed"
 )
 
 
@@ -124,23 +126,35 @@ class RootStatus:
 
 @dataclass(frozen=True)
 class RetainedRun:
-    """One retained training run beneath the run root."""
+    """One retained training run beneath the run root.
+
+    ``loadable`` is the question a session actually arrives with. ``blocker``
+    carries the reason whenever the answer is no, and both are ``None`` when
+    the optional model dependencies the contract is read through are absent.
+    """
 
     name: str
     path: Path
     has_run_record: bool
     checkpoints: int
     latest_checkpoint: str | None
+    latest_modified: datetime | None
+    loadable: bool | None
+    blocker: str | None
 
     def as_record(self) -> dict[str, object]:
         """Return the run as a JSON-serializable record."""
 
+        modified = self.latest_modified
         return {
             "name": self.name,
             "path": str(self.path),
             "has_run_record": self.has_run_record,
             "checkpoints": self.checkpoints,
             "latest_checkpoint": self.latest_checkpoint,
+            "latest_modified": None if modified is None else modified.isoformat(),
+            "loadable": self.loadable,
+            "blocker": self.blocker,
         }
 
 
@@ -297,26 +311,97 @@ def _retained_runs(
         return ()
 
     runs: list[RetainedRun] = []
-    for path in sorted(_directories(run_root)):
+    for path in _directories(run_root):
         checkpoints = sorted((path / "checkpoints").glob("step-*.pt"))
-        has_run_record = (path / "run.json").is_file()
-        if not has_run_record and not checkpoints:
+        record_path = path / "run.json"
+        if not record_path.is_file() and not checkpoints:
             continue
-        latest = _latest_checkpoint(path) if resolve_latest else None
+        latest, unresolved = (
+            _latest_checkpoint(path) if resolve_latest else (None, None)
+        )
+        loadable, blocker = _loadability(
+            record_path,
+            has_checkpoints=bool(checkpoints),
+            unresolved=unresolved,
+            readable=resolve_latest,
+        )
+        # Stamped on the pointer rather than the highest step on disk, so the
+        # time agrees with the checkpoint named beside it. The fallback is for
+        # the run whose pointer did not resolve, and for the installation that
+        # resolves no pointer at all.
+        stamped = latest or (checkpoints[-1] if checkpoints else None)
         runs.append(
             RetainedRun(
                 name=path.name,
                 path=path,
-                has_run_record=has_run_record,
+                has_run_record=record_path.is_file(),
                 checkpoints=len(checkpoints),
-                latest_checkpoint=latest,
+                latest_checkpoint=None if latest is None else latest.name,
+                latest_modified=None if stamped is None else _modified_at(stamped),
+                loadable=loadable,
+                blocker=blocker,
             )
         )
-    return tuple(runs)
+    return tuple(sorted(runs, key=_recency))
 
 
-def _latest_checkpoint(run_path: Path) -> str | None:
-    """Return the run's latest checkpoint name, resolved the way a runner does."""
+def _recency(run: RetainedRun) -> tuple[float, str]:
+    """Order runs newest first, then by name, with checkpointless runs last."""
+
+    if run.latest_modified is None:
+        return (float("inf"), run.name)
+    return (-run.latest_modified.timestamp(), run.name)
+
+
+def _modified_at(path: Path) -> datetime | None:
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(modified, tz=UTC)
+
+
+def _loadability(
+    record_path: Path,
+    *,
+    has_checkpoints: bool,
+    unresolved: str | None,
+    readable: bool,
+) -> tuple[bool | None, str | None]:
+    """Answer whether this run can be loaded from, and why not when it cannot.
+
+    The structural reasons are answered whatever is installed, because they are
+    questions about the directory. Only the artifact contract has to be
+    compared against code the model extra brings in.
+    """
+
+    if not record_path.is_file():
+        return False, "no run record"
+    if not has_checkpoints:
+        return False, "no checkpoints"
+    if not readable:
+        # Neither loadable nor not: the reason is a property of the
+        # installation, and it is reported once beside the other things this
+        # report could not answer.
+        return None, None
+    if unresolved is not None:
+        # Weights a default selection cannot reach, in the resolver's own
+        # words. Refusing to guess past the pointer is what keeps a reading
+        # able to name the exact checkpoint it scored.
+        return False, unresolved
+    from anthro_chess.inference.runner import run_record_incompatibility
+
+    blocker = run_record_incompatibility(record_path)
+    return blocker is None, blocker
+
+
+def _latest_checkpoint(run_path: Path) -> tuple[Path | None, str | None]:
+    """Resolve the run's latest checkpoint the way a runner does.
+
+    Returns the resolver's own message when it will not resolve, because a
+    report wording that failure itself would send a reader to a different file
+    than the runtime does.
+    """
 
     from anthro_chess.training.checkpoints import (
         CheckpointError,
@@ -324,9 +409,9 @@ def _latest_checkpoint(run_path: Path) -> str | None:
     )
 
     try:
-        return latest_checkpoint_path(run_path).name
-    except CheckpointError:
-        return None
+        return latest_checkpoint_path(run_path), None
+    except CheckpointError as error:
+        return None, str(error)
 
 
 def _data_artifacts(data_root: Path | None) -> tuple[DataArtifact, ...]:

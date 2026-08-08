@@ -61,6 +61,7 @@ from anthro_chess.evaluation.results import (
 )
 from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
 from anthro_chess.models import CausalMoveModel, MoveModelConfig
+from anthro_chess.models.causal import model_identity
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
 from accelerators import HOST
@@ -504,6 +505,33 @@ def inference_run() -> Callable[..., Path]:
     """
 
     return write_inference_run
+
+
+@pytest.fixture
+def loadable_run_record() -> dict[str, Any]:
+    """Return the run-record fields a load is gated on, all of them current.
+
+    Enough to be reported loadable and no more: a test asking which runs the
+    machine report says still load needs the gated fields rather than weights,
+    and writing the whole record a training run produces would bury them.
+    """
+
+    return {
+        "model": model_identity(
+            MoveModelConfig(
+                piece_embedding_dim=2,
+                action_embedding_dim=2,
+                model_dim=4,
+                attention_heads=1,
+                transformer_layers=1,
+                feedforward_dim=8,
+                dropout=0.0,
+            )
+        ),
+        "action_vocabulary": action_vocabulary_identity(),
+        "encoding": encoding_identity(),
+        "execution": {"precision": "float32", "parameter_dtype": "float32"},
+    }
 
 
 def write_inference_run(path: Path, *, seed: int = 5) -> Path:

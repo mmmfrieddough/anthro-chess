@@ -22,6 +22,7 @@ from anthro_chess.inference.selection import (
     resolve_model_selection,
 )
 from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
+from anthro_chess.models.causal import model_identity
 from anthro_chess.training.checkpoints import (
     CheckpointError,
     load_training_checkpoint,
@@ -246,11 +247,65 @@ class CheckpointModelRunner:
 def _load_run_record(path: Path) -> dict[str, Any]:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ModelRunnerError(f"cannot load run record {path}: {error}") from error
     if not isinstance(loaded, dict):
         raise ModelRunnerError(f"run record is not an object: {path}")
     return cast(dict[str, Any], loaded)
+
+
+def run_record_incompatibility(path: Path) -> str | None:
+    """Return why the run record at ``path`` no longer loads, or ``None``.
+
+    Every gate :func:`_validate_artifact_contract` applies to a run record,
+    which is what lets a survey of a whole run root say which runs are still
+    usable without opening one checkpoint. The expected identity is derived
+    from the record's own configuration rather than from a checkpoint's, so
+    this is the weaker answer by exactly one thing: it cannot see a checkpoint
+    disagreeing with the record it sits beside, and it does not read the
+    payload version, which lives in each ``.pt``. A run passing here can still
+    fail to load, and a caller reporting the result should not promise more.
+    """
+
+    try:
+        run_record = _load_run_record(path)
+        run_model = _mapping(run_record.get("model"), "run model identity")
+        config_record = _mapping(run_model.get("config"), "model configuration")
+        expected = model_identity(MoveModelConfig.model_validate(config_record))
+        return _run_record_incompatibility(run_record, expected)
+    except (ModelRunnerError, ValidationError) as error:
+        return str(error)
+
+
+def _run_record_incompatibility(
+    run_record: Mapping[str, Any],
+    expected_model: Mapping[str, object],
+) -> str | None:
+    """Return the first gate this run record fails, or ``None``.
+
+    Shared with the survey above so that a gate added here reaches the listing
+    that says which runs still load, instead of leaving it to keep printing a
+    verdict this function would refuse.
+    """
+
+    run_model = _mapping(run_record.get("model"), "run model identity")
+    if dict(run_model) != dict(expected_model):
+        version = run_model.get("version")
+        current = expected_model.get("version")
+        if version != current:
+            return f"model identity {version}, and this code loads {current}"
+        return "run model is incompatible with this model runner"
+    if run_record.get("action_vocabulary") != action_vocabulary_identity():
+        return "run record action vocabulary is incompatible"
+    if run_record.get("encoding") != encoding_identity():
+        return "run record model-facing encoding is incompatible"
+    execution = _mapping(run_record.get("execution"), "run execution metadata")
+    if (
+        execution.get("precision") != "float32"
+        or execution.get("parameter_dtype") != "float32"
+    ):
+        return "run parameter precision is unsupported"
+    return None
 
 
 def _validate_artifact_contract(
@@ -267,15 +322,13 @@ def _validate_artifact_contract(
         compatibility.get("model"),
         "checkpoint compatible model identity",
     )
-    run_model = _mapping(run_record.get("model"), "run model identity")
 
     config_record = _mapping(checkpoint_model.get("config"), "model configuration")
     model_config = MoveModelConfig.model_validate(config_record)
-    expected_model = CausalMoveModel(model_config).identity()
+    expected_model = model_identity(model_config)
     identities = (
         (checkpoint_model, "checkpoint model"),
         (compatibility_model, "checkpoint compatible model"),
-        (run_model, "run model"),
     )
     for actual, label in identities:
         if dict(actual) != expected_model:
@@ -286,7 +339,6 @@ def _validate_artifact_contract(
     for container, label in (
         (metadata, "checkpoint metadata"),
         (compatibility, "checkpoint compatibility"),
-        (run_record, "run record"),
     ):
         if container.get("action_vocabulary") != expected_action:
             raise ModelRunnerError(f"{label} action vocabulary is incompatible")
@@ -297,19 +349,11 @@ def _validate_artifact_contract(
         metadata.get("execution"),
         "checkpoint execution metadata",
     )
-    run_execution = _mapping(
-        run_record.get("execution"),
-        "run execution metadata",
-    )
-    for execution, label in (
-        (checkpoint_execution, "checkpoint"),
-        (run_execution, "run"),
+    if (
+        checkpoint_execution.get("precision") != "float32"
+        or checkpoint_execution.get("parameter_dtype") != "float32"
     ):
-        if (
-            execution.get("precision") != "float32"
-            or execution.get("parameter_dtype") != "float32"
-        ):
-            raise ModelRunnerError(f"{label} parameter precision is unsupported")
+        raise ModelRunnerError("checkpoint parameter precision is unsupported")
     if expected_model.get("rating_conditioning") != (
         "post-transformer-feature-modulation"
     ):
@@ -319,6 +363,13 @@ def _validate_artifact_contract(
         or expected_model.get("timing_head") is not False
     ):
         raise ModelRunnerError("checkpoint timing output is unsupported")
+    # The run record is gated through the same function the machine report
+    # reads, against the identity this checkpoint rebuilds to — so the report
+    # cannot fall behind a gate added here, and this side still catches a
+    # record that disagrees with the checkpoint it sits beside.
+    blocker = _run_record_incompatibility(run_record, expected_model)
+    if blocker is not None:
+        raise ModelRunnerError(blocker)
     return model_config
 
 

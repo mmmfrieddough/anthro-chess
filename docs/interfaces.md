@@ -273,6 +273,18 @@ Failure text belongs to the same concern: a command that needs a root and
 cannot resolve one names the variable and what it would have to hold, instead
 of reporting a missing artifact.
 
+A retained run is listed with whether this code can still load it, and with
+the reason when it cannot, because holding checkpoints and holding usable
+checkpoints are different facts and a report that answers only the first sends
+a session to find out the second one run at a time. The verdict is read from
+each run record rather than from the weights, so the listing stays as cheap as
+the directory walk it already was, and it is therefore the weaker half of the
+contract `anthro_chess.inference.runner` enforces on a real load: a run that
+passes here can still fail on its checkpoint payload version. Runs are ordered
+newest first on their latest checkpoint, which is where the usable ones
+collect, but recency is a place to look rather than an answer — a directory
+copied between hosts carries a recent timestamp and stale contents.
+
 A future native web UI may talk directly to the Anthro runtime API. Native
 interfaces can expose richer controls, show current runtime state, and
 represent non-move game actions such as resignation without being limited by

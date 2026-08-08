@@ -263,27 +263,37 @@ class CausalMoveModel(nn.Module):
         return cast(Tensor, self.transformer_norm(hidden))
 
     def identity(self) -> dict[str, object]:
-        """Return compatibility metadata for future runs and checkpoints.
+        """Return compatibility metadata for future runs and checkpoints."""
 
-        The whole configuration is carried, so a checkpoint says what to
-        rebuild without a second record having to supply the rest. Anything
-        left out here is a value the runner cannot recover, and it would then
-        rebuild the model at that field's default instead of the run's.
-        """
+        return model_identity(self.config)
 
-        return {
-            "name": "anthro-causal-move-model",
-            # Version 5 renamed every transformer parameter, so this is what
-            # refuses an older checkpoint by name rather than letting it fail
-            # as missing state-dict keys.
-            "version": 5,
-            "config": self.config.model_dump(mode="json"),
-            "action_vocabulary": action_vocabulary_identity(),
-            "encoding": encoding_identity(),
-            "rating_conditioning": "post-transformer-feature-modulation",
-            "timing_inputs": False,
-            "timing_head": False,
-        }
+
+def model_identity(config: MoveModelConfig) -> dict[str, object]:
+    """Return the compatibility metadata a model built from ``config`` carries.
+
+    The whole configuration is carried, so a checkpoint says what to rebuild
+    without a second record having to supply the rest. Anything left out here
+    is a value the runner cannot recover, and it would then rebuild the model
+    at that field's default instead of the run's.
+
+    A function of the configuration rather than of a built model, because
+    every field here is one: a caller comparing an artifact against what this
+    code would produce should not have to allocate a network to do it.
+    """
+
+    return {
+        "name": "anthro-causal-move-model",
+        # Version 5 renamed every transformer parameter, so this is what
+        # refuses an older checkpoint by name rather than letting it fail as
+        # missing state-dict keys.
+        "version": 5,
+        "config": config.model_dump(mode="json"),
+        "action_vocabulary": action_vocabulary_identity(),
+        "encoding": encoding_identity(),
+        "rating_conditioning": "post-transformer-feature-modulation",
+        "timing_inputs": False,
+        "timing_head": False,
+    }
 
 
 def _nullable_log_value(value: OptionalTensor) -> Tensor:
