@@ -328,14 +328,7 @@ def run_training(
                     "does not use a gradient scaler"
                 )
             train.loader.load_state(checkpoint["loader_state"])
-            counters = checkpoint["counters"]
-            if set(counters) != {"processed_positions"}:
-                raise CheckpointError("checkpoint counters are incomplete or unknown")
-            processed_positions = counters["processed_positions"]
-            if type(processed_positions) is not int or processed_positions < 0:
-                raise CheckpointError(
-                    "checkpoint processed_positions must be nonnegative"
-                )
+            processed_positions = checkpoint["counters"]["processed_positions"]
             restore_rng_state(
                 checkpoint["rng_state"],
                 device=device,

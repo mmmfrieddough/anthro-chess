@@ -123,15 +123,15 @@ class CheckpointModelRunner:
         selection: ResolvedModelSelection,
         device: torch.device,
         global_step: int,
+        processed_positions: int,
         metadata: Mapping[str, Any],
-        run_record: Mapping[str, Any],
     ) -> None:
         self._model = model
         self.selection = selection
         self.device = device
         self.global_step = global_step
+        self.processed_positions = processed_positions
         self.metadata = dict(metadata)
-        self.run_record = dict(run_record)
 
     def parameter_sha256(self) -> str:
         """Return the digest identifying the loaded parameters."""
@@ -179,8 +179,8 @@ class CheckpointModelRunner:
             selection=selection,
             device=device,
             global_step=int(checkpoint["global_step"]),
+            processed_positions=checkpoint["counters"]["processed_positions"],
             metadata=checkpoint["metadata"],
-            run_record=run_record,
         )
 
     def action_logits(self, batch: MoveModelBatch) -> Tensor:

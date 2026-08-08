@@ -372,6 +372,8 @@ def test_dependency_tests_report_degradation_without_a_verdict(
         "2000_plus",
     }
     assert dependency.maturity.step == 1
+    # The checkpoint's own count, not the larger one its finished run reports.
+    assert dependency.maturity.processed_positions == 64
     assert 0.0 <= dependency.anchor_agreement_rate <= 1.0
 
     measurements = {

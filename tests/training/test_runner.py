@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import torch
@@ -22,11 +22,13 @@ from anthro_chess.models import CausalMoveModel, MoveModelBatch
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
     RUN_ARTIFACT_VERSION,
+    CheckpointError,
     TrainingConfig,
     TrainingError,
     load_training_checkpoint,
     run_training,
 )
+from anthro_chess.training.checkpoints import save_training_checkpoint
 from anthro_chess.training.devices import (
     STRICT_DETERMINISM_BACKENDS,
     DeviceCapabilities,
@@ -1652,6 +1654,45 @@ maximum_games = 6
         )
 
     assert not (tmp_path / "run" / "run.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("counters", "message"),
+    [
+        ({}, "has no processed-position count"),
+        ({"processed_positions": -1}, "must be a nonnegative integer"),
+        ({"processed_positions": "8"}, "must be a nonnegative integer"),
+    ],
+)
+def test_a_checkpoint_without_a_usable_position_count_is_refused(
+    tmp_path: Path,
+    counters: Mapping[str, object],
+    message: str,
+) -> None:
+    """Every consumer loads through this function, so a payload that cannot
+    answer for its position count has to fail here rather than reach a reading
+    that reports it.
+    """
+
+    path = tmp_path / "checkpoints" / "step-00000001.pt"
+    save_training_checkpoint(
+        path,
+        global_step=1,
+        # Cast because the point is to write payloads the signature forbids;
+        # save does not police counters, so they reach disk and fail on load.
+        counters=cast(Mapping[str, int], counters),
+        model_state={},
+        optimizer_state={},
+        scheduler_state=None,
+        scaler_state=None,
+        loader_state={},
+        compatibility={},
+        metadata={},
+        device="cpu",
+    )
+
+    with pytest.raises(CheckpointError, match=message):
+        load_training_checkpoint(path)
 
 
 def _train_at_declared_context(
