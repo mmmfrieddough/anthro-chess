@@ -244,6 +244,39 @@ def test_legal_policy_normalizes_over_legal_actions_only(
     assert policy_divergence(first, second) > 0.0
 
 
+def test_the_legal_policy_hands_each_position_its_own_actions(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Each row is its own position's policy, over its own sorted actions.
+
+    Every row is cut from one gather across the whole batch, so a cut taken at
+    the wrong offset would hand a position its neighbour's numbers. The games
+    here reach positions with different numbers of legal moves, which is what
+    makes a shifted cut visible rather than merely wrong.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch(
+            (("e2e4", "e7e5", "g1f3", "b8c6", "f1b5"), 1500, None),
+            (("d2d4",), None, 1600),
+        )
+    )
+    shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
+    logits = torch.linspace(-2.0, 2.0, math.prod(shape)).reshape(shape)
+
+    active = active_batch(logits, batch)
+
+    rows = legal_policy_log_probabilities(active)
+
+    normalized = torch.log_softmax(
+        active.logits.masked_fill(~active.legal_mask, -torch.inf), dim=-1
+    )
+    assert [row.tolist() for row in rows] == [
+        normalized[offset, list(legal_actions)].tolist()
+        for offset, legal_actions in enumerate(active.legal_rows)
+    ]
+
+
 def test_scoring_rejects_legal_actions_that_do_not_align(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
