@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
-from anthro_chess.data import SequenceBatch
+from anthro_chess.data import EN_PASSANT_TOKEN_COUNT, SequenceBatch
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.models.batching import OptionalTensor
 
@@ -112,15 +112,17 @@ def test_a_valid_batch_is_accepted(
             id="castling-rights",
         ),
         pytest.param(
-            lambda batch: _corrupted_optional(batch, "en_passant_square", 64),
-            "en-passant squares are outside the board encoding",
+            lambda batch: _corrupted(batch, "en_passant_token", EN_PASSANT_TOKEN_COUNT),
+            "en-passant tokens are outside the board encoding",
             id="en-passant",
         ),
         pytest.param(
-            lambda batch: _corrupted_optional(
+            # One past the row that names "no previous action", which is the
+            # highest index the embedding has.
+            lambda batch: _corrupted(
                 batch,
-                "previous_action_id",
-                ACTION_VOCABULARY_SIZE,
+                "previous_action_token",
+                ACTION_VOCABULARY_SIZE + 1,
             ),
             "previous action is outside the action vocabulary",
             id="previous-action",
@@ -157,7 +159,7 @@ def test_the_tensor_boundary_widens_the_columns_the_model_indexes_with(
     assert batch.inputs.piece_ids.dtype is torch.long
     assert batch.action_targets.dtype is torch.long
     assert batch.ply_indices.dtype is torch.long
-    assert batch.inputs.previous_action_id.values.dtype is torch.long
+    assert batch.inputs.previous_action_token.dtype is torch.long
     assert batch.attention_mask.dtype is torch.bool
     assert batch.inputs.piece_ids.tolist() == source.inputs.piece_ids.tolist()
     assert batch.action_targets.tolist() == source.action_targets.tolist()

@@ -16,8 +16,14 @@ import torch
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
     action_vocabulary_identity,
+    encode_move,
 )
-from anthro_chess.data import build_decision_context, encoding_identity
+from anthro_chess.data import (
+    build_decision_context,
+    en_passant_token,
+    encoding_identity,
+    previous_action_token,
+)
 from anthro_chess.inference import (
     MODEL_SELECTION_FILE,
     CheckpointModelRunner,
@@ -97,7 +103,7 @@ def test_decision_tensorization_rates_only_the_current_decision() -> None:
 
     assert batch.inputs.target_rating.present.tolist() == [[False, False, True]]
     assert batch.inputs.target_rating.values.tolist() == [[0, 0, 1800]]
-    assert batch.inputs.previous_action_id.present.tolist() == [[False, True, True]]
+    assert batch.inputs.previous_action_token[0, 0] == previous_action_token(None)
     assert batch.ply_indices.tolist() == [[0, 1, 2]]
     assert not batch.action_loss_mask.any()
 
@@ -121,23 +127,17 @@ def test_every_tensorized_column_carries_the_input_its_plies_name() -> None:
         assert inputs.halfmove_clock[0, index] == position.halfmove_clock
         assert inputs.fullmove_number[0, index] == position.fullmove_number
         assert batch.ply_indices[0, index] == ply.ply_index
-        assert bool(inputs.en_passant_square.present[0, index]) == (
-            position.en_passant_square is not None
+        assert inputs.en_passant_token[0, index] == en_passant_token(
+            position.en_passant_square
         )
-        if position.en_passant_square is not None:
-            assert inputs.en_passant_square.values[0, index] == (
-                position.en_passant_square
-            )
-        assert bool(inputs.previous_action_id.present[0, index]) == (
-            ply.previous_action_id is not None
+        assert inputs.previous_action_token[0, index] == previous_action_token(
+            ply.previous_action_id
         )
-        if ply.previous_action_id is not None:
-            assert inputs.previous_action_id.values[0, index] == ply.previous_action_id
 
     # Castling and en passant both occur, so neither column is being read as a
     # constant that happens to match.
     assert inputs.castling_rights[0].unique().numel() > 1
-    assert inputs.en_passant_square.present[0].any()
+    assert (inputs.en_passant_token[0] != en_passant_token(None)).any()
 
 
 def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:
@@ -160,9 +160,15 @@ def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:
         [0, 1800, 0, 0],
         [0, 0, 0, 1200],
     ]
-    assert batch.inputs.previous_action_id.present.tolist() == [
-        [False, True, False, False],
-        [False, True, True, True],
+    # A padded timestep has no previous action, so it reads the same row as a
+    # game's first ply rather than the move a zero fill would name.
+    absent = previous_action_token(None)
+    opening, reply, advance = (
+        encode_move(chess.Move.from_uci(move)) for move in ("d2d4", "d7d5", "c2c4")
+    )
+    assert batch.inputs.previous_action_token.tolist() == [
+        [absent, opening, absent, absent],
+        [absent, opening, reply, advance],
     ]
     assert batch.ply_indices.tolist() == [[0, 1, 0, 0], [0, 1, 2, 3]]
 

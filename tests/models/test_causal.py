@@ -22,8 +22,10 @@ from anthro_chess.data import (
     SequenceBatch,
     SequenceExample,
     collate_sequences,
+    en_passant_token,
     encode_game,
     encoding_identity,
+    previous_action_token,
 )
 from anthro_chess.models import (
     CausalMoveModel,
@@ -55,25 +57,15 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     )
     assert batch.inputs.side_to_move[0].tolist() == [0, 1, 0]
     assert batch.inputs.castling_rights[0].tolist() == [15, 15, 15]
-    assert batch.inputs.en_passant_square.present[0].tolist() == [
-        False,
-        True,
-        True,
-    ]
-    assert batch.inputs.en_passant_square.values[0].tolist() == [
-        0,
-        chess.E3,
-        chess.E6,
+    assert batch.inputs.en_passant_token[0].tolist() == [
+        en_passant_token(None),
+        en_passant_token(chess.E3),
+        en_passant_token(chess.E6),
     ]
     assert batch.inputs.halfmove_clock[0].tolist() == [0, 0, 0]
     assert batch.inputs.fullmove_number[0].tolist() == [1, 1, 2]
-    assert batch.inputs.previous_action_id.present[0].tolist() == [
-        False,
-        True,
-        True,
-    ]
-    assert batch.inputs.previous_action_id.values[0].tolist() == [
-        0,
+    assert batch.inputs.previous_action_token[0].tolist() == [
+        previous_action_token(None),
         first_action,
         second_action,
     ]

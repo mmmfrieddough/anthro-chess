@@ -13,9 +13,11 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
+    EN_PASSANT_TOKEN_COUNT,
     DecisionColumn,
     DecisionContext,
     SequenceBatch,
+    previous_action_token,
 )
 from anthro_chess.data.loading import LegalActionTensor
 
@@ -35,15 +37,20 @@ class OptionalTensor:
 
 @dataclass(frozen=True)
 class MoveModelInputs:
-    """Tensorized exact state and context shaped batch by sequence."""
+    """Tensorized exact state and context shaped batch by sequence.
+
+    The two token columns are embedding rows the encoding already chose, so a
+    forward pass indexes them rather than deriving them from a value and a
+    presence flag on every step.
+    """
 
     piece_ids: Tensor
     side_to_move: Tensor
     castling_rights: Tensor
-    en_passant_square: OptionalTensor
+    en_passant_token: Tensor
     halfmove_clock: Tensor
     fullmove_number: Tensor
-    previous_action_id: OptionalTensor
+    previous_action_token: Tensor
     target_rating: OptionalTensor
 
 
@@ -124,16 +131,10 @@ class MoveModelBatch:
                 piece_ids=required(inputs.piece_ids),
                 side_to_move=required(inputs.side_to_move),
                 castling_rights=required(inputs.castling_rights),
-                en_passant_square=optional(
-                    inputs.en_passant_square.values,
-                    inputs.en_passant_square.present,
-                ),
+                en_passant_token=required(inputs.en_passant_token),
                 halfmove_clock=required(inputs.halfmove_clock),
                 fullmove_number=required(inputs.fullmove_number),
-                previous_action_id=optional(
-                    inputs.previous_action_id.values,
-                    inputs.previous_action_id.present,
-                ),
+                previous_action_token=required(inputs.previous_action_token),
                 target_rating=optional(
                     inputs.target_rating.values,
                     inputs.target_rating.present,
@@ -196,6 +197,10 @@ class MoveModelBatch:
 
         boards = np.zeros((count, width, BOARD_SQUARE_COUNT), dtype=np.uint8)
         packed = np.zeros((len(DecisionColumn), count, width), dtype=np.int64)
+        # A padded timestep has no previous action, so it takes the row that
+        # names absence rather than the move a zero fill would point at. Every
+        # other column's absent value is already zero.
+        packed[DecisionColumn.PREVIOUS_ACTION_TOKEN] = previous_action_token(None)
         attention = np.zeros((count, width), dtype=np.bool_)
         ratings = np.zeros((count, width), dtype=np.int64)
         rated = np.zeros((count, width), dtype=np.bool_)
@@ -228,24 +233,15 @@ class MoveModelBatch:
         def column(name: DecisionColumn) -> Tensor:
             return crossed[name]
 
-        def present(name: DecisionColumn) -> Tensor:
-            return crossed[name].to(torch.bool)
-
         result = cls(
             inputs=MoveModelInputs(
                 piece_ids=transferred(boards).to(torch.long),
                 side_to_move=column(DecisionColumn.SIDE_TO_MOVE),
                 castling_rights=column(DecisionColumn.CASTLING_RIGHTS),
-                en_passant_square=OptionalTensor(
-                    column(DecisionColumn.EN_PASSANT_SQUARE),
-                    present(DecisionColumn.EN_PASSANT_PRESENT),
-                ),
+                en_passant_token=column(DecisionColumn.EN_PASSANT_TOKEN),
                 halfmove_clock=column(DecisionColumn.HALFMOVE_CLOCK),
                 fullmove_number=column(DecisionColumn.FULLMOVE_NUMBER),
-                previous_action_id=OptionalTensor(
-                    column(DecisionColumn.PREVIOUS_ACTION_ID),
-                    present(DecisionColumn.PREVIOUS_ACTION_PRESENT),
-                ),
+                previous_action_token=column(DecisionColumn.PREVIOUS_ACTION_TOKEN),
                 target_rating=OptionalTensor(
                     transferred(ratings),
                     transferred(rated),
@@ -326,20 +322,15 @@ def _reject_invalid_batch(batch: _Batch) -> None:
         batch.ply_indices,
         batch.inputs.side_to_move,
         batch.inputs.castling_rights,
+        batch.inputs.en_passant_token,
         batch.inputs.halfmove_clock,
         batch.inputs.fullmove_number,
+        batch.inputs.previous_action_token,
     )
     if any(value.shape != expected_shape for value in aligned):
         raise ValueError("model inputs, targets, and masks must align")
-    optional_inputs = (
-        batch.inputs.en_passant_square,
-        batch.inputs.previous_action_id,
-        batch.inputs.target_rating,
-    )
-    if any(
-        item.values.shape != expected_shape or item.present.shape != expected_shape
-        for item in optional_inputs
-    ):
+    rating = batch.inputs.target_rating
+    if rating.values.shape != expected_shape or rating.present.shape != expected_shape:
         raise ValueError("nullable model inputs must align with targets")
     if len(batch.chunk_start_plies) != expected_shape[0]:
         raise ValueError("chunk start plies must name every sequence in the batch")
@@ -364,8 +355,8 @@ def _reject_invalid_values(batch: _Batch) -> None:
     allocating a boolean copy of the widest column in the batch.
     """
 
-    en_passant = batch.inputs.en_passant_square
-    previous_actions = batch.inputs.previous_action_id
+    en_passant = batch.inputs.en_passant_token
+    previous_actions = batch.inputs.previous_action_token
     ratings = batch.inputs.target_rating
     # A negative index would gather real position features from the wrong
     # end of the table rather than fail, so the lower bound is checked even
@@ -399,21 +390,15 @@ def _reject_invalid_values(batch: _Batch) -> None:
             | (batch.inputs.castling_rights.max() >= 16),
         ),
         (
-            "en-passant squares are outside the board encoding",
-            (
-                en_passant.present
-                & ((en_passant.values < 0) | (en_passant.values >= 64))
-            ).any(),
+            "en-passant tokens are outside the board encoding",
+            (en_passant.min() < 0) | (en_passant.max() >= EN_PASSANT_TOKEN_COUNT),
         ),
         (
             "previous action is outside the action vocabulary",
-            (
-                previous_actions.present
-                & (
-                    (previous_actions.values < 0)
-                    | (previous_actions.values >= ACTION_VOCABULARY_SIZE)
-                )
-            ).any(),
+            (previous_actions.min() < 0)
+            # The row past the vocabulary is "no previous action" and is the
+            # only index above it a batch may carry.
+            | (previous_actions.max() > ACTION_VOCABULARY_SIZE),
         ),
         (
             "active action target is outside the action vocabulary",

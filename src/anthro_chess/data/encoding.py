@@ -12,6 +12,7 @@ from hashlib import sha256
 import chess
 
 from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
     action_is_legal,
     action_vocabulary_identity,
     decode_move,
@@ -23,6 +24,10 @@ from anthro_chess.chess import (
 ENCODING_NAME = "anthro-per-ply"
 ENCODING_VERSION = 4
 BOARD_SQUARE_COUNT = 64
+#: How many rows an en-passant embedding needs, absence included. Token 0 is
+#: "no en-passant square" and square ``s`` is token ``s + 1``, which is what
+#: :func:`en_passant_token` writes and what a model sizing that table reads.
+EN_PASSANT_TOKEN_COUNT = BOARD_SQUARE_COUNT + 1
 
 _ENCODING_SCHEMA = {
     "identity": {
@@ -232,9 +237,11 @@ class PlyEncoding(PlyContext):
 class DecisionColumn(IntEnum):
     """Where each per-ply input sits in a :class:`DecisionColumns` row.
 
-    Every column is an integer, including the two presence flags, so one row of
-    a history is one contiguous block and a batch of histories is one array and
-    one device copy.
+    Every column is an integer, so one row of a history is one contiguous block
+    and a batch of histories is one array and one device copy. The two nullable
+    inputs travel as the embedding row each names rather than as a value beside
+    a presence flag, which is what :func:`en_passant_token` and
+    :func:`previous_action_token` decide.
 
     Held at the width the model indexes with rather than narrowed to what the
     values need, unlike the loader's columns. A rule counter arrives off a FEN a
@@ -247,12 +254,10 @@ class DecisionColumn(IntEnum):
     PLY_INDEX = 0
     SIDE_TO_MOVE = 1
     CASTLING_RIGHTS = 2
-    EN_PASSANT_SQUARE = 3
-    EN_PASSANT_PRESENT = 4
-    HALFMOVE_CLOCK = 5
-    FULLMOVE_NUMBER = 6
-    PREVIOUS_ACTION_ID = 7
-    PREVIOUS_ACTION_PRESENT = 8
+    EN_PASSANT_TOKEN = 3
+    HALFMOVE_CLOCK = 4
+    FULLMOVE_NUMBER = 5
+    PREVIOUS_ACTION_TOKEN = 6
 
 
 @dataclass(frozen=True)
@@ -291,8 +296,36 @@ class DecisionContext:
             raise ValueError("a decision context's two forms must be the same length")
 
 
+def en_passant_token(square: int | None) -> int:
+    """Return the embedding row naming one board's en-passant square.
+
+    A square with no en-passant capture available is its own row rather than a
+    square index the reader has to be told to ignore, so a batch carries one
+    column where it used to carry a value beside a presence flag.
+    """
+
+    return 0 if square is None else square + 1
+
+
+def previous_action_token(action_id: int | None) -> int:
+    """Return the embedding row naming the action before one timestep.
+
+    The row past the action vocabulary is "no previous action", which is a
+    game's first ply and every timestep padding a row out to the batch width.
+    """
+
+    return ACTION_VOCABULARY_SIZE if action_id is None else action_id
+
+
 def encoding_identity() -> dict[str, object]:
-    """Return the compatibility identity for manifests and model artifacts."""
+    """Return the compatibility identity for manifests and model artifacts.
+
+    Unchanged by which integer a nullable model input travels as. This names
+    the normalized per-ply record and the action vocabulary read off it, and a
+    checkpoint's weights mean what they meant as long as those hold: an
+    embedding row keeps its meaning when the row index arrives already
+    computed rather than assembled on the way in.
+    """
 
     return {
         "name": ENCODING_NAME,
@@ -439,8 +472,6 @@ class _EncodedPrefix:
         """Encode one further timestep into both forms."""
 
         board = ply.board
-        en_passant = board.en_passant_square
-        previous = ply.previous_action_id
         self._plies.append(ply)
         self._piece_ids += board.piece_ids
         # In DecisionColumn order.
@@ -449,12 +480,10 @@ class _EncodedPrefix:
                 ply.ply_index,
                 board.side_to_move,
                 board.castling_rights,
-                0 if en_passant is None else en_passant,
-                en_passant is not None,
+                en_passant_token(board.en_passant_square),
                 board.halfmove_clock,
                 board.fullmove_number,
-                0 if previous is None else previous,
-                previous is not None,
+                previous_action_token(ply.previous_action_id),
             )
         )
 
