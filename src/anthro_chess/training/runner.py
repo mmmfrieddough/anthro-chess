@@ -738,12 +738,10 @@ def _optimize(
                     "optimizer_seconds": (
                         optimizer_seconds if profile_phases else None
                     ),
-                    "peak_sampled_allocated_memory_bytes": (
+                    "peak_allocated_memory_bytes": (
                         monitor.peak_allocated_memory_bytes
                     ),
-                    "peak_sampled_driver_memory_bytes": (
-                        monitor.peak_driver_memory_bytes
-                    ),
+                    "peak_driver_memory_bytes": monitor.peak_driver_memory_bytes,
                     "training_health": (
                         health.as_record() if health is not None else None
                     ),

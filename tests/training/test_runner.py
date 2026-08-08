@@ -1127,9 +1127,7 @@ def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     assert all(record["data_seconds"] >= 0.0 for record in records)
     assert all(record["transfer_seconds"] >= 0.0 for record in records)
     assert all(record["compute_seconds"] >= 0.0 for record in records)
-    assert all(
-        record["peak_sampled_allocated_memory_bytes"] is None for record in records
-    )
+    assert all(record["peak_allocated_memory_bytes"] is None for record in records)
 
 
 @pytest.mark.gpu
@@ -1212,8 +1210,8 @@ def test_real_accelerator_forward_backward_update_and_validation(
     metric = json.loads(
         result.metrics_path.read_text(encoding="utf-8").splitlines()[-1]
     )
-    assert metric["peak_sampled_allocated_memory_bytes"] > 0
-    assert metric["peak_sampled_driver_memory_bytes"] > 0
+    assert metric["peak_allocated_memory_bytes"] > 0
+    assert metric["peak_driver_memory_bytes"] > 0
     # Every profiled phase is separately attributed, so a slow accelerator run
     # can be blamed on the pipeline it is actually spending time in rather than
     # on one bucket that quietly holds four of them.
