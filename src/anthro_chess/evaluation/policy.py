@@ -348,12 +348,34 @@ def legal_policy_log_probabilities(active: ActiveBatch) -> tuple[Tensor, ...]:
     defaults than reading a row at a time, and the rows it returns are views
     into that single block -- a caller retaining one past its batch pins the
     block and should copy it.
+
+    The normalize runs over the gathered entries rather than over the whole
+    vocabulary, because a row's legal actions are 1.6% of it at the evaluation
+    defaults and the other 98.4% are filled with ``-inf`` only to contribute
+    zero to the sum. Doing it full width builds two vocabulary-wide float64
+    tensors per call, which is seven times the whole function's cost at that
+    shape and almost all of it allocation.
+
+    Reducing by segment lands on different last bits than the full-width form,
+    around 3e-15 absolute. It is the more reproducible of the two despite that:
+    a fixed sequential sum over a few dozen entries does not depend on the
+    vector width the build was compiled for, while the dense kernel's reduction
+    tree does, so the full-width form disagrees with itself across machines by
+    the same margin this changed it by.
     """
 
-    masked = active.logits.masked_fill(~active.legal_mask, -torch.inf)
-    normalized = torch.log_softmax(masked, dim=-1)
     counts = tuple(len(legal_actions) for legal_actions in active.legal_rows)
-    return normalized[active.legal_mask].split_with_sizes(counts)
+    gathered = active.logits[active.legal_mask]
+    rows = torch.repeat_interleave(
+        torch.arange(len(counts), dtype=torch.long),
+        torch.tensor(counts, dtype=torch.long),
+    )
+    row_maximum = torch.full((len(counts),), -torch.inf, dtype=gathered.dtype)
+    row_maximum.scatter_reduce_(0, rows, gathered, reduce="amax")
+    shifted = gathered - row_maximum[rows]
+    total = torch.zeros(len(counts), dtype=gathered.dtype)
+    total.scatter_add_(0, rows, shifted.exp())
+    return (shifted - total.log()[rows]).split_with_sizes(counts)
 
 
 def policy_divergence(reference: Tensor, candidate: Tensor) -> float:

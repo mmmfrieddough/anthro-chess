@@ -253,6 +253,11 @@ def test_the_legal_policy_hands_each_position_its_own_actions(
     the wrong offset would hand a position its neighbour's numbers. The games
     here reach positions with different numbers of legal moves, which is what
     makes a shifted cut visible rather than merely wrong.
+
+    Read against a full-width normalize to a tolerance rather than exactly.
+    Reducing by segment agrees with the dense kernel to a few last bits, and
+    the tolerance is eleven orders below the gap a shifted cut opens, so it
+    still fails on the thing this test is for.
     """
 
     batch = MoveModelBatch.from_sequence_batch(
@@ -272,9 +277,37 @@ def test_the_legal_policy_hands_each_position_its_own_actions(
         active.logits.masked_fill(~active.legal_mask, -torch.inf), dim=-1
     )
     assert [row.tolist() for row in rows] == [
-        normalized[offset, list(legal_actions)].tolist()
+        pytest.approx(normalized[offset, list(legal_actions)].tolist(), abs=1e-12)
         for offset, legal_actions in enumerate(active.legal_rows)
     ]
+
+
+def test_the_legal_policy_survives_logits_whose_exponential_overflows(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """A row's own maximum comes off before anything is exponentiated.
+
+    Normalizing by segment means this function subtracts that maximum itself,
+    where the full-width kernel used to do it. Nothing else here would notice
+    it missing: the shift only matters once a logit is large enough that
+    ``exp`` overflows to infinity, and every other test in this file scores
+    logits of single digits.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, 1500))
+    )
+    assert batch.legal_action_ids is not None
+    logits = torch.full(
+        (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE),
+        800.0,
+    )
+    logits[0, 0, batch.legal_action_ids[0][0][0]] = 900.0
+
+    first, _ = legal_policy_log_probabilities(active_batch(logits, batch))
+
+    assert torch.all(torch.isfinite(first))
+    assert float(torch.exp(first).sum().item()) == pytest.approx(1.0)
 
 
 def test_scoring_rejects_legal_actions_that_do_not_align(
