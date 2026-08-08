@@ -1545,9 +1545,9 @@ def _applicable_floors(
     ``executions`` and ``trainings`` are the scopes this delta spans, which is
     what decides whether a scoped floor describes it. A delta whose two sides
     ran on different machines is covered by no characterized execution floor,
-    and one whose two sides were trained under different configurations by no
-    characterized training floor; reporting the noise as unknown there is the
-    honest answer.
+    and one neither of whose sides was trained under the characterized
+    configuration by no training floor; reporting the noise as unknown there is
+    the honest answer.
 
     An attached floor one side offered and the other did not is refused for the
     same reason: it describes one operand rather than the difference, and
