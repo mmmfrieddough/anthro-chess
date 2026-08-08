@@ -4,7 +4,7 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted.
+Accepted. Extended by `0027-settled-rating-ladder-grid.md`.
 
 ## Context
 

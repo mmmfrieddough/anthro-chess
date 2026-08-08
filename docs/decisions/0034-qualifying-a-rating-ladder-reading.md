@@ -7,6 +7,8 @@ Date: 2026-08-04
 Accepted. Extends `0026-conservative-dispersion-bounds.md`, composes with
 `0032-a-replayed-reading-has-no-evaluation-noise.md`, and settles the gap
 `0027-settled-rating-ladder-grid.md` left open.
+`0036-a-one-sided-floor-does-not-qualify-a-delta.md` settles a narrowing filed
+under it.
 
 ## Context
 

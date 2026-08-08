@@ -5,6 +5,7 @@ Date: 2026-08-04
 ## Status
 
 Accepted. Refines `0026-conservative-dispersion-bounds.md`.
+`0034-qualifying-a-rating-ladder-reading.md` composes with it.
 
 ## Context
 

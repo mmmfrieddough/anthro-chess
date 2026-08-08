@@ -4,7 +4,8 @@ Date: 2026-07-30
 
 ## Status
 
-Accepted as initial design direction.
+Accepted as initial design direction. Refined by
+`0037-the-human-reference-is-bandwidth-not-sample-size.md`.
 
 ## Context
 

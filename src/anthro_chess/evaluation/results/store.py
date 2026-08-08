@@ -60,7 +60,14 @@ logger = logging.getLogger(__name__)
 
 
 class ResultsStoreError(ValueError):
-    """Raised when the results store cannot be read or appended to safely."""
+    """Raised when the results store cannot be read or appended to safely.
+
+    Every filesystem refusal in this module is converted into this rather than
+    left as an ``OSError``: a recording benchmark declares this error in the
+    ``errors`` of its
+    :class:`~anthro_chess.evaluation.benchmarks.Benchmark`, and an ``OSError``
+    reaching there ends the whole sweep rather than failing one step.
+    """
 
 
 class ResultsStore:
@@ -105,9 +112,9 @@ class ResultsStore:
         path = self.records_directory / _record_file_name(result)
         payload = canonical_readable_json(result.as_record())
         with self._write_lock():
-            self.records_directory.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(self.records_directory)
             if path.exists():
-                if path.read_bytes() == payload:
+                if _read_bytes(path) == payload:
                     logger.info("Result %s is already recorded", result.result_id)
                     return path
                 raise ResultsStoreError(
@@ -123,9 +130,9 @@ class ResultsStore:
         path = self.bridges_directory / f"{bridge.bridge_id}.json"
         payload = canonical_readable_json(bridge.as_record())
         with self._write_lock():
-            self.bridges_directory.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(self.bridges_directory)
             if path.exists():
-                if path.read_bytes() == payload:
+                if _read_bytes(path) == payload:
                     return path
                 raise ResultsStoreError(
                     f"a different bridge is already recorded at {path}"
@@ -145,9 +152,9 @@ class ResultsStore:
         path = self.floors_directory / _characterization_file_name(characterization)
         payload = canonical_readable_json(characterization.as_record())
         with self._write_lock():
-            self.floors_directory.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(self.floors_directory)
             if path.exists():
-                if path.read_bytes() == payload:
+                if _read_bytes(path) == payload:
                     return path
                 raise ResultsStoreError(
                     f"a different characterization is already recorded at {path}"
@@ -168,7 +175,10 @@ class ResultsStore:
         if not path.is_file():
             raise ResultsStoreError(f"no bridge is recorded as {bridge_id}")
         with self._write_lock():
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as error:
+                raise ResultsStoreError(f"cannot remove {path}: {error}") from error
         logger.info("Revoked bridge %s", bridge_id)
         return path
 
@@ -242,7 +252,7 @@ class ResultsStore:
         looking like a recorded result.
         """
 
-        self._root.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(self._root)
         lock_path = self._root / LOCK_FILE_NAME
         try:
             descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -256,8 +266,14 @@ class ResultsStore:
                 f"cannot lock the results store at {self._root}: {error}"
             ) from error
         try:
-            os.write(descriptor, f"{os.getpid()}\n".encode())
-            os.close(descriptor)
+            try:
+                os.write(descriptor, f"{os.getpid()}\n".encode())
+            except OSError as error:
+                raise ResultsStoreError(
+                    f"cannot claim the lock at {lock_path}: {error}"
+                ) from error
+            finally:
+                os.close(descriptor)
             yield
         finally:
             lock_path.unlink(missing_ok=True)
@@ -290,7 +306,7 @@ class DetailStore:
                 f"detail path must stay beneath the detail root: {relative_path}"
             )
         path = self._root / candidate
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(path.parent)
         encoded = canonical_readable_json(payload)
         _write_atomically(path, encoded)
         return DetailReference(
@@ -319,7 +335,7 @@ class DetailStore:
         path = self._root / reference.path
         if not path.is_file():
             raise ResultsStoreError(f"detail payload does not exist: {path}")
-        encoded = path.read_bytes()
+        encoded = _read_bytes(path)
         if sha256(encoded).hexdigest() != reference.sha256:
             raise ResultsStoreError(f"detail payload checksum mismatch: {path}")
         return json.loads(encoded)
@@ -406,16 +422,37 @@ def _characterization_file_name(characterization: NoiseCharacterization) -> str:
     )
 
 
+def _ensure_directory(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ResultsStoreError(f"cannot create {path}: {error}") from error
+
+
+def _read_bytes(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ResultsStoreError(f"cannot read {path}: {error}") from error
+
+
 def _write_atomically(path: Path, payload: bytes) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_bytes(payload)
-    os.replace(temporary, path)
+    try:
+        temporary.write_bytes(payload)
+        os.replace(temporary, path)
+    except OSError as error:
+        # Nothing removes the orphan later, since this failure is not fatal to
+        # the run, and on the full disk that most often causes it the partial
+        # copy holds the space the next write needs.
+        temporary.unlink(missing_ok=True)
+        raise ResultsStoreError(f"cannot write {path}: {error}") from error
 
 
 def _load(path: Path, schema: type[RecordT]) -> RecordT:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        raw = json.loads(_read_bytes(path))
+    except json.JSONDecodeError as error:
         raise ResultsStoreError(f"cannot read {path}: {error}") from error
     try:
         return schema.model_validate(raw)

@@ -4,7 +4,9 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted. Extends `0022-one-joint-rating-ladder-fit.md`.
+Accepted. Extends `0022-one-joint-rating-ladder-fit.md`. Extended by
+`0030-ladder-ply-limit-at-the-trained-bound.md`, and
+`0034-qualifying-a-rating-ladder-reading.md` settles a gap it left open.
 
 ## Context
 
