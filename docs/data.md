@@ -641,7 +641,7 @@ what crosses to a device is the width the loader chose.
 
 Where a nullable model input has a natural reserved token, the encoding assigns
 it and the column carries that token instead of a value beside a presence flag.
-`docs/decisions/0035-the-encoding-owns-token-vocabularies-the-model-owns-transforms.md`
+`docs/decisions/0038-the-encoding-owns-token-vocabularies-the-model-owns-transforms.md`
 owns where the encoding's business ends and the model's begins, and what that
 means for checkpoint compatibility.
 

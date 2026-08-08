@@ -401,7 +401,7 @@ and the grid resolves fewer points than it plots. The reference is therefore
 declared at a size the grid can resolve, is neither shrunk by a reduced sweep nor
 left uncapped at full scale, and joins the declared workload so two readings
 smoothed differently cannot share a series.
-`docs/decisions/0029-the-human-reference-is-bandwidth-not-sample-size.md` owns
+`docs/decisions/0037-the-human-reference-is-bandwidth-not-sample-size.md` owns
 that rule.
 
 Report the effective local sample size alongside the curve, so a difference
