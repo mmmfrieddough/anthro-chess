@@ -50,7 +50,8 @@ training measurement *is* the configuration, so a floor characterized from one
 configuration's seed replicates describes nothing about a delta between models
 of another size, corpus, or arithmetic. Such a floor therefore carries the scope
 it was characterized under, and a report applies it only where that scope
-matches on both sides of the delta.
+describes the delta being judged. What that takes differs by kind, and
+:func:`in_scope` owns the difference.
 """
 
 from __future__ import annotations
@@ -319,10 +320,10 @@ class NoiseFloorIndex:
     on either side of the seam. A fingerprint with no characterization
     resolves to nothing at all rather than to zero.
 
-    A scoped floor additionally has to match what it measured: the machine for
-    an execution floor, the training configuration for a training floor. A
-    reading from outside that scope, or a delta whose two sides sit on either
-    side of it, resolves to no floor of that kind rather than to a borrowed one.
+    A scoped floor additionally has to describe the delta it would qualify,
+    which :func:`in_scope` decides and the two scoped kinds answer differently.
+    A floor that describes neither operand resolves to nothing rather than to a
+    borrowed one.
     """
 
     def __init__(
@@ -368,9 +369,9 @@ class NoiseFloorIndex:
 
         ``executions`` and ``trainings`` are the scopes the floors would
         qualify — both operands of a delta, or the single reading being
-        annotated. A scoped floor is returned only when every one of them sits
-        inside the scope it was characterized under, so a reading that records
-        no scope of a kind never resolves a floor of that kind.
+        annotated. A reading that records no scope of a kind carries the empty
+        scope, which no characterization is stored under, so it never resolves
+        a floor of that kind on its own.
         """
 
         series = self._bridges.series(fingerprint)
@@ -385,7 +386,7 @@ class NoiseFloorIndex:
             for key in sorted(self._by_series)
             if key[0] == series
             and key[1] == metric
-            and (not key[3] or measured[key[2]] == {key[3]})
+            and (not key[3] or in_scope(key[2], key[3], measured[key[2]]))
         )
 
 
@@ -573,6 +574,32 @@ def _gamma_continued_fraction(shape: float, x: float) -> float:
         if abs(delta - 1.0) < _GAMMA_EPSILON:
             break
     return h
+
+
+def in_scope(kind: str, scope: str, measured: frozenset[str] | set[str]) -> bool:
+    """Return whether a scoped floor describes the delta ``measured`` spans.
+
+    The two scoped kinds answer this differently, because their scopes are
+    different sorts of thing.
+
+    An **execution** scope is a condition both readings were taken under, so a
+    delta spanning two machines is described by neither machine's floor and is
+    reported as unknown. Decision 0025 owns that rule.
+
+    A **training** scope names the configuration whose seed spread the floor
+    measured, and that spread is a null distribution rather than a condition:
+    the question a delta asks is whether its other operand falls outside what a
+    different seed of this configuration would have produced. So one operand
+    carrying the characterized configuration is what makes the floor apply.
+    Requiring both would refuse exactly the control-arm comparison decision 0029
+    defines, since the change under test is what makes the two identities
+    differ. Where both operands carry characterized configurations, both floors
+    resolve and the widest binds, as it does everywhere else.
+    """
+
+    if kind == "training":
+        return scope in measured
+    return measured == {scope}
 
 
 def environment_key(execution: ExecutionRecord | None) -> str:
@@ -858,6 +885,7 @@ __all__ = [
     "environment_key",
     "floor_from_dispersion",
     "games_to_resolve",
+    "in_scope",
     "process_dispersion",
     "process_replicate_floors",
     "replicate_dispersion",

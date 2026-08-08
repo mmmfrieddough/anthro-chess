@@ -65,18 +65,37 @@ setting added to what a continuation must match becomes part of what a floor
 describes on the same commit, which is the only version of this that stays true
 without anybody remembering to keep two lists aligned.
 
-### A Reading Carries It, And A Report Matches Both Sides
+### A Reading Carries It, And One Operand Has To Be Inside It
 
 Every result records the training identity of the checkpoint it scored, beside
 the parameter digest that names the exact weights. A report resolves a training
-floor only where that identity matches the characterization on **both** operands
-of the delta.
+floor for a delta when **at least one** operand carries the configuration the
+floor was characterized on.
 
-A reading that carries no identity — recorded before this existed, or taken
-through a runner supplied rather than loaded — matches nothing, so its noise is
-reported as unknown rather than qualified by a borrowed floor. The same answer
-covers a delta whose two sides were trained under different configurations,
-which is the case the process in 0029 is most likely to produce by accident.
+This is deliberately not 0025's rule, and the difference is what the two scopes
+are. A machine is a *condition* both readings were taken under, so a delta
+spanning two machines is described by neither machine's floor. A training
+configuration is a *null distribution* — the spread a different seed of it would
+have produced — and the question a delta asks is whether its other operand falls
+outside that spread. That is precisely the control-arm comparison 0029 defines,
+whose two sides differ in configuration **by construction**, since the change
+under test is what makes the identities differ. Requiring both sides to match
+would refuse the one comparison a training floor exists to qualify, leaving it
+applicable only to same-configuration deltas, which are nulls already.
+
+A delta describing neither configuration resolves no training floor, which is
+the case this record exists for: seed variance measured on a small configuration
+must not qualify a delta between two large ones. A reading that carries no
+identity — recorded before this existed, or taken through a runner supplied
+rather than loaded — carries no configuration to match, so it cannot make a
+floor apply on its own. Where both operands carry characterized configurations,
+both floors resolve and the widest binds, as it does for every other kind.
+
+What this rule accepts is that a floor applies wherever one operand is the
+configuration it measured, whether the other is a deliberate variant or an
+unrelated model. Nothing in a digest distinguishes those, and the null-hypothesis
+reading is the same either way: does the other operand land outside what a
+different seed of this configuration would have produced.
 
 Characterization refuses rather than guesses: replicates that do not all record
 one identity are not one configuration's seed variance, and the command says so
@@ -91,9 +110,12 @@ else.
 
 ## Consequences
 
-A training floor is now worth characterizing once per configuration rather than
-once per comparison, which is what makes 0029's control arm cheaper the second
-time it is used. The reading in that record — four arms, half an hour of one
+A training floor is now worth characterizing once per base configuration rather
+than once per comparison, which is what makes 0029's control arm cheaper the
+second time it is used, and it corrects the verdict rather than only informing
+the reader: without a stored floor a control-versus-treatment delta is judged
+against the data-sampling floor alone and reported as **cleared**, which 0029
+measured to be wrong on up to 14 of 54 metrics for arms differing only by seed. The reading in that record — four arms, half an hour of one
 host at that scale — becomes a stored asset instead of a number in a pull
 request body.
 
