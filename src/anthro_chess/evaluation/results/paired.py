@@ -170,12 +170,23 @@ _COMPARABLE_FIELDS = ("unit", "stratum", "resamples", "seed", "coverage", "confi
 
 #: The outcome for a metric a matched pair never retained, which is most of
 #: them: pairing is the estimator for the deterministic fixed-input families
-#: alone. Shared across rows rather than built per row, and stated without the
-#: metric's name because the row a report prints it on already carries it.
+#: alone. Stated without the metric's name, because the row a report prints it
+#: on already carries it.
 _UNRETAINED = PairedFloor(unavailable="neither reading retained this metric")
 
+#: The outcome where nothing was consulted at all. A report given no detail
+#: root reads no payload and can pair nothing, which is a configuration its
+#: caller can fix rather than a property of the two readings — so it is named
+#: here with the reasons the index itself produces, instead of being spelled
+#: out wherever a report happens to discover it has no provider.
+NO_DETAIL_ROOT = PairedFloor(unavailable="no detail-tier root is configured")
 
-def _unpairable(reason: str) -> tuple[dict[str, PairedFloor], PairedFloor]:
+#: One comparison's per-metric outcomes, and the outcome every metric they do
+#: not name shares.
+_ComparisonOutcome = tuple[dict[str, PairedFloor], PairedFloor]
+
+
+def _unpairable(reason: str) -> _ComparisonOutcome:
     """Return the outcome every metric of an unpairable comparison shares."""
 
     return {}, PairedFloor(unavailable=reason)
@@ -187,8 +198,7 @@ class PairedFloorIndex:
     def __init__(self, detail: DetailStore) -> None:
         self._detail = detail
         self._contributions: dict[str, tuple[PairedContributions | None, str]] = {}
-        self._floors: dict[tuple[str, str], tuple[dict[str, PairedFloor], PairedFloor]]
-        self._floors = {}
+        self._floors: dict[tuple[str, str], _ComparisonOutcome] = {}
 
     def floor(
         self,
@@ -208,7 +218,7 @@ class PairedFloorIndex:
         self,
         baseline: ResultEnvelope,
         current: ResultEnvelope,
-    ) -> tuple[dict[str, PairedFloor], PairedFloor]:
+    ) -> _ComparisonOutcome:
         left, left_absence = self._load(baseline)
         right, right_absence = self._load(current)
         if left is None and right is None and left_absence == right_absence:
@@ -261,7 +271,9 @@ class PairedFloorIndex:
             return _unpairable(
                 "the retained contributions weight their units differently"
             )
-        common = sorted(set(left.metrics) & set(right.metrics))
+        left_metrics = set(left.metrics)
+        right_metrics = set(right.metrics)
+        common = sorted(left_metrics & right_metrics)
         if not common:
             return _unpairable("the two readings retain no metric in common")
         baseline_values = np.column_stack(
@@ -321,8 +333,8 @@ class PairedFloorIndex:
         # in the retained set looks like from a store holding readings from
         # either side of it.
         for side, unmatched in (
-            ("current", set(left.metrics) - set(right.metrics)),
-            ("baseline", set(right.metrics) - set(left.metrics)),
+            ("current", left_metrics - right_metrics),
+            ("baseline", right_metrics - left_metrics),
         ):
             for metric in unmatched:
                 outcomes[metric] = PairedFloor(
@@ -331,6 +343,19 @@ class PairedFloorIndex:
         return outcomes, _UNRETAINED
 
     def _load(
+        self,
+        envelope: ResultEnvelope,
+    ) -> tuple[PairedContributions | None, str]:
+        """Return one reading's retained contributions, reading it once."""
+
+        cached = self._contributions.get(envelope.result_id)
+        if cached is not None:
+            return cached
+        loaded = self._read(envelope)
+        self._contributions[envelope.result_id] = loaded
+        return loaded
+
+    def _read(
         self,
         envelope: ResultEnvelope,
     ) -> tuple[PairedContributions | None, str]:
@@ -344,17 +369,6 @@ class PairedFloorIndex:
         disagreeing with itself rather than a file that never arrived.
         """
 
-        cached = self._contributions.get(envelope.result_id)
-        if cached is not None:
-            return cached
-        loaded = self._read(envelope)
-        self._contributions[envelope.result_id] = loaded
-        return loaded
-
-    def _read(
-        self,
-        envelope: ResultEnvelope,
-    ) -> tuple[PairedContributions | None, str]:
         if envelope.detail is None:
             return None, "recorded no detail payload"
         if not self._detail.holds(envelope.detail):
@@ -459,6 +473,7 @@ def _stratum_buckets(
 
 
 __all__ = [
+    "NO_DETAIL_ROOT",
     "PAIRED_CONTRIBUTIONS_KEY",
     "PAIRED_CONTRIBUTIONS_VERSION",
     "PairedContributions",

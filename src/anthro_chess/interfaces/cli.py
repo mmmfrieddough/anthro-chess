@@ -3319,6 +3319,14 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
                     f"no sampling floor can exist: {metric.no_sampling_floor_reason}"
                 ):
                     print(line)
+            if metric.paired_sampling_floor:
+                # And where a report reads "paired floor unavailable", this is
+                # what says the row should have had one, so which metrics that
+                # covers is answerable without reading the registry source.
+                for line in _wrapped_reason(
+                    "the data-sampling floor is the paired checkpoint-pair one"
+                ):
+                    print(line)
     return 0
 
 

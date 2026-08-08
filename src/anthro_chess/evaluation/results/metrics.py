@@ -423,6 +423,7 @@ def registry_record() -> dict[str, object]:
                         "projection": metric.projection,
                         "execution_sensitive": metric.execution_sensitive,
                         "no_sampling_floor_reason": metric.no_sampling_floor_reason,
+                        "paired_sampling_floor": metric.paired_sampling_floor,
                         "summary": metric.summary,
                     }
                     for metric in metrics

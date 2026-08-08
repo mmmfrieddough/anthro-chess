@@ -82,6 +82,7 @@ from anthro_chess.evaluation.results.noise import (
     replicate_floors,
 )
 from anthro_chess.evaluation.results.paired import (
+    NO_DETAIL_ROOT,
     PAIRED_CONTRIBUTIONS_KEY,
     PAIRED_CONTRIBUTIONS_VERSION,
     PairedContributions,
@@ -158,6 +159,7 @@ __all__ = [
     "FINGERPRINT_ALGORITHM",
     "MAXIMUM_SUMMARY_BYTES",
     "NOMINAL_REPEATED_PASSES",
+    "NO_DETAIL_ROOT",
     "PAIRED_BOOTSTRAP_METHOD",
     "PAIRED_CONTRIBUTIONS_KEY",
     "PAIRED_CONTRIBUTIONS_VERSION",

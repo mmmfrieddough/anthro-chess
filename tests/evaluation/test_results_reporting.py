@@ -748,6 +748,23 @@ def test_an_unpaired_floor_standing_in_for_a_paired_one_is_reported_as_one(
     assert "within (sampling, unpaired)" in rendered
     assert "paired floor unavailable" in rendered
 
+    # Both sides missing is the routine cross-machine shape, and naming each
+    # separately says the same sentence twice on every row of a report.
+    (tmp_path / "detail" / "baseline.json").unlink()
+    both = _row(
+        build_delta_report(
+            [baseline, current],
+            BridgeIndex(),
+            floors=floors,
+            comparison_floors=PairedFloorIndex(detail),
+        ),
+        metric,
+    )
+
+    assert both.paired_floor_unavailable == (
+        "both readings recorded a detail payload this machine does not hold"
+    )
+
 
 def test_a_metric_only_one_side_retained_names_the_side_that_did_not(
     tmp_path: Path,

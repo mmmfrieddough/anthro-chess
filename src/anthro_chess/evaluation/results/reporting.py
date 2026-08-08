@@ -46,7 +46,7 @@ from anthro_chess.evaluation.results.metrics import (
     registered_metrics,
 )
 from anthro_chess.evaluation.results.noise import NoiseFloorIndex
-from anthro_chess.evaluation.results.paired import PairedFloor
+from anthro_chess.evaluation.results.paired import NO_DETAIL_ROOT, PairedFloor
 from anthro_chess.evaluation.results.records import (
     ExecutionRecord,
     Measurement,
@@ -1311,7 +1311,7 @@ def _metric_delta(
     )
     delta = current_measurement.value - baseline_measurement.value
     paired = (
-        PairedFloor(unavailable="no detail-tier root is configured")
+        NO_DETAIL_ROOT
         if comparison_floors is None
         else comparison_floors.floor(
             baseline_envelope,
@@ -1323,11 +1323,7 @@ def _metric_delta(
     # Where the metric declares one, an unpaired floor is not a coarser reading
     # of the same quantity, so the substitution is named rather than left for a
     # reader to infer from a floor that looks like every other floor.
-    unpaired = (
-        paired.unavailable
-        if paired.floor is None and definition.paired_sampling_floor
-        else None
-    )
+    unpaired = paired.unavailable if definition.paired_sampling_floor else None
     applicable = _applicable_floors(
         definition,
         baseline_measurement,
