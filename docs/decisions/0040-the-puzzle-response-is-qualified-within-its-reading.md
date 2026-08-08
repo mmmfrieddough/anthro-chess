@@ -144,9 +144,16 @@ risk of being written up as a finding.
 **The retained paired contributions still draw plug-in, and are still narrow.**
 The correction here is the new estimator's; the existing paired floors stratify
 by exact rating with the same two-puzzle strata and take the plug-in draw, so a
-reduced sweep's puzzle floors carry the understatement this one removed. Changing
-that moves floors already recorded, so it is left with `#304`, which owns the
-same mechanism at its limit.
+reduced sweep's puzzle floors carry the understatement this one removes.
+
+Correcting them is a one-word change and is deliberately not made here, for a
+reason worth stating precisely because the obvious one is wrong: a paired floor
+is *derived at report time* from machine-local contributions and never recorded,
+so nothing already in the store would be invalidated. What the flag would move
+is every stratified paired floor in the suite, in families this change does not
+otherwise touch and whose stratum sizes nobody has measured. It also does not
+reach the case `#304` is actually about — a stratum of one, where the rescaled
+draw is undefined rather than merely biased. Both belong with that issue.
 
 **The fitted rating is the quantity this most affects.** A bisection over
 expected score is pinned near the bottom of its search range at a checkpoint
