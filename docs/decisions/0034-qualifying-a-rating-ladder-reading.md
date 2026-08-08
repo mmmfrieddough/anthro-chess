@@ -8,7 +8,9 @@ Accepted. Extends `0026-conservative-dispersion-bounds.md`, composes with
 `0032-a-replayed-reading-has-no-evaluation-noise.md`, and settles the gap
 `0027-settled-rating-ladder-grid.md` left open.
 `0036-a-one-sided-floor-does-not-qualify-a-delta.md` settles a narrowing filed
-under it.
+under it, and
+`0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md` withdraws the
+whole between-opening consequence below, having measured that spread at nothing.
 
 ## Context
 
