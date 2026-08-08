@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import chess
-from pydantic import Field, StrictInt, model_validator
+from pydantic import AwareDatetime, Field, StrictInt, model_validator
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import (
@@ -92,6 +92,9 @@ class PuzzleSetBuildConfig(ConfigModel):
     name: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     version: StrictInt = Field(ge=1)
     source_retrieved: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    # The rolling upstream URL leaves a revision no name of its own, so what
+    # upstream last wrote is the only readable handle on the pinned snapshot.
+    source_last_modified: AwareDatetime
     expected_entries: StrictInt = Field(ge=1)
     expected_puzzles_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     archive: ArchiveConfig
@@ -288,6 +291,7 @@ def prepare_puzzle_set(
                 "url": config.archive.url,
                 "file_name": config.archive.file_name,
                 "retrieved": config.source_retrieved,
+                "last_modified": config.source_last_modified.isoformat(),
                 "sha256": config.archive.sha256,
                 "format": "lichess-puzzle-csv-v1",
             },

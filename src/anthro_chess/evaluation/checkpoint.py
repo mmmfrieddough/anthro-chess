@@ -650,7 +650,10 @@ def _run_dependency_tests(
             corrupted_positions=corrupted,
             conditioned_positions=conditioned,
             trajectory=trajectory,
-            maturity=_maturity(runner),
+            maturity=MaturityContext(
+                step=runner.global_step,
+                processed_positions=runner.processed_positions,
+            ),
         )
     except DependencyError as error:
         raise CheckpointEvaluationError(str(error)) from error
@@ -777,15 +780,6 @@ def _dependency_contributions(
         coverage=config.coverage,
         confidence=config.confidence,
     ).as_record()
-
-
-def _maturity(runner: CheckpointModelRunner) -> MaturityContext:
-    optimization = runner.run_record.get("optimization")
-    processed = None
-    if isinstance(optimization, Mapping):
-        value = optimization.get("processed_positions")
-        processed = int(value) if isinstance(value, int) else None
-    return MaturityContext(step=runner.global_step, processed_positions=processed)
 
 
 def _pool_split(pool: FrozenPool) -> SplitName:

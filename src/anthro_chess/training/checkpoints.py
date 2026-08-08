@@ -186,6 +186,17 @@ def load_training_checkpoint(path: Path) -> dict[str, Any]:
     for key in ("scheduler_state", "scaler_state"):
         if payload[key] is not None and not isinstance(payload[key], Mapping):
             raise CheckpointError(f"checkpoint {key} must be a mapping or null")
+    # Presence rather than an exact key set, unlike the top-level fields above:
+    # an exact set would turn adding a second counter into a CHECKPOINT_VERSION
+    # bump, which retires every checkpoint on disk for every consumer.
+    counters = payload["counters"]
+    if "processed_positions" not in counters:
+        raise CheckpointError(f"checkpoint {path} has no processed-position count")
+    positions = counters["processed_positions"]
+    if type(positions) is not int or positions < 0:
+        raise CheckpointError(
+            f"checkpoint {path} processed_positions must be a nonnegative integer"
+        )
     return payload
 
 

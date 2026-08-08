@@ -1643,6 +1643,18 @@ published puzzle set fixes the scale externally, so checkpoints separated by a
 year were measured against the same thing. It is also the one benchmark whose
 inputs are immune to pool generation cuts, needing no re-baselining at a seam.
 
+The fixed yardstick is the built artifact, not the source it is cut from.
+Upstream publishes puzzles at a single rolling URL with no dated snapshot
+beside it, so a pinned source digest stops being fetchable the moment upstream
+regenerates, and the build then correctly refuses rather than quietly selecting
+from different data. Recovering means re-pinning to whatever upstream now
+serves, which selects different puzzles and so changes both digests and the set
+identity. That is free only while no puzzle reading has been committed to the
+results store, because there is then nothing to be incomparable with;
+afterwards it is a new set version rather than a repair, and the readings on
+either side of it are separate series. So what decides a re-pin is the store,
+not the source.
+
 Greedy and sampled solve rates should both be reported against a declared
 reference temperature, since the gap between them is the same quantity the
 decision decomposition measures. Multi-move puzzles distinguish first-move

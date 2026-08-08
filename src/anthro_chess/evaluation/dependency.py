@@ -45,7 +45,10 @@ from anthro_chess.evaluation.slices import (
     rating_band_name,
 )
 
-DEPENDENCY_TEST_VERSION = 1
+#: Version 2 reads ``maturity`` off the evaluated checkpoint. Version 1 records
+#: carry the position count their run finished on for every checkpoint in it, so
+#: the two are not comparable per position.
+DEPENDENCY_TEST_VERSION = 2
 
 #: Key identifying one scored position across conditioning passes.
 PositionKey = tuple[int, int]
@@ -160,10 +163,15 @@ class TrajectorySignal:
 
 @dataclass(frozen=True)
 class MaturityContext:
-    """How far the evaluated checkpoint had trained when it was measured."""
+    """How far the evaluated checkpoint had trained when it was measured.
 
-    step: int | None
-    processed_positions: int | None
+    Both coordinates come from the evaluated checkpoint rather than from its
+    run, so an intermediate checkpoint reports the maturity it was saved at
+    instead of inheriting the count its run finished on.
+    """
+
+    step: int
+    processed_positions: int
 
     def as_record(self) -> dict[str, object]:
         """Return the record every dependency result is read against."""
