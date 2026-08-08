@@ -165,5 +165,13 @@ Use `docs/research.md` for outside work that materially informs the project.
 Each entry should say what the source is, what matters, which part of Anthro
 Chess it applies to, and how this project differs.
 
+**The subject of a research bullet is the outside work, not this project.** "How
+this project differs" is a fact about the source read against us, and stays true
+however we change; a bullet describing what we built in response does not, and
+nothing here checks it. Write what the source establishes and what that implies
+for a project like this one, and leave the design decision to the document that
+owns it — a bullet that restates a rule from a topic doc or a decision record
+has two copies to keep in step and no reason to.
+
 Do not let research notes turn the project into research for its own sake. The
 project goal remains a usable human-like chess opponent.
