@@ -83,6 +83,25 @@ An issue leaves `Parked` by being moved into a numbered milestone deliberately.
 Nothing sweeps it and no review is scheduled, so the finding keeps its evidence
 and stays searchable until someone decides it is next.
 
+An issue whose acceptance is that the model got better names the metric that
+carries the claim, before the work starts. Give the metric as
+`uv run anthro eval metrics` reports it, the benchmark that produces it, and the
+shape the movement is expected to take:
+
+- **one metric**, where the change targets a quantity and the rest should hold;
+- **several named metrics**, where the claim is a conjunction and partial
+  movement is a finding rather than a pass;
+- **across the board**, where the change is a general capability one and the
+  interesting outcome is anything that moved the wrong way.
+
+Written after the run, a claim is not a claim: whichever metric moved becomes
+the one that was meant, and a change that improved one thing while quietly
+degrading two reads as a success. Written first, the reading can fail.
+
+This applies to changes claiming a model improvement, not to every issue. A bug
+fix, a refactor, or a documentation change has no carrying metric and should not
+invent one.
+
 Contributor blank issues are disabled so public intake uses the focused forms.
 Repository maintainers can still open a blank issue when GitHub permissions
 allow it.
