@@ -553,6 +553,85 @@ def test_a_step_whose_input_failed_is_skipped_rather_than_run(
     assert "nothing to read" in (gamma.note or "")
 
 
+def _obstruct_games_payload(sweep_root: Path, producer: str) -> None:
+    """Make the hand-off's own write fail the way a bad sweep root does.
+
+    A directory where the payload goes is refused by the same rename the store
+    performs for any write, so the test exercises the real store rather than a
+    stand-in that raises on request.
+    """
+
+    (sweep_root / f"{producer}-games.json").mkdir(parents=True)
+
+
+def test_a_step_whose_games_cannot_be_handed_off_costs_only_its_dependent(
+    tmp_path: Path,
+) -> None:
+    """The sweep root refusing a payload is not a reason to end the sweep."""
+
+    recorder = Recorder(games=(_game_record(),))
+    plan = resolve_suite(
+        _suite(
+            benchmarks={
+                "alpha": {"config": str(_selection(tmp_path))},
+                "beta": {"config": str(_selection(tmp_path, "beta.toml"))},
+                "gamma": {"record": False},
+            }
+        ),
+        no_record=True,
+        registry=_registry(recorder),
+    )
+    sweep_root = tmp_path / "sweep"
+    _obstruct_games_payload(sweep_root, "alpha")
+
+    run = run_suite(plan, sweep_root=sweep_root)
+
+    assert recorder.calls == ["alpha", "beta"]
+    outcomes = {outcome.name: outcome for outcome in run.outcomes}
+    assert outcomes["alpha"].status is StepStatus.COMPLETED
+    assert outcomes["beta"].status is StepStatus.COMPLETED
+    assert outcomes["gamma"].status is StepStatus.FAILED
+    assert "could not hand off its games" in (outcomes["gamma"].note or "")
+    assert [item.name for item in run.failed] == ["gamma"]
+
+
+def test_a_step_whose_games_cannot_be_handed_off_is_still_in_the_ledger(
+    tmp_path: Path,
+) -> None:
+    """Otherwise a resume replays the most expensive step in the sweep."""
+
+    payload = {
+        "benchmarks": {
+            "alpha": {"config": str(_selection(tmp_path))},
+            "gamma": {"record": False},
+        }
+    }
+    first = Recorder(games=(_game_record(),))
+    plan = resolve_suite(_suite(**payload), no_record=True, registry=_registry(first))
+    sweep_root = sweep_directory(tmp_path / "sweeps", plan)
+    _obstruct_games_payload(sweep_root, "alpha")
+
+    run_suite(plan, sweep_root=sweep_root)
+
+    ledger = json.loads((sweep_root / "sweep.json").read_text(encoding="utf-8"))
+    statuses = {entry["benchmark"]: entry["status"] for entry in ledger["steps"]}
+    assert statuses == {"alpha": "completed", "gamma": "failed"}
+
+    second = Recorder(games=(_game_record(),))
+    resumed = run_suite(
+        resolve_suite(_suite(**payload), no_record=True, registry=_registry(second)),
+        sweep_root=sweep_root,
+        resume=True,
+    )
+
+    assert "alpha" not in second.calls
+    outcomes = {outcome.name: outcome for outcome in resumed.outcomes}
+    assert outcomes["alpha"].from_ledger is True
+    # The games are gone with the run that generated them, so resuming reports
+    # the dependent failing on the payload rather than pretending it can run.
+    assert outcomes["gamma"].status is StepStatus.FAILED
+
+
 def test_a_resumed_sweep_does_not_repeat_what_it_already_read(
     tmp_path: Path,
 ) -> None:
