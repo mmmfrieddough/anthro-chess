@@ -2284,9 +2284,9 @@ def _ladder_metric(
 
 #: Most of the ladder is informational, and deliberately so. A self-play ladder
 #: is internally consistent by construction, so a fitted rating and a slope
-#: describe the transfer function rather than grade it; only ordering and the
-#: distance from the configured scale carry a direction the project is willing
-#: to name.
+#: describe the transfer function rather than grade it. Three quantities carry a
+#: direction the project is willing to name: ordering, the distance from the
+#: configured scale, and the share of games that reached a result at all.
 LADDER_FITTED_RATING = _ladder_metric(
     "ladder.fitted_rating",
     MetricDirection.INFORMATIONAL,
@@ -2303,6 +2303,17 @@ LADDER_SCORE_RATE = _ladder_metric(
     (
         "Points per game one seat scored across its matches, counting a draw "
         "as a half. The raw observation the fit reads."
+    ),
+)
+
+LADDER_SCORED_GAME_RATE = _ladder_metric(
+    "ladder.scored_game_rate",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Share of one seat's games that reached a result rather than the ply "
+        "limit. The limit sits past the longest game in the corpus, so a seat "
+        "playing the way its corpus does would reach it essentially never, and "
+        "the share rising is the model learning to finish games."
     ),
 )
 

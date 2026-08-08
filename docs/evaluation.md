@@ -1484,6 +1484,40 @@ game at all: a game that reaches the ply limit has no result and informs no
 comparison, so it is counted rather than adjudicated into a draw, and a suite
 where nothing finished fails loudly as a generation problem.
 
+**Every number carries what the reading can resolve.** A flat transfer and a
+sample too thin to see one in are the same output without that, which is the
+distinction the first full-size reading could not draw. Nothing here is a
+per-game additive contribution the suite's data-sampling bootstrap could
+resample, and two checkpoints generate their own games so there is no shared
+sample to pair on either, so the ladder estimates its own floor a third way: it
+redraws the games each pairing played, refits, and reads the spread of
+everything one fit yields. Ordering, slope, span, ladder error and both
+temperature responses are functions of the fitted ratings, so they are reached
+by the reduction rather than by propagating a standard error through it — which
+would not work for an ordering, since a step function has no derivative to
+propagate through.
+
+The floor is evaluation noise for the reason generated play always is, and it
+travels on the measurement rather than being characterized against the series,
+because a ladder's sample size is deliberately outside its identity and a floor
+looked up beside a reading of a different size would be wrong by the difference.
+Pairings whose seats are all greedy replay rather than redraw and are held
+fixed, so a ladder is qualified against the games that would actually have
+differed, and one whose every seat is greedy states a floor of zero rather than
+estimating one.
+
+Two situations are treated apart from the rest. A number the redraw could not
+move carries no floor and the reading names it: a seat that scored nothing or
+scored everything has no finite fitted rating and reports the declared spread
+instead, and a step function that saturates cannot be resampled either, so a
+floor of zero from a bootstrap would read as perfect resolution rather than as
+the exact statement a replayed ladder makes. The error profile beside each seat
+is a mean over decisions rather than an output of the fit, so the refit does not
+reach it and its noise reports as unknown — a floor somebody could still
+produce, rather than one that cannot exist.
+`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns all of this,
+including the one component the estimate carries that a re-run would not redraw.
+
 **Read the unfinished count as a reading, not as overhead.** About half a
 full-size ladder's games reach the limit, and they are its most expensive games,
 but the limit sits past the longest game in the corpus the model trained on — a
@@ -1491,7 +1525,9 @@ model that finished games the way its corpus does would reach it essentially
 never. The count is therefore a statement about the seats, and it is the ladder
 quantity that has discriminated most sharply between checkpoints so far. It is
 concentrated in the sampling seats, which is where the temperature response is
-read.
+read. It is reported per seat as the share of that seat's games that reached a
+result, which is one of the three ladder quantities carrying a direction the
+project is willing to name.
 
 Each seat's own error profile is recorded beside its strength, computed through
 the shared decision decomposition rather than a private one, since that layer
@@ -1523,6 +1559,8 @@ declared size and records what that is worth against what it costs.
 `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md` settles the ply
 limit against the corpus's longest game and owns why the unfinished half is a
 reading rather than a dial to move.
+`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns how a reading
+is qualified and what the two degenerate fits are qualified as.
 
 Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
 of Anthro target ratings against one or more fixed external engine
