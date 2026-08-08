@@ -222,3 +222,9 @@ __marimo__/
 #   Transient write artifacts inside the committed benchmark results store.
 /results/.write-lock
 /results/**/.*.tmp
+
+# Anthro Chess marked-account snapshots
+#   The snapshot itself is checked in. Its sidecars are not: a resumable
+#   query's progress, and the temporary file it is replaced through.
+/configs/data/marked-accounts/*.partial
+/configs/data/marked-accounts/*.writing

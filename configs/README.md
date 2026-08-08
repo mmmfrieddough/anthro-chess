@@ -9,6 +9,10 @@ schema.
 `data/` contains the offline sample selection and the pinned, bounded Lichess
 baseline-corpus selection. The latter owns the archive identity, published
 checksum, rating namespace, deterministic maximum, and normalized shard size.
+It can also name a marked-account snapshot, though it does not yet;
+`data/marked-accounts/` explains why that one input is checked in rather than
+regenerated on demand, since account status is a live judgement and a corpus
+that re-asked for it would shrink on every run.
 `training/` contains the strict CPU and explicitly selected MPS and CUDA smoke
 paths against the prepared sample artifact, including step-keyed checkpoint and
 resume coverage. It also contains the first measured many-game MPS proof

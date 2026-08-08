@@ -65,12 +65,20 @@ class SplitConfig(ConfigModel):
 
 
 class FilterConfig(ConfigModel):
-    """Filters for the initial standard-human-game corpus."""
+    """Filters for the initial standard-human-game corpus.
+
+    ``marked_accounts`` names a snapshot of the accounts a source has marked
+    for breaking its rules, and every game either player appears in is
+    rejected. A relative path resolves against the selection file naming it,
+    because the snapshot is checked in beside that selection rather than built
+    during preparation; ``configs/data/marked-accounts/`` says why.
+    """
 
     minimum_plies: int = Field(default=1, ge=1)
     require_rated: StrictBool = True
     require_ratings: StrictBool = False
     exclude_bots: StrictBool = True
+    marked_accounts: Path | None = None
     event_speed: (
         Literal[
             "bullet",

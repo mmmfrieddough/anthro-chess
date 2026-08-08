@@ -31,6 +31,14 @@ minimum_plies = 8
 require_rated = true
 require_ratings = true
 exclude_bots = true
+# Rejects every game either player appears in. Deliberately not set yet: the
+# snapshot it names is two thirds built, because the source rate limits the
+# lookup hard enough that covering one archive takes several sessions across
+# days. Uncommenting this without the file present fails the run rather than
+# preparing unfiltered, which is why it waits for the artifact instead of
+# landing ahead of it. `#358` carries it and blocks `#90`. Build it with
+# `uv run anthro data mark-accounts`, then set:
+# marked_accounts = "marked-accounts/lichess-standard-rated-2017-04.txt"
 event_speed = "blitz"
 # Bound the first real training proof while retaining enough games for learned signal.
 maximum_games = 1000000

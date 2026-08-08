@@ -7,10 +7,8 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
-from io import TextIOWrapper
 from pathlib import Path
 from typing import TextIO
 from urllib.error import HTTPError, URLError
@@ -22,9 +20,17 @@ import chess.pgn
 
 from anthro_chess.chess import action_vocabulary_identity, encode_move
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.data.accounts import (
+    MarkedAccountError,
+    MarkedAccounts,
+    load_marked_accounts,
+    resolve_snapshot_path,
+)
 from anthro_chess.data.artifacts import (
+    SOURCE_USER_AGENT,
     DataLoadingError,
     file_sha256,
+    open_pgn_text,
     write_normalized_rows,
 )
 from anthro_chess.data.config import ArchiveConfig, PrepareConfig, SplitConfig
@@ -52,6 +58,8 @@ _CLOCK_CENTISECONDS_RE = re.compile(r"\[%clkc\s+([^\]\s]+)\]")
 _CLOCK_SHAPED_RE = re.compile(r"\[%clk(?:c)?\b")
 _TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")
 _SOURCE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+#: PGN ``Termination "Rules infraction"`` in the form ``_parse_text`` yields.
+_RULES_INFRACTION_TERMINATION = "rules_infraction"
 _EVENT_SPEED_RE = re.compile(
     r"\b(bullet|blitz|rapid|classical|correspondence)\b",
     re.IGNORECASE,
@@ -155,7 +163,7 @@ def acquire_configured_archive(
     partial_path = raw_directory / f"{archive.file_name}.part"
     request = Request(
         archive.url,
-        headers={"User-Agent": "anthro-chess-data-acquisition/1"},
+        headers={"User-Agent": SOURCE_USER_AGENT},
     )
     try:
         with (
@@ -209,6 +217,7 @@ def prepare_pgn(
             f"input archive checksum mismatch: expected {configured_archive.sha256}, "
             f"observed {input_sha256}"
         )
+    marked_accounts = _resolve_marked_accounts(resolved_config, input_sha256)
     records: list[dict[str, object]] = []
     rejections: Counter[str] = Counter()
     seen_game_ids: set[int] = set()
@@ -236,9 +245,9 @@ def prepare_pgn(
     manifest_directory = output_path / "manifests"
 
     try:
-        with _open_pgn_text(source_path) as pgn_file:
+        with open_pgn_text(source_path) as pgn_file:
             for game in _read_games(pgn_file):
-                parsed = _parse_game(game, resolved_config.value)
+                parsed = _parse_game(game, resolved_config.value, marked_accounts)
                 if parsed.record is None:
                     assert parsed.rejection is not None
                     rejections[parsed.rejection] += 1
@@ -330,7 +339,7 @@ def prepare_pgn(
                     if game_limit is not None and accepted_games >= game_limit:
                         stopped_at_limit = True
                         break
-    except (OSError, UnicodeError) as error:
+    except (OSError, UnicodeError, DataLoadingError) as error:
         raise DataPreparationError(
             f"cannot read input PGN {source_path}: {error}"
         ) from error
@@ -398,6 +407,16 @@ def prepare_pgn(
             "maximum_games": resolved_config.value.filters.maximum_games,
             "limit_reached": stopped_at_limit,
         },
+        "marked_accounts": (
+            None
+            if marked_accounts is None
+            else {
+                "covers_archive": marked_accounts.covers_archive,
+                "queried_at": marked_accounts.queried_at,
+                "accounts_queried": marked_accounts.accounts_queried,
+                "accounts_marked": marked_accounts.accounts_marked,
+            }
+        ),
         "split": {
             "algorithm": "sha256-threshold-v2",
             "seed": resolved_config.value.split.seed,
@@ -479,34 +498,6 @@ def prepare_pgn(
     )
 
 
-@contextmanager
-def _open_pgn_text(source_path: Path) -> Iterator[TextIO]:
-    if source_path.suffix != ".zst":
-        with source_path.open("r", encoding="utf-8") as pgn_file:
-            yield pgn_file
-        return
-
-    try:
-        import zstandard
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise DataPreparationError(
-            "Zstandard support is unavailable; install anthro-chess[data]"
-        ) from error
-
-    with source_path.open("rb") as compressed_file:
-        decompressor = zstandard.ZstdDecompressor()
-        try:
-            with (
-                decompressor.stream_reader(compressed_file) as reader,
-                TextIOWrapper(reader, encoding="utf-8") as pgn_file,
-            ):
-                yield pgn_file
-        except zstandard.ZstdError as error:
-            raise DataPreparationError(
-                f"cannot decompress input PGN {source_path}: {error}"
-            ) from error
-
-
 def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
     while True:
         game = chess.pgn.read_game(pgn_file)
@@ -515,7 +506,37 @@ def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
         yield game
 
 
-def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
+def _resolve_marked_accounts(
+    resolved_config: ResolvedConfig[PrepareConfig],
+    input_sha256: str,
+) -> MarkedAccounts | None:
+    """Load the configured marked-account snapshot and check it applies here."""
+
+    configured = resolved_config.value.filters.marked_accounts
+    if configured is None:
+        return None
+    try:
+        snapshot_path = resolve_snapshot_path(
+            configured, resolved_config.provenance.source
+        )
+        snapshot = load_marked_accounts(snapshot_path)
+        snapshot.require_archive(input_sha256)
+    except MarkedAccountError as error:
+        raise DataPreparationError(str(error)) from error
+    logger.info(
+        "Rejecting games of %s marked account(s) observed %s across %s account(s)",
+        snapshot.accounts_marked,
+        snapshot.queried_at,
+        snapshot.accounts_queried,
+    )
+    return snapshot
+
+
+def _parse_game(
+    game: chess.pgn.Game,
+    config: PrepareConfig,
+    marked_accounts: MarkedAccounts | None,
+) -> _ParsedGame:
     if game.errors:
         return _ParsedGame(None, "pgn_parse_error")
     variant = game.headers.get("Variant", "Standard")
@@ -523,6 +544,13 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
         return _ParsedGame(None, "unsupported_variant")
     if game.headers.get("SetUp") == "1" or game.headers.get("FEN"):
         return _ParsedGame(None, "nonstandard_initial_position")
+    termination_text, _ = _parse_text(game.headers.get("Termination"))
+    if termination_text == _RULES_INFRACTION_TERMINATION:
+        # Ended by the platform on a client-side report rather than played to
+        # a finish, so the record is a fragment of a game rather than a
+        # completed human one. Rejected for that rather than as a cheating
+        # filter, which 0040 measures this label as far too narrow to serve.
+        return _ParsedGame(None, "rules_infraction")
     if config.filters.exclude_bots and _has_bot_player(game):
         return _ParsedGame(None, "bot_game")
     if (
@@ -535,6 +563,15 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
         and "rated" not in game.headers.get("Event", "").casefold()
     ):
         return _ParsedGame(None, "unrated_game")
+    if marked_accounts is not None and _has_marked_player(game, marked_accounts):
+        # Every game a marked account played is rejected rather than the moves
+        # that were assisted, because no method separates the two per game and
+        # a marked player's honest games are not what this corpus is for.
+        #
+        # Ordered after the speed, rated, and bot filters so the manifest's
+        # count is a share of the corpus being built rather than of the whole
+        # archive, which is the number 0040 is checked against.
+        return _ParsedGame(None, "marked_account")
 
     source_game_key = _source_game_key(game.headers.get("Site"))
     if source_game_key is None:
@@ -654,6 +691,14 @@ def _parse_game(game: chess.pgn.Game, config: PrepareConfig) -> _ParsedGame:
         },
         None,
         derived_termination,
+    )
+
+
+def _has_marked_player(game: chess.pgn.Game, marked: MarkedAccounts) -> bool:
+    return any(
+        marked.contains(name)
+        for name in (game.headers.get("White"), game.headers.get("Black"))
+        if name
     )
 
 
