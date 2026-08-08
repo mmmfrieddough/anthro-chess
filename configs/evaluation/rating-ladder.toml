@@ -18,12 +18,12 @@
 # `generation.claim_draws`, and `runtime.resignation_enabled`. Values that
 # decide only how precisely are not: `grid.seeds`,
 # `generation.games_per_position`, `generation.concurrency`, and the
-# `resolution.*` settings can all be raised without ending a series.
+# `noise.*` settings can all be raised without ending a series.
 #
 # What the reading can resolve is estimated by redrawing each pairing's games
 # and running the fit again, which is what reaches ordering and the ladder
 # error: neither has a derivative for a standard error to be propagated
-# through. The schema owns the resample count and the rest of `resolution.*`,
+# through. The schema owns the resample count and the rest of `noise.*`,
 # and `docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns why.
 #
 # Cost scales with the square of the seat count. Four ratings at three

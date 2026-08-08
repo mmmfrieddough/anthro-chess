@@ -172,6 +172,12 @@ LADDER_BOOTSTRAP_METHOD = "refit-over-resampled-games"
 #: zero rather than small, per decision 0032.
 LADDER_DETERMINISTIC_METHOD = "deterministic-seats"
 
+#: What a reading records when neither of the above ran: the pairings a fresh
+#: seed would redraw hold too few games to show a spread. Named rather than left
+#: as the bootstrap's method, so a stored record does not claim a resample that
+#: was never drawn.
+LADDER_UNRESOLVED_METHOD = "too-few-redrawn-games"
+
 #: The noise a ladder floor bounds. A rollout has no fixed data to re-measure
 #: on — the games are the draw — so resampling them and re-running under another
 #: seed estimate the same quantity, and that quantity is what qualifies a delta
@@ -380,11 +386,12 @@ class LadderBenchmarkConfig(CheckpointSelection):
     openings: LadderOpeningsConfig = LadderOpeningsConfig()
     ablation: LadderAblationConfig = LadderAblationConfig()
     fit: LadderFitConfig = LadderFitConfig()
-    #: How the reading is qualified. A precision setting rather than a
-    #: measurement one — it decides how finely the floor beside a number is
-    #: read, never the number — so it stays out of series identity like the
+    #: How the reading is qualified. Named as every other benchmark names it,
+    #: so one override key reaches the whole suite. A precision setting rather
+    #: than a measurement one — it decides how finely the floor beside a number
+    #: is read, never the number — so it stays out of series identity like the
     #: seeds and the games per pairing.
-    resolution: NoiseConfig = NoiseConfig()
+    noise: NoiseConfig = NoiseConfig()
     detail: LadderDetailConfig = LadderDetailConfig()
 
 
@@ -1357,40 +1364,52 @@ def _resolution(
     stratified alternative was not taken and what sizing it needs.
     """
 
-    settings = config.resolution
+    settings = config.noise
     if not settings.enabled:
         return None
+    # What a re-run would redraw is decided by the seats rather than by what
+    # they managed to play, per decision 0032: a pairing that produced no game
+    # is a thin reading, not a replayed one, and calling it replayed would state
+    # a floor of zero over a generation failure.
+    varying = [
+        pairing
+        for pairing in pairings
+        if replicates_vary((pairing.first.temperature, pairing.second.temperature))
+    ]
     redrawn = {
         index: pairing
         for index, pairing in enumerate(pairings)
         if pairing.played
         and replicates_vary((pairing.first.temperature, pairing.second.temperature))
     }
-    method = LADDER_BOOTSTRAP_METHOD if redrawn else LADDER_DETERMINISTIC_METHOD
-    source = f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} {method}"
+    replayed = len(pairings) - len(varying)
     observed = _quantities(config, seats, pairings, fit, workload, device=device)
-    unqualifiable = _unbounded_seats(seats, pairings)
-    if not redrawn:
+    if not varying:
         # Nothing to draw. Every seat is greedy, so a fresh seed replays the
         # ladder move for move and the delta between two such readings is
-        # attributable to the weights alone.
+        # attributable to the weights alone — a seat pinned at the declared
+        # spread included, since it is pinned identically both times.
+        source = (
+            f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} "
+            f"{LADDER_DETERMINISTIC_METHOD}"
+        )
         return LadderResolution(
             floors={
                 key: NoiseFloor(value=0.0, kind=LADDER_FLOOR_KIND, source=source)
                 for key in observed
-                if key not in unqualifiable
             },
-            unqualifiable=unqualifiable,
-            method=method,
+            unqualifiable={},
+            method=LADDER_DETERMINISTIC_METHOD,
             coverage=settings.coverage,
             confidence=settings.confidence,
             resamples=0,
             fitted_resamples=0,
             redrawn_games=0,
-            replayed_pairings=len(pairings),
+            replayed_pairings=replayed,
             non_convergent_resamples=0,
         )
 
+    unqualifiable = _unbounded_seats(seats, pairings)
     redrawn_games = sum(pairing.played for pairing in redrawn.values())
     if redrawn_games < 2:
         # One game shows no spread, and a bound needs a degree of freedom to be
@@ -1400,21 +1419,24 @@ def _resolution(
             floors={},
             unqualifiable={
                 key: (
-                    "the pairings a fresh seed would redraw hold one game "
-                    "between them, which shows no spread to bound"
+                    "the pairings a fresh seed would redraw hold fewer than two "
+                    "games between them, which shows no spread to bound"
                 )
                 for key in observed
             }
             | unqualifiable,
-            method=method,
+            method=LADDER_UNRESOLVED_METHOD,
             coverage=settings.coverage,
             confidence=settings.confidence,
             resamples=0,
             fitted_resamples=0,
             redrawn_games=redrawn_games,
-            replayed_pairings=len(pairings) - len(redrawn),
+            replayed_pairings=replayed,
             non_convergent_resamples=0,
         )
+
+    method = LADDER_BOOTSTRAP_METHOD
+    source = f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} {method}"
 
     generator = np.random.default_rng(settings.seed)
     outcomes = {
@@ -1476,7 +1498,11 @@ def _resolution(
         floors[key] = NoiseFloor(
             value=floor_from_dispersion(
                 dispersion,
-                degrees_of_freedom=redrawn_games - 1,
+                # The games are the independent replicates, and the resample
+                # count is not — but a spread read off three surviving refits is
+                # known no better than three numbers allow, whichever is the
+                # scarcer of the two.
+                degrees_of_freedom=min(redrawn_games, len(values)) - 1,
                 coverage=settings.coverage,
                 confidence=settings.confidence,
             ),
@@ -1492,28 +1518,62 @@ def _resolution(
         resamples=settings.resamples,
         fitted_resamples=fitted,
         redrawn_games=redrawn_games,
-        replayed_pairings=len(pairings) - len(redrawn),
+        replayed_pairings=replayed,
         non_convergent_resamples=non_convergent,
     )
+
+
+def _seat_totals(
+    seats: Sequence[SeatKey],
+    pairings: Sequence[LadderPairing],
+) -> dict[SeatKey, tuple[int, float, int]]:
+    """Return each seat's scored games, points, and games played.
+
+    One pass over the pairings rather than one per quantity per seat. This runs
+    once per resample, where a scan per seat is quadratic in the grid on the
+    hottest loop the benchmark has.
+    """
+
+    totals = {seat: [0, 0.0, 0] for seat in seats}
+    for pairing in pairings:
+        for seat, points in (
+            (pairing.first, pairing.first_points),
+            (pairing.second, pairing.games - pairing.first_points),
+        ):
+            total = totals.get(seat)
+            if total is None:
+                continue
+            total[0] += pairing.games
+            total[1] += points
+            total[2] += pairing.played
+    return {
+        seat: (int(total[0]), float(total[1]), int(total[2]))
+        for seat, total in totals.items()
+    }
 
 
 def _unbounded_seats(
     seats: Sequence[SeatKey],
     pairings: Sequence[LadderPairing],
 ) -> dict[tuple[str, str], str]:
-    """Return the seats whose fitted rating is a bound rather than an estimate.
+    """Return the seats whose fitted rating is plainly a bound, not an estimate.
 
     A seat that scored nothing or scored everything has no finite
     maximum-likelihood rating, so the fit reports the declared spread instead.
     Read from the seat's own record rather than from ``RatingFit.clamped``,
     which also fires where the spread merely binds on an ordinary record — that
     seat's rating moves under resampling and is qualified like any other.
+
+    A seat sweeping on its own is the case this catches. A *group* that jointly
+    beats everything outside it is unbounded in the same way and is not named
+    here, because finding one is a connectivity question over the whole
+    comparison graph rather than a fact about a seat. Such a rating does not
+    move under resampling either, so it is caught by the spread instead, one
+    step later and with a vaguer reason.
     """
 
     unqualifiable: dict[tuple[str, str], str] = {}
-    for seat in seats:
-        games = _seat_games(seat, pairings)
-        points = _seat_points(seat, pairings)
+    for seat, (games, points, _) in _seat_totals(seats, pairings).items():
         if not games or 0.0 < points < games:
             continue
         unqualifiable[(seat.label, LADDER_FITTED_RATING.identifier)] = (
@@ -1541,16 +1601,14 @@ def _quantities(
     """
 
     values: dict[tuple[str, str], float] = {}
+    totals = _seat_totals(seats, pairings)
     for seat in seats:
         rating = fit.rating(seat)
         if rating is not None:
             values[(seat.label, LADDER_FITTED_RATING.identifier)] = rating
-        games = _seat_games(seat, pairings)
-        played = games + _seat_unfinished(seat, pairings)
+        games, points, played = totals[seat]
         if games:
-            values[(seat.label, LADDER_SCORE_RATE.identifier)] = (
-                _seat_points(seat, pairings) / games
-            )
+            values[(seat.label, LADDER_SCORE_RATE.identifier)] = points / games
         if played:
             values[(seat.label, LADDER_SCORED_GAME_RATE.identifier)] = games / played
     for reading in _readings(config, fit, workload, device=device, unavailable={}):
@@ -2183,6 +2241,7 @@ __all__ = [
     "LADDER_BENCHMARK_VERSION",
     "LADDER_BOOTSTRAP_METHOD",
     "LADDER_DETERMINISTIC_METHOD",
+    "LADDER_UNRESOLVED_METHOD",
     "LADDER_FLOOR_KIND",
     "LADDER_KIND",
     "RATING_SCALE",

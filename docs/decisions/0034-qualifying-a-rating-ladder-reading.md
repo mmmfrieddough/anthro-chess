@@ -61,7 +61,9 @@ a slightly different quantity from the number it sits beside.
 It is affordable. The whole estimate over the declared 15-seat, 105-pairing grid
 — a thousand redraws, a thousand refits, and the reductions read off each —
 measured 4.4 s in this checkout, against a ladder that has run in about two
-hours.
+hours. A ladder with a seat that sweeps costs about ten times that, because no
+refit of it converges and each runs out of iterations; still under a minute, and
+it is the state the reading is naming anyway.
 
 ### The Floor Is Evaluation Noise, And Travels On The Measurement
 
@@ -115,6 +117,10 @@ sweeps the same way and reproduces the same bound. Read from the seat's own
 record rather than from `RatingFit.clamped`, which fires wherever the spread
 binds — including on an ordinary win-and-loss record under a narrow spread,
 where the rating does move under resampling and is qualified like anything else.
+
+This is a statement about resampling, so it does not reach a reading that
+replays. A pinned seat on an all-greedy ladder is pinned identically both times,
+and its floor is the stated zero the rest of that reading carries.
 
 ### A Zero That Was Estimated Is Not A Zero That Was Stated
 
@@ -182,6 +188,13 @@ no spread at all, so a reduced grid run at one seed would report a floor of zero
 where the unstratified draw reports one that is merely too wide. A floor that
 understates is the failure floors exist to prevent, and choosing between them
 needs the measurement rather than an argument.
+
+**The zero-spread rule is the ladder's, not the suite's.** The curve family and
+the per-game bootstrap run the same estimator shape and neither refuses a
+dispersion of zero, so the same reading of a zero is available there. Whether it
+should be refused there is a question about those families — decision 0032
+deliberately states zero for one of them — so it is filed rather than pushed
+into the shared arithmetic here.
 
 **Withholding a floor protects a reading, not a comparison.** A report takes the
 widest floor of each kind offered by either side of a delta, so a seat that is a

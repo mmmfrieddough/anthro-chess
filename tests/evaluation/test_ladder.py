@@ -25,6 +25,7 @@ from anthro_chess.evaluation.ladder import (
     LADDER_BOOTSTRAP_METHOD,
     LADDER_DETERMINISTIC_METHOD,
     LADDER_KIND,
+    LADDER_UNRESOLVED_METHOD,
     RESPONSE_SCOPE,
     LadderBenchmarkConfig,
     LadderBenchmarkError,
@@ -148,9 +149,9 @@ def _config(**overrides: Any) -> ResolvedConfig[LadderBenchmarkConfig]:
     fields["grid"] = {**_BASE_GRID, **overrides.pop("grid", {})}
     fields["generation"] = {**_BASE_GENERATION, **overrides.pop("generation", {})}
     # Resamples buy precision on the floor rather than deciding its shape, and
-    # the shape is what these tests read. The shipped default is checked once,
-    # against the schema, rather than paid for in every fixture run.
-    fields["resolution"] = {"resamples": 100, **overrides.pop("resolution", {})}
+    # the shape is what these tests read, so a fixture pays for a hundred rather
+    # than the shipped thousand.
+    fields["noise"] = {"resamples": 100, **overrides.pop("noise", {})}
     fields.update(overrides)
     return ResolvedConfig(
         value=LadderBenchmarkConfig.model_validate(fields),
@@ -796,7 +797,8 @@ def test_a_ladder_nothing_would_redraw_states_a_floor_of_zero() -> None:
                 "temperatures": (0.0,),
                 "reference_temperature": 0.0,
             }
-        )
+        ),
+        runner=SweepingRunner(),
     )
     resolution = result.resolution
 
@@ -807,6 +809,14 @@ def test_a_ladder_nothing_would_redraw_states_a_floor_of_zero() -> None:
     assert resolution.replayed_pairings == len(result.pairings)
     assert resolution.floors
     assert all(floor.value == 0.0 for floor in resolution.floors.values())
+    # A seat that swept is pinned at the declared spread, and a replay pins it
+    # there identically both times. Withholding its floor would state that a
+    # reading which cannot move might have.
+    assert not resolution.unqualifiable
+    swept = [seat for seat in result.seats if seat.points in (0.0, float(seat.games))]
+    assert swept
+    for seat in swept:
+        assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
 
 
 def test_a_pairing_that_replays_is_held_fixed_while_the_rest_redraw() -> None:
@@ -936,6 +946,7 @@ def test_a_single_redrawn_game_reports_no_floor_rather_than_failing() -> None:
     reading = result.reading(1.0)
 
     assert resolution is not None
+    assert resolution.method == LADDER_UNRESOLVED_METHOD
     assert resolution.redrawn_games == 1
     assert not resolution.floors
     assert (

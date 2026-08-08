@@ -1506,13 +1506,15 @@ fixed, so a ladder is qualified against the games that would actually have
 differed, and one whose every seat is greedy states a floor of zero rather than
 estimating one.
 
-Two quantities are treated apart from the rest. A seat the fit clamped has no
-floor at all and the reading says why: its number is the declared spread rather
-than an estimate, and every resample of a seat that won every game wins every
-game again, so a floor built from it would read as perfect resolution. The error
-profile beside each seat is a mean over decisions rather than an output of the
-fit, so the refit does not reach it and its noise reports as unknown — a floor
-somebody could still produce, rather than one that cannot exist.
+Two situations are treated apart from the rest. A number the redraw could not
+move carries no floor and the reading names it: a seat that scored nothing or
+scored everything has no finite fitted rating and reports the declared spread
+instead, and a step function that saturates cannot be resampled either, so a
+floor of zero from a bootstrap would read as perfect resolution rather than as
+the exact statement a replayed ladder makes. The error profile beside each seat
+is a mean over decisions rather than an output of the fit, so the refit does not
+reach it and its noise reports as unknown — a floor somebody could still
+produce, rather than one that cannot exist.
 `docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns all of this,
 including the one component the estimate carries that a re-run would not redraw.
 
