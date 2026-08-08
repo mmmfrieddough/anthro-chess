@@ -219,12 +219,12 @@ or another checkpoint's.
 The **reduced sweep is the default and the full sweep is opt-in**, because a
 sweep measured in hours is not a default anyone will run on a new checkpoint.
 Reductions are confined to sample counts — scored view sizes, seeds, games per
-position, resamples, measured decisions — and never touch a grid, a dose, a
-temperature, or a ply limit, since those decide *what* is measured and
-shrinking one would report a different quantity rather than the same one less
-precisely. A smaller view is still its own data component, so a reduced sweep
-is a separate series rather than a partial down payment on a full one, and the
-scale is named in the output and in the ledger for that reason.
+position, resamples, puzzles per rating, measured decisions — and never touch a
+grid, a dose, a temperature, or a ply limit, since those decide *what* is
+measured and shrinking one would report a different quantity rather than the
+same one less precisely. A smaller view is still its own data component, so a
+reduced sweep is a separate series rather than a partial down payment on a full
+one, and the scale is named in the output and in the ledger for that reason.
 
 Not every view is a sample count, and the exception is the human reference the
 curve comparisons are smoothed against: at a neighbour-count bandwidth its size
@@ -1650,17 +1650,42 @@ confidence and power. That is a planning bound made before representative
 checkpoint pairs exist. Actual checkpoint reports resample the
 source-game-aligned differences retained in their machine-local detail
 payloads within exact-rating strata, preserving the selection design; they
-never use the independent-input bound as the comparison floor. Selection is
-uniform over every exact integer puzzle rating in the declared range, with
-deterministic hash ranking only among eligible puzzles at that rating. This
-removes the source population's rating-density bias without creating arbitrary
-selection discontinuities at a handful of wide band boundaries.
+never use the independent-input bound as the comparison floor. The command
+prints that bound at the size actually scored, because a reading beside no
+resolution at all was read as a finding about the model once already; it is
+labelled as the independent-sample bound it is, and is not the family's floor.
+Selection is uniform over every exact integer puzzle rating in the declared
+range, with deterministic hash ranking only among eligible puzzles at that
+rating. This removes the source population's rating-density bias without
+creating arbitrary selection discontinuities at a handful of wide band
+boundaries.
+
+A reading may score fewer puzzles than the artifact holds, which is how a
+reduced sweep affords this benchmark. The dial counts puzzles per exact rating
+rather than puzzles outright, and keeps the lowest-ranked of them under the
+same hash the build ranks by, so a subsample is precisely the artifact a build
+at that setting would have written: uniform over exact ratings, nested inside
+every larger reading, and identical on any machine. A flat count would sample
+the design away, leaving some exact ratings unscored and others overweighted.
+Its floor is two per rating rather than one, because the retained paired
+contributions stratify by exact rating and a stratum holding one puzzle can
+only redraw that puzzle, so its bootstrap spread — and the floor built from
+it — would be exactly zero. The realized selection is recorded in the artifact
+and its resolution is printed beside the reading, and because the puzzles
+scored are the data component, a subsampled run is its own series rather than a
+partial full one.
 
 The primary drill-down uses the shared nearest-neighbour curve machinery with a
 frozen bandwidth and grid. The analytic human reference and model response are
 smoothed at the same local bandwidth, preserving the bias-cancellation rule
-used by other human-reference comparisons. Wide rating bands remain as a
-readable secondary table, not as the estimator. The generated manifest records
+used by other human-reference comparisons. The reference is the whole set even
+when fewer puzzles are scored, which is the same rule the generated-play and
+termination curves follow — at a neighbour-count bandwidth the reference's size
+is a smoothing radius rather than a sample size. It costs nothing to hold here,
+because this reference is analytic rather than played, so a subsampled reading
+is estimated at exactly the radii a full one uses rather than on a differently
+smoothed curve. Wide rating bands remain as a readable secondary table, not as
+the estimator. The generated manifest records
 the power assumptions, source candidate coverage, quality filters, exact source
 and selected-content digests, license, and rating-design identity. Tests use
 small generated fixtures rather than the canonical records.

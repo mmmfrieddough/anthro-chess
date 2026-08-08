@@ -1584,11 +1584,29 @@ def _render_ratio(value: float, reference: float) -> str:
 
 
 def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
+    from anthro_chess.evaluation.puzzles.dataset import (
+        PUZZLE_DETECTION_CONFIDENCE,
+        PUZZLE_DETECTION_POWER,
+    )
+
+    selection = result.selection
+    scope = (
+        f"{selection.selected_puzzles} of {selection.eligible_puzzles} "
+        f"puzzle(s), {selection.puzzles_per_rating} per rating"
+        if selection.subsampled
+        else f"{selection.selected_puzzles} puzzle(s)"
+    )
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
         (
             f"Puzzle set: {result.dataset.pool_id} v{result.dataset.pool_version} "
-            f"({result.dataset.selected_games} puzzle(s))"
+            f"({scope})"
+        ),
+        (
+            f"Resolution: {selection.minimum_detectable_difference * 100:.2f} pp "
+            f"for independent readings at {PUZZLE_DETECTION_CONFIDENCE:.0%} "
+            f"confidence, {PUZZLE_DETECTION_POWER:.0%} power; a paired "
+            "comparison resolves finer"
         ),
         f"Reference temperature: {result.reference_temperature:.3f}",
         "",

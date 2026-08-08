@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from anthro_chess.evaluation.puzzles.dataset import (
     Puzzle,
+    PuzzleSelection,
     PuzzleSelectionConfig,
     PuzzleSet,
     PuzzleSetBuildConfig,
@@ -66,6 +67,7 @@ __all__ = [
     "PuzzleBenchmarkResult",
     "PuzzleCurvePoint",
     "PuzzleRatingResult",
+    "PuzzleSelection",
     "PuzzleSet",
     "PuzzleSetBuildConfig",
     "PuzzleSetBuildResult",

@@ -30,9 +30,11 @@ from anthro_chess.evaluation.curves import (
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles.dataset import (
     Puzzle,
+    PuzzleSelection,
     PuzzleSet,
     PuzzleSetError,
     load_puzzle_set,
+    select_puzzles,
 )
 from anthro_chess.evaluation.recording import ResultRecording, checkpoint_reference
 from anthro_chess.evaluation.results import (
@@ -100,6 +102,12 @@ class PuzzleBenchmarkConfig(CheckpointSelection):
     puzzle_set: Path
     training_normalized: Path
     target_ratings: tuple[StrictInt, ...] = (1000, 1400, 1800, 2200)
+    #: How many puzzles to score at each exact puzzle rating, or every one of
+    #: them. Two rather than one is the floor because the retained paired
+    #: contributions stratify by exact rating: a stratum holding one puzzle can
+    #: only ever redraw that puzzle, so a bootstrap over singleton strata
+    #: reports a spread of exactly zero and a floor that qualifies everything.
+    puzzles_per_rating: StrictInt | None = Field(default=None, ge=2)
     reference_temperature: float = Field(
         default=1.0,
         ge=0.0,
@@ -216,6 +224,7 @@ class PuzzleBenchmarkResult:
     checkpoint: CheckpointReference
     dataset: DatasetReference
     puzzle_set: Mapping[str, object]
+    selection: PuzzleSelection
     reference_temperature: float
     ratings: tuple[PuzzleRatingResult, ...]
     greedy_rating_slope: float
@@ -235,6 +244,7 @@ class PuzzleBenchmarkResult:
             "checkpoint": self.checkpoint.model_dump(mode="json"),
             "dataset": self.dataset.model_dump(mode="json"),
             "puzzle_set": dict(self.puzzle_set),
+            "selection": self.selection.as_record(),
             "reference_temperature": self.reference_temperature,
             "ratings": [rating.as_record() for rating in self.ratings],
             "greedy_rating_slope": self.greedy_rating_slope,
@@ -296,15 +306,17 @@ def benchmark_puzzles(
     config = resolved_config.value
     try:
         puzzle_set = load_puzzle_set(config.puzzle_set)
+        selection = select_puzzles(puzzle_set, config.puzzles_per_rating)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
         training_games, overlapping = _training_overlap(
-            puzzle_set,
+            selection.puzzles,
             config.training_normalized,
         )
-        tasks = _decision_tasks(puzzle_set)
+        tasks = _decision_tasks(selection.puzzles)
         scored_ratings = tuple(
             _score_rating(
                 puzzle_set,
+                selection.puzzles,
                 runner,
                 tasks,
                 target_rating=target_rating,
@@ -315,11 +327,11 @@ def benchmark_puzzles(
         )
         ratings = tuple(scored.result for scored in scored_ratings)
         component = projection_content_digest(
-            (puzzle.as_projection_record() for puzzle in puzzle_set.puzzles),
+            (puzzle.as_projection_record() for puzzle in selection.puzzles),
             PUZZLE_RESPONSE_PROJECTION,
         )
         checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
-        data = _dataset_reference(puzzle_set, component)
+        data = _dataset_reference(puzzle_set, selection, component)
     except (
         ModelRunnerError,
         OSError,
@@ -338,11 +350,12 @@ def benchmark_puzzles(
     sampled_slope = _slope(config.target_ratings, sampled_fitted)
     greedy_order = _order_accuracy(greedy_fitted)
     sampled_order = _order_accuracy(sampled_fitted)
-    overlap_rate = overlapping / len(puzzle_set.puzzles)
+    overlap_rate = overlapping / selection.selected_puzzles
     result = PuzzleBenchmarkResult(
         checkpoint=checkpoint,
         dataset=data,
         puzzle_set=puzzle_set.identity(),
+        selection=selection,
         reference_temperature=config.reference_temperature,
         ratings=ratings,
         greedy_rating_slope=greedy_slope,
@@ -381,10 +394,11 @@ def score_puzzle_set(
 ) -> tuple[PuzzleRatingResult, ...]:
     """Score an injected set and runner for fixtures and library consumers."""
 
-    tasks = _decision_tasks(puzzle_set)
+    tasks = _decision_tasks(puzzle_set.puzzles)
     return tuple(
         _score_rating(
             puzzle_set,
+            puzzle_set.puzzles,
             runner,
             tasks,
             target_rating=rating,
@@ -433,6 +447,7 @@ def fitted_rating(
 
 def _score_rating(
     puzzle_set: PuzzleSet,
+    puzzles: Sequence[Puzzle],
     runner: PuzzlePredictionRunner,
     tasks: Sequence[_DecisionTask],
     *,
@@ -441,7 +456,7 @@ def _score_rating(
     batch_size: int,
 ) -> _ScoredRating:
     decisions: dict[str, list[_DecisionScore]] = {
-        puzzle.puzzle_id: [] for puzzle in puzzle_set.puzzles
+        puzzle.puzzle_id: [] for puzzle in puzzles
     }
     for start in range(0, len(tasks), batch_size):
         batch = tasks[start : start + batch_size]
@@ -461,13 +476,13 @@ def _score_rating(
             )
 
     scores = tuple(
-        _puzzle_score(puzzle, decisions[puzzle.puzzle_id])
-        for puzzle in puzzle_set.puzzles
+        _puzzle_score(puzzle, decisions[puzzle.puzzle_id]) for puzzle in puzzles
     )
     puzzle_ratings = [score.puzzle.rating for score in scores]
     greedy_lines = [score.greedy_line for score in scores]
     sampled_lines = [score.sampled_line for score in scores]
     curve, greedy_curve_distance, sampled_curve_distance = _continuous_curve(
+        puzzle_set.puzzles,
         scores,
         target_rating,
     )
@@ -495,15 +510,25 @@ def _score_rating(
 
 
 def _continuous_curve(
+    puzzles: Sequence[Puzzle],
     scores: Sequence[_PuzzleScore],
     target_rating: int,
 ) -> tuple[tuple[PuzzleCurvePoint, ...], float, float]:
-    """Estimate continuous response with the shared frozen curve machinery."""
+    """Estimate continuous response with the shared frozen curve machinery.
 
-    neighbours = min(PUZZLE_CURVE_NEIGHBOURS, len(scores))
+    The reference is the whole set rather than the puzzles scored, which is the
+    rule the generated-play and termination curves already follow: at a
+    neighbour-count bandwidth the reference's size is a smoothing radius rather
+    than a sample size, so shrinking it would re-smooth the curve instead of
+    sampling it. Holding it costs nothing here, because this reference is
+    analytic rather than played, and it leaves a subsampled reading estimated
+    at exactly the radii a full one uses.
+    """
+
+    neighbours = min(PUZZLE_CURVE_NEIGHBOURS, len(puzzles))
     if neighbours < 2:
         raise PuzzleBenchmarkError("a puzzle response curve needs at least two puzzles")
-    ratings = [score.puzzle.rating for score in scores]
+    ratings = [puzzle.rating for puzzle in puzzles]
     low = min(ratings)
     high = max(ratings)
     grid = tuple(rating for rating in PUZZLE_CURVE_GRID if low <= rating <= high)
@@ -522,10 +547,10 @@ def _continuous_curve(
     )
     human = [
         Observation(
-            rating=float(score.puzzle.rating),
-            value=expected_score(target_rating, score.puzzle.rating),
+            rating=float(puzzle.rating),
+            value=expected_score(target_rating, puzzle.rating),
         )
-        for score in scores
+        for puzzle in puzzles
     ]
 
     def comparison(values: Sequence[float]) -> CurveComparison:
@@ -588,9 +613,9 @@ def _curve_value(value: float | None) -> float:
     return value
 
 
-def _decision_tasks(puzzle_set: PuzzleSet) -> tuple[_DecisionTask, ...]:
+def _decision_tasks(puzzles: Sequence[Puzzle]) -> tuple[_DecisionTask, ...]:
     tasks: list[_DecisionTask] = []
-    for puzzle in puzzle_set.puzzles:
+    for puzzle in puzzles:
         history = DecisionHistory(initial_fen=puzzle.initial_fen)
         for ply, move in enumerate(puzzle.moves):
             history.push(move)
@@ -722,7 +747,7 @@ def _band_results(
     return tuple(results)
 
 
-def _training_overlap(puzzle_set: PuzzleSet, path: Path) -> tuple[int, int]:
+def _training_overlap(puzzles: Sequence[Puzzle], path: Path) -> tuple[int, int]:
     keys: set[str] = set()
     games = 0
     columns = (
@@ -741,22 +766,27 @@ def _training_overlap(puzzle_set: PuzzleSet, path: Path) -> tuple[int, int]:
         raise PuzzleBenchmarkError(
             "training selection contains no non-test Lichess games"
         )
-    overlapping = sum(puzzle.source_game_key in keys for puzzle in puzzle_set.puzzles)
+    overlapping = sum(puzzle.source_game_key in keys for puzzle in puzzles)
     return games, overlapping
 
 
 def _dataset_reference(
     puzzle_set: PuzzleSet,
+    selection: PuzzleSelection,
     component: DataComponent,
 ) -> DatasetReference:
     digest = sha256()
-    for puzzle in puzzle_set.puzzles:
+    for puzzle in selection.puzzles:
         digest.update(f"{puzzle.puzzle_id}\n".encode())
     return dataset_reference(
         pool_id=puzzle_set.name,
         pool_version=puzzle_set.version,
-        view="canonical",
-        selected_games=len(puzzle_set.puzzles),
+        view=(
+            f"per-rating-{selection.puzzles_per_rating}"
+            if selection.subsampled
+            else "canonical"
+        ),
+        selected_games=selection.selected_puzzles,
         game_ids_sha256=digest.hexdigest(),
         components=[component],
     )

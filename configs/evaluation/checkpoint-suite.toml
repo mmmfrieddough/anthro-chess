@@ -16,12 +16,12 @@
 #
 # The reduced sweep is the default and the full sweep is `--full`. Reductions
 # below touch sample counts only — scored view sizes, seeds, games per position,
-# resamples, and measured decisions. None of them moves a grid, a dose, a
-# temperature, or a ply limit, because those decide *what* is measured and a
-# sweep that changed them would report a different quantity rather than the
-# same one less precisely. A smaller view is still its own data component and
-# therefore its own series, so a reduced sweep is not a partial down payment on
-# a full one.
+# resamples, puzzles per rating, and measured decisions. None of them moves a
+# grid, a dose, a temperature, or a ply limit, because those decide *what* is
+# measured and a sweep that changed them would report a different quantity
+# rather than the same one less precisely. A smaller view is still its own data
+# component and therefore its own series, so a reduced sweep is not a partial
+# down payment on a full one.
 #
 # One view is not a sample count and is therefore never reduced: the human
 # reference the generated-play and termination curves are smoothed against. Its
@@ -89,13 +89,17 @@ reduced = ["view.maximum_games=100"]
 [benchmarks.puzzles]
 # Rating response against the owned calibrated puzzle set.
 #
-# It is unreduced, and not by choice: the benchmark has no subsample dial, and
-# its rating grid is the measurement rather than a sample size, so there is
-# nothing here that can honestly be shrunk. Whatever it costs is therefore the
-# floor of any reduced sweep that includes it. Adding a puzzle subsample would
-# change what the benchmark selects to measure over, which is a benchmark
-# change with its own shakedown reading rather than a suite setting.
+# The configured rating grid is the measurement rather than a sample size and
+# is left alone; how many puzzles each of those ratings is scored against is
+# the sample count, and that is what shrinks. The dial counts puzzles per exact
+# puzzle rating because the set's whole design is uniform over exact ratings:
+# keeping two of the ten at each one reads the same design at a fifth of the
+# size, where a flat count would read a rating-biased slice of it. At the
+# shipped set that is 4,000 puzzles, resolving a 3.1-point solve-rate
+# difference where the full 20,000 resolve 1.4; the command prints the realized
+# figure beside the reading rather than leaving it to be inferred here.
 config = "configs/evaluation/puzzle-rating-response.toml"
+reduced = ["puzzles_per_rating=2"]
 
 [benchmarks.rollout]
 # The first generating step, the one whose games the decomposition below reads,
