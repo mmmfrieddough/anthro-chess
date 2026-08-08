@@ -194,6 +194,18 @@ class MetricDefinition:
     #: it exists. It annotates the metric rather than redefining it, so it stays
     #: out of series identity and needs no ``definition_version`` bump.
     no_sampling_floor_reason: str | None = None
+    #: Whether this metric's data-sampling floor comes from the paired
+    #: checkpoint-pair estimator, because the benchmark scores every checkpoint
+    #: on the same frozen units and retains their per-unit contributions.
+    #:
+    #: It is what makes a missing paired floor reportable. An unpaired floor is
+    #: not a coarser reading of the same quantity but a wider one by the factor
+    #: ``docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md``
+    #: measures, so a report has to be able to say that the floor beside a delta
+    #: is not the one the metric is defined against. Without the declaration it
+    #: cannot: two readings whose contributions never reached this machine look
+    #: exactly like two readings that never had any.
+    paired_sampling_floor: bool = False
 
 
 _PROJECTIONS: dict[str, DataProjection] = {}
@@ -282,6 +294,11 @@ def register_metric(metric: MetricDefinition) -> MetricDefinition:
             f"cost {metric.cost.value!r}; the declared workload is a realized "
             "input only to a metric that times its own execution or generates "
             "the games it reads"
+        )
+    if metric.paired_sampling_floor and metric.no_sampling_floor_reason is not None:
+        raise MetricRegistryError(
+            f"metric {metric.identifier!r} declares both that no data-sampling "
+            "floor can exist for it and that its floor is the paired one"
         )
     existing = _METRICS.get(metric.identifier)
     if existing is not None and existing != metric:
@@ -406,6 +423,7 @@ def registry_record() -> dict[str, object]:
                         "projection": metric.projection,
                         "execution_sensitive": metric.execution_sensitive,
                         "no_sampling_floor_reason": metric.no_sampling_floor_reason,
+                        "paired_sampling_floor": metric.paired_sampling_floor,
                         "summary": metric.summary,
                     }
                     for metric in metrics
@@ -1263,6 +1281,7 @@ DEPENDENCY_RATING_SHUFFLED_DEGRADATION = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        paired_sampling_floor=True,
     )
 )
 
@@ -1278,6 +1297,7 @@ DEPENDENCY_RATING_CONSTANT_DEGRADATION = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        paired_sampling_floor=True,
     )
 )
 
@@ -1293,6 +1313,7 @@ DEPENDENCY_RATING_ABSENT_DEGRADATION = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        paired_sampling_floor=True,
     )
 )
 
@@ -1352,6 +1373,7 @@ DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        paired_sampling_floor=True,
     )
 )
 
@@ -1368,6 +1390,7 @@ DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT = register_metric(
         ),
         cost=MetricCost.REPEATED_PASS,
         projection=MOVE_PREDICTION_PROJECTION.name,
+        paired_sampling_floor=True,
     )
 )
 
@@ -1376,6 +1399,8 @@ def _puzzle_metric(
     identifier: str,
     direction: MetricDirection,
     summary: str,
+    *,
+    paired_sampling_floor: bool = False,
 ) -> MetricDefinition:
     return register_metric(
         MetricDefinition(
@@ -1386,6 +1411,7 @@ def _puzzle_metric(
             summary=summary,
             cost=MetricCost.REPEATED_PASS,
             projection=PUZZLE_RESPONSE_PROJECTION.name,
+            paired_sampling_floor=paired_sampling_floor,
         )
     )
 
@@ -1397,6 +1423,7 @@ PUZZLE_GREEDY_FIRST_MOVE_ACCURACY = _puzzle_metric(
         "Fraction of puzzles whose first player move is the legal-masked "
         "argmax, averaged across the declared configured-rating grid."
     ),
+    paired_sampling_floor=True,
 )
 
 PUZZLE_GREEDY_LINE_COMPLETION = _puzzle_metric(
@@ -1406,6 +1433,7 @@ PUZZLE_GREEDY_LINE_COMPLETION = _puzzle_metric(
         "Fraction of complete verified puzzle lines for which every player "
         "move is the legal-masked argmax, averaged across configured ratings."
     ),
+    paired_sampling_floor=True,
 )
 
 PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE = _puzzle_metric(
@@ -1415,6 +1443,7 @@ PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE = _puzzle_metric(
         "Expected first-move solve rate under the declared reference "
         "temperature, averaged across the configured-rating grid."
     ),
+    paired_sampling_floor=True,
 )
 
 PUZZLE_SAMPLED_LINE_COMPLETION = _puzzle_metric(
@@ -1424,6 +1453,7 @@ PUZZLE_SAMPLED_LINE_COMPLETION = _puzzle_metric(
         "Expected probability of sampling every player move in the verified "
         "line at the declared reference temperature."
     ),
+    paired_sampling_floor=True,
 )
 
 PUZZLE_GREEDY_RATING_SLOPE = _puzzle_metric(

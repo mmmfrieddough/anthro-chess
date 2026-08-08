@@ -46,6 +46,7 @@ from anthro_chess.evaluation.results.metrics import (
     registered_metrics,
 )
 from anthro_chess.evaluation.results.noise import NoiseFloorIndex
+from anthro_chess.evaluation.results.paired import NO_DETAIL_ROOT, PairedFloor
 from anthro_chess.evaluation.results.records import (
     ExecutionRecord,
     Measurement,
@@ -135,7 +136,7 @@ class ComparisonFloorProvider(Protocol):
         baseline: ResultEnvelope,
         current: ResultEnvelope,
         metric: str,
-    ) -> NoiseFloor | None: ...
+    ) -> PairedFloor: ...
 
 
 class Movement(StrEnum):
@@ -202,6 +203,15 @@ class MetricDelta:
     noise_floors: tuple[NoiseFloor, ...]
     bridges: tuple[str, ...]
     note: str | None
+    #: Why this row's data-sampling floor is not the paired one the metric is
+    #: defined against, when it should have been. ``None`` for a metric whose
+    #: floor was never paired, and for one whose pair was found. Reported as
+    #: its own field rather than only in the note because it changes what the
+    #: verdict beside it means: the substituted floor is the wider one, so
+    #: ``within`` on such a row is a weaker statement than ``within`` on any
+    #: other, and automation that cannot see the difference will read a real
+    #: improvement as noise.
+    paired_floor_unavailable: str | None = None
     #: Which coordinates moved. ``None`` for a metric with no execution
     #: context, where the model is the only thing that can have moved.
     attribution: Attribution | None = None
@@ -236,6 +246,7 @@ class MetricDelta:
             ],
             "bridges": list(self.bridges),
             "note": self.note,
+            "paired_floor_unavailable": self.paired_floor_unavailable,
             "attribution": (
                 None if self.attribution is None else self.attribution.as_record()
             ),
@@ -895,11 +906,21 @@ def _render_noise(metric: MetricDelta) -> str:
     A bare "within" is unreadable without naming the source that produced the
     floor, because the three are not interchangeable and a reader has to know
     whether their comparison is even exposed to it.
+
+    A sampling floor standing in for the paired one is named in the column
+    rather than only in the row's note, because it is the verdict itself that
+    the substitution weakens: such a floor is the wider of the two, so "within"
+    beside it covers real improvements as well as noise.
     """
 
     if metric.noise_floor_kind is None:
         return metric.noise.value
     kind = _NOISE_KIND_LABELS.get(metric.noise_floor_kind, metric.noise_floor_kind)
+    if (
+        metric.paired_floor_unavailable is not None
+        and metric.noise_floor_kind == SAMPLING_FLOOR_KIND
+    ):
+        kind = f"{kind}, unpaired"
     return f"{metric.noise.value} ({kind})"
 
 
@@ -1243,11 +1264,11 @@ def _metric_delta(
             baseline=None,
             current=current[1].value,
             comparability=Comparability.INCOMPARABLE,
-            note=_note(
+            note=_annotations(
                 "no baseline recorded"
                 if baseline_label is None
                 else f"not measured for {baseline_label}",
-                hidden_series,
+                _hidden_note(hidden_series),
             ),
             series=bridges.series(current[1].fingerprint),
         )
@@ -1272,12 +1293,12 @@ def _metric_delta(
             baseline=baseline_measurement.value,
             current=current_measurement.value,
             comparability=comparison.comparability,
-            note=_note(
+            note=_annotations(
                 "different measurement; the declared workload changed"
                 if attribution is not None
                 and attribution.workload is AxisChange.CHANGED
                 else "incomparable; these results are not on the same series",
-                hidden_series,
+                _hidden_note(hidden_series),
             ),
             attribution=attribution,
             series=bridges.series(current_measurement.fingerprint),
@@ -1289,8 +1310,8 @@ def _metric_delta(
         else ()
     )
     delta = current_measurement.value - baseline_measurement.value
-    comparison_floor = (
-        None
+    paired = (
+        NO_DETAIL_ROOT
         if comparison_floors is None
         else comparison_floors.floor(
             baseline_envelope,
@@ -1298,12 +1319,17 @@ def _metric_delta(
             definition.identifier,
         )
     )
+    # Silence here is only correct for a metric whose floor was never paired.
+    # Where the metric declares one, an unpaired floor is not a coarser reading
+    # of the same quantity, so the substitution is named rather than left for a
+    # reader to infer from a floor that looks like every other floor.
+    unpaired = paired.unavailable if definition.paired_sampling_floor else None
     applicable = _applicable_floors(
         definition,
         baseline_measurement,
         current_measurement,
         floors,
-        comparison_floor=comparison_floor,
+        comparison_floor=paired.floor,
         executions=(baseline_envelope.execution, current_envelope.execution),
     )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
@@ -1334,12 +1360,21 @@ def _metric_delta(
         environment=environment,
         conditions=conditions,
         series=bridges.series(current_measurement.fingerprint),
-        note=(
-            _note("bridged series seam", hidden_series)
+        note=_annotations(
+            "bridged series seam"
             if comparison.comparability is Comparability.BRIDGED
-            else _hidden_note(hidden_series)
+            else None,
+            None if unpaired is None else f"paired floor unavailable: {unpaired}",
+            _hidden_note(hidden_series),
         ),
+        paired_floor_unavailable=unpaired,
     )
+
+
+def _annotations(*notes: str | None) -> str | None:
+    """Join the annotations a row carries, or ``None`` when it carries none."""
+
+    return "; ".join(note for note in notes if note is not None) or None
 
 
 def _hidden_note(hidden_series: int) -> str | None:
@@ -1359,20 +1394,13 @@ def _hidden_note(hidden_series: int) -> str | None:
     )
 
 
-def _note(note: str, hidden_series: int) -> str:
-    """Annotate a note the caller already has with the hidden-series warning."""
-
-    hidden = _hidden_note(hidden_series)
-    return note if hidden is None else f"{note}; {hidden}"
-
-
 def _incomparable_delta(
     definition: MetricDefinition,
     *,
     baseline: float | None,
     current: float | None,
     comparability: Comparability,
-    note: str,
+    note: str | None,
     series: str | None = None,
     attribution: Attribution | None = None,
 ) -> MetricDelta:

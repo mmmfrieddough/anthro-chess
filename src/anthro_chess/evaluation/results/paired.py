@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -19,6 +20,7 @@ from pydantic import Field, model_validator
 
 from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
+    PAIRED_BOOTSTRAP_METHOD,
     dispersion_bound,
 )
 from anthro_chess.evaluation.results.records import (
@@ -145,46 +147,100 @@ def paired_contributions(
     )
 
 
+@dataclass(frozen=True)
+class PairedFloor:
+    """One comparison's paired floor for one metric, or why it has none.
+
+    Both fields are reported rather than one. A caller holding ``None`` where a
+    floor was expected cannot tell a benchmark that never pairs from a pair
+    whose inputs did not survive the machine boundary, and those are the two
+    situations a reader most needs told apart: only the second is a reading
+    qualified by the wrong estimator.
+    """
+
+    floor: NoiseFloor | None = None
+    #: Why no paired floor could be built, in a phrase a report can print.
+    #: ``None`` only when ``floor`` is set.
+    unavailable: str | None = None
+
+
+#: The fields two retained payloads have to agree on before their per-unit
+#: values describe one comparison, named so a report can say which one differs.
+_COMPARABLE_FIELDS = ("unit", "stratum", "resamples", "seed", "coverage", "confidence")
+
+#: The outcome for a metric a matched pair never retained, which is most of
+#: them: pairing is the estimator for the deterministic fixed-input families
+#: alone. Stated without the metric's name, because the row a report prints it
+#: on already carries it.
+_UNRETAINED = PairedFloor(unavailable="neither reading retained this metric")
+
+#: The outcome where nothing was consulted at all. A report given no detail
+#: root reads no payload and can pair nothing, which is a configuration its
+#: caller can fix rather than a property of the two readings — so it is named
+#: here with the reasons the index itself produces, instead of being spelled
+#: out wherever a report happens to discover it has no provider.
+NO_DETAIL_ROOT = PairedFloor(unavailable="no detail-tier root is configured")
+
+#: One comparison's per-metric outcomes, and the outcome every metric they do
+#: not name shares.
+_ComparisonOutcome = tuple[dict[str, PairedFloor], PairedFloor]
+
+
+def _unpairable(reason: str) -> _ComparisonOutcome:
+    """Return the outcome every metric of an unpairable comparison shares."""
+
+    return {}, PairedFloor(unavailable=reason)
+
+
 class PairedFloorIndex:
     """Resolve paired data-sampling floors from machine-local result details."""
 
     def __init__(self, detail: DetailStore) -> None:
         self._detail = detail
-        self._contributions: dict[str, PairedContributions | None] = {}
-        self._floors: dict[tuple[str, str], dict[str, NoiseFloor]] = {}
+        self._contributions: dict[str, tuple[PairedContributions | None, str]] = {}
+        self._floors: dict[tuple[str, str], _ComparisonOutcome] = {}
 
     def floor(
         self,
         baseline: ResultEnvelope,
         current: ResultEnvelope,
         metric: str,
-    ) -> NoiseFloor | None:
-        """Return the paired floor for one result comparison, when retained."""
+    ) -> PairedFloor:
+        """Return the paired floor for one result comparison, or why there is none."""
 
         key = (baseline.result_id, current.result_id)
         if key not in self._floors:
             self._floors[key] = self._comparison_floors(baseline, current)
-        return self._floors[key].get(metric)
+        outcomes, otherwise = self._floors[key]
+        return outcomes.get(metric, otherwise)
 
     def _comparison_floors(
         self,
         baseline: ResultEnvelope,
         current: ResultEnvelope,
-    ) -> dict[str, NoiseFloor]:
-        left = self._load(baseline)
-        right = self._load(current)
+    ) -> _ComparisonOutcome:
+        left, left_absence = self._load(baseline)
+        right, right_absence = self._load(current)
+        if left is None and right is None and left_absence == right_absence:
+            # The usual shape of the failure, and the one worth reading as one
+            # sentence: neither side of a comparison taken on another machine
+            # has anything here to difference.
+            return _unpairable(f"both readings {left_absence}")
         if left is None or right is None:
-            return {}
-        if (
-            left.unit != right.unit
-            or set(left.unit_ids) != set(right.unit_ids)
-            or left.stratum != right.stratum
-            or left.resamples != right.resamples
-            or left.seed != right.seed
-            or left.coverage != right.coverage
-            or left.confidence != right.confidence
-        ):
-            return {}
+            missing = [
+                f"the {side} reading {absence}"
+                for side, contributions, absence in (
+                    ("baseline", left, left_absence),
+                    ("current", right, right_absence),
+                )
+                if contributions is None
+            ]
+            return _unpairable(" and ".join(missing))
+        for field in _COMPARABLE_FIELDS:
+            if getattr(left, field) != getattr(right, field):
+                return _unpairable(f"the retained contributions disagree on {field}")
+        if set(left.unit_ids) != set(right.unit_ids):
+            return _unpairable("the retained contributions cover different units")
 
         right_index = {unit_id: index for index, unit_id in enumerate(right.unit_ids)}
         right_order = np.asarray(
@@ -198,7 +254,9 @@ class PairedFloorIndex:
             else tuple(right.strata[index] for index in right_order)
         )
         if left_strata != right_strata:
-            return {}
+            return _unpairable(
+                "the retained contributions assign units to different strata"
+            )
         left_weights = left.weights
         right_weights = (
             None
@@ -210,10 +268,14 @@ class PairedFloorIndex:
         # sides weight their units differently and their difference is not the
         # delta either measurement reports.
         if left_weights != right_weights:
-            return {}
-        common = sorted(set(left.metrics) & set(right.metrics))
+            return _unpairable(
+                "the retained contributions weight their units differently"
+            )
+        left_metrics = set(left.metrics)
+        right_metrics = set(right.metrics)
+        common = sorted(left_metrics & right_metrics)
         if not common:
-            return {}
+            return _unpairable("the two readings retain no metric in common")
         baseline_values = np.column_stack(
             [np.asarray(left.metrics[metric], dtype=np.float64) for metric in common]
         )
@@ -242,35 +304,75 @@ class PairedFloorIndex:
         # resamples the delta itself, so the spread it reports is already the
         # spread of a difference rather than of one side of one.
         freedom = len(left.unit_ids) - 1
-        return {
-            metric: NoiseFloor(
-                value=float(
-                    left.coverage
-                    * dispersion_bound(
-                        float(dispersion),
-                        degrees_of_freedom=freedom,
-                        confidence=left.confidence,
-                    )
-                ),
-                kind="data-sampling",
-                source=(
-                    f"{left.resamples} "
-                    f"{'stratified ' if left.stratum is not None else ''}"
-                    f"{'weighted ' if left_weights is not None else ''}"
-                    "paired bootstrap resamples of "
-                    f"{len(left.unit_ids)} matching {left.unit} units"
-                ),
+        outcomes = {
+            metric: PairedFloor(
+                floor=NoiseFloor(
+                    value=float(
+                        left.coverage
+                        * dispersion_bound(
+                            float(dispersion),
+                            degrees_of_freedom=freedom,
+                            confidence=left.confidence,
+                        )
+                    ),
+                    kind="data-sampling",
+                    source=(
+                        f"{left.resamples} "
+                        f"{'stratified ' if left.stratum is not None else ''}"
+                        f"{'weighted ' if left_weights is not None else ''}"
+                        "paired bootstrap resamples of "
+                        f"{len(left.unit_ids)} matching {left.unit} units"
+                    ),
+                    estimator=PAIRED_BOOTSTRAP_METHOD,
+                )
             )
             for metric, dispersion in zip(common, dispersions, strict=True)
         }
+        # Which side retained nothing decides what is done about it, and two
+        # matched readings disagreeing about what they retain is what a change
+        # in the retained set looks like from a store holding readings from
+        # either side of it.
+        for side, unmatched in (
+            ("current", left_metrics - right_metrics),
+            ("baseline", right_metrics - left_metrics),
+        ):
+            for metric in unmatched:
+                outcomes[metric] = PairedFloor(
+                    unavailable=f"the {side} reading did not retain this metric"
+                )
+        return outcomes, _UNRETAINED
 
-    def _load(self, envelope: ResultEnvelope) -> PairedContributions | None:
+    def _load(
+        self,
+        envelope: ResultEnvelope,
+    ) -> tuple[PairedContributions | None, str]:
+        """Return one reading's retained contributions, reading it once."""
+
         cached = self._contributions.get(envelope.result_id)
-        if envelope.result_id in self._contributions:
+        if cached is not None:
             return cached
+        loaded = self._read(envelope)
+        self._contributions[envelope.result_id] = loaded
+        return loaded
+
+    def _read(
+        self,
+        envelope: ResultEnvelope,
+    ) -> tuple[PairedContributions | None, str]:
+        """Return one reading's retained contributions, or why it has none.
+
+        A payload this machine does not hold is an absence rather than a store
+        fault. The detail tier is machine-local while the summary tier is
+        committed, so a reading recorded elsewhere always resolves to nothing
+        here, and raising would end a whole report over one row's floor. A
+        payload that is present and wrong still raises: that is the store
+        disagreeing with itself rather than a file that never arrived.
+        """
+
         if envelope.detail is None:
-            self._contributions[envelope.result_id] = None
-            return None
+            return None, "recorded no detail payload"
+        if not self._detail.holds(envelope.detail):
+            return None, "recorded a detail payload this machine does not hold"
         payload = self._detail.read(envelope.detail)
         if not isinstance(payload, Mapping):
             raise ResultsStoreError(
@@ -278,16 +380,14 @@ class PairedFloorIndex:
             )
         raw = payload.get(PAIRED_CONTRIBUTIONS_KEY)
         if raw is None:
-            self._contributions[envelope.result_id] = None
-            return None
+            return None, "retained no per-unit contributions"
         try:
             contributions = PairedContributions.model_validate(raw)
         except ValueError as error:
             raise ResultsStoreError(
                 f"invalid paired contributions for {envelope.result_id}: {error}"
             ) from error
-        self._contributions[envelope.result_id] = contributions
-        return contributions
+        return contributions, ""
 
     @staticmethod
     def _verify_means(
@@ -373,9 +473,11 @@ def _stratum_buckets(
 
 
 __all__ = [
+    "NO_DETAIL_ROOT",
     "PAIRED_CONTRIBUTIONS_KEY",
     "PAIRED_CONTRIBUTIONS_VERSION",
     "PairedContributions",
+    "PairedFloor",
     "PairedFloorIndex",
     "paired_contributions",
 ]

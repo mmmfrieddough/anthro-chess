@@ -626,12 +626,25 @@ alongside the reading where its inputs are independent. A deterministic
 fixed-input benchmark retains aligned per-unit contributions in the detail tier
 instead; reporting joins those contributions and bootstraps the checkpoint
 delta. Such a floor belongs to the comparison and cannot correctly be attached
-to either checkpoint alone. If either detail payload is unavailable, its paired
-floor is unknown rather than replaced with an independent-input estimate. A
-benchmark whose floor is a function of its own configuration rather than of a
-series — a distributional distance, whose floor grows with the category count
-and shrinks with the sample — attaches the floor to its measurement instead,
-because that is the only place it can be correct.
+to either checkpoint alone. A benchmark whose floor is a function of its own
+configuration rather than of a series — a distributional distance, whose floor
+grows with the category count and shrinks with the sample — attaches the floor
+to its measurement instead, because that is the only place it can be correct.
+
+**A pair that could not pair says so.** The contributions are machine-local
+while the summary record is committed, so a reading taken elsewhere routinely
+arrives with nothing to difference against — and an independent-input estimate
+is standing by that looks like every other floor. It is not a coarser reading of
+the same quantity: it drops the covariance two checkpoints scored on one sample
+share and reports a width about 1.9x too wide, which turns real improvements
+into noise. So every floor names the estimator that produced it, a metric whose
+floor is the paired one declares that in the registry, and a row qualified by
+anything else states that the paired floor was unavailable and why. The reading
+is annotated rather than withheld, because an unpaired floor errs wide: a delta
+that clears one has cleared the paired floor as well, and only the verdict that
+a delta sits *within* the floor is weakened by the substitution.
+`docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md`
+owns why the difference is an error rather than a resolution setting.
 
 Retention is not always faithful without a weight. A quantity reported as a mean
 over positions cannot be resampled by position, because positions inside one

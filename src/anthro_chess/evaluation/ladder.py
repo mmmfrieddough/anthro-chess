@@ -1404,6 +1404,7 @@ def _resolution(
                     value=0.0,
                     kind=LADDER_FLOOR_KIND,
                     source=_floor_source(LADDER_DETERMINISTIC_METHOD),
+                    estimator=LADDER_DETERMINISTIC_METHOD,
                 )
                 for key in observed
             },
@@ -1509,6 +1510,7 @@ def _resolution(
             ),
             kind=LADDER_FLOOR_KIND,
             source=source,
+            estimator=LADDER_BOOTSTRAP_METHOD,
         )
     return LadderResolution(
         floors=floors,

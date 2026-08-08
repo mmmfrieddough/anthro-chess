@@ -39,7 +39,8 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
-ENVELOPE_VERSION = 3
+#: Version 4 names the estimator behind a stored noise floor.
+ENVELOPE_VERSION = 4
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -293,6 +294,14 @@ class NoiseFloor(ResultModel):
     value: float = Field(ge=0.0)
     kind: NoiseFloorKind
     source: str | None = Field(default=None, min_length=1)
+    #: Which estimator produced the value, named rather than described. One
+    #: kind can be estimated more than one way, and the ways are not
+    #: interchangeable: a data-sampling floor bootstrapped over one reading's
+    #: own games and one bootstrapped over two checkpoints' paired differences
+    #: answer different questions and differ by a known factor. ``source``
+    #: carries that in prose for a reader; this carries it for a reader who has
+    #: to tell the two apart without parsing a sentence.
+    estimator: Identifier | None = None
 
 
 class Measurement(ResultModel):

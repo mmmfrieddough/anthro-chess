@@ -62,6 +62,7 @@ from anthro_chess.evaluation.results.noise import (
     CHARACTERIZATION_VERSION,
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
+    PAIRED_BOOTSTRAP_METHOD,
     PROCESS_REPLICATE_METHOD,
     REPLICATE_METHOD,
     FloorEntry,
@@ -81,9 +82,11 @@ from anthro_chess.evaluation.results.noise import (
     replicate_floors,
 )
 from anthro_chess.evaluation.results.paired import (
+    NO_DETAIL_ROOT,
     PAIRED_CONTRIBUTIONS_KEY,
     PAIRED_CONTRIBUTIONS_VERSION,
     PairedContributions,
+    PairedFloor,
     PairedFloorIndex,
     paired_contributions,
 )
@@ -156,6 +159,8 @@ __all__ = [
     "FINGERPRINT_ALGORITHM",
     "MAXIMUM_SUMMARY_BYTES",
     "NOMINAL_REPEATED_PASSES",
+    "NO_DETAIL_ROOT",
+    "PAIRED_BOOTSTRAP_METHOD",
     "PAIRED_CONTRIBUTIONS_KEY",
     "PAIRED_CONTRIBUTIONS_VERSION",
     "PROCESS_REPLICATE_METHOD",
@@ -196,6 +201,7 @@ __all__ = [
     "NoiseFloorIndex",
     "NoiseVerdict",
     "PairedContributions",
+    "PairedFloor",
     "PairedFloorIndex",
     "ProcessDispersion",
     "ProjectionDigest",
