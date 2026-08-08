@@ -771,7 +771,10 @@ def write_training_run(
                 "action_vocabulary": action_vocabulary_identity(),
                 "encoding": encoding_identity(),
                 "execution": copy.deepcopy(execution),
-                "optimization": {"processed_positions": 64},
+                # Deliberately different from the checkpoint's own count above:
+                # this is the count the run finished on, and holding the two
+                # apart is what lets a test see which one a reading reported.
+                "optimization": {"processed_positions": 4096},
             },
             sort_keys=True,
         ),
