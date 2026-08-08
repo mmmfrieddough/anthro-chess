@@ -381,6 +381,7 @@ def test_preparation_selects_uniform_exact_ratings_and_records_coverage(
             "name": "fixture-puzzles",
             "version": 1,
             "source_retrieved": "2026-07-29",
+            "source_last_modified": "2026-07-28T00:00:00Z",
             "expected_entries": 2,
             "expected_puzzles_sha256": sha256(output_text.encode()).hexdigest(),
             "archive": {
@@ -414,6 +415,7 @@ def test_preparation_selects_uniform_exact_ratings_and_records_coverage(
     assert loaded.coverage["eligible_candidates"] == 3
     assert loaded.coverage["minimum_candidates_per_rating"] == 1
     assert loaded.sizing["overall_puzzles"] == 2
+    assert loaded.source["last_modified"] == "2026-07-28T00:00:00+00:00"
 
 
 def _source_csv(rows: Sequence[tuple[object, ...]]) -> str:
