@@ -255,128 +255,6 @@ Different from Anthro Chess:
   Anthro Chess should use a shared trajectory model and condition optional
   timing on the selected action.
 
-## Structured Output And Multi-Target Modeling
-
-### Multi-Target Prediction: A Unifying View
-
-Link: <https://arxiv.org/abs/1809.02352>
-
-Key information:
-
-- Surveys problems where a model predicts multiple target variables at once.
-- Emphasizes that target variables may have dependencies, constraints, or
-  relations.
-- Frames independent per-target prediction as the simplest baseline, with
-  dependency modeling as a central reason to use multi-target methods.
-
-Applies to Anthro Chess:
-
-- The model output can be viewed as a structured target containing action and,
-  when timing is enabled, move time.
-- Supports treating action and timing as dependent outputs rather than
-  independent marginal samples.
-
-Different from Anthro Chess:
-
-- This is a broad survey, not chess-specific.
-- Anthro Chess only needs a small practical structured-output design, not a
-  general multi-target learning framework.
-
-### Multi-Target Regression Via Input Space Expansion
-
-Link: <https://arxiv.org/abs/1211.6581>
-
-Key information:
-
-- Studies multi-target regression where continuous target variables can have
-  statistical dependencies.
-- Adapts stacked single-target and regressor-chain ideas, where predictions or
-  target values become inputs for related targets.
-- Notes the train/prediction discrepancy that can appear when training uses
-  true target values but inference uses predicted target values.
-
-Applies to Anthro Chess:
-
-- Move-conditioned timing is analogous to a small regressor chain:
-  `action -> move_time`.
-- The training setup should use the observed human action for the time target,
-  while inference uses the sampled model action.
-- The known train/inference discrepancy is a reason to evaluate generated
-  action-time coherence.
-
-Different from Anthro Chess:
-
-- The paper focuses on conventional continuous multi-target regression, not a
-  mixed discrete action plus continuous time output.
-- Anthro Chess should use the idea as a simple factorization, not as a full
-  classical regressor-chain implementation.
-
-### Classifier Chains: A Review And Perspectives
-
-Link: <https://arxiv.org/abs/1912.13405>
-
-Key information:
-
-- Reviews classifier-chain methods for multi-label prediction.
-- Chained methods preserve label dependencies by feeding earlier predicted
-  labels into later classifiers.
-
-Applies to Anthro Chess:
-
-- Provides the discrete-output analogue for conditioning one output on another.
-- Supports the action-first decoding order:
-  `p(action, time | context) = p(action | context) * p(time | context, action)`.
-
-Different from Anthro Chess:
-
-- Classifier chains are primarily for multi-label classification.
-- Anthro Chess uses the same dependency idea for one categorical action and one
-  optional sampled timing distribution.
-
-### Scheduled Sampling For Sequence Prediction
-
-Link: <https://arxiv.org/abs/1506.03099>
-
-Key information:
-
-- Describes the train/inference mismatch in sequence prediction when training
-  uses ground-truth previous tokens but inference uses model-generated tokens.
-- Proposes gradually exposing the model to its own predictions during training.
-
-Applies to Anthro Chess:
-
-- Names the ordinary exposure-bias concern created when the time head trains on
-  human actions but runs on sampled actions.
-- Suggests a possible later mitigation if move-time coherence fails in
-  generated games.
-
-Different from Anthro Chess:
-
-- The initial Anthro Chess design should use ordinary teacher forcing. Scheduled
-  sampling is a possible later tool, not a planned core requirement.
-
-### Better Conditional Density Estimation For Neural Networks
-
-Link: <https://arxiv.org/abs/1606.02321>
-
-Key information:
-
-- Argues that many neural prediction tasks need a full conditional distribution
-  over outputs rather than a point estimate.
-- Compares conditional density estimation approaches against mixture density
-  networks and categorical discretization baselines.
-
-Applies to Anthro Chess:
-
-- Supports predicting a sampleable move-time distribution instead of a single
-  average move time.
-- Reinforces evaluating timing by likelihood/calibration, not just mean error.
-
-Different from Anthro Chess:
-
-- This is not chess-specific and does not define the final time-output
-  parameterization.
-
 ### UniMaia: Learning Unified Human-Aligned Chess With Textual Descriptions
 
 Link: <https://arxiv.org/abs/2605.27767>
@@ -478,6 +356,128 @@ Different from Anthro Chess:
 - N-gram models are much less expressive than the intended neural architecture.
 - They do not use exact board embeddings, rich clock context, legal masks, or
   learned board representations.
+
+## Structured Output And Multi-Target Modeling
+
+### Multi-Target Prediction: A Unifying View
+
+Link: <https://arxiv.org/abs/1809.02352>
+
+Key information:
+
+- Surveys problems where a model predicts multiple target variables at once.
+- Emphasizes that target variables may have dependencies, constraints, or
+  relations.
+- Frames independent per-target prediction as the simplest baseline, with
+  dependency modeling as a central reason to use multi-target methods.
+
+Applies to Anthro Chess:
+
+- The model output can be viewed as a structured target containing action and,
+  when timing is enabled, move time.
+- Supports treating action and timing as dependent outputs rather than
+  independent marginal samples.
+
+Different from Anthro Chess:
+
+- This is a broad survey, not chess-specific.
+- Anthro Chess only needs a small practical structured-output design, not a
+  general multi-target learning framework.
+
+### Multi-Target Regression Via Input Space Expansion
+
+Link: <https://arxiv.org/abs/1211.6581>
+
+Key information:
+
+- Studies multi-target regression where continuous target variables can have
+  statistical dependencies.
+- Adapts stacked single-target and regressor-chain ideas, where predictions or
+  target values become inputs for related targets.
+- Notes the train/prediction discrepancy that can appear when training uses
+  true target values but inference uses predicted target values.
+
+Applies to Anthro Chess:
+
+- Move-conditioned timing is analogous to a small regressor chain:
+  `action -> move_time`.
+- Names the input mismatch a chained regressor carries: the second target is
+  conditioned on a true value in training and a predicted one at inference.
+- The known train/inference discrepancy is a reason to evaluate generated
+  action-time coherence.
+
+Different from Anthro Chess:
+
+- The paper focuses on conventional continuous multi-target regression, not a
+  mixed discrete action plus continuous time output.
+- Anthro Chess should use the idea as a simple factorization, not as a full
+  classical regressor-chain implementation.
+
+### Classifier Chains: A Review And Perspectives
+
+Link: <https://arxiv.org/abs/1912.13405>
+
+Key information:
+
+- Reviews classifier-chain methods for multi-label prediction.
+- Chained methods preserve label dependencies by feeding earlier predicted
+  labels into later classifiers.
+
+Applies to Anthro Chess:
+
+- Provides the discrete-output analogue for conditioning one output on another.
+- Supports an action-first decoding order over a discrete first output, which
+  `docs/decisions/0003-action-conditioned-timing.md` settles for this project.
+
+Different from Anthro Chess:
+
+- Classifier chains are primarily for multi-label classification.
+- Anthro Chess uses the same dependency idea for one categorical action and one
+  optional sampled timing distribution.
+
+### Scheduled Sampling For Sequence Prediction
+
+Link: <https://arxiv.org/abs/1506.03099>
+
+Key information:
+
+- Describes the train/inference mismatch in sequence prediction when training
+  uses ground-truth previous tokens but inference uses model-generated tokens.
+- Proposes gradually exposing the model to its own predictions during training.
+
+Applies to Anthro Chess:
+
+- Names the ordinary exposure-bias concern created when the time head trains on
+  human actions but runs on sampled actions.
+- Suggests a possible later mitigation if move-time coherence fails in
+  generated games.
+
+Different from Anthro Chess:
+
+- The initial Anthro Chess design should use ordinary teacher forcing. Scheduled
+  sampling is a possible later tool, not a planned core requirement.
+
+### Better Conditional Density Estimation For Neural Networks
+
+Link: <https://arxiv.org/abs/1606.02321>
+
+Key information:
+
+- Argues that many neural prediction tasks need a full conditional distribution
+  over outputs rather than a point estimate.
+- Compares conditional density estimation approaches against mixture density
+  networks and categorical discretization baselines.
+
+Applies to Anthro Chess:
+
+- Supports predicting a sampleable move-time distribution instead of a single
+  average move time.
+- Reinforces evaluating timing by likelihood/calibration, not just mean error.
+
+Different from Anthro Chess:
+
+- This is not chess-specific and does not define the final time-output
+  parameterization.
 
 ## Chess As Sequence Prediction And State Tracking
 
@@ -598,9 +598,9 @@ Key information:
 
 Applies to Anthro Chess:
 
-- A rating-response diagnostic: solve rate as a continuous function of puzzle
-  rating across a configured-rating grid, with the human reference curve
-  derivable from the puzzle ratings themselves.
+- Solve rate against puzzle rating gives a response curve whose human reference
+  is derivable from the puzzle ratings themselves, so no separate human baseline
+  has to be collected.
 - The cheapest external rating instrument available, needing only forward
   passes.
 - A benchmark input immune to evaluation pool regeneration, so its scale stays
