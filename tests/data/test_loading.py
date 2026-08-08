@@ -16,8 +16,10 @@ from anthro_chess.data import (
     SequenceDataset,
     SequenceLoaderConfig,
     collate_sequences,
+    en_passant_token,
     maximum_position_bound,
     prepare_pgn,
+    previous_action_token,
 )
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.models import MoveModelBatch
@@ -72,7 +74,13 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
     assert batch.legal_action_ids[1][0]
     assert batch.legal_action_ids[1][1:] == ((), ())
     assert batch.inputs.piece_ids[1][1].tolist() == [0] * 64
-    assert batch.inputs.previous_action_id.present[0].tolist() == [False, True, True]
+    # The padded row's two trailing timesteps have no en-passant square and no
+    # previous action either, so both read the row that names absence.
+    assert batch.inputs.en_passant_token[1].tolist() == [en_passant_token(None)] * 3
+    assert (
+        batch.inputs.previous_action_token[1].tolist()
+        == [previous_action_token(None)] * 3
+    )
     assert batch.inputs.target_rating.values[0].tolist() == [1400, 1401, 1400]
     assert batch.game_ids.tolist() == [[1, 1, 1], [2, 0, 0]]
     assert batch.ply_indices.tolist() == [[0, 1, 2], [0, 0, 0]]
@@ -99,8 +107,7 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
 
     assert batch.chunk_start_plies == (0, 2, 4)
     assert batch.ply_indices.tolist() == [[0, 1], [2, 3], [4, 0]]
-    assert batch.inputs.previous_action_id.values[1][0] == _action_ids(("e7e5",))[0]
-    assert bool(batch.inputs.previous_action_id.present[1][0]) is True
+    assert batch.inputs.previous_action_token[1][0] == _action_ids(("e7e5",))[0]
 
 
 @pytest.mark.parametrize("chunk_length", [None, 3, 8, 12])
@@ -182,9 +189,9 @@ def test_each_timestep_is_handed_the_action_the_previous_one_predicted() -> None
 
     batch = next(loader)
 
-    assert batch.inputs.previous_action_id.present[0].tolist() == [False, True, True]
-    assert batch.inputs.previous_action_id.values[0][1] == batch.action_targets[0][0]
-    assert batch.inputs.previous_action_id.values[0][2] == batch.action_targets[0][1]
+    assert batch.inputs.previous_action_token[0][0] == previous_action_token(None)
+    assert batch.inputs.previous_action_token[0][1] == batch.action_targets[0][0]
+    assert batch.inputs.previous_action_token[0][2] == batch.action_targets[0][1]
 
 
 def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
@@ -206,10 +213,10 @@ def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
         "piece_ids": (inputs.piece_ids, "uint8"),
         "side_to_move": (inputs.side_to_move, "uint8"),
         "castling_rights": (inputs.castling_rights, "uint8"),
-        "en_passant_square": (inputs.en_passant_square.values, "uint8"),
+        "en_passant_token": (inputs.en_passant_token, "uint8"),
         "halfmove_clock": (inputs.halfmove_clock, "int16"),
         "fullmove_number": (inputs.fullmove_number, "int16"),
-        "previous_action_id": (inputs.previous_action_id.values, "int16"),
+        "previous_action_token": (inputs.previous_action_token, "int16"),
         "target_rating": (inputs.target_rating.values, "int16"),
         "time_initial_ms": (inputs.time_initial_ms.values, "int32"),
         "time_increment_ms": (inputs.time_increment_ms.values, "int32"),
@@ -220,7 +227,6 @@ def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
         "game_ids": (batch.game_ids, "uint64"),
         "attention_mask": (batch.attention_mask, "bool"),
         "action_loss_mask": (batch.action_loss_mask, "bool"),
-        "en_passant_present": (inputs.en_passant_square.present, "bool"),
     }
     for name, (column, dtype) in expected.items():
         assert column.dtype.name == dtype, name

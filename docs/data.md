@@ -639,6 +639,12 @@ conversion wraps a column and copies it rather than visiting every timestep.
 Widening to what a model indexes with belongs on the far side of that copy, so
 what crosses to a device is the width the loader chose.
 
+Where a nullable model input has a natural reserved token, the encoding assigns
+it and the column carries that token instead of a value beside a presence flag.
+`docs/decisions/0035-the-encoding-owns-token-vocabularies-the-model-owns-transforms.md`
+owns where the encoding's business ends and the model's begins, and what that
+means for checkpoint compatibility.
+
 A live game's history carries the same column form and accumulates it while the
 game is played, one row per ply beside the ply it encodes. What that buys is not
 shared with the loader, which sees each ply once: a game asks for a batch after

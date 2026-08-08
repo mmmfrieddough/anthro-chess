@@ -8,6 +8,7 @@ import chess
 import pytest
 
 from anthro_chess.chess import (
+    ACTION_VOCABULARY_SIZE,
     DRAW_CLAIM_ACTION_ID,
     RESIGNATION_ACTION_ID,
     encode_move,
@@ -19,8 +20,10 @@ from anthro_chess.data import (
     EncodingError,
     GameEncodingInput,
     build_decision_context,
+    en_passant_token,
     encode_game,
     encoding_identity,
+    previous_action_token,
 )
 from anthro_chess.data import encoding as encoding_module
 
@@ -392,20 +395,37 @@ def test_the_column_form_describes_the_same_timesteps_as_the_plies() -> None:
         assert row[DecisionColumn.PLY_INDEX] == ply.ply_index
         assert row[DecisionColumn.SIDE_TO_MOVE] == board.side_to_move
         assert row[DecisionColumn.CASTLING_RIGHTS] == board.castling_rights
-        assert bool(row[DecisionColumn.EN_PASSANT_PRESENT]) == (
-            board.en_passant_square is not None
+        assert row[DecisionColumn.EN_PASSANT_TOKEN] == en_passant_token(
+            board.en_passant_square
         )
-        assert row[DecisionColumn.EN_PASSANT_SQUARE] == (board.en_passant_square or 0)
         assert row[DecisionColumn.HALFMOVE_CLOCK] == board.halfmove_clock
         assert row[DecisionColumn.FULLMOVE_NUMBER] == board.fullmove_number
-        assert bool(row[DecisionColumn.PREVIOUS_ACTION_PRESENT]) == (
-            ply.previous_action_id is not None
+        assert row[DecisionColumn.PREVIOUS_ACTION_TOKEN] == previous_action_token(
+            ply.previous_action_id
         )
-        assert row[DecisionColumn.PREVIOUS_ACTION_ID] == (ply.previous_action_id or 0)
 
-    # The en-passant square is what a zero-filled column cannot stand in for,
-    # so the case the test was built around is checked to have occurred.
+    # The en-passant square is what a shared zero would stand in for, so the
+    # case the test was built around is checked to have occurred.
     assert any(ply.board.en_passant_square is not None for ply in context.plies)
+
+
+def test_a_nullable_input_travels_as_the_row_that_names_its_absence() -> None:
+    """Absence is a row of the same table, so nothing reassembles it downstream.
+
+    Square a1 is index 0 and the first action id is 0, so both columns would
+    otherwise put a real value and a missing one at the same index and need a
+    presence flag beside them to be read apart.
+    """
+
+    assert en_passant_token(None) == 0
+    assert en_passant_token(chess.A1) == 1
+    assert en_passant_token(chess.H8) == BOARD_SQUARE_COUNT
+
+    assert previous_action_token(None) == ACTION_VOCABULARY_SIZE
+    assert previous_action_token(0) == 0
+    assert previous_action_token(ACTION_VOCABULARY_SIZE - 1) == (
+        ACTION_VOCABULARY_SIZE - 1
+    )
 
 
 def test_a_rule_counter_larger_than_play_produces_carries_through() -> None:

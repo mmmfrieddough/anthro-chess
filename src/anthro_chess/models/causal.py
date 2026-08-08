@@ -13,14 +13,17 @@ from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
     action_vocabulary_identity,
 )
-from anthro_chess.data import encoding_identity
+from anthro_chess.data import (
+    EN_PASSANT_TOKEN_COUNT,
+    PREVIOUS_ACTION_TOKEN_COUNT,
+    encoding_identity,
+)
 from anthro_chess.models.batching import MoveModelBatch, OptionalTensor
 from anthro_chess.models.config import MoveModelConfig
 
 _PIECE_ID_COUNT = 13
 _SIDE_TO_MOVE_COUNT = 2
 _CASTLING_RIGHTS_COUNT = 16
-_EN_PASSANT_TOKEN_COUNT = 65
 _RATING_CONTEXT_COUNT = 2
 
 
@@ -34,7 +37,7 @@ class BoardEncoder(nn.Module):
         self.side_embedding = nn.Embedding(_SIDE_TO_MOVE_COUNT, embedding_dim)
         self.castling_embedding = nn.Embedding(_CASTLING_RIGHTS_COUNT, embedding_dim)
         self.en_passant_embedding = nn.Embedding(
-            _EN_PASSANT_TOKEN_COUNT,
+            EN_PASSANT_TOKEN_COUNT,
             embedding_dim,
         )
         input_dim = (64 + 3) * embedding_dim + 2
@@ -49,11 +52,8 @@ class BoardEncoder(nn.Module):
 
         inputs = batch.inputs
         piece_features = self.piece_embedding(inputs.piece_ids).flatten(-2)
-        en_passant_tokens = torch.where(
-            inputs.en_passant_square.present,
-            inputs.en_passant_square.values + 1,
-            0,
-        )
+        # A transform rather than a token vocabulary, so it stays here while
+        # the two nullable inputs moved. Decision 0035 says why.
         rule_counts = torch.log1p(
             torch.stack(
                 (
@@ -68,7 +68,7 @@ class BoardEncoder(nn.Module):
                 piece_features,
                 self.side_embedding(inputs.side_to_move),
                 self.castling_embedding(inputs.castling_rights),
-                self.en_passant_embedding(en_passant_tokens),
+                self.en_passant_embedding(inputs.en_passant_token),
                 rule_counts,
             ),
             dim=-1,
@@ -189,7 +189,7 @@ class CausalMoveModel(nn.Module):
         self.config = config or MoveModelConfig()
         self.board_encoder = BoardEncoder(self.config)
         self.previous_action_embedding = nn.Embedding(
-            ACTION_VOCABULARY_SIZE + 1,
+            PREVIOUS_ACTION_TOKEN_COUNT,
             self.config.action_embedding_dim,
         )
         context_input_dim = self.config.model_dim + self.config.action_embedding_dim
@@ -244,16 +244,10 @@ class CausalMoveModel(nn.Module):
                 f"batch reaches ply index {batch.position_bound - 1}, past the "
                 f"{declared} plies this model declares as its context"
             )
-        inputs = batch.inputs
-        previous_action_tokens = torch.where(
-            inputs.previous_action_id.present,
-            inputs.previous_action_id.values,
-            ACTION_VOCABULARY_SIZE,
-        )
         context = torch.cat(
             (
                 self.board_encoder(batch),
-                self.previous_action_embedding(previous_action_tokens),
+                self.previous_action_embedding(batch.inputs.previous_action_token),
             ),
             dim=-1,
         )

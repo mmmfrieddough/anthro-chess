@@ -15,9 +15,11 @@ from anthro_chess.data.config import (
 )
 from anthro_chess.data.encoding import (
     BOARD_SQUARE_COUNT,
+    EN_PASSANT_TOKEN_COUNT,
     ENCODING_NAME,
     ENCODING_SCHEMA_SHA256,
     ENCODING_VERSION,
+    PREVIOUS_ACTION_TOKEN_COUNT,
     BoardEncoding,
     DecisionColumn,
     DecisionColumns,
@@ -28,8 +30,10 @@ from anthro_chess.data.encoding import (
     PlyContext,
     PlyEncoding,
     build_decision_context,
+    en_passant_token,
     encode_game,
     encoding_identity,
+    previous_action_token,
 )
 from anthro_chess.data.loading import (
     LOADER_STATE_VERSION,
@@ -76,10 +80,12 @@ __all__ = [
     "AcquisitionResult",
     "ArchiveConfig",
     "BOARD_SQUARE_COUNT",
+    "EN_PASSANT_TOKEN_COUNT",
     "ENCODING_NAME",
     "ENCODING_SCHEMA_SHA256",
     "ENCODING_VERSION",
     "LOADER_STATE_VERSION",
+    "PREVIOUS_ACTION_TOKEN_COUNT",
     "SELECTION_SPEC_VERSION",
     "STREAMING_IDENTITY_VERSION",
     "STREAMING_LOADER_NAME",
@@ -127,9 +133,11 @@ __all__ = [
     "build_sharded_index",
     "collate_sequences",
     "derive_termination",
+    "en_passant_token",
     "encode_game",
     "encoding_identity",
     "maximum_position_bound",
     "prepare_pgn",
+    "previous_action_token",
     "terminal_action_for",
 ]

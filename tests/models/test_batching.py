@@ -10,7 +10,11 @@ import pytest
 import torch
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE
-from anthro_chess.data import SequenceBatch
+from anthro_chess.data import (
+    EN_PASSANT_TOKEN_COUNT,
+    PREVIOUS_ACTION_TOKEN_COUNT,
+    SequenceBatch,
+)
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.models.batching import OptionalTensor
 
@@ -40,23 +44,6 @@ def _corrupted(batch: MoveModelBatch, field: str, value: int) -> MoveModelBatch:
     replacement = original.clone()
     replacement.view(-1)[0] = value
     return _with_inputs(batch, **{field: replacement})
-
-
-def _corrupted_optional(
-    batch: MoveModelBatch,
-    field: str,
-    value: int,
-) -> MoveModelBatch:
-    """Return the batch with one *present* entry of a nullable input rewritten."""
-
-    original: OptionalTensor = getattr(batch.inputs, field)
-    values = original.values.clone()
-    present = torch.ones_like(original.present)
-    values.view(-1)[0] = value
-    return _with_inputs(
-        batch,
-        **{field: OptionalTensor(values=values, present=present)},
-    )
 
 
 def test_a_valid_batch_is_accepted(
@@ -112,21 +99,25 @@ def test_a_valid_batch_is_accepted(
             id="castling-rights",
         ),
         pytest.param(
-            lambda batch: _corrupted_optional(batch, "en_passant_square", 64),
-            "en-passant squares are outside the board encoding",
+            lambda batch: _corrupted(batch, "en_passant_token", EN_PASSANT_TOKEN_COUNT),
+            "en-passant tokens are outside the board encoding",
             id="en-passant",
         ),
         pytest.param(
-            lambda batch: _corrupted_optional(
-                batch,
-                "previous_action_id",
-                ACTION_VOCABULARY_SIZE,
+            lambda batch: _corrupted(
+                batch, "previous_action_token", PREVIOUS_ACTION_TOKEN_COUNT
             ),
             "previous action is outside the action vocabulary",
             id="previous-action",
         ),
         pytest.param(
-            lambda batch: _corrupted_optional(batch, "target_rating", -1),
+            lambda batch: _with_inputs(
+                batch,
+                target_rating=OptionalTensor(
+                    values=torch.full_like(batch.inputs.target_rating.values, -1),
+                    present=torch.ones_like(batch.inputs.target_rating.present),
+                ),
+            ),
             "target ratings must be nonnegative",
             id="negative-rating",
         ),
@@ -157,7 +148,7 @@ def test_the_tensor_boundary_widens_the_columns_the_model_indexes_with(
     assert batch.inputs.piece_ids.dtype is torch.long
     assert batch.action_targets.dtype is torch.long
     assert batch.ply_indices.dtype is torch.long
-    assert batch.inputs.previous_action_id.values.dtype is torch.long
+    assert batch.inputs.previous_action_token.dtype is torch.long
     assert batch.attention_mask.dtype is torch.bool
     assert batch.inputs.piece_ids.tolist() == source.inputs.piece_ids.tolist()
     assert batch.action_targets.tolist() == source.action_targets.tolist()

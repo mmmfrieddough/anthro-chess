@@ -21,7 +21,9 @@ from anthro_chess.data.encoding import (
     BOARD_SQUARE_COUNT,
     GameEncodingInput,
     PlyEncoding,
+    en_passant_token,
     encode_game,
+    previous_action_token,
 )
 from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
 
@@ -86,15 +88,20 @@ class OptionalIntBatch:
 
 @dataclass(frozen=True)
 class SequenceInputs:
-    """Framework-neutral numeric model inputs shaped batch by sequence."""
+    """Framework-neutral numeric model inputs shaped batch by sequence.
+
+    ``en_passant_token`` and ``previous_action_token`` are the embedding rows
+    :mod:`anthro_chess.data.encoding` assigns, absence included, rather than a
+    value beside a presence flag.
+    """
 
     piece_ids: np.ndarray
     side_to_move: np.ndarray
     castling_rights: np.ndarray
-    en_passant_square: OptionalIntBatch
+    en_passant_token: np.ndarray
     halfmove_clock: np.ndarray
     fullmove_number: np.ndarray
-    previous_action_id: OptionalIntBatch
+    previous_action_token: np.ndarray
     target_rating: OptionalIntBatch
     time_initial_ms: OptionalIntBatch
     time_increment_ms: OptionalIntBatch
@@ -550,7 +557,7 @@ class SequenceDataLoader(SequenceBatchSource):
 def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     """Pad and pack sequence examples into arrays, inventing no targets.
 
-    Every column is written into a zero-filled array of its own width, so a
+    Every column is written into a prefilled array of its own width, so a
     padded timestep costs a memset rather than a Python object and the result
     is what a tensor can wrap. Each width is what that column's values need and
     no more, because this is what a worker sends and what crosses to a device.
@@ -575,8 +582,10 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     def required(
         getter: Callable[[PlyEncoding], int],
         dtype: type[np.generic],
+        *,
+        padding: int = 0,
     ) -> np.ndarray:
-        values = np.zeros(shape, dtype=dtype)
+        values = np.full(shape, padding, dtype=dtype)
         for index, example in enumerate(examples):
             values[index, : lengths[index]] = [getter(ply) for ply in example.plies]
         return values
@@ -616,10 +625,22 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         piece_ids=piece_ids,
         side_to_move=required(lambda ply: ply.board.side_to_move, np.uint8),
         castling_rights=required(lambda ply: ply.board.castling_rights, np.uint8),
-        en_passant_square=optional(lambda ply: ply.board.en_passant_square, np.uint8),
+        # A padded timestep has no en-passant square and no previous action, so
+        # each is filled with the row that names absence. Only the second one
+        # differs from a zero fill, and both say so rather than one relying on
+        # a coincidence.
+        en_passant_token=required(
+            lambda ply: en_passant_token(ply.board.en_passant_square),
+            np.uint8,
+            padding=en_passant_token(None),
+        ),
         halfmove_clock=required(lambda ply: ply.board.halfmove_clock, np.int16),
         fullmove_number=required(lambda ply: ply.board.fullmove_number, np.int16),
-        previous_action_id=optional(lambda ply: ply.previous_action_id, np.int16),
+        previous_action_token=required(
+            lambda ply: previous_action_token(ply.previous_action_id),
+            np.int16,
+            padding=previous_action_token(None),
+        ),
         target_rating=optional(lambda ply: ply.target_rating, np.int16),
         time_initial_ms=optional(lambda ply: ply.time_initial_ms, np.int32),
         time_increment_ms=optional(lambda ply: ply.time_increment_ms, np.int32),
