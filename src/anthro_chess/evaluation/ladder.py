@@ -60,7 +60,7 @@ from __future__ import annotations
 import logging
 import math
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
@@ -679,23 +679,27 @@ class LadderResolution:
     #: read or compared against another reading's without them.
     coverage: float
     confidence: float
+    replayed_pairings: int
+    #: Everything below counts what a resample did, so all of it is zero where
+    #: none was drawn. Defaulted rather than restated, so the two paths that
+    #: draw nothing cannot come to disagree about what that looks like.
+    #:
     #: Resamples drawn. Zero on a stated floor, which does not depend on
     #: resampling and stands where a bootstrap could not.
-    resamples: int
+    resamples: int = 0
     #: Resamples that produced a fit. Below ``resamples`` where a draw left
     #: fewer than two seats with a scored game, which is a thin reading rather
     #: than an error but is not what the configured count says it is.
-    fitted_resamples: int
+    fitted_resamples: int = 0
     #: Games in the pairings a fresh seed would redraw, which is what the
     #: dispersion bound's degrees of freedom count. Games in a pairing of greedy
     #: seats are excluded: they replay, so they contribute no spread to bound.
-    redrawn_games: int
-    replayed_pairings: int
+    redrawn_games: int = 0
     #: Resamples whose refit ran out of iterations. A diagnostic beside the
     #: floors rather than a filter on them: the spread of an estimator that is
     #: struggling is still the spread of the number the benchmark reports, and a
     #: reader deciding how much to trust the floor needs to see it.
-    non_convergent_resamples: int
+    non_convergent_resamples: int = 0
 
     def floor(self, scope: str, metric: str) -> NoiseFloor | None:
         """Return the floor beside one reported quantity, if it has one."""
@@ -715,7 +719,11 @@ class LadderResolution:
             "replayed_pairings": self.replayed_pairings,
             "non_convergent_resamples": self.non_convergent_resamples,
             "floors": [
-                {"scope": scope, "metric": metric, "floor": floor.value}
+                {
+                    "scope": scope,
+                    "metric": metric,
+                    "floor": floor.model_dump(mode="json"),
+                }
                 for (scope, metric), floor in sorted(self.floors.items())
             ],
             "unqualifiable": [
@@ -880,17 +888,18 @@ def benchmark_ladder(
     profiles = _error_profiles(DecisionSet(tuple(samples), unscored))
     device = runner_device(loaded)
     workload = _base_workload(config, source)
+    totals = _seat_totals(seats, pairings)
     measured_seats = tuple(
         LadderSeat(
             key=seat,
-            games=_seat_games(seat, pairings),
-            points=_seat_points(seat, pairings),
-            unfinished=_seat_unfinished(seat, pairings),
+            games=games,
+            points=points,
+            unfinished=played - games,
             fitted_rating=fit.rating(seat),
             decisions=profiles.get(seat.setting),
             execution=execution_record(device, {**workload, **seat.as_record()}),
         )
-        for seat in seats
+        for seat, (games, points, played) in totals.items()
     )
 
     unavailable: dict[str, str] = {}
@@ -1010,8 +1019,13 @@ def fit_ratings(
         iterations += 1
         updated: dict[SeatKey, float] = {}
         for seat in placed:
+            # The seat's own strength is loop-invariant here, and this runs once
+            # per opponent per iteration per resample — hashing a seat key to
+            # fetch it again each time is the largest cost in the resolution
+            # step that buys nothing.
+            own = strengths[seat]
             denominator = sum(
-                count / (strengths[seat] + strengths[opponent])
+                count / (own + strengths[opponent])
                 for opponent, count in games[seat].items()
             )
             # A seat that scored nothing has a maximum-likelihood strength of
@@ -1371,17 +1385,12 @@ def _resolution(
     # they managed to play, per decision 0032: a pairing that produced no game
     # is a thin reading, not a replayed one, and calling it replayed would state
     # a floor of zero over a generation failure.
-    varying = [
-        pairing
-        for pairing in pairings
-        if replicates_vary((pairing.first.temperature, pairing.second.temperature))
-    ]
-    redrawn = {
+    varying = {
         index: pairing
         for index, pairing in enumerate(pairings)
-        if pairing.played
-        and replicates_vary((pairing.first.temperature, pairing.second.temperature))
+        if replicates_vary((pairing.first.temperature, pairing.second.temperature))
     }
+    redrawn = {index: pairing for index, pairing in varying.items() if pairing.played}
     replayed = len(pairings) - len(varying)
     observed = _quantities(config, seats, pairings, fit, workload, device=device)
     if not varying:
@@ -1389,24 +1398,20 @@ def _resolution(
         # ladder move for move and the delta between two such readings is
         # attributable to the weights alone — a seat pinned at the declared
         # spread included, since it is pinned identically both times.
-        source = (
-            f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} "
-            f"{LADDER_DETERMINISTIC_METHOD}"
-        )
         return LadderResolution(
             floors={
-                key: NoiseFloor(value=0.0, kind=LADDER_FLOOR_KIND, source=source)
+                key: NoiseFloor(
+                    value=0.0,
+                    kind=LADDER_FLOOR_KIND,
+                    source=_floor_source(LADDER_DETERMINISTIC_METHOD),
+                )
                 for key in observed
             },
             unqualifiable={},
             method=LADDER_DETERMINISTIC_METHOD,
             coverage=settings.coverage,
             confidence=settings.confidence,
-            resamples=0,
-            fitted_resamples=0,
-            redrawn_games=0,
             replayed_pairings=replayed,
-            non_convergent_resamples=0,
         )
 
     unqualifiable = _unbounded_seats(seats, pairings)
@@ -1428,15 +1433,11 @@ def _resolution(
             method=LADDER_UNRESOLVED_METHOD,
             coverage=settings.coverage,
             confidence=settings.confidence,
-            resamples=0,
-            fitted_resamples=0,
             redrawn_games=redrawn_games,
             replayed_pairings=replayed,
-            non_convergent_resamples=0,
         )
 
-    method = LADDER_BOOTSTRAP_METHOD
-    source = f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} {method}"
+    source = _floor_source(LADDER_BOOTSTRAP_METHOD)
 
     generator = np.random.default_rng(settings.seed)
     outcomes = {
@@ -1512,7 +1513,7 @@ def _resolution(
     return LadderResolution(
         floors=floors,
         unqualifiable=unqualifiable,
-        method=method,
+        method=LADDER_BOOTSTRAP_METHOD,
         coverage=settings.coverage,
         confidence=settings.confidence,
         resamples=settings.resamples,
@@ -1523,6 +1524,12 @@ def _resolution(
     )
 
 
+def _floor_source(method: str) -> str:
+    """Return what a stored floor names as the thing that produced it."""
+
+    return f"{LADDER_BENCHMARK.name} v{LADDER_BENCHMARK_VERSION} {method}"
+
+
 def _seat_totals(
     seats: Sequence[SeatKey],
     pairings: Sequence[LadderPairing],
@@ -1531,10 +1538,12 @@ def _seat_totals(
 
     One pass over the pairings rather than one per quantity per seat. This runs
     once per resample, where a scan per seat is quadratic in the grid on the
-    hottest loop the benchmark has.
+    hottest loop the benchmark has, and it is the only place the three are
+    counted, so the number a floor describes and the number it sits beside come
+    from one reduction.
     """
 
-    totals = {seat: [0, 0.0, 0] for seat in seats}
+    totals = {seat: (0, 0.0, 0) for seat in seats}
     for pairing in pairings:
         for seat, points in (
             (pairing.first, pairing.first_points),
@@ -1543,13 +1552,12 @@ def _seat_totals(
             total = totals.get(seat)
             if total is None:
                 continue
-            total[0] += pairing.games
-            total[1] += points
-            total[2] += pairing.played
-    return {
-        seat: (int(total[0]), float(total[1]), int(total[2]))
-        for seat, total in totals.items()
-    }
+            totals[seat] = (
+                total[0] + pairing.games,
+                total[1] + points,
+                total[2] + pairing.played,
+            )
+    return totals
 
 
 def _unbounded_seats(
@@ -1921,7 +1929,7 @@ def _seat_measurements(
     """
 
     workload = seat.execution.workload_component()
-    values: list[tuple[str, float, int | None]] = []
+    values: list[tuple[str, float, int]] = []
     if seat.fitted_rating is not None:
         values.append((LADDER_FITTED_RATING.identifier, seat.fitted_rating, seat.games))
     if seat.games:
@@ -1973,7 +1981,7 @@ def _reading_measurements(
 
     workload = reading.execution.workload_component()
     seats = len(reading.ratings)
-    values: list[tuple[str, float, int | None]] = [
+    values: list[tuple[str, float, int]] = [
         (LADDER_RATING_ORDER_ACCURACY.identifier, reading.order_accuracy, seats),
         (
             LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier,
@@ -1994,7 +2002,7 @@ def _response_measurements(
     """Return the committed temperature response and its attenuation."""
 
     workload = response.execution.workload_component()
-    values: list[tuple[str, float, int | None]] = [
+    values: list[tuple[str, float, int]] = [
         (
             LADDER_TEMPERATURE_RESPONSE.identifier,
             response.conditioned_response,
@@ -2022,7 +2030,7 @@ def _response_measurements(
 
 def _measurements(
     scope: str,
-    values: Sequence[tuple[str, float, int | None]],
+    values: Sequence[tuple[str, float, int]],
     workload: WorkloadComponent,
     resolution: LadderResolution | None,
 ) -> tuple[Measurement, ...]:
@@ -2096,30 +2104,6 @@ def _held_white(record: GameRecord, seat: SeatKey) -> bool:
     return (
         configuration.get("target_rating") == seat.target_rating
         and configuration.get("temperature") == seat.temperature
-    )
-
-
-def _seat_games(seat: SeatKey, pairings: Iterable[LadderPairing]) -> int:
-    return sum(
-        pairing.games for pairing in pairings if seat in (pairing.first, pairing.second)
-    )
-
-
-def _seat_unfinished(seat: SeatKey, pairings: Iterable[LadderPairing]) -> int:
-    return sum(
-        pairing.unfinished
-        for pairing in pairings
-        if seat in (pairing.first, pairing.second)
-    )
-
-
-def _seat_points(seat: SeatKey, pairings: Iterable[LadderPairing]) -> float:
-    return sum(
-        pairing.first_points
-        if pairing.first == seat
-        else pairing.games - pairing.first_points
-        for pairing in pairings
-        if seat in (pairing.first, pairing.second)
     )
 
 

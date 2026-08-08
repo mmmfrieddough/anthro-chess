@@ -31,6 +31,7 @@ from anthro_chess.evaluation.ladder import (
     LadderBenchmarkError,
     LadderBenchmarkResult,
     LadderPairing,
+    LadderSeat,
     SeatConditioning,
     SeatKey,
     fit_ratings,
@@ -722,8 +723,9 @@ def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
     assert resolution.method == LADDER_BOOTSTRAP_METHOD
     # Nothing was silently dropped, and the floors say what they claim.
     assert resolution.fitted_resamples == resolution.resamples
-    assert resolution.coverage > 0.0
-    assert 0.0 < resolution.confidence < 1.0
+    settings = LadderBenchmarkConfig().noise
+    assert resolution.coverage == settings.coverage
+    assert resolution.confidence == settings.confidence
     reading = result.reading(1.0)
     for definition in (
         LADDER_RATING_ERROR,
@@ -813,7 +815,7 @@ def test_a_ladder_nothing_would_redraw_states_a_floor_of_zero() -> None:
     # there identically both times. Withholding its floor would state that a
     # reading which cannot move might have.
     assert not resolution.unqualifiable
-    swept = [seat for seat in result.seats if seat.points in (0.0, float(seat.games))]
+    swept = _swept(result)
     assert swept
     for seat in swept:
         assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
@@ -879,7 +881,7 @@ def test_a_seat_with_no_finite_rating_is_named_rather_than_given_a_zero() -> Non
     resolution = result.resolution
 
     assert resolution is not None
-    swept = [seat for seat in result.seats if seat.points in (0.0, float(seat.games))]
+    swept = _swept(result)
     assert swept
     for seat in swept:
         key = (seat.label, LADDER_FITTED_RATING.identifier)
@@ -900,9 +902,9 @@ def test_a_spread_that_merely_binds_still_qualifies_its_seat() -> None:
 
     assert resolution is not None
     assert result.fit.clamped
+    unbounded = {seat.key for seat in _swept(result)}
     for seat in result.fit.clamped:
-        measured = result.seat(seat)
-        if measured.points in (0.0, float(measured.games)):
+        if seat in unbounded:
             continue
         assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
 
@@ -955,6 +957,17 @@ def test_a_single_redrawn_game_reports_no_floor_rather_than_failing() -> None:
             (reading.label, LADDER_FITTED_RATING_SLOPE.identifier)
         ]
     )
+
+
+def _swept(result: LadderBenchmarkResult) -> list[LadderSeat]:
+    """Return the seats that scored nothing or scored everything.
+
+    The distinction these tests exist to pin: a seat with no finite
+    maximum-likelihood rating, whose number is a bound rather than an
+    estimate.
+    """
+
+    return [seat for seat in result.seats if seat.points in (0.0, float(seat.games))]
 
 
 def _readings(result: LadderBenchmarkResult) -> tuple[ResultEnvelope, ...]:

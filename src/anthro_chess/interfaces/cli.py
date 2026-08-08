@@ -2174,10 +2174,8 @@ def _optional_value(value: float | None, spec: str = ".2f") -> str:
 
 
 def _render_ladder(result: LadderBenchmarkResult) -> str:
-    from anthro_chess.evaluation.ladder import SeatConditioning, SeatKey
     from anthro_chess.evaluation.results.metrics import (
         LADDER_ADJACENT_RATING_ORDER_ACCURACY,
-        LADDER_FITTED_RATING,
         LADDER_FITTED_RATING_SLOPE,
         LADDER_FITTED_RATING_SPAN,
         LADDER_RATING_ERROR,
@@ -2211,67 +2209,37 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
         )
     lines.extend(_render_ladder_resolution(result))
     for reading in result.readings:
+        # Each row's per-seat floor is printed once, in the Seats table below,
+        # rather than again beside the same fitted rating here.
+        resolves = partial(_resolves, result, reading.label)
         lines.extend(
             [
                 "",
                 f"Ladder at {reading.label}  "
                 f"(series {reading.execution.workload_sha256[:12]})",
-                f"    {'configured':>10}{'fitted':>10}{'error':>9}{'resolves':>12}",
+                f"    {'configured':>10}{'fitted':>10}{'error':>9}",
             ]
         )
         lines.extend(
             f"    {rating:>10}{fitted:>10.0f}{fitted - rating:>+9.0f}"
-            + _resolves_column(
-                result,
-                SeatKey(
-                    SeatConditioning.CONDITIONED, rating, reading.temperature
-                ).label,
-                LADDER_FITTED_RATING.identifier,
-                0,
-            )
             for rating, fitted in zip(reading.ratings, reading.fitted, strict=True)
         )
         lines.extend(
             [
                 (
                     f"  ordering       {reading.order_accuracy:.3f}"
-                    + _resolves(
-                        result,
-                        reading.label,
-                        LADDER_RATING_ORDER_ACCURACY.identifier,
-                        3,
-                    )
+                    + resolves(LADDER_RATING_ORDER_ACCURACY.identifier, 3)
                     + f" pairwise, {reading.adjacent_order_accuracy:.3f}"
-                    + _resolves(
-                        result,
-                        reading.label,
-                        LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier,
-                        3,
-                    )
+                    + resolves(LADDER_ADJACENT_RATING_ORDER_ACCURACY.identifier, 3)
                     + " adjacent"
                 ),
                 (
                     f"  transfer       slope {reading.slope:.3f}"
-                    + _resolves(
-                        result,
-                        reading.label,
-                        LADDER_FITTED_RATING_SLOPE.identifier,
-                        3,
-                    )
+                    + resolves(LADDER_FITTED_RATING_SLOPE.identifier, 3)
                     + f", span {reading.span:.0f}"
-                    + _resolves(
-                        result,
-                        reading.label,
-                        LADDER_FITTED_RATING_SPAN.identifier,
-                        0,
-                    )
+                    + resolves(LADDER_FITTED_RATING_SPAN.identifier, 0)
                     + f", ladder error {reading.ladder_error:.1f}"
-                    + _resolves(
-                        result,
-                        reading.label,
-                        LADDER_RATING_ERROR.identifier,
-                        1,
-                    )
+                    + resolves(LADDER_RATING_ERROR.identifier, 1)
                 ),
             ]
         )
@@ -2305,7 +2273,10 @@ def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
     one look identical at the point of use and mean different things.
     """
 
-    from anthro_chess.evaluation.ladder import LADDER_DETERMINISTIC_METHOD
+    from anthro_chess.evaluation.ladder import (
+        LADDER_DETERMINISTIC_METHOD,
+        LADDER_UNRESOLVED_METHOD,
+    )
 
     resolution = result.resolution
     if resolution is None:
@@ -2317,7 +2288,7 @@ def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
             "number is exactly zero"
         )
         return lines
-    if not resolution.resamples:
+    if resolution.method == LADDER_UNRESOLVED_METHOD:
         lines.append(
             f"  too thin       {resolution.redrawn_games} redrawn game(s) show "
             "no spread to bound, so nothing here is qualified"
@@ -2344,22 +2315,26 @@ def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
 def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
     """Name every reported number that has no floor, and why it cannot."""
 
-    from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
-
     resolution = result.resolution
     if resolution is None or not resolution.unqualifiable:
         return []
     lines = ["", "Unqualifiable"]
     for (scope, metric), reason in sorted(resolution.unqualifiable.items()):
-        lines.extend(
-            textwrap.wrap(
-                f"{scope} {metric}: {reason}",
-                width=MAXIMUM_LINE_WIDTH,
-                initial_indent="    ",
-                subsequent_indent="      ",
-            )
-        )
+        lines.extend(_wrapped_reason(f"{scope} {metric}: {reason}"))
     return lines
+
+
+def _wrapped_reason(text: str) -> list[str]:
+    """Wrap one indented explanation of why a metric carries no floor."""
+
+    from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
+
+    return textwrap.wrap(
+        text,
+        width=MAXIMUM_LINE_WIDTH,
+        initial_indent="    ",
+        subsequent_indent="      ",
+    )
 
 
 def _resolves(
@@ -2384,7 +2359,7 @@ def _resolves_column(
     scope: str,
     metric: str,
     precision: int,
-    width: int = 12,
+    width: int,
 ) -> str:
     """Return the same, as a fixed-width column.
 
@@ -3315,7 +3290,6 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
         metric_column_width,
         registry_record,
     )
-    from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
 
     if arguments.format == "json":
         print(json.dumps(registry_record(), indent=2, sort_keys=True))
@@ -3341,11 +3315,8 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
                 # Where a report reads "unqualifiable", this is what it points
                 # at, so the reason belongs in the listing rather than only in
                 # the source.
-                for line in textwrap.wrap(
-                    f"no sampling floor can exist: {metric.no_sampling_floor_reason}",
-                    width=MAXIMUM_LINE_WIDTH,
-                    initial_indent="    ",
-                    subsequent_indent="      ",
+                for line in _wrapped_reason(
+                    f"no sampling floor can exist: {metric.no_sampling_floor_reason}"
                 ):
                     print(line)
     return 0

@@ -60,8 +60,8 @@ a slightly different quantity from the number it sits beside.
 
 It is affordable. The whole estimate over the declared 15-seat, 105-pairing grid
 — a thousand redraws, a thousand refits, and the reductions read off each —
-measured 4.4 s in this checkout, against a ladder that has run in about two
-hours. A ladder with a seat that sweeps costs about ten times that, because no
+measured 2.9 s in this checkout, against a ladder that has run in about two
+hours. A ladder with a seat that sweeps costs roughly ten times that, because no
 refit of it converges and each runs out of iterations; still under a minute, and
 it is the state the reading is naming anyway.
 
