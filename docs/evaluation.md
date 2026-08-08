@@ -590,10 +590,21 @@ rather than of the pool they were scored on, and the series fingerprint carries
 nothing about the training run by design — decisions 0018 and 0021 keep it out
 so that a delta across model size stays interpretable. A training
 characterization therefore records the training identity it was measured under,
-a report applies it only where that identity matches on both sides of the delta,
-and anywhere else the noise is reported as unknown. A reading recorded without
-that identity matches nothing, and replicates that do not all share one are
-refused rather than characterized.
+and a report applies it only to a delta that identity describes.
+
+What that takes is not what an execution floor takes, because the two scopes are
+different sorts of thing. A machine is a condition a reading was taken under, so
+a delta spanning two machines is described by neither. A training configuration
+is a **null distribution** — the spread a different seed of it would have
+produced — and the question a delta asks is whether its other operand falls
+outside that spread. That is the control-arm comparison, whose two sides differ
+in configuration by construction, so requiring both to match would refuse the
+one comparison the floor exists for. One operand carrying the characterized
+configuration is therefore what makes the floor apply; a delta describing
+neither is reported as unknown, and where both operands carry characterized
+configurations the widest of the two floors binds. A reading recorded without an
+identity carries no configuration to match, and replicates that do not all share
+one are refused rather than characterized.
 `docs/decisions/0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`
 owns that rule and what the scope deliberately leaves out.
 

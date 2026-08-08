@@ -766,21 +766,31 @@ def test_a_training_floor_does_not_travel_to_another_configuration(
     )
 
 
-def test_a_delta_spanning_two_configurations_has_no_training_floor(
+def test_a_training_floor_qualifies_a_delta_against_the_configuration_it_measured(
     move_prediction_component: Digest,
 ) -> None:
+    """The control-arm comparison, whose two sides differ by construction.
+
+    The change under test is what makes the treatment arm's identity differ, so
+    requiring both sides to match would refuse the one delta a training floor
+    exists to qualify.
+    """
+
     component = move_prediction_component()
     index = NoiseFloorIndex([_training_characterization(component)])
     fingerprint = series_fingerprint(METRIC, component)
 
-    assert (
-        index.floors(
-            METRIC,
-            fingerprint,
-            trainings=(TRAINING_SCOPE, OTHER_TRAINING_SCOPE),
-        )
-        == ()
+    control_then_treatment = index.floors(
+        METRIC, fingerprint, trainings=(TRAINING_SCOPE, OTHER_TRAINING_SCOPE)
     )
+    treatment_then_control = index.floors(
+        METRIC, fingerprint, trainings=(OTHER_TRAINING_SCOPE, TRAINING_SCOPE)
+    )
+
+    assert [floor.kind for floor in control_then_treatment] == ["training"]
+    # Which operand is the baseline is a recording order, not a claim about
+    # which configuration the floor describes.
+    assert treatment_then_control == control_then_treatment
 
 
 def test_replicates_that_do_not_share_a_configuration_characterize_nothing(
@@ -810,7 +820,6 @@ def test_a_reading_with_no_training_identity_borrows_no_training_floor(
 
     assert index.floors(METRIC, fingerprint) == ()
     assert index.floors(METRIC, fingerprint, trainings=(None, None)) == ()
-    assert index.floors(METRIC, fingerprint, trainings=(TRAINING_SCOPE, None)) == ()
 
 
 def test_a_scope_mismatch_withholds_one_kind_rather_than_the_reading(
@@ -900,6 +909,24 @@ def test_a_delta_spanning_two_machines_has_no_execution_floor() -> None:
         None,
         here.workload_component(),
     )
+
+    assert index.floors(EFFICIENCY_METRIC, fingerprint, executions=(here, here))
+    assert index.floors(EFFICIENCY_METRIC, fingerprint, executions=(here, there)) == ()
+
+
+def test_an_execution_floor_still_needs_both_sides_of_the_delta() -> None:
+    """A machine is a condition, not a null distribution, so the rules differ.
+
+    A training floor describes the spread one operand would have shown under
+    another seed, and a delta asks whether the other fell outside it. Nothing
+    equivalent is true of a machine: a delta spanning two of them is described
+    by neither machine's floor.
+    """
+
+    index = NoiseFloorIndex([_execution_characterization(device_name="laptop")])
+    here = _execution_scope(device_name="laptop")
+    there = _execution_scope(device_name="workstation")
+    fingerprint = series_fingerprint(EFFICIENCY_METRIC, None, here.workload_component())
 
     assert index.floors(EFFICIENCY_METRIC, fingerprint, executions=(here, here))
     assert index.floors(EFFICIENCY_METRIC, fingerprint, executions=(here, there)) == ()
