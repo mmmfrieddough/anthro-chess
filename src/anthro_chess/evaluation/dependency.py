@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from statistics import fmean, median
 
-from pydantic import Field, StrictBool
+from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.evaluation.policy import PositionPolicy
@@ -106,21 +106,22 @@ class DependencyTestConfig(ConfigModel):
     #: its prefix carries a usable strength signal.
     minimum_prefix_decisions: int = Field(default=5, ge=1)
 
-    def conditioning_values(self) -> tuple[int, ...]:
-        """Return the deduplicated conditioning ratings, in ascending order.
-
-        Counted after deduplication, because it is distinct ratings the table
-        needs: a grid naming one rating twice would put every slice's best
-        result on the only column there is, and would collapse the anchor
-        comparison onto a distribution and itself.
-        """
-
-        values = tuple(sorted(set(self.cross_conditioning_ratings)))
-        if len(values) < 2:
+    @model_validator(mode="after")
+    def _validate_conditioning_ratings(self) -> DependencyTestConfig:
+        # Counted after deduplication, because it is distinct ratings both
+        # readers need: a grid naming one rating twice would put every slice's
+        # best result on the only column there is, and would collapse the
+        # anchor comparison onto a distribution and itself.
+        if len(set(self.cross_conditioning_ratings)) < 2:
             raise ValueError(
                 "cross-conditioning needs at least two distinct conditioning ratings"
             )
-        return values
+        return self
+
+    def conditioning_values(self) -> tuple[int, ...]:
+        """Return the deduplicated conditioning ratings, in ascending order."""
+
+        return tuple(sorted(set(self.cross_conditioning_ratings)))
 
 
 @dataclass(frozen=True)

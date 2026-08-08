@@ -148,9 +148,8 @@ _TRUE_CONDITIONING = Conditioning(name="true", kind=ConditioningKind.TRUE)
 def _constant_conditioning(rating: int) -> Conditioning:
     """Return the treatment that shows every rated position one fixed rating.
 
-    The name carries the rating, so the anchor comparison and the
-    cross-conditioning table refer to a shared conditioning by one name rather
-    than by two spellings that happen to agree.
+    One place builds it, because the anchor comparison and the
+    cross-conditioning table now share the passes it describes.
     """
 
     return Conditioning(
@@ -314,18 +313,15 @@ class _ScoringSession:
         """
 
         signals: dict[PositionKey, TrajectorySignal] = {}
-        anchors = {
-            rating: _constant_conditioning(rating)
-            for rating in (anchor_low, anchor_high)
-        }
+        anchors = (anchor_low, anchor_high)
         scored: dict[int, list[PositionPolicy]] = {rating: [] for rating in anchors}
         for batch in self._batches():
             true_batch = self._condition(batch, _TRUE_CONDITIONING)
             active = active_batch(self._runner.action_logits(true_batch), true_batch)
             true = legal_policy_log_probabilities(active)
             policies = []
-            for rating, conditioning in anchors.items():
-                conditioned = self._condition(batch, conditioning)
+            for rating in anchors:
+                conditioned = self._condition(batch, _constant_conditioning(rating))
                 rescored = active.rescored(
                     self._runner.action_logits(conditioned),
                     conditioned,
