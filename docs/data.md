@@ -325,52 +325,22 @@ silently mixed into the main human-imitation training data.
 The normalized schema should separate game-level metadata from per-ply sequence
 data.
 
-Required game-level fields should be small and structural:
+A record is divided by what varies. Game-level values are scalars written once:
+identity and provenance, the ruleset and initial position, the result, and the
+rating and time-control metadata a decision may condition on. Per-ply values are
+list columns aligned to the action sequence rather than rows keyed by ply, so a
+game is one row and its plies travel with it — which is what lets a batch's rows
+be read with a single columnar take.
 
-- `schema_version`;
-- internal `game_id`;
-- compact `source_id`;
-- compact `source_game_key` or source-native identifier;
-- `ruleset`;
-- `initial_position`;
-- `result`;
-- `ply_count`;
-- compact action sequence or offsets into a packed action array.
+Optional values carry a status beside them rather than a sentinel, because
+absent and zero are different facts: no clock data is not a move that consumed
+zero milliseconds, and an unknown rating is not a numeric one. A rating that is
+missing, one present on an untrusted scale, and one that was converted are three
+cases a reader has to be able to separate. So most optional values are a pair,
+and the schema carries more columns than a list of concepts would suggest.
 
-Useful optional game-level fields include:
-
-- player identifiers and names;
-- player titles and bot flags;
-- source ratings, rating namespaces, rating systems, rating differences, and
-  rating deviations;
-- normalized rating when the source rating is on a trusted or converted scale;
-- rated/casual marker;
-- time initial value and increment;
-- termination reason;
-- event or tournament identifiers;
-- opening/ECO metadata;
-- source license and provenance metadata;
-- source final position for validation only.
-
-Required per-ply fields should also be small:
-
-- `game_id` or shard-local game index;
-- `ply_index`;
-- side to move, if not implied by ply index and initial position;
-- compact action id.
-
-Useful optional per-ply fields include:
-
-- clock remaining after the move;
-- derived move time;
-- clock precision;
-- timing validity flags;
-- opening, structure, style, or player-style labels;
-- evaluation metadata when a source provides it.
-
-The schema should distinguish unavailable values from meaningful zero values.
-For example, no clock data is different from a move that consumed zero
-milliseconds, and unknown rating is different from a numeric rating.
+`anthro_chess.data.schema` declares those columns and their types, and is where
+their names are written down.
 
 ## Missing Fields
 
@@ -425,13 +395,12 @@ The default rating scale should be Lichess-like because Lichess is expected to
 provide the initial bulk of rating-conditioned training data.
 
 The normalized schema should preserve original source ratings without assuming
-that every source rating is directly comparable. Useful fields include:
-
-- `source_rating_value`;
-- `source_rating_namespace`, such as `lichess_blitz` or `chesscom_rapid`;
-- `source_rating_system`, such as Glicko-2, Glicko, or unknown;
-- `normalized_rating`, when available;
-- `normalization_version`, when conversion was applied.
+that every source rating is directly comparable. Each player's source rating is
+kept beside the namespace and rating system it came from — a Lichess blitz
+Glicko-2 number and a Chess.com rapid one are not the same quantity, and a
+reader that treats them as one has silently pooled two scales. The normalized
+value is a separate column rather than an overwrite, so revisiting the
+conversion never destroys what the source actually said.
 
 For initial training, use Lichess ratings directly as the normalized rating.
 Other sources can still contribute move, style, player, opening, evaluation, or
@@ -563,31 +532,8 @@ zstd. This gives compact columnar storage, nullable fields, list columns,
 schema metadata, and easy inspection with tools such as DuckDB, PyArrow, or
 Polars.
 
-A simple normalized row can represent one game with list columns for actions
-and optional clocks:
-
-```text
-game_id
-source_id
-ruleset_id
-initial_position
-ratings and time-control metadata
-actions: list<uint16 or uint32>
-clock_remaining_ms: nullable list<int32>
-```
-
-If Parquet list columns become too slow or awkward for training, generate
-packed training shards:
-
-```text
-games.parquet
-actions.bin
-clock_remaining_ms.bin
-```
-
-The `games.parquet` file can hold offsets and lengths into contiguous binary
-arrays. This format is less self-describing, so it should be treated as a
-derived cache with explicit manifests.
+One game is one row, with list columns carrying its actions and optional
+clocks, so the format matches the unit a batch is read in.
 
 ## Derived State And Legal Masks
 
