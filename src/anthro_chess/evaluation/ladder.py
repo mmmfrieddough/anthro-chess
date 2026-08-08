@@ -1382,11 +1382,12 @@ def _resolution(
     most sharply between checkpoints so far.
 
     The draw is over a pairing's games without regard to which opening each came
-    from, which is the estimator the generated-play family already uses and
-    which errs wide here: the openings are frozen, so a fresh seed replays the
-    same set and the spread between openings is not something a re-run redraws.
-    ``docs/decisions/0034-qualifying-a-rating-ladder-reading.md`` owns why the
-    stratified alternative was not taken and what sizing it needs.
+    from, and deliberately so: the between-opening spread a stratified draw
+    would remove measures at nothing.
+    ``docs/decisions/0034-qualifying-a-rating-ladder-reading.md`` owns the rest,
+    and
+    ``docs/decisions/0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md``
+    owns that measurement.
     """
 
     settings = config.noise

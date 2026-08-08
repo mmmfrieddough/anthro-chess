@@ -1546,8 +1546,19 @@ the exact statement a replayed ladder makes. The error profile beside each seat
 is a mean over decisions rather than an output of the fit, so the refit does not
 reach it and its noise reports as unknown — a floor somebody could still
 produce, rather than one that cannot exist.
-`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns all of this,
-including the one component the estimate carries that a re-run would not redraw.
+`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns all of this.
+
+The draw is over a pairing's games without regard to which of the frozen
+openings each came from. Two checkpoints are read on the same openings, so a
+spread between them would be common-mode and the shared-component rule above
+would bar it from the floor. Measured, there is none to bar, and stratifying the
+draw by opening and colour would leave every floor narrower than the true
+run-to-run spread rather than wider, because a stratum holds few enough games
+that drawing inside one understates its own spread by more than the openings
+contribute.
+`docs/decisions/0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md`
+holds that measurement, what it says for the curve family, and what would
+reopen it.
 
 **Read the unfinished count as a reading, not as overhead.** About half a
 full-size ladder's games reach the limit, and they are its most expensive games,
