@@ -749,6 +749,71 @@ def test_an_unpaired_floor_standing_in_for_a_paired_one_is_reported_as_one(
     assert "paired floor unavailable" in rendered
 
 
+def test_a_metric_only_one_side_retained_names_the_side_that_did_not(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Which side is missing decides what is done about it.
+
+    Two readings can match on every field that makes them one comparison and
+    still disagree about what they retained, because the retained set is a
+    property of the build that wrote each payload. Reporting that as though
+    neither had the metric sends a maintainer to re-record the wrong one.
+    """
+
+    component = move_prediction_component()
+    metric = "dependency.rating_constant_degradation"
+    shared = "dependency.rating_absent_degradation"
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[
+            measurement(metric, 0.5, data=component),
+            measurement(shared, 0.5, data=component),
+        ],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(metric, 0.5, data=component),
+            measurement(shared, 0.5, data=component),
+        ],
+        recorded_at=CURRENT_AT,
+    )
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(metrics: list[str]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="pool-game",
+                unit_ids=("a", "b", "c", "d"),
+                metrics={name: [0.5, 0.5, 0.5, 0.5] for name in metrics},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    baseline = baseline.model_copy(
+        update={"detail": detail.write("baseline.json", retained([metric, shared]))}
+    )
+    current = current.model_copy(
+        update={"detail": detail.write("current.json", retained([shared]))}
+    )
+
+    report = build_delta_report(
+        [baseline, current],
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+
+    assert _row(report, shared).paired_floor_unavailable is None
+    assert _row(report, metric).paired_floor_unavailable == (
+        f"the current reading retained no contribution for {metric}"
+    )
+
+
 def test_a_report_with_no_detail_root_says_the_paired_floor_needs_one(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,

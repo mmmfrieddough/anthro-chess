@@ -192,10 +192,35 @@ class PairedFloorIndex:
         retained = floors.get(metric)
         if retained is not None:
             return PairedFloor(floor=retained)
-        return PairedFloor(
-            unavailable=unavailable
-            or f"no reading retained a per-unit contribution for {metric}"
-        )
+        if unavailable:
+            return PairedFloor(unavailable=unavailable)
+        return PairedFloor(unavailable=self._metric_absence(baseline, current, metric))
+
+    def _metric_absence(
+        self,
+        baseline: ResultEnvelope,
+        current: ResultEnvelope,
+        metric: str,
+    ) -> str:
+        """Name the side that retained nothing, for a pair that otherwise matched.
+
+        Which side it is decides what a maintainer does about it, and the two
+        sides disagreeing about what they retain is what a change in the
+        retained set looks like from a store holding readings from either side
+        of it.
+        """
+
+        left, _ = self._load(baseline)
+        right, _ = self._load(current)
+        assert left is not None and right is not None  # both loaded to get here
+        missing = [
+            side
+            for side, contributions in (("baseline", left), ("current", right))
+            if metric not in contributions.metrics
+        ]
+        if len(missing) == 1:
+            return f"the {missing[0]} reading retained no contribution for {metric}"
+        return f"neither reading retained a contribution for {metric}"
 
     def _comparison_floors(
         self,

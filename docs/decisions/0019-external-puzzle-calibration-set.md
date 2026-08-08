@@ -4,7 +4,8 @@ Date: 2026-07-29
 
 ## Status
 
-Accepted.
+Accepted. Its paired-floor consequence is superseded by
+`0035-a-degraded-floor-is-annotated-rather-than-withheld.md`.
 
 ## Context
 
@@ -73,9 +74,10 @@ game, so game-clustered and puzzle-level support are identical; validation
 rejects a selected set that violates that property.
 
 A paired sampling floor belongs to two results rather than either result alone.
-Reports compute it from matching detail payloads. If those machine-local
-payloads are unavailable, the paired floor is unknown; an independent-input
-floor must not be substituted.
+Reports compute it from matching detail payloads. Where those machine-local
+payloads are unavailable, decision 0035 says what a report does instead: it
+keeps the floor it has, names the estimator that produced it, and states on the
+row that the paired floor was expected and why it is missing.
 
 ## References
 
