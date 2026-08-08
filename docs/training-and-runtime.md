@@ -160,8 +160,18 @@ a precision or tensor-core setting to act on, and at a small batch this model's
 step is exactly that regardless of how wide the model is. Every one of these
 settings was first measured on such a step and read as worthless; re-measured
 at a batch that fills the device, two of them are decisive.
-`docs/planning/cuda-training-proof.md` records both readings side by side,
-which is what stops the next attempt from re-deriving either.
+
+The size of that reversal is the thing to carry forward, because it is what
+stops the next attempt from trusting the wrong reading. Against a host-bound
+step, bfloat16 autocast read 7% slower and reduced-precision matmul read as
+noise, and the matmul setting was removed on that basis. Re-measured on a
+device-bound one at batch 256, bfloat16 is worth **+70.4%** and the matmul
+setting **+21.1%**; bfloat16 also returns 37% of reserved memory at that
+workload. The fused optimizer inverts the other way — worth 33.4% at a small
+batch where its saved launches are a visible share of the step, and 1.0% at
+batch 256, inside that arm's own spread. So a reading taken at the wrong batch
+does not merely understate a setting, it can reverse the ordering between two of
+them.
 
 Two precision settings therefore stay available and stay off by default.
 **Mixed precision** autocasts the forward pass while parameters and optimizer
@@ -185,9 +195,35 @@ they declare is the arithmetic every gradient is computed in. So both are
 settings a continuation has to match: a run that changed either partway would
 have no way to say which half produced its weights.
 
-`docs/planning/memory-envelope.md` measures what that trade is worth on a 24 GiB
-card, and records the envelope of width, batch, and sequence length it bounds. It
-also corrects an assumption this section could otherwise invite: at the width
+What that trade is worth was measured on a 24 GiB card, by running until the
+card refused rather than extrapolating. At batch 256 and two layers, float32
+fits width 3,072 and fails at 4,096; bfloat16-mixed fits 4,096 and fails at
+5,120. Both sit above 95% of the card, so neither is a recommendation — a real
+configuration also carries checkpointing, validation, and an evaluation cadence.
+Depth trades against width at about 0.84 GiB per layer at width 256, so a
+deeper, narrower model is available inside the same envelope. Which point in it
+to pick is capacity work's question, not this document's.
+
+Two things make a naive reading of that envelope wrong, and both are easier to
+walk into than to notice.
+
+**The sequence axis is not the longest game.** The corpus is chunked by game and
+the loader buckets by length, so the longest sequence in an epoch arrives in a
+batch of one — its bucket never fills. The batch that actually costs the most is
+a full one at a moderate length. Batch size times the longest game is therefore
+wrong in the safe direction, and the gap widens with batch: at batch 1,024 the
+naive bound overstates the real peak by 2.4x.
+
+**A shared card understates the requirement.** Peak reserved memory is otherwise
+exactly reproducible — repeated runs of one workload return the same figure to
+the byte, so the boundary is a line rather than a band. But a card held by
+another process at the same time reports a *lower* peak, because co-tenancy
+makes the allocator cache less. At the boundary that turns a fit into a spurious
+out-of-memory failure: one arm first reported OOM for float32 at width 512 and
+batch 1,024, and measured alone it fits at 21.11 GiB. Read an envelope only on
+an idle card.
+
+One assumption this section could otherwise invite is also wrong: at the width
 this project trains today, the activation memory deciding a fit is not the
 transformer's but the action head's, because the head projects to the action
 vocabulary and its cost follows padded positions rather than model width.
@@ -295,7 +331,7 @@ debug values belong in code, tests, or checked-in configuration rather than in
 this document.
 
 The first completed progression, its reproducible commands, and measured
-evidence are recorded in `docs/planning/minimal-training-proof.md`.
+evidence are recorded in `#61`.
 
 The complete progression is a gate for the first training implementation and
 for later changes to foundational data, encoding, alignment, model, or loss
@@ -510,7 +546,7 @@ That probe measures a shipped decision rather than a dial, which is a fair
 reason to ask whether it earns its size, and the answer is that it does: what
 it reads swings by more than an order of magnitude between the batch this
 project trains today and one that fills the device, so it is not a number a run
-can be assumed to know without measuring. `docs/planning/cuda-training-proof.md`
+can be assumed to know without measuring. The device-side settings section above
 holds both readings and what the probe itself costs to take.
 
 The same rule governs the offline scoring pass and the per-move inference path,

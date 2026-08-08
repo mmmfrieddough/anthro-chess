@@ -15,7 +15,7 @@ suite reading carried 54 floors covering `held_out`, `legality`, and
 scored inside `anthro eval run`, the one command whose records are committed, so
 the gap sat beside floors rather than in a corner of the suite nobody reads.
 
-`docs/planning/first-full-suite-reading.md` reports the dependency movement —
+`#146` reports the dependency movement —
 `absent` degradation rising from +0.315239 to +0.824292 between two checkpoints
 — as having moved the way a model learning to use its conditioning should. That
 reading may well be right. Nothing in the output established that it was above
@@ -128,7 +128,7 @@ this one. The puzzle family's floor question (#173) is likewise separate.
 ## References
 
 - #179 — the gap this closes
-- #146 — where it was found; `docs/planning/first-full-suite-reading.md`
+- #146 — where it was found, and where the reading is recorded
 - #173, #175, #190 — the same class of reading-surface gap elsewhere
 - `docs/decisions/0013-benchmark-result-comparability.md`
 - `docs/decisions/0026-conservative-dispersion-bounds.md`

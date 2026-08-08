@@ -174,6 +174,6 @@ resolution beside them — is untouched and remains the more consequential.
 - `docs/decisions/0022-one-joint-rating-ladder-fit.md`
 - `docs/decisions/0027-settled-rating-ladder-grid.md`
 - `docs/decisions/0013-benchmark-result-comparability.md`
-- `docs/planning/first-full-suite-reading.md`
+- `#146` — the reading this rests on
 - `configs/evaluation/rating-ladder.toml`
 - `configs/data/lichess-blitz-2017-04.toml`

@@ -222,7 +222,7 @@ visible.
 
 ## References
 
-- #190 — the gap this closes; #146, `docs/planning/first-full-suite-reading.md`
+- #190 — the gap this closes; #146
 - #177 — the flat-transfer finding this exists to qualify
 - `docs/decisions/0022-one-joint-rating-ladder-fit.md`
 - `docs/decisions/0026-conservative-dispersion-bounds.md`

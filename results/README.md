@@ -60,7 +60,7 @@ exercised with real data.
 
 They are **pre-core**: nothing is protected before the evaluation core is
 designated, so they are deleted at #90 rather than bridged or carried forward.
-`docs/planning/first-full-suite-reading.md` records what they were for.
+`#146` records what they were for.
 
 `docs/evaluation.md` and `docs/decisions/0014-evaluation-result-storage.md`
 explain the layering; `docs/decisions/0013-benchmark-result-comparability.md`

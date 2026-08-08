@@ -67,8 +67,8 @@ drop_last = false
 # Eight is what this batch needs and no more. Raise it with the batch rather
 # than on its own: what a pool absorbs is decode, and decode grows with the
 # batch while the device work barely does, so a pool sized against a small
-# batch is spare capacity. `docs/planning/corpus-scale-loading.md` has the
-# sweep across batch 16, 64, and 256.
+# batch is spare capacity. `docs/data.md` records why the worker and prefetch
+# dials are not independent.
 [train.streaming]
 planning_window_examples = 16384
 workers = 8

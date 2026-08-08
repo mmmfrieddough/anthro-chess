@@ -24,8 +24,8 @@ from anthro_chess.training.efficiency import TrainingEfficiencyConfig
 #: the batch this project trains today it costs throughput and returns
 #: activation memory; at a batch that fills the device it is the largest single
 #: win measured on this backend. It stays off by default because the default
-#: batch is the first of those.  ``docs/planning/cuda-training-proof.md`` holds
-#: the readings on both.
+#: batch is the first of those.  ``docs/training-and-runtime.md`` holds the
+#: readings on both.
 TrainingPrecision = Literal["float32", "bfloat16-mixed"]
 
 #: Whether float32 matrix multiplication may use the tensor cores' reduced
@@ -35,7 +35,7 @@ TrainingPrecision = Literal["float32", "bfloat16-mixed"]
 #: Same shape of tradeoff as the precision dial and the same reason to measure
 #: rather than assume: it returns nothing on a launch-bound step, because
 #: tensor cores accelerate arithmetic and a launch-bound step is not doing any.
-#: Off by default; ``docs/planning/cuda-training-proof.md`` holds the readings,
+#: Off by default; ``docs/training-and-runtime.md`` holds the readings,
 #: and ``_EXECUTION_COMPATIBILITY_KEYS`` in the runner holds why a continuation
 #: has to match it.
 MatmulPrecision = Literal["highest", "high"]

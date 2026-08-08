@@ -185,13 +185,10 @@ precision, determinism, accumulation, phase timings, throughput, and sampled
 device memory. The synchronized phase profiling used by the smoke selections
 adds diagnostic overhead and should be disabled for ordinary throughput runs.
 
-What the CUDA path is worth on the current workload, and which optimizations
-were measured and then rejected, is recorded in
-[`docs/planning/cuda-training-proof.md`](docs/planning/cuda-training-proof.md).
-What fits on one 24 GiB card — across model width, batch size, sequence length,
-and precision, with the out-of-memory boundary located rather than estimated —
-is recorded in
-[`docs/planning/memory-envelope.md`](docs/planning/memory-envelope.md).
+What the CUDA path is worth on the current workload, which optimizations were
+measured and then rejected, and what fits on one 24 GiB card across model width,
+batch size, sequence length and precision are recorded in
+[`docs/training-and-runtime.md`](docs/training-and-runtime.md).
 
 ## Baseline Training Corpus
 
@@ -229,10 +226,10 @@ many-game Apple-silicon MPS run. The baseline command reports both raw move loss
 and legally masked held-out move loss; the latter is compared directly with
 uniform selection over exact legal actions.
 
-See
-[the minimal training proof](docs/planning/minimal-training-proof.md)
-for the reproducible corpus slice, baseline configuration, resume command,
-acceptance comparison, and measured evidence. The resulting checkpoint is a
+The acceptance comparison is in
+[`docs/training-and-runtime.md`](docs/training-and-runtime.md); the corpus
+slice, baseline configuration and resume command are the selections under
+[`configs/training/`](configs/training). The resulting checkpoint is a
 development artifact, not a published model release.
 
 When `ANTHRO_CHESS_RUN_ROOT` is set, checked-in training commands write their
