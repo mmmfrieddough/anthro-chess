@@ -39,8 +39,10 @@ following are true in live GitHub metadata:
 - it has no open blockers; and
 - it is not already claimed by another active implementation session.
 
-The active milestone is the current roadmap stage represented by the live
-milestone and tracker state.
+The active milestone is the lowest-numbered open milestone. Milestones carry a
+numeric prefix so that ordering is readable from the list itself rather than
+inferred from tracker state. `Parked` deliberately carries none, so it can never
+read as the stage after the current one.
 
 Selection is also constrained by the hardware an issue requires. An issue
 labeled `execution: gpu-required` is not available where the GPU environment its
@@ -63,11 +65,23 @@ the finding unfindable until they get to it.
 
 Two things keep that honest. The milestone is where the work belongs rather
 than the one that would make it selectable, so a finding outside the current
-stage goes in a later milestone or none; and a blocker is a real order
-constraint rather than a preference, by the rule below. What stays with the
-maintainer is what it is everywhere else here — reviewing and merging — and an
-issue still has to carry every field to be picked up, so one filed bare is
+stage goes in a later numbered milestone or in `Parked`; and a blocker is a real
+order constraint rather than a preference, by the rule below. What stays with
+the maintainer is what it is everywhere else here — reviewing and merging — and
+an issue still has to carry every field to be picked up, so one filed bare is
 intake either way.
+
+`Parked` holds real findings that improve something already working. A reading
+that is wrong, a run that loses data, or a defect a player would observe belongs
+in the active milestone whatever it costs to fix. Everything else names the
+decision it changes and who is waiting on that decision; where there is none, it
+is parked. Until this project has completed a real training run, an efficiency
+or precision improvement to evaluation machinery that already produces a correct
+reading is parked unless it unblocks the active milestone's exit — say which.
+
+An issue leaves `Parked` by being moved into a numbered milestone deliberately.
+Nothing sweeps it and no review is scheduled, so the finding keeps its evidence
+and stays searchable until someone decides it is next.
 
 Contributor blank issues are disabled so public intake uses the focused forms.
 Repository maintainers can still open a blank issue when GitHub permissions
@@ -244,6 +258,12 @@ does not point at a stale check name.
 Keep issue metadata current when GitHub tooling is available, including labels,
 milestone, dependencies, sub-issue state, and newly discovered execution or
 verification requirements.
+
+An unreproduced flake gets an issue, not an argument. A test that failed once
+and passes in isolation is an unknown until something explains it, and reasoning
+that this change could not have caused it disposes of the question without
+answering it. File the failure with the invocation that produced it, then carry
+on.
 
 ## Taking A Shakedown Reading
 
