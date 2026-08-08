@@ -309,6 +309,75 @@ def write_corpus() -> Callable[..., tuple[Path, Path]]:
     return _write_corpus
 
 
+@pytest.fixture
+def write_puzzle_artifact() -> Callable[..., Path]:
+    """Return a factory writing a loadable puzzle artifact and its manifest."""
+
+    return _write_puzzle_artifact
+
+
+#: Two verified puzzle lines — an opponent setup move, then one and two
+#: solution moves — repeated to fill a generated set. Repeating them keeps
+#: first-move accuracy and line completion distinguishable without checking in
+#: more chess than a fixture needs.
+_PUZZLE_LINES = (
+    (
+        "N1bk2nr/1p1p1ppp/p2Qp3/8/4P3/6P1/1Pn1KP1P/2qN1B1R b - - 1 14",
+        "c2a1 d6f8",
+    ),
+    (
+        "r1bqr1k1/1p2bppp/p4n2/3p2B1/8/2PB1N1P/PP2Q1P1/RN2R1K1 w - - 4 15",
+        "b1d2 e7c5 g1h1 e8e2",
+    ),
+)
+
+
+def _write_puzzle_artifact(
+    directory: Path,
+    *,
+    ratings: Sequence[int],
+    puzzles_per_rating: int,
+) -> Path:
+    """Write a puzzle set uniform over every exact rating, as a build does.
+
+    The canonical artifact holds the same count at every exact rating in its
+    range, and that is the design a subsample has to preserve, so a fixture
+    filling ratings unevenly could not tell a correct dial from a biased one.
+    """
+
+    rows = sorted(
+        f"p{rating:05d}{index:02d},{_PUZZLE_LINES[index % 2][0]},"
+        f"{_PUZZLE_LINES[index % 2][1]},{rating},g{rating:05d}{index:02d}"
+        for rating in ratings
+        for index in range(puzzles_per_rating)
+    )
+    content = "puzzle_id,initial_fen,moves,rating,source_game_key\n"
+    content += "\n".join(rows) + "\n"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "puzzles.csv").write_text(content, encoding="utf-8")
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "fixture-puzzles",
+                "version": 1,
+                "entries": len(rows),
+                "puzzles_sha256": sha256(content.encode()).hexdigest(),
+                "source": {"url": "https://example.test/puzzles"},
+                "license": {"spdx_id": "CC0-1.0"},
+                "selection": {
+                    "minimum_rating": 800,
+                    "maximum_rating_exclusive": 2800,
+                    "local_precision_span": 400,
+                },
+                "sizing": {},
+                "coverage": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return directory
+
+
 def _sequence_batch(
     *games: tuple[tuple[str, ...], int | None, int | None],
 ) -> SequenceBatch:
