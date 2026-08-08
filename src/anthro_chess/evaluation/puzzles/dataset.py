@@ -92,6 +92,9 @@ class PuzzleSetBuildConfig(ConfigModel):
     name: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     version: StrictInt = Field(ge=1)
     source_retrieved: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    # The rolling upstream URL leaves a revision no name of its own, so this is
+    # the only readable handle on the one ``archive.sha256`` pins.
+    source_last_modified: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
     expected_entries: StrictInt = Field(ge=1)
     expected_puzzles_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     archive: ArchiveConfig
@@ -288,6 +291,7 @@ def prepare_puzzle_set(
                 "url": config.archive.url,
                 "file_name": config.archive.file_name,
                 "retrieved": config.source_retrieved,
+                "last_modified": config.source_last_modified,
                 "sha256": config.archive.sha256,
                 "format": "lichess-puzzle-csv-v1",
             },

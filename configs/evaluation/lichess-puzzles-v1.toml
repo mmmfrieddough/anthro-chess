@@ -1,15 +1,17 @@
 artifact_name = "lichess-puzzles-v1"
 name = "anthro-lichess-puzzles"
 version = 1
-source_retrieved = "2026-07-29"
+source_retrieved = "2026-08-08"
+source_last_modified = "2026-08-02T07:23:55Z"
 expected_entries = 20000
 # Filled from the deterministic build and verified on every rebuild.
-expected_puzzles_sha256 = "27cd8d2efc13f9988abcae7ba674eaa1b32dcb19e2aa5a316b64b7738c20f8d1"
+expected_puzzles_sha256 = "a5386d7764b771637f2687d53988d3fcd2b302ef386628d4e6af6879fbcf8e92"
 
 [archive]
 url = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
-file_name = "lichess_db_puzzle_2026-07.csv.zst"
-sha256 = "5503bfaf5534518ffe3c4c3bb0ac1ae82350d117ad1a52947796096b75e6247e"
+# Upstream publishes no dated puzzle export, so this names the local copy only.
+file_name = "lichess_db_puzzle.csv.zst"
+sha256 = "a0ea9129c6b6434dfb34a9ac4ec660c9cfff22b2de465e01854f018fc847f073"
 compression = "zstd"
 
 [selection]
