@@ -2132,3 +2132,61 @@ def test_a_rescaled_stratified_draw_removes_the_plug_in_understatement() -> None
     # variance 1/12 exactly; the plug-in draw reports half of it.
     assert float(np.var(means[True])) == pytest.approx(1.0 / 12.0, rel=0.05)
     assert float(np.var(means[False])) == pytest.approx(1.0 / 24.0, rel=0.05)
+
+
+def test_a_stratum_holding_one_unit_withholds_the_paired_floor(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A redraw within a stratum of one can only ever return that one unit.
+
+    Its contribution to the spread is absent rather than small, so the floor
+    built from it would be narrow by however much that stratum mattered.
+    """
+
+    component = move_prediction_component()
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(values: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="fixture-game",
+                unit_ids=("a", "b", "c"),
+                stratum="rating",
+                strata=("low", "low", "high"),
+                metrics={"dependency.rating_anchor_top1_agreement": values},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    envelopes = [
+        recorded_result(
+            label=label,
+            measurements=[
+                measurement(
+                    "dependency.rating_anchor_top1_agreement", value, data=component
+                )
+            ],
+            recorded_at=stamp,
+        ).model_copy(
+            update={"detail": detail.write(f"singleton-{label}.json", retained(values))}
+        )
+        for label, value, stamp, values in (
+            ("checkpoint-a", 0.0, BASELINE_AT, [0.0, 0.0, 0.0]),
+            ("checkpoint-b", 1.0, CURRENT_AT, [1.0, 1.0, 1.0]),
+        )
+    ]
+
+    report = build_delta_report(
+        envelopes,
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, "dependency.rating_anchor_top1_agreement")
+
+    assert row.noise_floor is None
+    assert row.paired_floor_unavailable is not None
+    assert "a stratum holds one unit" in row.paired_floor_unavailable

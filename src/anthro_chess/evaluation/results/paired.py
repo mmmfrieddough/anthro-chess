@@ -11,6 +11,7 @@ committed summary tier.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -257,6 +258,12 @@ class PairedFloorIndex:
             return _unpairable(
                 "the retained contributions assign units to different strata"
             )
+        if left_strata is not None and min(Counter(left_strata).values()) < 2:
+            # The draw redraws within a stratum, so one holding a single unit
+            # can only ever return that unit. Its contribution to the spread is
+            # not small, it is absent, and a floor built from it would clear
+            # every delta.
+            return _unpairable("a stratum holds one unit, so a redraw cannot move it")
         left_weights = left.weights
         right_weights = (
             None
@@ -433,7 +440,12 @@ def _bootstrap_paired_means(
     replicates = np.empty((resamples, deltas.shape[1]), dtype=np.float64)
     buckets = stratum_buckets(strata) if strata is not None else None
     for index in range(resamples):
-        multiplicity = draw_multiplicity(generator, units=units, buckets=buckets)
+        multiplicity = draw_multiplicity(
+            generator,
+            units=units,
+            buckets=buckets,
+            rescale=True,
+        )
         if weights is None:
             replicates[index] = multiplicity @ deltas / units
             continue
@@ -471,7 +483,7 @@ def draw_multiplicity(
     A stratified draw redraws within each stratum at its own size, which is what
     holds the design of a stratified selection fixed across replicates.
 
-    ``rescale`` takes ``size - 1`` of each stratum's units and scales the counts
+    ``rescale`` takes one fewer than each stratum holds and scales the counts
     back up, which removes the ``(n-1)/n`` understatement a plug-in draw carries
     and is exact for a mean.
     `docs/decisions/0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md`
@@ -481,12 +493,13 @@ def draw_multiplicity(
     """
 
     if buckets is None:
-        drawn = generator.integers(0, units, size=units)
-        return np.bincount(drawn, minlength=units).astype(np.float64)
+        taken = units - 1 if rescale else units
+        drawn = generator.integers(0, units, size=taken)
+        return np.bincount(drawn, minlength=units) * (units / taken)
     multiplicity = np.zeros(units, dtype=np.float64)
     for size, grouped_indices in buckets:
         if rescale and size < 2:
-            raise ValueError("a rescaled stratified draw needs at least two units")
+            raise ValueError("a rescaled draw needs at least two units per stratum")
         taken = size - 1 if rescale else size
         offsets = generator.integers(0, size, (grouped_indices.shape[0], taken))
         drawn = np.take_along_axis(grouped_indices, offsets, axis=1).ravel()
