@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 import torch
+from torch import Tensor
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.evaluation import (
@@ -38,7 +39,9 @@ from anthro_chess.evaluation.slices import (
     PositionCharacteristic,
     PositionPredicate,
 )
+from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.interfaces.cli import main
+from anthro_chess.models import MoveModelBatch
 
 #: A middlegame position where the side to move has a promotion available and
 #: the shared opening line never reaches, so the rule-case slices are exercised
@@ -426,6 +429,53 @@ def test_dependency_detail_retains_what_a_paired_floor_needs(
     assert "dependency.rating_within_game_response" not in retained.metrics
 
 
+def test_the_dependency_tests_score_each_conditioning_once(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nine passes over the view, not eleven.
+
+    The anchor comparison scores two fixed conditionings the
+    cross-conditioning table also wants, and re-scoring them cost two of the
+    eleven passes this reading used to make. Counted rather than asserted
+    structurally, because the passes are what the reading costs: the same
+    evaluation with the dependency block off is exactly one pass, which is
+    what turns a call count into a pass count on any fixture.
+
+    That the retained scores equal a standalone pass' is
+    ``ActiveBatch.rescored``'s guarantee, which ``test_policy`` pins.
+
+    ``configs/evaluation/checkpoint-suite.toml`` states this same count to
+    argue what a reduced sweep shrinks, and nothing else here would catch it
+    going stale, so a change that moves this number belongs there too.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    calls = 0
+    scored = CheckpointModelRunner.action_logits
+
+    def counted(self: CheckpointModelRunner, batch: MoveModelBatch) -> Tensor:
+        nonlocal calls
+        calls += 1
+        return scored(self, batch)
+
+    monkeypatch.setattr(CheckpointModelRunner, "action_logits", counted)
+
+    _evaluate(_config(pool, checkpoint, dependency={"enabled": False}))
+    batches = calls
+    calls = 0
+    _evaluate(_config(pool, checkpoint))
+
+    assert batches > 0
+    assert calls == 9 * batches
+
+
 def test_absent_conditioning_changes_what_the_model_is_shown(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
@@ -680,6 +730,7 @@ def _config(
     *,
     view: dict[str, Any] | None = None,
     noise: dict[str, Any] | None = None,
+    dependency: dict[str, Any] | None = None,
 ) -> ResolvedConfig[CheckpointEvaluationConfig]:
     return ResolvedConfig(
         value=CheckpointEvaluationConfig.model_validate(
@@ -691,6 +742,7 @@ def _config(
                 "dependency": {
                     "minimum_slice_positions": 1,
                     "minimum_prefix_decisions": 1,
+                    **(dependency or {}),
                 },
                 "noise": noise or {"resamples": 100},
             }

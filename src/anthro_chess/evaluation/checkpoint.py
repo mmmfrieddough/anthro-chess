@@ -145,6 +145,20 @@ logger = logging.getLogger(__name__)
 _TRUE_CONDITIONING = Conditioning(name="true", kind=ConditioningKind.TRUE)
 
 
+def _constant_conditioning(rating: int) -> Conditioning:
+    """Return the treatment that shows every rated position one fixed rating.
+
+    One place builds it, because the anchor comparison and the
+    cross-conditioning table now share the passes it describes.
+    """
+
+    return Conditioning(
+        name=f"constant-{rating}",
+        kind=ConditioningKind.CONSTANT,
+        rating=rating,
+    )
+
+
 class CheckpointEvaluationError(ValueError):
     """Raised when a checkpoint cannot be evaluated over a frozen pool."""
 
@@ -275,7 +289,10 @@ class _ScoringSession:
         *,
         anchor_low: int,
         anchor_high: int,
-    ) -> dict[PositionKey, TrajectorySignal]:
+    ) -> tuple[
+        dict[PositionKey, TrajectorySignal],
+        dict[int, tuple[PositionPolicy, ...]],
+    ]:
         """Compare each position's policy at two anchor conditioning ratings.
 
         All three policies a signal needs are computed for one batch at a
@@ -286,33 +303,31 @@ class _ScoringSession:
         The two anchors are the true-conditioning pass' own rows under other
         ratings, so the alignment that pass built is carried to them rather
         than rebuilt twice.
+
+        The anchors' ordinary scores come back beside the signals, because
+        both anchors are fixed-conditioning passes the cross-conditioning
+        table wants anyway. That retention is a handful of scalars per
+        position rather than a distribution, so it does not pay the cost the
+        paragraph above declines — and without it these two conditionings run
+        a second time.
         """
 
         signals: dict[PositionKey, TrajectorySignal] = {}
-        anchors = (
-            Conditioning(
-                name=f"constant-{anchor_low}",
-                kind=ConditioningKind.CONSTANT,
-                rating=anchor_low,
-            ),
-            Conditioning(
-                name=f"constant-{anchor_high}",
-                kind=ConditioningKind.CONSTANT,
-                rating=anchor_high,
-            ),
-        )
+        anchors = (anchor_low, anchor_high)
+        scored: dict[int, list[PositionPolicy]] = {rating: [] for rating in anchors}
         for batch in self._batches():
             true_batch = self._condition(batch, _TRUE_CONDITIONING)
             active = active_batch(self._runner.action_logits(true_batch), true_batch)
             true = legal_policy_log_probabilities(active)
             policies = []
-            for conditioning in anchors:
-                conditioned = self._condition(batch, conditioning)
+            for rating in anchors:
+                conditioned = self._condition(batch, _constant_conditioning(rating))
                 rescored = active.rescored(
                     self._runner.action_logits(conditioned),
                     conditioned,
                 )
                 policies.append(legal_policy_log_probabilities(rescored))
+                scored[rating].extend(score_positions(rescored))
             low, high = policies
             for offset, key in enumerate(
                 zip(active.game_ids, active.ply_indices, strict=True)
@@ -324,7 +339,9 @@ class _ScoringSession:
                     low=low[offset],
                     high=high[offset],
                 )
-        return signals
+        return signals, {
+            rating: tuple(positions) for rating, positions in scored.items()
+        }
 
     def _batches(self) -> Iterator[MoveModelBatch]:
         loader = SequenceDataLoader(self._inputs.dataset, self._inputs.loader_config)
@@ -613,19 +630,18 @@ def _run_dependency_tests(
         logger.info("Scoring under %s rating conditioning", conditioning.name)
         corrupted[conditioning.name] = (conditioning, session.score(conditioning))
 
-    conditioned: dict[int, Sequence[PositionPolicy]] = {}
-    for value in values:
-        logger.info("Scoring under a fixed conditioning rating of %s", value)
-        conditioned[value] = session.score(
-            Conditioning(
-                name=f"constant-{value}",
-                kind=ConditioningKind.CONSTANT,
-                rating=value,
-            )
-        )
-
     logger.info("Comparing anchor policies at ratings %s and %s", values[0], values[-1])
-    trajectory = session.trajectory(anchor_low=values[0], anchor_high=values[-1])
+    trajectory, conditioned = session.trajectory(
+        anchor_low=values[0], anchor_high=values[-1]
+    )
+
+    # The anchor comparison above already scored the outermost two
+    # conditionings, so only the values it did not cover need a pass here.
+    for value in values:
+        if value in conditioned:
+            continue
+        logger.info("Scoring under a fixed conditioning rating of %s", value)
+        conditioned[value] = session.score(_constant_conditioning(value))
     try:
         return build_dependency_result(
             config=settings,
