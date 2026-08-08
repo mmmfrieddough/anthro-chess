@@ -4,7 +4,7 @@ Date: 2026-07-25
 
 ## Status
 
-Accepted.
+Accepted. Refined by `0023-series-separated-tensorboard-history.md`.
 
 ## Context
 

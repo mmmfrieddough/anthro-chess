@@ -88,6 +88,14 @@ jobs:
                 fail=1
               fi
             done
+            for n in $(awk '/^## /{inst = ($0=="## Status")} !inst' "$f" \
+                       | grep -oiE '(refine|supersede|extend)[sd]? (decision )?`?0[0-9]{3}' \
+                       | grep -oE '0[0-9]{3}' | sort -u); do
+              if ! sed -n '/^## Status$/,/^## /p' "$f" | grep -q "$n-"; then
+                echo "::error file=$f::body declares a relationship to $n; declare it in Status, which is where the two-way check reads"
+                fail=1
+              fi
+            done
           done
           exit $fail
 
