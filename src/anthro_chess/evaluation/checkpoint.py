@@ -61,6 +61,13 @@ from anthro_chess.evaluation.dependency import (
 )
 from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_leakage
 from anthro_chess.evaluation.noise import NoiseConfig, characterize_sampling_noise
+from anthro_chess.evaluation.opening_frequency import (
+    OpeningFrequency,
+    OpeningFrequencyError,
+    OpeningTailReading,
+    count_opening_families,
+    read_opening_tail,
+)
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
@@ -179,6 +186,16 @@ class DetailConfig(ConfigModel):
     per_position: StrictBool = False
 
 
+class OpeningConfig(ConfigModel):
+    """Whether the reading places each opening family on a frequency axis."""
+
+    #: Counting costs a replay of every training game's opening, so it scales
+    #: with the training corpus rather than with the pool being scored. The
+    #: whole opening reading hangs off it, because a per-family table without
+    #: the frequency axis cannot answer the question it exists for.
+    training_frequency: StrictBool = False
+
+
 class CheckpointEvaluationConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval run``."""
 
@@ -189,6 +206,7 @@ class CheckpointEvaluationConfig(CheckpointSelection):
     leakage: LeakageConfig = LeakageConfig()
     detail: DetailConfig = DetailConfig()
     noise: NoiseConfig = NoiseConfig()
+    openings: OpeningConfig = OpeningConfig()
 
 
 @dataclass(frozen=True)
@@ -203,6 +221,8 @@ class CheckpointEvaluationResult:
     adjudication: AdjudicationReport | None
     dependency: DependencyTestResult | None
     noise: NoiseCharacterization | None
+    opening_frequency: OpeningFrequency | None = None
+    opening_tail: OpeningTailReading | None = None
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
@@ -226,6 +246,14 @@ class CheckpointEvaluationResult:
                 self.dependency.as_record() if self.dependency is not None else None
             ),
             "noise": self.noise.as_record() if self.noise is not None else None,
+            "opening_frequency": (
+                None
+                if self.opening_frequency is None
+                else self.opening_frequency.as_record()
+            ),
+            "opening_tail": (
+                None if self.opening_tail is None else self.opening_tail.as_record()
+            ),
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -443,6 +471,11 @@ def evaluate_checkpoint(
         training_normalized=config.leakage.training_normalized,
     )
 
+    # Before the scoring pass rather than after it, for the reason the leakage
+    # check runs where it does: this reads the same corpus and can fail on it,
+    # and a failure that arrives after the passes have run discards them.
+    frequency = _count_training_frequency(config, leakage)
+
     session = _ScoringSession(
         runner,
         inputs.scoring,
@@ -454,7 +487,8 @@ def evaluate_checkpoint(
         inputs.selection.name,
     )
     positions, action_set_scores = session.score_primary()
-    slices = aggregate_positions(positions, inputs.scoring)
+    slices = aggregate_positions(positions, inputs.scoring, opening_frequency=frequency)
+    opening_tail = None if frequency is None else read_opening_tail(slices, frequency)
     adjudication = build_adjudication_report(action_set_scores, inputs.scoring)
     dependency = (
         _run_dependency_tests(config, session, inputs, positions, runner)
@@ -486,6 +520,7 @@ def evaluate_checkpoint(
         adjudication,
         component,
         recorded_at=recording.recorded_at,
+        opening_frequency=frequency,
     )
     recorder.characterize(noise)
     result = CheckpointEvaluationResult(
@@ -497,6 +532,8 @@ def evaluate_checkpoint(
         adjudication=adjudication,
         dependency=dependency,
         noise=noise,
+        opening_frequency=frequency,
+        opening_tail=opening_tail,
     )
     recorder.add(
         slice_measurements(slices, component),
@@ -574,6 +611,7 @@ def _characterize_noise(
     component: DataComponent,
     *,
     recorded_at: datetime,
+    opening_frequency: OpeningFrequency | None,
 ) -> NoiseCharacterization | None:
     """Estimate this reading's own data-sampling noise from the same pass.
 
@@ -590,7 +628,11 @@ def _characterize_noise(
         )
         return characterize_sampling_noise(
             merge_game_totals(
-                per_game_totals(positions, inputs.scoring),
+                per_game_totals(
+                    positions,
+                    inputs.scoring,
+                    opening_frequency=opening_frequency,
+                ),
                 adjudication_totals,
             ),
             component=component,
@@ -606,6 +648,44 @@ def _characterize_noise(
         # evaluation. The reading still stands; it simply has no floor.
         logger.warning("Skipping data-sampling noise characterization: %s", error)
         return None
+
+
+def _count_training_frequency(
+    config: CheckpointEvaluationConfig,
+    leakage: LeakageCheck,
+) -> OpeningFrequency | None:
+    """Count how often the training selection saw each opening family.
+
+    The corpus and split come from the leakage check rather than being resolved
+    a second time, so the frequency axis is counted over exactly the games that
+    check proved this checkpoint trained on.
+
+    That corpus has to be the one the pool was drawn from, or a committed tier
+    would mean a share of games no fingerprint records; `docs/evaluation.md`
+    argues it. What settles the question is the training manifest the checkpoint
+    recorded, so a ``leakage.training_normalized`` override still has to name a
+    copy of that corpus rather than a subset of it.
+    """
+
+    if not config.openings.training_frequency:
+        return None
+    if not leakage.same_source_corpus:
+        raise CheckpointEvaluationError(
+            "the opening-frequency axis needs the checkpoint's training corpus "
+            "and this pool's source corpus to be the same one; they are not, "
+            "so a family's training share says nothing about the games scored"
+        )
+    logger.info(
+        "Classifying the %s split of the training corpus by opening family",
+        leakage.training_split,
+    )
+    try:
+        return count_opening_families(
+            [Path(path) for path in leakage.training_normalized_paths],
+            leakage.training_split,
+        )
+    except OpeningFrequencyError as error:
+        raise CheckpointEvaluationError(str(error)) from error
 
 
 def _run_dependency_tests(
