@@ -1600,23 +1600,26 @@ def _applicable_floors(
     )
     baseline_kind = None if baseline.dispersion is None else baseline.dispersion.kind
     current_kind = None if current.dispersion is None else current.dispersion.kind
+    combined = (
+        _combined(baseline.dispersion, current.dispersion)
+        if baseline.dispersion is not None
+        and current.dispersion is not None
+        and baseline_kind == current_kind
+        else None
+    )
     # What a source spanning the whole delta covers: a series characterization,
-    # the paired estimator, or both readings offering a dispersion of one kind.
+    # the paired estimator, or the two readings combined. Derived from the
+    # combined floor rather than from the same test a second time, so a kind
+    # cannot be reported as spanning with no floor behind it.
     spanning = {floor.kind for floor in indexed}
     if comparison_floor is not None:
         spanning.add(comparison_floor.kind)
-    if baseline_kind is not None and baseline_kind == current_kind:
-        spanning.add(baseline_kind)
+    if combined is not None:
+        spanning.add(combined.kind)
     one_sided = {
         kind for kind in (baseline_kind, current_kind) if kind is not None
     } - spanning
-    candidates = []
-    if (
-        baseline.dispersion is not None
-        and current.dispersion is not None
-        and baseline_kind == current_kind
-    ):
-        candidates.append(_combined(baseline.dispersion, current.dispersion))
+    candidates = [] if combined is None else [combined]
     candidates.extend(indexed)
     if comparison_floor is not None:
         # A paired floor is the data-sampling uncertainty of this exact delta.
@@ -1677,9 +1680,9 @@ def _movement(
 
     if direction is MetricDirection.INFORMATIONAL:
         return Movement.INFORMATIONAL
-    if noise is NoiseVerdict.WITHIN:
-        return Movement.UNCHANGED
-    if math.isclose(delta, 0.0, abs_tol=0.0, rel_tol=0.0):
+    if noise is NoiseVerdict.WITHIN or math.isclose(
+        delta, 0.0, abs_tol=0.0, rel_tol=0.0
+    ):
         return Movement.UNCHANGED
     improved = (
         delta < 0.0 if direction is MetricDirection.LOWER_IS_BETTER else delta > 0.0

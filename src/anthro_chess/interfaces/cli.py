@@ -1972,7 +1972,6 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
     """
 
     from anthro_chess.evaluation.curves import CURVE_DETERMINISTIC_METHOD
-    from anthro_chess.evaluation.results import self_combined_floor
 
     if not reading.comparisons:
         # Headings over nothing read as a table that found nothing rather than
@@ -1999,19 +1998,13 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
             + _rollout_arm(
                 comparison.conditional_distance,
                 null=None if references is None else references.conditional,
-                floor=(
-                    None
-                    if spreads is None
-                    else self_combined_floor(spreads.conditional)
-                ),
+                floor=None if spreads is None else spreads.conditional_floor,
                 seed=None if spread is None else spread.floor,
             )
             + _rollout_arm(
                 comparison.pooled_distance,
                 null=None if references is None else references.pooled,
-                floor=(
-                    None if spreads is None else self_combined_floor(spreads.pooled)
-                ),
+                floor=None if spreads is None else spreads.pooled_floor,
                 seed=None if spread is None else spread.pooled_floor,
             )
             + f"{comparison.response.value:>{_ROLLOUT_VERDICT_WIDTH}}"
@@ -2267,8 +2260,6 @@ def _termination_arm(
 
 
 def _render_termination(result: TerminationBenchmarkResult) -> str:
-    from anthro_chess.evaluation.results import self_combined_floor
-
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
         f"Games: {result.games} generated against {result.reference_games} human "
@@ -2324,19 +2315,13 @@ def _render_termination(result: TerminationBenchmarkResult) -> str:
                     "conditional",
                     comparison.conditional_distance,
                     null=None if references is None else references.conditional,
-                    floor=(
-                        None
-                        if spreads is None
-                        else self_combined_floor(spreads.conditional)
-                    ),
+                    floor=None if spreads is None else spreads.conditional_floor,
                 ),
                 _termination_arm(
                     "pooled",
                     comparison.pooled_distance,
                     null=None if references is None else references.pooled,
-                    floor=(
-                        None if spreads is None else self_combined_floor(spreads.pooled)
-                    ),
+                    floor=None if spreads is None else spreads.pooled_floor,
                 ),
                 f"  reads as    {comparison.response.value}",
             ]
@@ -2575,14 +2560,12 @@ def _resolves(
     a delta against a reading like this one would face.
     """
 
-    from anthro_chess.evaluation.results import self_combined_floor
-
     resolution = result.resolution
     if resolution is None:
         return ""
-    dispersion = resolution.dispersion(scope, metric)
-    if dispersion is not None:
-        return f" ±{self_combined_floor(dispersion):.{precision}f}"
+    floor = resolution.floor(scope, metric)
+    if floor is not None:
+        return f" ±{floor:.{precision}f}"
     return " (unqualifiable)" if (scope, metric) in resolution.unqualifiable else ""
 
 
@@ -2602,15 +2585,9 @@ def _resolves_column(
     columns and explained by the ``unplaced`` line above.
     """
 
-    from anthro_chess.evaluation.results import self_combined_floor
-
     resolution = result.resolution
-    dispersion = None if resolution is None else resolution.dispersion(scope, metric)
-    value = (
-        "-"
-        if dispersion is None
-        else f"±{self_combined_floor(dispersion):.{precision}f}"
-    )
+    floor = None if resolution is None else resolution.floor(scope, metric)
+    value = "-" if floor is None else f"±{floor:.{precision}f}"
     return value.rjust(width)
 
 
@@ -3458,11 +3435,15 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         # Results arrive in recording order, so the last reading that read its
         # own spread over a counted draw of games is the one that still
         # describes the metric.
-        spread = None
-        for envelope in store.results():
-            candidate = envelope.measurement(metric)
-            if candidate is not None and candidate.dispersion is not None:
-                spread = candidate.dispersion
+        spread = next(
+            (
+                measured.dispersion
+                for envelope in reversed(store.results())
+                if (measured := envelope.measurement(metric)) is not None
+                and measured.dispersion is not None
+            ),
+            None,
+        )
         if spread is None:
             print(
                 f"anthro eval noise plan: no reading records a sampled "

@@ -41,7 +41,6 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ResultEnvelope,
     ResultsStore,
-    self_combined_floor,
 )
 from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_CONDITIONAL_DISTANCE,
@@ -796,11 +795,11 @@ def test_the_comparison_table_qualifies_each_arm_with_its_own_numbers(
             quantity.value,
             f"{comparison.conditional_distance:.4f}",
             f"{comparison.references.conditional:.4f}",
-            f"{self_combined_floor(comparison.dispersions.conditional):.4f}",
+            f"{comparison.dispersions.conditional_floor:.4f}",
             f"{spread.floor:.4f}",
             f"{comparison.pooled_distance:.4f}",
             f"{comparison.references.pooled:.4f}",
-            f"{self_combined_floor(comparison.dispersions.pooled):.4f}",
+            f"{comparison.dispersions.pooled_floor:.4f}",
             f"{spread.pooled_floor:.4f}",
             comparison.response.value,
         ]

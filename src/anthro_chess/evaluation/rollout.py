@@ -189,7 +189,7 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_WHITE_SCORE,
     MOVE_PREDICTION_PROJECTION,
 )
-from anthro_chess.evaluation.results.noise import bounded_floor, self_combined_floor
+from anthro_chess.evaluation.results.noise import bounded_floor
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
@@ -1299,14 +1299,10 @@ def _divergence_by_depth(
                 categories=len({observation.value for observation in (*human, *model)}),
                 conditional_distance=comparison.conditional_distance,
                 conditional_floor=(
-                    None
-                    if spreads is None
-                    else self_combined_floor(spreads.conditional)
+                    None if spreads is None else spreads.conditional_floor
                 ),
                 pooled_distance=comparison.pooled_distance,
-                pooled_floor=(
-                    None if spreads is None else self_combined_floor(spreads.pooled)
-                ),
+                pooled_floor=None if spreads is None else spreads.pooled_floor,
             )
         )
     return tuple(points)

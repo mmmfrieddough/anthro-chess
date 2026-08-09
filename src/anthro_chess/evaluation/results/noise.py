@@ -87,7 +87,7 @@ from anthro_chess.evaluation.results.records import (
 )
 
 #: Version 5 dropped the sampled-unit count, which only a data-sampling floor
-#: carried and which now travels on the reading as its sample size.
+#: carried and which now travels beside the dispersion on the reading itself.
 #: Version 4 added the training scope a training floor is only valid within.
 #: Version 3 replaced the point-estimate dispersion in a floor with a
 #: conservative upper bound, and records the confidence that bound carries.
@@ -498,15 +498,14 @@ def measured_dispersion(
 def combined_floor(
     baseline: MetricDispersion,
     current: MetricDispersion,
-    *,
-    coverage: float = DEFAULT_COVERAGE,
 ) -> float:
     """Return the delta noise alone produces between two readings.
 
     The variance of a difference is the sum of the two variances, so the two
-    readings' bounded dispersions combine in quadrature. ``coverage`` is applied
+    readings' bounded dispersions combine in quadrature. The coverage is applied
     here rather than stored on either reading because a floor is a claim the
-    comparison makes; the readings only say how far their own units move.
+    comparison makes; the readings only say how far their own units move, and
+    one factor for every comparison is what keeps two floors comparable.
 
     Two bounds hold together with the product of their confidences rather than
     with either one, so a floor combined from two readings each bounded at 95%
@@ -515,16 +514,10 @@ def combined_floor(
     the two readings share a spread.
     """
 
-    if coverage <= 0.0 or not math.isfinite(coverage):
-        raise NoiseCharacterizationError("coverage must be a finite, positive factor")
-    return coverage * math.hypot(baseline.bound, current.bound)
+    return DEFAULT_COVERAGE * math.hypot(baseline.bound, current.bound)
 
 
-def self_combined_floor(
-    dispersion: MetricDispersion,
-    *,
-    coverage: float = DEFAULT_COVERAGE,
-) -> float:
+def self_combined_floor(dispersion: MetricDispersion) -> float:
     """Return the floor a delta against a reading like this one would face.
 
     What one reading resolves on its own is not a fact about any delta, since
@@ -534,7 +527,7 @@ def self_combined_floor(
     between two readings of one benchmark at one size will land near.
     """
 
-    return combined_floor(dispersion, dispersion, coverage=coverage)
+    return combined_floor(dispersion, dispersion)
 
 
 def bounded_spread(
@@ -807,12 +800,7 @@ def process_replicate_floors(
     return tuple(entries)
 
 
-def games_to_resolve(
-    dispersion: MetricDispersion,
-    *,
-    effect: float,
-    coverage: float = DEFAULT_COVERAGE,
-) -> int:
+def games_to_resolve(dispersion: MetricDispersion, *, effect: float) -> int:
     """Return how many games are needed to resolve an effect of a given size.
 
     A sampling dispersion shrinks with the square root of the games behind it,
@@ -838,7 +826,7 @@ def games_to_resolve(
         )
     if effect <= 0.0 or not math.isfinite(effect):
         raise NoiseCharacterizationError("an effect size must be finite and positive")
-    floor = self_combined_floor(dispersion, coverage=coverage)
+    floor = self_combined_floor(dispersion)
     if floor == 0.0:
         return 1
     return max(1, math.ceil(dispersion.units * (floor / effect) ** 2))

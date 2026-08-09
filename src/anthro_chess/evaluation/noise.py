@@ -54,9 +54,10 @@ class NoiseConfig(ConfigModel):
     enabled: StrictBool = True
     resamples: int = Field(default=DEFAULT_RESAMPLES, ge=100)
     seed: int = Field(default=0, ge=0)
-    #: Read by the estimators that report a covered spread within one reading.
-    #: A delta floor takes its coverage at comparison time, because the claim
-    #: belongs to the comparison rather than to either reading.
+    #: Read only by the estimators that report a covered spread within one
+    #: reading. A benchmark that stores a dispersion and nothing else does not
+    #: read it: a delta floor takes its coverage at comparison time, because the
+    #: claim belongs to the comparison rather than to either reading.
     coverage: float = Field(default=DEFAULT_COVERAGE, gt=0.0)
     confidence: float = Field(default=DEFAULT_CONFIDENCE, gt=0.0, lt=1.0)
 

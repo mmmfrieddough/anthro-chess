@@ -73,6 +73,7 @@ from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
     measured_dispersion,
+    self_combined_floor,
 )
 from anthro_chess.evaluation.results.records import NoiseFloorKind
 
@@ -443,6 +444,18 @@ class CurveDispersions:
     model_variation: MetricDispersion
     resamples: int
     method: str
+
+    @property
+    def conditional_floor(self) -> float:
+        """Return what a delta against a reading like this one would clear."""
+
+        return self_combined_floor(self.conditional)
+
+    @property
+    def pooled_floor(self) -> float:
+        """Return the same for the pooled arm."""
+
+        return self_combined_floor(self.pooled)
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one comparison's spreads."""

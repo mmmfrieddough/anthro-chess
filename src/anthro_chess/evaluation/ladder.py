@@ -120,6 +120,7 @@ from anthro_chess.evaluation.results import (
     ResultEnvelope,
     measured_dispersion,
     measurement,
+    self_combined_floor,
 )
 from anthro_chess.evaluation.results.fingerprints import (
     FingerprintError,
@@ -718,6 +719,16 @@ class LadderResolution:
         """Return the spread beside one reported quantity, if it has one."""
 
         return self.dispersions.get((scope, metric))
+
+    def floor(self, scope: str, metric: str) -> float | None:
+        """Return what a delta against a reading like this one would clear.
+
+        A ladder reading resolves nothing on its own, so what a single reading
+        can show is the floor the other operand matching it would produce.
+        """
+
+        spread = self.dispersion(scope, metric)
+        return None if spread is None else self_combined_floor(spread)
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of the whole resolution estimate."""

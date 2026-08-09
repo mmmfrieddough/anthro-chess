@@ -42,7 +42,6 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ResultEnvelope,
     ResultsStore,
-    self_combined_floor,
 )
 from anthro_chess.evaluation.results.metrics import (
     LADDER_ABLATED_TEMPERATURE_RESPONSE,
@@ -869,15 +868,11 @@ def test_a_thicker_sample_resolves_a_ladder_more_finely() -> None:
     assert thick.resolution is not None
     assert thick.games > thin.games
     seat = SeatKey(SeatConditioning.CONDITIONED, 1200, 1.0)
-    thin_spread = thin.resolution.dispersion(
-        seat.label, LADDER_FITTED_RATING.identifier
-    )
-    thick_spread = thick.resolution.dispersion(
-        seat.label, LADDER_FITTED_RATING.identifier
-    )
-    assert thin_spread is not None
-    assert thick_spread is not None
-    assert self_combined_floor(thick_spread) < self_combined_floor(thin_spread)
+    thin_floor = thin.resolution.floor(seat.label, LADDER_FITTED_RATING.identifier)
+    thick_floor = thick.resolution.floor(seat.label, LADDER_FITTED_RATING.identifier)
+    assert thin_floor is not None
+    assert thick_floor is not None
+    assert thick_floor < thin_floor
 
 
 def test_a_seat_with_no_finite_rating_is_named_rather_than_given_a_zero() -> None:

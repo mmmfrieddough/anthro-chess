@@ -358,10 +358,16 @@ class ResultRecorder:
         what says the estimate was taken over the inputs this measurement was
         computed from. A measurement whose spread the estimator could not read
         keeps none, and a unit the estimator never covered is left alone.
+
+        A benchmark that built its measurement with a spread of its own keeps
+        it. Only a benchmark whose estimating pass spans several units registers
+        one here, so the two never describe the same series, and letting an
+        ambient mapping overwrite what a measurement was constructed with would
+        be the wrong way round if they ever did.
         """
 
         dispersion = self._recording.dispersions.get(item.fingerprint)
-        if dispersion is None:
+        if dispersion is None or item.dispersion is not None:
             return item
         return item.model_copy(update={"dispersion": dispersion})
 

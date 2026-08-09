@@ -49,7 +49,6 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     DetailStore,
     ResultsStore,
-    self_combined_floor,
 )
 from anthro_chess.evaluation.results.metrics import (
     GAME_TERMINATION_FAMILY,
@@ -846,12 +845,12 @@ def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
     assert (
         f"  conditional {comparison.conditional_distance:.4f}  "
         f"null {comparison.references.conditional:.4f}  "
-        f"floor {self_combined_floor(comparison.dispersions.conditional):.4f}"
+        f"floor {comparison.dispersions.conditional_floor:.4f}"
     ) in rendered
     assert (
         f"  pooled      {comparison.pooled_distance:.4f}  "
         f"null {comparison.references.pooled:.4f}  "
-        f"floor {self_combined_floor(comparison.dispersions.pooled):.4f}"
+        f"floor {comparison.dispersions.pooled_floor:.4f}"
     ) in rendered
     assert f"  reads as    {comparison.response.value}" in rendered
 

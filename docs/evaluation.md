@@ -2832,12 +2832,12 @@ rather than that the change produced it. The report says so beside the verdict:
 `cleared` means larger than benchmark noise, and never that the change caused
 it. The exception claims less rather than more: a replayed reading states a
 floor of zero, which says its games cannot be redrawn at all and therefore says
-nothing about a draw that could be. Two arms differ by their initialization seeds as well as by the
-change, so clearing either kind establishes that two models differ, not that the
-change is why. That is
-not a theoretical gap. Measured at proof scale, two arms differing only by their
-initialization seed cleared 14 of 54 floored metrics and read better on every
-held-out and legality metric; decision 0029 holds the reading.
+nothing about a draw that could be. Two arms differ by their initialization
+seeds as well as by the change, so clearing either kind establishes that two
+models differ, not that the change is why. That is not a theoretical gap.
+Measured at proof scale, two arms differing only by their initialization seed
+cleared 14 of 54 floored metrics and read better on every held-out and legality
+metric; decision 0029 holds the reading.
 
 A claim therefore rests on one of two things: a delta far enough outside seed
 variance that nothing else explains it, or a training floor characterized from

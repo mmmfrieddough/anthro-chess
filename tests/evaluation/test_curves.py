@@ -43,7 +43,6 @@ from anthro_chess.evaluation.results import (
     MetricDirection,
     build_bridge,
     register_metric,
-    self_combined_floor,
 )
 from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_FAMILY,
@@ -693,7 +692,7 @@ def test_declaring_the_model_side_fixed_leaves_the_reading_itself_alone() -> Non
     assert varying.references is not None
     assert fixed.references.conditional == varying.references.conditional
     assert varying.dispersions is not None
-    assert self_combined_floor(varying.dispersions.conditional) > 1.0
+    assert varying.dispersions.conditional_floor > 1.0
 
 
 def test_the_reference_size_does_not_move_the_floor() -> None:
