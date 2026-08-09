@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 import chess
+import numpy as np
 import torch
 from pydantic import Field, StrictInt, model_validator
 from torch import Tensor
@@ -66,17 +69,32 @@ from anthro_chess.evaluation.results.metrics import (
     PUZZLE_SAMPLED_RATING_SLOPE,
     PUZZLE_TRAINING_OVERLAP_RATE,
 )
+from anthro_chess.evaluation.results.noise import bounded_spread
+from anthro_chess.evaluation.results.paired import (
+    draw_multiplicity,
+    stratum_buckets,
+)
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import (
     CheckpointModelRunner,
     ModelRunnerError,
 )
 
+logger = logging.getLogger(__name__)
+
 PUZZLE_BENCHMARK_VERSION = 1
 PUZZLE_CURVE_VERSION = 1
 PUZZLE_CURVE_NEIGHBOURS = 4000
 PUZZLE_CURVE_GRID = tuple(float(rating) for rating in range(850, 2800, 100))
 PUZZLE_KIND = "puzzle-rating-response"
+#: How far past the scored puzzle ratings a fitted rating may land, in rating
+#: points. Shared so the tabulated inverse the resolution reads covers exactly
+#: the range the fit searches.
+_FIT_SEARCH_MARGIN = 2400.0
+#: The rating difference worth a factor of ten in the odds of scoring. The
+#: tabulated inverse has to use the same scale as the fit it inverts, or it
+#: would report a spread belonging to a different quantity.
+_RATING_SCALE = 400.0
 PUZZLE_BENCHMARK = BenchmarkReference(
     name=PUZZLE_KIND,
     version=PUZZLE_BENCHMARK_VERSION,
@@ -218,6 +236,68 @@ class PuzzleRatingResult:
 
 
 @dataclass(frozen=True)
+class PuzzleRatingResolution:
+    """How far a redraw moves the fit at one configured rating.
+
+    ``None`` where no redraw moved the quantity at all. A spread of zero would
+    read as perfect resolution, which is the opposite of what was observed.
+    """
+
+    target_rating: int
+    greedy_fitted_puzzle_rating: float | None
+    sampled_fitted_puzzle_rating: float | None
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "target_rating": self.target_rating,
+            "greedy_fitted_puzzle_rating": self.greedy_fitted_puzzle_rating,
+            "sampled_fitted_puzzle_rating": self.sampled_fitted_puzzle_rating,
+        }
+
+
+@dataclass(frozen=True)
+class PuzzleResponseResolution:
+    """What the scored puzzles can resolve of the response the fit yields.
+
+    Every configured rating is scored on the same puzzles, so the response is a
+    comparison within one reading and a redraw of those puzzles moves all of it
+    together. Each replicate therefore refits every configured rating from one
+    draw, and the spreads below are of the reduction the reading itself ran.
+    """
+
+    resamples: int
+    puzzles: int
+    coverage: float
+    confidence: float
+    ratings: tuple[PuzzleRatingResolution, ...]
+    greedy_rating_slope: float | None
+    sampled_rating_slope: float | None
+    greedy_order_accuracy: float | None
+    sampled_order_accuracy: float | None
+
+    @property
+    def widest_greedy_fit(self) -> float | None:
+        return _widest(rating.greedy_fitted_puzzle_rating for rating in self.ratings)
+
+    @property
+    def widest_sampled_fit(self) -> float | None:
+        return _widest(rating.sampled_fitted_puzzle_rating for rating in self.ratings)
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "resamples": self.resamples,
+            "puzzles": self.puzzles,
+            "coverage": self.coverage,
+            "confidence": self.confidence,
+            "ratings": [rating.as_record() for rating in self.ratings],
+            "greedy_rating_slope": self.greedy_rating_slope,
+            "sampled_rating_slope": self.sampled_rating_slope,
+            "greedy_order_accuracy": self.greedy_order_accuracy,
+            "sampled_order_accuracy": self.sampled_order_accuracy,
+        }
+
+
+@dataclass(frozen=True)
 class PuzzleBenchmarkResult:
     """The response grid, provenance, and durable result envelope."""
 
@@ -234,6 +314,7 @@ class PuzzleBenchmarkResult:
     training_games: int
     overlapping_puzzles: int
     overlap_rate: float
+    resolution: PuzzleResponseResolution | None = None
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
@@ -251,6 +332,9 @@ class PuzzleBenchmarkResult:
             "sampled_rating_slope": self.sampled_rating_slope,
             "greedy_order_accuracy": self.greedy_order_accuracy,
             "sampled_order_accuracy": self.sampled_order_accuracy,
+            "response_resolution": (
+                None if self.resolution is None else self.resolution.as_record()
+            ),
             "training_overlap": {
                 "training_games": self.training_games,
                 "overlapping_puzzles": self.overlapping_puzzles,
@@ -351,6 +435,7 @@ def benchmark_puzzles(
     greedy_order = _order_accuracy(greedy_fitted)
     sampled_order = _order_accuracy(sampled_fitted)
     overlap_rate = overlapping / selection.selected_puzzles
+    resolution = _response_resolution(scored_ratings, config.noise)
     result = PuzzleBenchmarkResult(
         checkpoint=checkpoint,
         dataset=data,
@@ -365,6 +450,7 @@ def benchmark_puzzles(
         training_games=training_games,
         overlapping_puzzles=overlapping,
         overlap_rate=overlap_rate,
+        resolution=resolution,
     )
     recorder = recording.measuring(
         checkpoint,
@@ -412,7 +498,7 @@ def score_puzzle_set(
 def expected_score(player_rating: float, puzzle_rating: float) -> float:
     """Return the Glicko/Elo expected score used as the human reference."""
 
-    exponent = (puzzle_rating - player_rating) / 400.0
+    exponent = (puzzle_rating - player_rating) / _RATING_SCALE
     if exponent > 15:
         return 0.0
     if exponent < -15:
@@ -433,8 +519,8 @@ def fitted_rating(
     ):
         raise ValueError("puzzle outcomes must be finite probabilities")
     target = sum(outcomes)
-    lower = min(puzzle_ratings) - 2400.0
-    upper = max(puzzle_ratings) + 2400.0
+    lower = min(puzzle_ratings) - _FIT_SEARCH_MARGIN
+    upper = max(puzzle_ratings) + _FIT_SEARCH_MARGIN
     for _ in range(80):
         midpoint = (lower + upper) / 2.0
         predicted = sum(expected_score(midpoint, rating) for rating in puzzle_ratings)
@@ -910,6 +996,173 @@ def _paired_contributions(
         coverage=config.coverage,
         confidence=config.confidence,
     ).as_record()
+
+
+def _response_resolution(
+    scored_ratings: Sequence[_ScoredRating],
+    config: NoiseConfig,
+) -> PuzzleResponseResolution | None:
+    """Refit resampled puzzles and read the spread of the response.
+
+    The draw is stratified by exact puzzle rating, matching both the selection
+    design and the retained paired contributions. That is also what makes the
+    refit cheap: holding each stratum at its own size holds the scored rating
+    composition fixed, so the fit's expected-score sum is one curve every
+    replicate inverts rather than a bisection each has to run for itself.
+    """
+
+    if not config.enabled or len(scored_ratings) < 2:
+        return None
+    scores = scored_ratings[0].scores
+    if len(scores) < 2:
+        return None
+    target_ratings = [scored.result.target_rating for scored in scored_ratings]
+    puzzle_ratings = [score.puzzle.rating for score in scores]
+    buckets = stratum_buckets(puzzle_ratings)
+    thinnest = min(size for size, _ in buckets)
+    if thinnest < 2:
+        # A fact about the set rather than a failed reading: only an artifact
+        # built at one puzzle per rating reaches this, since the reading dial
+        # already floors puzzles_per_rating at two.
+        logger.warning(
+            "Skipping puzzle response resolution: %d puzzle(s) at some exact "
+            "rating, and a stratified redraw needs at least two",
+            thinnest,
+        )
+        return None
+    greedy = np.array(
+        [[score.greedy_line for score in scored.scores] for scored in scored_ratings],
+        dtype=np.float64,
+    ).T
+    sampled = np.array(
+        [[score.sampled_line for score in scored.scores] for scored in scored_ratings],
+        dtype=np.float64,
+    ).T
+    fitted, totals = _fit_curve(puzzle_ratings)
+    generator = np.random.default_rng(config.seed)
+    greedy_fits = np.empty((config.resamples, len(scored_ratings)), dtype=np.float64)
+    sampled_fits = np.empty_like(greedy_fits)
+    for index in range(config.resamples):
+        multiplicity = draw_multiplicity(
+            generator,
+            units=len(scores),
+            buckets=buckets,
+            rescale=True,
+        )
+        greedy_fits[index] = np.interp(multiplicity @ greedy, totals, fitted)
+        sampled_fits[index] = np.interp(multiplicity @ sampled, totals, fitted)
+
+    spread = partial(_bounded_spread, units=len(scores), config=config)
+    greedy_response = [_reductions(target_ratings, row) for row in greedy_fits]
+    sampled_response = [_reductions(target_ratings, row) for row in sampled_fits]
+    return PuzzleResponseResolution(
+        resamples=config.resamples,
+        puzzles=len(scores),
+        coverage=config.coverage,
+        confidence=config.confidence,
+        ratings=tuple(
+            PuzzleRatingResolution(
+                target_rating=target_rating,
+                greedy_fitted_puzzle_rating=spread(greedy_fits[:, column]),
+                sampled_fitted_puzzle_rating=spread(sampled_fits[:, column]),
+            )
+            for column, target_rating in enumerate(target_ratings)
+        ),
+        greedy_rating_slope=spread(_column(item.slope for item in greedy_response)),
+        sampled_rating_slope=spread(_column(item.slope for item in sampled_response)),
+        greedy_order_accuracy=spread(
+            _column(item.order_accuracy for item in greedy_response)
+        ),
+        sampled_order_accuracy=spread(
+            _column(item.order_accuracy for item in sampled_response)
+        ),
+    )
+
+
+#: How finely the expected-score sum is tabulated before replicate fits are read
+#: off it by interpolation, in puzzle-rating points. The sum is a smooth
+#: logistic mixture, so this resolves a fit to far below the tenth of a rating
+#: point the reading reports.
+_FIT_CURVE_STEP = 0.5
+
+
+def _fit_curve(puzzle_ratings: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
+    """Tabulate the fit's expected-score sum over the range it searches.
+
+    ``fitted_rating`` bisects this sum for one target. A stratified redraw
+    scores the same rating composition every time, so the sum is the same
+    increasing function for every replicate and inverting it once serves all of
+    them.
+    """
+
+    lower = float(min(puzzle_ratings)) - _FIT_SEARCH_MARGIN
+    upper = float(max(puzzle_ratings)) + _FIT_SEARCH_MARGIN
+    fitted = np.arange(lower, upper + _FIT_CURVE_STEP, _FIT_CURVE_STEP)
+    totals = np.zeros_like(fitted)
+    for rating, count in Counter(puzzle_ratings).items():
+        totals += count / (1.0 + np.power(10.0, (rating - fitted) / _RATING_SCALE))
+    return fitted, totals
+
+
+def _bounded_spread(
+    replicates: np.ndarray,
+    *,
+    units: int,
+    config: NoiseConfig,
+) -> float | None:
+    """Return the conservative spread of one resampled quantity.
+
+    The matched puzzles are the independent replicates rather than the draws
+    taken from them, which is what the dispersion bound's degrees of freedom
+    count. A quantity no draw moved returns ``None``: the resample observed
+    that it could not move this number, not that a wider sample could not.
+    """
+
+    dispersion = float(np.std(replicates, ddof=1))
+    if dispersion == 0.0:
+        return None
+    return bounded_spread(
+        dispersion,
+        degrees_of_freedom=units - 1,
+        coverage=config.coverage,
+        confidence=config.confidence,
+    )
+
+
+def _widest(spreads: Iterable[float | None]) -> float | None:
+    """Return the widest estimated spread, or ``None`` if none was estimated.
+
+    An unmoved quantity is narrower than any estimate rather than wider, so it
+    cannot be the widest and only decides the answer when it is the only one.
+    """
+
+    estimated = [spread for spread in spreads if spread is not None]
+    return max(estimated) if estimated else None
+
+
+class _Reduction(NamedTuple):
+    """What one replicate's fitted ratings reduce to."""
+
+    slope: float
+    order_accuracy: float
+
+
+def _reductions(target_ratings: Sequence[int], fits: np.ndarray) -> _Reduction:
+    """Reduce one replicate through the reading's own reductions.
+
+    Rather than a vectorized restatement of them, so a spread cannot end up
+    describing a slightly different quantity from the number it is printed
+    beside.
+    """
+
+    fitted = fits.tolist()
+    return _Reduction(_slope(target_ratings, fitted), _order_accuracy(fitted))
+
+
+def _column(values: Iterable[float]) -> np.ndarray:
+    """Return one reduced quantity across every replicate."""
+
+    return np.fromiter(values, dtype=np.float64)
 
 
 def _detail_payload(

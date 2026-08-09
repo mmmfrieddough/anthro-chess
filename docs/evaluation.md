@@ -724,6 +724,15 @@ the second kind declares why in the registry, and a report renders it
 work that cannot be done, and it is the same ambiguity as a floor rendering as
 exactly zero.
 
+That second ambiguity is why a bootstrap that could not move a quantity reports
+no floor rather than a floor of zero. What the resample observed is that *this*
+draw could not move the number, which is not the observation that nothing could:
+a quantity identical in every unit scored reads that way at any sample size, and
+the wider draw that would move it is exactly the work `unknown` points at. A zero
+would instead clear every later delta, which is the failure a floor exists to
+prevent. The genuine zero is the *stated* one, where re-measuring replays the
+same games, and a reading records that it stated rather than estimated.
+
 That declaration rules out one estimator rather than every floor. It says
 resampling the units a reading scored cannot estimate this metric's dispersion,
 so no data-sampling floor can exist for it — but evaluation and training noise
@@ -1779,6 +1788,26 @@ never use the independent-input bound as the comparison floor. The command
 prints that bound at the size actually scored, because a reading beside no
 resolution at all was read as a finding about the model once already; it is
 labelled as the independent-sample bound it is, and is not the family's floor.
+
+The solve rates are not the whole reading, and what remains needs a different
+qualifier again. The fitted puzzle rating at each configured rating, the slope
+through them and the pairwise ordering are nonlinear functions of the whole
+draw, so no per-unit retention reproduces them and the paired estimator does not
+reach them. They are qualified inside the reading instead: the scored puzzles
+are redrawn within exact-rating strata, by the rescaled draw a small stratum
+needs, and *every* configured rating is refit from that one draw, because the
+configured-rating grid is one draw asked the same question several times rather
+than several independent readings. Each
+refitted quantity is printed with its own spread. A quantity no redraw moved
+says so rather than reporting a spread of zero, which would license every delta;
+that is not a corner case here, since an ordering saturates as soon as the fit
+separates two configured ratings and a fit pinned at the bottom of its search
+range cannot move at all. The spreads stay in the output and the detail payload
+rather than being attached to the stored measurements, because they qualify one
+reading's response and not a delta between checkpoints.
+`docs/decisions/0042-the-puzzle-response-is-qualified-within-its-reading.md`
+owns the rule and why an independent-input floor is not what this family gets.
+
 Selection is uniform over every exact integer puzzle rating in the declared
 range, with deterministic hash ranking only among eligible puzzles at that
 rating. This removes the source population's rating-density bias without
@@ -1826,8 +1855,9 @@ That is the infinite-sample solve rate without Monte Carlo noise and remains
 directly comparable with the greedy reading at temperature zero.
 
 The detail artifact carries the configured-rating grid, continuous human and
-model curves with effective local sample sizes, the rating-band drill-down, and
-the aligned per-source-game values needed for later paired checkpoint floors.
+model curves with effective local sample sizes, the rating-band drill-down, the
+resampled response resolution, and the aligned per-source-game values needed for
+later paired checkpoint floors.
 The summary tier carries overall solve rates, continuous curve distance,
 fitted-rating slope and pairwise ordering, plus the source-game overlap rate.
 The overlap join reads only Lichess train and validation keys; test-only games

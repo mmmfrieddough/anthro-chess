@@ -399,7 +399,11 @@ def test_evaluation_records_human_referenced_forced_outcomes(
 
     assert result.noise is not None
     floor_metrics = {entry.metric for entry in result.noise.floors}
-    assert "adjudicated.mate_available_human_rate" in floor_metrics
+    # The human rate is absent because the human took the mate at both
+    # opportunities, so no resample of these games can move it. A floor of zero
+    # there would clear every later delta rather than describe one.
+    assert "adjudicated.mate_available_policy_mass" in floor_metrics
+    assert "adjudicated.mate_available_human_rate" not in floor_metrics
 
 
 def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
@@ -433,7 +437,11 @@ def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
     # has to land on the same series as the measurement it describes.
     assert set(floors) <= set(reported)
     assert "held_out.move_loss" in floors
-    assert "adjudicated.material_gain_selected_rate" in floors
+    # A rate the fixture's games all agree on is absent rather than floored at
+    # zero, since a redraw of those games observed that it could not move the
+    # rate rather than that nothing could.
+    assert "adjudicated.material_gain_best_rank" in floors
+    assert "adjudicated.material_gain_selected_rate" not in floors
     for metric, entry in floors.items():
         assert entry.fingerprint == reported[metric]
         assert entry.sampling_units == result.view.selected_games

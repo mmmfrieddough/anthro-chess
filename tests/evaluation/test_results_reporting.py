@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from anthro_chess.evaluation.results import (
@@ -46,6 +47,10 @@ from anthro_chess.evaluation.results import (
     render_provenance,
     render_report,
     series_fingerprint,
+)
+from anthro_chess.evaluation.results.paired import (
+    draw_multiplicity,
+    stratum_buckets,
 )
 from anthro_chess.evaluation.results.reporting import (
     MAXIMUM_LINE_WIDTH,
@@ -2094,3 +2099,94 @@ def test_short_identifiers_keep_the_column_at_its_minimum() -> None:
     assert _header(rendered).index("better") == (
         indent + MINIMUM_METRIC_COLUMN_WIDTH + separator
     )
+
+
+def test_a_rescaled_stratified_draw_removes_the_plug_in_understatement() -> None:
+    """A plug-in draw of `n` reports `(n-1)/n` of the variance it should.
+
+    Decision 0039 measures what that costs where a stratum is small, and names
+    the correction: take one fewer and scale the counts back up. Two units to a
+    stratum is where it is worst and is what the reduced puzzle sweep scores.
+    """
+
+    values = np.asarray([0.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float64)
+    buckets = stratum_buckets(["low", "low", "mid", "mid", "high", "high"])
+    means = {
+        rescale: np.asarray(
+            [
+                draw_multiplicity(
+                    np.random.default_rng(seed),
+                    units=len(values),
+                    buckets=buckets,
+                    rescale=rescale,
+                )
+                @ values
+                / len(values)
+                for seed in range(4000)
+            ]
+        )
+        for rescale in (False, True)
+    }
+
+    # Each stratum holds one zero and one one, so a stratified mean has
+    # variance 1/12 exactly; the plug-in draw reports half of it.
+    assert float(np.var(means[True])) == pytest.approx(1.0 / 12.0, rel=0.05)
+    assert float(np.var(means[False])) == pytest.approx(1.0 / 24.0, rel=0.05)
+
+
+def test_a_stratum_holding_one_unit_withholds_the_paired_floor(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A redraw within a stratum of one can only ever return that one unit.
+
+    Its contribution to the spread is absent rather than small, so the floor
+    built from it would be narrow by however much that stratum mattered.
+    """
+
+    component = move_prediction_component()
+    detail = DetailStore(tmp_path / "detail")
+
+    def retained(values: list[float]) -> dict[str, object]:
+        return {
+            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
+                unit="fixture-game",
+                unit_ids=("a", "b", "c"),
+                stratum="rating",
+                strata=("low", "low", "high"),
+                metrics={"dependency.rating_anchor_top1_agreement": values},
+                resamples=1_000,
+                seed=0,
+                coverage=1.96,
+            ).as_record()
+        }
+
+    envelopes = [
+        recorded_result(
+            label=label,
+            measurements=[
+                measurement(
+                    "dependency.rating_anchor_top1_agreement", value, data=component
+                )
+            ],
+            recorded_at=stamp,
+        ).model_copy(
+            update={"detail": detail.write(f"singleton-{label}.json", retained(values))}
+        )
+        for label, value, stamp, values in (
+            ("checkpoint-a", 0.0, BASELINE_AT, [0.0, 0.0, 0.0]),
+            ("checkpoint-b", 1.0, CURRENT_AT, [1.0, 1.0, 1.0]),
+        )
+    ]
+
+    report = build_delta_report(
+        envelopes,
+        BridgeIndex(),
+        comparison_floors=PairedFloorIndex(detail),
+    )
+    row = _row(report, "dependency.rating_anchor_top1_agreement")
+
+    assert row.noise_floor is None
+    assert row.paired_floor_unavailable is not None
+    assert "a stratum holds one unit" in row.paired_floor_unavailable

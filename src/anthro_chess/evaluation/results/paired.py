@@ -11,7 +11,8 @@ committed summary tier.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +22,7 @@ from pydantic import Field, model_validator
 from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
     PAIRED_BOOTSTRAP_METHOD,
-    dispersion_bound,
+    bounded_spread,
 )
 from anthro_chess.evaluation.results.records import (
     Identifier,
@@ -257,6 +258,12 @@ class PairedFloorIndex:
             return _unpairable(
                 "the retained contributions assign units to different strata"
             )
+        if left_strata is not None and min(Counter(left_strata).values()) < 2:
+            # The draw redraws within a stratum, so one holding a single unit
+            # can only ever return that unit. Its contribution to the spread is
+            # not small, it is absent, and a floor built from it would clear
+            # every delta.
+            return _unpairable("a stratum holds one unit, so a redraw cannot move it")
         left_weights = left.weights
         right_weights = (
             None
@@ -307,13 +314,11 @@ class PairedFloorIndex:
         outcomes = {
             metric: PairedFloor(
                 floor=NoiseFloor(
-                    value=float(
-                        left.coverage
-                        * dispersion_bound(
-                            float(dispersion),
-                            degrees_of_freedom=freedom,
-                            confidence=left.confidence,
-                        )
+                    value=bounded_spread(
+                        float(dispersion),
+                        degrees_of_freedom=freedom,
+                        coverage=left.coverage,
+                        confidence=left.confidence,
                     ),
                     kind="data-sampling",
                     source=(
@@ -433,20 +438,14 @@ def _bootstrap_paired_means(
     units = int(deltas.shape[0])
     generator = np.random.default_rng(seed)
     replicates = np.empty((resamples, deltas.shape[1]), dtype=np.float64)
-    buckets = _stratum_buckets(strata) if strata is not None else None
+    buckets = stratum_buckets(strata) if strata is not None else None
     for index in range(resamples):
-        drawn: np.ndarray
-        if buckets is None:
-            drawn = generator.integers(0, units, size=units)
-        else:
-            sampled: list[np.ndarray] = []
-            for size, grouped_indices in buckets:
-                offsets = generator.integers(0, size, grouped_indices.shape)
-                sampled.append(
-                    np.take_along_axis(grouped_indices, offsets, axis=1).ravel()
-                )
-            drawn = np.concatenate(sampled)
-        multiplicity = np.bincount(drawn, minlength=units).astype(np.float64)
+        multiplicity = draw_multiplicity(
+            generator,
+            units=units,
+            buckets=buckets,
+            rescale=True,
+        )
         if weights is None:
             replicates[index] = multiplicity @ deltas / units
             continue
@@ -455,12 +454,12 @@ def _bootstrap_paired_means(
     return replicates
 
 
-def _stratum_buckets(
-    strata: Sequence[str],
+def stratum_buckets(
+    strata: Sequence[Hashable],
 ) -> tuple[tuple[int, np.ndarray], ...]:
     """Group equal-size strata so one bootstrap draw remains vectorized."""
 
-    grouped: dict[str, list[int]] = {}
+    grouped: dict[Hashable, list[int]] = {}
     for index, stratum in enumerate(strata):
         grouped.setdefault(stratum, []).append(index)
     by_size: dict[int, list[list[int]]] = {}
@@ -472,6 +471,42 @@ def _stratum_buckets(
     )
 
 
+def draw_multiplicity(
+    generator: np.random.Generator,
+    *,
+    units: int,
+    buckets: Sequence[tuple[int, np.ndarray]] | None,
+    rescale: bool = False,
+) -> np.ndarray:
+    """Draw one resample of the units and return how often each was drawn.
+
+    A stratified draw redraws within each stratum at its own size, which is what
+    holds the design of a stratified selection fixed across replicates.
+
+    ``rescale`` takes one fewer than each stratum holds and scales the counts
+    back up, which removes the ``(n-1)/n`` understatement a plug-in draw carries
+    and is exact for a mean.
+    `docs/decisions/0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md`
+    measures what leaving it in costs: at a three-unit stratum the plug-in draw
+    reported 83% of the spread it should. It needs at least two units in every
+    stratum, since one leaves nothing to draw.
+    """
+
+    if buckets is None:
+        taken = units - 1 if rescale else units
+        drawn = generator.integers(0, units, size=taken)
+        return np.bincount(drawn, minlength=units) * (units / taken)
+    multiplicity = np.zeros(units, dtype=np.float64)
+    for size, grouped_indices in buckets:
+        if rescale and size < 2:
+            raise ValueError("a rescaled draw needs at least two units per stratum")
+        taken = size - 1 if rescale else size
+        offsets = generator.integers(0, size, (grouped_indices.shape[0], taken))
+        drawn = np.take_along_axis(grouped_indices, offsets, axis=1).ravel()
+        multiplicity += np.bincount(drawn, minlength=units) * (size / taken)
+    return multiplicity
+
+
 __all__ = [
     "NO_DETAIL_ROOT",
     "PAIRED_CONTRIBUTIONS_KEY",
@@ -479,5 +514,7 @@ __all__ = [
     "PairedContributions",
     "PairedFloor",
     "PairedFloorIndex",
+    "draw_multiplicity",
     "paired_contributions",
+    "stratum_buckets",
 ]
