@@ -735,7 +735,9 @@ Some records should still be filtered or separated early:
 - corrupt or unparseable games;
 - unsupported variants for a standard-chess run;
 - known bots or AI games from the main human corpus;
+- games played by an account the source has marked for breaking its rules;
 - malformed clocks or impossible metadata;
+- games a source cut short on a rules report rather than play;
 - abandoned zero-move games unless a specific task needs them.
 
 Filter for validity, never for balance. Every entry above is a statement that a
@@ -751,6 +753,31 @@ selection touches only the train split, so the same distortion becomes visible
 as a mismatch against a clean reference, and it stays reversible. A preparation
 filter is therefore a definitional statement about what counts as human play
 for every later benchmark, and it should be recorded as one.
+
+Engine assistance is the case that most tests that rule, and it is the
+deliberate exception. Every game played by an account the source has marked is
+rejected during preparation, so those games leave every split rather than only
+the training one. The reason is that a reference containing engine-assisted
+play measures the wrong target for a project whose whole subject is human-like
+play, and the human-versus-engine classifier would otherwise draw its human
+class from it. That is a definitional statement about what counts as human
+play, it removes roughly a tenth of the games a month offers, and it is
+recorded as one in
+[`0041-games-of-marked-accounts-leave-the-corpus.md`](decisions/0041-games-of-marked-accounts-leave-the-corpus.md).
+
+The baseline selection does not name a snapshot yet, so it prepares unfiltered
+until one exists. Building it means asking the source about every account in an
+archive, which it rate limits hard enough to take several sessions; the
+selection carries the setting commented out rather than pointing at a file that
+is not there, because preparation refuses a missing or non-covering snapshot
+rather than quietly preparing without it.
+
+The filter acts on accounts rather than on moves because no method separates
+assisted moves from honest ones within a game at any useful confidence, while
+the source publishes an account-level judgement for free. What that judgement
+is, why it is pinned and checked in rather than queried during preparation, and
+why widening the corpus fails loudly instead of quietly under-filtering are
+owned by `configs/data/marked-accounts/`.
 
 Training runs should log both the intended recipe and the effective sample
 distribution they actually saw.

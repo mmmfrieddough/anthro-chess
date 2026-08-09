@@ -4,7 +4,8 @@ Date: 2026-07-26
 
 ## Status
 
-Accepted.
+Accepted. `0041-games-of-marked-accounts-leave-the-corpus.md` records the one
+exception taken to the preparation-filter rule below, and says what that costs.
 
 ## Context
 

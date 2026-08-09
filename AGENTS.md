@@ -27,7 +27,7 @@ that rebuild the data side from the pinned sources.
 
 Read `docs/documentation.md` and the rows below that match the work.
 
-`docs/decisions/` (0001-0040) holds why a choice was made, not what the rule is;
+`docs/decisions/` (0001-0041) holds why a choice was made, not what the rule is;
 the rule lives in the code, config, or doc that enforces it. Open a record when
 the reasoning behind a constraint matters — before changing or re-litigating
 one — rather than as a matter of course. Every record names the later ones that

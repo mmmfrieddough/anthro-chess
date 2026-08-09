@@ -8,11 +8,13 @@ rules belong in one place so they cannot drift between consumers.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
+from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.data.schema import (
@@ -22,10 +24,47 @@ from anthro_chess.data.schema import (
 )
 
 _PARQUET_MISSING = "Parquet support is unavailable; install anthro-chess[data]"
+#: How this project identifies itself to a source. One value, because a source
+#: that blocks it should block all of this project's traffic rather than half.
+SOURCE_USER_AGENT = "anthro-chess-data-acquisition/1"
 
 
 class DataLoadingError(ValueError):
     """Raised when normalized data or saved loader state is incompatible."""
+
+
+@contextmanager
+def open_pgn_text(source_path: Path) -> Iterator[TextIO]:
+    """Yield a PGN archive as text, decompressing Zstandard in the stream.
+
+    A second, uncompressed copy of the archive is larger than the corpus it
+    produces, so one is never written to disk.
+    """
+
+    if source_path.suffix != ".zst":
+        with source_path.open("r", encoding="utf-8") as pgn_file:
+            yield pgn_file
+        return
+
+    try:
+        import zstandard
+    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
+        raise DataLoadingError(
+            "Zstandard support is unavailable; install anthro-chess[data]"
+        ) from error
+
+    with source_path.open("rb") as compressed_file:
+        decompressor = zstandard.ZstdDecompressor()
+        try:
+            with (
+                decompressor.stream_reader(compressed_file) as reader,
+                TextIOWrapper(reader, encoding="utf-8") as pgn_file,
+            ):
+                yield pgn_file
+        except zstandard.ZstdError as error:
+            raise DataLoadingError(
+                f"cannot decompress input PGN {source_path}: {error}"
+            ) from error
 
 
 @dataclass(frozen=True)

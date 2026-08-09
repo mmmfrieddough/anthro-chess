@@ -30,7 +30,7 @@ from anthro_chess.machine import (
 )
 
 if TYPE_CHECKING:
-    from anthro_chess.data import SequenceDataConfig
+    from anthro_chess.data import PrepareConfig, SequenceDataConfig
     from anthro_chess.evaluation import (
         CheckpointEvaluationResult,
         DecisionDecomposition,
@@ -194,6 +194,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit TOML source and preprocessing selection.",
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
+
+    mark_accounts_parser = data_commands.add_parser(
+        "mark-accounts",
+        help=(
+            "Snapshot which of an archive's accounts the source has marked, so "
+            "preparation can reject their games without querying it."
+        ),
+        parents=[_SET_FLAG],
+    )
+    mark_accounts_parser.add_argument(
+        "input",
+        type=Path,
+        nargs="?",
+        help="Raw source PGN file. Defaults to the configured acquired archive.",
+    )
+    mark_accounts_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML source and archive selection.",
+    )
+    mark_accounts_parser.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Snapshot to write. Defaults to the configured "
+            "filters.marked_accounts path."
+        ),
+    )
+    mark_accounts_parser.add_argument(
+        "--pause-seconds",
+        type=float,
+        help=(
+            "Seconds between requests, overriding the checked-in default. "
+            "Refusals compound, so raise this before lowering it."
+        ),
+    )
+    mark_accounts_parser.set_defaults(handler=_run_data_mark_accounts)
 
     eval_parser = subcommands.add_parser(
         "eval",
@@ -1097,18 +1135,9 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         output = _data_output_path(arguments.output, resolved.value.artifact_name)
-        input_path = arguments.input
-        if input_path is None:
-            if resolved.value.archive is None:
-                raise ConfigError(
-                    "input path is required because the selected data "
-                    "configuration has no archive"
-                )
-            archive_root = _data_output_path(
-                arguments.output,
-                resolved.value.archive.artifact_name or resolved.value.artifact_name,
-            )
-            input_path = archive_root / "raw" / resolved.value.archive.file_name
+        input_path = _configured_archive_path(
+            resolved, arguments.input, arguments.output
+        )
         result = prepare_pgn(input_path, output, resolved)
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
@@ -1125,6 +1154,99 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             f"{result.normalized_paths[0].parent}"
         )
     print(f"Manifest: {result.manifest_path}")
+    return 0
+
+
+def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
+    from datetime import UTC, datetime
+
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.data import DataLoadingError, PrepareConfig
+    from anthro_chess.data.accounts import (
+        MarkedAccountError,
+        load_marked_accounts,
+        marked_accounts_from_usernames,
+        query_marked_accounts,
+        resolve_snapshot_path,
+        scan_archive_accounts,
+    )
+    from anthro_chess.data.artifacts import file_sha256
+
+    try:
+        resolved = load_config(
+            PrepareConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
+        configured_archive = resolved.value.archive
+        input_path = _configured_archive_path(resolved, arguments.input, None)
+        if not input_path.is_file():
+            raise ConfigError(f"source archive does not exist: {input_path}")
+
+        output_path = arguments.output
+        if output_path is None:
+            configured_output = resolved.value.filters.marked_accounts
+            if configured_output is None:
+                raise ConfigError(
+                    "--output is required because the selection sets no "
+                    "filters.marked_accounts path"
+                )
+            output_path = resolve_snapshot_path(
+                configured_output, resolved.provenance.source
+            )
+
+        archive_sha256 = file_sha256(input_path)
+        if (
+            configured_archive is not None
+            and archive_sha256 != configured_archive.sha256
+        ):
+            raise ConfigError(
+                f"archive checksum mismatch: expected {configured_archive.sha256}, "
+                f"observed {archive_sha256}"
+            )
+
+        if output_path.is_file():
+            existing = load_marked_accounts(output_path)
+            if archive_sha256 == existing.covers_archive:
+                print(
+                    f"{output_path} already covers this archive "
+                    f"({existing.accounts_marked} marked of "
+                    f"{existing.accounts_queried})."
+                )
+                return 0
+            raise ConfigError(
+                f"{output_path} covers a different archive. Widening one snapshot "
+                "across archives has to keep every earlier verdict rather than "
+                "re-decide covered accounts, and nothing prepares from two "
+                "archives yet; write this one to its own --output path"
+            )
+
+        resume_path = output_path.with_suffix(output_path.suffix + ".partial")
+        print(f"Scanning {input_path} for distinct accounts...")
+        accounts = scan_archive_accounts(input_path)
+        print(f"Querying the source about {len(accounts)} account(s)...")
+        marked = query_marked_accounts(
+            accounts,
+            pause_seconds=arguments.pause_seconds,
+            resume_path=resume_path,
+        )
+        snapshot = marked_accounts_from_usernames(
+            marked,
+            archive_sha256=archive_sha256,
+            queried_at=datetime.now(tz=UTC).date().isoformat(),
+            accounts_queried=len(accounts),
+        )
+        snapshot.write(output_path)
+        resume_path.unlink(missing_ok=True)
+    except (ConfigError, DataLoadingError, MarkedAccountError) as error:
+        print(f"anthro data mark-accounts: {error}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Marked {snapshot.accounts_marked} of {len(accounts)} account(s) "
+        f"({100 * snapshot.accounts_marked / max(len(accounts), 1):.2f}%)."
+    )
+    print(f"Snapshot: {output_path}")
     return 0
 
 
@@ -3573,6 +3695,29 @@ def _data_output_path(output: Path | None, artifact_name: str) -> Path:
     if output is not None:
         return output
     return _environment_root(DATA_ROOT_VARIABLE) / artifact_name
+
+
+def _configured_archive_path(
+    resolved: ResolvedConfig[PrepareConfig],
+    explicit_input: Path | None,
+    artifact_root: Path | None,
+) -> Path:
+    """Return where the archive a data selection names was acquired to."""
+
+    from anthro_chess.config import ConfigError
+
+    if explicit_input is not None:
+        return explicit_input
+    archive = resolved.value.archive
+    if archive is None:
+        raise ConfigError(
+            "input path is required because the selected data "
+            "configuration has no archive"
+        )
+    root = _data_output_path(
+        artifact_root, archive.artifact_name or resolved.value.artifact_name
+    )
+    return root / "raw" / archive.file_name
 
 
 def _environment_root(name: str) -> Path:

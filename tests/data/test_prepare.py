@@ -23,6 +23,7 @@ from anthro_chess.data import (
     acquire_archive,
     prepare_pgn,
 )
+from anthro_chess.data.accounts import marked_accounts_from_usernames
 from anthro_chess.data.schema import NORMALIZED_COLUMNS
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -155,7 +156,11 @@ def test_filters_games_and_records_rejection_reasons(tmp_path: Path) -> None:
     input_path.write_text(
         _short_game(site="accepted")
         + _short_game(site="bot", extra_headers='[WhiteTitle "BOT"]\n')
-        + _short_game(site="unrated", event="Casual test game"),
+        + _short_game(site="unrated", event="Casual test game")
+        + _short_game(
+            site="infraction",
+            extra_headers='[Termination "Rules infraction"]\n',
+        ),
         encoding="utf-8",
     )
     resolved = load_config(
@@ -172,12 +177,64 @@ def test_filters_games_and_records_rejection_reasons(tmp_path: Path) -> None:
     result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
 
     assert result.accepted_games == 1
-    assert result.rejected_games == 2
+    assert result.rejected_games == 3
     manifest = _read_json(result.manifest_path)
     assert manifest["games"]["rejection_reasons"] == {
         "bot_game": 1,
+        "rules_infraction": 1,
         "unrated_game": 1,
     }
+
+
+def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
+    input_path = tmp_path / "marked.pgn"
+    input_path.write_text(
+        _short_game(site="clean")
+        + _short_game(site="marked-white", white="Cheater")
+        + _short_game(site="marked-black", black="Cheater"),
+        encoding="utf-8",
+    )
+    snapshot = marked_accounts_from_usernames(
+        ["cheater"],
+        archive_sha256=sha256(input_path.read_bytes()).hexdigest(),
+        queried_at="2026-08-08",
+        accounts_queried=6,
+    ).write(tmp_path / "marked-accounts.txt")
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(f'filters.marked_accounts="{snapshot}"',),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    # Both colours are checked.
+    assert result.accepted_games == 1
+    manifest = _read_json(result.manifest_path)
+    assert manifest["games"]["rejection_reasons"] == {"marked_account": 2}
+    assert manifest["marked_accounts"]["accounts_marked"] == 1
+    assert manifest["marked_accounts"]["accounts_queried"] == 6
+
+
+def test_refuses_to_prepare_an_archive_the_snapshot_does_not_cover(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "widened.pgn"
+    input_path.write_text(_short_game(site="accepted"), encoding="utf-8")
+    snapshot = marked_accounts_from_usernames(
+        ["cheater"],
+        archive_sha256="f" * 64,
+        queried_at="2026-08-08",
+        accounts_queried=6,
+    ).write(tmp_path / "marked-accounts.txt")
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(f'filters.marked_accounts="{snapshot}"',),
+    )
+
+    with pytest.raises(DataPreparationError, match="does not cover archive"):
+        prepare_pgn(input_path, tmp_path / "artifacts", resolved)
 
 
 def test_rejects_a_run_when_no_games_pass_filters(tmp_path: Path) -> None:
@@ -348,7 +405,7 @@ _ENDING_GAMES: tuple[tuple[str, str], ...] = (
     ("resigned-off-turn", "resignation"),
     ("flagged", "clock_expiry"),
     ("walked-away", "abandonment"),
-    ("infraction", "unknown"),
+    ("unterminated", "unknown"),
 )
 
 
@@ -388,10 +445,10 @@ def _ending_corpus() -> str:
             termination="Time forfeit",
         )
         + _ended_game(
-            site="infraction",
+            site="unterminated",
             result="1-0",
             movetext="1. e4 e5",
-            termination="Rules infraction",
+            termination="Unterminated",
         )
     )
 
@@ -683,14 +740,16 @@ def _short_game(
     site: str,
     event: str = "Rated Blitz game",
     extra_headers: str = "",
+    white: str = "White",
+    black: str = "Black",
 ) -> str:
     return f"""
 [Event "{event}"]
 [Site "https://example.test/{site}"]
 [Date "2026.07.16"]
 [Round "-"]
-[White "White"]
-[Black "Black"]
+[White "{white}"]
+[Black "{black}"]
 [Result "1-0"]
 [WhiteElo "1200"]
 [BlackElo "1200"]
