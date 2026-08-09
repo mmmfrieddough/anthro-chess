@@ -85,11 +85,29 @@ removal of 0025.
 on one frozen pool share their draw, so the variance of their difference is
 `sigma_a**2 + sigma_b**2 - 2*cov`, and dropping the covariance term reports a
 width strictly wider than the truth. Decision 0033 measured that cost at about
-1.9x, and decision 0042 argued the puzzle family is its extreme case, since every
-checkpoint is scored on the identical set. Both are superseded here, and both were
-right about the arithmetic: real improvements will read as noise more often than
-a paired estimator would have let them, and the puzzle response is where that will
-show first.
+1.9x, and decision 0042 identified the puzzle family as its extreme case, since
+every checkpoint is scored on the identical set. Both are superseded here, and
+both were right about the arithmetic: real improvements will read as noise more
+often than a paired estimator would have let them, and the puzzle response is
+where that will show first.
+
+0042 is superseded in its routing rather than refuted in its reasoning, and it
+named this path itself: having declined to attach its spreads as floors, it
+records that if a cross-checkpoint qualifier is ever wanted, the cheap form is
+the one to build — attach the within-reading spread through `bounded_floor`,
+"which errs wide, the direction that costs findings rather than invents them".
+This is that form, taken everywhere rather than for one family, with the
+equal-dispersion assumption in its `sqrt(2)` removed. What 0042 estimates is
+retained in full: a replicate redraws once and refits every configured rating
+together, the draw is stratified and rescaled per 0039, and a quantity no redraw
+moved reports no spread. Only its conclusion that such deltas stay `unknown` is
+reversed.
+
+That estimator shape is also why the paired approach could not have been kept
+here in any case. A fitted rating is a nonlinear functional of the whole draw,
+and pairing retains per-unit values and reduces them by a mean, so it cannot
+reach the response metrics at all — as 0042 observes, the ladder refits the same
+way and cannot pair either.
 
 That is accepted. A floor that is too wide costs power; a floor that is wrong
 about what it covers costs a claim. The maintainer's requirement is a bar that is
