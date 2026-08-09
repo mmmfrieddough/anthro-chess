@@ -501,6 +501,16 @@ corpus it read, because two runs over one corpus can differ only in what they
 selected from it. `docs/data.md` owns what that selection is and why it is a
 load-time dial.
 
+It is rewritten beside every checkpoint rather than once after the step loop
+returns, because a run is selected through its record and a run that is
+signalled, crashes, or loses its host would otherwise leave weights nothing can
+load, however long it trained. So the record describes where the run had
+reached rather than where it was configured to stop: the steps it completed are
+its own field, the target is in the resolved configuration beside them, and a
+completion flag separates an interrupted run from a finished one — including
+the run interrupted after its last checkpoint but before its validation, which
+reached its target step and still never finished.
+
 The metrics stream carries more than one kind of record, each labelled, because
 a cadence reading and an optimizer step do not arrive on the same schedule and
 should not be forced into one row. A reader selects the kind it wants rather
