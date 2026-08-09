@@ -189,7 +189,7 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_WHITE_SCORE,
     MOVE_PREDICTION_PROJECTION,
 )
-from anthro_chess.evaluation.results.noise import floor_from_dispersion
+from anthro_chess.evaluation.results.noise import bounded_floor, self_combined_floor
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
@@ -525,10 +525,11 @@ class SeedSpread:
         # them leaves few degrees of freedom and a wide bound. That is the
         # honest reading of a spread measured this thinly, and it is another
         # reason this stays a diagnostic rather than a floor a report applies.
-        return floor_from_dispersion(
+        _, floor = bounded_floor(
             stdev([value for _, value in values]),
             degrees_of_freedom=len(values) - 1,
         )
+        return floor
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one quantity's seed spread."""
@@ -1291,17 +1292,21 @@ def _divergence_by_depth(
             # One depth the reference cannot support is a reason to report
             # fewer points, not to fail a diagnostic the rest of them support.
             continue
-        floors = comparison.floors
+        spreads = comparison.dispersions
         points.append(
             DepthDivergence(
                 ply=ply,
                 categories=len({observation.value for observation in (*human, *model)}),
                 conditional_distance=comparison.conditional_distance,
                 conditional_floor=(
-                    None if floors is None else floors.conditional.value
+                    None
+                    if spreads is None
+                    else self_combined_floor(spreads.conditional)
                 ),
                 pooled_distance=comparison.pooled_distance,
-                pooled_floor=None if floors is None else floors.pooled.value,
+                pooled_floor=(
+                    None if spreads is None else self_combined_floor(spreads.pooled)
+                ),
             )
         )
     return tuple(points)

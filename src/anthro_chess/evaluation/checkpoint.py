@@ -21,7 +21,6 @@ import logging
 import random
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -60,7 +59,7 @@ from anthro_chess.evaluation.dependency import (
     build_dependency_result,
 )
 from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_leakage
-from anthro_chess.evaluation.noise import NoiseConfig, characterize_sampling_noise
+from anthro_chess.evaluation.noise import NoiseConfig, sampling_dispersions
 from anthro_chess.evaluation.opening_frequency import (
     OpeningFrequency,
     OpeningFrequencyError,
@@ -96,6 +95,7 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     DatasetReference,
     Measurement,
+    MetricDispersion,
     ResultEnvelope,
     measurement,
     paired_contributions,
@@ -111,10 +111,7 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
     MOVE_PREDICTION_PROJECTION,
 )
-from anthro_chess.evaluation.results.noise import (
-    NoiseCharacterization,
-    NoiseCharacterizationError,
-)
+from anthro_chess.evaluation.results.noise import NoiseCharacterizationError
 from anthro_chess.evaluation.scoring import (
     SCORED_COLUMNS,
     EvaluationLoaderConfig,
@@ -220,7 +217,7 @@ class CheckpointEvaluationResult:
     slices: SliceTable
     adjudication: AdjudicationReport | None
     dependency: DependencyTestResult | None
-    noise: NoiseCharacterization | None
+    dispersions: Mapping[str, MetricDispersion]
     opening_frequency: OpeningFrequency | None = None
     opening_tail: OpeningTailReading | None = None
     envelopes: tuple[ResultEnvelope, ...] = ()
@@ -245,7 +242,10 @@ class CheckpointEvaluationResult:
             "dependency": (
                 self.dependency.as_record() if self.dependency is not None else None
             ),
-            "noise": self.noise.as_record() if self.noise is not None else None,
+            "dispersions": {
+                fingerprint: dispersion.model_dump(mode="json")
+                for fingerprint, dispersion in sorted(self.dispersions.items())
+            },
             "opening_frequency": (
                 None
                 if self.opening_frequency is None
@@ -513,16 +513,15 @@ def evaluate_checkpoint(
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
     )
-    noise = _characterize_noise(
+    dispersions = _estimate_dispersions(
         config,
         inputs,
         positions,
         adjudication,
         component,
-        recorded_at=recording.recorded_at,
         opening_frequency=frequency,
     )
-    recorder.characterize(noise)
+    recorder.disperse(dispersions)
     result = CheckpointEvaluationResult(
         checkpoint=checkpoint,
         dataset=data,
@@ -531,7 +530,7 @@ def evaluate_checkpoint(
         slices=slices,
         adjudication=adjudication,
         dependency=dependency,
-        noise=noise,
+        dispersions=dispersions,
         opening_frequency=frequency,
         opening_tail=opening_tail,
     )
@@ -603,30 +602,29 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
     return _EvaluationInputs(pool=pool, selection=selection, scoring=scoring)
 
 
-def _characterize_noise(
+def _estimate_dispersions(
     config: CheckpointEvaluationConfig,
     inputs: _EvaluationInputs,
     positions: Sequence[PositionPolicy],
     adjudication: AdjudicationReport | None,
     component: DataComponent,
     *,
-    recorded_at: datetime,
     opening_frequency: OpeningFrequency | None,
-) -> NoiseCharacterization | None:
-    """Estimate this reading's own data-sampling noise from the same pass.
+) -> dict[str, MetricDispersion]:
+    """Estimate this reading's own data-sampling spread from the same pass.
 
-    The floor costs one resampling of numbers already computed, so it is on by
-    default. A reading with no floor beside it can only report that a number
+    The estimate costs one resampling of numbers already computed, so it is on
+    by default. A reading with no spread beside it can only report that a number
     moved.
     """
 
     if not config.noise.enabled:
-        return None
+        return {}
     try:
         adjudication_totals = (
             () if adjudication is None else adjudication.per_game_totals()
         )
-        return characterize_sampling_noise(
+        return sampling_dispersions(
             merge_game_totals(
                 per_game_totals(
                     positions,
@@ -641,13 +639,12 @@ def _characterize_noise(
                 f"bootstrap over {inputs.selection.selected_games} game(s) of "
                 f"pool view {inputs.selection.name!r}"
             ),
-            recorded_at=recorded_at,
         )
     except NoiseCharacterizationError as error:
         # A view too small to resample is a fact about the view, not a failed
-        # evaluation. The reading still stands; it simply has no floor.
-        logger.warning("Skipping data-sampling noise characterization: %s", error)
-        return None
+        # evaluation. The reading still stands; it simply has no spread.
+        logger.warning("Skipping the data-sampling estimate: %s", error)
+        return {}
 
 
 def _count_training_frequency(

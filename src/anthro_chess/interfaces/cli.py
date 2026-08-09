@@ -1619,16 +1619,15 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
                 f"{dependency.anchor_agreement_rate:.6f}",
             ]
         )
-    noise = result.noise
-    if noise is not None:
+    if result.dispersions:
         lines.extend(
             [
                 "",
                 (
-                    f"Noise: data-sampling floors for {len(noise.floors)} metric(s) "
-                    f"from {noise.replicates} resamples of "
-                    f"{result.view.selected_games} game(s). "
-                    "See `anthro eval noise list`."
+                    f"Noise: data-sampling dispersions for "
+                    f"{len(result.dispersions)} metric(s), bootstrapped over "
+                    f"{result.view.selected_games} game(s). A delta against "
+                    "another reading is floored by combining the two."
                 ),
             ]
         )
@@ -1973,6 +1972,7 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
     """
 
     from anthro_chess.evaluation.curves import CURVE_DETERMINISTIC_METHOD
+    from anthro_chess.evaluation.results import self_combined_floor
 
     if not reading.comparisons:
         # Headings over nothing read as a table that found nothing rather than
@@ -1993,19 +1993,25 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
     for quantity, comparison in reading.comparisons.items():
         spread = reading.seed_spread.get(quantity)
         references = comparison.references
-        floors = comparison.floors
+        spreads = comparison.dispersions
         lines.append(
             f"  {quantity.value:<{width}}"
             + _rollout_arm(
                 comparison.conditional_distance,
                 null=None if references is None else references.conditional,
-                floor=None if floors is None else floors.conditional.value,
+                floor=(
+                    None
+                    if spreads is None
+                    else self_combined_floor(spreads.conditional)
+                ),
                 seed=None if spread is None else spread.floor,
             )
             + _rollout_arm(
                 comparison.pooled_distance,
                 null=None if references is None else references.pooled,
-                floor=None if floors is None else floors.pooled.value,
+                floor=(
+                    None if spreads is None else self_combined_floor(spreads.pooled)
+                ),
                 seed=None if spread is None else spread.pooled_floor,
             )
             + f"{comparison.response.value:>{_ROLLOUT_VERDICT_WIDTH}}"
@@ -2022,8 +2028,8 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
         ]
     )
     if any(
-        comparison.floors is not None
-        and comparison.floors.method == CURVE_DETERMINISTIC_METHOD
+        comparison.dispersions is not None
+        and comparison.dispersions.method == CURVE_DETERMINISTIC_METHOD
         for comparison in reading.comparisons.values()
     ):
         # A floor of zero here is the reading's own answer rather than a
@@ -2261,6 +2267,8 @@ def _termination_arm(
 
 
 def _render_termination(result: TerminationBenchmarkResult) -> str:
+    from anthro_chess.evaluation.results import self_combined_floor
+
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
         f"Games: {result.games} generated against {result.reference_games} human "
@@ -2294,7 +2302,7 @@ def _render_termination(result: TerminationBenchmarkResult) -> str:
     for mix in result.mixes:
         comparison = mix.comparison
         references = comparison.references
-        floors = comparison.floors
+        spreads = comparison.dispersions
         # One line per arm rather than one line for both. The verdict is
         # computed from each distance against its own null, so a layout that
         # puts one arm's qualifier beside the other arm's distance invites the
@@ -2316,13 +2324,19 @@ def _render_termination(result: TerminationBenchmarkResult) -> str:
                     "conditional",
                     comparison.conditional_distance,
                     null=None if references is None else references.conditional,
-                    floor=None if floors is None else floors.conditional.value,
+                    floor=(
+                        None
+                        if spreads is None
+                        else self_combined_floor(spreads.conditional)
+                    ),
                 ),
                 _termination_arm(
                     "pooled",
                     comparison.pooled_distance,
                     null=None if references is None else references.pooled,
-                    floor=None if floors is None else floors.pooled.value,
+                    floor=(
+                        None if spreads is None else self_combined_floor(spreads.pooled)
+                    ),
                 ),
                 f"  reads as    {comparison.response.value}",
             ]
@@ -2555,14 +2569,20 @@ def _resolves(
     metric: str,
     precision: int,
 ) -> str:
-    """Return what one reported number can resolve, as a suffix to print."""
+    """Return what one reported number can resolve, as a suffix to print.
+
+    A single reading resolves nothing on its own, so what is shown is the floor
+    a delta against a reading like this one would face.
+    """
+
+    from anthro_chess.evaluation.results import self_combined_floor
 
     resolution = result.resolution
     if resolution is None:
         return ""
-    floor = resolution.floor(scope, metric)
-    if floor is not None:
-        return f" ±{floor.value:.{precision}f}"
+    dispersion = resolution.dispersion(scope, metric)
+    if dispersion is not None:
+        return f" ±{self_combined_floor(dispersion):.{precision}f}"
     return " (unqualifiable)" if (scope, metric) in resolution.unqualifiable else ""
 
 
@@ -2582,9 +2602,15 @@ def _resolves_column(
     columns and explained by the ``unplaced`` line above.
     """
 
+    from anthro_chess.evaluation.results import self_combined_floor
+
     resolution = result.resolution
-    floor = None if resolution is None else resolution.floor(scope, metric)
-    value = "-" if floor is None else f"±{floor.value:.{precision}f}"
+    dispersion = None if resolution is None else resolution.dispersion(scope, metric)
+    value = (
+        "-"
+        if dispersion is None
+        else f"±{self_combined_floor(dispersion):.{precision}f}"
+    )
     return value.rjust(width)
 
 
@@ -3400,9 +3426,6 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
         if record.training is not None:
             print(f"  valid for training configuration {record.training[:16]}")
         for entry in record.floors:
-            units = (
-                "" if entry.sampling_units is None else f"  n={entry.sampling_units}"
-            )
             within = (
                 ""
                 if entry.within_process_dispersion is None
@@ -3412,7 +3435,7 @@ def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
                 f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
                 f"dispersion {entry.dispersion:.6g} "
                 f"bounded at {entry.dispersion_bound:.6g} "
-                f"(df {entry.degrees_of_freedom}){units}{within}"
+                f"(df {entry.degrees_of_freedom}){within}"
             )
     return 0
 
@@ -3426,27 +3449,38 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         games_to_resolve,
         metric_definition,
         resolve_store_root,
+        self_combined_floor,
     )
 
     try:
         metric = metric_definition(arguments.metric).identifier
         store = ResultsStore(resolve_store_root(arguments.store))
-        # Characterizations arrive in recording order, so the last data-sampling
-        # record covering this metric is the one that still describes it.
-        newest = None
-        entry = None
-        for record in store.characterizations():
-            candidate = record.entry(metric) if record.kind == "data-sampling" else None
-            if candidate is not None:
-                newest, entry = record, candidate
-        if newest is None or entry is None:
+        # Results arrive in recording order, so the last reading that measured
+        # its own spread over a counted sample is the one that still describes
+        # the metric.
+        measured = None
+        for envelope in store.results():
+            candidate = envelope.measurement(metric)
+            if (
+                candidate is not None
+                and candidate.dispersion is not None
+                and candidate.sample_size is not None
+            ):
+                measured = candidate
+        if measured is None or measured.dispersion is None:
             print(
-                f"anthro eval noise plan: no data-sampling floor is recorded for "
-                f"{metric}",
+                f"anthro eval noise plan: no reading records a sampled "
+                f"dispersion for {metric}",
                 file=sys.stderr,
             )
             return 2
-        required = games_to_resolve(entry, arguments.effect)
+        units = measured.sample_size or 0
+        required = games_to_resolve(
+            measured.dispersion,
+            units=units,
+            effect=arguments.effect,
+        )
+        floor = self_combined_floor(measured.dispersion)
     except (
         MetricRegistryError,
         NoiseCharacterizationError,
@@ -3462,9 +3496,9 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
                     "metric": metric,
                     "effect": arguments.effect,
                     "required_games": required,
-                    "measured_games": entry.sampling_units,
-                    "measured_floor": entry.floor,
-                    "source": newest.source,
+                    "measured_games": units,
+                    "measured_floor": floor,
+                    "source": measured.dispersion.source,
                 },
                 indent=2,
                 sort_keys=True,
@@ -3476,8 +3510,8 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         f"{required} game(s)."
     )
     print(
-        f"Measured floor {entry.floor:.6g} over {entry.sampling_units} game(s) "
-        f"({newest.source})."
+        f"Measured floor {floor:.6g} over {units} game(s) "
+        f"({measured.dispersion.source})."
     )
     return 0
 

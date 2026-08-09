@@ -39,9 +39,11 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
+#: Version 6 carries a measurement's own dispersion in place of a floor built
+#: from it, so a delta is floored by combining the two readings it compares.
 #: Version 5 records the training identity a training noise floor is scoped to.
 #: Version 4 names the estimator behind a stored noise floor.
-ENVELOPE_VERSION = 5
+ENVELOPE_VERSION = 6
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -313,6 +315,41 @@ class NoiseFloor(ResultModel):
     estimator: Identifier | None = None
 
 
+class MetricDispersion(ResultModel):
+    """How far one reading's own units move the metric it reports.
+
+    A reading stores its spread rather than a floor built from it. A floor
+    computed inside one reading has to assume the other operand's spread equals
+    it, and the two committed readings of one metric have differed by two orders
+    of magnitude; combining the two dispersions in front of a delta is the same
+    arithmetic without that assumption.
+    ``docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md``
+    owns the design.
+    """
+
+    value: float = Field(ge=0.0)
+    #: The conservative upper limit on ``value`` a floor is combined from, per
+    #: decision 0026. Bounded here rather than at comparison time because the
+    #: replicates behind the estimate are the reading's own, and stored beside
+    #: the estimate so how much of a wide floor is spread and how much is
+    #: ignorance stays visible.
+    bound: float = Field(ge=0.0)
+    kind: NoiseFloorKind
+    source: str | None = Field(default=None, min_length=1)
+    estimator: Identifier | None = None
+
+    @model_validator(mode="after")
+    def _validate_bound(self) -> MetricDispersion:
+        if not math.isfinite(self.value) or not math.isfinite(self.bound):
+            raise ValueError("a dispersion and its bound must be finite numbers")
+        if self.bound < self.value:
+            raise ValueError(
+                "a dispersion bound below the dispersion it bounds is not a "
+                "conservative limit"
+            )
+        return self
+
+
 class Measurement(ResultModel):
     """One metric value and the series it belongs to."""
 
@@ -320,7 +357,7 @@ class Measurement(ResultModel):
     value: float
     fingerprint: Sha256Hex
     sample_size: int | None = Field(default=None, ge=1)
-    noise_floor: NoiseFloor | None = None
+    dispersion: MetricDispersion | None = None
 
     @model_validator(mode="after")
     def _validate_value(self) -> Measurement:
@@ -587,7 +624,7 @@ def measurement(
     data: DataComponent | None = None,
     workload: WorkloadComponent | None = None,
     sample_size: int | None = None,
-    noise_floor: NoiseFloor | None = None,
+    dispersion: MetricDispersion | None = None,
 ) -> Measurement:
     """Return one measurement with its fingerprint computed from the registry."""
 
@@ -601,7 +638,7 @@ def measurement(
         value=value,
         fingerprint=fingerprint,
         sample_size=sample_size,
-        noise_floor=noise_floor,
+        dispersion=dispersion,
     )
 
 

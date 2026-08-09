@@ -41,6 +41,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ResultEnvelope,
     ResultsStore,
+    self_combined_floor,
 )
 from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_CONDITIONAL_DISTANCE,
@@ -612,8 +613,8 @@ def test_a_distance_carries_the_floor_it_has_to_clear(
         )
         assert conditional is not None
         assert conditional.value >= 0.0
-        assert conditional.noise_floor is not None
-        assert conditional.noise_floor.kind == "evaluation"
+        assert conditional.dispersion is not None
+        assert conditional.dispersion.kind == "evaluation"
 
 
 def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
@@ -639,10 +640,10 @@ def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
     sampled = result.reading(RolloutArm.STANDARD_START, 1.0)
     assert greedy.comparisons
     for comparison in greedy.comparisons.values():
-        assert comparison.floors is not None
-        assert comparison.floors.method == CURVE_DETERMINISTIC_METHOD
-        assert comparison.floors.conditional.value == 0.0
-        assert comparison.floors.pooled.value == 0.0
+        assert comparison.dispersions is not None
+        assert comparison.dispersions.method == CURVE_DETERMINISTIC_METHOD
+        assert comparison.dispersions.conditional.value == 0.0
+        assert comparison.dispersions.pooled.value == 0.0
     # The null levels answer a different question and survive: a finite sample
     # still fails to match the reference exactly, whether or not another run
     # would redraw it.
@@ -651,8 +652,8 @@ def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
     )
     assert sampled.comparisons
     for comparison in sampled.comparisons.values():
-        assert comparison.floors is not None
-        assert comparison.floors.method == CURVE_BOOTSTRAP_METHOD
+        assert comparison.dispersions is not None
+        assert comparison.dispersions.method == CURVE_BOOTSTRAP_METHOD
     # The per-ply divergence sweep is the same reading truncated, so it reaches
     # the same answer rather than bootstrapping the identical games twenty times.
     assert greedy.divergence
@@ -712,11 +713,9 @@ def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(
         item = envelope.measurement(
             GENERATED_PLAY_CONDITIONAL_DISTANCE[quantity.value].identifier
         )
-        assert item is not None and item.noise_floor is not None
-        assert comparison.floors is not None
-        assert item.noise_floor.value == pytest.approx(
-            comparison.floors.conditional.value
-        )
+        assert item is not None and item.dispersion is not None
+        assert comparison.dispersions is not None
+        assert item.dispersion == comparison.dispersions.conditional
 
 
 def test_a_reading_reports_how_far_its_smoother_actually_reached(
@@ -790,18 +789,18 @@ def test_the_comparison_table_qualifies_each_arm_with_its_own_numbers(
     assert set(rows) == {quantity.value for quantity in reading.comparisons}
     for quantity, comparison in reading.comparisons.items():
         assert comparison.references is not None
-        assert comparison.floors is not None
+        assert comparison.dispersions is not None
         spread = reading.seed_spread[quantity]
         assert spread.floor is not None and spread.pooled_floor is not None
         assert rows[quantity.value].split() == [
             quantity.value,
             f"{comparison.conditional_distance:.4f}",
             f"{comparison.references.conditional:.4f}",
-            f"{comparison.floors.conditional.value:.4f}",
+            f"{self_combined_floor(comparison.dispersions.conditional):.4f}",
             f"{spread.floor:.4f}",
             f"{comparison.pooled_distance:.4f}",
             f"{comparison.references.pooled:.4f}",
-            f"{comparison.floors.pooled.value:.4f}",
+            f"{self_combined_floor(comparison.dispersions.pooled):.4f}",
             f"{spread.pooled_floor:.4f}",
             comparison.response.value,
         ]

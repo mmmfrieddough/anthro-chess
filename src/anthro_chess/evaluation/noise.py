@@ -1,9 +1,12 @@
 """Data-sampling noise, estimated by bootstrapping one scored run.
 
-This is the cheap noise floor. It asks how far a metric would move on a
+This is the cheap dispersion. It asks how far a metric would move on a
 different draw of the same size from the same population, and it is answerable
 from a single evaluation pass: resample the games that were scored, recompute
 the metric, and read the spread. No repeat run and no second checkpoint.
+
+The spread travels on the reading that measured it. Turning it into a floor
+takes two readings, and that happens at comparison time.
 
 Games are the resampling unit rather than positions. Positions within one game
 are strongly dependent, so resampling positions would treat a game's worth of
@@ -20,7 +23,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 
 import numpy as np
 from pydantic import Field, StrictBool
@@ -28,6 +30,7 @@ from pydantic import Field, StrictBool
 from anthro_chess.config import ConfigModel
 from anthro_chess.evaluation.results import (
     DataComponent,
+    MetricDispersion,
     WorkloadComponent,
     series_fingerprint,
 )
@@ -35,25 +38,25 @@ from anthro_chess.evaluation.results.noise import (
     BOOTSTRAP_METHOD,
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
-    FloorEntry,
-    NoiseCharacterization,
     NoiseCharacterizationError,
-    bounded_floor,
-    build_characterization,
+    measured_dispersion,
 )
 
 #: Enough resamples for a stable dispersion without making a cheap estimate
-#: expensive. The floor is reported to a few significant figures, so further
-#: resamples buy precision nothing downstream reads.
+#: expensive. The dispersion is reported to a few significant figures, so
+#: further resamples buy precision nothing downstream reads.
 DEFAULT_RESAMPLES = 1000
 
 
 class NoiseConfig(ConfigModel):
-    """How an evaluation characterizes its own data-sampling noise."""
+    """How an evaluation estimates its own data-sampling noise."""
 
     enabled: StrictBool = True
     resamples: int = Field(default=DEFAULT_RESAMPLES, ge=100)
     seed: int = Field(default=0, ge=0)
+    #: Read by the estimators that report a covered spread within one reading.
+    #: A delta floor takes its coverage at comparison time, because the claim
+    #: belongs to the comparison rather than to either reading.
     coverage: float = Field(default=DEFAULT_COVERAGE, gt=0.0)
     confidence: float = Field(default=DEFAULT_CONFIDENCE, gt=0.0, lt=1.0)
 
@@ -80,17 +83,21 @@ class GameTotals:
     metrics: Mapping[str, MetricTotal]
 
 
-def bootstrap_floors(
+def bootstrap_dispersions(
     totals: Sequence[GameTotals],
     *,
     component: DataComponent,
     seed: int,
+    source: str,
     resamples: int = DEFAULT_RESAMPLES,
-    coverage: float = DEFAULT_COVERAGE,
     confidence: float = DEFAULT_CONFIDENCE,
     workload: WorkloadComponent | None = None,
-) -> tuple[FloorEntry, ...]:
-    """Return one data-sampling floor per metric the scored games support.
+) -> dict[str, MetricDispersion]:
+    """Return one data-sampling dispersion per metric the scored games support.
+
+    Keyed by series fingerprint, which names the metric as well as the inputs,
+    so a reading can attach each dispersion to the measurement it describes
+    without matching on the identifier and hoping the series agreed.
 
     A metric whose dispersion cannot be estimated is omitted rather than
     reported as zero. That happens for a rule case rare enough that resamples
@@ -112,8 +119,8 @@ def bootstrap_floors(
     precisely the false precision the bound is here to remove.
 
     ``workload`` is required by a benchmark whose metrics are execution-
-    sensitive, because a floor has to be stored under the same fingerprint as
-    the measurement it qualifies. Omitting it there would file every floor
+    sensitive, because a dispersion has to carry the same fingerprint as the
+    measurement it qualifies. Omitting it there would key every dispersion
     against a series no measurement belongs to.
     """
 
@@ -142,7 +149,7 @@ def bootstrap_floors(
 
     replicates = _bootstrap_replicates(sums, counts, seed=seed, resamples=resamples)
     freedom = len(totals) - 1
-    entries: list[FloorEntry] = []
+    dispersions: dict[str, MetricDispersion] = {}
     for column, metric in enumerate(metrics):
         values = replicates[:, column]
         observed = values[np.isfinite(values)]
@@ -151,62 +158,42 @@ def bootstrap_floors(
         dispersion = float(np.std(observed, ddof=1))
         if dispersion == 0.0:
             continue
-        bound, floor = bounded_floor(
-            dispersion,
-            degrees_of_freedom=freedom,
-            coverage=coverage,
-            confidence=confidence,
-        )
-        entries.append(
-            FloorEntry(
-                metric=metric,
-                fingerprint=series_fingerprint(metric, component, workload),
-                floor=floor,
-                dispersion=dispersion,
-                dispersion_bound=bound,
+        dispersions[series_fingerprint(metric, component, workload)] = (
+            measured_dispersion(
+                dispersion,
+                kind="data-sampling",
                 degrees_of_freedom=freedom,
-                sampling_units=len(totals),
+                confidence=confidence,
+                source=source,
+                estimator=BOOTSTRAP_METHOD,
             )
         )
-    return tuple(entries)
+    return dispersions
 
 
-def characterize_sampling_noise(
+def sampling_dispersions(
     totals: Sequence[GameTotals],
     *,
     component: DataComponent,
     config: NoiseConfig,
     source: str,
-    recorded_at: datetime | None = None,
     workload: WorkloadComponent | None = None,
-) -> NoiseCharacterization | None:
-    """Return the recordable characterization for one evaluation's own noise.
+) -> dict[str, MetricDispersion]:
+    """Return what one evaluation's own draw of games moves each metric by.
 
-    ``None`` means nothing could be estimated, which is a reportable state
-    rather than an error: a view too small to resample says so instead of
-    producing a floor nobody should trust.
+    An empty mapping means nothing could be estimated, which is a reportable
+    state rather than an error: a view too small to resample says so instead of
+    producing a dispersion nobody should trust.
     """
 
-    entries = bootstrap_floors(
+    return bootstrap_dispersions(
         totals,
         component=component,
         seed=config.seed,
+        source=source,
         resamples=config.resamples,
-        coverage=config.coverage,
         confidence=config.confidence,
         workload=workload,
-    )
-    if not entries:
-        return None
-    return build_characterization(
-        kind="data-sampling",
-        method=BOOTSTRAP_METHOD,
-        replicates=config.resamples,
-        coverage=config.coverage,
-        confidence=config.confidence,
-        source=source,
-        floors=entries,
-        recorded_at=recorded_at,
     )
 
 
@@ -245,6 +232,6 @@ __all__ = [
     "GameTotals",
     "MetricTotal",
     "NoiseConfig",
-    "bootstrap_floors",
-    "characterize_sampling_noise",
+    "bootstrap_dispersions",
+    "sampling_dispersions",
 ]

@@ -57,6 +57,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ExecutionRecord,
     Measurement,
+    MetricDispersion,
     NoiseCharacterization,
     ResultEnvelope,
     ResultRecordError,
@@ -183,6 +184,7 @@ class ResultRecording:
         self.detail = detail
         self.envelopes: list[ResultEnvelope] = []
         self.characterizations: list[NoiseCharacterization] = []
+        self.dispersions: dict[str, MetricDispersion] = {}
         self.detail_paths: list[Path] = []
         self._settings = resolved_config.value
         self._error = error
@@ -349,11 +351,25 @@ class ResultRecorder:
                 configuration=self._recording.configuration,
                 data=data,
                 execution=execution,
-                measurements=measurements,
+                measurements=[self._dispersed(item) for item in measurements],
                 detail=reference,
                 recorded_at=self._recording.recorded_at,
             )
         )
+
+    def _dispersed(self, item: Measurement) -> Measurement:
+        """Attach the spread estimated for this measurement's own series.
+
+        Matched on the fingerprint rather than the identifier, because that is
+        what says the estimate was taken over the inputs this measurement was
+        computed from. A measurement whose spread the estimator could not read
+        keeps none, and a unit the estimator never covered is left alone.
+        """
+
+        dispersion = self._recording.dispersions.get(item.fingerprint)
+        if dispersion is None:
+            return item
+        return item.model_copy(update={"dispersion": dispersion})
 
     def _write(
         self,
@@ -378,6 +394,17 @@ class ResultRecorder:
 
         if characterization is not None:
             self._recording.characterizations.append(characterization)
+
+    def disperse(self, dispersions: Mapping[str, MetricDispersion]) -> None:
+        """Carry the spread of each series onto the measurements added after it.
+
+        Registered on the recorder rather than passed to :meth:`add` because one
+        estimating pass covers several units of a reading, and a benchmark that
+        had to route the mapping through each of them would be free to route it
+        to the wrong one.
+        """
+
+        self._recording.dispersions.update(dispersions)
 
 
 __all__ = [

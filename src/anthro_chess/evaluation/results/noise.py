@@ -9,11 +9,16 @@ mistake. They are estimated differently and they answer different questions,
 but they all reduce to the same reportable quantity: the **dispersion** of a
 metric across independent replicates of one noise source.
 
-A floor is that dispersion expressed as a delta. Two independent measurements
-of an unchanged quantity differ with a standard deviation of ``sqrt(2)`` times
-the dispersion of one of them, so a floor is that difference at a declared
-normal coverage. The result is directly comparable to a reported delta, which
-is what a report needs and what a raw standard deviation is not.
+A floor is that dispersion expressed as a delta, at a declared normal coverage.
+The result is directly comparable to a reported delta, which is what a report
+needs and what a raw standard deviation is not.
+
+The variance of a difference is the sum of the two variances, so a delta
+between two readings is floored by combining the dispersion each one carries:
+:func:`combined_floor`. :func:`bounded_floor` is the same arithmetic where both
+sides are one characterization's replicates and share a dispersion by
+construction, which is what makes its ``sqrt(2)`` correct there and an
+assumption anywhere else.
 
 The dispersion a floor is built from is never the measured one. A dispersion
 read off a handful of replicates is a point estimate sitting in the middle of
@@ -72,6 +77,7 @@ from anthro_chess.evaluation.results.records import (
     EnvironmentRecord,
     ExecutionRecord,
     Identifier,
+    MetricDispersion,
     NoiseFloor,
     NoiseFloorKind,
     ResultEnvelope,
@@ -80,11 +86,13 @@ from anthro_chess.evaluation.results.records import (
     canonical_json,
 )
 
+#: Version 5 dropped the sampled-unit count, which only a data-sampling floor
+#: carried and which now travels on the reading as its sample size.
 #: Version 4 added the training scope a training floor is only valid within.
 #: Version 3 replaced the point-estimate dispersion in a floor with a
 #: conservative upper bound, and records the confidence that bound carries.
 #: Version 2 added the execution scope an execution floor is only valid within.
-CHARACTERIZATION_VERSION = 4
+CHARACTERIZATION_VERSION = 5
 
 #: Two-sided normal coverage for a 95% interval. A floor is a claim about how
 #: far apart two measurements land when nothing changed, so it needs a stated
@@ -110,6 +118,12 @@ PROCESS_REPLICATE_METHOD = "repeated-process-replicates"
 #: ``docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md``
 #: owns why that is an error rather than a coarser estimate.
 PAIRED_BOOTSTRAP_METHOD = "paired-bootstrap-over-units"
+
+#: How a delta floor built from the two readings in front of it was arrived at.
+#: Named like an estimator because it stands where one used to, but it estimates
+#: nothing of its own: both readings already measured their spread, and this is
+#: the arithmetic that turns the pair into a floor.
+COMBINED_DISPERSION_METHOD = "combined-reading-dispersions"
 
 
 class NoiseCharacterizationError(ValueError):
@@ -139,11 +153,6 @@ class FloorEntry(ResultModel):
     #: and counting them here would restore the false precision the bound
     #: exists to remove.
     degrees_of_freedom: int = Field(ge=1)
-    #: How many independent sampling units the dispersion was measured over,
-    #: when the floor scales with that count. Set for data-sampling floors,
-    #: where it is the number of games and is what makes the sizing question
-    #: computable; absent for the kinds that do not scale this way.
-    sampling_units: int | None = Field(default=None, ge=1)
     #: How much of ``dispersion`` repeating the measurement inside one process
     #: already reproduces. Set for an execution floor measured with more than
     #: one reading per process, and absent otherwise. It is a diagnostic rather
@@ -430,36 +439,6 @@ def dispersion_bound(
     return dispersion * math.sqrt(degrees_of_freedom / quantile)
 
 
-def floor_from_dispersion(
-    dispersion: float,
-    *,
-    degrees_of_freedom: int,
-    coverage: float = DEFAULT_COVERAGE,
-    confidence: float = DEFAULT_CONFIDENCE,
-) -> float:
-    """Return the delta that noise alone produces, at a declared coverage.
-
-    Two independent measurements of an unchanged quantity differ with a
-    standard deviation of ``sqrt(2)`` times the dispersion of either one, so
-    this is the difference a reader should expect to see when nothing changed.
-
-    ``dispersion`` is bounded before it is used, so the returned floor covers
-    ``coverage`` of those differences with ``confidence`` rather than covering
-    it on average across characterizations. ``degrees_of_freedom`` is required
-    rather than defaulted because there is no safe value for it: a caller that
-    does not know how many independent replicates its estimate rests on cannot
-    know how far to trust it either.
-    """
-
-    _, floor = bounded_floor(
-        dispersion,
-        degrees_of_freedom=degrees_of_freedom,
-        coverage=coverage,
-        confidence=confidence,
-    )
-    return floor
-
-
 def bounded_floor(
     dispersion: float,
     *,
@@ -469,9 +448,15 @@ def bounded_floor(
 ) -> tuple[float, float]:
     """Return the bound a floor was built from, and the floor.
 
-    Every estimator records both, so returning them together keeps the stored
-    bound and the stored floor from drifting apart through two call sites that
-    could disagree about which arguments produced which.
+    Every characterization records both, so returning them together keeps the
+    stored bound and the stored floor from drifting apart through two call sites
+    that could disagree about which arguments produced which.
+
+    The ``sqrt(2)`` is exact here rather than assumed: a characterization's
+    replicates are draws of one quantity, so the two readings whose difference
+    this floors share a dispersion by construction. A delta between two
+    independent readings does not, and :func:`combined_floor` is what floors
+    that.
     """
 
     if coverage <= 0.0 or not math.isfinite(coverage):
@@ -482,6 +467,66 @@ def bounded_floor(
         confidence=confidence,
     )
     return bound, coverage * math.sqrt(2.0) * bound
+
+
+def measured_dispersion(
+    dispersion: float,
+    *,
+    kind: NoiseFloorKind,
+    degrees_of_freedom: int,
+    confidence: float = DEFAULT_CONFIDENCE,
+    source: str | None = None,
+    estimator: str | None = None,
+) -> MetricDispersion:
+    """Return the record a reading stores for a dispersion it estimated."""
+
+    return MetricDispersion(
+        value=dispersion,
+        bound=dispersion_bound(
+            dispersion,
+            degrees_of_freedom=degrees_of_freedom,
+            confidence=confidence,
+        ),
+        kind=kind,
+        source=source,
+        estimator=estimator,
+    )
+
+
+def combined_floor(
+    baseline: MetricDispersion,
+    current: MetricDispersion,
+    *,
+    coverage: float = DEFAULT_COVERAGE,
+) -> float:
+    """Return the delta noise alone produces between two readings.
+
+    The variance of a difference is the sum of the two variances, so the two
+    readings' bounded dispersions combine in quadrature. ``coverage`` is applied
+    here rather than stored on either reading because a floor is a claim the
+    comparison makes; the readings only say how far their own units move.
+    """
+
+    if coverage <= 0.0 or not math.isfinite(coverage):
+        raise NoiseCharacterizationError("coverage must be a finite, positive factor")
+    return coverage * math.hypot(baseline.bound, current.bound)
+
+
+def self_combined_floor(
+    dispersion: MetricDispersion,
+    *,
+    coverage: float = DEFAULT_COVERAGE,
+) -> float:
+    """Return the floor a delta against a reading like this one would face.
+
+    What one reading resolves on its own is not a fact about any delta, since
+    the other operand's spread is unknown until there is one. This is the
+    stand-in for a display holding a single reading: the floor if the other
+    reading turned out to match this one, which is also what a comparison
+    between two readings of one benchmark at one size will land near.
+    """
+
+    return combined_floor(dispersion, dispersion, coverage=coverage)
 
 
 def bounded_spread(
@@ -754,32 +799,42 @@ def process_replicate_floors(
     return tuple(entries)
 
 
-def games_to_resolve(entry: FloorEntry, effect: float) -> int:
+def games_to_resolve(
+    dispersion: MetricDispersion,
+    *,
+    units: int,
+    effect: float,
+    coverage: float = DEFAULT_COVERAGE,
+) -> int:
     """Return how many games are needed to resolve an effect of a given size.
 
-    A sampling floor shrinks with the square root of the games behind it, so
-    the count an axis needs is computable from one measured floor rather than
-    guessed. This is what sizes a pool generation.
+    A sampling dispersion shrinks with the square root of the games behind it,
+    so the count an axis needs is computable from one reading rather than
+    guessed. This is what sizes a pool generation, and it is why no separate
+    benchmark-level resolution constant is declared or kept current.
 
-    The answer errs high, and deliberately. The floor it extrapolates from
-    carries a dispersion bound sized for the degrees of freedom available now,
-    and a larger pool would carry more of those and a tighter bound, so the
-    projected floor is the widest one the larger pool could produce rather than
-    the one it will. Erring the other way would size a pool that turns out not
-    to resolve the effect it was cut for.
+    The floor it extrapolates from is the one a delta against a reading like
+    this one would face, since that is the comparison a larger pool is being cut
+    for.
+
+    The answer errs high, and deliberately. The bound behind that floor is sized
+    for the degrees of freedom available now, and a larger pool would carry more
+    of those and a tighter bound, so the projected floor is the widest one the
+    larger pool could produce rather than the one it will. Erring the other way
+    would size a pool that turns out not to resolve the effect it was cut for.
     """
 
-    if entry.sampling_units is None:
+    if units < 1:
         raise NoiseCharacterizationError(
-            f"the floor for {entry.metric} does not scale with a game count, so "
-            "it cannot size an evaluation input"
+            "sizing an evaluation input needs the number of units the "
+            "dispersion was measured over"
         )
     if effect <= 0.0 or not math.isfinite(effect):
         raise NoiseCharacterizationError("an effect size must be finite and positive")
-    if entry.floor == 0.0:
+    floor = self_combined_floor(dispersion, coverage=coverage)
+    if floor == 0.0:
         return 1
-    required = entry.sampling_units * (entry.floor / effect) ** 2
-    return max(1, math.ceil(required))
+    return max(1, math.ceil(units * (floor / effect) ** 2))
 
 
 def build_characterization(
@@ -893,6 +948,7 @@ def replicate_floors(
 __all__ = [
     "BOOTSTRAP_METHOD",
     "CHARACTERIZATION_VERSION",
+    "COMBINED_DISPERSION_METHOD",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_COVERAGE",
     "PAIRED_BOOTSTRAP_METHOD",
@@ -906,14 +962,16 @@ __all__ = [
     "bounded_floor",
     "bounded_spread",
     "build_characterization",
+    "combined_floor",
     "dispersion_bound",
     "environment_key",
-    "floor_from_dispersion",
     "games_to_resolve",
+    "measured_dispersion",
     "in_scope",
     "process_dispersion",
     "process_replicate_floors",
     "replicate_dispersion",
     "replicate_floors",
+    "self_combined_floor",
     "training_scope",
 ]
