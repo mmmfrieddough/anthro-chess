@@ -113,16 +113,32 @@ A floor on a measurement is looked up to qualify a *delta between two
 checkpoints*, and this spread is not that quantity: it is estimated from one
 reading's own draw without the covariance the two checkpoints share, so a report
 that used it would judge every puzzle delta by the estimator 0033 rejects. The
-paired estimator is the correct one, and it cannot reach these quantities yet
-because it retains per-unit values and reduces them by a mean, while a fitted
-rating is a nonlinear functional of the whole draw. Extending it to functional
-reductions is real work and is `#356` rather than half-built here.
+paired estimator is the correct one, and it cannot reach these quantities,
+because it retains per-unit values and reduces them by a mean while a fitted
+rating is a nonlinear functional of the whole draw.
 
-Until it lands, a report continues to render these metrics' deltas as noise
-`unknown`, which is the honest verdict: a floor nobody has produced yet rather
-than one that cannot exist. `no_sampling_floor_reason` is deliberately not set on
-them, because resampling the scored puzzles plainly can estimate their
-dispersion — this reading does it.
+**So a report renders these metrics' deltas as noise `unknown`, and that is
+where they stay.** It is the honest verdict — a floor nobody has produced rather
+than one that cannot exist — and `no_sampling_floor_reason` is deliberately not
+set on them, because resampling the scored puzzles plainly can estimate their
+dispersion; this reading does it.
+
+Building the cross-checkpoint version was considered and declined rather than
+deferred. It would need the report to re-run a benchmark-specific reduction per
+replicate — invert the expected-score sum, refit, then slope and ordering — and
+no mechanism exists for a benchmark to hand the report a reduction. Adding one
+couples the results layer to benchmark code or rewrites the reporting contract,
+and it has to serve the ladder too, which refits the same way and cannot pair at
+all. That is a large change for rows that read `unknown` and gate nothing: the
+slope is `INFORMATIONAL`, and the four solve-rate metrics beside it already
+carry paired floors and are what moves first.
+
+If it is ever wanted, the cheap form is the one to build and not the one above:
+attach these spreads to the measurements with `bounded_floor` — the `sqrt(2)`
+variant, since a delta between two readings is what a floor covers — and declare
+`paired_sampling_floor` on the metrics, so `0035`'s degraded-floor path annotates
+the substitution automatically. It errs wide, which is the direction that costs
+findings rather than invents them.
 
 ## Consequences
 
@@ -175,7 +191,8 @@ configured rating instead of only the slope's.
 
 - #173 — the gap this closes; #146, where the reading was taken
 - #168 / #321 — the realized sample size and detectable difference in the output
-- #356 — the cross-checkpoint half this defers; #304 — what a tiny stratum costs
+- #356 — the cross-checkpoint version, considered and closed; #304 — the
+  estimated zero, part fixed here and part still open
 - `docs/decisions/0026-conservative-dispersion-bounds.md`
 - `docs/decisions/0032-a-replayed-reading-has-no-evaluation-noise.md`
 - `docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md`
