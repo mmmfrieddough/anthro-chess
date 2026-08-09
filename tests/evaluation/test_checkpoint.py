@@ -162,9 +162,7 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     }
     assert result.adjudication is not None
     assert PositionPredicate.MATERIAL_GAIN in result.adjudication.predicates
-    # Three result envelopes and what the invocation cost. The data-sampling
-    # spreads bootstrapped from the same pass travel on the measurements rather
-    # than as a record of their own.
+    # Three result envelopes and what the invocation cost.
     assert len(result.recorded_paths) == 4
     assert result.checkpoint.step == 1
     assert result.checkpoint.parameter_sha256 is not None
@@ -439,8 +437,8 @@ def test_evaluation_bootstraps_a_spread_for_every_series_it_reports(
         assert dispersion.kind == "data-sampling"
         assert dispersion.bound >= dispersion.value
 
-    # Nothing is filed against the series any more, so nothing can collide
-    # there when the next reading of the same series measures its own spread.
+    # Nothing is filed against the series, so nothing can collide there when
+    # the next reading of the same series measures its own spread.
     assert store.characterizations() == ()
 
 

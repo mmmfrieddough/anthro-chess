@@ -120,9 +120,8 @@ def test_a_floor_is_the_delta_two_independent_measurements_produce() -> None:
 
 def test_a_delta_floor_combines_the_two_readings_it_compares() -> None:
     # The variance of a difference is the sum of the two variances, so two
-    # readings that happen to agree reduce to the sqrt(2) the old arithmetic
-    # assumed, and two that do not are dominated by the noisier of them rather
-    # than by whichever one the report happened to look up.
+    # readings that happen to agree reduce to sqrt(2) times either one, and two
+    # that do not are dominated by the noisier of them.
     narrow = measured_dispersion(0.1, kind="data-sampling", degrees_of_freedom=200)
     wide = measured_dispersion(1.19, kind="data-sampling", degrees_of_freedom=200)
 

@@ -2554,11 +2554,7 @@ def _resolves(
     metric: str,
     precision: int,
 ) -> str:
-    """Return what one reported number can resolve, as a suffix to print.
-
-    A single reading resolves nothing on its own, so what is shown is the floor
-    a delta against a reading like this one would face.
-    """
+    """Return what one reported number can resolve, as a suffix to print."""
 
     resolution = result.resolution
     if resolution is None:

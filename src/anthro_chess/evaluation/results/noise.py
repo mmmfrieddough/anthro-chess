@@ -125,9 +125,9 @@ PROCESS_REPLICATE_METHOD = "repeated-process-replicates"
 PAIRED_BOOTSTRAP_METHOD = "paired-bootstrap-over-units"
 
 #: How a delta floor built from the two readings in front of it was arrived at.
-#: Named like an estimator because it stands where one used to, but it estimates
-#: nothing of its own: both readings already measured their spread, and this is
-#: the arithmetic that turns the pair into a floor.
+#: It fills the same field an estimator's name does while estimating nothing:
+#: both readings already measured their spread, and this is only the arithmetic
+#: that turns the pair into a floor.
 COMBINED_DISPERSION_METHOD = "combined-reading-dispersions"
 
 
@@ -809,8 +809,7 @@ def games_to_resolve(dispersion: MetricDispersion, *, effect: float) -> int:
 
     A sampling dispersion shrinks with the square root of the games behind it,
     so the count an axis needs is computable from one reading rather than
-    guessed. This is what sizes a pool generation, and it is why no separate
-    benchmark-level resolution constant is declared or kept current.
+    guessed. This is what sizes a pool generation.
 
     The floor it extrapolates from is the one a delta against a reading like
     this one would face, since that is the comparison a larger pool is being cut

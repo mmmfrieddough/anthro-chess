@@ -150,9 +150,7 @@ class Movement(StrEnum):
     BETTER = "better"
     WORSE = "worse"
     #: The delta is zero, or inside the floor that qualifies it. The two are one
-    #: statement to act on — nothing here has been shown to move — and reporting
-    #: the sign of a delta the benchmark cannot distinguish from its own noise
-    #: is what let a row read ``better`` and ``within`` at once.
+    #: statement to act on: nothing here has been shown to move.
     UNCHANGED = "unchanged"
     INFORMATIONAL = "informational"
     UNKNOWN = "unknown"
@@ -1608,9 +1606,9 @@ def _applicable_floors(
         else None
     )
     # What a source spanning the whole delta covers: a series characterization,
-    # the paired estimator, or the two readings combined. Derived from the
-    # combined floor rather than from the same test a second time, so a kind
-    # cannot be reported as spanning with no floor behind it.
+    # the paired estimator, or the two readings combined. Read off the combined
+    # floor itself, so a kind cannot be reported as spanning with no floor
+    # behind it.
     spanning = {floor.kind for floor in indexed}
     if comparison_floor is not None:
         spanning.add(comparison_floor.kind)
@@ -1645,6 +1643,9 @@ def _applicable_floors(
 
 def _combined(baseline: MetricDispersion, current: MetricDispersion) -> NoiseFloor:
     """Return the floor the two readings' own dispersions imply for their delta.
+
+    The caller has already established that the two dispersions share a kind,
+    which is what lets the combined floor carry ``baseline``'s.
 
     Both sources are named, baseline first, where the two readings describe
     themselves differently: a floor combined from a thousand-game reading and a

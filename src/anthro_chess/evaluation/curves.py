@@ -453,7 +453,7 @@ class CurveDispersions:
 
     @property
     def pooled_floor(self) -> float:
-        """Return the same for the pooled arm."""
+        """Return the same for the pooled arm's distance."""
 
         return self_combined_floor(self.pooled)
 

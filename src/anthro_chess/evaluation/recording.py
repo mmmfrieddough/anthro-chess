@@ -356,8 +356,7 @@ class ResultRecorder:
 
         Matched on the fingerprint rather than the identifier, because that is
         what says the estimate was taken over the inputs this measurement was
-        computed from. A measurement whose spread the estimator could not read
-        keeps none, and a unit the estimator never covered is left alone.
+        computed from.
 
         A benchmark that built its measurement with a spread of its own keeps
         it. Only a benchmark whose estimating pass spans several units registers

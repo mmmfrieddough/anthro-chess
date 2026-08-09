@@ -423,8 +423,7 @@ def test_a_delta_floor_is_combined_from_both_readings_rather_than_one(
     assert row.noise_floor is not None
     assert row.noise_floor == pytest.approx(math.sqrt((0.1**2 + 0.5**2) / 2))
     assert 0.1 < row.noise_floor < 0.5
-    # Keeping the wider of the two, which is what a report holding one stored
-    # floor per series came to, would have called this delta of -0.4 noise.
+    # The wider of the two alone would have called this delta of -0.4 noise.
     assert row.noise is NoiseVerdict.CLEARED
     # Which side contributed the width is the first thing a wide floor raises.
     assert row.noise_floors[0].source == "a thousand games + forty games"
@@ -481,8 +480,8 @@ def test_no_row_reads_as_an_improvement_it_cannot_separate_from_noise(
 ) -> None:
     """``better`` and ``within`` on one row is a contradiction a reader acts on.
 
-    ``_movement`` was a pure sign test, so the committed store held a row
-    reading both at once. The floor is what decides whether anything moved.
+    The committed store held such a row, so this is an observed failure rather
+    than a hypothetical one. The floor is what decides whether anything moved.
     """
 
     component = move_prediction_component()
@@ -2220,8 +2219,7 @@ def test_the_default_text_view_stays_readable(
     # rating family, generated play, game termination, novelty, and training
     # efficiency, which have metrics but no result in this fixture; a family
     # gets its own actionable absence section as soon as it has a metric to be
-    # absent. One line of the noise legend is what saying that a within-floor
-    # delta reads as unchanged cost.
+    # absent.
     assert len(rendered.splitlines()) <= 35
 
 
