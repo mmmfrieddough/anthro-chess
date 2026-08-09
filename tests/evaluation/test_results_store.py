@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -235,6 +236,36 @@ def test_a_refused_detail_write_is_the_store_s_own_error(tmp_path: Path) -> None
     # The caller carries on past this error, so nothing else will ever remove
     # the half-written copy.
     assert list(destination.parent.glob(".*.tmp")) == []
+
+
+def test_a_detail_payload_the_serializer_refuses_is_the_store_s_own_error(
+    tmp_path: Path,
+) -> None:
+    # A committed measurement cannot be non-finite, but a detail payload is
+    # freeform: a rate over zero samples reaches the serializer unchecked.
+    detail = DetailStore(tmp_path / "detail")
+
+    # Indenting forces the pure-Python encoder, which recurses once per level,
+    # so past the interpreter's limit the payload exhausts the stack instead.
+    nested: dict[str, object] = {}
+    cursor = nested
+    for _ in range(2 * sys.getrecursionlimit()):
+        deeper: dict[str, object] = {}
+        cursor["next"] = deeper
+        cursor = deeper
+
+    with pytest.raises(ResultsStoreError, match="cannot serialize"):
+        detail.write("checkpoint-a/rates.json", {"rate": float("nan")})
+
+    with pytest.raises(ResultsStoreError, match="cannot serialize"):
+        detail.write("checkpoint-a/slopes.json", {"slope": object()})
+
+    with pytest.raises(ResultsStoreError, match="cannot serialize"):
+        detail.write("checkpoint-a/tree.json", nested)
+
+    # The caller carries on past this error, so a directory made for a payload
+    # that never arrives is one nothing will ever remove.
+    assert not detail.root.exists()
 
 
 def test_a_record_that_cannot_be_read_back_is_the_store_s_own_error(
