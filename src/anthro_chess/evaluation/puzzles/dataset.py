@@ -13,12 +13,21 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache
 from hashlib import sha256
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import chess
-from pydantic import AwareDatetime, Field, StrictInt, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    model_validator,
+)
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import (
@@ -30,6 +39,7 @@ from anthro_chess.data.artifacts import file_sha256
 
 PUZZLE_FILE_NAME = "puzzles.csv"
 PUZZLE_METADATA_FILE_NAME = "manifest.json"
+VENDORED_RECORD_FILE_NAME = "selection.json"
 PUZZLE_SELECTION_ALGORITHM = "sha256-rank-per-exact-rating-v1"
 PUZZLE_SIZING_METHOD = "two-independent-proportions-worst-case-v1"
 PUZZLE_DETECTION_CONFIDENCE = 0.95
@@ -52,6 +62,7 @@ _OUTPUT_COLUMNS = (
 )
 _NORMAL_95 = 1.959963984540054
 _NORMAL_80_POWER = 0.8416212335729143
+_DATA_PACKAGE = "anthro_chess.evaluation.puzzles"
 
 
 class PuzzleSetError(ValueError):
@@ -210,15 +221,38 @@ class PuzzleSelection:
 
 @dataclass(frozen=True)
 class PuzzleSetBuildResult:
-    """The generated puzzle artifact and the verified raw source behind it."""
+    """The generated puzzle artifact and its verified identity."""
 
     artifact_path: Path
     puzzle_path: Path
     manifest_path: Path
-    source_path: Path
-    source_reused: bool
     entries: int
     puzzles_sha256: str
+
+
+class VendoredPuzzleSet(BaseModel):
+    """The committed selection plus what only the upstream archive knows.
+
+    Selecting reads a rolling upstream object that keeps no history, so a
+    rebuild cannot recover the revision or the population the rows were drawn
+    from. Those travel with the rows for that reason.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    content: str
+    name: str
+    version: StrictInt
+    entries: StrictInt
+    puzzles_sha256: str
+    source: dict[str, Any]
+    selection: dict[str, Any]
+    coverage: dict[str, Any]
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the committed record written beside the selected rows."""
+
+        return self.model_dump(exclude={"content"})
 
 
 @dataclass(frozen=True)
@@ -246,18 +280,90 @@ class _SelectedPuzzle:
 def prepare_puzzle_set(
     resolved_config: ResolvedConfig[PuzzleSetBuildConfig],
     output_directory: str | Path,
-    *,
-    source_path: str | Path | None = None,
 ) -> PuzzleSetBuildResult:
-    """Build a deterministic external puzzle artifact from a pinned export."""
+    """Install the committed puzzle selection as a verified artifact."""
 
     config = resolved_config.value
     output = Path(output_directory)
     try:
+        vendored = load_vendored_puzzle_set()
+        _validate_vendored_against_config(vendored, config)
+
+        output.mkdir(parents=True, exist_ok=True)
+        puzzle_path = output / PUZZLE_FILE_NAME
+        manifest_path = output / PUZZLE_METADATA_FILE_NAME
+        _atomic_write_text(puzzle_path, vendored.content)
+        metadata = {
+            **vendored.as_record(),
+            "license": PUZZLE_LICENSE,
+            "sizing": _sizing_record(config.selection),
+        }
+        _atomic_write_text(
+            manifest_path,
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        )
+        # Reads back what was just written, which is where every line is
+        # parsed and every move checked for legality.
+        load_puzzle_set(output)
+    except (OSError, ValueError) as error:
+        if isinstance(error, PuzzleSetError):
+            raise
+        raise PuzzleSetError(str(error)) from error
+    return PuzzleSetBuildResult(
+        artifact_path=output,
+        puzzle_path=puzzle_path,
+        manifest_path=manifest_path,
+        entries=vendored.entries,
+        puzzles_sha256=vendored.puzzles_sha256,
+    )
+
+
+def load_vendored_puzzle_set() -> VendoredPuzzleSet:
+    """Read the committed selection and the record that describes it."""
+
+    content = _read_data_file(PUZZLE_FILE_NAME)
+    try:
+        record = json.loads(_read_data_file(VENDORED_RECORD_FILE_NAME))
+        vendored = VendoredPuzzleSet.model_validate({**record, "content": content})
+    except (json.JSONDecodeError, TypeError, ValidationError) as error:
+        raise PuzzleSetError(
+            f"the committed {VENDORED_RECORD_FILE_NAME} is unusable: {error}"
+        ) from error
+    observed = sha256(content.encode()).hexdigest()
+    if observed != vendored.puzzles_sha256:
+        raise PuzzleSetError(
+            f"the committed {PUZZLE_FILE_NAME} does not match the checksum in "
+            f"{VENDORED_RECORD_FILE_NAME}: expected {vendored.puzzles_sha256}, "
+            f"observed {observed}"
+        )
+    return vendored
+
+
+def build_vendored_puzzle_set(
+    config: PuzzleSetBuildConfig,
+    *,
+    source_path: str | Path | None = None,
+    archive_directory: str | Path | None = None,
+) -> VendoredPuzzleSet:
+    """Select puzzles from the pinned upstream archive, for vendoring.
+
+    Reads either ``source_path`` or, failing that, a download kept under
+    ``archive_directory``. This is the only path that reads the archive, and it
+    deliberately does not check the selected content against
+    ``expected_puzzles_sha256``: it runs when that digest is being established
+    rather than confirmed.
+    """
+
+    try:
         if source_path is None:
-            acquired = acquire_configured_archive(output, config.archive)
-            source = acquired.archive_path
-            source_reused = acquired.reused
+            if archive_directory is None:
+                raise PuzzleSetError(
+                    "selecting from the pinned archive needs either the archive "
+                    "itself or a directory to acquire it into"
+                )
+            source = acquire_configured_archive(
+                archive_directory, config.archive
+            ).archive_path
         else:
             source = Path(source_path)
             observed = file_sha256(source)
@@ -266,65 +372,25 @@ def prepare_puzzle_set(
                     "input puzzle archive checksum mismatch: expected "
                     f"{config.archive.sha256}, observed {observed}"
                 )
-            source_reused = True
         selected, coverage = _select_puzzles(source, config.selection)
         _validate_selected(selected, config.selection)
         rendered = _render_csv(selected)
-        observed_puzzles_sha256 = sha256(rendered.encode()).hexdigest()
-        if observed_puzzles_sha256 != config.expected_puzzles_sha256:
-            raise PuzzleSetError(
-                "selected puzzle checksum mismatch: expected "
-                f"{config.expected_puzzles_sha256}, "
-                f"observed {observed_puzzles_sha256}"
-            )
-
-        output.mkdir(parents=True, exist_ok=True)
-        puzzle_path = output / PUZZLE_FILE_NAME
-        manifest_path = output / PUZZLE_METADATA_FILE_NAME
-        _atomic_write_text(puzzle_path, rendered)
-        metadata = {
-            "name": config.name,
-            "version": config.version,
-            "entries": len(selected),
-            "puzzles_sha256": observed_puzzles_sha256,
-            "source": {
-                "url": config.archive.url,
-                "file_name": config.archive.file_name,
-                "retrieved": config.source_retrieved,
-                "last_modified": config.source_last_modified.isoformat(),
-                "sha256": config.archive.sha256,
-                "format": "lichess-puzzle-csv-v1",
-            },
-            "license": PUZZLE_LICENSE,
-            "selection": {
-                "algorithm": PUZZLE_SELECTION_ALGORITHM,
-                **config.selection.model_dump(mode="json"),
-            },
-            "sizing": _sizing_record(config.selection),
-            "coverage": coverage,
-        }
-        _atomic_write_text(
-            manifest_path,
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-        )
-        loaded = load_puzzle_set(output)
-        if len(loaded.puzzles) != config.expected_entries:
-            raise PuzzleSetError(
-                f"prepared {len(loaded.puzzles)} puzzles, "
-                f"expected {config.expected_entries}"
-            )
+        # Every rejection a later build would raise has to surface while the
+        # archive is still in hand; upstream will not serve it again.
+        tuple(_parse_puzzles(rendered, Path(PUZZLE_FILE_NAME)))
     except (DataPreparationError, OSError, ValueError) as error:
         if isinstance(error, PuzzleSetError):
             raise
         raise PuzzleSetError(str(error)) from error
-    return PuzzleSetBuildResult(
-        artifact_path=output,
-        puzzle_path=puzzle_path,
-        manifest_path=manifest_path,
-        source_path=source,
-        source_reused=source_reused,
+    return VendoredPuzzleSet(
+        content=rendered,
+        name=config.name,
+        version=config.version,
         entries=len(selected),
-        puzzles_sha256=observed_puzzles_sha256,
+        puzzles_sha256=sha256(rendered.encode()).hexdigest(),
+        source=_source_record(config),
+        selection=_selection_record(config.selection),
+        coverage=coverage,
     )
 
 
@@ -427,6 +493,64 @@ def conservative_detectable_difference(sample_size: int) -> float:
         raise ValueError("sample_size must be positive")
     standard_error = math.sqrt(2.0 * 0.25 / sample_size)
     return (_NORMAL_95 + _NORMAL_80_POWER) * standard_error
+
+
+def _source_record(config: PuzzleSetBuildConfig) -> dict[str, object]:
+    return {
+        "url": config.archive.url,
+        "file_name": config.archive.file_name,
+        "retrieved": config.source_retrieved,
+        "last_modified": config.source_last_modified.isoformat(),
+        "sha256": config.archive.sha256,
+        "format": "lichess-puzzle-csv-v1",
+    }
+
+
+def _selection_record(selection: PuzzleSelectionConfig) -> dict[str, object]:
+    return {
+        "algorithm": PUZZLE_SELECTION_ALGORITHM,
+        **selection.model_dump(mode="json"),
+    }
+
+
+def _validate_vendored_against_config(
+    vendored: VendoredPuzzleSet,
+    config: PuzzleSetBuildConfig,
+) -> None:
+    """Fail when the committed selection and this configuration disagree.
+
+    The configuration states the pin and the design; the committed record
+    states what was actually selected under them. Nothing recomputes the
+    selection offline, so this comparison is what keeps a re-pin from
+    describing rows it did not produce.
+    """
+
+    expected: Mapping[str, object] = {
+        "name": config.name,
+        "version": config.version,
+        "entries": config.expected_entries,
+        "puzzles_sha256": config.expected_puzzles_sha256,
+        "source": _source_record(config),
+        "selection": _selection_record(config.selection),
+    }
+    observed = vendored.as_record()
+    differing = sorted(key for key in expected if observed[key] != expected[key])
+    if differing:
+        raise PuzzleSetError(
+            "the committed puzzle selection disagrees with this configuration "
+            f"on {', '.join(differing)}; regenerate it with "
+            "scripts/vendor-puzzle-selection.py"
+        )
+
+
+def _read_data_file(name: str) -> str:
+    resource = files(_DATA_PACKAGE).joinpath("data", name)
+    try:
+        return resource.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise PuzzleSetError(
+            f"the committed puzzle selection is missing {name}"
+        ) from error
 
 
 def _select_puzzles(
