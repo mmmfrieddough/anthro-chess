@@ -405,6 +405,7 @@ def test_a_floor_only_one_side_offers_does_not_qualify_the_delta(
 def test_a_withheld_floor_stops_the_surviving_kinds_licensing_a_finding(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
+    training_scope: str,
 ) -> None:
     """Clearing the floors that remain is not clearing every noise source.
 
@@ -422,6 +423,7 @@ def test_a_withheld_floor_stops_the_surviving_kinds_licensing_a_finding(
                 method="independent-replicates",
                 replicates=4,
                 source="four seeds",
+                training=training_scope,
                 floors=[
                     FloorEntry(
                         metric="held_out.move_loss",
@@ -1364,6 +1366,7 @@ def test_a_characterized_floor_applies_without_being_attached_to_the_result(
 def test_a_delta_is_judged_against_the_widest_floor_that_applies(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
+    training_scope: str,
 ) -> None:
     # Sampling noise and training noise are different questions, and a delta
     # has to clear every source that applies before it is a finding.
@@ -1394,6 +1397,7 @@ def test_a_delta_is_judged_against_the_widest_floor_that_applies(
                 method="independent-replicates",
                 replicates=4,
                 source="four seeds",
+                training=training_scope,
                 floors=[
                     FloorEntry(
                         metric="held_out.move_loss",
@@ -1436,6 +1440,7 @@ def test_a_delta_is_judged_against_the_widest_floor_that_applies(
 def test_a_delta_inside_its_floor_is_shown_rather_than_hidden(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
+    training_scope: str,
 ) -> None:
     # A consistent small regression only stays visible if a within-floor delta
     # is still reported with its value.
@@ -1447,6 +1452,7 @@ def test_a_delta_inside_its_floor_is_shown_rather_than_hidden(
                 method="independent-replicates",
                 replicates=3,
                 source="three seeds",
+                training=training_scope,
                 floors=[
                     FloorEntry(
                         metric="held_out.move_loss",
@@ -1482,6 +1488,134 @@ def test_a_delta_inside_its_floor_is_shown_rather_than_hidden(
     assert row.delta == pytest.approx(-0.3)
     assert row.movement is Movement.BETTER
     assert "-0.3" in render_report(report)
+
+
+def test_a_training_floor_does_not_qualify_a_delta_it_describes_neither_side_of(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    training_scope: str,
+) -> None:
+    """The pool and the view match; the configuration that was trained does not.
+
+    A series fingerprint deliberately says nothing about the training run, so
+    without the scope this floor would qualify a delta between models of any
+    size on this pool.
+    """
+
+    component = move_prediction_component()
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="training",
+                method="independent-replicates",
+                replicates=4,
+                source="four seeds of the small configuration",
+                training=training_scope,
+                floors=[
+                    FloorEntry(
+                        metric="held_out.move_loss",
+                        fingerprint=series_fingerprint(
+                            "held_out.move_loss",
+                            component,
+                        ),
+                        floor=10.0,
+                        dispersion=3.6,
+                        dispersion_bound=3.6,
+                        degrees_of_freedom=3,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+    elsewhere = "9f" * 32
+    baseline = recorded_result(
+        label="checkpoint-a",
+        move_loss=3.5,
+        recorded_at=BASELINE_AT,
+        training_sha256=elsewhere,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        move_loss=3.2,
+        recorded_at=CURRENT_AT,
+        training_sha256=elsewhere,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex(), floors=floors)
+    row = _row(report, "held_out.move_loss")
+
+    assert row.noise_floors == ()
+    assert row.noise is NoiseVerdict.UNKNOWN
+    assert row.delta == pytest.approx(-0.3)
+
+
+def test_a_training_floor_binds_a_control_arm_against_its_treatment(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    training_scope: str,
+) -> None:
+    """The comparison decision 0029 defines, and the verdict it turns on.
+
+    Judged against the data-sampling floor alone this delta reads as cleared and
+    better, which is the false finding 0029 measured: arms differing only by
+    seed cleared that floor on up to 14 of 54 metrics. The training floor is the
+    only kind that answers whether the change is why.
+    """
+
+    component = move_prediction_component()
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="training",
+                method="independent-replicates",
+                replicates=4,
+                source="four seeds of the control configuration",
+                training=training_scope,
+                floors=[
+                    FloorEntry(
+                        metric="held_out.move_loss",
+                        fingerprint=series_fingerprint(
+                            "held_out.move_loss",
+                            component,
+                        ),
+                        floor=0.25,
+                        dispersion=0.09,
+                        dispersion_bound=0.09,
+                        degrees_of_freedom=3,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+    sampling = NoiseFloor(
+        value=0.08,
+        kind="data-sampling",
+        source="bootstrap over this reading's games",
+    )
+    control = recorded_result(
+        label="control-arm",
+        measurements=[
+            measurement("held_out.move_loss", 3.5, data=component, noise_floor=sampling)
+        ],
+        recorded_at=BASELINE_AT,
+    )
+    treatment = recorded_result(
+        label="treatment-arm",
+        measurements=[
+            measurement("held_out.move_loss", 3.4, data=component, noise_floor=sampling)
+        ],
+        recorded_at=CURRENT_AT,
+        training_sha256="9f" * 32,
+    )
+
+    report = build_delta_report([control, treatment], BridgeIndex(), floors=floors)
+    row = _row(report, "held_out.move_loss")
+
+    assert row.noise_floor == pytest.approx(0.25)
+    assert row.noise_floor_kind == "training"
+    assert row.noise is NoiseVerdict.WITHIN
 
 
 def test_the_first_recorded_checkpoint_reports_without_a_baseline(

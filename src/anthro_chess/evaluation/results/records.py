@@ -39,8 +39,9 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
+#: Version 5 records the training identity a training noise floor is scoped to.
 #: Version 4 names the estimator behind a stored noise floor.
-ENVELOPE_VERSION = 4
+ENVELOPE_VERSION = 5
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -86,6 +87,14 @@ class CheckpointReference(ResultModel):
     step: int | None = Field(default=None, ge=0)
     run_id: str | None = Field(default=None, min_length=1)
     parameter_sha256: Sha256Hex | None = None
+    #: The training configuration that decided these weights, digested without
+    #: the initialization seed. ``parameter_sha256`` names one model and this
+    #: names the set of models a seed could have produced, which is the scope a
+    #: training noise floor describes and the only thing that stops one from
+    #: qualifying a delta between configurations it never measured. Absent on a
+    #: reading recorded before the identity existed, and on one whose runner was
+    #: supplied rather than loaded from a checkpoint.
+    training_sha256: Sha256Hex | None = None
 
 
 class ConfigurationReference(ResultModel):

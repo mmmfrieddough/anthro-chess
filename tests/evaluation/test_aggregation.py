@@ -9,6 +9,8 @@ import pytest
 from anthro_chess.evaluation.aggregation import (
     COLOR_DIMENSION,
     LEGAL_MOVE_COUNT_DIMENSION,
+    OPENING_FAMILY_DIMENSION,
+    OPENING_TIER_DIMENSION,
     PHASE_DIMENSION,
     RATING_DIMENSION,
     REPORTED_CHARACTERISTICS,
@@ -17,8 +19,10 @@ from anthro_chess.evaluation.aggregation import (
     SliceAggregator,
     summarize,
 )
+from anthro_chess.evaluation.opening_frequency import OPENING_TIER_NAMES
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.results.metrics import (
+    OPENING_TIER_SLICE_NAMES,
     PHASE_SLICE_NAMES,
     RATING_BAND_SLICE_NAMES,
     RULE_CASE_SLICE_NAMES,
@@ -126,6 +130,38 @@ def test_registered_slice_names_match_the_slice_layer() -> None:
         sorted(str(case) for case in REPORTED_CHARACTERISTICS)
     )
     assert UNRATED_SLICE_NAME == UNRATED_SLICE
+    assert OPENING_TIER_SLICE_NAMES == OPENING_TIER_NAMES
+
+
+def test_an_opening_label_covers_every_position_of_its_game() -> None:
+    aggregator = SliceAggregator()
+    for ply_index in range(3):
+        aggregator.add(
+            _policy(ply_index=ply_index),
+            _slices(phase=GamePhase.ENDGAME if ply_index else GamePhase.OPENING),
+            (),
+            opening_family="Sicilian Defense",
+            opening_tier="common_opening",
+        )
+
+    table = aggregator.compute()
+
+    family = table.slice_summary(OPENING_FAMILY_DIMENSION, "Sicilian Defense")
+    tier = table.slice_summary(OPENING_TIER_DIMENSION, "common_opening")
+    assert family is not None
+    assert family.position_count == 3
+    assert tier is not None
+    assert tier.position_count == 3
+
+
+def test_an_unlabelled_opening_leaves_both_dimensions_empty() -> None:
+    aggregator = SliceAggregator()
+    aggregator.add(_policy(), _slices(), ())
+
+    table = aggregator.compute()
+
+    assert table.dimensions[OPENING_FAMILY_DIMENSION] == {}
+    assert table.dimensions[OPENING_TIER_DIMENSION] == {}
 
 
 def _policy(

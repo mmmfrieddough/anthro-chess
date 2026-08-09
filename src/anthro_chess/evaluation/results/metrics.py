@@ -937,6 +937,46 @@ LEGALITY_MASK_PENALTY_BY_RULE_CASE: Mapping[str, MetricDefinition] = {
     for case in RULE_CASE_SLICE_NAMES
 }
 
+#: Opening frequency tiers, stated here for the reason the phase names are: a
+#: slice layer that renamed or re-bounded a tier would end these series, which
+#: is intended, because a tier's share boundaries are what its number means.
+OPENING_TIER_SLICE_NAMES: tuple[str, ...] = (
+    "common_opening",
+    "uncommon_opening",
+    "rare_opening",
+    "very_rare_opening",
+    "unseen_opening",
+    "unclassified_opening",
+)
+
+#: Held-out loss against how often the training selection saw each opening.
+#: Reported only when the checkpoint trained on the corpus the pool was drawn
+#: from, which is what keeps a tier's membership pinned by the same digest the
+#: fingerprint already carries. See the rare-opening tail section of
+#: `docs/evaluation.md`.
+HELD_OUT_MOVE_LOSS_BY_OPENING_TIER: Mapping[str, MetricDefinition] = {
+    tier: register_metric(
+        MetricDefinition(
+            identifier=f"held_out.move_loss_{tier}",
+            family=HELD_OUT_PREDICTION_FAMILY.identifier,
+            direction=MetricDirection.LOWER_IS_BETTER,
+            definition_version=1,
+            summary=(
+                f"Raw-logit cross-entropy of the human move on held-out games "
+                f"in the {tier.removesuffix('_opening').replace('_', ' ')} "
+                "opening-frequency tier, which a family enters by its share of "
+                "the checkpoint's training selection. Read the tiers together "
+                "rather than one alone: rare openings are harder to predict "
+                "whether or not they are undertrained, and only the shape "
+                "across frequencies tells the two apart."
+            ),
+            cost=MetricCost.SINGLE_PASS,
+            projection=MOVE_PREDICTION_PROJECTION.name,
+        )
+    )
+    for tier in OPENING_TIER_SLICE_NAMES
+}
+
 ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
     "mate_available",
     "mate_threatened",

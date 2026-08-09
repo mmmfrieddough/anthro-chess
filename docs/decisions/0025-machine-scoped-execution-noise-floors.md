@@ -5,7 +5,9 @@ Date: 2026-07-31
 ## Status
 
 Accepted. Refines `0018-workload-scoped-efficiency-series.md`. Refined by
-`0026-conservative-dispersion-bounds.md`.
+`0026-conservative-dispersion-bounds.md`. Its shape is applied to a second noise
+kind by
+`0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`.
 
 ## Context
 

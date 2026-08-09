@@ -476,6 +476,15 @@ the question they answer rather than by how they are computed:
   source that cannot be estimated from numbers already computed, because what
   varies is the machine rather than the sample.
 
+Which of these a reading needs follows from what is being claimed, and the two
+questions are easy to conflate. Whether one run improved between two of its own
+steps is a checkpoint delta. Whether a change to the model, the data, or the
+training setup improved anything is a configuration change, and clearing a
+sampling or evaluation floor does not establish it: the two arms differ by their
+initialization seeds as well as by the change. **Regression Comparisons** below
+holds what a claim rests on, and decision 0029 holds the measurement that settled
+it.
+
 The first two coincide for generated play, and that is worth stating plainly
 because the definitions above read as if they never could. A rollout has no
 fixed data to re-measure on — the games *are* the draw — so bootstrapping the
@@ -576,6 +585,37 @@ fingerprint rules as any other measurement, so they invalidate on the same
 terms rather than lingering as stale constants. A floor characterized on a pool
 that has since been regenerated stops matching and the report says the floor is
 unknown, which is the honest answer.
+
+### Training Noise
+
+Training noise should be characterized early, while runs are short. It is the
+most valuable of the three and the only one that becomes harder to obtain over
+time: once runs are long and expensive, several repeat runs stop being
+affordable, and the project loses the ability to distinguish a small improvement
+from seed luck for the rest of its life.
+
+The floor is a property of the training configuration its replicates shared
+rather than of the pool they were scored on, and the series fingerprint carries
+nothing about the training run by design — decisions 0018 and 0021 keep it out
+so that a delta across model size stays interpretable. A training
+characterization therefore records the training identity it was measured under,
+and a report applies it only to a delta that identity describes.
+
+What that takes is not what an execution floor takes, because the two scopes are
+different sorts of thing. A machine is a condition a reading was taken under, so
+a delta spanning two machines is described by neither. A training configuration
+is a **null distribution** — the spread a different seed of it would have
+produced — and the question a delta asks is whether its other operand falls
+outside that spread. That is the control-arm comparison, whose two sides differ
+in configuration by construction, so requiring both to match would refuse the
+one comparison the floor exists for. One operand carrying the characterized
+configuration is therefore what makes the floor apply; a delta describing
+neither is reported as unknown, and where both operands carry characterized
+configurations the widest of the two floors binds. A reading recorded without an
+identity carries no configuration to match, and replicates that do not all share
+one are refused rather than characterized.
+`docs/decisions/0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`
+owns that rule and what the scope deliberately leaves out.
 
 ### Execution Noise
 
@@ -690,12 +730,6 @@ so no data-sampling floor can exist for it — but evaluation and training noise
 are read from repeated measurements instead, and either still describes such a
 metric. A report refuses only the sampling floor and judges the delta against
 any other kind it has.
-
-Training noise should be characterized early, while runs are short. It is the
-most valuable of the three and the only one that becomes harder to obtain over
-time: once runs are long and expensive, several repeat runs stop being
-affordable, and the project loses the ability to distinguish a small improvement
-from seed luck for the rest of its life.
 
 Sampling-noise estimates are also what size the evaluation inputs. A
 conservative independent-input estimate is suitable before representative
@@ -1064,6 +1098,56 @@ the raw logits. Mixing the two would let a legality problem hide inside an
 accuracy number. One scoring pass computes both, along with the per-position
 quantities later benchmarks need, so decision decomposition and rollout
 comparisons share this code path instead of recomputing a policy of their own.
+
+### Opening Family And The Rare-Opening Tail
+
+`docs/decisions/0016-sampling-axes-versus-measured-distributions.md` declines to
+resample or reweight training by opening family, and accepts whatever
+sample-efficiency cost the long tail of rare openings carries on the belief that
+the cost is small. This slice is what makes that belief falsifiable. It is a
+benchmark and never a loss term; weighting the loss by family is the operation
+that record closes.
+
+Per-family loss alone settles nothing. Rare openings are genuinely harder to
+predict, so higher loss on the rare ones is the expected result whether or not
+they are undertrained, and only the relationship between loss and *training*
+frequency separates the two. So the whole reading hangs off one opt-in: counting
+how often the training split saw each family, which costs a replay per game. An
+ordinary reading does not pay it and does not slice by opening at all.
+
+When it is asked for, every scored position carries its game's classified
+family, and the per-family table reports move loss, mask penalty, and top-k
+accuracy through the same slice machinery every other dimension uses. The label
+is a game-level one — a Sicilian's endgame counts toward the Sicilian — which
+dilutes the reading with positions the opening stopped constraining plies ago.
+That is why the table is read for its shape across families rather than for any
+one family's level.
+
+Families are then grouped into a small set of tiers by their share of the
+training selection, plus one tier for families that selection never held and one
+for games the book never named. The tiers are what reaches the committed store,
+because the per-family table is unbounded, and they are ordinary slices of the
+same scoring pass, so the bootstrap qualifies each of them the way it qualifies
+a phase or a rating band. Read across the tiers: loss
+that is still falling as frequency rises, all the way into the rarest, is the
+shape that says more data on rare families would help. Beside them the detail
+tier carries the same statement as one number — the fitted slope of loss against
+log training frequency over the tail families — and, for each scored family, the
+tier and training share to join against its row in the slice table.
+
+A tier is a share of the *training* corpus, and a series fingerprint's data
+component covers only the games scored. Those two pin each other only when one
+corpus supplies both, so the reading is refused outright on a checkpoint that
+trained somewhere other than where the pool came from, rather than committing a
+series whose slice membership nothing recorded. For the same reason the tier
+boundaries are code-owned rather than configurable: a configured boundary would
+move families between series without changing any metric identity.
+
+Reopening decision 0016 needs a second signal beside this one — a generated
+opening distribution underrepresenting the tail relative to humans beyond the
+noise floor, which the repertoire comparison below supplies. Either alone is
+weak, and even both together argue for more data before they argue for
+reweighting.
 
 ## Legality Metrics
 
@@ -2707,10 +2791,8 @@ A claim therefore rests on one of two things: a delta far enough outside seed
 variance that nothing else explains it, or a training floor characterized from
 arms trained at several seeds, which `uv run anthro eval noise characterize`
 already produces. Such a floor describes the training configuration its arms
-shared, and no series fingerprint carries that — the scoping problem decision
-0025 solved for the machine, unsolved for this kind and open as `#235` — so it
-is read beside the comparison it was characterized for rather than committed to
-the store.
+shared, records it, and is resolved only within it, so characterizing one once
+qualifies every later comparison against that same base.
 Anything narrower is reported as what it is, a delta not distinguished from seed
 variance, rather than as an improvement. A family with no floor at all can show
 that nothing else moved; it cannot carry the claim.

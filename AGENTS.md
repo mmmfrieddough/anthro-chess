@@ -62,6 +62,11 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   `uv run anthro machine` before concluding that this machine has no corpus or
   no checkpoints; an empty worktree is not evidence, because unset roots and a
   machine with no artifacts look identical from inside the repository.
+- A `noise cleared` verdict does not say a change worked. A data-sampling or
+  evaluation floor says the delta survived a different draw of games; only a
+  training floor separates a change from seed variance, and two arms differ by
+  their seeds as well as by the change. `docs/evaluation.md` (Regression
+  Comparisons) says what a claim rests on.
 - Use exact chess logic for board reconstruction, legal move generation, and
   rule bookkeeping.
 - Legal-mask model move outputs before sampling.

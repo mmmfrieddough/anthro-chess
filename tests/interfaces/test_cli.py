@@ -625,8 +625,22 @@ split = "train"
     assert "run_name" in capsys.readouterr().err
 
 
-def _record_fixture_results(store_root: Path) -> None:
-    """Record two comparable results so the report command has history."""
+#: Shared by both fixture readings, so they compare as two checkpoints of one
+#: configuration.
+CLI_TRAINING_SHA256 = "7d" * 32
+
+
+def _record_fixture_results(
+    store_root: Path,
+    *,
+    training_sha256: str | None = CLI_TRAINING_SHA256,
+    month: int = 7,
+) -> None:
+    """Record two comparable results so the report command has history.
+
+    ``month`` moves the whole pair earlier, so a caller can lay down an older
+    generation of the same two readings under the store's append-only history.
+    """
 
     from datetime import UTC, datetime
 
@@ -659,7 +673,10 @@ def _record_fixture_results(store_root: Path) -> None:
             build_result(
                 kind="held-out-prediction",
                 benchmark=BenchmarkReference(name="move-validation", version=1),
-                checkpoint=CheckpointReference(label=label),
+                checkpoint=CheckpointReference(
+                    label=label,
+                    training_sha256=training_sha256,
+                ),
                 data=dataset_reference(
                     pool_id="fixture-pool",
                     pool_version=1,
@@ -669,7 +686,7 @@ def _record_fixture_results(store_root: Path) -> None:
                     components=[component],
                 ),
                 measurements=[measurement("held_out.move_loss", value, data=component)],
-                recorded_at=datetime(2026, 7, day, tzinfo=UTC),
+                recorded_at=datetime(2026, month, day, tzinfo=UTC),
             )
         )
 
@@ -1450,6 +1467,8 @@ def test_eval_noise_characterizes_training_noise_from_replicate_runs(
     listed = capsys.readouterr().out
     assert "training" in listed
     assert "two smoke-scale seeds" in listed
+    # Two floors from different configurations would otherwise render alike.
+    assert f"valid for training configuration {CLI_TRAINING_SHA256[:16]}" in listed
 
     # The report now judges the delta against the floor it just characterized
     # rather than reporting that no floor is known.
@@ -1482,6 +1501,87 @@ def test_eval_noise_characterize_needs_more_than_one_replicate(
         == 2
     )
     assert "at least two checkpoints" in capsys.readouterr().err
+
+
+def test_eval_noise_characterize_refuses_replicates_with_no_training_identity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A floor is stored for later lookup, so it has to say what it describes.
+
+    Recording one whose scope cannot be established would put back exactly the
+    floor that qualifies every configuration on the pool.
+    """
+
+    _record_fixture_results(tmp_path / "results", training_sha256=None)
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                str(tmp_path / "results"),
+                "--kind",
+                "training",
+                "--checkpoint",
+                "checkpoint-a",
+                "--checkpoint",
+                "checkpoint-b",
+                "--source",
+                "two seeds",
+            ]
+        )
+        == 2
+    )
+    assert "records no training identity" in capsys.readouterr().err
+
+
+def test_eval_noise_characterize_reads_the_scope_off_the_replicates_it_used(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An older reading of the same checkpoint is history, not a second replicate.
+
+    The store appends, so a label routinely carries readings this floor was not
+    built from — including ones recorded before the identity existed. Refusing
+    on those would be unsatisfiable, since nothing can retract them.
+    """
+
+    store = str(tmp_path / "results")
+    _record_fixture_results(tmp_path / "results", training_sha256=None, month=6)
+    _record_fixture_results(tmp_path / "results")
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "characterize",
+                "--store",
+                store,
+                "--kind",
+                "training",
+                "--checkpoint",
+                "checkpoint-a",
+                "--checkpoint",
+                "checkpoint-b",
+                "--metric",
+                "held_out.move_loss",
+                "--source",
+                "two smoke-scale seeds",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["eval", "noise", "list", "--store", store]) == 0
+    assert (
+        f"valid for training configuration {CLI_TRAINING_SHA256[:16]}"
+        in capsys.readouterr().out
+    )
 
 
 def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(

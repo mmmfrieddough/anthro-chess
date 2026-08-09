@@ -1356,6 +1356,10 @@ def _metric_delta(
         floors,
         comparison_floor=paired.floor,
         executions=(baseline_envelope.execution, current_envelope.execution),
+        trainings=(
+            baseline_envelope.checkpoint.training_sha256,
+            current_envelope.checkpoint.training_sha256,
+        ),
     )
     binding = max(applicable, key=lambda floor: floor.value, default=None)
     environment = (
@@ -1528,6 +1532,7 @@ def _applicable_floors(
     *,
     comparison_floor: NoiseFloor | None,
     executions: Sequence[ExecutionRecord | None] = (),
+    trainings: Sequence[str | None] = (),
 ) -> tuple[tuple[NoiseFloor, ...], tuple[str, ...]]:
     """Return the floors that apply to this comparison, and the kinds refused.
 
@@ -1537,10 +1542,12 @@ def _applicable_floors(
     whole series. Where both exist for one kind, the wider one is kept, since
     a floor that understates the noise is worse than one that overstates it.
 
-    ``executions`` are the executions this delta spans, which is what decides
-    whether a machine-scoped execution floor describes it. A delta whose two
-    sides ran on different machines is covered by no characterized execution
-    floor, and reporting the noise as unknown there is the honest answer.
+    ``executions`` and ``trainings`` are the scopes this delta spans, which is
+    what decides whether a scoped floor describes it. A delta whose two sides
+    ran on different machines is covered by no characterized execution floor,
+    and one neither of whose sides was trained under the characterized
+    configuration by no training floor; reporting the noise as unknown there is
+    the honest answer.
 
     An attached floor one side offered and the other did not is refused for the
     same reason: it describes one operand rather than the difference, and
@@ -1560,7 +1567,12 @@ def _applicable_floors(
 
     metric = definition.identifier
     widest: dict[str, NoiseFloor] = {}
-    indexed = floors.floors(metric, current.fingerprint, executions=executions)
+    indexed = floors.floors(
+        metric,
+        current.fingerprint,
+        executions=executions,
+        trainings=trainings,
+    )
     baseline_kind = None if baseline.noise_floor is None else baseline.noise_floor.kind
     current_kind = None if current.noise_floor is None else current.noise_floor.kind
     # What a source spanning the whole delta covers: a series characterization,

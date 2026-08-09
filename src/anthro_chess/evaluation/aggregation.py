@@ -46,6 +46,8 @@ COLOR_DIMENSION = "color"
 RATING_DIMENSION = "rating_band"
 LEGAL_MOVE_COUNT_DIMENSION = "legal_move_count"
 RULE_CASE_DIMENSION = "rule_case"
+OPENING_FAMILY_DIMENSION = "opening_family"
+OPENING_TIER_DIMENSION = "opening_frequency_tier"
 
 SLICE_DIMENSIONS: tuple[str, ...] = (
     PHASE_DIMENSION,
@@ -53,6 +55,8 @@ SLICE_DIMENSIONS: tuple[str, ...] = (
     RATING_DIMENSION,
     LEGAL_MOVE_COUNT_DIMENSION,
     RULE_CASE_DIMENSION,
+    OPENING_FAMILY_DIMENSION,
+    OPENING_TIER_DIMENSION,
 )
 
 
@@ -219,8 +223,16 @@ class SliceAggregator:
         position: PositionPolicy,
         slices: PositionSlices,
         characteristics: Iterable[PositionCharacteristic],
+        *,
+        opening_family: str | None = None,
+        opening_tier: str | None = None,
     ) -> None:
-        """Add one scored position under its derived slice labels."""
+        """Add one scored position under its derived slice labels.
+
+        The two opening labels describe the game rather than the position, so
+        every decision in a game classified as a Sicilian counts toward that
+        family, endgame included.
+        """
 
         self._overall.add(position)
         self._bucket(PHASE_DIMENSION, str(slices.phase)).add(position)
@@ -237,6 +249,10 @@ class SliceAggregator:
         for characteristic in REPORTED_CHARACTERISTICS:
             if characteristic in observed:
                 self._bucket(RULE_CASE_DIMENSION, str(characteristic)).add(position)
+        if opening_family is not None:
+            self._bucket(OPENING_FAMILY_DIMENSION, opening_family).add(position)
+        if opening_tier is not None:
+            self._bucket(OPENING_TIER_DIMENSION, opening_tier).add(position)
 
     def compute(self) -> SliceTable:
         """Return every slice summary, rejecting an empty evaluation."""
