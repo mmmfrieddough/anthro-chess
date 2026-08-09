@@ -344,6 +344,13 @@ tests — which metric moves, in which direction — is written down before eith
 arm runs. It belongs in the pull request beside the other commands that were
 run, and the pull request says which benchmarks were read and which were not.
 
+Two arms establish that two models differ. What establishes that the change is
+why is the training floor for the configuration they share, so the pull request
+says which floor the delta was read against. Where none is characterized for
+that configuration, the reading says so rather than falling back to the sampling
+floor the report will otherwise print; `docs/evaluation.md` (Regression
+Comparisons) owns the rule.
+
 A session with neither the training hardware nor the corpus cannot produce an
 arm. Route it the way a pending GPU check is routed: complete the
 implementation, open the pull request with the pending reading named

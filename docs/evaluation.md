@@ -476,6 +476,15 @@ the question they answer rather than by how they are computed:
   source that cannot be estimated from numbers already computed, because what
   varies is the machine rather than the sample.
 
+Which of these a reading needs follows from what is being claimed, and the two
+questions are easy to conflate. Whether one run improved between two of its own
+steps is a checkpoint delta. Whether a change to the model, the data, or the
+training setup improved anything is a configuration change, and clearing a
+sampling or evaluation floor does not establish it: the two arms differ by their
+initialization seeds as well as by the change. **Regression Comparisons** below
+holds what a claim rests on, and decision 0029 holds the measurement that settled
+it.
+
 The first two coincide for generated play, and that is worth stating plainly
 because the definitions above read as if they never could. A rollout has no
 fixed data to re-measure on — the games *are* the draw — so bootstrapping the
