@@ -177,7 +177,10 @@ def test_bootstrap_resamples_games_rather_than_positions(
         resamples=200,
     )
 
-    assert identical[0].floor == 0.0
+    # No floor at all rather than one of zero: the resample observed that it
+    # could not move this metric, not that a wider draw could not, and a zero
+    # would clear every later delta.
+    assert identical == ()
     assert spread[0].floor > 0.0
     assert spread[0].sampling_units == 20
 

@@ -1,4 +1,4 @@
-# 0040: The Puzzle Response Is Qualified Within Its Own Reading
+# 0041: The Puzzle Response Is Qualified Within Its Own Reading
 
 Date: 2026-08-08
 
@@ -172,13 +172,31 @@ returned a confident zero that cleared every delta. The comparison now reports
 why it has no floor. That is the same rule `0034` states for the ladder,
 arriving at the paired estimator by the route `#304` predicted.
 
-`#304` stays open for the rest of its scope: an *estimated* dispersion of zero
-is still a floor in `evaluation.noise.bootstrap_floors` and in the curve family,
-where refusing it is a per-family decision that has to leave `0032`'s stated
-zero intact. Taking it here was tried and reverted — it turns nine
-generated-play, termination and checkpoint readings into unqualified ones,
-because their fixtures are too thin to show any spread, and deciding what those
-fixtures should be is that issue's work rather than this one's.
+**An estimated dispersion of zero is refused where a bootstrap produces one.**
+`evaluation.noise.bootstrap_floors` now omits such a metric, as it already
+omitted one whose dispersion could not be estimated at all. The rule is `0034`'s,
+applied where `#304` found the same defect: a resample observed that it could not
+move this number, not that a wider draw could not, and a quantity identical in
+every game scored reads that way at any sample size.
+
+`#304` also asks whether the rule belongs beside `bounded_floor` rather than at
+each call site. It belongs at the call site. The predicate is one comparison,
+while what to *do* about a zero differs by caller — omit one metric, refuse a
+whole comparison — and pushing it into the shared arithmetic would also catch
+`0032`'s *stated* zero, which is the one that is correct.
+
+The curve family keeps its estimated zero, and the reason is not the one it
+looks like. Refusing it there is the same two lines and in production would
+never fire, since a curve over hundreds of varied games always moves. It fires
+only against the fixtures: `TrajectoryRunner` answers identically for one
+trajectory length and rating, and `maximum_generated_plies` truncates every
+fixture game at the same length, so every generated game *is* the same game and
+no redraw of them can move a distance. Qualifying those readings needs a stub
+whose games differ **and** a ply limit that lets them end at different lengths,
+which moves counts a dozen unrelated assertions in that family read. A varying
+stub alone was measured and is not enough. That is fixture architecture in a
+family this change does not otherwise touch, and it is the whole remaining cost
+of `#304`.
 
 **The fitted rating is the quantity this most affects.** A bisection over
 expected score is pinned near the bottom of its search range at a checkpoint

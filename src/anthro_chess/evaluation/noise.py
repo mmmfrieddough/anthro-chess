@@ -97,6 +97,12 @@ def bootstrap_floors(
     frequently contain none of it, and a floor of zero there would license
     every delta as a finding.
 
+    A dispersion the resample measured as exactly zero is omitted on the same
+    ground. The draw observed that it could not move this metric, which is not
+    the same as observing that nothing could: a quantity identical in every game
+    scored reads this way at any sample size, and the wider sample that would
+    move it is the thing nobody has taken.
+
     The **games** are what the dispersion bound's degrees of freedom count, not
     the resamples. A bootstrap draws as many resamples as it is asked for, but
     every one of them is drawn from the same games, so more of them buy a
@@ -143,6 +149,8 @@ def bootstrap_floors(
         if observed.size < 2:
             continue
         dispersion = float(np.std(observed, ddof=1))
+        if dispersion == 0.0:
+            continue
         bound, floor = bounded_floor(
             dispersion,
             degrees_of_freedom=freedom,
