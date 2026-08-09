@@ -8,6 +8,8 @@ Accepted. Settles the estimator half of `#223` and supersedes its recommendation
 to reconsider the checkpoint-pair machinery. Applied to reporting by
 `0035-a-degraded-floor-is-annotated-rather-than-withheld.md` and to the puzzle
 family by `0042-the-puzzle-response-is-qualified-within-its-reading.md`.
+Superseded by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which accepts the width this
+record measured rather than paying to remove it.
 
 ## Context
 

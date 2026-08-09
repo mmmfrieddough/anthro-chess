@@ -7,7 +7,8 @@ Date: 2026-08-08
 Accepted. Applies the shape of
 `0025-machine-scoped-execution-noise-floors.md` to a second noise kind, and
 lifts the prohibition in `0029-model-change-control-arm.md` that stood in for
-it.
+it. Superseded by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which removes the
+training kind rather than rescoping it.
 
 ## Context
 

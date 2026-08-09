@@ -8,6 +8,8 @@ Accepted. Refines `0018-workload-scoped-efficiency-series.md`. Refined by
 `0026-conservative-dispersion-bounds.md`. Its shape is applied to a second noise
 kind by
 `0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`.
+Narrowed to the efficiency families by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which removes the other
+noise kinds this scoping served.
 
 ## Context
 

@@ -7,7 +7,9 @@ Date: 2026-08-08
 Accepted. Settles the narrowing filed under "Withholding a floor protects a
 reading, not a comparison" in
 `0034-qualifying-a-rating-ladder-reading.md`, and states the boundary against
-`0035-a-degraded-floor-is-annotated-rather-than-withheld.md`.
+`0035-a-degraded-floor-is-annotated-rather-than-withheld.md`. Superseded by
+`0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, under which both readings always
+supply their own dispersion.
 
 ## Context
 
