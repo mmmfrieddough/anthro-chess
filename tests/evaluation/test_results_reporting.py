@@ -645,6 +645,73 @@ def test_a_withheld_floor_stops_the_surviving_kinds_licensing_a_finding(
     assert "a dispersion exists but describes one operand" in " ".join(rendered.split())
 
 
+def test_a_lone_dispersion_does_not_widen_a_floor_that_spans_both_sides(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A spread one reading measured is not a wider reading of the delta.
+
+    A characterization describes both operands, so it decides the verdict on its
+    own even where the dispersion the other reading happens to carry is wider.
+    That is the decision's central claim rather than an oversight: what one
+    reading's units moved by says nothing about the difference, so it cannot be
+    the conservative choice for it.
+    """
+
+    component = move_prediction_component()
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="evaluation",
+                method="repeat-measurement",
+                replicates=8,
+                source="eight re-measurements of one checkpoint",
+                floors=[
+                    FloorEntry(
+                        metric="held_out.move_loss",
+                        fingerprint=series_fingerprint("held_out.move_loss", component),
+                        floor=0.1,
+                        dispersion=0.03,
+                        dispersion_bound=0.03,
+                        degrees_of_freedom=7,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+    report = build_delta_report(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                measurements=[measurement("held_out.move_loss", 3.5, data=component)],
+                recorded_at=BASELINE_AT,
+            ),
+            recorded_result(
+                label="checkpoint-b",
+                measurements=[
+                    measurement(
+                        "held_out.move_loss",
+                        3.0,
+                        data=component,
+                        dispersion=_dispersion(0.75, kind="evaluation"),
+                    )
+                ],
+                recorded_at=CURRENT_AT,
+            ),
+        ],
+        BridgeIndex(),
+        floors=floors,
+    )
+    row = _row(report, "held_out.move_loss")
+
+    assert row.noise_floor == pytest.approx(0.1)
+    assert row.noise is NoiseVerdict.CLEARED
+    # Nothing is withheld: the characterization covers this kind for both
+    # operands, so there is no qualification the report declined to borrow.
+    assert row.one_sided_floors == ()
+
+
 def test_a_withheld_floor_outranks_the_impossible_sampling_floor_verdict(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
