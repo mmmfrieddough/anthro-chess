@@ -3,7 +3,7 @@
 Each file here records which accounts a source had marked for breaking its
 rules at one moment, for one archive. Preparation rejects every game those
 accounts played. `uv run anthro data mark-accounts` builds one;
-`docs/decisions/0040-games-of-marked-accounts-leave-the-corpus.md` owns why the
+`docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md` owns why the
 games go rather than the moves.
 
 These are pinned inputs rather than derived artifacts, which is why they are

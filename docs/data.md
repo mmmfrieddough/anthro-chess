@@ -763,7 +763,7 @@ play, and the human-versus-engine classifier would otherwise draw its human
 class from it. That is a definitional statement about what counts as human
 play, it removes roughly a tenth of the games a month offers, and it is
 recorded as one in
-[`0040-games-of-marked-accounts-leave-the-corpus.md`](decisions/0040-games-of-marked-accounts-leave-the-corpus.md).
+[`0041-games-of-marked-accounts-leave-the-corpus.md`](decisions/0041-games-of-marked-accounts-leave-the-corpus.md).
 
 The baseline selection does not name a snapshot yet, so it prepares unfiltered
 until one exists. Building it means asking the source about every account in an

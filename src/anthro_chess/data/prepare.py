@@ -549,7 +549,7 @@ def _parse_game(
         # Ended by the platform on a client-side report rather than played to
         # a finish, so the record is a fragment of a game rather than a
         # completed human one. Rejected for that rather than as a cheating
-        # filter, which 0040 measures this label as far too narrow to serve.
+        # filter, which 0041 measures this label as far too narrow to serve.
         return _ParsedGame(None, "rules_infraction")
     if config.filters.exclude_bots and _has_bot_player(game):
         return _ParsedGame(None, "bot_game")
@@ -570,7 +570,7 @@ def _parse_game(
         #
         # Ordered after the speed, rated, and bot filters so the manifest's
         # count is a share of the corpus being built rather than of the whole
-        # archive, which is the number 0040 is checked against.
+        # archive, which is the number 0041 is checked against.
         return _ParsedGame(None, "marked_account")
 
     source_game_key = _source_game_key(game.headers.get("Site"))
