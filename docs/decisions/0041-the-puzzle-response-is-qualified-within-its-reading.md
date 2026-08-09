@@ -185,18 +185,35 @@ while what to *do* about a zero differs by caller — omit one metric, refuse a
 whole comparison — and pushing it into the shared arithmetic would also catch
 `0032`'s *stated* zero, which is the one that is correct.
 
-The curve family keeps its estimated zero, and the reason is not the one it
-looks like. Refusing it there is the same two lines and in production would
-never fire, since a curve over hundreds of varied games always moves. It fires
-only against the fixtures: `TrajectoryRunner` answers identically for one
-trajectory length and rating, and `maximum_generated_plies` truncates every
-fixture game at the same length, so every generated game *is* the same game and
-no redraw of them can move a distance. Qualifying those readings needs a stub
-whose games differ **and** a ply limit that lets them end at different lengths,
-which moves counts a dozen unrelated assertions in that family read. A varying
-stub alone was measured and is not enough. That is fixture architecture in a
-family this change does not otherwise touch, and it is the whole remaining cost
-of `#304`.
+**The curve family keeps its estimated zero**, which is the other half of the
+per-family question `#304` asks, and it is a different answer for a reason
+rather than for convenience.
+
+A curve's floor is attached to its measurement because it is a function of that
+reading's own configuration, and for generated play `0032` already establishes
+that evaluation and data-sampling noise coincide — the games *are* the draw. So a
+distance that no redraw moves is a statement about the play this reading
+generated, not about a sample that happened to come out flat, and the reading
+already exposes it directly: a `CurveComparison` carries `model_variation`
+beside the distance, so a reader sees that the model side did not move without
+having to infer it from the floor.
+
+The measured consequence of the alternative decided this. Refusing there is the
+same two lines and in production would never fire — a curve over hundreds of
+varied games always moves — but at fixture scale it removes floors from
+whichever quantities that fixture cannot exercise, and *which* quantities those
+are shifts with the configuration. Measured on the generated-play fixtures:
+with one game per cell, all ten; with a stub whose games differ, resignation
+enabled and four games per cell, four of ten (repetition, cycle, book depth,
+move diversity); adding a third seed made repertoire degenerate too, and the
+depth sweep lost its floor at the plies the games no longer reached. Six tests
+across `test_rollout.py` and `test_termination_benchmark.py` assert that every
+quantity carries a floor, and no fixture short of production-scale play lets
+them keep saying so. Narrowing them to whichever subset a given fixture happens
+to move would leave
+`test_a_distance_carries_the_floor_it_has_to_clear` asserting less than its name
+claims, which is a worse outcome than a zero the reading already qualifies with
+`model_variation`.
 
 **The fitted rating is the quantity this most affects.** A bisection over
 expected score is pinned near the bottom of its search range at a checkpoint
