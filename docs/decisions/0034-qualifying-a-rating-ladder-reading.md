@@ -11,7 +11,7 @@ Accepted. Extends `0026-conservative-dispersion-bounds.md`, composes with
 under it,
 `0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md` withdraws the
 whole between-opening consequence below, having measured that spread at nothing,
-and `0041-the-puzzle-response-is-qualified-within-its-reading.md` answers its
+and `0042-the-puzzle-response-is-qualified-within-its-reading.md` answers its
 zero-spread question for one more family.
 
 ## Context

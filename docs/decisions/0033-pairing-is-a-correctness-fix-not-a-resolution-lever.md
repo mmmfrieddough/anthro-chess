@@ -7,7 +7,7 @@ Date: 2026-08-04
 Accepted. Settles the estimator half of `#223` and supersedes its recommendation
 to reconsider the checkpoint-pair machinery. Applied to reporting by
 `0035-a-degraded-floor-is-annotated-rather-than-withheld.md` and to the puzzle
-family by `0041-the-puzzle-response-is-qualified-within-its-reading.md`.
+family by `0042-the-puzzle-response-is-qualified-within-its-reading.md`.
 
 ## Context
 

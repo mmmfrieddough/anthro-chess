@@ -7,7 +7,7 @@ Date: 2026-08-08
 Accepted. Settles the between-opening consequence
 `0034-qualifying-a-rating-ladder-reading.md` filed, and answers the same
 question for the generated-play curve family. Its rescaled draw is taken by
-`0041-the-puzzle-response-is-qualified-within-its-reading.md`, which applies it
+`0042-the-puzzle-response-is-qualified-within-its-reading.md`, which applies it
 to the puzzle family and to the paired estimator.
 
 ## Context

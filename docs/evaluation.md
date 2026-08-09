@@ -1805,7 +1805,7 @@ separates two configured ratings and a fit pinned at the bottom of its search
 range cannot move at all. The spreads stay in the output and the detail payload
 rather than being attached to the stored measurements, because they qualify one
 reading's response and not a delta between checkpoints.
-`docs/decisions/0041-the-puzzle-response-is-qualified-within-its-reading.md`
+`docs/decisions/0042-the-puzzle-response-is-qualified-within-its-reading.md`
 owns the rule and why an independent-input floor is not what this family gets.
 
 Selection is uniform over every exact integer puzzle rating in the declared

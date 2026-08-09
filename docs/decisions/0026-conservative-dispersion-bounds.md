@@ -8,7 +8,7 @@ Accepted. Refines `0025-machine-scoped-execution-noise-floors.md`. Refined by
 `0032-a-replayed-reading-has-no-evaluation-noise.md`, and extended by
 `0028-qualifying-the-rating-dependency-family.md`,
 `0034-qualifying-a-rating-ladder-reading.md` and
-`0041-the-puzzle-response-is-qualified-within-its-reading.md`.
+`0042-the-puzzle-response-is-qualified-within-its-reading.md`.
 
 ## Context
 
