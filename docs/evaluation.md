@@ -451,6 +451,13 @@ committed summary tier.
 
 ## Noise Characterization
 
+> **Superseded in design, not yet in code.**
+> `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
+> replaces the four kinds, the scope rules and the stored characterizations
+> described below with one dispersion per reading, combined at comparison time.
+> This section still describes what the code does today. It is rewritten as that
+> migration lands, and the tracker issue holds the order.
+
 A delta is not a finding until it is larger than the noise in the measurement.
 Reports should annotate every change with the noise floor it did or did not
 clear, and a delta inside the floor should be visible but marked rather than

@@ -8,7 +8,8 @@ Accepted. Supersedes the paired-floor consequence in
 `0019-external-puzzle-calibration-set.md`, and settles the reporting half of
 `#294` under `0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md`.
 `0036-a-one-sided-floor-does-not-qualify-a-delta.md` states the boundary against
-it.
+it. Superseded by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, under which a delta carries
+no borrowed floor to degrade.
 
 ## Context
 

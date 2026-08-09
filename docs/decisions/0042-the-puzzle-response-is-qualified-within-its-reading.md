@@ -9,7 +9,9 @@ the puzzle family, takes the estimator shape
 `0034-qualifying-a-rating-ladder-reading.md` settled for the ladder, takes the
 rescaled stratified draw
 `0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md` requires, and
-rests on `0026-conservative-dispersion-bounds.md` for the bound.
+rests on `0026-conservative-dispersion-bounds.md` for the bound. Superseded by
+`0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which keeps the within-reading
+resample and drops the paired comparison.
 
 ## Context
 
