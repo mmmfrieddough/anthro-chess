@@ -353,22 +353,30 @@ def test_a_metric_absent_from_a_game_is_still_bootstrapped(
 
 
 def test_sampling_noise_sizes_the_games_an_axis_needs() -> None:
-    dispersion = measured_dispersion(0.04, kind="data-sampling", degrees_of_freedom=999)
+    dispersion = measured_dispersion(
+        0.04, kind="data-sampling", degrees_of_freedom=999, units=1_000
+    )
     floor = self_combined_floor(dispersion)
 
     # A floor shrinks with the square root of the games behind it, so resolving
     # a quarter of the measured floor takes sixteen times the games.
-    assert games_to_resolve(dispersion, units=1_000, effect=floor) == 1_000
-    assert games_to_resolve(dispersion, units=1_000, effect=floor / 4) == 16_000
+    assert games_to_resolve(dispersion, effect=floor) == 1_000
+    assert games_to_resolve(dispersion, effect=floor / 4) == 16_000
 
 
-def test_sizing_an_input_needs_the_units_the_spread_was_read_over() -> None:
-    dispersion = measured_dispersion(0.04, kind="data-sampling", degrees_of_freedom=9)
+def test_a_spread_that_does_not_scale_cannot_size_an_input() -> None:
+    # A spread read over games a reading generated, rather than over a draw
+    # from a population, does not shrink with a larger pool, so extrapolating
+    # it by the inverse square root would answer a question nobody asked.
+    scaling = measured_dispersion(
+        0.04, kind="data-sampling", degrees_of_freedom=9, units=10
+    )
+    unscaled = measured_dispersion(0.04, kind="evaluation", degrees_of_freedom=9)
 
-    with pytest.raises(NoiseCharacterizationError, match="number of units"):
-        games_to_resolve(dispersion, units=0, effect=0.01)
+    with pytest.raises(NoiseCharacterizationError, match="does not scale"):
+        games_to_resolve(unscaled, effect=0.01)
     with pytest.raises(NoiseCharacterizationError, match="finite and positive"):
-        games_to_resolve(dispersion, units=10, effect=0.0)
+        games_to_resolve(scaling, effect=0.0)
 
 
 def test_a_characterization_round_trips_through_the_store(

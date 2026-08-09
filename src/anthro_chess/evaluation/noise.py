@@ -164,6 +164,7 @@ def bootstrap_dispersions(
                 kind="data-sampling",
                 degrees_of_freedom=freedom,
                 confidence=confidence,
+                units=len(totals),
                 source=source,
                 estimator=BOOTSTRAP_METHOD,
             )

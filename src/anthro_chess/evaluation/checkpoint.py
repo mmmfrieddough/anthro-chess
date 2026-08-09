@@ -129,7 +129,9 @@ from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch, OptionalTensor
 
-CHECKPOINT_EVALUATION_VERSION = 1
+#: Version 2 carries each series' own dispersion where version 1 carried the
+#: characterization the run recorded beside the reading.
+CHECKPOINT_EVALUATION_VERSION = 2
 
 HELD_OUT_KIND = "held-out-prediction"
 DEPENDENCY_KIND = "rating-dependency"

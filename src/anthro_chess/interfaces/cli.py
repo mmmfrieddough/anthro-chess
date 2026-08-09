@@ -3455,32 +3455,23 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
     try:
         metric = metric_definition(arguments.metric).identifier
         store = ResultsStore(resolve_store_root(arguments.store))
-        # Results arrive in recording order, so the last reading that measured
-        # its own spread over a counted sample is the one that still describes
-        # the metric.
-        measured = None
+        # Results arrive in recording order, so the last reading that read its
+        # own spread over a counted draw of games is the one that still
+        # describes the metric.
+        spread = None
         for envelope in store.results():
             candidate = envelope.measurement(metric)
-            if (
-                candidate is not None
-                and candidate.dispersion is not None
-                and candidate.sample_size is not None
-            ):
-                measured = candidate
-        if measured is None or measured.dispersion is None:
+            if candidate is not None and candidate.dispersion is not None:
+                spread = candidate.dispersion
+        if spread is None:
             print(
                 f"anthro eval noise plan: no reading records a sampled "
                 f"dispersion for {metric}",
                 file=sys.stderr,
             )
             return 2
-        units = measured.sample_size or 0
-        required = games_to_resolve(
-            measured.dispersion,
-            units=units,
-            effect=arguments.effect,
-        )
-        floor = self_combined_floor(measured.dispersion)
+        required = games_to_resolve(spread, effect=arguments.effect)
+        floor = self_combined_floor(spread)
     except (
         MetricRegistryError,
         NoiseCharacterizationError,
@@ -3496,9 +3487,9 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
                     "metric": metric,
                     "effect": arguments.effect,
                     "required_games": required,
-                    "measured_games": units,
+                    "measured_games": spread.units,
                     "measured_floor": floor,
-                    "source": measured.dispersion.source,
+                    "source": spread.source,
                 },
                 indent=2,
                 sort_keys=True,
@@ -3509,10 +3500,7 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         f"{metric}: resolving an effect of {arguments.effect:.6g} needs about "
         f"{required} game(s)."
     )
-    print(
-        f"Measured floor {floor:.6g} over {units} game(s) "
-        f"({measured.dispersion.source})."
-    )
+    print(f"Measured floor {floor:.6g} over {spread.units} game(s) ({spread.source}).")
     return 0
 
 

@@ -149,7 +149,9 @@ from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
-LADDER_BENCHMARK_VERSION = 1
+#: Version 2 stores each quantity's own dispersion where version 1 stored the
+#: floor and the coverage that scaled it.
+LADDER_BENCHMARK_VERSION = 2
 
 LADDER_KIND = "rating-ladder"
 LADDER_BENCHMARK = BenchmarkReference(

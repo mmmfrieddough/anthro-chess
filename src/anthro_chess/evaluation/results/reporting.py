@@ -1562,8 +1562,11 @@ def _applicable_floors(
     Two sources can supply a floor. Each reading carries the dispersion of its
     own units, and the two combine into the floor of the delta between them; a
     calibration pass characterizes a floor for the whole series. Where both
-    exist for one kind, the wider one is kept, since a floor that understates
-    the noise is worse than one that overstates it.
+    produce one for a kind, the wider is kept, since a floor that understates
+    the noise is worse than one that overstates it. A dispersion only one
+    reading carries produces nothing to keep: it describes that operand and not
+    the difference, so a characterization spanning the same kind decides the
+    verdict alone even where the lone dispersion is wider.
 
     ``executions`` and ``trainings`` are the scopes this delta spans, which is
     what decides whether a scoped floor describes it. A delta whose two sides
@@ -1640,19 +1643,20 @@ def _applicable_floors(
 def _combined(baseline: MetricDispersion, current: MetricDispersion) -> NoiseFloor:
     """Return the floor the two readings' own dispersions imply for their delta.
 
-    The two sources are kept apart when they differ, because a floor combined
-    from a thousand-game reading and a forty-game one is neither reading's, and
-    which side contributed the width is the first thing a reader chasing a wide
-    floor wants.
+    Both sources are named, baseline first, where the two readings describe
+    themselves differently: a floor combined from a thousand-game reading and a
+    forty-game one is neither reading's, and which side contributed the width is
+    the first thing a reader chasing a wide floor wants. Two readings of one
+    benchmark at one size describe themselves identically and are named once.
     """
 
-    sources = sorted(
-        {source for source in (baseline.source, current.source) if source is not None}
-    )
+    named = [
+        source for source in (baseline.source, current.source) if source is not None
+    ]
     return NoiseFloor(
         value=combined_floor(baseline, current),
         kind=baseline.kind,
-        source=" + ".join(sources) or None,
+        source=" + ".join(dict.fromkeys(named)) or None,
         estimator=COMBINED_DISPERSION_METHOD,
     )
 

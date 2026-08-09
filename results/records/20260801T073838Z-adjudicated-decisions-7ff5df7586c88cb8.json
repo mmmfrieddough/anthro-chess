@@ -77,6 +77,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 1.02975046806476
       },
       "fingerprint": "74a97ebdef6ae4f6039fbd01621a2dd42d8d636bbf333f610983d1cac5d9ca4f",
@@ -90,6 +91,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.05295585681499636
       },
       "fingerprint": "bb8f9d9c5096eb7eb85375c67ac688ca87aa89ddde0eb0d634e6be54c514fea9",
@@ -103,6 +105,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.04965558590295906
       },
       "fingerprint": "39743cdaba85243d94ca10c1aa50f183d56d23c23318dc12186d6309599f022a",
@@ -116,6 +119,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.0034615858888531006
       },
       "fingerprint": "47549a7c534ad2b2b4cdd68214b758e20fce5ebcddb8feb0ae60fd7aa75676fa",
@@ -129,6 +133,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.019319630908515916
       },
       "fingerprint": "e1f64fd8750f4889682c13b170fa8f792da32c68810e7ae43e1d390010b5ec36",
@@ -142,6 +147,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.19259407170277318
       },
       "fingerprint": "4823bef8db3a6c36acabda0f7bdc5ffb4d85c9ae81a103cabc8432736e873df9",
@@ -155,6 +161,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.03792373514008409
       },
       "fingerprint": "9b5baee379ac0f026bd8162620fc04cba0d32269e9ca6bcde1f7fdbf4bac1f3d",
@@ -168,6 +175,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.03176098365511513
       },
       "fingerprint": "8332309da9dc5795da908d933e8f1855c5755eff49d17fb35aab115ae21ed495",
@@ -181,6 +189,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.013631536549018062
       },
       "fingerprint": "532d26c5090229d6e0ac5cbd4c5c835f9c1e8e602725e64c100f5ab7b503b24b",
@@ -194,6 +203,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.03423496564122641
       },
       "fingerprint": "7b9cdf67c4cf079b384e3c4ad88202e2f1cca22291232f3cc70dea5c471fbba3",
@@ -207,6 +217,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.15955553638839756
       },
       "fingerprint": "8945a9df40b5bc105e2068f5de3d720a37c6e5a86608c9c8b918502f31c84c22",
@@ -220,6 +231,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.007503042013555689
       },
       "fingerprint": "ac1cf453bd28882f9d1e4b5ca1b2f58481ad443daf3874aa33158c75d739bcbc",
@@ -233,6 +245,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.007761693310042124
       },
       "fingerprint": "76ba06db52a4d670a40234ce59c023cc569bca6aa6206c480c2ab7d971e0e989",
@@ -246,6 +259,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.0037659566071879405
       },
       "fingerprint": "79f1fc18be46c199638c919754c04284de17a2827397ab8753cc5d0459329032",
@@ -259,6 +273,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.007300724267264242
       },
       "fingerprint": "9758dc9b10f27daa6b7a00a9c7dcea2519ad0508b70b7f70fd03c40619fb230f",
@@ -272,6 +287,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.037038634436642806
       },
       "fingerprint": "38308da17961dd9e0b81714db8905f6bfd9791da713fc46c0bfb65e68f600621",
@@ -285,6 +301,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.038060400313264686
       },
       "fingerprint": "e5bb7328a94dc1dcd5579a6b53014d3a0c4ac8fb977d91424845d7e0dea52d04",
@@ -298,6 +315,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.01026310360906945
       },
       "fingerprint": "94e091312d036e4206c69732cd5ca46ca6dfbed293646845346207f1dc5e5750",
@@ -311,6 +329,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.007410176075862847
       },
       "fingerprint": "db650f6c45e86246f91e3e459d093f28fb281e66418d8850da9facb89bed5631",
@@ -324,6 +343,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.037038634436642806
       },
       "fingerprint": "dcbea97c8ea34f75a89ada87b87c789504b4d78c6abd4899b5648de6d6fb75c4",
@@ -337,6 +357,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 2.874248594191535
       },
       "fingerprint": "a01608072c18382ae85cae9f8d9f04c2917a1552aec47d08c4c72238571ab115",
@@ -350,6 +371,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.09288255747967701
       },
       "fingerprint": "6dbde035a1654c56b0bbace24ae3c3c34d35ae586bc42fb6e6fdd0ef92b6bdbe",
@@ -363,6 +385,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.03697806561703503
       },
       "fingerprint": "52da40cc56158415ff140abf65e95ddf28c15645c3ba6e2decfa6c763543287e",
@@ -376,6 +399,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.025182420729926273
       },
       "fingerprint": "d925cc5956ebbe0160679e6f1f5458bb02d253763dff75458fb036238e800425",
@@ -389,6 +413,7 @@
         "estimator": "bootstrap-over-games",
         "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
+        "units": 400,
         "value": 0.08143322082355045
       },
       "fingerprint": "a9895b5c4c70e899816099f5b848fcfb35d86cda76997f9da6fd87a1122ac0bd",
@@ -398,5 +423,5 @@
     }
   ],
   "recorded_at": "2026-08-01T07:38:38.083420Z",
-  "result_id": "82f2ad8cafe3ec00"
+  "result_id": "7ff5df7586c88cb8"
 }

@@ -475,6 +475,7 @@ def measured_dispersion(
     kind: NoiseFloorKind,
     degrees_of_freedom: int,
     confidence: float = DEFAULT_CONFIDENCE,
+    units: int | None = None,
     source: str | None = None,
     estimator: str | None = None,
 ) -> MetricDispersion:
@@ -487,6 +488,7 @@ def measured_dispersion(
             degrees_of_freedom=degrees_of_freedom,
             confidence=confidence,
         ),
+        units=units,
         kind=kind,
         source=source,
         estimator=estimator,
@@ -505,6 +507,12 @@ def combined_floor(
     readings' bounded dispersions combine in quadrature. ``coverage`` is applied
     here rather than stored on either reading because a floor is a claim the
     comparison makes; the readings only say how far their own units move.
+
+    Two bounds hold together with the product of their confidences rather than
+    with either one, so a floor combined from two readings each bounded at 95%
+    is a 90% claim about the pair. That is a weaker guarantee than a stored
+    floor built from a single bound carried, and it is the price of not assuming
+    the two readings share a spread.
     """
 
     if coverage <= 0.0 or not math.isfinite(coverage):
@@ -802,7 +810,6 @@ def process_replicate_floors(
 def games_to_resolve(
     dispersion: MetricDispersion,
     *,
-    units: int,
     effect: float,
     coverage: float = DEFAULT_COVERAGE,
 ) -> int:
@@ -824,17 +831,17 @@ def games_to_resolve(
     would size a pool that turns out not to resolve the effect it was cut for.
     """
 
-    if units < 1:
+    if dispersion.units is None:
         raise NoiseCharacterizationError(
-            "sizing an evaluation input needs the number of units the "
-            "dispersion was measured over"
+            "this spread does not scale with a game count, so it cannot size "
+            "an evaluation input"
         )
     if effect <= 0.0 or not math.isfinite(effect):
         raise NoiseCharacterizationError("an effect size must be finite and positive")
     floor = self_combined_floor(dispersion, coverage=coverage)
     if floor == 0.0:
         return 1
-    return max(1, math.ceil(units * (floor / effect) ** 2))
+    return max(1, math.ceil(dispersion.units * (floor / effect) ** 2))
 
 
 def build_characterization(

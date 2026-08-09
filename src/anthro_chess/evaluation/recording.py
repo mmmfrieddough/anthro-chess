@@ -58,7 +58,6 @@ from anthro_chess.evaluation.results import (
     ExecutionRecord,
     Measurement,
     MetricDispersion,
-    NoiseCharacterization,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
@@ -183,7 +182,6 @@ class ResultRecording:
         self.store = store
         self.detail = detail
         self.envelopes: list[ResultEnvelope] = []
-        self.characterizations: list[NoiseCharacterization] = []
         self.dispersions: dict[str, MetricDispersion] = {}
         self.detail_paths: list[Path] = []
         self._settings = resolved_config.value
@@ -273,11 +271,7 @@ class ResultRecording:
     def _append(self) -> None:
         if self.store is None:
             return
-        recorded = [self.store.append(item) for item in self.envelopes]
-        recorded.extend(
-            self.store.append_characterization(item) for item in self.characterizations
-        )
-        self._recorded_paths = tuple(recorded)
+        self._recorded_paths = tuple(self.store.append(item) for item in self.envelopes)
 
     @property
     def fields(self) -> dict[str, Any]:
@@ -388,12 +382,6 @@ class ResultRecorder:
         reference = detail.write(relative, payload(), description=description)
         self._recording.detail_paths.append(detail.root / relative)
         return reference
-
-    def characterize(self, characterization: NoiseCharacterization | None) -> None:
-        """Keep one noise floor to append beside the envelopes, if there is one."""
-
-        if characterization is not None:
-            self._recording.characterizations.append(characterization)
 
     def disperse(self, dispersions: Mapping[str, MetricDispersion]) -> None:
         """Carry the spread of each series onto the measurements added after it.

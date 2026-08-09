@@ -1447,6 +1447,7 @@ def _record_sampled_reading(store_root: Path, *, floor: float, games: int) -> No
                     dispersion=MetricDispersion(
                         value=bound,
                         bound=bound,
+                        units=games,
                         kind="data-sampling",
                         source="the fixture pool",
                     ),

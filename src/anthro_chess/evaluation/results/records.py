@@ -334,6 +334,12 @@ class MetricDispersion(ResultModel):
     #: the estimate so how much of a wide floor is spread and how much is
     #: ignorance stays visible.
     bound: float = Field(ge=0.0)
+    #: How many independent sampling units the spread was read over, when it
+    #: scales with that count. Set where the units are the games a bootstrap
+    #: resampled, which is what makes the sizing question computable; absent
+    #: where re-measuring does not redraw a sample, and deliberately not the
+    #: measurement's own ``sample_size``, which counts scored positions.
+    units: int | None = Field(default=None, ge=1)
     kind: NoiseFloorKind
     source: str | None = Field(default=None, min_length=1)
     estimator: Identifier | None = None
