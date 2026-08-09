@@ -2,9 +2,9 @@
 """Regenerate the vendored puzzle selection from the pinned upstream archive.
 
 This is a maintenance script, not part of the runtime package. It runs only
-when the puzzle set is deliberately re-pinned or its selection design changes,
-which is also when the set version is bumped, so the benchmark identity never
-changes underneath a recorded reading.
+when the puzzle set is deliberately re-pinned or its selection design changes.
+Whether that starts a new set version is decided by what the results store
+already holds; the puzzle section of ``docs/evaluation.md`` says how.
 
 Usage:
 
@@ -30,19 +30,18 @@ import json
 import sys
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
-
-from anthro_chess.config import ConfigError, load_config  # noqa: E402
-from anthro_chess.evaluation.puzzles.dataset import (  # noqa: E402
+from anthro_chess.config import ConfigError, load_config
+from anthro_chess.data import DataPreparationError, acquire_configured_archive
+from anthro_chess.evaluation.puzzles.dataset import (
     PUZZLE_FILE_NAME,
     VENDORED_RECORD_FILE_NAME,
     PuzzleSetBuildConfig,
     PuzzleSetError,
     build_vendored_puzzle_set,
 )
-from anthro_chess.machine import DATA_ROOT_VARIABLE, required_root  # noqa: E402
+from anthro_chess.machine import DATA_ROOT_VARIABLE, required_root
 
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIRECTORY = (
     REPOSITORY_ROOT / "src" / "anthro_chess" / "evaluation" / "puzzles" / "data"
 )
@@ -67,24 +66,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(PuzzleSetBuildConfig, path=arguments.config).value
-        archive_directory = (
-            None
-            if arguments.archive is not None
-            else required_root(
+        archive = arguments.archive
+        if archive is None:
+            root = required_root(
                 DATA_ROOT_VARIABLE,
                 alternative="--archive must name a copy of the pinned archive",
             )
-            / config.artifact_name
-        )
-        vendored = build_vendored_puzzle_set(
-            config,
-            source_path=arguments.archive,
-            archive_directory=archive_directory,
-        )
-    except (ConfigError, PuzzleSetError) as error:
+            archive = acquire_configured_archive(
+                root / config.artifact_name, config.archive
+            ).archive_path
+        vendored = build_vendored_puzzle_set(config, archive)
+    except (ConfigError, DataPreparationError, PuzzleSetError) as error:
         raise SystemExit(f"vendor-puzzle-selection: {error}") from error
 
-    DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
     puzzle_path = DATA_DIRECTORY / PUZZLE_FILE_NAME
     puzzle_path.write_text(vendored.content, encoding="utf-8", newline="\n")
     record_path = DATA_DIRECTORY / VENDORED_RECORD_FILE_NAME

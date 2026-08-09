@@ -30,11 +30,7 @@ from pydantic import (
 )
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import (
-    ArchiveConfig,
-    DataPreparationError,
-    acquire_configured_archive,
-)
+from anthro_chess.data import ArchiveConfig
 from anthro_chess.data.artifacts import file_sha256
 
 PUZZLE_FILE_NAME = "puzzles.csv"
@@ -305,9 +301,7 @@ def prepare_puzzle_set(
         # Reads back what was just written, which is where every line is
         # parsed and every move checked for legality.
         load_puzzle_set(output)
-    except (OSError, ValueError) as error:
-        if isinstance(error, PuzzleSetError):
-            raise
+    except OSError as error:
         raise PuzzleSetError(str(error)) from error
     return PuzzleSetBuildResult(
         artifact_path=output,
@@ -319,7 +313,7 @@ def prepare_puzzle_set(
 
 
 def load_vendored_puzzle_set() -> VendoredPuzzleSet:
-    """Read the committed selection and the record that describes it."""
+    """Read the committed selection, refusing rows its record's checksum rejects."""
 
     content = _read_data_file(PUZZLE_FILE_NAME)
     try:
@@ -341,44 +335,30 @@ def load_vendored_puzzle_set() -> VendoredPuzzleSet:
 
 def build_vendored_puzzle_set(
     config: PuzzleSetBuildConfig,
-    *,
-    source_path: str | Path | None = None,
-    archive_directory: str | Path | None = None,
+    source_path: str | Path,
 ) -> VendoredPuzzleSet:
     """Select puzzles from the pinned upstream archive, for vendoring.
 
-    Reads either ``source_path`` or, failing that, a download kept under
-    ``archive_directory``. This is the only path that reads the archive, and it
-    deliberately does not check the selected content against
-    ``expected_puzzles_sha256``: it runs when that digest is being established
-    rather than confirmed.
+    This is the only path that reads the archive, and it deliberately does not
+    check the selected content against ``expected_puzzles_sha256``: it runs
+    when that digest is being established rather than confirmed.
     """
 
     try:
-        if source_path is None:
-            if archive_directory is None:
-                raise PuzzleSetError(
-                    "selecting from the pinned archive needs either the archive "
-                    "itself or a directory to acquire it into"
-                )
-            source = acquire_configured_archive(
-                archive_directory, config.archive
-            ).archive_path
-        else:
-            source = Path(source_path)
-            observed = file_sha256(source)
-            if observed != config.archive.sha256:
-                raise PuzzleSetError(
-                    "input puzzle archive checksum mismatch: expected "
-                    f"{config.archive.sha256}, observed {observed}"
-                )
+        source = Path(source_path)
+        observed = file_sha256(source)
+        if observed != config.archive.sha256:
+            raise PuzzleSetError(
+                "input puzzle archive checksum mismatch: expected "
+                f"{config.archive.sha256}, observed {observed}"
+            )
         selected, coverage = _select_puzzles(source, config.selection)
         _validate_selected(selected, config.selection)
         rendered = _render_csv(selected)
         # Every rejection a later build would raise has to surface while the
         # archive is still in hand; upstream will not serve it again.
         tuple(_parse_puzzles(rendered, Path(PUZZLE_FILE_NAME)))
-    except (DataPreparationError, OSError, ValueError) as error:
+    except (OSError, ValueError) as error:
         if isinstance(error, PuzzleSetError):
             raise
         raise PuzzleSetError(str(error)) from error

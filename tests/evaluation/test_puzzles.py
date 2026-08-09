@@ -412,7 +412,7 @@ def test_vendoring_selects_uniform_exact_ratings_and_records_coverage(
             },
         }
     )
-    vendored = build_vendored_puzzle_set(config, source_path=source)
+    vendored = build_vendored_puzzle_set(config, source)
 
     assert vendored.entries == 2
     assert vendored.content == output_text
