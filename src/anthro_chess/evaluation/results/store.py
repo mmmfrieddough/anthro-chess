@@ -63,9 +63,9 @@ class ResultsStoreError(ValueError):
     """Raised when the results store cannot be read or appended to safely.
 
     Every filesystem refusal in this module is converted into this rather than
-    left as an ``OSError``: a recording benchmark declares this error in the
-    ``errors`` of its
-    :class:`~anthro_chess.evaluation.benchmarks.Benchmark`, and an ``OSError``
+    left as an ``OSError``, and so is a detail payload the serializer refuses:
+    a recording benchmark declares this error in the ``errors`` of its
+    :class:`~anthro_chess.evaluation.benchmarks.Benchmark`, and anything else
     reaching there ends the whole sweep rather than failing one step.
     """
 
@@ -306,8 +306,14 @@ class DetailStore:
                 f"detail path must stay beneath the detail root: {relative_path}"
             )
         path = self._root / candidate
+        try:
+            encoded = canonical_readable_json(payload)
+        except (RecursionError, TypeError, ValueError) as error:
+            # The committed tier is serialized from typed records that reject a
+            # non-finite value long before this; a detail payload is freeform,
+            # so the serializer is the first thing that ever inspects it.
+            raise ResultsStoreError(f"cannot serialize {path}: {error}") from error
         _ensure_directory(path.parent)
-        encoded = canonical_readable_json(payload)
         _write_atomically(path, encoded)
         return DetailReference(
             path=str(candidate),

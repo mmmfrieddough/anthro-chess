@@ -353,6 +353,21 @@ def test_a_detail_write_failure_becomes_the_benchmark_s_own_error(
             _add_reading(recorder, component)
 
 
+def test_a_refused_detail_payload_becomes_the_benchmark_s_own_error(
+    tmp_path: Path,
+    resolved: ResolvedConfig[_Config],
+    move_prediction_component: Digest,
+) -> None:
+    # The filesystem is not the only thing that can refuse a detail write.
+    component = move_prediction_component()
+    detail = DetailStore(tmp_path / "detail")
+
+    with pytest.raises(_BenchmarkError, match="cannot serialize"):
+        with _recording(resolved, detail=detail) as recording:
+            recorder = _measuring(recording)
+            _add_reading(recorder, component, payload=lambda: {"rate": float("nan")})
+
+
 def test_a_failed_reading_appends_nothing(
     tmp_path: Path,
     resolved: ResolvedConfig[_Config],
