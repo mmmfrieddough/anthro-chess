@@ -56,8 +56,8 @@ def test_content_digest_ignores_columns_the_projection_does_not_read(
     baseline = move_prediction_component([scored_row(1), scored_row(2)])
     changed = move_prediction_component(
         [
-            scored_row(1, clock_remaining_ms=[1, 2, 3], result="0-1"),
-            scored_row(2, clock_remaining_ms=None, result="1/2-1/2"),
+            scored_row(1, clock_remaining_delta_ms=[1, 2, 3], result="0-1"),
+            scored_row(2, clock_remaining_delta_ms=None, result="1/2-1/2"),
         ]
     )
 

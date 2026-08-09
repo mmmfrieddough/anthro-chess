@@ -39,10 +39,12 @@ from anthro_chess.data import (
     encoding_identity,
     terminal_action_for,
 )
+from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    encode_clock_remaining_deltas,
     normalized_parquet_schema,
 )
 from anthro_chess.evaluation.results import (
@@ -143,9 +145,15 @@ def _normalized_row(
     moves = OPENING_MOVES[:plies] if moves is None else moves
     white_rating, black_rating = (rating, rating) if ratings is None else ratings
     status = "present"
-    clock_trace = [290_000] * len(moves) if clocks else [None] * len(moves)
+    # Descending rather than constant so a decoded trace is a plausible clock:
+    # a constant one encodes to zeros and would hide a sign error in the delta.
+    clock_trace: list[int | None] = (
+        [290_000 - 1_000 * index for index in range(len(moves))]
+        if clocks
+        else [None] * len(moves)
+    )
     clock_statuses = [status if clocks else "unavailable"] * len(moves)
-    clock_precisions: list[int | None] = [100 if clocks else None] * len(moves)
+    clock_precision_ms = 100 if clocks else None
     # Derive the ending and its terminal action the same way preparation would,
     # so a fixture row never carries a category its own result and moves could
     # not produce, or an action sequence preparation would not have written.
@@ -167,12 +175,13 @@ def _normalized_row(
         action_ids.append(terminal_action_id)
         clock_trace = [*clock_trace, None]
         clock_statuses.append("unavailable")
-        clock_precisions.append(None)
     return {
         "schema_version": SCHEMA_VERSION,
         "game_id": game_id,
         "source_id": "fixture",
         "source_game_key": f"game{game_id}",
+        "white_player_digest": account_row_digest(f"white{game_id}"),
+        "black_player_digest": account_row_digest(f"black{game_id}"),
         "ruleset": "standard",
         "initial_position": initial_position,
         "result": result,
@@ -199,9 +208,9 @@ def _normalized_row(
         "time_increment_status": (
             status if time_increment_ms is not None else "unavailable"
         ),
-        "clock_remaining_ms": clock_trace,
+        "clock_remaining_delta_ms": encode_clock_remaining_deltas(clock_trace),
         "clock_status": clock_statuses,
-        "clock_precision_ms": clock_precisions,
+        "clock_precision_ms": clock_precision_ms,
         "split": split,
     }
 
@@ -487,7 +496,7 @@ def _scored_row(game_id: int, **overrides: Any) -> dict[str, Any]:
         "white_normalized_rating": 1500,
         "black_normalized_rating": 1500,
         # Deliberately outside the move-prediction projection.
-        "clock_remaining_ms": [300_000, 299_000],
+        "clock_remaining_delta_ms": [300_000, 299_000],
         "clock_status": ["present", "present"],
         "time_initial_ms": 300_000,
         "time_increment_ms": 0,

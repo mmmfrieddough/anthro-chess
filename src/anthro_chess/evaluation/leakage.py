@@ -55,7 +55,7 @@ _CONTENT_COLUMNS = (
     NormalizedColumn.RESULT.value,
     NormalizedColumn.WHITE_NORMALIZED_RATING.value,
     NormalizedColumn.BLACK_NORMALIZED_RATING.value,
-    NormalizedColumn.CLOCK_REMAINING_MS.value,
+    NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value,
     NormalizedColumn.SPLIT.value,
 )
 _CONTENT_KEY_COLUMNS = tuple(

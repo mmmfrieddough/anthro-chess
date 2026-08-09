@@ -666,15 +666,15 @@ def _project_row(row: Mapping[str, Any], actions: Sequence[int]) -> dict[str, An
     derivation reached. The clock trace is projected rather than recomputed:
     this benchmark reads no timing, and inventing move times for moves nobody
     played would put fabricated data in the one place a later timing benchmark
-    would trust. The other two per-ply clock columns are never read here, so
-    the pool read leaves them behind rather than truncating them for nobody.
+    would trust. The remaining per-ply clock column is never read here, so the
+    pool read leaves it behind rather than truncating it for nobody.
     """
 
     updated = dict(row)
     plies = len(actions)
     updated[NormalizedColumn.ACTION_IDS.value] = list(actions)
-    clocks = updated[NormalizedColumn.CLOCK_REMAINING_MS.value]
-    updated[NormalizedColumn.CLOCK_REMAINING_MS.value] = list(clocks)[:plies]
+    clocks = updated[NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value]
+    updated[NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value] = list(clocks)[:plies]
     updated[NormalizedColumn.PLY_COUNT.value] = plies
     return updated
 

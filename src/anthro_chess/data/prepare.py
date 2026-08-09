@@ -23,6 +23,7 @@ from anthro_chess.config import ResolvedConfig
 from anthro_chess.data.accounts import (
     MarkedAccountError,
     MarkedAccounts,
+    account_row_digest,
     load_marked_accounts,
     resolve_snapshot_path,
 )
@@ -41,6 +42,7 @@ from anthro_chess.data.schema import (
     FieldStatus,
     NormalizedColumn,
     SplitName,
+    encode_clock_remaining_deltas,
 )
 from anthro_chess.data.termination import (
     TERMINAL_ACTION_STATUSES,
@@ -284,16 +286,9 @@ def prepare_pgn(
                     clock_status_counts.update(
                         str(status) for status in clock_statuses[:ply_count]
                     )
-                    clock_precisions = parsed.record[
-                        NormalizedColumn.CLOCK_PRECISION_MS
-                    ]
-                    if not isinstance(clock_precisions, list):
-                        raise TypeError("normalized clock precisions must be a list")
-                    clock_precision_counts.update(
-                        precision
-                        for precision in clock_precisions[:ply_count]
-                        if isinstance(precision, int)
-                    )
+                    clock_precision = parsed.record[NormalizedColumn.CLOCK_PRECISION_MS]
+                    if isinstance(clock_precision, int):
+                        clock_precision_counts[clock_precision] += 1
                     assert parsed.termination is not None
                     termination_category_counts[parsed.termination.category.value] += 1
                     termination_attribution_counts[
@@ -438,7 +433,7 @@ def prepare_pgn(
         "coverage": {
             "clock": {
                 "status_plies": dict(sorted(clock_status_counts.items())),
-                "precision_ms_plies": {
+                "precision_ms_games": {
                     str(precision): count
                     for precision, count in sorted(clock_precision_counts.items())
                 },
@@ -587,7 +582,7 @@ def _parse_game(
     actions: list[int] = []
     clock_values: list[int | None] = []
     clock_statuses: list[FieldStatus] = []
-    clock_precisions: list[int | None] = []
+    clock_precision_ms: int | None = None
     board = game.board()
     for node in game.mainline():
         move = node.move
@@ -597,7 +592,16 @@ def _parse_game(
         clock = _parse_clock(node.comment)
         clock_values.append(clock.value)
         clock_statuses.append(clock.status)
-        clock_precisions.append(clock.precision_ms)
+        if clock.precision_ms is not None:
+            # Precision is inferred per ply from how the source printed the
+            # clock, so an exporter that strips a trailing zero infers a coarser
+            # tick for that ply alone. The finest tick describes every reading,
+            # since a coarser one is representable in it.
+            clock_precision_ms = (
+                clock.precision_ms
+                if clock_precision_ms is None
+                else min(clock_precision_ms, clock.precision_ms)
+            )
         board.push(move)
 
     if len(actions) < config.filters.minimum_plies:
@@ -628,7 +632,6 @@ def _parse_game(
         actions.append(terminal_action_id)
         clock_values.append(None)
         clock_statuses.append(_STATUS_UNAVAILABLE)
-        clock_precisions.append(None)
     game_id = _game_id(config.source.id, source_game_key)
     split = _split_name(
         game_id,
@@ -658,6 +661,12 @@ def _parse_game(
             NormalizedColumn.GAME_ID: game_id,
             NormalizedColumn.SOURCE_ID: config.source.id,
             NormalizedColumn.SOURCE_GAME_KEY: source_game_key,
+            NormalizedColumn.WHITE_PLAYER_DIGEST: _player_digest(
+                game.headers.get("White")
+            ),
+            NormalizedColumn.BLACK_PLAYER_DIGEST: _player_digest(
+                game.headers.get("Black")
+            ),
             NormalizedColumn.RULESET: "standard",
             NormalizedColumn.INITIAL_POSITION: chess.STARTING_FEN,
             NormalizedColumn.RESULT: result,
@@ -684,9 +693,11 @@ def _parse_game(
             NormalizedColumn.TIME_INITIAL_STATUS: time_initial.status,
             NormalizedColumn.TIME_INCREMENT_MS: time_increment.value,
             NormalizedColumn.TIME_INCREMENT_STATUS: time_increment.status,
-            NormalizedColumn.CLOCK_REMAINING_MS: clock_values,
+            NormalizedColumn.CLOCK_REMAINING_DELTA_MS: encode_clock_remaining_deltas(
+                clock_values
+            ),
             NormalizedColumn.CLOCK_STATUS: clock_statuses,
-            NormalizedColumn.CLOCK_PRECISION_MS: clock_precisions,
+            NormalizedColumn.CLOCK_PRECISION_MS: clock_precision_ms,
             NormalizedColumn.SPLIT: split,
         },
         None,
@@ -700,6 +711,12 @@ def _has_marked_player(game: chess.pgn.Game, marked: MarkedAccounts) -> bool:
         for name in (game.headers.get("White"), game.headers.get("Black"))
         if name
     )
+
+
+def _player_digest(name: str | None) -> int | None:
+    if name is None or not name.strip() or name.strip() == "?":
+        return None
+    return account_row_digest(name)
 
 
 def _has_bot_player(game: chess.pgn.Game) -> bool:

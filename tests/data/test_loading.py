@@ -21,7 +21,10 @@ from anthro_chess.data import (
     prepare_pgn,
     previous_action_token,
 )
-from anthro_chess.data.schema import SCHEMA_VERSION
+from anthro_chess.data.schema import (
+    SCHEMA_VERSION,
+    encode_clock_remaining_deltas,
+)
 from anthro_chess.models import MoveModelBatch
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -391,7 +394,9 @@ def _row(
         "black_normalized_rating": 1401,
         "time_initial_ms": 60_000,
         "time_increment_ms": 1_000,
-        "clock_remaining_ms": [59_000] * len(moves),
+        "clock_remaining_delta_ms": encode_clock_remaining_deltas(
+            [59_000 - 500 * index for index in range(len(moves))]
+        ),
         "split": "train",
     }
 

@@ -28,7 +28,12 @@ from anthro_chess.data import (
     SequenceLoaderConfig,
     encode_game,
 )
-from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn, SplitName
+from anthro_chess.data.schema import (
+    SCHEMA_VERSION,
+    NormalizedColumn,
+    SplitName,
+    clock_remaining_ms,
+)
 from anthro_chess.evaluation.aggregation import (
     OPENING_TIER_DIMENSION,
     PHASE_DIMENSION,
@@ -313,7 +318,7 @@ SCORED_COLUMNS = (
     NormalizedColumn.BLACK_NORMALIZED_RATING.value,
     NormalizedColumn.TIME_INITIAL_MS.value,
     NormalizedColumn.TIME_INCREMENT_MS.value,
-    NormalizedColumn.CLOCK_REMAINING_MS.value,
+    NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value,
 )
 
 
@@ -334,7 +339,7 @@ def encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
         black_normalized_rating=row[NormalizedColumn.BLACK_NORMALIZED_RATING],
         time_initial_ms=row[NormalizedColumn.TIME_INITIAL_MS],
         time_increment_ms=row[NormalizedColumn.TIME_INCREMENT_MS],
-        clock_remaining_ms=tuple(row[NormalizedColumn.CLOCK_REMAINING_MS]),
+        clock_remaining_ms=clock_remaining_ms(row),
     )
 
 

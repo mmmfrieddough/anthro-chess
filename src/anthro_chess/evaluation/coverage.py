@@ -13,7 +13,10 @@ from typing import Any
 
 from anthro_chess.data import GameEncodingInput, encode_game
 from anthro_chess.data.artifacts import DataLoadingError
-from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.data.schema import (
+    NormalizedColumn,
+    clock_remaining_ms,
+)
 from anthro_chess.evaluation.slices import position_slices
 
 
@@ -86,7 +89,7 @@ def _encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
             black_normalized_rating=row[NormalizedColumn.BLACK_NORMALIZED_RATING],
             time_initial_ms=row[NormalizedColumn.TIME_INITIAL_MS],
             time_increment_ms=row[NormalizedColumn.TIME_INCREMENT_MS],
-            clock_remaining_ms=tuple(row[NormalizedColumn.CLOCK_REMAINING_MS]),
+            clock_remaining_ms=clock_remaining_ms(row),
         )
     except (KeyError, TypeError, ValueError) as error:
         raise DataLoadingError(f"invalid normalized game in pool: {error}") from error

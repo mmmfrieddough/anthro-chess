@@ -391,7 +391,7 @@ def _row_sha256(row: Mapping[str, Any]) -> str:
             NormalizedColumn.RESULT,
             NormalizedColumn.WHITE_NORMALIZED_RATING,
             NormalizedColumn.BLACK_NORMALIZED_RATING,
-            NormalizedColumn.CLOCK_REMAINING_MS,
+            NormalizedColumn.CLOCK_REMAINING_DELTA_MS,
         )
     }
     return sha256(

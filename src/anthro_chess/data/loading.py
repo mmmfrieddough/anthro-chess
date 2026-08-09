@@ -25,7 +25,11 @@ from anthro_chess.data.encoding import (
     encode_game,
     previous_action_token,
 )
-from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn
+from anthro_chess.data.schema import (
+    SCHEMA_VERSION,
+    NormalizedColumn,
+    clock_remaining_ms,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -53,7 +57,7 @@ _LOADER_COLUMNS = (
     NormalizedColumn.BLACK_NORMALIZED_RATING,
     NormalizedColumn.TIME_INITIAL_MS,
     NormalizedColumn.TIME_INCREMENT_MS,
-    NormalizedColumn.CLOCK_REMAINING_MS,
+    NormalizedColumn.CLOCK_REMAINING_DELTA_MS,
     NormalizedColumn.SPLIT,
 )
 
@@ -809,7 +813,7 @@ def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
         )
     try:
         action_ids = tuple(row[NormalizedColumn.ACTION_IDS])
-        clocks = tuple(row[NormalizedColumn.CLOCK_REMAINING_MS])
+        clocks = clock_remaining_ms(row)
         return GameEncodingInput(
             game_id=row[NormalizedColumn.GAME_ID],
             ruleset=row[NormalizedColumn.RULESET],
