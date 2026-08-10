@@ -1,11 +1,12 @@
 import json
 from hashlib import sha256
 from importlib import import_module
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, cast
 
 import chess
+import chess.pgn
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 import zstandard
@@ -1309,3 +1310,85 @@ def test_a_truncated_bzip2_archive_reports_rather_than_escapes(tmp_path: Path) -
 
     with pytest.raises(DataPreparationError, match="cannot decompress input PGN"):
         prepare_pgn(archive_path, tmp_path / "artifacts", resolved)
+
+
+def test_decoding_across_processes_writes_the_bytes_one_process_would(
+    tmp_path: Path,
+) -> None:
+    """Worker count is a runtime choice, so it may not reach the artifact.
+
+    The corpus spans several decoding jobs and stops at a bound partway
+    through one, so the comparison covers the boundaries between them and the
+    early exit that leaves jobs queued for games past the bound.
+    """
+
+    from anthro_chess.data.prepare import _GAMES_PER_JOB
+
+    games = "".join(
+        _short_game(site=f"game-{index}") for index in range(_GAMES_PER_JOB * 2 + 40)
+    )
+    input_path = tmp_path / "games.pgn"
+    input_path.write_text(games + _short_game(site="game-0"), encoding="utf-8")
+    overrides = (
+        'source.id="test"',
+        f"filters.maximum_games={_GAMES_PER_JOB * 2 + 10}",
+        "output.games_per_shard=200",
+        "split.test_fraction=0.2",
+        "split.require_nonempty=true",
+    )
+
+    written = []
+    for name, workers in (("one", 0), ("many", 3)):
+        resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG, overrides=overrides)
+        output = tmp_path / name
+        result = prepare_pgn(input_path, output, resolved, workers=workers)
+        assert result.accepted_games == _GAMES_PER_JOB * 2 + 10
+        written.append(
+            {
+                path.relative_to(output): path.read_bytes()
+                for path in sorted(output.rglob("*"))
+                if path.is_file()
+            }
+        )
+
+    assert len(written[0]) == 1 + len(result.normalized_paths)
+    assert written[0] == written[1]
+
+
+#: PGN the framing has to survive, since a run splits the stream on game
+#: boundaries before anything parses it: leading noise, an escaped line, one
+#: blank line between headers, and a comment holding a blank line of its own.
+_AWKWARDLY_FRAMED_PGN = """
+
+% an escaped line the parser ignores
+[Event "Rated Blitz game"]
+[Site "https://example.test/first"]
+
+[Result "1-0"]
+1. e4 { a comment
+
+carrying a blank line } e5 2. Qh5 Nc6 3. Qxf7# 1-0
+
+[Event "Rated Blitz game"]
+[Site "https://example.test/second"]
+[Result "0-1"]
+1. f3 e5 2. g4 Qh4# 0-1"""
+
+
+def test_framing_splits_the_stream_where_the_parser_ends_a_game() -> None:
+    """A framed game reparses into the game reading the whole stream gives."""
+
+    from anthro_chess.data.prepare import _read_game_batches
+
+    framed = list(_read_game_batches(StringIO(_AWKWARDLY_FRAMED_PGN), 1))
+    streamed = StringIO(_AWKWARDLY_FRAMED_PGN)
+
+    assert "".join(framed) == _AWKWARDLY_FRAMED_PGN
+    assert len(framed) == 2
+    for text in framed:
+        expected = chess.pgn.read_game(streamed)
+        actual = chess.pgn.read_game(StringIO(text))
+        assert expected is not None and actual is not None
+        assert dict(actual.headers) == dict(expected.headers)
+        assert list(actual.mainline_moves()) == list(expected.mainline_moves())
+    assert chess.pgn.read_game(streamed) is None

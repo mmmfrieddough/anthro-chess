@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import textwrap
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -192,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Explicit TOML source and preprocessing selection.",
+    )
+    prepare_parser.add_argument(
+        "--workers",
+        type=int,
+        help=(
+            "Processes decoding games, 0 to decode in the reader's own. "
+            "Defaults to one per core beyond the reader. Nothing about it "
+            "reaches the artifact."
+        ),
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
 
@@ -1126,6 +1136,14 @@ def _run_data_acquire(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _prepare_workers(requested: int | None) -> int:
+    """Size preparation's decoding pool, leaving the reader a core of its own."""
+
+    if requested is not None:
+        return requested
+    return max((os.cpu_count() or 1) - 1, 0)
+
+
 def _run_data_prepare(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.data import DataPreparationError, PrepareConfig, prepare_pgn
@@ -1140,7 +1158,12 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
         input_path = _configured_archive_path(
             resolved, arguments.input, arguments.output
         )
-        result = prepare_pgn(input_path, output, resolved)
+        result = prepare_pgn(
+            input_path,
+            output,
+            resolved,
+            workers=_prepare_workers(arguments.workers),
+        )
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
         return 2

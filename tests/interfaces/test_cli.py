@@ -85,6 +85,28 @@ def test_data_prepare_command_routes_to_importable_pipeline(
     assert "manifests/manifest.json" in command_output
 
 
+def test_data_prepare_decodes_on_the_workers_it_is_given(tmp_path: Path) -> None:
+    """The flag reaches preparation, and none of it reaches what is written."""
+
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    config = repository_root / "configs/data/lichess-sample.toml"
+    written = []
+    for name, workers in (("one", "0"), ("two", "2")):
+        output = tmp_path / name
+        argv = ["data", "prepare", str(sample), str(output), "--config", str(config)]
+        assert main([*argv, "--workers", workers]) == 0
+        written.append(
+            {
+                path.relative_to(output): path.read_bytes()
+                for path in sorted(output.rglob("*"))
+                if path.is_file()
+            }
+        )
+
+    assert written[0] == written[1]
+
+
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -349,6 +371,8 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         input_path: Path,
         output: Path,
         _resolved: object,
+        *,
+        workers: int,
     ) -> PreparationResult:
         captured_paths.append((input_path, output))
         return PreparationResult(
