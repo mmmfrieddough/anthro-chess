@@ -184,6 +184,15 @@ the player-slots they hold, and preparation copies both into the corpus
 manifest. The number a corpus claims is that share, read off the snapshot it
 names.
 
+It is a share of the archives rather than of the corpus, and the two differ: the
+census counts every game an archive holds, including the casual games
+preparation rejects, so an account that only ever played casual games is in the
+denominator and none of its games are in the corpus. The figure therefore
+understates what the corpus caught rather than overstating it, which is the
+direction to err in. Counting the corpus instead would make the counts a
+property of one selection's filters rather than of the archive, and every
+selection would then pay for its own census.
+
 Two reductions sit under it, and both are `0047`'s. A closed account's mark is
 never disclosed, and closure runs at 13.15% of player-slots, so a snapshot
 covering a given share of slots catches roughly 87% of that share of the marks
