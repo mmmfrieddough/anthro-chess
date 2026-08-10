@@ -72,10 +72,13 @@ _REFUSAL_ATTEMPTS = 2
 _PLAYER_TAGS = ('[White "', '[Black "')
 #: Both player tags are the same width, so the name starts at a fixed offset.
 _PLAYER_TAG_LENGTH = len(_PLAYER_TAGS[0])
-#: Where a census keeps its per-archive counts and its answers, beneath each
-#: artifact's directory under the data root.
+#: Where a census keeps what it accumulates, beneath the data root: an
+#: archive's counts beside that archive, named after it because a selection may
+#: acquire several into one artifact directory; the answers beside neither,
+#: because account status belongs to the source rather than to any one
+#: selection, and a second selection must inherit them rather than pay again.
 CENSUS_DIRECTORY = "census"
-ACCOUNT_GAMES_FILE = "account-games.tsv"
+ACCOUNT_GAMES_SUFFIX = ".accounts.tsv"
 ANSWERS_FILE = "answers.tsv"
 ACCOUNT_GAMES_FORMAT_VERSION = 1
 _HEADER_PREFIX = "#"
@@ -104,6 +107,15 @@ class ArchiveAccounts:
 
     archive_sha256: str
     games_by_account: dict[str, int]
+
+
+@dataclass(frozen=True)
+class PinnedArchive:
+    """One archive a selection pins, and where its counts are kept."""
+
+    path: Path
+    counts_path: Path
+    sha256: str
 
 
 def source_token() -> str | None:
@@ -158,8 +170,10 @@ def read_account_games(path: Path) -> ArchiveAccounts:
     except OSError as error:
         raise CensusError(f"cannot read account counts {path}: {error}") from error
     header_line, _, body = text.partition("\n")
+    if not header_line.startswith(_HEADER_PREFIX):
+        raise CensusError(f"{path} has no header line")
     try:
-        header = json.loads(header_line.removeprefix(_HEADER_PREFIX))
+        header = json.loads(header_line[len(_HEADER_PREFIX) :])
     except json.JSONDecodeError as error:
         raise CensusError(f"{path} has an unreadable header: {error}") from error
     if (
@@ -174,7 +188,7 @@ def read_account_games(path: Path) -> ArchiveAccounts:
     games_by_account: dict[str, int] = {}
     for line in body.splitlines():
         name, separator, games = line.partition("\t")
-        if not separator or not games.isdigit():
+        if not separator or not games.isdecimal():
             raise CensusError(f"{path} holds a row that is not a count: {line!r}")
         games_by_account[name] = int(games)
     return ArchiveAccounts(
@@ -183,32 +197,46 @@ def read_account_games(path: Path) -> ArchiveAccounts:
     )
 
 
-def account_games(archive_path: Path, counts_path: Path) -> ArchiveAccounts:
+def account_games(archive: PinnedArchive) -> ArchiveAccounts:
     """Return an archive's counts, taking the pass over it at most once."""
 
-    if counts_path.is_file():
-        return read_account_games(counts_path)
-    logger.info("Counting the accounts in %s", archive_path.name)
+    if archive.counts_path.is_file():
+        counted = read_account_games(archive.counts_path)
+        if counted.archive_sha256 == archive.sha256:
+            return counted
+        logger.info(
+            "%s counts an archive this selection no longer pins; counting again",
+            archive.counts_path,
+        )
+    logger.info("Counting the accounts in %s", archive.path.name)
+    digest = file_sha256(archive.path)
+    if digest != archive.sha256:
+        raise CensusError(
+            f"{archive.path} hashes to {digest}, not the {archive.sha256} this "
+            "selection pins; acquire it again before counting it"
+        )
     counted = ArchiveAccounts(
-        archive_sha256=file_sha256(archive_path),
-        games_by_account=count_archive_accounts(archive_path),
+        archive_sha256=digest,
+        games_by_account=count_archive_accounts(archive.path),
     )
-    write_account_games(counts_path, counted)
+    write_account_games(archive.counts_path, counted)
     return counted
 
 
-def count_missing_archives(
-    archives: Sequence[tuple[Path, Path]],
+def count_uncounted_archives(
+    archives: Sequence[PinnedArchive],
     *,
     workers: int,
 ) -> None:
-    """Count every archive that has no counts yet, several at once.
+    """Count every archive with no counts file yet, several at once.
 
     One pass decompresses tens of gigabytes, so the backlog left by a batch of
-    newly acquired archives is hours of work that parallelizes exactly.
+    newly acquired archives is hours of work that parallelizes exactly. An
+    archive whose counts are merely superseded is left to :func:`account_games`,
+    since a re-pinned archive is one at a time rather than a backlog.
     """
 
-    missing = [pair for pair in archives if not pair[1].is_file()]
+    missing = [archive for archive in archives if not archive.counts_path.is_file()]
     if not missing:
         return
     logger.info(
@@ -217,16 +245,18 @@ def count_missing_archives(
         workers,
     )
     if workers <= 1:
-        for archive_path, counts_path in missing:
-            account_games(archive_path, counts_path)
+        for archive in missing:
+            account_games(archive)
         return
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        for _ in pool.map(_count_one_archive, missing):
+        for _ in pool.map(_count_archive, missing):
             pass
 
 
-def _count_one_archive(archive: tuple[Path, Path]) -> None:
-    account_games(*archive)
+def _count_archive(archive: PinnedArchive) -> None:
+    # Returning the counts would pickle a dictionary of every account in the
+    # archive back to a caller that reads them from disk anyway.
+    account_games(archive)
 
 
 @dataclass(frozen=True)
@@ -272,13 +302,13 @@ class Census:
         return unanswered[:limit]
 
 
-def read_census(counts_paths: Sequence[Path], answers_path: Path) -> Census:
+def read_census(archives_pinned: Sequence[PinnedArchive], answers_path: Path) -> Census:
     """Assemble the queue's inputs from the counted archives and the answers."""
 
     archives: list[str] = []
     games_by_account: dict[str, int] = {}
-    for path in counts_paths:
-        counted = read_account_games(path)
+    for archive in archives_pinned:
+        counted = account_games(archive)
         archives.append(counted.archive_sha256)
         for name, games in counted.games_by_account.items():
             games_by_account[name] = games_by_account.get(name, 0) + games
@@ -442,7 +472,18 @@ def snapshot_from_census(census: Census, *, queried_at: str) -> MarkedAccounts:
 
 def _ask(batch: Sequence[str], token: str | None) -> dict[str, bool]:
     answers = dict.fromkeys(batch, False)
-    for record in _post_usernames(list(batch), token):
+    records = _post_usernames(list(batch), token)
+    if not records:
+        # An account the source omits has no status to disclose and is recorded
+        # unmarked, which is right for an erased account and wrong for a whole
+        # batch: nothing is ever re-asked, so a hiccup answering 200 with
+        # nothing would write a batch of permanent clean verdicts. Stopping the
+        # run costs a day of allowance and is visible; recording them is not.
+        raise CensusError(
+            f"the source answered for none of {len(batch)} account(s), which is "
+            "a fault rather than a batch of accounts it has never heard of"
+        )
+    for record in records:
         identifier = record.get("id") or record.get("username")
         if isinstance(identifier, str) and identifier.casefold() in answers:
             answers[identifier.casefold()] = bool(record.get("tosViolation"))

@@ -478,12 +478,19 @@ def test_data_census_asks_the_busiest_accounts_first_and_stores_every_answer(
     # Busiest first across both archives, and the counts stay beside each one.
     assert asked == ["busy", "middling"]
     data_root = tmp_path / "datasets"
-    assert (data_root / "month-1/census/account-games.tsv").is_file()
-    assert (data_root / "month-2/census/account-games.tsv").is_file()
-    answers = (data_root / "fixture/census/answers.tsv").read_text(encoding="utf-8")
+    assert (data_root / "month-1/census/1.pgn.zst.accounts.tsv").is_file()
+    assert (data_root / "month-2/census/2.pgn.zst.accounts.tsv").is_file()
+    # The answers are the source's, not the selection's, so another selection
+    # over the same source inherits them.
+    answers = (data_root / "test-account-census/answers.tsv").read_text(
+        encoding="utf-8"
+    )
     assert answers.splitlines()[0].startswith("busy\t1\t")
     output = capsys.readouterr().out
-    assert "Asked about 2 account(s); 1 marked. The day's allowance is spent." in output
+    assert (
+        "Asked about 2 account(s); 1 marked. The requested accounts are asked about."
+        in output
+    )
     assert "Coverage: 2 of 3 account(s) (66.67%), 83.33% of player-slots" in output
 
 
@@ -501,13 +508,31 @@ def test_data_mark_accounts_cuts_a_snapshot_from_the_census_as_it_stands(
             {"id": name, "tosViolation": name == "busy"} for name in batch
         ],
     )
+    output_path = tmp_path / "marked.txt"
+    command = ["data", "mark-accounts", "--config", str(config), "--output"]
+
+    # A snapshot the census cannot speak for would stop preparation partway
+    # through a corpus that cannot be repaired one archive at a time.
+    assert main([*command, str(output_path)]) == 2
+    assert "counted 0 of this selection's 2 archive(s)" in capsys.readouterr().err
+
     assert (
-        main(["data", "census", "--config", str(config), "--pause-seconds", "0"]) == 0
+        main(
+            [
+                "data",
+                "census",
+                "--config",
+                str(config),
+                "--pause-seconds",
+                "0",
+                "--workers",
+                "2",
+            ]
+        )
+        == 0
     )
     capsys.readouterr()
 
-    output_path = tmp_path / "marked.txt"
-    command = ["data", "mark-accounts", "--config", str(config), "--output"]
     assert main([*command, str(output_path)]) == 0
 
     snapshot = load_marked_accounts(output_path)

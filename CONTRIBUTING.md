@@ -168,10 +168,11 @@ and the source answers for a bounded number a day, so the census accrues while
 everything downstream proceeds, and `uv run anthro data mark-accounts` cuts a
 snapshot from wherever it has reached.
 
-Everything it accumulates lives under `ANTHRO_CHESS_DATA_ROOT` — the per-archive
-account counts beside each archive, the answers beside the selection — because
-an earlier census checkpointed itself inside a worktree and `git worktree
-remove` deleted it.
+Everything it accumulates lives under `ANTHRO_CHESS_DATA_ROOT`, because an
+earlier census checkpointed itself inside a worktree and `git worktree remove`
+deleted it. Each archive's account counts sit beside that archive; the answers
+sit under the source rather than the selection, so a second selection over the
+same source inherits them instead of spending the same rate limit twice.
 
 Set `LICHESS_TOKEN` to a personal access token to double the day's allowance:
 the limit is per address and charges an authenticated caller half. The endpoint
