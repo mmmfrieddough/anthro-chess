@@ -39,11 +39,6 @@ larger than assumed. They multiply, and the resulting claim is: with
 produces. Widening either one widens the floor; only more replicates narrow it
 honestly.
 
-That claim holds per bound. A floor combined from two readings rests on two of
-them, so its confidence is the product rather than either factor; #382 holds
-whether the per-reading bound should be raised to bring the pair back to the
-declared one.
-
 Floors are stored beside the results they qualify, keyed by the same series
 fingerprint as any other measurement. That is deliberate: when the pool, the
 view, or a metric definition moves, the floor stops matching and the report
@@ -512,10 +507,12 @@ def combined_floor(
     comparison makes; the readings only say how far their own units move, and
     one factor for every comparison is what keeps two floors comparable.
 
-    Two bounds hold together with the product of their confidences rather than
-    with either one, so a floor combined from two readings each bounded at 95%
-    is a 90% claim about the pair. #382 holds whether to raise the per-reading
-    bound or to declare the joint figure as what a combined floor claims.
+    Resting on two bounds does not weaken the confidence either one carries.
+    That would follow if the floor needed both to hold, but it needs only their
+    combination to: a bound that overshoots covers for one that undershoots, and
+    in quadrature it usually does. Coverage is exactly the declared confidence
+    at the degenerate end, where one reading's variance is the whole pair, and
+    higher wherever both readings contribute.
     """
 
     return DEFAULT_COVERAGE * math.hypot(baseline.bound, current.bound)
