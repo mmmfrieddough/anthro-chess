@@ -38,6 +38,7 @@ class _Config(ConfigModel):
     """A minimal selection, so the configuration reference has something real."""
 
     view: str = "canonical"
+    temperature: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -376,6 +377,23 @@ def test_an_envelope_that_cannot_reproduce_its_series_is_converted_too(
                 payload=dict,
                 description="Slice tables.",
             )
+
+
+def test_a_configuration_the_serializer_refuses_is_converted_too() -> None:
+    # Digesting the selection is the one thing the recording does outside its
+    # own block: the driver evaluates the constructor in the `with` expression,
+    # so `__exit__` never sees what it raises. A `--set <float field>=nan`
+    # override is all it takes.
+    refused = ResolvedConfig(
+        value=_Config(temperature=float("nan")),
+        provenance=ConfigProvenance(
+            source="selection.toml",
+            overrides=("temperature=nan",),
+        ),
+    )
+
+    with pytest.raises(_BenchmarkError, match="cannot serialize"):
+        _recording(refused)
 
 
 def test_an_error_the_recording_tail_does_not_own_is_left_alone(

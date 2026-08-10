@@ -174,11 +174,17 @@ class ResultRecording:
         detail: DetailStore | None,
         error: type[Exception],
     ) -> None:
-        self.configuration = configuration_reference(
-            resolved_config.as_record(),
-            source=resolved_config.provenance.source,
-            overrides=resolved_config.provenance.overrides,
-        )
+        try:
+            self.configuration = configuration_reference(
+                resolved_config.as_record(),
+                source=resolved_config.provenance.source,
+                overrides=resolved_config.provenance.overrides,
+            )
+        except ResultRecordError as failure:
+            # Converted here rather than left to ``__exit__``: the driver
+            # evaluates this constructor in the ``with`` expression, so nothing
+            # raised from it ever reaches the block's own conversion.
+            raise error(str(failure)) from failure
         self.store = store
         self.detail = detail
         self.envelopes: list[ResultEnvelope] = []

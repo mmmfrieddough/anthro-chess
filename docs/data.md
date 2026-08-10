@@ -57,10 +57,10 @@ machine-local directory outside every repository checkout. Set
 artifact directory, the CLI uses
 `$ANTHRO_CHESS_DATA_ROOT/<configured-artifact-name>`. Acquisition writes the
 verified archive under the archive selection's `raw/` directory. Preparation
-reads that archive by default and writes `normalized/` plus `manifests/` under
-the configured prepared-artifact directory. This lets multiple prepared
-selections reuse one verified archive. Explicit input and output paths still
-take precedence.
+reads that archive by default, where a selection pins exactly one, and writes
+`normalized/` plus `manifests/` under the configured prepared-artifact
+directory. This lets multiple prepared selections reuse one verified archive.
+Explicit input and output paths still take precedence.
 
 Worktrees should read and write the same verified archives, normalized shards,
 and manifests directly beneath the shared root rather than copying them into
@@ -72,7 +72,7 @@ directory.
 The current implementation provides an importable PGN preparation API and the
 thin `anthro data prepare` command. It validates standard games through
 `python-chess`, converts moves with the shared action codec, writes one
-source-agnostic Parquet row per game, and records source, input, output,
+source-agnostic Parquet row per game, and records source, inputs, output,
 configuration, action-vocabulary, filtering, and deterministic split
 provenance in a separate manifest.
 
@@ -110,6 +110,41 @@ counts, ply ranges, and rating, time-control, and clock coverage. Exact release,
 digest, selection size, filters, split recipe, and shard sizing remain owned by
 the checked-in configuration. Raw archives and generated outputs remain
 outside Git, and ordinary tests continue to use local fixtures.
+
+### Building One Corpus From Many Archives
+
+A selection may pin many archives, and preparation appends one of them per run:
+each run takes one input, writes that archive's shards beside whatever is
+already there, and rewrites the manifest to span every archive that has been
+prepared. This is what lets a selection larger than the machine's disk be built
+at all — fetch a month, prepare it, delete the archive, continue — and a run
+names its own `--input` rather than being handed a default, because a selection
+spanning archives has no single one.
+
+Three properties make that safe to interrupt and resume. Shard names carry the
+input's digest, so no two archives collide and a retried archive overwrites only
+its own shards. The manifest records each archive's own digest, counts,
+rejections and coverage, derives the corpus-wide totals from those parts rather
+than carrying a running tally, and is replaced atomically, so the whole can
+never disagree with the pieces and a kill mid-write cannot lose the record of
+what is in. And an archive the manifest already records is left alone rather
+than prepared twice, so re-running an interrupted pass from its beginning costs
+nothing and changes nothing — including an archive every filter rejected, which
+is recorded as an empty append rather than failing the pass.
+
+One corpus directory still takes one writer at a time. An append reads the
+manifest and rewrites it, so two runs against the same directory can each write
+one that omits the other's archive, and the loser's shards are then swept as
+orphans.
+
+Preparation therefore only ever adds to a corpus. A selection whose source,
+filters, split or termination choices differ from the ones the manifest recorded
+is refused rather than half-applied, and the accepted-game bound counts the
+corpus rather than each archive, so pinning 51 archives does not silently
+multiply it by 51. Rebuilding under a changed selection means removing the
+artifact directory or preparing into another one.
+
+See `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`.
 
 ## Splits
 
@@ -238,16 +273,11 @@ using `%clkc` in many timed games. The export spans 2013-01 through 2021-06 and
 has roughly 3.7B games total. The 2017-04 through 2021-06 portion has roughly
 3.35B games.
 
-A local sample of the 2017-04 universal export suggested that about half of all
-records were standard rated games with ratings, numeric time controls, and
-centisecond clock comments. That implies a rough clean timing corpus on the
-order of 1.5B-2.0B games, or tens to hundreds of billions of plies. The exact
-usable count should be computed by the ingestion pipeline rather than assumed.
-
 The corpus the breadth pass builds is that universal export, 2017-04 through
 2021-06, chosen for its clock precision.
 `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why,
-and what ending in mid-2021 costs.
+what the export holds before and after filtering, and what ending in mid-2021
+costs.
 
 Lichess records need filters and tags. Early and universal exports can include
 casual games, variants, unknown ratings, correspondence games, AI-level games,
@@ -717,13 +747,11 @@ overrepresented groups. Training should use sampling recipes to decide how
 often different slices appear.
 
 Not every axis may be reweighted. Resampling is safe on an axis the model is
-explicitly conditioned on, because it changes the marginal distribution of an
-input rather than the conditional behavior benchmarks read. Resampling an axis
-the model must reproduce unconditionally moves the very distribution its
-benchmark measures, so the benchmark reports the sampling recipe instead of the
-model. Weighting the loss by an axis is the same operation as resampling it.
+explicitly conditioned on and unsafe on one the model must reproduce
+unconditionally, and weighting the loss by an axis is the same operation as
+resampling it.
 `docs/decisions/0016-sampling-axes-versus-measured-distributions.md` owns this
-rule and the axes currently closed under it.
+rule, why the two cases differ, and the axes currently closed under it.
 
 Sampling axes available for balancing:
 

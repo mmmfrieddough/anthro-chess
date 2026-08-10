@@ -27,7 +27,7 @@ that rebuild the data side from the pinned sources.
 
 Read `docs/documentation.md` and the rows below that match the work.
 
-`docs/decisions/` (0001-0045) holds why a choice was made, not what the rule is;
+`docs/decisions/` holds why a choice was made, not what the rule is;
 the rule lives in the code, config, or doc that enforces it. Open a record when
 the reasoning behind a constraint matters — before changing or re-litigating
 one — rather than as a matter of course. Every record names the later ones that
@@ -43,7 +43,7 @@ refined or superseded it, so the one you land on says where to go next.
 | touching acquisition, preparation, or the normalized record | `docs/data.md` |
 | touching training, checkpoints, or the artifact roots | `docs/training-and-runtime.md` |
 | touching UCI or any external protocol | `docs/interfaces.md` |
-| adding or changing a benchmark or metric — 2300 lines, read the matching section | `docs/evaluation.md` |
+| adding or changing a benchmark or metric — read the matching section | `docs/evaluation.md` |
 | preference-control work | `docs/preference-controls.md` |
 | a data, training, or evaluation choice wants prior art — never as background reading | `docs/research.md` |
 | picking up, claiming, or publishing an issue | `docs/issue-workflow.md` |
@@ -82,6 +82,9 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   question.
 - Do not duplicate exact names, thresholds, defaults, schema fields, or config
   values in prose when code, schemas, or config files should own them.
+- Do not argue for a change in the doc the routing table sent you to. That doc
+  states the current rule; the reasoning behind it goes in `docs/decisions/`, or
+  in the pull request when it has no lasting value.
 
 ## Working here
 

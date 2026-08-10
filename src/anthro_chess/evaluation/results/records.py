@@ -72,7 +72,28 @@ class ResultModel(BaseModel):
         extra="forbid",
         frozen=True,
         validate_default=True,
+        # A freeform field carries whatever a benchmark put in it, and pydantic
+        # renders a non-finite float there as ``null`` by default — so a record
+        # would commit, and digest, a value its configuration never held.
+        # Keeping the float is what lets :func:`canonical_json` refuse it.
+        ser_json_inf_nan="constants",
     )
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the JSON-compatible record written to the store.
+
+        A record that cannot be rendered is a recording failure like any other,
+        so it is raised as one rather than as the serializer's own error, which
+        no benchmark declares and which therefore ends a whole sweep.
+        """
+
+        try:
+            return self.model_dump(mode="json")
+        except ValueError as error:
+            # ``PydanticSerializationError``, which pydantic does not re-export.
+            raise ResultRecordError(
+                f"cannot serialize {type(self).__name__}: {error}"
+            ) from error
 
 
 class BenchmarkReference(ResultModel):
@@ -307,11 +328,11 @@ class NoiseFloor(ResultModel):
     source: str | None = Field(default=None, min_length=1)
     #: Which estimator produced the value, named rather than described. One
     #: kind can be estimated more than one way, and the ways are not
-    #: interchangeable: a data-sampling floor bootstrapped over one reading's
-    #: own games and one bootstrapped over two checkpoints' paired differences
-    #: answer different questions and differ by a known factor. ``source``
-    #: carries that in prose for a reader; this carries it for a reader who has
-    #: to tell the two apart without parsing a sentence.
+    #: interchangeable: a data-sampling floor combined from two readings'
+    #: dispersions and one taken from a series characterization answer
+    #: different questions. ``source`` carries that in prose for a reader; this
+    #: carries it for a reader who has to tell the two apart without parsing a
+    #: sentence.
     estimator: Identifier | None = None
 
 
@@ -424,7 +445,9 @@ class ResultEnvelope(ResultModel):
         expects those to stay readable and honestly labeled rather than to
         make the surrounding history unloadable. The same applies to the size
         budget, which can only be exceeded by a record written when the budget
-        was larger.
+        was larger, and to the serialization it is measured over: ``json.loads``
+        accepts literals the canonical writer refuses, so re-encoding on the way
+        in would let one stored record make the whole history unreadable.
         """
 
         if self.envelope_version > ENVELOPE_VERSION:
@@ -447,8 +470,10 @@ class ResultEnvelope(ResultModel):
                     f"{measurement.metric} that its own provenance does not "
                     "reproduce"
                 )
+        if not recording:
+            return
         size = len(canonical_json(self.as_record()))
-        if recording and size > MAXIMUM_SUMMARY_BYTES:
+        if size > MAXIMUM_SUMMARY_BYTES:
             raise ResultRecordError(
                 f"result {self.result_id} is {size} bytes; the committed "
                 f"summary tier caps a record at {MAXIMUM_SUMMARY_BYTES}. Move "
@@ -494,11 +519,6 @@ class ResultEnvelope(ResultModel):
                 return measurement
         return None
 
-    def as_record(self) -> dict[str, Any]:
-        """Return the JSON-compatible record written to the store."""
-
-        return self.model_dump(mode="json")
-
 
 class Bridge(ResultModel):
     """An explicit assertion that two fingerprints name the same series.
@@ -525,11 +545,6 @@ class Bridge(ResultModel):
             raise ValueError("recorded_at must carry a time zone")
         return self
 
-    def as_record(self) -> dict[str, Any]:
-        """Return the JSON-compatible record written to the store."""
-
-        return self.model_dump(mode="json")
-
 
 def default_checkpoint_label(run_id: str, global_step: int) -> str:
     """Return the conventional label for one checkpoint of one run.
@@ -550,14 +565,24 @@ def default_checkpoint_label(run_id: str, global_step: int) -> str:
 
 
 def canonical_json(value: Any) -> bytes:
-    """Serialize a record the one way the store and its digests agree on."""
+    """Serialize a record the one way the store and its digests agree on.
 
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode()
+    What the serializer refuses is raised as a record error, which
+    :meth:`ResultRecording.__exit__` and :meth:`ResultsStore.append` already
+    convert into the running benchmark's own. A bare ``ValueError`` from here
+    is declared by nothing and ends the sweep instead of the step, and it
+    arrives after the benchmark has finished measuring.
+    """
+
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    except (RecursionError, TypeError, ValueError) as error:
+        raise ResultRecordError(f"cannot serialize a record: {error}") from error
 
 
 def build_result(
@@ -693,6 +718,10 @@ def execution_reference(
     the digest, which is the point of passing it separately.
     """
 
+    try:
+        digest = workload_digest(workload)
+    except FingerprintError as error:
+        raise ResultRecordError(str(error)) from error
     return ExecutionRecord(
         device=device,
         device_name=device_name,
@@ -702,7 +731,7 @@ def execution_reference(
         platform=platform,
         cpu_threads=cpu_threads,
         workload=dict(workload),
-        workload_sha256=workload_digest(workload),
+        workload_sha256=digest,
         coordinates=dict(coordinates or {}),
     )
 
@@ -729,7 +758,7 @@ def _environment_value(value: object) -> str | None:
 
 
 def _record_id(record: ResultModel) -> str:
-    payload = record.model_dump(mode="json")
+    payload = record.as_record()
     payload.pop("result_id", None)
     payload.pop("bridge_id", None)
     return sha256(canonical_json(payload)).hexdigest()[:16]

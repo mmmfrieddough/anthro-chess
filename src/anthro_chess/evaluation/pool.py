@@ -244,6 +244,12 @@ def _freeze_pool(
     write_normalized_rows(selected, games_path)
 
     coverage = pool_coverage(selected)
+    # A corpus prepared before manifests spanned archives records one `input`,
+    # and freezing from one is legitimate where appending to it is not, so its
+    # provenance is carried rather than dropped.
+    source_inputs = source_manifest.get("inputs")
+    if source_inputs is None and "input" in source_manifest:
+        source_inputs = [source_manifest["input"]]
     pool_manifest = {
         "benchmark_version": BENCHMARK_VERSION,
         "pool": {
@@ -259,7 +265,7 @@ def _freeze_pool(
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": sha256(manifest_bytes).hexdigest(),
             "source": source_manifest.get("source"),
-            "input": source_manifest.get("input"),
+            "inputs": source_inputs,
             "split": source_manifest.get("split"),
             "selection": source_manifest.get("selection"),
         },

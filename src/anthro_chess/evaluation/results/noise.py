@@ -67,7 +67,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
 
 from pydantic import Field, model_validator
 
@@ -109,15 +108,6 @@ DEFAULT_CONFIDENCE = 0.95
 BOOTSTRAP_METHOD = "bootstrap-over-games"
 REPLICATE_METHOD = "independent-replicates"
 PROCESS_REPLICATE_METHOD = "repeated-process-replicates"
-
-#: The estimator a comparison-scoped data-sampling floor is produced by, named
-#: here beside the others so the two ways of estimating that one kind are
-#: written down in one place. ``BOOTSTRAP_METHOD`` resamples one reading's own
-#: games and reports a width about 1.9x too wide for a delta between two
-#: checkpoints scored on the same ones;
-#: ``docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md``
-#: owns why that is an error rather than a coarser estimate.
-PAIRED_BOOTSTRAP_METHOD = "paired-bootstrap-over-units"
 
 #: How a delta floor built from the two readings in front of it was arrived at.
 #: It fills the same field an estimator's name does while estimating nothing:
@@ -314,11 +304,6 @@ class NoiseCharacterization(ResultModel):
                 f"bytes; the committed summary tier caps a record at "
                 f"{MAXIMUM_SUMMARY_BYTES}"
             )
-
-    def as_record(self) -> dict[str, Any]:
-        """Return the JSON-compatible record written to the store."""
-
-        return self.model_dump(mode="json")
 
 
 class NoiseFloorIndex:
@@ -867,15 +852,15 @@ def build_characterization(
             training=training,
             floors=ordered,
         )
+        payload = record.as_record()
+        payload.pop("characterization_id", None)
+        identified = record.model_copy(
+            update={
+                "characterization_id": sha256(canonical_json(payload)).hexdigest()[:16],
+            }
+        )
     except ValueError as error:
         raise NoiseCharacterizationError(str(error)) from error
-    payload = record.model_dump(mode="json")
-    payload.pop("characterization_id", None)
-    identified = record.model_copy(
-        update={
-            "characterization_id": sha256(canonical_json(payload)).hexdigest()[:16],
-        }
-    )
     identified.verify()
     return identified
 
@@ -946,7 +931,6 @@ __all__ = [
     "COMBINED_DISPERSION_METHOD",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_COVERAGE",
-    "PAIRED_BOOTSTRAP_METHOD",
     "PROCESS_REPLICATE_METHOD",
     "REPLICATE_METHOD",
     "FloorEntry",

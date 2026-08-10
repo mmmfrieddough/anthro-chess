@@ -21,7 +21,6 @@ import logging
 import random
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -90,7 +89,6 @@ from anthro_chess.evaluation.recording import (
     pool_dataset_reference,
 )
 from anthro_chess.evaluation.results import (
-    PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
@@ -99,7 +97,6 @@ from anthro_chess.evaluation.results import (
     MetricDispersion,
     ResultEnvelope,
     measurement,
-    paired_contributions,
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -567,12 +564,8 @@ def evaluate_checkpoint(
             _dependency_measurements(dependency, component),
             kind=DEPENDENCY_KIND,
             benchmark=DEPENDENCY_BENCHMARK,
-            payload=partial(_dependency_payload, dependency, config.noise),
-            description=(
-                "Cross-conditioning and within-game dependency tables, "
-                "and the aligned per-game values a later paired floor "
-                "needs."
-            ),
+            payload=dependency.as_record,
+            description="Cross-conditioning and within-game dependency tables.",
             data=data,
         )
     return result
@@ -742,10 +735,6 @@ def _run_dependency_tests(
         raise CheckpointEvaluationError(str(error)) from error
 
 
-#: Which metric each conditioning treatment's degradation is reported as. One
-#: table rather than two, because the reading and the floor beside it have to
-#: name the same quantity, and a treatment added to only one of them is the
-#: missing-floor gap this family already had once.
 _DEGRADATION_METRICS = {
     ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
     ConditioningKind.CONSTANT: DEPENDENCY_RATING_CONSTANT_DEGRADATION,
@@ -807,62 +796,6 @@ def _dependency_measurements(
             )
         )
     return tuple(values)
-
-
-def _dependency_payload(
-    dependency: DependencyTestResult,
-    config: NoiseConfig,
-) -> dict[str, object]:
-    """Return the dependency tables plus the paired inputs a later floor needs."""
-
-    payload = dependency.as_record()
-    contributions = _dependency_contributions(dependency, config)
-    if contributions is not None:
-        payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
-    return payload
-
-
-def _dependency_contributions(
-    dependency: DependencyTestResult,
-    config: NoiseConfig,
-) -> dict[str, object] | None:
-    """Retain the aligned per-game values a later paired floor bootstraps.
-
-    The dependency family scores one frozen view repeatedly under different
-    conditioning, so its uncertainty is uncertainty in the *paired* delta
-    between two checkpoints on the same games. That floor belongs to the
-    comparison and cannot be attached to either reading alone, which is why it
-    is retained here rather than characterized into the committed tier.
-    """
-
-    if not config.enabled:
-        return None
-    contributions = dependency.contributions
-    if len(contributions) < 2:
-        return None
-    metrics = {
-        definition.identifier: [
-            contribution.degradations[kind] for contribution in contributions
-        ]
-        for kind, definition in _DEGRADATION_METRICS.items()
-        if kind in contributions[0].degradations
-    }
-    metrics[DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE.identifier] = [
-        contribution.anchor_divergence for contribution in contributions
-    ]
-    metrics[DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT.identifier] = [
-        contribution.anchor_agreement for contribution in contributions
-    ]
-    return paired_contributions(
-        unit="pool-game",
-        unit_ids=[str(contribution.game_id) for contribution in contributions],
-        metrics=metrics,
-        weights=[float(contribution.positions) for contribution in contributions],
-        resamples=config.resamples,
-        seed=config.seed,
-        coverage=config.coverage,
-        confidence=config.confidence,
-    ).as_record()
 
 
 def _pool_split(pool: FrozenPool) -> SplitName:

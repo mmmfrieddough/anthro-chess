@@ -89,25 +89,6 @@ def test_a_generated_metric_may_declare_either_data_dependency() -> None:
     assert without.projection is None
 
 
-def test_a_metric_cannot_rule_out_a_sampling_floor_and_declare_a_paired_one() -> None:
-    """The two declarations are opposite claims about the same estimator.
-
-    One says no resampling of per-unit contributions can estimate this metric's
-    dispersion; the other says its floor is exactly that, bootstrapped over two
-    checkpoints' matched contributions. A metric carrying both would leave a
-    report deciding which to believe.
-    """
-
-    with pytest.raises(MetricRegistryError, match="paired one"):
-        register_metric(
-            _definition(
-                identifier="legality.contradictory_floor",
-                no_sampling_floor_reason="it counts slices rather than games",
-                paired_sampling_floor=True,
-            )
-        )
-
-
 def test_a_cost_that_contradicts_the_data_dependency_is_refused() -> None:
     with pytest.raises(MetricRegistryError, match="reads no data"):
         register_metric(

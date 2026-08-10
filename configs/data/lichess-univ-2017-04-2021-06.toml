@@ -4,18 +4,17 @@ artifact_name = "lichess-univ-2017-04-2021-06"
 # `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why
 # this source, this precision, and this span, and what the span costs.
 #
-# This selection is not ready to prepare from, and preparation refuses it until
-# it is. A corpus spanning speeds needs the rating namespace derived per game
-# (#386) and the speed axis derived from the time control rather than the event
-# label (#387); building one corpus from many archives is #388, and doing it at
-# this volume is #389.
+# Preparation appends one archive at a time, so each run names its own
+# `--input` and the corpus grows across these 51. It is still not ready to
+# prepare from: a corpus spanning speeds needs the rating namespace derived per
+# game (#386) and the speed axis derived from the time control rather than the
+# event label (#387), and doing it at this volume is #389.
 #
 # Filters are absent for the same reason rather than by oversight: the speed
 # axis is not derivable from the event label across this span, so the filters
 # this needs are not the sibling selection's. `rating_namespace` is unset so
-# that once preparation accepts many archives it writes no namespace rather
-# than a wrong one — an absent value is detectable downstream where a wrong one
-# is not, and that hazard outlives the refusal #388 removes.
+# that a corpus spanning speeds writes no namespace rather than a wrong one —
+# an absent value is detectable downstream where a wrong one is not.
 
 [source]
 id = "lichess"

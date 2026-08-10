@@ -146,7 +146,7 @@ class ResultsStore:
 
         try:
             characterization.verify()
-        except NoiseCharacterizationError as error:
+        except (NoiseCharacterizationError, ResultRecordError) as error:
             raise ResultsStoreError(str(error)) from error
 
         path = self.floors_directory / _characterization_file_name(characterization)
@@ -321,19 +321,6 @@ class DetailStore:
             bytes=len(encoded),
             description=description,
         )
-
-    def holds(self, reference: DetailReference) -> bool:
-        """Say whether this machine still has the referenced payload.
-
-        A summary record is committed and a detail payload is not, so a
-        reference resolving to nothing is the ordinary state of a result
-        recorded elsewhere rather than a store fault. A reader that needs the
-        payload only when it is there asks this first; ``read`` still refuses
-        an absent one, because a reader that needs it has nothing to fall back
-        on.
-        """
-
-        return (self._root / reference.path).is_file()
 
     def read(self, reference: DetailReference) -> Any:
         """Read a referenced payload, rejecting bytes that no longer match."""

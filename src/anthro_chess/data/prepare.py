@@ -6,11 +6,12 @@ import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import TextIO
+from typing import Any, Literal, TextIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -32,7 +33,9 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     open_pgn_text,
+    validate_manifest_compatibility,
     write_normalized_rows,
+    write_text_atomically,
 )
 from anthro_chess.data.config import ArchiveConfig, PrepareConfig, SplitConfig
 from anthro_chess.data.schema import (
@@ -69,6 +72,29 @@ _EVENT_SPEED_RE = re.compile(
     re.IGNORECASE,
 )
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+#: How many hex characters of an input's digest name that input's shards. A
+#: shard name has to be unique across every archive one corpus is built from,
+#: and deriving it from the content rather than from a running count keeps a
+#: retried archive overwriting its own shards instead of another month's.
+_SHARD_KEY_LENGTH = 12
+#: Configuration a second archive may differ in and still belong in the same
+#: corpus. ``archives`` grows when a source publishes another month;
+#: ``artifact_name`` and ``output`` decide where shards go and how large they
+#: are rather than what is in them; ``filters.maximum_games`` is a corpus bound,
+#: and raising one keeps every game already accepted while admitting more, which
+#: is the expansion ``docs/data.md`` describes; ``split.require_nonempty``
+#: checks the result rather than shaping it.
+#:
+#: Named as exemptions rather than as the sections to compare, so that a
+#: configuration gaining a field or a whole section fails closed: appending
+#: refuses until someone decides the new one is safe.
+_IDENTITY_EXEMPTIONS: tuple[tuple[str, ...], ...] = (
+    ("archives",),
+    ("artifact_name",),
+    ("output",),
+    ("filters", "maximum_games"),
+    ("split", "require_nonempty"),
+)
 #: Manifest labels for whether a player's decision ended the game while they
 #: held the move. ``not_applicable`` covers endings no player decided, which is
 #: a different statement from a decision made on the opponent's clock.
@@ -94,20 +120,57 @@ class AcquisitionResult:
     reused: bool
 
 
+PreparationDisposition = Literal["prepared", "already_prepared", "corpus_complete"]
+
+
 @dataclass(frozen=True)
 class PreparationResult:
-    """Paths and counts produced by one preparation run."""
+    """Paths and counts produced by one preparation run.
+
+    A run prepares one archive and appends it to whatever corpus already exists
+    beneath the output directory, so these are read at two levels:
+    ``normalized_paths``, ``accepted_games`` and ``rejected_games`` describe the
+    one archive, while ``split_counts`` and ``corpus_archives`` describe the
+    corpus that archive now belongs to.
+    """
 
     normalized_paths: tuple[Path, ...]
     manifest_path: Path
     accepted_games: int
     rejected_games: int
     split_counts: dict[str, int]
+    corpus_archives: int
+    disposition: PreparationDisposition = "prepared"
 
     @property
     def normalized_path(self) -> Path:
         """Return the first shard for compatibility with single-shard callers."""
         return self.normalized_paths[0]
+
+
+@dataclass(frozen=True)
+class _ExistingCorpus:
+    """The archives and shards a corpus manifest already records."""
+
+    inputs: tuple[dict[str, Any], ...]
+    shards: tuple[dict[str, Any], ...]
+
+    @property
+    def accepted_games(self) -> int:
+        return sum(int(entry["games"]["accepted"]) for entry in self.inputs)
+
+    def entry_for(self, input_sha256: str) -> dict[str, Any] | None:
+        return next(
+            (entry for entry in self.inputs if entry["sha256"] == input_sha256),
+            None,
+        )
+
+    def shard_paths(self, output_path: Path, input_sha256: str) -> tuple[Path, ...]:
+        return tuple(
+            output_path / shard["path"]
+            for shard in self.shards
+            if shard["input_sha256"] == input_sha256
+        )
 
 
 @dataclass(frozen=True)
@@ -194,28 +257,67 @@ def prepare_pgn(
     output_directory: str | Path,
     resolved_config: ResolvedConfig[PrepareConfig],
 ) -> PreparationResult:
-    """Prepare a PGN stream and write normalized and manifest artifacts."""
+    """Append one PGN archive to the corpus beneath an output directory.
+
+    A corpus is built one archive at a time, because a selection can name more
+    archives than the machine has disk to hold at once and a run then fetches,
+    prepares and deletes each in turn. An archive the manifest already records
+    is left alone rather than prepared twice, which is what lets an interrupted
+    pass be re-run from its beginning.
+
+    One corpus directory takes one writer at a time: two runs appending at once
+    each rewrite the manifest without the other's archive, and the loser's
+    shards are then swept as orphans.
+    """
     source_path = Path(input_path)
     output_path = Path(output_directory)
     logger.info("Preparing normalized data from %s", source_path)
     if not source_path.is_file():
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
-    archives = resolved_config.value.archives
-    if len(archives) > 1:
-        # One run writes one manifest and renumbers shards from zero, so a
-        # second archive into the same artifact replaces the first rather than
-        # extending it. #388 is what lifts this.
-        raise DataPreparationError(
-            f"this selection pins {len(archives)} archives and preparation "
-            "builds a corpus from one"
-        )
+    config = resolved_config.value
+    archives = config.archives
+    normalized_directory = output_path / "normalized"
+    manifest_directory = output_path / "manifests"
+    manifest_path = manifest_directory / "manifest.json"
+    # Ahead of digesting the input, which reads a whole archive — tens of
+    # gigabytes at the pinned selection's sizes — so a corpus this selection
+    # cannot append to is refused without that read.
+    corpus = _read_existing_corpus(
+        manifest_path,
+        _selection_identity(_recorded_mapping(resolved_config.as_record()["config"])),
+    )
+
     input_sha256 = file_sha256(source_path)
-    if archives and input_sha256 != archives[0].sha256:
+    if archives and input_sha256 not in {archive.sha256 for archive in archives}:
         raise DataPreparationError(
-            f"input archive checksum mismatch: expected {archives[0].sha256}, "
-            f"observed {input_sha256}"
+            f"input archive checksum {input_sha256} matches none of the "
+            f"{len(archives)} archive(s) this selection pins"
         )
+    prepared_entry = corpus.entry_for(input_sha256)
+    if prepared_entry is not None:
+        logger.info("Archive %s is already in this corpus", source_path.name)
+        return _recorded_result(corpus, manifest_path, output_path, prepared_entry)
+    maximum_games = config.filters.maximum_games
+    remaining_games = (
+        None if maximum_games is None else maximum_games - corpus.accepted_games
+    )
+    if remaining_games is not None and remaining_games < 0:
+        # Raising a bound admits more games and is why the bound is not part of
+        # the selection identity. Lowering one below what a corpus already holds
+        # cannot be honoured by adding nothing, because the corpus is already
+        # past it.
+        raise DataPreparationError(
+            f"{manifest_path} records {corpus.accepted_games} accepted game(s), "
+            f"past the configured maximum of {maximum_games}; remove the "
+            "artifact directory to rebuild it, or prepare into another one"
+        )
+    if remaining_games == 0:
+        logger.info(
+            "Corpus already holds its configured maximum of %s game(s)",
+            maximum_games,
+        )
+        return _recorded_result(corpus, manifest_path, output_path, None)
     marked_accounts = _resolve_marked_accounts(resolved_config, input_sha256)
     records: list[dict[str, object]] = []
     rejections: Counter[str] = Counter()
@@ -240,13 +342,10 @@ def prepare_pgn(
     accepted_games = 0
     stopped_at_limit = False
 
-    normalized_directory = output_path / "normalized"
-    manifest_directory = output_path / "manifests"
-
     try:
         with open_pgn_text(source_path) as pgn_file:
             for game in _read_games(pgn_file):
-                parsed = _parse_game(game, resolved_config.value, marked_accounts)
+                parsed = _parse_game(game, config, marked_accounts)
                 if parsed.record is None:
                     assert parsed.rejection is not None
                     rejections[parsed.rejection] += 1
@@ -316,7 +415,7 @@ def prepare_pgn(
                         if isinstance(rating, int):
                             rating_values.append(rating)
 
-                    games_per_shard = resolved_config.value.output.games_per_shard
+                    games_per_shard = config.output.games_per_shard
                     if games_per_shard is not None and len(records) >= games_per_shard:
                         _flush_records(
                             records,
@@ -324,11 +423,13 @@ def prepare_pgn(
                             normalized_directory=normalized_directory,
                             normalized_paths=normalized_paths,
                             output_shards=output_shards,
-                            sharded=True,
+                            input_sha256=input_sha256,
                         )
 
-                    game_limit = resolved_config.value.filters.maximum_games
-                    if game_limit is not None and accepted_games >= game_limit:
+                    if (
+                        remaining_games is not None
+                        and accepted_games >= remaining_games
+                    ):
                         stopped_at_limit = True
                         break
     except (OSError, UnicodeError, DataLoadingError) as error:
@@ -336,12 +437,20 @@ def prepare_pgn(
             f"cannot read input PGN {source_path}: {error}"
         ) from error
 
-    if accepted_games == 0:
+    if accepted_games == 0 and not corpus.inputs:
+        # With no earlier archive there is no corpus for an empty append to
+        # extend, so an archive that accepts nothing is a misconfigured
+        # selection rather than a month with nothing eligible in it.
         detail = ", ".join(
             f"{reason}={count}" for reason, count in sorted(rejections.items())
         )
         raise DataPreparationError(
             "no games passed preparation filters" + (f" ({detail})" if detail else "")
+        )
+    if accepted_games == 0:
+        logger.warning(
+            "Archive %s contributed no games and is recorded as an empty append",
+            source_path.name,
         )
 
     _flush_records(
@@ -350,55 +459,13 @@ def prepare_pgn(
         normalized_directory=normalized_directory,
         normalized_paths=normalized_paths,
         output_shards=output_shards,
-        sharded=resolved_config.value.output.games_per_shard is not None,
+        input_sha256=input_sha256,
     )
-    manifest_directory.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_directory / "manifest.json"
 
-    observed_split_counts: dict[str, int] = {
-        split_name: split_counts[split_name] for split_name in SPLIT_NAMES
-    }
-    if resolved_config.value.split.require_nonempty:
-        empty_splits = tuple(
-            split_name
-            for split_name in _requested_splits(resolved_config.value.split)
-            if observed_split_counts[split_name] == 0
-        )
-        if empty_splits:
-            raise DataPreparationError(
-                "prepared corpus did not produce nonempty "
-                f"{', '.join(empty_splits)} split(s)"
-            )
-
-    selected_paths = set(normalized_paths)
-    for stale_path in normalized_directory.glob("games*.parquet"):
-        if stale_path not in selected_paths:
-            stale_path.unlink()
-
-    output_record: dict[str, object] = {
-        "format": "parquet",
-        "compression": "zstd",
-        "shards": output_shards,
-    }
-    if len(output_shards) == 1:
-        output_record["path"] = output_shards[0]["path"]
-        output_record["sha256"] = output_shards[0]["sha256"]
-
-    manifest = {
-        "schema_version": SCHEMA_VERSION,
-        "preprocessing_version": PREPROCESSING_VERSION,
-        "source": resolved_config.value.source.model_dump(mode="json"),
-        "input": {
-            "file_name": source_path.name,
-            "sha256": input_sha256,
-        },
-        "output": output_record,
-        "action_vocabulary": action_vocabulary_identity(),
-        "selection": {
-            "algorithm": "source-order-first-accepted-v1",
-            "maximum_games": resolved_config.value.filters.maximum_games,
-            "limit_reached": stopped_at_limit,
-        },
+    archive_record: dict[str, Any] = {
+        "file_name": source_path.name,
+        "sha256": input_sha256,
+        "limit_reached": stopped_at_limit,
         "marked_accounts": (
             None
             if marked_accounts is None
@@ -409,12 +476,8 @@ def prepare_pgn(
                 "accounts_marked": marked_accounts.accounts_marked,
             }
         ),
-        "split": {
-            "algorithm": "sha256-threshold-v2",
-            "seed": resolved_config.value.split.seed,
-            "validation_fraction": resolved_config.value.split.validation_fraction,
-            "test_fraction": resolved_config.value.split.test_fraction,
-            "counts": observed_split_counts,
+        "split_counts": {
+            split_name: split_counts[split_name] for split_name in SPLIT_NAMES
         },
         "games": {
             "accepted": accepted_games,
@@ -463,23 +526,84 @@ def prepare_pgn(
                 },
                 "abandonment": {
                     "clock_share_threshold": (
-                        resolved_config.value.termination.abandonment_clock_share
+                        config.termination.abandonment_clock_share
                     ),
                     "clock_share_judged_games": abandonment_judged_games,
                 },
             },
         },
+    }
+
+    inputs = (*corpus.inputs, archive_record)
+    corpus_shards = [*corpus.shards, *output_shards]
+    corpus_games = _corpus_games(inputs)
+    observed_split_counts = _corpus_split_counts(inputs)
+    if config.split.require_nonempty:
+        empty_splits = tuple(
+            split_name
+            for split_name in _requested_splits(config.split)
+            if observed_split_counts[split_name] == 0
+        )
+        if empty_splits:
+            raise DataPreparationError(
+                "prepared corpus did not produce nonempty "
+                f"{', '.join(empty_splits)} split(s)"
+            )
+
+    recorded_paths = {output_path / shard["path"] for shard in corpus_shards}
+    present_paths = set(normalized_directory.glob("games*.parquet"))
+    # A manifest asserting shards that are gone is otherwise not detected until
+    # a training or freeze run reads the corpus, by which point more archives
+    # sit on top of the claim.
+    missing_paths = sorted(recorded_paths - present_paths)
+    if missing_paths:
+        raise DataPreparationError(
+            f"{manifest_path} records {len(missing_paths)} shard(s) that are no "
+            f"longer present, the first being {missing_paths[0]}; remove the "
+            "artifact directory to rebuild it"
+        )
+    for stale_path in present_paths - recorded_paths:
+        stale_path.unlink()
+
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "preprocessing_version": PREPROCESSING_VERSION,
+        "source": config.source.model_dump(mode="json"),
+        "inputs": list(inputs),
+        "output": {
+            "format": "parquet",
+            "compression": "zstd",
+            "shards": corpus_shards,
+        },
+        "action_vocabulary": action_vocabulary_identity(),
+        "selection": {
+            "algorithm": "source-order-first-accepted-v1",
+            "maximum_games": maximum_games,
+            "limit_reached": maximum_games is not None
+            and corpus_games["accepted"] >= maximum_games,
+        },
+        "split": {
+            "algorithm": "sha256-threshold-v2",
+            "seed": config.split.seed,
+            "validation_fraction": config.split.validation_fraction,
+            "test_fraction": config.split.test_fraction,
+            "counts": observed_split_counts,
+        },
+        "games": corpus_games,
+        "coverage": _corpus_coverage(inputs),
         "resolved_config": resolved_config.as_record(),
     }
-    manifest_path.write_text(
+    write_text_atomically(
+        manifest_path,
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     logger.info(
-        "Prepared %s game(s), rejected %s, and wrote %s shard(s)",
+        "Prepared %s game(s), rejected %s, and wrote %s shard(s); the corpus "
+        "now spans %s archive(s)",
         accepted_games,
         sum(rejections.values()),
         len(normalized_paths),
+        len(inputs),
     )
     return PreparationResult(
         normalized_paths=tuple(normalized_paths),
@@ -487,6 +611,134 @@ def prepare_pgn(
         accepted_games=accepted_games,
         rejected_games=sum(rejections.values()),
         split_counts=observed_split_counts,
+        corpus_archives=len(inputs),
+    )
+
+
+def _selection_identity(config: Mapping[str, Any]) -> dict[str, object]:
+    """Reduce a recorded selection to what decides what a game becomes.
+
+    The data contract — schema, preprocessing and vocabulary versions — is not
+    here because ``validate_manifest_compatibility`` owns it for every consumer.
+    """
+
+    identity: dict[str, Any] = deepcopy(dict(config))
+    for *sections, field in _IDENTITY_EXEMPTIONS:
+        holder: Any = identity
+        for section in sections:
+            holder = holder.get(section) if isinstance(holder, dict) else None
+        if isinstance(holder, dict):
+            holder.pop(field, None)
+    return identity
+
+
+def _recorded_mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _read_existing_corpus(
+    manifest_path: Path,
+    identity: Mapping[str, object],
+) -> _ExistingCorpus:
+    """Read the corpus a run appends to, refusing one built another way."""
+
+    if not manifest_path.is_file():
+        return _ExistingCorpus(inputs=(), shards=())
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("manifest is not a JSON object")
+        validate_manifest_compatibility(manifest, manifest_path)
+    except (OSError, ValueError, DataLoadingError) as error:
+        raise DataPreparationError(
+            f"cannot read corpus manifest {manifest_path}: {error}"
+        ) from error
+    inputs = manifest.get("inputs")
+    if not isinstance(inputs, list) or not inputs:
+        raise DataPreparationError(
+            f"{manifest_path} records no per-archive inputs, so it predates a "
+            "corpus that can span them; remove the artifact directory to "
+            "rebuild it, or prepare into another one"
+        )
+    recorded_config = _recorded_mapping(manifest.get("resolved_config")).get("config")
+    recorded = _selection_identity(_recorded_mapping(recorded_config))
+    if recorded != identity:
+        # Over the union, so a section the recorded selection has and this one
+        # does not is named rather than reported as an unexplained difference.
+        differing = ", ".join(
+            sorted(
+                key
+                for key in recorded.keys() | identity.keys()
+                if recorded.get(key) != identity.get(key)
+            )
+        )
+        raise DataPreparationError(
+            f"{manifest_path} was prepared under a different {differing}, and "
+            "one corpus is built from one selection; remove the artifact "
+            "directory to rebuild it, or prepare into another one"
+        )
+    shards = _recorded_mapping(manifest.get("output")).get("shards")
+    if not isinstance(shards, list) or not shards:
+        raise DataPreparationError(f"{manifest_path} records no output shards")
+    if not all(_records_an_archive(entry) for entry in inputs) or not all(
+        _records_a_shard(shard) for shard in shards
+    ):
+        raise DataPreparationError(
+            f"{manifest_path} has an input record without a digest, or a shard "
+            "record without a path and the digest of the archive it came from"
+        )
+    corpus = _ExistingCorpus(inputs=tuple(inputs), shards=tuple(shards))
+    try:
+        # Rolling the recorded archives up walks every remaining field this run
+        # will index, so a manifest written by other code reports rather than
+        # dying on a bare lookup halfway through the append.
+        _corpus_games(corpus.inputs)
+        _corpus_coverage(corpus.inputs)
+    except (KeyError, TypeError) as error:
+        raise DataPreparationError(
+            f"{manifest_path} has an input record missing {error}"
+        ) from error
+    return corpus
+
+
+def _records_an_archive(entry: object) -> bool:
+    return isinstance(entry, dict) and isinstance(entry.get("sha256"), str)
+
+
+def _records_a_shard(shard: object) -> bool:
+    return (
+        isinstance(shard, dict)
+        and isinstance(shard.get("path"), str)
+        and isinstance(shard.get("input_sha256"), str)
+    )
+
+
+def _recorded_result(
+    corpus: _ExistingCorpus,
+    manifest_path: Path,
+    output_path: Path,
+    entry: Mapping[str, Any] | None,
+) -> PreparationResult:
+    """Report a run that added nothing, from what the manifest already records."""
+
+    if entry is None:
+        return PreparationResult(
+            normalized_paths=(),
+            manifest_path=manifest_path,
+            accepted_games=0,
+            rejected_games=0,
+            split_counts=_corpus_split_counts(corpus.inputs),
+            corpus_archives=len(corpus.inputs),
+            disposition="corpus_complete",
+        )
+    return PreparationResult(
+        normalized_paths=corpus.shard_paths(output_path, entry["sha256"]),
+        manifest_path=manifest_path,
+        accepted_games=entry["games"]["accepted"],
+        rejected_games=entry["games"]["rejected"],
+        split_counts=_corpus_split_counts(corpus.inputs),
+        corpus_archives=len(corpus.inputs),
+        disposition="already_prepared",
     )
 
 
@@ -874,17 +1126,17 @@ def _flush_records(
     output_path: Path,
     normalized_directory: Path,
     normalized_paths: list[Path],
-    output_shards: list[dict[str, object]],
-    sharded: bool,
+    output_shards: list[dict[str, Any]],
+    input_sha256: str,
 ) -> None:
     if not records:
         return
     records.sort(key=_record_game_id)
     normalized_directory.mkdir(parents=True, exist_ok=True)
-    file_name = (
-        f"games-{len(normalized_paths):05d}.parquet" if sharded else "games.parquet"
+    shard_key = input_sha256[:_SHARD_KEY_LENGTH]
+    normalized_path = (
+        normalized_directory / f"games-{shard_key}-{len(normalized_paths):05d}.parquet"
     )
-    normalized_path = normalized_directory / file_name
     _write_parquet(records, normalized_path)
     split_counts = Counter(str(record[NormalizedColumn.SPLIT]) for record in records)
     normalized_paths.append(normalized_path)
@@ -892,6 +1144,9 @@ def _flush_records(
         {
             "path": normalized_path.relative_to(output_path).as_posix(),
             "sha256": file_sha256(normalized_path),
+            # Recorded as well as named, so a shard's provenance can be checked
+            # without parsing its file name.
+            "input_sha256": input_sha256,
             "games": len(records),
             "split_counts": {
                 split_name: split_counts[split_name] for split_name in SPLIT_NAMES
@@ -914,3 +1169,114 @@ def _integer_coverage(
         "minimum": min(values) if values else None,
         "maximum": max(values) if values else None,
     }
+
+
+def _corpus_split_counts(inputs: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts = _summed_counts(entry["split_counts"] for entry in inputs)
+    return {split_name: counts.get(split_name, 0) for split_name in SPLIT_NAMES}
+
+
+def _corpus_games(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Roll every archive's counts up into one corpus-wide statement.
+
+    Totals are derived from the per-archive records rather than carried forward
+    from the previous run's totals, so a manifest cannot come to disagree with
+    the parts it is made of.
+    """
+
+    blocks = [entry["games"] for entry in inputs]
+    plies = [block["plies"] for block in blocks]
+    return {
+        "accepted": sum(block["accepted"] for block in blocks),
+        "rejected": sum(block["rejected"] for block in blocks),
+        "scanned": sum(block["scanned"] for block in blocks),
+        "rejection_reasons": _summed_counts(
+            block["rejection_reasons"] for block in blocks
+        ),
+        "plies": {
+            "total": sum(block["total"] for block in plies),
+            "minimum_per_game": _extreme(plies, "minimum_per_game", min),
+            "maximum_per_game": _extreme(plies, "maximum_per_game", max),
+        },
+    }
+
+
+def _corpus_coverage(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Roll every archive's coverage up into one corpus-wide statement.
+
+    The abandonment threshold comes from the records like every other number
+    rather than from the configuration, and every archive agrees on it because
+    ``termination`` is part of the selection identity an append is refused for.
+    """
+
+    blocks = [entry["coverage"] for entry in inputs]
+    clocks = [block["clock"] for block in blocks]
+    ratings = [block["source_rating"] for block in blocks]
+    terminations = [block["termination"] for block in blocks]
+    return {
+        "clock": {
+            "status_plies": _summed_counts(clock["status_plies"] for clock in clocks),
+            "precision_ms_games": _summed_counts(
+                clock["precision_ms_games"] for clock in clocks
+            ),
+        },
+        "time_initial_ms": _merged_integer_coverage(
+            [block["time_initial_ms"] for block in blocks]
+        ),
+        "time_increment_ms": _merged_integer_coverage(
+            [block["time_increment_ms"] for block in blocks]
+        ),
+        "source_rating": {
+            "values_present": sum(rating["values_present"] for rating in ratings),
+            "minimum": _extreme(ratings, "minimum", min),
+            "maximum": _extreme(ratings, "maximum", max),
+        },
+        "termination": {
+            "category_games": _summed_counts(
+                termination["category_games"] for termination in terminations
+            ),
+            "attribution_games": _summed_counts(
+                termination["attribution_games"] for termination in terminations
+            ),
+            "terminal_action_games": _summed_counts(
+                termination["terminal_action_games"] for termination in terminations
+            ),
+            "abandonment": {
+                "clock_share_threshold": terminations[0]["abandonment"][
+                    "clock_share_threshold"
+                ],
+                "clock_share_judged_games": sum(
+                    termination["abandonment"]["clock_share_judged_games"]
+                    for termination in terminations
+                ),
+            },
+        },
+    }
+
+
+def _merged_integer_coverage(
+    blocks: Sequence[Mapping[str, Any]],
+) -> dict[str, object]:
+    return {
+        "status_games": _summed_counts(block["status_games"] for block in blocks),
+        "minimum": _extreme(blocks, "minimum", min),
+        "maximum": _extreme(blocks, "maximum", max),
+    }
+
+
+def _summed_counts(blocks: Iterable[Mapping[str, int]]) -> dict[str, int]:
+    total: Counter[str] = Counter()
+    for block in blocks:
+        total.update(block)
+    return dict(sorted(total.items()))
+
+
+def _extreme(
+    blocks: Sequence[Mapping[str, Any]],
+    key: str,
+    select: Callable[[Iterable[int]], int],
+) -> int | None:
+    """Combine one bound across archives, ignoring those that observed none."""
+
+    observed = [block[key] for block in blocks if isinstance(block.get(key), int)]
+    return select(observed) if observed else None

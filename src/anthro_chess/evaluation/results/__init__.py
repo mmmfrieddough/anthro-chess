@@ -63,7 +63,6 @@ from anthro_chess.evaluation.results.noise import (
     COMBINED_DISPERSION_METHOD,
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
-    PAIRED_BOOTSTRAP_METHOD,
     PROCESS_REPLICATE_METHOD,
     REPLICATE_METHOD,
     FloorEntry,
@@ -84,15 +83,6 @@ from anthro_chess.evaluation.results.noise import (
     replicate_floors,
     self_combined_floor,
     training_scope,
-)
-from anthro_chess.evaluation.results.paired import (
-    NO_DETAIL_ROOT,
-    PAIRED_CONTRIBUTIONS_KEY,
-    PAIRED_CONTRIBUTIONS_VERSION,
-    PairedContributions,
-    PairedFloor,
-    PairedFloorIndex,
-    paired_contributions,
 )
 from anthro_chess.evaluation.results.records import (
     ENVELOPE_VERSION,
@@ -121,7 +111,6 @@ from anthro_chess.evaluation.results.records import (
     measurement,
 )
 from anthro_chess.evaluation.results.reporting import (
-    ComparisonFloorProvider,
     DeltaReport,
     FamilyReport,
     HistoryPoint,
@@ -165,10 +154,6 @@ __all__ = [
     "FINGERPRINT_ALGORITHM",
     "MAXIMUM_SUMMARY_BYTES",
     "NOMINAL_REPEATED_PASSES",
-    "NO_DETAIL_ROOT",
-    "PAIRED_BOOTSTRAP_METHOD",
-    "PAIRED_CONTRIBUTIONS_KEY",
-    "PAIRED_CONTRIBUTIONS_VERSION",
     "PROCESS_REPLICATE_METHOD",
     "REPLICATE_METHOD",
     "Attribution",
@@ -178,7 +163,6 @@ __all__ = [
     "BridgeIndex",
     "CheckpointReference",
     "Comparability",
-    "ComparisonFloorProvider",
     "ConfigurationReference",
     "DataComponent",
     "DataProjection",
@@ -207,9 +191,6 @@ __all__ = [
     "NoiseFloor",
     "NoiseFloorIndex",
     "NoiseVerdict",
-    "PairedContributions",
-    "PairedFloor",
-    "PairedFloorIndex",
     "ProcessDispersion",
     "ProjectionDigest",
     "ProvenanceDifference",
@@ -246,7 +227,6 @@ __all__ = [
     "measured_dispersion",
     "measurements_by_workload",
     "measurement",
-    "paired_contributions",
     "metric_column_width",
     "metric_definition",
     "metric_family",
