@@ -1158,7 +1158,9 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
                 f"Prepared {result.accepted_games} game(s); "
                 f"rejected {result.rejected_games}."
             )
-        if len(result.normalized_paths) == 1:
+        if not result.normalized_paths:
+            print("Normalized: no shards, because this archive accepted no games.")
+        elif len(result.normalized_paths) == 1:
             print(f"Normalized: {result.normalized_path}")
         else:
             print(
@@ -1232,8 +1234,8 @@ def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
             raise ConfigError(
                 f"{output_path} covers a different archive. Widening one snapshot "
                 "across archives has to keep every earlier verdict rather than "
-                "re-decide covered accounts, and nothing prepares from two "
-                "archives yet; write this one to its own --output path"
+                "re-decide covered accounts, and nothing does that yet; write "
+                "this one to its own --output path"
             )
 
         resume_path = output_path.with_suffix(output_path.suffix + ".partial")

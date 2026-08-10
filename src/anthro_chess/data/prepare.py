@@ -7,6 +7,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -33,6 +34,7 @@ from anthro_chess.data.artifacts import (
     file_sha256,
     open_pgn_text,
     write_normalized_rows,
+    write_text_atomically,
 )
 from anthro_chess.data.config import ArchiveConfig, PrepareConfig, SplitConfig
 from anthro_chess.data.schema import (
@@ -74,19 +76,24 @@ _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 #: and deriving it from the content rather than from a running count keeps a
 #: retried archive overwriting its own shards instead of another month's.
 _SHARD_KEY_LENGTH = 12
-#: Configuration sections that decide what a game becomes, so a second archive
-#: prepared under different ones would not belong in the same corpus.
-_IDENTITY_SECTIONS = ("source", "split", "filters", "termination")
-#: Fields inside those sections that decide nothing about a game.
-#: ``filters.maximum_games`` is a corpus bound, and raising one keeps every
-#: game already accepted while admitting more, which is the expansion
-#: ``docs/data.md`` describes; ``split.require_nonempty`` checks the result
-#: rather than shaping it. Everything else fails closed, so a section gaining a
-#: field refuses an append until someone decides the field is safe.
-_IDENTITY_EXEMPT_FIELDS: dict[str, tuple[str, ...]] = {
-    "filters": ("maximum_games",),
-    "split": ("require_nonempty",),
-}
+#: Configuration a second archive may differ in and still belong in the same
+#: corpus. ``archives`` grows when a source publishes another month;
+#: ``artifact_name`` and ``output`` decide where shards go and how large they
+#: are rather than what is in them; ``filters.maximum_games`` is a corpus bound,
+#: and raising one keeps every game already accepted while admitting more, which
+#: is the expansion ``docs/data.md`` describes; ``split.require_nonempty``
+#: checks the result rather than shaping it.
+#:
+#: Named as exemptions rather than as the sections to compare, so that a
+#: configuration gaining a field or a whole section fails closed: appending
+#: refuses until someone decides the new one is safe.
+_IDENTITY_EXEMPTIONS: tuple[tuple[str, ...], ...] = (
+    ("archives",),
+    ("artifact_name",),
+    ("output",),
+    ("filters", "maximum_games"),
+    ("split", "require_nonempty"),
+)
 #: Manifest labels for whether a player's decision ended the game while they
 #: held the move. ``not_applicable`` covers endings no player decided, which is
 #: a different statement from a decision made on the opponent's clock.
@@ -292,7 +299,17 @@ def prepare_pgn(
     remaining_games = (
         None if maximum_games is None else maximum_games - corpus.accepted_games
     )
-    if remaining_games is not None and remaining_games <= 0:
+    if remaining_games is not None and remaining_games < 0:
+        # Raising a bound admits more games and is why the bound is not part of
+        # the selection identity. Lowering one below what a corpus already holds
+        # cannot be honoured by adding nothing, because the corpus is already
+        # past it.
+        raise DataPreparationError(
+            f"{manifest_path} records {corpus.accepted_games} accepted game(s), "
+            f"past the configured maximum of {maximum_games}; remove the "
+            "artifact directory to rebuild it, or prepare into another one"
+        )
+    if remaining_games == 0:
         logger.info(
             "Corpus already holds its configured maximum of %s game(s)",
             maximum_games,
@@ -417,12 +434,22 @@ def prepare_pgn(
             f"cannot read input PGN {source_path}: {error}"
         ) from error
 
-    if accepted_games == 0:
+    if accepted_games == 0 and not corpus.inputs:
+        # An archive contributing nothing to a corpus that already holds games
+        # is recorded as an empty append instead, because a pass over many
+        # archives has to be able to mark it done and move on. With nothing
+        # before it there is no corpus, and this is the misconfiguration it has
+        # always been.
         detail = ", ".join(
             f"{reason}={count}" for reason, count in sorted(rejections.items())
         )
         raise DataPreparationError(
             "no games passed preparation filters" + (f" ({detail})" if detail else "")
+        )
+    if accepted_games == 0:
+        logger.warning(
+            "Archive %s contributed no games and is recorded as an empty append",
+            source_path.name,
         )
 
     _flush_records(
@@ -522,14 +549,21 @@ def prepare_pgn(
                 f"{', '.join(empty_splits)} split(s)"
             )
 
-    recorded_paths = {
-        (output_path / shard["path"]).resolve() for shard in corpus_shards
-    }
-    for stale_path in normalized_directory.glob("games*.parquet"):
-        if stale_path.resolve() not in recorded_paths:
-            stale_path.unlink()
+    recorded_paths = {output_path / shard["path"] for shard in corpus_shards}
+    present_paths = set(normalized_directory.glob("games*.parquet"))
+    # One enumeration answers both directions. A manifest asserting shards that
+    # are gone is otherwise not detected until a training or freeze run reads
+    # the corpus, by which point more archives sit on top of the claim.
+    missing_paths = sorted(recorded_paths - present_paths)
+    if missing_paths:
+        raise DataPreparationError(
+            f"{manifest_path} records {len(missing_paths)} shard(s) that are no "
+            f"longer present, the first being {missing_paths[0]}; remove the "
+            "artifact directory to rebuild it"
+        )
+    for stale_path in present_paths - recorded_paths:
+        stale_path.unlink()
 
-    manifest_directory.mkdir(parents=True, exist_ok=True)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "preprocessing_version": PREPROCESSING_VERSION,
@@ -560,9 +594,11 @@ def prepare_pgn(
         ),
         "resolved_config": resolved_config.as_record(),
     }
-    manifest_path.write_text(
+    # Atomically, because this is the only record of which archives are in and
+    # the shards it describes cannot be identified without it.
+    write_text_atomically(
+        manifest_path,
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     logger.info(
         "Prepared %s game(s), rejected %s, and wrote %s shard(s); the corpus "
@@ -609,14 +645,14 @@ def _manifest_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
 
 
 def _config_identity(config: Mapping[str, Any]) -> dict[str, object]:
-    return {
-        section: {
-            key: value
-            for key, value in _recorded_mapping(config.get(section)).items()
-            if key not in _IDENTITY_EXEMPT_FIELDS.get(section, ())
-        }
-        for section in _IDENTITY_SECTIONS
-    }
+    identity: dict[str, Any] = deepcopy(dict(config))
+    for *sections, field in _IDENTITY_EXEMPTIONS:
+        holder: Any = identity
+        for section in sections:
+            holder = holder.get(section) if isinstance(holder, dict) else None
+        if isinstance(holder, dict):
+            holder.pop(field, None)
+    return identity
 
 
 def _recorded_mapping(value: object) -> Mapping[str, Any]:
@@ -646,8 +682,14 @@ def _read_existing_corpus(
         )
     recorded = _manifest_identity(manifest)
     if recorded != identity:
+        # Over the union, so a section the recorded selection has and this one
+        # does not is named rather than reported as an unexplained difference.
         differing = ", ".join(
-            sorted(key for key, value in identity.items() if recorded.get(key) != value)
+            sorted(
+                key
+                for key in recorded.keys() | identity.keys()
+                if recorded.get(key) != identity.get(key)
+            )
         )
         raise DataPreparationError(
             f"{manifest_path} was prepared under a different {differing}, and "
@@ -657,26 +699,26 @@ def _read_existing_corpus(
     shards = _recorded_mapping(manifest.get("output")).get("shards")
     if not isinstance(shards, list) or not shards:
         raise DataPreparationError(f"{manifest_path} records no output shards")
-    if not all(_records_an_archive(entry) for entry in inputs) or not all(
-        _records_a_shard(shard) for shard in shards
-    ):
+    corpus = _ExistingCorpus(inputs=tuple(inputs), shards=tuple(shards))
+    try:
+        if not all(_records_an_archive(entry) for entry in inputs) or not all(
+            _records_a_shard(shard) for shard in shards
+        ):
+            raise KeyError("record")
+        # Rolling the recorded archives up walks every field this run will
+        # index, so a manifest written by other code reports rather than dying
+        # on a bare lookup halfway through the append.
+        _corpus_games(corpus.inputs)
+        _corpus_coverage(corpus.inputs, 0.0)
+    except (KeyError, TypeError) as error:
         raise DataPreparationError(
-            f"{manifest_path} has an incomplete input or shard record"
-        )
-    return _ExistingCorpus(inputs=tuple(inputs), shards=tuple(shards))
+            f"{manifest_path} has an incomplete input or shard record: {error}"
+        ) from error
+    return corpus
 
 
 def _records_an_archive(entry: object) -> bool:
-    """Check the archive fields an appending run indexes without re-deriving."""
-
-    return (
-        isinstance(entry, dict)
-        and isinstance(entry.get("sha256"), str)
-        and all(
-            isinstance(entry.get(block), dict)
-            for block in ("games", "split_counts", "coverage")
-        )
-    )
+    return isinstance(entry, dict) and isinstance(entry.get("sha256"), str)
 
 
 def _records_a_shard(shard: object) -> bool:

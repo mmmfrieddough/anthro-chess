@@ -32,11 +32,11 @@ that archive's shards beside whatever is already in `normalized/`, and rewrites
 the manifest to span every archive prepared so far. Preparation never replaces
 a corpus; rebuilding means removing the artifact directory.
 
-**Shard names carry the input's digest**, as `games-<digest12>-<index>.parquet`.
-A name is then unique across archives without consulting the manifest, which
-means a retried archive overwrites its own shards and nothing else. The shard
-record repeats the full digest so a reader checks provenance from the manifest
-rather than by parsing file names.
+**Shard names carry a prefix of the input's digest.** A name is then unique
+across archives without consulting the manifest, which means a retried archive
+overwrites its own shards and nothing else. The shard record repeats the full
+digest so a reader checks provenance from the manifest rather than by parsing
+file names.
 
 **Corpus totals are derived from the per-archive records**, not carried forward
 from the previous run's totals. Each archive's entry holds its own digest,
@@ -96,9 +96,25 @@ refuses the second. A corpus spanning archives therefore cannot set
 `filters.marked_accounts` until a snapshot can speak for more than one; `0041`
 and the `MarkedAccounts` docstring carry that end.
 
-**The manifest grows with the corpus.** At 50,000 games per shard, 2.21B games
-is roughly 44,000 shard records, and every consumer reads the manifest whole.
-That is a scale problem the corpus already had and this does not fix.
+**Duplicate detection is per archive, not per corpus.** A run rejects a game id
+it has already seen in the archive it is reading, and holding every id of a
+2.2B-game corpus in memory to extend that across archives is not affordable, so
+two archives publishing the same game contribute it twice. The split-boundary
+guarantee survives — assignment is a pure function of the id, so both copies
+land in the same split — but a game can appear twice in the corpus and twice in
+a pool frozen from it. The pinned selection is 51 distinct months, which do not
+overlap; a source that re-cuts or re-publishes archives would.
+
+**The manifest grows with the corpus**, to tens of thousands of shard records at
+full size, and every consumer reads it whole. That is a scale problem the corpus
+already had and this does not fix.
+
+**One corpus directory takes one writer at a time.** An append is a
+read-modify-write of the manifest with no lock, so two runs against the same
+directory can each write a manifest that omits the other's archive, and the
+loser's shards are then swept as orphans. `docs/data.md` already asked for no
+concurrent writers against one corpus; appending makes the cost of ignoring it
+an archive rather than a run.
 
 ## Consequences
 
