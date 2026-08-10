@@ -463,7 +463,7 @@ MOVE_TIMING_PROJECTION = register_projection(
         columns=(
             NormalizedColumn.ACTION_IDS.value,
             NormalizedColumn.BLACK_NORMALIZED_RATING.value,
-            NormalizedColumn.CLOCK_REMAINING_MS.value,
+            NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value,
             NormalizedColumn.CLOCK_STATUS.value,
             NormalizedColumn.INITIAL_POSITION.value,
             NormalizedColumn.RULESET.value,

@@ -72,7 +72,10 @@ import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.data.schema import (
+    NormalizedColumn,
+    row_game_id,
+)
 from anthro_chess.evaluation.decisions import (
     DecisionCell,
     DecisionDecompositionError,
@@ -200,7 +203,8 @@ logger = logging.getLogger(__name__)
 #: What the opening projection reads from a pool row: the moves it continues from,
 #: and nothing beyond what the provenance digest already declares.
 _OPENING_COLUMNS = (
-    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.SOURCE_ID.value,
+    NormalizedColumn.SOURCE_GAME_KEY.value,
     *MOVE_PREDICTION_PROJECTION.columns,
 )
 
@@ -1769,7 +1773,7 @@ def _position_source(
     ]
     games = sorted(
         (
-            int(row[NormalizedColumn.GAME_ID.value]),
+            row_game_id(row),
             tuple(int(value) for value in row[NormalizedColumn.ACTION_IDS.value]),
         )
         for row in rows

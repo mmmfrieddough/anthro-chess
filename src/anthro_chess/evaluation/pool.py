@@ -35,6 +35,7 @@ from anthro_chess.data.schema import (
     SCHEMA_VERSION,
     NormalizedColumn,
     SplitName,
+    row_game_id,
 )
 from anthro_chess.evaluation.coverage import pool_coverage
 
@@ -46,7 +47,8 @@ logger = logging.getLogger(__name__)
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
 #: remaining columns only to discard them is most of what a load costs.
 _POOL_GAME_COLUMNS = (
-    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.SOURCE_ID.value,
+    NormalizedColumn.SOURCE_GAME_KEY.value,
     NormalizedColumn.PLY_COUNT.value,
     NormalizedColumn.RESULT.value,
     NormalizedColumn.WHITE_NORMALIZED_RATING.value,
@@ -125,13 +127,13 @@ def pool_rows(
         rows = [
             row
             for row in read_normalized_rows(pool.games_path, columns)
-            if int(row[NormalizedColumn.GAME_ID]) in wanted
+            if row_game_id(row) in wanted
         ]
     except DataLoadingError as loading_error:
         raise error(str(loading_error)) from loading_error
     if len(rows) != len(wanted):
         raise error("the evaluation pool does not contain every selected game")
-    return tuple(sorted(rows, key=lambda row: int(row[NormalizedColumn.GAME_ID])))
+    return tuple(sorted(rows, key=lambda row: row_game_id(row)))
 
 
 @dataclass(frozen=True)
@@ -191,14 +193,14 @@ def _freeze_pool(
             if split == config.split:
                 selected.append(row)
             elif split == "train":
-                train_game_ids.add(int(row[NormalizedColumn.GAME_ID]))
+                train_game_ids.add(row_game_id(row))
 
     if not selected:
         raise EvaluationPoolError(
             f"no normalized games are assigned to the {config.split} split"
         )
 
-    selected.sort(key=lambda row: int(row[NormalizedColumn.GAME_ID]))
+    selected.sort(key=lambda row: row_game_id(row))
     games = tuple(pool_game(row) for row in selected)
     game_ids = tuple(game.game_id for game in games)
     identity = game_ids_sha256(game_ids)
@@ -254,7 +256,7 @@ def _freeze_pool(
             "game_ids_sha256": identity,
             "games": [
                 {
-                    "game_id": int(row[NormalizedColumn.GAME_ID]),
+                    "game_id": row_game_id(row),
                     "content_sha256": _row_sha256(row),
                 }
                 for row in selected
@@ -365,7 +367,7 @@ def pool_game(row: Mapping[str, Any]) -> PoolGame:
     """
 
     return PoolGame(
-        game_id=int(row[NormalizedColumn.GAME_ID]),
+        game_id=row_game_id(row),
         ply_count=int(row[NormalizedColumn.PLY_COUNT]),
         result=str(row[NormalizedColumn.RESULT]),
         has_ratings=(
@@ -384,14 +386,15 @@ def _row_sha256(row: Mapping[str, Any]) -> str:
     content = {
         str(column): row[column]
         for column in (
-            NormalizedColumn.GAME_ID,
+            NormalizedColumn.SOURCE_ID,
+            NormalizedColumn.SOURCE_GAME_KEY,
             NormalizedColumn.RULESET,
             NormalizedColumn.INITIAL_POSITION,
             NormalizedColumn.ACTION_IDS,
             NormalizedColumn.RESULT,
             NormalizedColumn.WHITE_NORMALIZED_RATING,
             NormalizedColumn.BLACK_NORMALIZED_RATING,
-            NormalizedColumn.CLOCK_REMAINING_MS,
+            NormalizedColumn.CLOCK_REMAINING_DELTA_MS,
         )
     }
     return sha256(

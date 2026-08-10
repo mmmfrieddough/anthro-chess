@@ -31,6 +31,7 @@ def test_filters_within_one_corpus_by_time_control(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     games = _corpus(
         tmp_path,
@@ -49,7 +50,9 @@ def test_filters_within_one_corpus_by_time_control(
         selection=SelectionConfig(minimum_time_initial_ms=BLITZ_MS),
     )
 
-    assert dataset.resolution.game_ids == (2, 3)
+    assert dataset.resolution.game_ids == tuple(
+        sorted((fixture_game_id(2), fixture_game_id(3)))
+    )
     assert dataset.resolution.excluded_games == {"below_minimum_time_initial": 1}
 
 
@@ -57,6 +60,7 @@ def test_rating_band_requires_both_players_inside_it(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     rows = [
         normalized_row(1, split="train", ratings=(1500, 1520)),
@@ -71,7 +75,7 @@ def test_rating_band_requires_both_players_inside_it(
         selection=SelectionConfig(minimum_rating=1400, maximum_rating=1600),
     )
 
-    assert dataset.resolution.game_ids == (1,)
+    assert dataset.resolution.game_ids == (fixture_game_id(1),)
     assert dataset.resolution.excluded_games == {
         "above_maximum_rating": 1,
         "missing_ratings": 1,
@@ -82,6 +86,7 @@ def test_a_missing_axis_value_is_excluded_rather_than_treated_as_zero(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     rows = [
         normalized_row(1, split="train", time_initial_ms=None),
@@ -95,7 +100,7 @@ def test_a_missing_axis_value_is_excluded_rather_than_treated_as_zero(
         selection=SelectionConfig(minimum_time_initial_ms=0),
     )
 
-    assert dataset.resolution.game_ids == (2,)
+    assert dataset.resolution.game_ids == (fixture_game_id(2),)
     assert dataset.resolution.excluded_games == {"missing_time_control": 1}
 
 
@@ -165,6 +170,7 @@ def test_a_selection_never_reaches_outside_the_split_it_loads(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     rows = [
         normalized_row(1, split="train"),
@@ -179,7 +185,7 @@ def test_a_selection_never_reaches_outside_the_split_it_loads(
         selection=SelectionConfig(fraction=1.0),
     )
 
-    assert dataset.resolution.game_ids == (1,)
+    assert dataset.resolution.game_ids == (fixture_game_id(1),)
     assert dataset.resolution.eligible_games == 1
 
 

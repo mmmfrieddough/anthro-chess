@@ -28,7 +28,13 @@ from anthro_chess.data import (
     SequenceLoaderConfig,
     encode_game,
 )
-from anthro_chess.data.schema import SCHEMA_VERSION, NormalizedColumn, SplitName
+from anthro_chess.data.schema import (
+    SCHEMA_VERSION,
+    NormalizedColumn,
+    SplitName,
+    clock_remaining_ms,
+    row_game_id,
+)
 from anthro_chess.evaluation.aggregation import (
     OPENING_TIER_DIMENSION,
     PHASE_DIMENSION,
@@ -143,9 +149,7 @@ class ScoringInputs:
                     )
                 except OpeningClassificationError as error:
                     raise ScoringError(str(error)) from error
-                self._opening_families[int(row[NormalizedColumn.GAME_ID])] = (
-                    label.family
-                )
+                self._opening_families[row_game_id(row)] = label.family
         return self._opening_families[game_id]
 
     def labels(self, key: PositionKey) -> PositionLabels:
@@ -182,7 +186,7 @@ def build_scoring_inputs(
 
     ordered = sorted(
         (dict(row) for row in rows),
-        key=lambda row: int(row[NormalizedColumn.GAME_ID]),
+        key=lambda row: row_game_id(row),
     )
     examples: list[SequenceExample] = []
     plies: dict[PositionKey, PlyEncoding] = {}
@@ -193,7 +197,7 @@ def build_scoring_inputs(
         examples.append(
             SequenceExample(
                 shard_index=0,
-                game_id=int(row[NormalizedColumn.GAME_ID]),
+                game_id=row_game_id(row),
                 start_ply=encoded[0].ply_index,
                 plies=encoded,
             )
@@ -305,7 +309,8 @@ def per_game_totals(
 #: to project to at least these and would otherwise drift from them silently.
 SCORED_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION.value,
-    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.SOURCE_ID.value,
+    NormalizedColumn.SOURCE_GAME_KEY.value,
     NormalizedColumn.RULESET.value,
     NormalizedColumn.INITIAL_POSITION.value,
     NormalizedColumn.ACTION_IDS.value,
@@ -313,7 +318,7 @@ SCORED_COLUMNS = (
     NormalizedColumn.BLACK_NORMALIZED_RATING.value,
     NormalizedColumn.TIME_INITIAL_MS.value,
     NormalizedColumn.TIME_INCREMENT_MS.value,
-    NormalizedColumn.CLOCK_REMAINING_MS.value,
+    NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value,
 )
 
 
@@ -326,7 +331,7 @@ def encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
             f"{row[NormalizedColumn.SCHEMA_VERSION]}; expected {SCHEMA_VERSION}"
         )
     return GameEncodingInput(
-        game_id=int(row[NormalizedColumn.GAME_ID]),
+        game_id=row_game_id(row),
         ruleset=str(row[NormalizedColumn.RULESET]),
         initial_position=str(row[NormalizedColumn.INITIAL_POSITION]),
         action_ids=tuple(row[NormalizedColumn.ACTION_IDS]),
@@ -334,7 +339,7 @@ def encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
         black_normalized_rating=row[NormalizedColumn.BLACK_NORMALIZED_RATING],
         time_initial_ms=row[NormalizedColumn.TIME_INITIAL_MS],
         time_increment_ms=row[NormalizedColumn.TIME_INCREMENT_MS],
-        clock_remaining_ms=tuple(row[NormalizedColumn.CLOCK_REMAINING_MS]),
+        clock_remaining_ms=clock_remaining_ms(row),
     )
 
 
@@ -347,8 +352,8 @@ def rows_identity_sha256(
 
     digest = sha256()
     digest.update(str(context).encode())
-    for row in sorted(rows, key=lambda item: int(item[NormalizedColumn.GAME_ID])):
-        digest.update(f"\n{row[NormalizedColumn.GAME_ID]}".encode())
+    for row in sorted(rows, key=lambda item: row_game_id(item)):
+        digest.update(f"\n{row_game_id(row)}".encode())
     return digest.hexdigest()
 
 

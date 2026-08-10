@@ -93,6 +93,19 @@ def account_digest(username: str) -> str:
     return sha256(f"{DIGEST_SALT}\0{normalized}".encode()).hexdigest()[:DIGEST_LENGTH]
 
 
+#: Hex characters of :func:`account_digest` that fit a normalized row's fixed
+#: 64-bit player column. Truncating a stored snapshot digest the same way
+#: yields the same integer, so a corpus row and a snapshot can be matched
+#: without the corpus storing usernames.
+_ROW_DIGEST_LENGTH = 16
+
+
+def account_row_digest(username: str) -> int:
+    """Return the normalized-row player identifier for one source username."""
+
+    return int(account_digest(username)[:_ROW_DIGEST_LENGTH], 16)
+
+
 @dataclass(frozen=True)
 class MarkedAccounts:
     """Marked accounts observed across the archive a snapshot covers.

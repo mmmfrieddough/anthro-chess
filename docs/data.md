@@ -385,9 +385,19 @@ It is useful for joins, de-duplication, splits, debugging, and manifests.
 URLs should usually be reconstructable from a source template and
 `source_game_key`, or stored only in debug/provenance tables.
 
-Player identifiers should be kept when available because they may later support
-player-style data. They should also use compact source-specific ids or
-dictionary encoding in training shards.
+Player identifiers are kept when a source provides them, as a fixed-width salted
+digest of the account rather than the name. Membership is what a corpus-level
+account filter needs and a digest serves it as well as a name does, so the
+corpus does not repeat a source's usernames in readable form. That obscures
+rather than protects, for the reason `anthro_chess.data.accounts` gives about
+the snapshot digests it shares a salt with: the salt is public and the account
+space is the archive's, so anyone holding the archive can rebuild the mapping.
+
+Carrying them is what makes account-level filtering a property of the rows
+rather than of the parse. A filter that can only run while reading PGN has to be
+decided before preparation and costs a full re-parse to revisit, and whether
+splitting on game id leaks a player between train and test cannot be asked at
+all. Both stay answerable while the evaluation core is still unfrozen.
 
 ## Rating Scale
 
@@ -534,6 +544,15 @@ Polars.
 
 One game is one row, with list columns carrying its actions and optional
 clocks, so the format matches the unit a batch is read in.
+
+Two storage choices are not what a reader wants back, and both earn the
+indirection only because they were measured. A clock trace is differenced
+against the same player's previous reading, which takes about a third off the
+column. And the columns whose values never repeat are exempted from dictionary
+encoding, which on those measured a quarter of the column spent for nothing. Reading a
+clock therefore goes through `anthro_chess.data.schema`, which owns the codec
+and the reasoning behind it; `anthro_chess.data.artifacts` owns the encoding
+exemption.
 
 ## Derived State And Legal Masks
 

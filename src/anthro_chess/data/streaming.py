@@ -64,7 +64,10 @@ from anthro_chess.data.loading import (
     _state_from_record,
     collate_sequences,
 )
-from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.data.schema import (
+    NormalizedColumn,
+    row_game_id,
+)
 from anthro_chess.data.termination import TerminalActionStatus
 
 #: Bumped when the shard-backed identity or plan changes shape, so a checkpoint
@@ -81,7 +84,8 @@ logger = logging.getLogger(__name__)
 #: whether one further action was appended, which together give the encoded
 #: length of a game without touching its actions.
 _INDEX_COLUMNS = (
-    NormalizedColumn.GAME_ID,
+    NormalizedColumn.SOURCE_ID,
+    NormalizedColumn.SOURCE_GAME_KEY,
     NormalizedColumn.PLY_COUNT,
     NormalizedColumn.TERMINAL_ACTION_STATUS,
     NormalizedColumn.WHITE_NORMALIZED_RATING,
@@ -471,7 +475,7 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
             )
             if len(plies) != job.lengths[row_index]:
                 raise DataLoadingError(
-                    f"{path} game {job.rows[row_index][NormalizedColumn.GAME_ID]} "
+                    f"{path} game {row_game_id(job.rows[row_index])} "
                     f"decodes to {len(plies)} action(s) where its ply count and "
                     f"terminal action status describe {job.lengths[row_index]}"
                 )
@@ -530,7 +534,7 @@ def _scan_row_group(
             continue
         appended = terminal[position] == TerminalActionStatus.APPENDED
         positions.append(position)
-        game_ids.append(columns[NormalizedColumn.GAME_ID][position])
+        game_ids.append(row_game_id(row))
         lengths.append(ply_counts[position] + (1 if appended else 0))
     return _ScannedGroup(
         shard=shard_index,

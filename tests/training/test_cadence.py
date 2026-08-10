@@ -107,6 +107,7 @@ def test_a_preview_view_subsamples_the_validation_split_deterministically(
     tmp_path: Path,
     normalized_row: RowFactory,
     write_corpus: CorpusFactory,
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     validation = _corpus(tmp_path, normalized_row, write_corpus)
 
@@ -121,7 +122,9 @@ def test_a_preview_view_subsamples_the_validation_split_deterministically(
     assert second.selection is not None
     assert second.selection.game_ids == first.selection.game_ids
     # Every selected game belongs to the validation split.
-    assert set(first.selection.game_ids) <= set(range(100, 106))
+    assert set(first.selection.game_ids) <= {
+        fixture_game_id(index) for index in range(100, 106)
+    }
 
 
 def test_a_preview_reading_cannot_share_a_series_with_a_wider_reading(

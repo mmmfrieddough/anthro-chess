@@ -884,7 +884,7 @@ def _truncate(row: Mapping[str, Any], prefix_plies: int | None) -> dict[str, Any
         return updated
     for column in (
         NormalizedColumn.ACTION_IDS,
-        NormalizedColumn.CLOCK_REMAINING_MS,
+        NormalizedColumn.CLOCK_REMAINING_DELTA_MS,
     ):
         updated[column.value] = list(updated[column.value])[:prefix_plies]
     updated[NormalizedColumn.PLY_COUNT.value] = len(

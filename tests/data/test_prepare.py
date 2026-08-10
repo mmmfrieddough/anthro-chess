@@ -23,8 +23,14 @@ from anthro_chess.data import (
     acquire_archive,
     prepare_pgn,
 )
-from anthro_chess.data.accounts import marked_accounts_from_usernames
-from anthro_chess.data.schema import NORMALIZED_COLUMNS
+from anthro_chess.data.accounts import (
+    account_row_digest,
+    marked_accounts_from_usernames,
+)
+from anthro_chess.data.schema import (
+    NORMALIZED_COLUMNS,
+    decode_clock_remaining_deltas,
+)
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -67,9 +73,13 @@ def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
     assert decode_move(row["action_ids"][0]) == chess.Move.from_uci("e2e4")
     assert row["white_source_rating"] == 2100
     assert row["white_normalized_rating"] == 2100
-    assert row["clock_remaining_ms"][:3] == [30000, 30000, 29000]
+    assert decode_clock_remaining_deltas(row["clock_remaining_delta_ms"])[:3] == [
+        30000,
+        30000,
+        29000,
+    ]
     assert set(row["clock_status"]) == {"present"}
-    assert set(row["clock_precision_ms"]) == {1000}
+    assert row["clock_precision_ms"] == 1000
 
     manifest = _read_json(result.manifest_path)
     assert manifest["input"]["sha256"] == _sha256(SAMPLE_PGN)
@@ -139,14 +149,19 @@ def test_preserves_present_unavailable_and_rejected_optional_values(
     assert row["white_source_rating_status"] == "present"
     assert row["black_source_rating"] is None
     assert row["black_source_rating_status"] == "rejected"
-    assert row["clock_remaining_ms"] == [0, None, 12340, None]
+    assert decode_clock_remaining_deltas(row["clock_remaining_delta_ms"]) == [
+        0,
+        None,
+        12340,
+        None,
+    ]
     assert row["clock_status"] == [
         "present",
         "rejected",
         "present",
         "unavailable",
     ]
-    assert row["clock_precision_ms"] == [1000, None, 10, None]
+    assert row["clock_precision_ms"] == 10
     assert row["termination"] is None
     assert row["termination_status"] == "unavailable"
 
@@ -184,6 +199,66 @@ def test_filters_games_and_records_rejection_reasons(tmp_path: Path) -> None:
         "rules_infraction": 1,
         "unrated_game": 1,
     }
+
+
+def test_keeps_a_game_whose_clock_precision_varies_at_its_finest_tick(
+    tmp_path: Path,
+) -> None:
+    """A game whose plies print clocks at two ticks records the finer one."""
+
+    input_path = tmp_path / "mixed-precision.pgn"
+    input_path.write_text(
+        _short_game(site="mixed", moves="1. e4 { [%clk 0:01:00] } e5 { [%clkc 5900] }"),
+        encoding="utf-8",
+    )
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(
+            'source.id="test"',
+            'source.version="fixture"',
+            'source.url="https://example.test/"',
+            'source.license="CC0-1.0"',
+            "filters.minimum_plies=1",
+        ),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    row = pq.read_table(result.normalized_path).to_pylist()[0]
+    assert result.accepted_games == 1
+    assert decode_clock_remaining_deltas(row["clock_remaining_delta_ms"]) == [
+        60_000,
+        59_000,
+    ]
+    assert row["clock_precision_ms"] == 10
+
+
+def test_records_the_player_digests_a_marked_snapshot_is_matched_against(
+    tmp_path: Path,
+) -> None:
+    """The corpus carries digests rather than names, and they must line up."""
+
+    input_path = tmp_path / "players.pgn"
+    input_path.write_text(
+        _short_game(site="named", white="Alice", black="Bob"), encoding="utf-8"
+    )
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(
+            'source.id="test"',
+            'source.version="fixture"',
+            'source.url="https://example.test/"',
+            'source.license="CC0-1.0"',
+        ),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    row = pq.read_table(result.normalized_path).to_pylist()[0]
+    assert row["white_player_digest"] == account_row_digest("alice")
+    assert row["black_player_digest"] == account_row_digest("bob")
 
 
 def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
@@ -596,11 +671,12 @@ def test_appends_a_terminal_action_for_a_decision_made_on_the_players_turn(
     assert resigned["ply_count"] == 3
     assert len(resigned["action_ids"]) == 4
     # The per-ply columns stay aligned with the actions, with no invented clock.
-    for column in ("clock_remaining_ms", "clock_status", "clock_precision_ms"):
+    for column in ("clock_remaining_delta_ms", "clock_status"):
         assert len(resigned[column]) == 4
-    assert resigned["clock_remaining_ms"][-1] is None
+    assert (
+        decode_clock_remaining_deltas(resigned["clock_remaining_delta_ms"])[-1] is None
+    )
     assert resigned["clock_status"][-1] == "unavailable"
-    assert resigned["clock_precision_ms"][-1] is None
 
 
 def test_omits_a_terminal_action_the_player_could_not_have_chosen(
@@ -742,6 +818,7 @@ def _short_game(
     extra_headers: str = "",
     white: str = "White",
     black: str = "Black",
+    moves: str = "1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0",
 ) -> str:
     return f"""
 [Event "{event}"]
@@ -754,7 +831,7 @@ def _short_game(
 [WhiteElo "1200"]
 [BlackElo "1200"]
 {extra_headers}
-1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0
+{moves}
 
 """.lstrip()
 

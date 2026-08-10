@@ -56,7 +56,12 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 from anthro_chess.chess import decode_move, encode_move, is_terminal_action
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DataLoadingError, SequenceDataLoader
-from anthro_chess.data.schema import SPLIT_NAMES, NormalizedColumn, SplitName
+from anthro_chess.data.schema import (
+    SPLIT_NAMES,
+    NormalizedColumn,
+    SplitName,
+    row_game_id,
+)
 from anthro_chess.evaluation.adjudication import action_sets, merge_game_totals
 from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, SliceTable
 from anthro_chess.evaluation.checkpoint import (
@@ -419,7 +424,7 @@ def derive_arm(
         raise NoveltyBenchmarkError(f"unsupported perturbation recipe: {config.recipe}")
     return tuple(
         derived
-        for row in sorted(rows, key=lambda item: int(item[NormalizedColumn.GAME_ID]))
+        for row in sorted(rows, key=lambda item: row_game_id(item))
         if (derived := _derive_game(row, dose=dose, config=config)) is not None
     )
 
@@ -534,7 +539,7 @@ def _derive_game(
     contributing a shorter window, which would make the arms incomparable.
     """
 
-    game_id = int(row[NormalizedColumn.GAME_ID])
+    game_id = row_game_id(row)
     action_ids = [int(value) for value in row[NormalizedColumn.ACTION_IDS]]
     board = _initial_board(row)
     player = _player_color(config.seed, game_id)
@@ -662,15 +667,15 @@ def _project_row(row: Mapping[str, Any], actions: Sequence[int]) -> dict[str, An
     derivation reached. The clock trace is projected rather than recomputed:
     this benchmark reads no timing, and inventing move times for moves nobody
     played would put fabricated data in the one place a later timing benchmark
-    would trust. The other two per-ply clock columns are never read here, so
-    the pool read leaves them behind rather than truncating them for nobody.
+    would trust. The remaining per-ply clock column is never read here, so the
+    pool read leaves it behind rather than truncating it for nobody.
     """
 
     updated = dict(row)
     plies = len(actions)
     updated[NormalizedColumn.ACTION_IDS.value] = list(actions)
-    clocks = updated[NormalizedColumn.CLOCK_REMAINING_MS.value]
-    updated[NormalizedColumn.CLOCK_REMAINING_MS.value] = list(clocks)[:plies]
+    clocks = updated[NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value]
+    updated[NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value] = list(clocks)[:plies]
     updated[NormalizedColumn.PLY_COUNT.value] = plies
     return updated
 

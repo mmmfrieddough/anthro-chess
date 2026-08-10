@@ -1258,7 +1258,10 @@ def test_multiple_games_aggregate_into_one_cell_reading() -> None:
     assert mean.sample_size == 6
 
 
-def test_prefix_continuations_start_from_the_human_games(pool: Path) -> None:
+def test_prefix_continuations_start_from_the_human_games(
+    pool: Path,
+    fixture_game_id: Callable[[int], int],
+) -> None:
     """A prefix arm has to actually replay the pool's openings."""
 
     result = _run(
@@ -1274,7 +1277,7 @@ def test_prefix_continuations_start_from_the_human_games(pool: Path) -> None:
     assert cell.positions == 2
     for record in cell.records:
         assert record.prefix_plies == 4
-        assert record.source_game_id in {2, 3}
+        assert record.source_game_id in {fixture_game_id(2), fixture_game_id(3)}
         board = chess.Board()
         for move_text in ("e2e4", "e7e5", "g1f3", "b8c6"):
             move = chess.Move.from_uci(move_text)

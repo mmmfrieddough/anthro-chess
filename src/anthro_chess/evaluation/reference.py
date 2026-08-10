@@ -250,7 +250,8 @@ class HumanReference:
 #: read needs. Declared here so a caller projecting its pool read cannot drift
 #: from what this function goes on to index.
 REFERENCE_COLUMNS = (
-    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.SOURCE_ID.value,
+    NormalizedColumn.SOURCE_GAME_KEY.value,
     NormalizedColumn.WHITE_NORMALIZED_RATING.value,
     NormalizedColumn.BLACK_NORMALIZED_RATING.value,
     NormalizedColumn.ACTION_IDS.value,

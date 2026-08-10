@@ -20,6 +20,7 @@ from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    NormalizedColumn,
     normalized_parquet_schema,
 )
 
@@ -196,6 +197,39 @@ def rows_at_positions(table: Any, positions: Sequence[int]) -> list[dict[str, An
     return cast(list[dict[str, Any]], table.take(list(positions)).to_pylist())
 
 
+#: Columns whose values never repeat, so a dictionary of them is as large as
+#: the data it indexes and costs about a quarter of the column for nothing.
+#: Merely high cardinality is not the test: a player digest is distinct in
+#: most rows and still measures smaller encoded, because an account plays
+#: many of a shard's games.
+_UNIQUE_PER_ROW_COLUMNS = frozenset(
+    {
+        NormalizedColumn.SOURCE_GAME_KEY.value,
+    }
+)
+
+
+def _dictionary_columns(schema: Any) -> list[str]:
+    """Return the leaf column paths that should be dictionary encoded.
+
+    Parquet names a list column's leaf ``<field>.list.element``, and a path
+    matching no leaf is ignored rather than rejected, so a wrong one silently
+    drops the encoding.
+    """
+
+    import pyarrow as pa
+
+    paths: list[str] = []
+    for field in schema:
+        if field.name in _UNIQUE_PER_ROW_COLUMNS:
+            continue
+        leaf = (
+            f"{field.name}.list.element" if pa.types.is_list(field.type) else field.name
+        )
+        paths.append(leaf)
+    return paths
+
+
 def write_normalized_rows(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
     """Write rows as a zstd-compressed shard using the canonical schema."""
 
@@ -205,12 +239,13 @@ def write_normalized_rows(rows: Sequence[Mapping[str, Any]], path: Path) -> None
     except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
         raise DataLoadingError(_PARQUET_MISSING) from error
 
-    table = pa.Table.from_pylist(list(rows), schema=normalized_parquet_schema())
+    schema = normalized_parquet_schema()
+    table = pa.Table.from_pylist(list(rows), schema=schema)
     pq.write_table(
         table,
         path,
         compression="zstd",
-        use_dictionary=True,
+        use_dictionary=_dictionary_columns(schema),
         write_statistics=True,
     )
 
