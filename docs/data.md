@@ -150,7 +150,8 @@ See `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`.
 
 Preparation decodes games on a pool of processes. One reader walks the
 decompressed stream and decides where each game ends, and workers do the
-parsing, replay, encoding and classification that dominates the cost. The
+parsing, encoding and classification that dominates the cost, building each
+normalized record in one pass as the parser walks the game. The
 reader consumes their results in source order, so acceptance, duplicate
 rejection, the accepted-game bound and shard boundaries see the same sequence
 whatever the pool size.

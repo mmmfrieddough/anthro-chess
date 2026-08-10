@@ -84,6 +84,19 @@ _EVENT_SPEED_RE = re.compile(
     re.IGNORECASE,
 )
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+#: What ``chess.pgn.Headers`` seeds a game with when a tag is absent. Collecting
+#: headers into a plain dict is what makes the decode one pass, and it is these
+#: the dict would otherwise be missing: a game carrying no ``Result`` tag and no
+#: result token is unfinished rather than invalid.
+_TAG_ROSTER_DEFAULTS: dict[str, str] = {
+    "Event": "?",
+    "Site": "?",
+    "Date": "????.??.??",
+    "Round": "?",
+    "White": "?",
+    "Black": "?",
+    "Result": "*",
+}
 #: Games framed into one decoding job. A job has to cost far more than the
 #: round trip that dispatched it, and a full pool's worth of the records they
 #: return has to stay small beside the shard being filled.
@@ -783,9 +796,11 @@ def _decode_stream(
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
 ) -> Iterator[_ParsedGame]:
+    """Yield every game a handle holds, decoded but not yet accepted."""
+
     builder = partial(_RecordBuilder, config, marked_accounts)
     while True:
-        parsed = chess.pgn.read_game(handle, Visitor=builder)
+        parsed: _ParsedGame | None = chess.pgn.read_game(handle, Visitor=builder)
         if parsed is None:
             return
         yield parsed
@@ -951,21 +966,13 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
         self._marked_accounts = marked_accounts
 
     def begin_game(self) -> None:
-        self._headers: dict[str, str] = {}
+        self._headers = dict(_TAG_ROSTER_DEFAULTS)
         self._moves: list[chess.Move] = []
         self._comments: list[str] = []
         self._board: chess.Board | None = None
         self._depth = 0
         self._in_variation = False
         self._failed = False
-        self._null_move = False
-
-    def begin_headers(self) -> None:
-        # Nothing, so ``read_game`` builds the ``Headers`` its own variant and
-        # FEN lookups need while this keeps a plain dict beside it. Handing it
-        # one of these instead saves a percent and buys a dependence on how
-        # ``Headers`` is constructed.
-        return None
 
     def visit_header(self, tagname: str, tagvalue: str) -> None:
         self._headers[tagname] = tagvalue
@@ -981,17 +988,14 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
         self._in_variation = False
 
     def end_variation(self) -> None:
-        self._depth -= 1
+        # Clamped because ``read_game`` also closes an error-skip through this
+        # callback, with no ``begin_variation`` to match it.
+        self._depth = max(self._depth - 1, 0)
 
     def visit_move(self, board: chess.Board, move: chess.Move) -> None:
         self._in_variation = True
         if self._depth:
             return
-        if not move:
-            # ``parse_san`` promises a move that is legal or null and records
-            # an error for anything else, so the null is the whole of what a
-            # legality test over the replayed mainline used to catch.
-            self._null_move = True
         self._moves.append(move)
         self._comments.append("")
 
@@ -1015,7 +1019,6 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
             self._comments,
             self._board,
             failed=self._failed,
-            null_move=self._null_move,
             config=self._config,
             marked_accounts=self._marked_accounts,
         )
@@ -1028,7 +1031,6 @@ def _parse_game(
     final_board: chess.Board | None,
     *,
     failed: bool,
-    null_move: bool,
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
 ) -> _ParsedGame:
@@ -1079,7 +1081,10 @@ def _parse_game(
     ):
         return _ParsedGame(None, "missing_or_invalid_rating")
     time_initial, time_increment = _parse_time_control(headers.get("TimeControl"))
-    if null_move:
+    if not all(moves):
+        # ``parse_san`` promises a move that is legal or null and records an
+        # error for anything else, so the null is the whole of what a legality
+        # test over the replayed mainline used to catch.
         return _ParsedGame(None, "illegal_move")
     actions: list[int] = []
     clock_values: list[int | None] = []
@@ -1109,7 +1114,8 @@ def _parse_game(
         return _ParsedGame(None, "invalid_result")
 
     termination, termination_status = _parse_text(headers.get("Termination"))
-    assert final_board is not None
+    if final_board is None:
+        return _ParsedGame(None, "pgn_parse_error")
     derived_termination = derive_termination(
         result=result,
         source_termination=termination,

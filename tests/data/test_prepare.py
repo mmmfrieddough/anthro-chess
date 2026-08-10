@@ -1451,3 +1451,55 @@ def test_an_illegal_move_inside_a_variation_rejects_the_whole_game() -> None:
 
     assert parsed.record is None
     assert parsed.rejection == "pgn_parse_error"
+
+
+def _headerless_game(headers: str, moves: str) -> str:
+    return f'[Event "Rated Blitz game"]\n[Site "https://example.test/edge"]\n{headers}\n{moves}\n\n'
+
+
+def test_a_game_with_no_result_tag_and_no_result_token_is_unfinished() -> None:
+    """``read_game``'s own headers default ``Result`` to ``*``, and so must these.
+
+    Collecting headers into a plain dict is what makes the decode one pass, and
+    a dict starts without the roster defaults a game is entitled to.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _headerless_game('[WhiteElo "1200"]\n[BlackElo "1200"]\n', "1. e4 e5 2. Nf3")
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is not None
+    assert parsed.record["result"] == "*"
+
+
+def test_a_result_token_fills_a_result_tag_that_is_still_open() -> None:
+    """The movetext token is the only writer of a header this never reads."""
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _headerless_game(
+        '[Result "*"]\n[WhiteElo "1200"]\n[BlackElo "1200"]\n',
+        "1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0",
+    )
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is not None
+    assert parsed.record["result"] == "1-0"
+
+
+def test_an_illegal_mainline_move_is_a_parse_error_not_an_encoded_action() -> None:
+    """Pins the ``parse_san`` contract the mainline legality test used to enforce.
+
+    Nothing else would notice if a ``python-chess`` bump started returning a
+    move the position refuses, and the pin admits a minor one.
+    """
+
+    parsed = _decoded("1. e4 e5 2. Qh4 1-0")
+
+    assert parsed.record is None
+    assert parsed.rejection == "pgn_parse_error"
