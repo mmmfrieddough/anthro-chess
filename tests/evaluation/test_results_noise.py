@@ -187,19 +187,24 @@ def test_bootstrap_resamples_games_rather_than_positions(
     assert spread.estimator == BOOTSTRAP_METHOD
 
 
+@pytest.mark.parametrize("positions", [(3, 3, 3), (121, 42, 149)])
 def test_agreeing_games_are_omitted_even_where_their_rate_is_inexact(
     move_prediction_component: Digest,
+    positions: tuple[int, ...],
 ) -> None:
     # The same omission as above, at a rate binary floating point cannot hold.
-    # Every resample computes the one value, but its mean lands beside rather
-    # than on it, so the deviation is ~1e-17 instead of zero and a test for
-    # zero would record a floor no comparison could fail to clear.
+    # Every resample recomputes the one value from differently-rounded sums, so
+    # it lands within a few ulp of itself instead of on itself, and a test for
+    # exactly zero would record a floor no comparison could fail to clear.
+    # Unequal position counts are the case that reaches several distinct
+    # quotients rather than one, so identity is not the test either.
+    rate = 0.9233579079706695
     agreeing = tuple(
         GameTotals(
             game_id=game_id,
-            metrics={METRIC: MetricTotal(total=1.0, positions=3)},
+            metrics={METRIC: MetricTotal(total=rate * count, positions=count)},
         )
-        for game_id in (1, 2, 3)
+        for game_id, count in enumerate(positions)
     )
 
     identical = bootstrap_dispersions(
@@ -350,8 +355,7 @@ def test_a_metric_one_game_realized_reports_no_dispersion(
     move_prediction_component: Digest,
 ) -> None:
     # One game is one replicate, and a single replicate observes no spread for
-    # a bound to rest on. The exactly-zero guard does not catch it: resampling
-    # one game leaves the last bits of the divided total moving.
+    # a bound to rest on — the count says so without the estimate having to.
     component = move_prediction_component()
     totals = (
         GameTotals(

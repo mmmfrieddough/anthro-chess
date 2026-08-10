@@ -1576,7 +1576,7 @@ def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(
 
     plan = json.loads(capsys.readouterr().out)
     assert plan["required_realizing_games"] == 16_000
-    assert plan["measured_games"] == 1_000
+    assert plan["measured_realizing_games"] == 1_000
     # Every game realized this metric, so the two counts are one number.
     assert plan["required_pool_games"] == 16_000
 

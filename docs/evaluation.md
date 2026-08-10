@@ -633,9 +633,10 @@ newest reading that measured its own spread over a counted sample. No
 benchmark-level resolution constant is declared or kept current for it.
 
 The answer is in the same units the spread was read over, so for a sliced metric
-it counts games that realize the slice rather than games in the pool. Converting
-one to the other takes the rate at which the pool realizes the slice, which the
-command does not yet apply.
+it counts games that realize the slice rather than games in the pool. The
+command reports both, converting through the rate the reading itself observed —
+an identity where every game realizes the metric, and an order of magnitude for
+a rare rule case.
 
 ## Benchmark Data Layers
 

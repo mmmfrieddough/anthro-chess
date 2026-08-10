@@ -47,6 +47,14 @@ from anthro_chess.evaluation.results.noise import (
 #: further resamples buy precision nothing downstream reads.
 DEFAULT_RESAMPLES = 1000
 
+#: How small a spread has to be, against the value it describes, to be the
+#: division's rounding rather than the draw. A resample of games that all agree
+#: recomputes one quotient from differently-rounded sums, so it lands within a
+#: few ulp of itself rather than on itself — measured at 5e-16 relative across
+#: agreeing draws, and a real spread is several percent. Anywhere between is
+#: unoccupied, so the threshold sits four orders above the noise it excludes.
+_RESAMPLE_ROUNDING = 1e-12
+
 
 class NoiseConfig(ConfigModel):
     """How an evaluation estimates its own data-sampling noise."""
@@ -105,21 +113,21 @@ def bootstrap_dispersions(
     frequently contain none of it, and a floor of zero there would license
     every delta as a finding.
 
-    A metric the draw could not move is omitted on the same ground, and that is
-    read off the resampled values rather than off their standard deviation. The
-    draw observed that it could not move this metric, which is not the same as
-    observing that nothing could: a quantity identical in every game scored
+    A metric the draw could not move is omitted on the same ground, and by a
+    spread negligible against its own value rather than by one of exactly zero.
+    The draw observed that it could not move this metric, which is not the same
+    as observing that nothing could: a quantity identical in every game scored
     reads this way at any sample size, and the wider sample that would move it
-    is the thing nobody has taken. One distinct value says so exactly; the
-    deviation it produces does not, because averaging a thousand copies of an
-    inexact quotient lands beside rather than on it and leaves a spread around
-    1e-17 that no comparison could ever fail to clear.
+    is the thing nobody has taken. Exactly zero is the wrong test for it,
+    because recomputing one quotient from differently-rounded sums lands within
+    a few ulp of itself rather than on itself, and a floor of 1e-16 clears every
+    delta as surely as a floor of nothing.
 
-    So is a metric only one game realized, and by its game count rather than by
-    that test. One game is one replicate and observes no spread for a bound to
-    rest on, while resampling it *does* vary in the last bits — the divided
-    total moves with the multiplicity — so the distinct-value test lets it
-    through.
+    So is a metric only one game realized. Its resample is negligibly spread
+    too, so the test above would reach it, but it is excluded on the count
+    instead: one replicate observes no spread for a bound to rest on, and the
+    degrees of freedom this passes on are only non-zero because that is checked
+    rather than inferred from a threshold.
 
     The **games** are what the dispersion bound's degrees of freedom count, not
     the resamples. A bootstrap draws as many resamples as it is asked for, but
@@ -175,9 +183,11 @@ def bootstrap_dispersions(
             continue
         values = replicates[:, column]
         observed = values[np.isfinite(values)]
-        if np.unique(observed).size < 2:
+        if observed.size < 2:
             continue
         dispersion = float(np.std(observed, ddof=1))
+        if dispersion <= abs(float(np.mean(observed))) * _RESAMPLE_ROUNDING:
+            continue
         dispersions[series_fingerprint(metric, component, workload)] = (
             measured_dispersion(
                 dispersion,

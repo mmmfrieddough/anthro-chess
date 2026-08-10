@@ -2991,8 +2991,6 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
 
 
 def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
-    import math
-
     from anthro_chess.evaluation.results import (
         MetricRegistryError,
         NoiseCharacterizationError,
@@ -3032,10 +3030,12 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         # `required` counts games realizing the metric, so a pool has to be
         # larger by whatever rate it realizes them at. Identical for a metric
         # every game realizes, and an order of magnitude for a rare rule case.
+        # Rounded up in integers: a tiny effect drives `required` past what a
+        # float can divide.
         pool = (
             None
             if dataset is None or spread.units is None
-            else max(1, math.ceil(required * dataset.selected_games / spread.units))
+            else (required * dataset.selected_games + spread.units - 1) // spread.units
         )
     except (
         MetricRegistryError,
@@ -3053,7 +3053,7 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
                     "effect": arguments.effect,
                     "required_realizing_games": required,
                     "required_pool_games": pool,
-                    "measured_games": spread.units,
+                    "measured_realizing_games": spread.units,
                     "measured_floor": floor,
                     "source": spread.source,
                 },
@@ -3067,7 +3067,10 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         f"{required} game(s) realizing it"
         + ("." if pool is None else f", or about {pool} pool game(s).")
     )
-    print(f"Measured floor {floor:.6g} over {spread.units} game(s) ({spread.source}).")
+    print(
+        f"Measured floor {floor:.6g} over {spread.units} realizing game(s) "
+        f"({spread.source})."
+    )
     return 0
 
 

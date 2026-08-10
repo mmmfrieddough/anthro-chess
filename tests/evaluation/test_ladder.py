@@ -36,6 +36,7 @@ from anthro_chess.evaluation.ladder import (
     LadderSeat,
     SeatConditioning,
     SeatKey,
+    _resolution,
     fit_ratings,
     seat_keys,
 )
@@ -931,6 +932,58 @@ def test_a_seat_rate_is_bounded_for_its_own_games_rather_than_the_grid_s() -> No
     assert rating.bound == pytest.approx(
         dispersion_bound(rating.value, degrees_of_freedom=resolution.redrawn_games - 1)
     )
+
+
+def test_a_seat_whose_own_games_barely_redraw_is_named_rather_than_bounded() -> None:
+    """A grid can be thick enough to resolve while one seat in it is not.
+
+    Two greedy seats replay their pairing, so the games one of them takes into
+    the redraw are only the single game it played against the warm seat. The
+    grid's twenty-one are no evidence about that seat's own rate.
+
+    Such a seat is withheld either way — one redrawn game is one outcome, so
+    the refit reproduces its rate and the spread reads as zero. What the count
+    buys is the reading saying which of the two it is: a sample too thin to
+    bound, rather than a quantity the redraw could not move.
+    """
+
+    greedy = SeatKey(SeatConditioning.CONDITIONED, 1200, 0.0)
+    replayed_against = SeatKey(SeatConditioning.CONDITIONED, 1600, 0.0)
+    warm = SeatKey(SeatConditioning.CONDITIONED, 2000, 1.0)
+    seats = (greedy, replayed_against, warm)
+    pairings = (
+        LadderPairing(
+            first=greedy,
+            second=replayed_against,
+            first_wins=10,
+            draws=0,
+            first_losses=10,
+        ),
+        LadderPairing(first=greedy, second=warm, first_wins=1, draws=0, first_losses=0),
+        LadderPairing(
+            first=replayed_against, second=warm, first_wins=10, draws=0, first_losses=10
+        ),
+    )
+    fit = fit_ratings(
+        seats,
+        pairings,
+        anchor_seats=seats,
+        anchor_rating=1500.0,
+        maximum_spread=800.0,
+    )
+
+    resolution = _resolution(
+        _config().value, seats, pairings, fit, {}, device=torch.device("cpu")
+    )
+
+    assert resolution is not None
+    assert resolution.redrawn_games == 21
+    rate = (greedy.label, LADDER_SCORE_RATE.identifier)
+    assert rate not in resolution.dispersions
+    assert "fewer than two of this seat's games" in resolution.unqualifiable[rate]
+    # The seats the redraw does reach keep their bounds; one thin seat does not
+    # withdraw the reading.
+    assert (warm.label, LADDER_SCORE_RATE.identifier) in resolution.dispersions
 
 
 def test_a_thicker_sample_resolves_a_ladder_more_finely() -> None:
