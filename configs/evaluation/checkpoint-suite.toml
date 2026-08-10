@@ -149,19 +149,21 @@ reduced = [
 ]
 
 [benchmarks.ladder]
-# Full sweeps only, and this is the one step with no affordable reduction.
+# The only head-to-head strength reading, and by a wide margin the most
+# expensive step at either scale.
 #
 # Its cost is quadratic in its seat count, and the seat count is the
 # measurement, so the seat grid is not a dial: a ladder fitted on a different
 # set of seats cannot be read against this one at all, since the fit places
 # every seat on one internal scale. Seeds and openings are the only sample
-# sizes it has, and driving both to their floor still leaves every pairing
-# playing one opening from each side — over two hundred generated games.
+# sizes it has, and both are below.
 #
-# Whether that belongs in a sweep meant to run on every new checkpoint is a
-# cost question, and the seconds-a-game figure this exclusion used to answer it
-# with predated the generated-game fix and was thirty-eight times the real one.
-# It is not restated here; time the ladder before relying on the exclusion.
+# The reduction is deliberately at the thin end, and it is the one reduction in
+# this file whose reading is not yet known to resolve anything: at eight games a
+# pairing the widths #328 measured cover their own estimates. It is shipped
+# qualified rather than withheld — decision 0034 puts a floor beside every
+# ladder quantity, so a reading that cannot discriminate says so — and
+# `docs/decisions/0050-every-suite-step-declares-both-scales.md` owns why that
+# is preferred to a reduced sweep with no strength reading in it at all.
 config = "configs/evaluation/rating-ladder.toml"
-scales = ["full"]
 reduced = ["grid.seeds=[0]", "openings.view.maximum_games=4"]

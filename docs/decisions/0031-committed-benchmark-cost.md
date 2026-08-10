@@ -4,8 +4,10 @@ Date: 2026-08-03
 
 ## Status
 
-Accepted. Extends `0018-workload-scoped-efficiency-series.md`, and refined by
-`0048-a-pinned-pool-generation-is-not-a-cost-workload.md`.
+Accepted. Extends `0018-workload-scoped-efficiency-series.md`, refined by
+`0048-a-pinned-pool-generation-is-not-a-cost-workload.md`, and
+`0050-every-suite-step-declares-both-scales.md` re-argues the one
+scope decision the figures deleted here were still holding up.
 
 ## Context
 

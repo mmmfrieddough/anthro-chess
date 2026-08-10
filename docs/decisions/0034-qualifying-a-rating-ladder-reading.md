@@ -13,6 +13,8 @@ under it,
 whole between-opening consequence below, having measured that spread at nothing,
 and `0042-the-puzzle-response-is-qualified-within-its-reading.md` answers its
 zero-spread question for one more family.
+`0050-every-suite-step-declares-both-scales.md` rests on the
+resolution this establishes to decide which sweeps the ladder belongs to.
 
 ## Context
 

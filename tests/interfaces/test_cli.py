@@ -1763,9 +1763,6 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
     # Decision decomposition reads the games the rollout played, so it can
     # never be planned ahead of it.
     assert names.index("decisions") > names.index("rollout")
-    # The ladder sits out the reduced sweep: its cost is a seat grid rather
-    # than a sample size, so it has no reduction that is both honest and
-    # affordable. Every other benchmark is here.
     assert set(names) == {
         "inference",
         "run",
@@ -1774,6 +1771,7 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
         "rollout",
         "decisions",
         "termination",
+        "ladder",
     }
     decisions = next(step for step in plan["steps"] if step["benchmark"] == "decisions")
     assert decisions["record"] is False
@@ -1808,10 +1806,10 @@ def test_eval_suite_full_scale_is_opt_in(
     full_run = next(s for s in full["steps"] if s["benchmark"] == "run")
     assert "view.maximum_games=400" in reduced_run["overrides"]
     assert full_run["overrides"] == []
-    # The full sweep also carries the steps that have no honest reduction.
+    # The two scales differ by what each step reads, not by which steps run.
     reduced_names = {step["benchmark"] for step in reduced["steps"]}
     full_names = {step["benchmark"] for step in full["steps"]}
-    assert reduced_names < full_names
+    assert reduced_names == full_names
     # Two scales are two series, so a resume can never cross between them.
     assert reduced["plan_sha256"] != full["plan_sha256"]
 
@@ -1885,33 +1883,39 @@ def test_eval_suite_needs_somewhere_to_keep_its_ledger(
     assert "--sweep-root" in capsys.readouterr().err
 
 
-def test_eval_suite_runs_the_ladder_only_at_full_scale(
+def test_eval_suite_shrinks_the_ladder_rather_than_dropping_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Measured at roughly four hours reduced, it is a full-sweep step."""
+    """The reduction is reached at one scale and absent at the other.
+
+    Against the shipped selection rather than a fixture, because the state this
+    pins against is a `reduced` list beside a `scales` that drops the step: the
+    overrides then reach no schema at either scale and nothing finds them wrong.
+    """
 
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+    arguments = [
+        "eval",
+        "suite",
+        "--config",
+        "configs/evaluation/checkpoint-suite.toml",
+        "--plan",
+        "--format",
+        "json",
+    ]
 
-    assert (
-        main(
-            [
-                "eval",
-                "suite",
-                "--config",
-                "configs/evaluation/checkpoint-suite.toml",
-                "--plan",
-                "--full",
-                "--format",
-                "json",
-            ]
-        )
-        == 0
-    )
+    assert main(arguments) == 0
+    reduced = json.loads(capsys.readouterr().out)
+    assert main([*arguments, "--full"]) == 0
+    full = json.loads(capsys.readouterr().out)
 
-    plan = json.loads(capsys.readouterr().out)
-    assert "ladder" in {step["benchmark"] for step in plan["steps"]}
+    reduced_ladder = next(s for s in reduced["steps"] if s["benchmark"] == "ladder")
+    full_ladder = next(s for s in full["steps"] if s["benchmark"] == "ladder")
+    assert "grid.seeds=[0]" in reduced_ladder["overrides"]
+    assert "openings.view.maximum_games=4" in reduced_ladder["overrides"]
+    assert full_ladder["overrides"] == []
 
 
 def _retained_run(
