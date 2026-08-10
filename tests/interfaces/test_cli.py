@@ -106,6 +106,7 @@ def test_data_prepare_decodes_on_the_workers_it_is_given(
         _resolved: object,
         *,
         workers: int,
+        counts_path: Path | None,
     ) -> PreparationResult:
         requested.append(workers)
         return PreparationResult(
@@ -595,7 +596,7 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     repository_root = Path(__file__).parents[2]
     config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
     data_root = tmp_path / "datasets"
-    captured_paths: list[tuple[Path, Path]] = []
+    captured_paths: list[tuple[Path, Path, Path | None]] = []
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
 
     def fake_prepare(
@@ -604,8 +605,9 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         _resolved: object,
         *,
         workers: int,
+        counts_path: Path | None,
     ) -> PreparationResult:
-        captured_paths.append((input_path, output))
+        captured_paths.append((input_path, output, counts_path))
         return PreparationResult(
             normalized_paths=(output / "normalized/games-0.parquet",),
             manifest_path=output / "manifests/manifest.json",
@@ -630,11 +632,15 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         )
         == 0
     )
+    # The corpus is named for this run; the archive and the account counts it
+    # leaves behind belong to the archive, which selections share.
     assert captured_paths == [
         (
             data_root / "lichess-blitz-2017-04/raw/"
             "lichess_db_standard_rated_2017-04.pgn.zst",
             data_root / "proof-slice",
+            data_root / "lichess-blitz-2017-04/census/"
+            "lichess_db_standard_rated_2017-04.pgn.zst.accounts.tsv",
         )
     ]
 

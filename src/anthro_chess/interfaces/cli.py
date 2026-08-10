@@ -1124,6 +1124,7 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             output,
             resolved,
             workers=_prepare_workers(arguments.workers),
+            counts_path=_archive_counts_path(resolved, input_path, arguments.output),
         )
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
@@ -3521,11 +3522,7 @@ def _pinned_archives(
 ) -> list[PinnedArchive]:
     """Return where each pinned archive was acquired to and its account counts."""
 
-    from anthro_chess.data.census import (
-        ACCOUNT_GAMES_SUFFIX,
-        CENSUS_DIRECTORY,
-        PinnedArchive,
-    )
+    from anthro_chess.data.census import PinnedArchive
 
     archives = []
     for archive in resolved.value.archives:
@@ -3533,15 +3530,36 @@ def _pinned_archives(
         archives.append(
             PinnedArchive(
                 path=root / "raw" / archive.file_name,
-                counts_path=(
-                    root
-                    / CENSUS_DIRECTORY
-                    / f"{archive.file_name}{ACCOUNT_GAMES_SUFFIX}"
-                ),
+                counts_path=_counts_path(root, archive.file_name),
                 sha256=archive.sha256,
             )
         )
     return archives
+
+
+def _counts_path(artifact_root: Path, file_name: str) -> Path:
+    from anthro_chess.data.census import ACCOUNT_GAMES_SUFFIX, CENSUS_DIRECTORY
+
+    return artifact_root / CENSUS_DIRECTORY / f"{file_name}{ACCOUNT_GAMES_SUFFIX}"
+
+
+def _archive_counts_path(
+    resolved: ResolvedConfig[PrepareConfig],
+    input_path: Path,
+    artifact_root: Path | None,
+) -> Path | None:
+    """Return where preparing this input leaves the census its account counts.
+
+    An input that is not one of the selection's acquired archives leaves none.
+    The census asks about the accounts of archives a corpus is built from, and
+    a PGN handed to `--input` from anywhere on the machine is not one of those.
+    """
+
+    for archive in resolved.value.archives:
+        root = _archive_artifact_root(resolved, archive, artifact_root)
+        if root / "raw" / archive.file_name == input_path:
+            return _counts_path(root, archive.file_name)
+    return None
 
 
 def _census_answers_path(resolved: ResolvedConfig[PrepareConfig]) -> Path:

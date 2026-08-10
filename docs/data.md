@@ -33,6 +33,7 @@ The intended pipeline has three broad data layers:
 
 ```text
 raw/          downloaded source archives, unchanged where practical
+census/       per-archive account counts the account census orders its queue by
 normalized/   source-agnostic game records in compact shards
 training/     optional packed shards optimized for dataloading
 manifests/    source, schema, checksum, split, and sampling metadata
@@ -41,6 +42,11 @@ manifests/    source, schema, checksum, split, and sampling metadata
 Raw data may include compressed PGN archives, API JSON, source index files, and
 other source-native artifacts. Raw files are useful for reproducibility but are
 allowed to be treated as rebuildable cache when local storage is constrained.
+
+Whatever a raw archive is the only source of has to be taken while it is there.
+Account names are the case that arises: the census asks the source about them
+and the normalized corpus keeps digests, so preparation writes the counts as it
+reads rather than leaving a second pass to be run before the archive can go.
 
 Normalized data should be the durable local corpus. It should contain generic
 fields and compact encodings, not source-specific PGN text.

@@ -18,6 +18,12 @@ Everything this writes lives beneath the data root rather than in the
 repository. The first census checkpointed itself beside its snapshot at a
 gitignored path, and ``git worktree remove`` deletes ignored files, which is
 how it was lost.
+
+The counts an archive contributes are written by whichever pass reads it —
+usually preparation, which is already reading every line — so the archive can be
+reclaimed as soon as it is prepared. A counts file always speaks for a whole
+archive: preparation writes one only when it reached the end, and
+:func:`count_archive_accounts` is here for the archives that leaves.
 """
 
 from __future__ import annotations
@@ -124,26 +130,45 @@ def source_token() -> str | None:
     return os.environ.get(LICHESS_TOKEN_VARIABLE, "").strip() or None
 
 
+class ArchiveAccountCounter:
+    """Counts an account's games from the PGN lines it is shown.
+
+    Preparation and a census pass both have every line of an archive in hand
+    already, so both count through this rather than either parsing player names
+    its own way: two producers of one counts file have to agree exactly.
+
+    Names are folded to the source's account identity, because a PGN prints
+    whatever capitalization the player typed and one account must not reach the
+    queue twice.
+    """
+
+    def __init__(self) -> None:
+        self.games_by_account: dict[str, int] = {}
+
+    def observe(self, line: str) -> None:
+        """Count one PGN line, which is a player tag or nothing of interest."""
+
+        if line.startswith(_PLAYER_TAGS):
+            name = line[_PLAYER_TAG_LENGTH:].partition('"')[0].strip().casefold()
+            if name:
+                self.games_by_account[name] = self.games_by_account.get(name, 0) + 1
+
+
 def count_archive_accounts(archive_path: Path) -> dict[str, int]:
     """Return how many games each account appears in, across a whole archive.
 
     The whole archive is counted rather than the games a selection would
     accept, so raising a game bound or widening to another speed within a
-    counted archive needs no new pass.
-
-    Names are folded to the source's account identity, because a PGN prints
-    whatever capitalization the player typed and the same account must not
-    reach the queue twice.
+    counted archive needs no new pass. Preparation writes the same counts as a
+    by-product when it reads an archive to the end; this is for an archive
+    nothing has prepared.
     """
 
-    games_by_account: dict[str, int] = {}
+    counter = ArchiveAccountCounter()
     with open_pgn_text(archive_path) as pgn_file:
         for line in pgn_file:
-            if line.startswith(_PLAYER_TAGS):
-                name = line[_PLAYER_TAG_LENGTH:].partition('"')[0].strip().casefold()
-                if name:
-                    games_by_account[name] = games_by_account.get(name, 0) + 1
-    return games_by_account
+            counter.observe(line)
+    return counter.games_by_account
 
 
 def write_account_games(path: Path, counted: ArchiveAccounts) -> None:

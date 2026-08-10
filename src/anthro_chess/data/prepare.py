@@ -49,6 +49,11 @@ from anthro_chess.data.artifacts import (
     write_normalized_rows,
     write_text_atomically,
 )
+from anthro_chess.data.census import (
+    ArchiveAccountCounter,
+    ArchiveAccounts,
+    write_account_games,
+)
 from anthro_chess.data.config import ArchiveConfig, PrepareConfig, SplitConfig
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
@@ -302,6 +307,7 @@ def prepare_pgn(
     resolved_config: ResolvedConfig[PrepareConfig],
     *,
     workers: int = 0,
+    counts_path: Path | None = None,
 ) -> PreparationResult:
     """Append one PGN archive to the corpus beneath an output directory.
 
@@ -318,6 +324,12 @@ def prepare_pgn(
     ``workers`` decodes games on that many processes, and none of it reaches
     what is written: the artifact of a run on thirty processes is the artifact
     of a run on none, byte for byte.
+
+    ``counts_path`` is where this pass leaves the account census its per-archive
+    counts. Producing them here is what lets an archive be deleted as soon as it
+    is prepared: the census orders its queue by games played, and reading that
+    from the pass the archive is already getting costs a comparison per line
+    rather than a second pass over hundreds of gigabytes.
     """
     source_path = Path(input_path)
     output_path = Path(output_directory)
@@ -391,12 +403,13 @@ def prepare_pgn(
     output_shards: list[dict[str, object]] = []
     accepted_games = 0
     stopped_at_limit = False
+    counter = ArchiveAccountCounter()
 
     try:
         with (
             open_pgn_text(source_path) as pgn_file,
             closing(
-                _decoded_games(pgn_file, config, marked_accounts, workers)
+                _decoded_games(pgn_file, config, marked_accounts, workers, counter)
             ) as decoded,
         ):
             for parsed in decoded:
@@ -511,6 +524,19 @@ def prepare_pgn(
         logger.warning(
             "Archive %s contributed no games and is recorded as an empty append",
             source_path.name,
+        )
+    if counts_path is not None and not stopped_at_limit:
+        # Only a pass that reached the end of the archive counted all of it, and
+        # a counts file that spoke for part of one would understate the census's
+        # population while reading as though it covered the archive. A pass the
+        # corpus bound cut short leaves the counting to the census, which needs
+        # the archive back to do it.
+        write_account_games(
+            counts_path,
+            ArchiveAccounts(
+                archive_sha256=input_sha256,
+                games_by_account=counter.games_by_account,
+            ),
         )
 
     _flush_records(
@@ -820,25 +846,43 @@ def _decode_stream(
         yield parsed
 
 
-class _CapturingReader:
-    """Hand ``read_game`` its lines while keeping the ones it consumed.
+class _ScanningReader:
+    """Hand ``read_game`` its lines, counting accounts as they go past.
 
     ``read_game`` touches the handle only through ``readline``, which is what
     lets this stand in for the ``TextIO`` it is cast to.
+
+    Counting here is what lets an archive be reclaimed the moment it has been
+    prepared: the account census orders its queue by games played, and this
+    pass already holds every line it would otherwise reopen the archive to
+    read.
+
+    ``lines`` is kept only for a caller that frames games out of them, since a
+    pass that never clears it would hold the whole archive in memory.
     """
 
-    def __init__(self, handle: TextIO) -> None:
+    def __init__(
+        self,
+        handle: TextIO,
+        counter: ArchiveAccountCounter,
+        *,
+        capture: bool,
+    ) -> None:
         self._handle = handle
+        self._counter = counter
+        self._capture = capture
         self.lines: list[str] = []
 
     def readline(self) -> str:
         line = self._handle.readline()
         if line:
-            self.lines.append(line)
+            self._counter.observe(line)
+            if self._capture:
+                self.lines.append(line)
         return line
 
 
-def _framed_games(pgn_file: TextIO) -> Iterator[str]:
+def _framed_games(pgn_file: TextIO, counter: ArchiveAccountCounter) -> Iterator[str]:
     """Yield each game's raw text, framed but not parsed.
 
     Deciding where one game ends is the part that cannot be divided, so it runs
@@ -848,7 +892,7 @@ def _framed_games(pgn_file: TextIO) -> Iterator[str]:
     full of workers.
     """
 
-    reader = _CapturingReader(pgn_file)
+    reader = _ScanningReader(pgn_file, counter, capture=True)
     while True:
         reader.lines = []
         framed = chess.pgn.read_game(
@@ -860,8 +904,10 @@ def _framed_games(pgn_file: TextIO) -> Iterator[str]:
         yield "".join(reader.lines)
 
 
-def _read_game_batches(pgn_file: TextIO) -> Iterator[str]:
-    games = _framed_games(pgn_file)
+def _read_game_batches(
+    pgn_file: TextIO, counter: ArchiveAccountCounter
+) -> Iterator[str]:
+    games = _framed_games(pgn_file, counter)
     while batch := list(islice(games, _GAMES_PER_JOB)):
         yield "".join(batch)
 
@@ -897,6 +943,7 @@ def _decoded_games(
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
     workers: int,
+    counter: ArchiveAccountCounter,
 ) -> Generator[_ParsedGame, None, None]:
     """Yield every game's decode in source order, across ``workers`` processes.
 
@@ -906,10 +953,11 @@ def _decoded_games(
     """
 
     if workers < 1:
-        yield from _decode_stream(pgn_file, config, marked_accounts)
+        reader = cast(TextIO, _ScanningReader(pgn_file, counter, capture=False))
+        yield from _decode_stream(reader, config, marked_accounts)
         return
 
-    batches = _read_game_batches(pgn_file)
+    batches = _read_game_batches(pgn_file, counter)
     pool = ProcessPoolExecutor(
         max_workers=workers,
         initializer=_start_worker,

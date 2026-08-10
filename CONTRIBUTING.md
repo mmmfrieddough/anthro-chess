@@ -174,10 +174,11 @@ deleted it. Each archive's account counts sit beside that archive; the answers
 sit under the source rather than the selection, so a second selection over the
 same source inherits them instead of spending the same rate limit twice.
 
-An archive is read once, to count it. Its counts outlive it, so a raw archive
-can be reclaimed once it has been counted and prepared and the census carries on
-asking about its accounts — only a first count, or one invalidated by re-pinning
-the archive, needs the file back.
+Preparation writes those counts as it reads, so an archive can be reclaimed as
+soon as it has been prepared and the census carries on asking about its
+accounts. `anthro data census` counts an archive nothing has prepared, and an
+archive whose preparation stopped at `filters.maximum_games` before the end —
+those are the only two cases that need the file back.
 
 Set `LICHESS_TOKEN` to a personal access token to double the day's allowance:
 the limit is per address and charges an authenticated caller half. The endpoint

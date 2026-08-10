@@ -1383,12 +1383,74 @@ carrying a blank line } e5 2. Qh5 Nc6 3. Qxf7# 1-0
 1. f3 e5 2. g4 Qh4# 0-1"""
 
 
+@pytest.mark.parametrize("workers", [0, 2])
+def test_counts_the_accounts_the_census_orders_by_while_it_reads(
+    tmp_path: Path,
+    workers: int,
+) -> None:
+    """Whichever pass counts an archive has to produce the same counts."""
+
+    from anthro_chess.data.census import count_archive_accounts, read_account_games
+
+    input_path = tmp_path / "counted.pgn"
+    input_path.write_text(
+        _short_game(site="one", white="Busy", black="Quiet")
+        + _short_game(site="two", white="BUSY", black="Middling")
+        # A game preparation rejects still holds accounts the corpus's archive
+        # holds, so the census asks about them too.
+        + _short_game(site="three", white="Busy", black="Botted", event="Casual game"),
+        encoding="utf-8",
+    )
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+    counts_path = tmp_path / "census/counted.pgn.accounts.tsv"
+
+    prepare_pgn(
+        input_path,
+        tmp_path / "artifacts",
+        resolved,
+        workers=workers,
+        counts_path=counts_path,
+    )
+
+    counted = read_account_games(counts_path)
+    assert counted.archive_sha256 == _sha256(input_path)
+    assert counted.games_by_account == {
+        "busy": 3,
+        "quiet": 1,
+        "middling": 1,
+        "botted": 1,
+    }
+    assert counted.games_by_account == count_archive_accounts(input_path)
+
+
+def test_leaves_no_counts_for_an_archive_the_game_bound_cut_short(
+    tmp_path: Path,
+) -> None:
+    """Counts that spoke for part of an archive would read as the whole of it."""
+
+    input_path = tmp_path / "bounded.pgn"
+    input_path.write_text(
+        _short_game(site="one") + _short_game(site="two"), encoding="utf-8"
+    )
+    resolved = load_config(
+        PrepareConfig, path=SAMPLE_CONFIG, overrides=("filters.maximum_games=1",)
+    )
+    counts_path = tmp_path / "census/bounded.pgn.accounts.tsv"
+
+    prepare_pgn(input_path, tmp_path / "artifacts", resolved, counts_path=counts_path)
+
+    assert not counts_path.exists()
+
+
 def test_framing_splits_the_stream_where_the_parser_ends_a_game() -> None:
     """A framed game reparses into the game reading the whole stream gives."""
 
+    from anthro_chess.data.census import ArchiveAccountCounter
     from anthro_chess.data.prepare import _framed_games
 
-    framed = list(_framed_games(StringIO(_AWKWARDLY_FRAMED_PGN)))
+    framed = list(
+        _framed_games(StringIO(_AWKWARDLY_FRAMED_PGN), ArchiveAccountCounter())
+    )
     streamed = StringIO(_AWKWARDLY_FRAMED_PGN)
 
     assert "".join(framed) == _AWKWARDLY_FRAMED_PGN
