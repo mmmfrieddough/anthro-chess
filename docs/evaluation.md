@@ -534,6 +534,19 @@ inside one process share a warm allocator and a compiled kernel, so the
 `docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
 counting either of the cheap numbers would buy.
 
+Which games those are is a per-metric question. A sliced metric — a rule case,
+an opening tier, a rating band — is realized in a fraction of the games a pass
+scored, and only those carry evidence about how far it moves. Each metric's
+spread is bounded for the games that realized it and records that count, so a
+rare slice reads as the thin estimate it is rather than borrowing the whole
+pass's confidence. A metric only one game realized reports no spread at all,
+since one replicate observes none.
+
+The ladder's refit answers the same question about its own quantities. A seat's
+score rate counts the games that seat played; its fitted rating counts every
+redrawn game in the grid, because the fit that produces a rating is joint and
+every game anywhere in it moves every rating.
+
 The bound is severe at small replicate counts, which is what the replicate
 defaults are chosen against. Resting a floor on two bounds rather than one does
 not weaken the confidence either carries: the floor needs only their combination
@@ -619,6 +632,14 @@ so how many games an axis needs in order to resolve an effect of a given size is
 computable rather than guessed, and `anthro eval noise plan` computes it from the
 newest reading that measured its own spread over a counted sample. No
 benchmark-level resolution constant is declared or kept current for it.
+
+The answer is in the same units the spread was read over, so for a sliced metric
+it counts games that realize the slice rather than games in the pool. The
+command reports both, converting through the rate the reading itself observed —
+an identity where every game realizes the metric, and an order of magnitude for
+a rare rule case. A reading recorded before that count became per-metric is
+refused rather than converted, because its count answers the other question and
+nothing on the record distinguishes the two.
 
 ## Benchmark Data Layers
 

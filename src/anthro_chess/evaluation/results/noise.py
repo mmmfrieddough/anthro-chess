@@ -341,6 +341,10 @@ def games_to_resolve(dispersion: MetricDispersion, *, effect: float) -> int:
     so the count an axis needs is computable from one reading rather than
     guessed. This is what sizes a pool generation.
 
+    The count is in the games the dispersion was read over, which for a sliced
+    metric are the ones that realized the slice rather than games in the pool;
+    converting to a pool size takes a realization rate nothing here applies.
+
     The floor it extrapolates from is the one a delta against a reading like
     this one would face, since that is the comparison a larger pool is being cut
     for.
