@@ -358,7 +358,13 @@ def append_answers(path: Path, answers: Mapping[str, bool], queried_at: str) -> 
 
 
 def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
-    """Return the shortest pause between batches the burst allowance sustains."""
+    """Return the shortest pause between batches the burst allowance sustains.
+
+    Only the burst bucket is paced against. The daily one is spent as fast as
+    the burst bucket allows, which is why a run ends either at the budget
+    :func:`daily_account_allowance` predicts or at the refusal that proves the
+    prediction was optimistic.
+    """
 
     return (
         _BURST_WINDOW_SECONDS
