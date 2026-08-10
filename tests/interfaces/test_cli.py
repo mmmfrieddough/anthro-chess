@@ -77,10 +77,33 @@ def test_data_prepare_command_routes_to_importable_pipeline(
         == 0
     )
 
-    assert pq.read_table(output / "normalized/games.parquet").num_rows == 1
+    (shard,) = (output / "normalized").glob("games-*.parquet")
+    assert pq.read_table(shard).num_rows == 1
     command_output = capsys.readouterr().out
     assert "Prepared 1 game(s); rejected 0." in command_output
+    assert "Corpus: 1 game(s) from 1 archive(s)." in command_output
     assert "manifests/manifest.json" in command_output
+
+
+def test_data_prepare_reports_an_archive_the_corpus_already_holds(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Re-running the command over a prepared archive says so and adds nothing."""
+
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    config = repository_root / "configs/data/lichess-sample.toml"
+    output = tmp_path / "artifacts"
+    command = ["data", "prepare", str(sample), str(output), "--config", str(config)]
+    assert main(command) == 0
+    capsys.readouterr()
+
+    assert main(command) == 0
+
+    command_output = capsys.readouterr().out
+    assert "Archive already in this corpus, contributing 1 game(s)." in command_output
+    assert "Corpus: 1 game(s) from 1 archive(s)." in command_output
 
 
 def test_eval_freeze_command_routes_to_importable_pool_builder(
@@ -200,7 +223,8 @@ def test_data_prepare_uses_data_root_when_output_is_omitted(
     assert main(["data", "prepare", str(sample), "--config", str(config)]) == 0
 
     output = data_root / "lichess-sample"
-    assert pq.read_table(output / "normalized/games.parquet").num_rows == 1
+    (shard,) = (output / "normalized").glob("games-*.parquet")
+    assert pq.read_table(shard).num_rows == 1
     assert "Prepared 1 game(s); rejected 0." in capsys.readouterr().out
 
 
@@ -328,11 +352,12 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     ) -> PreparationResult:
         captured_paths.append((input_path, output))
         return PreparationResult(
-            normalized_paths=(output / "normalized/games.parquet",),
+            normalized_paths=(output / "normalized/games-0.parquet",),
             manifest_path=output / "manifests/manifest.json",
             accepted_games=1,
             rejected_games=0,
             split_counts={"train": 1, "validation": 0},
+            corpus_archives=1,
         )
 
     monkeypatch.setattr("anthro_chess.data.prepare_pgn", fake_prepare)

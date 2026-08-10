@@ -114,6 +114,8 @@ as an out-of-distribution check outside the core than inside it.
 ## References
 
 - `#89`, the breadth pass this supplies
+- `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`, which
+  says how one corpus is built from these 51 archives
 - `docs/data.md` (Corpus Expansion, Primary Source)
 - `docs/decisions/0011-held-out-test-partition.md`
 - `docs/decisions/0013-benchmark-result-comparability.md`

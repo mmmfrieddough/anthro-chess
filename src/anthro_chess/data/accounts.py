@@ -119,8 +119,10 @@ class MarkedAccounts:
     would have to keep every earlier verdict verbatim and ask only about
     genuinely new accounts, since re-deciding a covered account applies a later
     moderation decision retroactively and drops games an earlier pool
-    generation contains. Nothing prepares from two archives yet, so that
-    belongs with whatever does.
+    generation contains. Preparation appends one archive at a time, so a corpus
+    spanning archives cannot set ``filters.marked_accounts`` at all until a
+    snapshot can speak for more than one: ``require_archive`` refuses the second
+    archive rather than preparing it unfiltered.
     """
 
     covers_archive: str

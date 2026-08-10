@@ -240,7 +240,7 @@ def _freeze_pool(
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": sha256(manifest_bytes).hexdigest(),
             "source": source_manifest.get("source"),
-            "input": source_manifest.get("input"),
+            "inputs": source_manifest.get("inputs"),
             "split": source_manifest.get("split"),
             "selection": source_manifest.get("selection"),
         },
