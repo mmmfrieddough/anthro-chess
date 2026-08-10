@@ -146,6 +146,24 @@ artifact directory or preparing into another one.
 
 See `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`.
 
+### Preparing At Corpus Scale
+
+Preparation decodes games on a pool of processes. One reader walks the
+decompressed stream and decides where each game ends, and workers do the
+parsing, replay, encoding and classification that dominates the cost. The
+reader consumes their results in source order, so acceptance, duplicate
+rejection, the accepted-game bound and shard boundaries see the same sequence
+whatever the pool size.
+
+Worker count is therefore a statement about the machine and not about the
+corpus. It is a `--workers` argument to `anthro data prepare` rather than a
+field of the selection, it is absent from the manifest, and a run on a full
+machine writes the same bytes a single-process run writes over the same input.
+A corpus may be built across machines that afford different numbers of them.
+
+See `docs/decisions/0049-one-reader-frames-a-pool-decodes.md` for the measured
+rates and where the scaling stops.
+
 ## Splits
 
 Normalized games are partitioned three ways. `train` and `validation` behave as
