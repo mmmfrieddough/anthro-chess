@@ -889,19 +889,23 @@ def test_reads_a_bzip2_archive_the_universal_export_publishes(tmp_path: Path) ->
     assert result.accepted_games == 1
 
 
-def _monthly_archives(tmp_path: Path, *, games_each: int = 4) -> tuple[Path, Path]:
+#: Games in each archive :func:`_monthly_archives` writes. Several tests count
+#: against it, as a corpus total and as a bound one archive exactly fills.
+_GAMES_PER_ARCHIVE = 4
+
+
+def _monthly_archives(tmp_path: Path) -> tuple[Path, Path]:
     """Write two archives that stand in for two months of one source."""
 
     paths = []
     for month in ("2017-04", "2017-05"):
         path = tmp_path / f"games-{month}.pgn.zst"
         games = "".join(
-            _short_game(site=f"{month}-{index}") for index in range(games_each)
+            _short_game(site=f"{month}-{index}") for index in range(_GAMES_PER_ARCHIVE)
         )
         path.write_bytes(zstandard.ZstdCompressor().compress(games.encode()))
         paths.append(path)
-    first, second = paths
-    return first, second
+    return paths[0], paths[1]
 
 
 def _selection_over(tmp_path: Path, *archives: Path) -> Path:
@@ -979,6 +983,34 @@ def test_appends_a_second_archive_to_the_corpus_the_first_built(
     assert manifest["games"]["scanned"] == 8
     assert sum(appended.split_counts.values()) == manifest["games"]["accepted"]
     assert appended.accepted_games == 4
+
+
+def test_the_corpus_blocks_report_every_field_the_archive_ones_do(
+    tmp_path: Path,
+) -> None:
+    """A field added to one and not the other would go silently missing."""
+
+    first, _ = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first))
+
+    result = prepare_pgn(first, tmp_path / "artifacts", resolved)
+
+    manifest = _read_json(result.manifest_path)
+    (entry,) = manifest["inputs"]
+    for block in ("games", "coverage"):
+        assert _shape_of(manifest[block]) == _shape_of(entry[block]), block
+    # With one archive in, the roll-up is that archive, so the numbers agree too.
+    assert manifest["games"] == entry["games"]
+    assert manifest["coverage"] == entry["coverage"]
+    assert manifest["split"]["counts"] == entry["split_counts"]
+
+
+def _shape_of(block: Any) -> Any:
+    """Return a block's nested key structure, ignoring the values under it."""
+
+    if not isinstance(block, dict):
+        return None
+    return {key: _shape_of(value) for key, value in sorted(block.items())}
 
 
 def test_leaves_an_archive_the_corpus_already_holds_alone(tmp_path: Path) -> None:
@@ -1193,7 +1225,7 @@ def test_refuses_a_corpus_manifest_missing_the_blocks_the_rollup_reads(
     manifest["inputs"][0]["coverage"] = {"clock": {}}
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(DataPreparationError, match="incomplete input or shard record"):
+    with pytest.raises(DataPreparationError, match="input record missing"):
         prepare_pgn(second, output, resolved)
 
 
@@ -1222,17 +1254,15 @@ def test_replaces_the_corpus_manifest_atomically(tmp_path: Path) -> None:
     output = tmp_path / "artifacts"
     prepare_pgn(first, output, resolved)
     written: list[Path] = []
-    real_replace = Path.replace
-
-    def record_replace(self: Path, target: Path) -> Path:
-        written.append(Path(target))
-        return real_replace(self, target)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(Path, "replace", record_replace)
+        patch.setattr(
+            "anthro_chess.data.prepare.write_text_atomically",
+            lambda path, text: written.append(path),
+        )
         result = prepare_pgn(second, output, resolved)
 
-    assert result.manifest_path in written
+    assert written == [result.manifest_path]
 
 
 def test_refuses_a_corpus_prepared_before_a_manifest_could_span_archives(
@@ -1243,12 +1273,11 @@ def test_refuses_a_corpus_prepared_before_a_manifest_could_span_archives(
     first, second = _monthly_archives(tmp_path)
     resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
     output = tmp_path / "artifacts"
-    manifest_path = output / "manifests/manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        json.dumps({"input": {"file_name": first.name, "sha256": _sha256(first)}}),
-        encoding="utf-8",
-    )
+    manifest_path = prepare_pgn(first, output, resolved).manifest_path
+    manifest = _read_json(manifest_path)
+    (entry,) = manifest.pop("inputs")
+    manifest["input"] = {"file_name": entry["file_name"], "sha256": entry["sha256"]}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(DataPreparationError, match="records no per-archive inputs"):
         prepare_pgn(second, output, resolved)

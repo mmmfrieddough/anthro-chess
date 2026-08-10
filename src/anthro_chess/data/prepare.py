@@ -33,6 +33,7 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     open_pgn_text,
+    validate_manifest_compatibility,
     write_normalized_rows,
     write_text_atomically,
 )
@@ -279,18 +280,23 @@ def prepare_pgn(
 
     config = resolved_config.value
     archives = config.archives
+    normalized_directory = output_path / "normalized"
+    manifest_directory = output_path / "manifests"
+    manifest_path = manifest_directory / "manifest.json"
+    # Ahead of digesting the input, which reads a whole archive — tens of
+    # gigabytes at the pinned selection's sizes — so a corpus this selection
+    # cannot append to is refused without that read.
+    corpus = _read_existing_corpus(
+        manifest_path,
+        _selection_identity(_recorded_mapping(resolved_config.as_record()["config"])),
+    )
+
     input_sha256 = file_sha256(source_path)
     if archives and input_sha256 not in {archive.sha256 for archive in archives}:
         raise DataPreparationError(
             f"input archive checksum {input_sha256} matches none of the "
             f"{len(archives)} archive(s) this selection pins"
         )
-
-    normalized_directory = output_path / "normalized"
-    manifest_directory = output_path / "manifests"
-    manifest_path = manifest_directory / "manifest.json"
-    identity = _selection_identity(resolved_config)
-    corpus = _read_existing_corpus(manifest_path, identity)
     prepared_entry = corpus.entry_for(input_sha256)
     if prepared_entry is not None:
         logger.info("Archive %s is already in this corpus", source_path.name)
@@ -589,9 +595,7 @@ def prepare_pgn(
             "counts": observed_split_counts,
         },
         "games": corpus_games,
-        "coverage": _corpus_coverage(
-            inputs, config.termination.abandonment_clock_share
-        ),
+        "coverage": _corpus_coverage(inputs),
         "resolved_config": resolved_config.as_record(),
     }
     # Atomically, because this is the only record of which archives are in and
@@ -618,33 +622,15 @@ def prepare_pgn(
     )
 
 
-def _selection_identity(
-    resolved_config: ResolvedConfig[PrepareConfig],
-) -> dict[str, object]:
-    """Describe everything about a selection that decides what a game becomes."""
+def _selection_identity(config: Mapping[str, Any]) -> dict[str, object]:
+    """Reduce a recorded selection to what decides what a game becomes.
 
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "preprocessing_version": PREPROCESSING_VERSION,
-        "action_vocabulary": action_vocabulary_identity(),
-        **_config_identity(resolved_config.value.model_dump(mode="json")),
-    }
+    Read from the config record rather than from named sections, so that a
+    selection gaining a field or a section fails closed. The data contract —
+    schema, preprocessing and vocabulary versions — is not here because
+    ``validate_manifest_compatibility`` owns it for every consumer.
+    """
 
-
-def _manifest_identity(manifest: Mapping[str, Any]) -> dict[str, object]:
-    """Read back the selection identity a corpus manifest recorded."""
-
-    recorded = manifest.get("resolved_config")
-    config = recorded.get("config") if isinstance(recorded, Mapping) else None
-    return {
-        "schema_version": manifest.get("schema_version"),
-        "preprocessing_version": manifest.get("preprocessing_version"),
-        "action_vocabulary": manifest.get("action_vocabulary"),
-        **_config_identity(config if isinstance(config, Mapping) else {}),
-    }
-
-
-def _config_identity(config: Mapping[str, Any]) -> dict[str, object]:
     identity: dict[str, Any] = deepcopy(dict(config))
     for *sections, field in _IDENTITY_EXEMPTIONS:
         holder: Any = identity
@@ -669,18 +655,22 @@ def _read_existing_corpus(
         return _ExistingCorpus(inputs=(), shards=())
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        if not isinstance(manifest, dict):
+            raise ValueError("manifest is not a JSON object")
+        validate_manifest_compatibility(manifest, manifest_path)
+    except (OSError, ValueError, DataLoadingError) as error:
         raise DataPreparationError(
             f"cannot read corpus manifest {manifest_path}: {error}"
         ) from error
-    inputs = manifest.get("inputs") if isinstance(manifest, dict) else None
+    inputs = manifest.get("inputs")
     if not isinstance(inputs, list) or not inputs:
         raise DataPreparationError(
             f"{manifest_path} records no per-archive inputs, so it predates a "
             "corpus that can span them; remove the artifact directory to "
             "rebuild it, or prepare into another one"
         )
-    recorded = _manifest_identity(manifest)
+    recorded_config = _recorded_mapping(manifest.get("resolved_config")).get("config")
+    recorded = _selection_identity(_recorded_mapping(recorded_config))
     if recorded != identity:
         # Over the union, so a section the recorded selection has and this one
         # does not is named rather than reported as an unexplained difference.
@@ -699,20 +689,23 @@ def _read_existing_corpus(
     shards = _recorded_mapping(manifest.get("output")).get("shards")
     if not isinstance(shards, list) or not shards:
         raise DataPreparationError(f"{manifest_path} records no output shards")
+    if not all(_records_an_archive(entry) for entry in inputs) or not all(
+        _records_a_shard(shard) for shard in shards
+    ):
+        raise DataPreparationError(
+            f"{manifest_path} has an input record without a digest, or a shard "
+            "record without a path and the digest of the archive it came from"
+        )
     corpus = _ExistingCorpus(inputs=tuple(inputs), shards=tuple(shards))
     try:
-        if not all(_records_an_archive(entry) for entry in inputs) or not all(
-            _records_a_shard(shard) for shard in shards
-        ):
-            raise KeyError("record")
-        # Rolling the recorded archives up walks every field this run will
-        # index, so a manifest written by other code reports rather than dying
-        # on a bare lookup halfway through the append.
+        # Rolling the recorded archives up walks every remaining field this run
+        # will index, so a manifest written by other code reports rather than
+        # dying on a bare lookup halfway through the append.
         _corpus_games(corpus.inputs)
-        _corpus_coverage(corpus.inputs, 0.0)
+        _corpus_coverage(corpus.inputs)
     except (KeyError, TypeError) as error:
         raise DataPreparationError(
-            f"{manifest_path} has an incomplete input or shard record: {error}"
+            f"{manifest_path} has an input record missing {error}"
         ) from error
     return corpus
 
@@ -737,19 +730,24 @@ def _recorded_result(
 ) -> PreparationResult:
     """Report a run that added nothing, from what the manifest already records."""
 
-    games = _recorded_mapping(None if entry is None else entry["games"])
+    if entry is None:
+        return PreparationResult(
+            normalized_paths=(),
+            manifest_path=manifest_path,
+            accepted_games=0,
+            rejected_games=0,
+            split_counts=_corpus_split_counts(corpus.inputs),
+            corpus_archives=len(corpus.inputs),
+            disposition="corpus_complete",
+        )
     return PreparationResult(
-        normalized_paths=(
-            ()
-            if entry is None
-            else corpus.shard_paths(output_path, str(entry["sha256"]))
-        ),
+        normalized_paths=corpus.shard_paths(output_path, entry["sha256"]),
         manifest_path=manifest_path,
-        accepted_games=int(games.get("accepted", 0)),
-        rejected_games=int(games.get("rejected", 0)),
+        accepted_games=entry["games"]["accepted"],
+        rejected_games=entry["games"]["rejected"],
         split_counts=_corpus_split_counts(corpus.inputs),
         corpus_archives=len(corpus.inputs),
-        disposition="already_prepared" if entry is not None else "corpus_complete",
+        disposition="already_prepared",
     )
 
 
@@ -1213,11 +1211,13 @@ def _corpus_games(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _corpus_coverage(
-    inputs: Sequence[Mapping[str, Any]],
-    abandonment_clock_share: float,
-) -> dict[str, Any]:
-    """Roll every archive's coverage up into one corpus-wide statement."""
+def _corpus_coverage(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Roll every archive's coverage up into one corpus-wide statement.
+
+    The abandonment threshold comes from the records like every other number
+    rather than from the configuration, and every archive agrees on it because
+    ``termination`` is part of the selection identity an append is refused for.
+    """
 
     blocks = [entry["coverage"] for entry in inputs]
     clocks = [block["clock"] for block in blocks]
@@ -1252,7 +1252,9 @@ def _corpus_coverage(
                 termination["terminal_action_games"] for termination in terminations
             ),
             "abandonment": {
-                "clock_share_threshold": abandonment_clock_share,
+                "clock_share_threshold": terminations[0]["abandonment"][
+                    "clock_share_threshold"
+                ],
                 "clock_share_judged_games": sum(
                     termination["abandonment"]["clock_share_judged_games"]
                     for termination in terminations
