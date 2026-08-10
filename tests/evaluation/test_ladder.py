@@ -44,6 +44,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ResultEnvelope,
     ResultsStore,
+    dispersion_bound,
 )
 from anthro_chess.evaluation.results.metrics import (
     LADDER_ABLATED_TEMPERATURE_RESPONSE,
@@ -894,6 +895,41 @@ def test_a_pairing_that_replays_is_held_fixed_while_the_rest_redraw() -> None:
     assert resolution.replayed_pairings == len(greedy)
     assert resolution.redrawn_games == sum(
         pairing.played for pairing in result.pairings if pairing not in greedy
+    )
+
+
+def test_a_seat_rate_is_bounded_for_its_own_games_rather_than_the_grid_s() -> None:
+    """A seat's score rate is computed from the games that seat played.
+
+    Bounding it for every game in the grid would claim replicates it never had,
+    and the claim grows with the grid: a three-seat grid gives each seat two
+    thirds of the games, and a wider one gives it less. The fitted rating is
+    keyed by seat too and is not the same case, because the fit is joint.
+    """
+
+    result = _run(_config(grid={"target_ratings": (1200, 1600, 2000)}))
+    resolution = result.resolution
+    seat = SeatKey(SeatConditioning.CONDITIONED, 1600, 1.0)
+
+    assert resolution is not None
+    seat_games = sum(
+        pairing.played
+        for pairing in result.pairings
+        if seat in (pairing.first, pairing.second)
+    )
+    # Both counts have to stay under the surviving refits, or the refits are
+    # what the bound rests on and this measures nothing.
+    assert seat_games < resolution.redrawn_games < resolution.fitted_resamples
+
+    rate = resolution.dispersion(seat.label, LADDER_SCORE_RATE.identifier)
+    rating = resolution.dispersion(seat.label, LADDER_FITTED_RATING.identifier)
+    assert rate is not None
+    assert rating is not None
+    assert rate.bound == pytest.approx(
+        dispersion_bound(rate.value, degrees_of_freedom=seat_games - 1)
+    )
+    assert rating.bound == pytest.approx(
+        dispersion_bound(rating.value, degrees_of_freedom=resolution.redrawn_games - 1)
     )
 
 

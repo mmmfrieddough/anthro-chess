@@ -105,16 +105,21 @@ def bootstrap_dispersions(
     frequently contain none of it, and a floor of zero there would license
     every delta as a finding.
 
-    A dispersion the resample measured as exactly zero is omitted on the same
-    ground. The draw observed that it could not move this metric, which is not
-    the same as observing that nothing could: a quantity identical in every game
-    scored reads this way at any sample size, and the wider sample that would
-    move it is the thing nobody has taken.
+    A metric the draw could not move is omitted on the same ground, and that is
+    read off the resampled values rather than off their standard deviation. The
+    draw observed that it could not move this metric, which is not the same as
+    observing that nothing could: a quantity identical in every game scored
+    reads this way at any sample size, and the wider sample that would move it
+    is the thing nobody has taken. One distinct value says so exactly; the
+    deviation it produces does not, because averaging a thousand copies of an
+    inexact quotient lands beside rather than on it and leaves a spread around
+    1e-17 that no comparison could ever fail to clear.
 
     So is a metric only one game realized, and by its game count rather than by
     that test. One game is one replicate and observes no spread for a bound to
-    rest on, while resampling it does not quite return a constant — floating
-    point leaves the last bits of the divided total moving.
+    rest on, while resampling it *does* vary in the last bits — the divided
+    total moves with the multiplicity — so the distinct-value test lets it
+    through.
 
     The **games** are what the dispersion bound's degrees of freedom count, not
     the resamples. A bootstrap draws as many resamples as it is asked for, but
@@ -170,11 +175,9 @@ def bootstrap_dispersions(
             continue
         values = replicates[:, column]
         observed = values[np.isfinite(values)]
-        if observed.size < 2:
+        if np.unique(observed).size < 2:
             continue
         dispersion = float(np.std(observed, ddof=1))
-        if dispersion == 0.0:
-            continue
         dispersions[series_fingerprint(metric, component, workload)] = (
             measured_dispersion(
                 dispersion,

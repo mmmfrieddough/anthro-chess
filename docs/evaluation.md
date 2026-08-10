@@ -541,6 +541,11 @@ rare slice reads as the thin estimate it is rather than borrowing the whole
 pass's confidence. A metric only one game realized reports no spread at all,
 since one replicate observes none.
 
+The ladder's refit answers the same question about its own quantities. A seat's
+score rate counts the games that seat played; its fitted rating counts every
+redrawn game in the grid, because the fit that produces a rating is joint and
+every game anywhere in it moves every rating.
+
 The bound is severe at small replicate counts, which is what the replicate
 defaults are chosen against. Resting a floor on two bounds rather than one does
 not weaken the confidence either carries: the floor needs only their combination

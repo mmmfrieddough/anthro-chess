@@ -1474,8 +1474,18 @@ def test_eval_bridge_records_lists_and_revokes(
     assert "No bridges are recorded." in capsys.readouterr().out
 
 
-def _record_sampled_reading(store_root: Path, *, floor: float, games: int) -> None:
-    """Record the reading an evaluation run leaves behind, spread included."""
+def _record_sampled_reading(
+    store_root: Path,
+    *,
+    floor: float,
+    games: int,
+    selected_games: int | None = None,
+) -> None:
+    """Record the reading an evaluation run leaves behind, spread included.
+
+    ``games`` is what realized the metric and ``selected_games`` what the pass
+    scored. They differ only for a sliced metric.
+    """
 
     import math
     from datetime import UTC, datetime
@@ -1516,7 +1526,7 @@ def _record_sampled_reading(store_root: Path, *, floor: float, games: int) -> No
                 pool_id="fixture-pool",
                 pool_version=1,
                 view="canonical",
-                selected_games=component.games,
+                selected_games=games if selected_games is None else selected_games,
                 game_ids_sha256="a" * 64,
                 components=[component],
             ),
@@ -1565,8 +1575,46 @@ def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(
     )
 
     plan = json.loads(capsys.readouterr().out)
-    assert plan["required_games"] == 16_000
+    assert plan["required_realizing_games"] == 16_000
     assert plan["measured_games"] == 1_000
+    # Every game realized this metric, so the two counts are one number.
+    assert plan["required_pool_games"] == 16_000
+
+
+def test_eval_noise_plan_scales_a_sliced_metric_up_to_a_pool_size(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The spread was read over the games that realized the slice, so the count
+    # extrapolated from it is in those too. A pool has to be larger by the rate
+    # it realizes them at, which is the difference between a pool that resolves
+    # the effect and one a tenth of the size that does not.
+    _record_sampled_reading(
+        tmp_path / "results", floor=0.04, games=100, selected_games=1_000
+    )
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "plan",
+                "--store",
+                str(tmp_path / "results"),
+                "--metric",
+                "held_out.move_loss",
+                "--effect",
+                "0.01",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["required_realizing_games"] == 1_600
+    assert plan["required_pool_games"] == 16_000
 
 
 def test_eval_noise_plan_reports_a_missing_spread_without_a_traceback(

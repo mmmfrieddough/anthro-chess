@@ -187,6 +187,32 @@ def test_bootstrap_resamples_games_rather_than_positions(
     assert spread.estimator == BOOTSTRAP_METHOD
 
 
+def test_agreeing_games_are_omitted_even_where_their_rate_is_inexact(
+    move_prediction_component: Digest,
+) -> None:
+    # The same omission as above, at a rate binary floating point cannot hold.
+    # Every resample computes the one value, but its mean lands beside rather
+    # than on it, so the deviation is ~1e-17 instead of zero and a test for
+    # zero would record a floor no comparison could fail to clear.
+    agreeing = tuple(
+        GameTotals(
+            game_id=game_id,
+            metrics={METRIC: MetricTotal(total=1.0, positions=3)},
+        )
+        for game_id in (1, 2, 3)
+    )
+
+    identical = bootstrap_dispersions(
+        agreeing,
+        component=move_prediction_component(),
+        seed=5,
+        source="agreeing games at an inexact rate",
+        resamples=200,
+    )
+
+    assert identical == {}
+
+
 def test_a_bootstrap_bound_rests_on_the_games_rather_than_the_resamples(
     move_prediction_component: Digest,
 ) -> None:

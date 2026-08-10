@@ -192,6 +192,14 @@ LADDER_UNRESOLVED_METHOD = "too-few-redrawn-games"
 #: themselves; the response spans the whole grid and has no narrower scope.
 RESPONSE_SCOPE = "response"
 
+#: The quantities one seat's own games produce, whose bound counts those games
+#: rather than the grid's. A fitted rating is keyed by seat too and is not one
+#: of them: the fit is joint, so every redrawn game anywhere in the grid moves
+#: every seat's rating and is evidence about it.
+_SEAT_SCOPED_METRICS = frozenset(
+    {LADDER_SCORE_RATE.identifier, LADDER_SCORED_GAME_RATE.identifier}
+)
+
 logger = logging.getLogger(__name__)
 
 #: What the opening projection reads from a pool row: the moves it continues from,
@@ -1446,7 +1454,8 @@ def _resolution(
         )
 
     unqualifiable = _unbounded_seats(seats, pairings)
-    redrawn_games = sum(pairing.played for pairing in redrawn.values())
+    redrawn_pairings = tuple(redrawn.values())
+    redrawn_games = sum(pairing.played for pairing in redrawn_pairings)
     if redrawn_games < 2:
         # One game shows no spread, and a bound needs a degree of freedom to be
         # computed at all. Saying so beats failing a reading whose games are
@@ -1499,9 +1508,25 @@ def _resolution(
             if key in replicates:
                 replicates[key].append(value)
 
+    seat_redrawn = {
+        seat.label: played
+        for seat, (_, _, played) in _seat_totals(seats, redrawn_pairings).items()
+    }
     dispersions: dict[tuple[str, str], MetricDispersion] = {}
     for key in observed:
         if key in unqualifiable:
+            continue
+        scope, identifier = key
+        games_behind = (
+            seat_redrawn.get(scope, 0)
+            if identifier in _SEAT_SCOPED_METRICS
+            else redrawn_games
+        )
+        if games_behind < 2:
+            unqualifiable[key] = (
+                "the pairings a fresh seed would redraw hold fewer than two of "
+                "this seat's games, which shows no spread to bound"
+            )
             continue
         values = [value for value in replicates[key] if math.isfinite(value)]
         if len(values) < 2:
@@ -1532,7 +1557,7 @@ def _resolution(
             # is not — but a spread read off three surviving refits is known no
             # better than three numbers allow, whichever is the scarcer of the
             # two.
-            degrees_of_freedom=min(redrawn_games, len(values)) - 1,
+            degrees_of_freedom=min(games_behind, len(values)) - 1,
             confidence=settings.confidence,
             source=source,
             estimator=LADDER_BOOTSTRAP_METHOD,
