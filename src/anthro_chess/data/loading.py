@@ -7,14 +7,16 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from hashlib import sha256
+from heapq import nsmallest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, overload
 
 from anthro_chess.data.artifacts import (
     DataLoadingError,
-    game_ids_sha256,
     read_normalized_rows,
+    sorted_game_ids_sha256,
 )
 from anthro_chess.data.config import SelectionConfig, SequenceLoaderConfig
 from anthro_chess.data.encoding import (
@@ -169,18 +171,18 @@ class SelectionResolution:
     merely descriptive: a later run over the same corpus with the same spec
     resolves the same digest, and a corpus that has since grown resolves a
     different one.
+
+    It is also all that survives of the ids themselves. Confirming that a later
+    run reproduced the same games is the only thing anything downstream reads
+    them for, the digest answers exactly that, and a corpus-scale selection's
+    ids are tens of gigabytes of Python object held for the length of a run.
     """
 
     spec: dict[str, object]
-    game_ids: tuple[int, ...]
     eligible_games: int
+    selected_games: int
+    game_ids_sha256: str
     excluded_games: dict[str, int]
-
-    @property
-    def selected_games(self) -> int:
-        """Return how many games survived filtering and subsampling."""
-
-        return len(self.game_ids)
 
     def as_record(self) -> dict[str, object]:
         """Return the resolved-selection record stored in run artifacts."""
@@ -191,7 +193,7 @@ class SelectionResolution:
             "eligible_games": self.eligible_games,
             "selected_games": self.selected_games,
             "excluded_games": dict(sorted(self.excluded_games.items())),
-            "game_ids_sha256": game_ids_sha256(self.game_ids),
+            "game_ids_sha256": self.game_ids_sha256,
         }
 
 
@@ -342,21 +344,21 @@ class SequenceDataset(Sequence[SequenceExample]):
             split,
             len(normalized_paths),
         )
-        resolution = _resolve_selection(
+        resolution, selected = _resolve_selection(
             normalized_paths,
             split=split,
             selection=selection,
         )
-        selected = frozenset(resolution.game_ids)
         examples: list[SequenceExample] = []
         identity_records: list[dict[str, object]] = []
         for shard_index, path in enumerate(normalized_paths):
             for row in read_normalized_rows(path, _LOADER_COLUMNS):
                 if row[NormalizedColumn.SPLIT] != split:
                     continue
-                if row_game_id(row) not in selected:
+                game_id = row_game_id(row)
+                if game_id not in selected:
                     continue
-                game = _game_from_row(row, path)
+                game = _game_from_row(row, path, game_id)
                 plies = encode_game(game, legal_actions=legal_actions)
                 chunks = _chunk_plies(plies, chunk_length)
                 for chunk in chunks:
@@ -574,11 +576,10 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     Each timestep's legal action ids are packed when the encoding built them.
     """
 
-    # Deferred, the way `anthro_chess.data.artifacts` defers pyarrow: this is
-    # the only place in the package that needs an array library, and importing
-    # it at module scope would take `anthro machine` — a diagnostic that has to
-    # run wherever the package is installed — down with it on an install
-    # carrying no extras.
+    # Deferred, the way `anthro_chess.data.artifacts` defers pyarrow: importing
+    # an array library at module scope would take `anthro machine` — a
+    # diagnostic that has to run wherever the package is installed — down with
+    # it on an install carrying no extras.
     import numpy as np
 
     if not examples:
@@ -695,7 +696,7 @@ def _resolve_selection(
     *,
     split: str,
     selection: SelectionConfig,
-) -> SelectionResolution:
+) -> tuple[SelectionResolution, frozenset[int]]:
     """Decide which games in one split the configured selection keeps."""
 
     eligible: list[int] = []
@@ -710,33 +711,44 @@ def _resolve_selection(
             else:
                 excluded[reason] = excluded.get(reason, 0) + 1
 
-    ordered = sorted(eligible, key=lambda game_id: _rank_key(selection.seed, game_id))
-    kept = len(ordered)
+    kept = subsample_size(len(eligible), selection)
+    selected = sorted(nsmallest(kept, eligible, key=partial(_rank_key, selection.seed)))
+    return (
+        SelectionResolution(
+            spec=selection.model_dump(mode="json"),
+            eligible_games=len(eligible),
+            selected_games=len(selected),
+            game_ids_sha256=sorted_game_ids_sha256(selected),
+            excluded_games=excluded,
+        ),
+        frozenset(selected),
+    )
+
+
+def subsample_size(eligible_games: int, selection: SelectionConfig) -> int:
+    """Return how many of the eligible games the configured dials keep."""
+
+    kept = eligible_games
     if selection.fraction is not None:
         # Floor rather than round up: a fraction small enough to select nothing
         # should fail as an empty selection instead of quietly training on one
         # game.
-        kept = int(len(ordered) * selection.fraction)
+        kept = int(eligible_games * selection.fraction)
     if selection.maximum_games is not None:
         kept = min(kept, selection.maximum_games)
-
-    return SelectionResolution(
-        spec=selection.model_dump(mode="json"),
-        game_ids=tuple(sorted(ordered[:kept])),
-        eligible_games=len(eligible),
-        excluded_games=excluded,
-    )
+    return kept
 
 
 def _resolution_for_examples(
     examples: Sequence[SequenceExample],
     selection: SelectionConfig,
 ) -> SelectionResolution:
-    game_ids = tuple(sorted({example.game_id for example in examples}))
+    game_ids = sorted({example.game_id for example in examples})
     return SelectionResolution(
         spec=selection.model_dump(mode="json"),
-        game_ids=game_ids,
         eligible_games=len(game_ids),
+        selected_games=len(game_ids),
+        game_ids_sha256=sorted_game_ids_sha256(game_ids),
         excluded_games={},
     )
 
@@ -807,7 +819,11 @@ def _rank_key(seed: str, game_id: int) -> bytes:
     return sha256(f"{seed}\0{game_id}".encode()).digest()
 
 
-def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
+def _game_from_row(
+    row: Mapping[str, Any],
+    path: Path,
+    game_id: int,
+) -> GameEncodingInput:
     if row[NormalizedColumn.SCHEMA_VERSION] != SCHEMA_VERSION:
         raise DataLoadingError(
             f"{path} uses normalized schema version "
@@ -818,7 +834,7 @@ def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
         action_ids = tuple(row[NormalizedColumn.ACTION_IDS])
         clocks = clock_remaining_ms(row)
         return GameEncodingInput(
-            game_id=row_game_id(row),
+            game_id=game_id,
             ruleset=row[NormalizedColumn.RULESET],
             initial_position=row[NormalizedColumn.INITIAL_POSITION],
             action_ids=action_ids,

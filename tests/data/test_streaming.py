@@ -18,6 +18,7 @@ from anthro_chess.data import (
 )
 from anthro_chess.data.artifacts import (
     ShardIdentity,
+    game_ids_sha256,
     normalized_shard_paths,
     validate_manifest_outputs,
 )
@@ -608,6 +609,44 @@ def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
     assert streaming.resolution.excluded_games == {"below_minimum_rating": 8}
     assert streaming.resolution.selected_games == 4
     streaming.close()
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        SelectionConfig(),
+        SelectionConfig(fraction=1.0),
+        SelectionConfig(fraction=0.5),
+        SelectionConfig(maximum_games=5),
+    ],
+    ids=["everything", "whole-fraction", "half", "capped"],
+)
+def test_the_resolved_digest_names_the_games_the_index_actually_holds(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    selection: SelectionConfig,
+) -> None:
+    """The digest is all that is kept of the ids, so it has to be theirs.
+
+    A subsample that the index disagreed with would otherwise record a set of
+    games no run ever read, and nothing downstream holds the ids to notice.
+    """
+
+    shards, manifest_sha256 = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 16), games_per_shard=4
+    )
+
+    index = build_sharded_index(
+        shards,
+        split="train",
+        selection=selection,
+        manifest_sha256=manifest_sha256,
+    )
+
+    held = [game_id for group in index.groups for game_id in group.game_ids]
+    assert index.resolution.selected_games == len(held)
+    assert index.resolution.game_ids_sha256 == game_ids_sha256(held)
 
 
 def test_an_empty_selection_fails_instead_of_starting_a_run_on_nothing(
