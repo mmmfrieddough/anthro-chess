@@ -4,6 +4,10 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=1024]
+        # Upstream serves one rolling puzzle export with no history, so the
+        # vendored selection is the only surviving copy of the rows a reading
+        # was taken against.
+        exclude: ^src/anthro_chess/evaluation/puzzles/data/puzzles\.csv$
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml

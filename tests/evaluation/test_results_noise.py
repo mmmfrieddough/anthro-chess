@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -14,8 +15,8 @@ from anthro_chess.evaluation.noise import (
     GameTotals,
     MetricTotal,
     NoiseConfig,
-    bootstrap_floors,
-    characterize_sampling_noise,
+    bootstrap_dispersions,
+    sampling_dispersions,
 )
 from anthro_chess.evaluation.results import (
     BOOTSTRAP_METHOD,
@@ -26,21 +27,25 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     ExecutionRecord,
     FloorEntry,
+    MetricDispersion,
     NoiseCharacterization,
     NoiseCharacterizationError,
     NoiseFloorIndex,
     ResultsStore,
     ResultsStoreError,
+    bounded_floor,
     build_bridge,
     build_characterization,
+    combined_floor,
     dispersion_bound,
     execution_reference,
-    floor_from_dispersion,
     games_to_resolve,
+    measured_dispersion,
     process_dispersion,
     process_replicate_floors,
     replicate_dispersion,
     replicate_floors,
+    self_combined_floor,
     series_fingerprint,
     training_scope,
 )
@@ -59,6 +64,13 @@ OTHER_TRAINING_SCOPE = "2b" * 32
 METRIC = "held_out.move_loss"
 OTHER_METRIC = "legality.mask_penalty"
 EFFICIENCY_METRIC = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+
+
+def _only(dispersions: Mapping[str, MetricDispersion]) -> MetricDispersion:
+    """Return the one dispersion a single-metric bootstrap produced."""
+
+    (dispersion,) = dispersions.values()
+    return dispersion
 
 
 def _totals(values: list[float], *, positions: int = 4) -> tuple[GameTotals, ...]:
@@ -81,7 +93,6 @@ def _entry(
     dispersion: float = 0.05,
     dispersion_bound: float | None = None,
     degrees_of_freedom: int = 5,
-    sampling_units: int | None = None,
 ) -> FloorEntry:
     return FloorEntry(
         metric=metric,
@@ -90,7 +101,6 @@ def _entry(
         dispersion=dispersion,
         dispersion_bound=dispersion if dispersion_bound is None else dispersion_bound,
         degrees_of_freedom=degrees_of_freedom,
-        sampling_units=sampling_units,
     )
 
 
@@ -100,20 +110,48 @@ def test_a_floor_is_the_delta_two_independent_measurements_produce() -> None:
     # a confidence of one half, where the chi-squared bound is close enough to
     # the estimate to leave the sqrt(2) visible on its own.
     bound = dispersion_bound(0.1, degrees_of_freedom=200, confidence=0.5)
-    assert floor_from_dispersion(
-        0.1, degrees_of_freedom=200, coverage=1.0, confidence=0.5
-    ) == pytest.approx(math.sqrt(2) * bound)
-    assert floor_from_dispersion(0.0, degrees_of_freedom=5) == 0.0
-    single = floor_from_dispersion(0.1, degrees_of_freedom=5, coverage=1.0)
-    doubled = floor_from_dispersion(0.1, degrees_of_freedom=5, coverage=2.0)
+    _, floor = bounded_floor(0.1, degrees_of_freedom=200, coverage=1.0, confidence=0.5)
+    assert floor == pytest.approx(math.sqrt(2) * bound)
+    assert bounded_floor(0.0, degrees_of_freedom=5)[1] == 0.0
+    single = bounded_floor(0.1, degrees_of_freedom=5, coverage=1.0)[1]
+    doubled = bounded_floor(0.1, degrees_of_freedom=5, coverage=2.0)[1]
     assert doubled == pytest.approx(2 * single)
+
+
+def test_a_delta_floor_combines_the_two_readings_it_compares() -> None:
+    # The variance of a difference is the sum of the two variances, so two
+    # readings that happen to agree reduce to sqrt(2) times either one, and two
+    # that do not are dominated by the noisier of them.
+    narrow = measured_dispersion(0.1, kind="data-sampling", degrees_of_freedom=200)
+    wide = measured_dispersion(1.19, kind="data-sampling", degrees_of_freedom=200)
+
+    assert combined_floor(narrow, narrow) == pytest.approx(
+        DEFAULT_COVERAGE * math.sqrt(2) * narrow.bound
+    )
+    assert combined_floor(narrow, wide) == pytest.approx(
+        DEFAULT_COVERAGE * math.hypot(narrow.bound, wide.bound)
+    )
+    # The equal-dispersion assumption understates the combined floor whenever
+    # the two readings differ, and by most where they differ by most.
+    assert combined_floor(narrow, wide) > combined_floor(narrow, narrow)
+    assert combined_floor(narrow, wide) < combined_floor(wide, wide)
+
+
+def test_one_reading_alone_reports_the_floor_a_matching_reading_would_face() -> None:
+    # A single reading resolves nothing on its own, so a display holding one
+    # shows what a delta against a reading like it would have to clear.
+    dispersion = measured_dispersion(0.3, kind="evaluation", degrees_of_freedom=9)
+
+    assert self_combined_floor(dispersion) == pytest.approx(
+        combined_floor(dispersion, dispersion)
+    )
 
 
 def test_a_floor_is_built_from_a_bound_rather_than_the_measured_dispersion() -> None:
     # The measured dispersion sits in the middle of its own sampling
     # distribution, so a floor built directly on it is too narrow about half
     # the time. Every floor is built from an upper limit instead.
-    assert floor_from_dispersion(0.1, degrees_of_freedom=5) > 1.96 * math.sqrt(2) * 0.1
+    assert bounded_floor(0.1, degrees_of_freedom=5)[1] > 1.96 * math.sqrt(2) * 0.1
 
 
 def test_a_thinner_estimate_is_bounded_further_from_what_it_measured() -> None:
@@ -164,25 +202,29 @@ def test_bootstrap_resamples_games_rather_than_positions(
 ) -> None:
     component = move_prediction_component()
     # Every game agrees, so no resample of games can move the mean at all.
-    identical = bootstrap_floors(
+    identical = bootstrap_dispersions(
         _totals([2.0] * 20),
         component=component,
         seed=7,
+        source="identical games",
         resamples=200,
     )
-    spread = bootstrap_floors(
-        _totals([1.0, 2.0, 3.0, 4.0] * 5),
-        component=component,
-        seed=7,
-        resamples=200,
+    spread = _only(
+        bootstrap_dispersions(
+            _totals([1.0, 2.0, 3.0, 4.0] * 5),
+            component=component,
+            seed=7,
+            source="spread games",
+            resamples=200,
+        )
     )
 
-    # No floor at all rather than one of zero: the resample observed that it
-    # could not move this metric, not that a wider draw could not, and a zero
+    # No dispersion at all rather than one of zero: the resample observed that
+    # it could not move this metric, not that a wider draw could not, and a zero
     # would clear every later delta.
-    assert identical == ()
-    assert spread[0].floor > 0.0
-    assert spread[0].sampling_units == 20
+    assert identical == {}
+    assert spread.value > 0.0
+    assert spread.kind == "data-sampling"
 
 
 def test_a_bootstrap_bound_rests_on_the_games_rather_than_the_resamples(
@@ -193,20 +235,18 @@ def test_a_bootstrap_bound_rests_on_the_games_rather_than_the_resamples(
     # number the caller chose. Only more games may narrow the bound.
     component = move_prediction_component()
     totals = _totals([1.0, 2.0, 3.0, 4.0] * 5)
-
-    few = bootstrap_floors(totals, component=component, seed=7, resamples=200)
-    many = bootstrap_floors(totals, component=component, seed=7, resamples=2_000)
-    wider = bootstrap_floors(
-        _totals([1.0, 2.0, 3.0, 4.0] * 20),
-        component=component,
-        seed=7,
-        resamples=200,
+    draw = partial(
+        bootstrap_dispersions, component=component, seed=7, source="resample count"
     )
 
-    assert few[0].degrees_of_freedom == 19
-    assert many[0].degrees_of_freedom == 19
-    assert wider[0].degrees_of_freedom == 79
-    assert wider[0].floor < few[0].floor
+    few = _only(draw(totals, resamples=200))
+    many = _only(draw(totals, resamples=2_000))
+    wider = _only(draw(_totals([1.0, 2.0, 3.0, 4.0] * 20), resamples=200))
+
+    # The measured spread is what more resamples read more finely; the bound
+    # over it is what only more games narrow.
+    assert many.bound == pytest.approx(few.bound, rel=0.05)
+    assert self_combined_floor(wider) < self_combined_floor(few)
 
 
 def test_a_same_weights_delta_stays_inside_a_bounded_floor() -> None:
@@ -222,7 +262,7 @@ def test_a_same_weights_delta_stays_inside_a_bounded_floor() -> None:
 
     for estimate in measured:
         naive = 1.96 * math.sqrt(2) * estimate
-        bounded = floor_from_dispersion(estimate, degrees_of_freedom=5)
+        bounded = bounded_floor(estimate, degrees_of_freedom=5)[1]
         assert bounded >= honest
         if estimate < truth:
             assert naive < honest
@@ -233,13 +273,14 @@ def test_bootstrap_output_is_deterministic_for_one_seed(
 ) -> None:
     component = move_prediction_component()
     totals = _totals([1.0, 2.0, 3.5, 0.5, 2.5, 4.0])
+    draw = partial(bootstrap_dispersions, totals, component=component, source="seeded")
 
-    first = bootstrap_floors(totals, component=component, seed=11, resamples=150)
-    again = bootstrap_floors(totals, component=component, seed=11, resamples=150)
-    different = bootstrap_floors(totals, component=component, seed=12, resamples=150)
+    first = draw(seed=11, resamples=150)
+    again = draw(seed=11, resamples=150)
+    different = draw(seed=12, resamples=150)
 
     assert first == again
-    assert first[0].floor != different[0].floor
+    assert _only(first).value != _only(different).value
 
 
 def test_a_bootstrap_floor_lands_on_the_series_it_qualifies(
@@ -247,24 +288,26 @@ def test_a_bootstrap_floor_lands_on_the_series_it_qualifies(
 ) -> None:
     component = move_prediction_component()
 
-    entries = bootstrap_floors(
+    dispersions = bootstrap_dispersions(
         _totals([1.0, 2.0, 3.0]),
         component=component,
         seed=3,
+        source="one series",
         resamples=100,
     )
 
-    assert entries[0].fingerprint == series_fingerprint(METRIC, component)
+    assert set(dispersions) == {series_fingerprint(METRIC, component)}
 
 
 def test_bootstrapping_needs_more_than_one_game(
     move_prediction_component: Digest,
 ) -> None:
     with pytest.raises(NoiseCharacterizationError, match="at least two scored games"):
-        bootstrap_floors(
+        bootstrap_dispersions(
             _totals([1.0]),
             component=move_prediction_component(),
             seed=1,
+            source="one game",
             resamples=100,
         )
 
@@ -293,39 +336,46 @@ def test_a_metric_absent_from_a_game_is_still_bootstrapped(
         ),
     )
 
-    entries = {
-        entry.metric: entry
-        for entry in bootstrap_floors(
-            totals,
-            component=component,
-            seed=5,
-            resamples=200,
-        )
+    dispersions = bootstrap_dispersions(
+        totals,
+        component=component,
+        seed=5,
+        source="sliced games",
+        resamples=200,
+    )
+
+    assert set(dispersions) == {
+        series_fingerprint(METRIC, component),
+        series_fingerprint(OTHER_METRIC, component),
     }
-
-    assert set(entries) == {METRIC, OTHER_METRIC}
-    assert entries[OTHER_METRIC].floor > 0.0
+    assert dispersions[series_fingerprint(OTHER_METRIC, component)].value > 0.0
 
 
-def test_sampling_noise_sizes_the_games_an_axis_needs(
-    move_prediction_component: Digest,
-) -> None:
-    component = move_prediction_component()
-    entry = _entry(component, floor=0.04, sampling_units=1_000)
+def test_sampling_noise_sizes_the_games_an_axis_needs() -> None:
+    dispersion = measured_dispersion(
+        0.04, kind="data-sampling", degrees_of_freedom=999, units=1_000
+    )
+    floor = self_combined_floor(dispersion)
 
     # A floor shrinks with the square root of the games behind it, so resolving
     # a quarter of the measured floor takes sixteen times the games.
-    assert games_to_resolve(entry, 0.04) == 1_000
-    assert games_to_resolve(entry, 0.01) == 16_000
+    assert games_to_resolve(dispersion, effect=floor) == 1_000
+    assert games_to_resolve(dispersion, effect=floor / 4) == 16_000
 
 
-def test_a_floor_that_does_not_scale_cannot_size_an_input(
-    move_prediction_component: Digest,
-) -> None:
-    entry = _entry(move_prediction_component(), sampling_units=None)
+def test_a_spread_that_does_not_scale_cannot_size_an_input() -> None:
+    # A spread read over games a reading generated, rather than over a draw
+    # from a population, does not shrink with a larger pool, so extrapolating
+    # it by the inverse square root would answer a question nobody asked.
+    scaling = measured_dispersion(
+        0.04, kind="data-sampling", degrees_of_freedom=9, units=10
+    )
+    unscaled = measured_dispersion(0.04, kind="evaluation", degrees_of_freedom=9)
 
     with pytest.raises(NoiseCharacterizationError, match="does not scale"):
-        games_to_resolve(entry, 0.01)
+        games_to_resolve(unscaled, effect=0.01)
+    with pytest.raises(NoiseCharacterizationError, match="finite and positive"):
+        games_to_resolve(scaling, effect=0.0)
 
 
 def test_a_characterization_round_trips_through_the_store(
@@ -560,35 +610,31 @@ def test_replicate_floors_carry_the_series_they_were_measured_on(
     assert entries[0].metric == METRIC
     assert entries[0].fingerprint == fingerprint
     assert entries[0].dispersion == pytest.approx(replicate_dispersion([3.0, 3.4]))
-    assert entries[0].sampling_units is None
 
 
-def test_characterizing_sampling_noise_produces_a_recordable_record(
+def test_sampling_noise_travels_on_the_reading_that_measured_it(
     move_prediction_component: Digest,
 ) -> None:
     component = move_prediction_component()
 
-    characterization = characterize_sampling_noise(
+    dispersions = sampling_dispersions(
         _totals([1.0, 2.0, 3.0, 4.0]),
         component=component,
         config=NoiseConfig(resamples=200, seed=4),
         source="bootstrap over 4 game(s)",
-        recorded_at=RECORDED_AT,
     )
 
-    assert characterization is not None
-    assert characterization.kind == "data-sampling"
-    assert characterization.method == "bootstrap-over-games"
-    assert characterization.replicates == 200
-    assert characterization.confidence == DEFAULT_CONFIDENCE
-    entry = characterization.entry(METRIC)
-    assert entry is not None
-    assert entry.sampling_units == 4
+    dispersion = dispersions[series_fingerprint(METRIC, component)]
+    assert dispersion.kind == "data-sampling"
+    assert dispersion.estimator == BOOTSTRAP_METHOD
+    assert dispersion.source == "bootstrap over 4 game(s)"
     # Both quantities are kept: the measured spread describes the sample, and
-    # the bound is what the floor was actually built from.
-    assert entry.dispersion_bound > entry.dispersion
-    assert entry.floor == pytest.approx(
-        DEFAULT_COVERAGE * math.sqrt(2) * entry.dispersion_bound
+    # the bound is what a floor is combined from.
+    assert dispersion.bound > dispersion.value
+    assert dispersion.bound == pytest.approx(
+        dispersion_bound(
+            dispersion.value, degrees_of_freedom=3, confidence=DEFAULT_CONFIDENCE
+        )
     )
 
 
@@ -971,10 +1017,10 @@ def test_execution_floors_land_on_the_series_they_qualify() -> None:
     # replicate, so the bound rests on one degree of freedom rather than three.
     assert entry.degrees_of_freedom == 1
     assert entry.floor == pytest.approx(
-        floor_from_dispersion(
+        bounded_floor(
             replicate_dispersion([10.0, 10.2, 12.0, 12.2]),
             degrees_of_freedom=1,
-        )
+        )[1]
     )
 
 

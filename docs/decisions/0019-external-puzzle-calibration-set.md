@@ -5,7 +5,10 @@ Date: 2026-07-29
 ## Status
 
 Accepted. Its paired-floor consequence is superseded by
-`0035-a-degraded-floor-is-annotated-rather-than-withheld.md`.
+`0035-a-degraded-floor-is-annotated-rather-than-withheld.md`, and its
+artifact-boundary consequence by
+`0044-the-puzzle-selection-is-vendored-not-refetched.md`, which vendors the
+selected records once the pinned source proved unfetchable.
 
 ## Context
 

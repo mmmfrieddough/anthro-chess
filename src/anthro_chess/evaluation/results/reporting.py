@@ -45,11 +45,16 @@ from anthro_chess.evaluation.results.metrics import (
     registered_families,
     registered_metrics,
 )
-from anthro_chess.evaluation.results.noise import NoiseFloorIndex
+from anthro_chess.evaluation.results.noise import (
+    COMBINED_DISPERSION_METHOD,
+    NoiseFloorIndex,
+    combined_floor,
+)
 from anthro_chess.evaluation.results.paired import NO_DETAIL_ROOT, PairedFloor
 from anthro_chess.evaluation.results.records import (
     ExecutionRecord,
     Measurement,
+    MetricDispersion,
     NoiseFloor,
     ResultEnvelope,
 )
@@ -144,6 +149,8 @@ class Movement(StrEnum):
 
     BETTER = "better"
     WORSE = "worse"
+    #: The delta is zero, or inside the floor that qualifies it. The two are one
+    #: statement to act on: nothing here has been shown to move.
     UNCHANGED = "unchanged"
     INFORMATIONAL = "informational"
     UNKNOWN = "unknown"
@@ -194,8 +201,11 @@ class MetricDelta:
     comparability: Comparability
     movement: Movement
     noise: NoiseVerdict
-    #: The binding floor: the largest of the characterized floors that apply,
-    #: because a delta has to clear every noise source to be a finding.
+    #: The binding floor: the largest of the floors that apply, because a delta
+    #: has to clear every noise source to be a finding. A cleared delta is
+    #: larger than benchmark noise and is **not** thereby established as caused
+    #: by the change: two arms differ by their initialization seeds as well, and
+    #: no floor built from a reading's own units can see that.
     noise_floor: float | None
     noise_floor_kind: str | None
     #: Every applicable floor, so a reader who knows which noise source their
@@ -212,14 +222,14 @@ class MetricDelta:
     #: other, and automation that cannot see the difference will read a real
     #: improvement as noise.
     paired_floor_unavailable: str | None = None
-    #: The floor kinds this delta declined to borrow, because one side offered
-    #: one and the other offered nothing of that kind. Reported rather than
-    #: absorbed into the ``unknown`` verdict for the same reason as the field
-    #: above: a floor that qualifies one operand says nothing about the
-    #: difference, and where a benchmark withholds a floor per reading it also
-    #: says the other operand was never an estimate. Automation reading only
-    #: the verdict would send somebody to characterize a series that is
-    #: already characterized.
+    #: The floor kinds this delta declined to borrow, because one reading
+    #: measured a dispersion of that kind and the other measured none. Reported
+    #: rather than absorbed into the ``unknown`` verdict for the same reason as
+    #: the field above: a dispersion that describes one operand says nothing
+    #: about the difference, and a benchmark that withholds one per reading is
+    #: also saying the other operand was never an estimate. Automation reading
+    #: only the verdict would send somebody to re-measure a reading that has
+    #: already been measured.
     one_sided_floors: tuple[str, ...] = ()
     #: Which coordinates moved. ``None`` for a metric with no execution
     #: context, where the model is the only thing that can have moved.
@@ -808,10 +818,19 @@ def _noise_legend(report: DeltaReport) -> list[str]:
     if not verdicts:
         return []
     legend = (
-        "noise: a delta is judged against the widest characterized floor that "
-        "applies, named in the column; 'within' means the delta is inside it "
-        "and 'unknown' means no floor is characterized for that series."
+        "noise: a delta is judged against the widest floor that applies, named "
+        "in the column and combined from the dispersion each reading measured "
+        "over its own units; 'within' means the delta is inside it and reads "
+        "as 'unchanged' in the change column, and 'unknown' means no floor "
+        "covers that series."
     )
+    if NoiseVerdict.CLEARED in verdicts:
+        legend = (
+            f"{legend} 'cleared' means larger than benchmark noise, not that "
+            "the change caused it: two arms differ by their initialization "
+            "seeds as well, which no floor read off a reading's own units can "
+            "see."
+        )
     if NoiseVerdict.UNQUALIFIABLE in verdicts:
         legend = (
             f"{legend} 'unqualifiable' means resampling that metric's units "
@@ -822,7 +841,7 @@ def _noise_legend(report: DeltaReport) -> list[str]:
         legend = (
             f"{legend} A row naming a withheld floor is unknown for the other "
             "reason: one side of that delta measured noise the other did not, "
-            "so a floor exists but describes one operand rather than the "
+            "so a dispersion exists but describes one operand rather than the "
             "difference."
         )
     return textwrap.wrap(
@@ -1367,6 +1386,12 @@ def _metric_delta(
         if definition.execution_sensitive
         else ()
     )
+    noise = _noise_verdict(
+        definition,
+        delta,
+        None if binding is None else binding.value,
+        withheld=one_sided,
+    )
     return MetricDelta(
         metric=definition.identifier,
         family=definition.family,
@@ -1375,13 +1400,8 @@ def _metric_delta(
         current=current_measurement.value,
         delta=delta,
         comparability=comparison.comparability,
-        movement=_pivoted_movement(definition, delta, attribution, pivot),
-        noise=_noise_verdict(
-            definition,
-            delta,
-            None if binding is None else binding.value,
-            withheld=one_sided,
-        ),
+        movement=_pivoted_movement(definition, delta, attribution, pivot, noise),
+        noise=noise,
         noise_floor=None if binding is None else binding.value,
         noise_floor_kind=None if binding is None else binding.kind,
         noise_floors=applicable,
@@ -1483,6 +1503,7 @@ def _pivoted_movement(
     delta: float,
     attribution: Attribution | None,
     pivot: ReportPivot,
+    noise: NoiseVerdict,
 ) -> Movement:
     """Return the verdict, given what the report holds fixed.
 
@@ -1498,7 +1519,7 @@ def _pivoted_movement(
     """
 
     if attribution is None:
-        return _movement(definition.direction, delta)
+        return _movement(definition.direction, delta, noise)
     if pivot is ReportPivot.CHECKPOINT:
         # The environment has to have provably held still; an unverifiable
         # claim of sameness is exactly what must not pass. A condition change
@@ -1507,7 +1528,7 @@ def _pivoted_movement(
             return Movement.CONFOUNDED
         if attribution.conditions is AxisChange.CHANGED:
             return Movement.CONFOUNDED
-        return _movement(definition.direction, delta)
+        return _movement(definition.direction, delta, noise)
 
     # The environment pivot asks whether the machine got faster, so what has to
     # hold still is the thing being measured on it. Where a benchmark declares
@@ -1521,7 +1542,7 @@ def _pivoted_movement(
     )
     if held is not AxisChange.UNCHANGED:
         return Movement.CONFOUNDED
-    return _movement(definition.direction, delta)
+    return _movement(definition.direction, delta, noise)
 
 
 def _applicable_floors(
@@ -1536,11 +1557,14 @@ def _applicable_floors(
 ) -> tuple[tuple[NoiseFloor, ...], tuple[str, ...]]:
     """Return the floors that apply to this comparison, and the kinds refused.
 
-    Two sources can supply a floor. A benchmark whose floor is a function of
-    its own configuration attaches it to the measurement, which is the only
-    place it can be right; a calibration pass characterizes a floor for the
-    whole series. Where both exist for one kind, the wider one is kept, since
-    a floor that understates the noise is worse than one that overstates it.
+    Two sources can supply a floor. Each reading carries the dispersion of its
+    own units, and the two combine into the floor of the delta between them; a
+    calibration pass characterizes a floor for the whole series. Where both
+    produce one for a kind, the wider is kept, since a floor that understates
+    the noise is worse than one that overstates it. A dispersion only one
+    reading carries produces nothing to keep: it describes that operand and not
+    the difference, so a characterization spanning the same kind decides the
+    verdict alone even where the lone dispersion is wider.
 
     ``executions`` and ``trainings`` are the scopes this delta spans, which is
     what decides whether a scoped floor describes it. A delta whose two sides
@@ -1549,13 +1573,12 @@ def _applicable_floors(
     configuration by no training floor; reporting the noise as unknown there is
     the honest answer.
 
-    An attached floor one side offered and the other did not is refused for the
-    same reason: it describes one operand rather than the difference, and
-    nothing here says it is the wider of the two. The side that offered nothing
-    may be noisier, and where a benchmark withholds a floor per reading it may
-    not be an estimate at all. Those kinds are returned beside the floors so a
-    report can say which qualification it declined to borrow, since keeping the
-    widest of what is left would otherwise look like an ordinary reading.
+    A dispersion one side carries and the other does not is refused for the same
+    reason: it describes one operand rather than the difference, and nothing
+    here says the side that carries none is the narrower. Those kinds are
+    returned beside the floors so a report can say which qualification it
+    declined to borrow, since keeping the widest of what is left would otherwise
+    look like an ordinary reading.
 
     A metric that declares why resampling its units cannot estimate its
     dispersion is refused a data-sampling floor here, whichever source offered
@@ -1573,23 +1596,28 @@ def _applicable_floors(
         executions=executions,
         trainings=trainings,
     )
-    baseline_kind = None if baseline.noise_floor is None else baseline.noise_floor.kind
-    current_kind = None if current.noise_floor is None else current.noise_floor.kind
+    baseline_kind = None if baseline.dispersion is None else baseline.dispersion.kind
+    current_kind = None if current.dispersion is None else current.dispersion.kind
+    combined = (
+        _combined(baseline.dispersion, current.dispersion)
+        if baseline.dispersion is not None
+        and current.dispersion is not None
+        and baseline_kind == current_kind
+        else None
+    )
     # What a source spanning the whole delta covers: a series characterization,
-    # the paired estimator, or both measurements offering the same kind.
+    # the paired estimator, or the two readings combined. Read off the combined
+    # floor itself, so a kind cannot be reported as spanning with no floor
+    # behind it.
     spanning = {floor.kind for floor in indexed}
     if comparison_floor is not None:
         spanning.add(comparison_floor.kind)
-    if baseline_kind is not None and baseline_kind == current_kind:
-        spanning.add(baseline_kind)
+    if combined is not None:
+        spanning.add(combined.kind)
     one_sided = {
         kind for kind in (baseline_kind, current_kind) if kind is not None
     } - spanning
-    candidates = [
-        floor
-        for floor in (current.noise_floor, baseline.noise_floor)
-        if floor is not None and floor.kind not in one_sided
-    ]
+    candidates = [] if combined is None else [combined]
     candidates.extend(indexed)
     if comparison_floor is not None:
         # A paired floor is the data-sampling uncertainty of this exact delta.
@@ -1613,10 +1641,49 @@ def _applicable_floors(
     return tuple(widest[kind] for kind in sorted(widest)), tuple(sorted(one_sided))
 
 
-def _movement(direction: MetricDirection, delta: float) -> Movement:
+def _combined(baseline: MetricDispersion, current: MetricDispersion) -> NoiseFloor:
+    """Return the floor the two readings' own dispersions imply for their delta.
+
+    The caller has already established that the two dispersions share a kind,
+    which is what lets the combined floor carry ``baseline``'s.
+
+    Both sources are named, baseline first, where the two readings describe
+    themselves differently: a floor combined from a thousand-game reading and a
+    forty-game one is neither reading's, and which side contributed the width is
+    the first thing a reader chasing a wide floor wants. Two readings of one
+    benchmark at one size describe themselves identically and are named once.
+    """
+
+    named = [
+        source for source in (baseline.source, current.source) if source is not None
+    ]
+    return NoiseFloor(
+        value=combined_floor(baseline, current),
+        kind=baseline.kind,
+        source=" + ".join(dict.fromkeys(named)) or None,
+        estimator=COMBINED_DISPERSION_METHOD,
+    )
+
+
+def _movement(
+    direction: MetricDirection,
+    delta: float,
+    noise: NoiseVerdict,
+) -> Movement:
+    """Return the verdict on the delta, which noise can withdraw.
+
+    A delta inside its floor is not a smaller improvement than one that clears
+    it; it is a number that has not been shown to have moved. Reporting the sign
+    of it as ``better`` is how a row comes to read ``better`` and ``within`` at
+    once, which is the reading that sends somebody to defend a change the
+    benchmark cannot distinguish from its own noise.
+    """
+
     if direction is MetricDirection.INFORMATIONAL:
         return Movement.INFORMATIONAL
-    if math.isclose(delta, 0.0, abs_tol=0.0, rel_tol=0.0):
+    if noise is NoiseVerdict.WITHIN or math.isclose(
+        delta, 0.0, abs_tol=0.0, rel_tol=0.0
+    ):
         return Movement.UNCHANGED
     improved = (
         delta < 0.0 if direction is MetricDirection.LOWER_IS_BETTER else delta > 0.0

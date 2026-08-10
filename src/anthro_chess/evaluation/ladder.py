@@ -119,10 +119,11 @@ from anthro_chess.evaluation.results import (
     DatasetReference,
     ExecutionRecord,
     Measurement,
-    NoiseFloor,
+    MetricDispersion,
     ResultEnvelope,
-    floor_from_dispersion,
+    measured_dispersion,
     measurement,
+    self_combined_floor,
 )
 from anthro_chess.evaluation.results.fingerprints import (
     FingerprintError,
@@ -152,7 +153,9 @@ from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
-LADDER_BENCHMARK_VERSION = 1
+#: Version 2 stores each quantity's own dispersion where version 1 stored the
+#: floor and the coverage that scaled it.
+LADDER_BENCHMARK_VERSION = 2
 
 LADDER_KIND = "rating-ladder"
 LADDER_BENCHMARK = BenchmarkReference(
@@ -185,13 +188,13 @@ LADDER_DETERMINISTIC_METHOD = "deterministic-seats"
 #: was never drawn.
 LADDER_UNRESOLVED_METHOD = "too-few-redrawn-games"
 
-#: The noise a ladder floor bounds. A rollout has no fixed data to re-measure
+#: The noise a ladder spread bounds. A rollout has no fixed data to re-measure
 #: on — the games are the draw — so resampling them and re-running under another
 #: seed estimate the same quantity, and that quantity is what qualifies a delta
 #: between two checkpoints.
 LADDER_FLOOR_KIND: NoiseFloorKind = "evaluation"
 
-#: What the temperature response's floors are filed under. Seats and rows name
+#: What the temperature response's spreads are filed under. Seats and rows name
 #: themselves; the response spans the whole grid and has no narrower scope.
 RESPONSE_SCOPE = "response"
 
@@ -673,8 +676,8 @@ class LadderResolution:
     One estimate for the whole ladder rather than one per reported number,
     because there is one ladder: ordering, slope, span, ladder error and both
     temperature responses are functions of the same fitted ratings, so a
-    resample that redraws the games moves all of them together and their floors
-    come off the same refits.
+    resample that redraws the games moves all of them together and their
+    spreads come off the same refits.
 
     A quantity may have none, and that is a state rather than a gap. A seat the
     fit clamped has no finite maximum-likelihood rating, so its number is a
@@ -684,22 +687,22 @@ class LadderResolution:
     a number with nothing beside it.
     """
 
-    #: Floors keyed by the scope they were read at and the metric they qualify.
-    #: The scope is a seat's label, a temperature row's label, or ``response``.
-    floors: Mapping[tuple[str, str], NoiseFloor]
-    #: Why a quantity has no floor, keyed the same way.
+    #: Spreads keyed by the scope they were read at and the metric they
+    #: qualify. The scope is a seat's label, a temperature row's label, or
+    #: ``response``.
+    dispersions: Mapping[tuple[str, str], MetricDispersion]
+    #: Why a quantity has no spread, keyed the same way.
     unqualifiable: Mapping[tuple[str, str], str]
     method: str
-    #: What every floor here claims. Both scale it, so a stored width cannot be
-    #: read or compared against another reading's without them.
-    coverage: float
+    #: The confidence the bound beside every spread carries, per decision 0026.
+    #: A stored bound cannot be read without it.
     confidence: float
     replayed_pairings: int
     #: Everything below counts what a resample did, so all of it is zero where
     #: none was drawn. Defaulted rather than restated, so the two paths that
     #: draw nothing cannot come to disagree about what that looks like.
     #:
-    #: Resamples drawn. Zero on a stated floor, which does not depend on
+    #: Resamples drawn. Zero on a stated spread, which does not depend on
     #: resampling and stands where a bootstrap could not.
     resamples: int = 0
     #: Resamples that produced a fit. Below ``resamples`` where a draw left
@@ -711,35 +714,44 @@ class LadderResolution:
     #: seats are excluded: they replay, so they contribute no spread to bound.
     redrawn_games: int = 0
     #: Resamples whose refit ran out of iterations. A diagnostic beside the
-    #: floors rather than a filter on them: the spread of an estimator that is
+    #: spreads rather than a filter on them: the spread of an estimator that is
     #: struggling is still the spread of the number the benchmark reports, and a
-    #: reader deciding how much to trust the floor needs to see it.
+    #: reader deciding how much to trust it needs to see it.
     non_convergent_resamples: int = 0
 
-    def floor(self, scope: str, metric: str) -> NoiseFloor | None:
-        """Return the floor beside one reported quantity, if it has one."""
+    def dispersion(self, scope: str, metric: str) -> MetricDispersion | None:
+        """Return the spread beside one reported quantity, if it has one."""
 
-        return self.floors.get((scope, metric))
+        return self.dispersions.get((scope, metric))
+
+    def floor(self, scope: str, metric: str) -> float | None:
+        """Return what a delta against a reading like this one would clear.
+
+        A ladder reading resolves nothing on its own, so what a single reading
+        can show is the floor the other operand matching it would produce.
+        """
+
+        spread = self.dispersion(scope, metric)
+        return None if spread is None else self_combined_floor(spread)
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of the whole resolution estimate."""
 
         return {
             "method": self.method,
-            "coverage": self.coverage,
             "confidence": self.confidence,
             "resamples": self.resamples,
             "fitted_resamples": self.fitted_resamples,
             "redrawn_games": self.redrawn_games,
             "replayed_pairings": self.replayed_pairings,
             "non_convergent_resamples": self.non_convergent_resamples,
-            "floors": [
+            "dispersions": [
                 {
                     "scope": scope,
                     "metric": metric,
-                    "floor": floor.model_dump(mode="json"),
+                    "dispersion": dispersion.model_dump(mode="json"),
                 }
-                for (scope, metric), floor in sorted(self.floors.items())
+                for (scope, metric), dispersion in sorted(self.dispersions.items())
             ],
             "unqualifiable": [
                 {"scope": scope, "metric": metric, "reason": reason}
@@ -1415,9 +1427,10 @@ def _resolution(
         # attributable to the weights alone — a seat pinned at the declared
         # spread included, since it is pinned identically both times.
         return LadderResolution(
-            floors={
-                key: NoiseFloor(
+            dispersions={
+                key: MetricDispersion(
                     value=0.0,
+                    bound=0.0,
                     kind=LADDER_FLOOR_KIND,
                     source=_floor_source(LADDER_DETERMINISTIC_METHOD),
                     estimator=LADDER_DETERMINISTIC_METHOD,
@@ -1426,7 +1439,6 @@ def _resolution(
             },
             unqualifiable={},
             method=LADDER_DETERMINISTIC_METHOD,
-            coverage=settings.coverage,
             confidence=settings.confidence,
             replayed_pairings=replayed,
         )
@@ -1438,7 +1450,7 @@ def _resolution(
         # computed at all. Saying so beats failing a reading whose games are
         # already played.
         return LadderResolution(
-            floors={},
+            dispersions={},
             unqualifiable={
                 key: (
                     "the pairings a fresh seed would redraw hold fewer than two "
@@ -1448,7 +1460,6 @@ def _resolution(
             }
             | unqualifiable,
             method=LADDER_UNRESOLVED_METHOD,
-            coverage=settings.coverage,
             confidence=settings.confidence,
             redrawn_games=redrawn_games,
             replayed_pairings=replayed,
@@ -1486,7 +1497,7 @@ def _resolution(
             if key in replicates:
                 replicates[key].append(value)
 
-    floors: dict[tuple[str, str], NoiseFloor] = {}
+    dispersions: dict[tuple[str, str], MetricDispersion] = {}
     for key in observed:
         if key in unqualifiable:
             continue
@@ -1509,30 +1520,26 @@ def _resolution(
             # comes out of the branch above.
             unqualifiable[key] = (
                 "every resample returned the same value, so the redraw could "
-                "not move it and there is no spread to bound; a stated floor of "
-                "zero is a different claim and is reported as one"
+                "not move it and there is no spread to bound; a stated spread "
+                "of zero is a different claim and is reported as one"
             )
             continue
-        floors[key] = NoiseFloor(
-            value=floor_from_dispersion(
-                dispersion,
-                # The games are the independent replicates, and the resample
-                # count is not — but a spread read off three surviving refits is
-                # known no better than three numbers allow, whichever is the
-                # scarcer of the two.
-                degrees_of_freedom=min(redrawn_games, len(values)) - 1,
-                coverage=settings.coverage,
-                confidence=settings.confidence,
-            ),
+        dispersions[key] = measured_dispersion(
+            dispersion,
             kind=LADDER_FLOOR_KIND,
+            # The games are the independent replicates, and the resample count
+            # is not — but a spread read off three surviving refits is known no
+            # better than three numbers allow, whichever is the scarcer of the
+            # two.
+            degrees_of_freedom=min(redrawn_games, len(values)) - 1,
+            confidence=settings.confidence,
             source=source,
             estimator=LADDER_BOOTSTRAP_METHOD,
         )
     return LadderResolution(
-        floors=floors,
+        dispersions=dispersions,
         unqualifiable=unqualifiable,
         method=LADDER_BOOTSTRAP_METHOD,
-        coverage=settings.coverage,
         confidence=settings.confidence,
         resamples=settings.resamples,
         fitted_resamples=fitted,
@@ -1936,9 +1943,9 @@ def _seat_measurements(
     moving the profile has changed the shape of the mistakes, which no strength
     number can show.
 
-    The error profile carries no floor. It is a mean over decisions rather than
-    an output of the fit, so the refit the other floors come from does not reach
-    it, and a delta in one reports its noise as unknown — which is what a floor
+    The error profile carries no spread. It is a mean over decisions rather than
+    an output of the fit, so the refit the others come from does not reach it,
+    and a delta in one reports its noise as unknown — which is what a floor
     somebody could still produce should read as.
     """
 
@@ -2050,11 +2057,11 @@ def _measurements(
 ) -> tuple[Measurement, ...]:
     """Return one unit's measurements, each beside what the reading can resolve.
 
-    The floor travels on the measurement rather than being characterized against
-    the series. Sample size is deliberately outside a ladder's identity — more
-    seeds estimate the same ladder more precisely — so a floor filed against the
-    series would be looked up later beside a reading taken at a different size,
-    and be wrong by whatever the two sizes differ by.
+    The spread travels on the measurement rather than being characterized
+    against the series. Sample size is deliberately outside a ladder's identity
+    — more seeds estimate the same ladder more precisely — so a spread filed
+    against the series would be looked up later beside a reading taken at a
+    different size, and be wrong by whatever the two sizes differ by.
     """
 
     return tuple(
@@ -2063,8 +2070,8 @@ def _measurements(
             value,
             workload=workload,
             sample_size=sample_size,
-            noise_floor=(
-                None if resolution is None else resolution.floor(scope, identifier)
+            dispersion=(
+                None if resolution is None else resolution.dispersion(scope, identifier)
             ),
         )
         for identifier, value, sample_size in values
@@ -2141,7 +2148,7 @@ def _log_summary(result: LadderBenchmarkResult) -> None:
             resolution.method,
             resolution.redrawn_games,
             resolution.replayed_pairings,
-            len(resolution.floors),
+            len(resolution.dispersions),
             len(resolution.unqualifiable),
         )
     for reading in result.readings:

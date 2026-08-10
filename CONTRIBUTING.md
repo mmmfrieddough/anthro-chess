@@ -136,20 +136,24 @@ uv run anthro eval prepare-puzzles --config configs/evaluation/lichess-puzzles-v
 Three digests carry that verification, and a mismatch in each means something
 different:
 
-- `[archive] sha256` in the corpus and puzzle configurations — the downloaded
-  release is the pinned one. A mismatch means the source moved, not that the
-  download is corrupt in some recoverable way.
+- `[archive] sha256` in the corpus configuration — the downloaded release is the
+  pinned one. A mismatch means the source moved, not that the download is
+  corrupt in some recoverable way.
 - `expected_game_ids_sha256` in the pool configuration — the frozen pool holds
   exactly the games the recorded one did. A mismatch means the corpus, the
   filters, or the split seed moved, and the benchmark needs a new pool version
   rather than a retry.
-- `expected_puzzles_sha256` in the puzzle configuration — the deterministic
-  selection over the pinned archive reproduced.
+- `expected_puzzles_sha256` in the puzzle configuration — the vendored selection
+  is the one this configuration pins. A mismatch means the two were changed
+  apart, and `scripts/vendor-puzzle-selection.py` is what brings them back
+  together.
 
-The network is used only to fetch those two archives, and the game archive is
-by far the larger of them. Preparation, freezing, training, and evaluation all
-run offline afterwards. Each archive is kept under the data root, so a later
-rebuild re-verifies what is already there rather than fetching it again.
+The network is used only to fetch the game archive, which is kept under the data
+root, so a later rebuild re-verifies what is already there rather than fetching
+it again. Preparation, freezing, training, and evaluation all run offline
+afterwards, and so does the puzzle step: upstream serves one rolling puzzle
+export that stops resolving as soon as it regenerates, so the selection cut from
+it is vendored in the repository instead.
 
 For a check that needs no network and no large download, the repository carries
 a sample game that prepares, trains, and serves UCI in seconds. `README.md` has

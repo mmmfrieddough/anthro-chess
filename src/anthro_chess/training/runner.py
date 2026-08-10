@@ -93,7 +93,7 @@ from anthro_chess.training.tensorboard import (
     TrainingTensorBoard,
 )
 
-RUN_ARTIFACT_VERSION = 6
+RUN_ARTIFACT_VERSION = 7
 logger = logging.getLogger(__name__)
 
 
@@ -127,10 +127,88 @@ class _DataSelection:
 @dataclass(frozen=True)
 class _OptimizationResult:
     processed_positions: int
+    completed_steps: int
     checkpoint_path: Path
     readings: tuple[CadenceReading, ...]
     instrumentation_seconds: float
     efficiency_paths: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RunRecordWriter:
+    """Keep ``run.json`` describing the checkpoints beside it while a run lasts.
+
+    A run is selected through its record, so a run that is signalled, crashes,
+    or loses its host keeps loadable checkpoints only where the record already
+    describes them — a record assembled once the step loop returns would cost
+    such a run everything but its weights, however long it trained. Each write
+    replaces the file atomically, so a process that dies during one leaves the
+    previous record rather than a truncated one.
+    """
+
+    path: Path
+    identity: Mapping[str, object]
+    starting_step: int
+    resumed_from: Path | None
+    initial_parameter_sha256: str
+
+    def write(
+        self,
+        *,
+        completed_steps: int,
+        processed_positions: int,
+        checkpoint: Path | None,
+        complete: bool,
+        final_parameter_sha256: str | None = None,
+        validation: Mapping[str, object] | None = None,
+        evaluation: Mapping[str, object] | None = None,
+        efficiency: Mapping[str, object] | None = None,
+    ) -> None:
+        """Replace the record with one describing the run through ``checkpoint``."""
+
+        record: dict[str, object] = {
+            **self.identity,
+            # Not derivable from the step counts below: a run signalled after
+            # its last checkpoint but before validation reached its target step
+            # and still never finished.
+            "complete": complete,
+            "optimization": {
+                "optimizer": "Adam",
+                "starting_step": self.starting_step,
+                # The step whose checkpoint this record describes, which lags
+                # the last step executed when a run dies between checkpoints.
+                "completed_steps": completed_steps,
+                "processed_positions": processed_positions,
+                "resumed_from": (
+                    str(self.resumed_from.resolve())
+                    if self.resumed_from is not None
+                    else None
+                ),
+                "checkpoint": (
+                    str(checkpoint.resolve()) if checkpoint is not None else None
+                ),
+                "initial_parameter_sha256": self.initial_parameter_sha256,
+                "final_parameter_sha256": final_parameter_sha256,
+            },
+            "validation": validation,
+            "evaluation": evaluation,
+            "efficiency": efficiency,
+        }
+        temporary = self.path.with_name(f".{self.path.name}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        except OSError as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise TrainingError(
+                f"cannot write run record {self.path}: {error}"
+            ) from error
 
 
 @dataclass(frozen=True)
@@ -371,9 +449,35 @@ def run_training(
         )
 
         initial_parameter_sha256 = parameter_sha256(model)
+        run_record = _RunRecordWriter(
+            path=run_path,
+            # The identities a checkpoint carries are the identities its run
+            # record has to agree with: a load gates the two against each other,
+            # and the machine report reads the record's copy alone.
+            identity={
+                **checkpoint_metadata,
+                "version": RUN_ARTIFACT_VERSION,
+                "seed": config.seed,
+                "hardware": hardware_record(device),
+            },
+            starting_step=starting_step,
+            resumed_from=resumed_from,
+            initial_parameter_sha256=initial_parameter_sha256,
+        )
         if resumed_from is None:
             clear_latest_checkpoint(output_directory)
         _prepare_metrics(metrics_path, through_step=starting_step)
+        # Before the first checkpoint rather than after it, because whatever
+        # this replaces describes a different run: the finished one a resume
+        # continues, or an earlier one that reused the directory. Left until the
+        # first checkpoint, either would have this run's whole first interval
+        # reading as a run that completed.
+        run_record.write(
+            completed_steps=starting_step,
+            processed_positions=processed_positions,
+            checkpoint=None,
+            complete=False,
+        )
         efficiency_monitor.begin_optimization(starting_step=starting_step)
         optimization = _optimize(
             model,
@@ -395,6 +499,7 @@ def run_training(
             schedule=schedule,
             run_id=run_id,
             efficiency=efficiency_recorder,
+            run_record=run_record,
         )
         _synchronize_device(device)
         final_parameter_sha256 = parameter_sha256(model)
@@ -442,35 +547,18 @@ def run_training(
                 detail=efficiency_detail,
             ),
         )
-        run_record = {
-            "version": RUN_ARTIFACT_VERSION,
-            "resolved_config": resolved_config.as_record(),
-            "seed": config.seed,
-            "code": code_record,
-            "data": data_record,
-            "model": model_identity,
-            "action_vocabulary": action_vocabulary_identity(),
-            "encoding": encoding_identity(),
-            "execution": execution_record,
-            "hardware": hardware_record(device),
-            "optimization": {
-                "optimizer": "Adam",
-                "starting_step": starting_step,
-                "completed_steps": config.steps,
-                "processed_positions": optimization.processed_positions,
-                "resumed_from": (
-                    str(resumed_from.resolve()) if resumed_from is not None else None
-                ),
-                "checkpoint": str(optimization.checkpoint_path.resolve()),
-                "initial_parameter_sha256": initial_parameter_sha256,
-                "final_parameter_sha256": final_parameter_sha256,
-            },
-            "validation": (
+        run_record.write(
+            completed_steps=optimization.completed_steps,
+            processed_positions=optimization.processed_positions,
+            checkpoint=optimization.checkpoint_path,
+            complete=True,
+            final_parameter_sha256=final_parameter_sha256,
+            validation=(
                 validation_metrics.as_record()
                 if validation_metrics is not None
                 else None
             ),
-            "evaluation": {
+            evaluation={
                 "cadences": schedule.as_record(),
                 "readings": [
                     {
@@ -483,16 +571,12 @@ def run_training(
                 ],
                 "instrumentation_seconds": optimization.instrumentation_seconds,
             },
-            "efficiency": {
+            efficiency={
                 **efficiency_summary.as_record(),
                 "coordinates": efficiency_recorder.execution.coordinates,
                 "recorded": [str(path) for path in efficiency_paths],
                 "detail": [str(path) for path in efficiency_detail_paths],
             },
-        }
-        run_path.write_text(
-            json.dumps(run_record, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
     except torch.OutOfMemoryError as error:  # pragma: no cover - needs a real device
         raise TrainingError(
@@ -561,11 +645,13 @@ def _optimize(
     schedule: CadenceSchedule,
     run_id: str,
     efficiency: _EfficiencyRecorder,
+    run_record: _RunRecordWriter,
 ) -> _OptimizationResult:
     model.train()
     monitor = efficiency.monitor
     training_sha256 = training_identity_sha256(compatibility)
     saved_checkpoint: Path | None = None
+    saved_step = starting_step
     data_seconds = 0.0
     transfer_seconds = 0.0
     compute_seconds = 0.0
@@ -808,6 +894,7 @@ def _optimize(
                     )
             if saving:
                 checkpoint_started = time.perf_counter()
+                saved_step = global_step
                 saved_checkpoint = checkpoint_path(output_directory, global_step)
                 save_training_checkpoint(
                     saved_checkpoint,
@@ -822,6 +909,12 @@ def _optimize(
                     metadata=checkpoint_metadata,
                     device=device,
                 )
+                run_record.write(
+                    completed_steps=global_step,
+                    processed_positions=processed_positions,
+                    checkpoint=saved_checkpoint,
+                    complete=False,
+                )
                 monitor.charge(
                     time.perf_counter() - checkpoint_started,
                     kind="checkpoint",
@@ -831,6 +924,7 @@ def _optimize(
         raise TrainingError("training completed without saving a checkpoint")
     return _OptimizationResult(
         processed_positions=processed_positions,
+        completed_steps=saved_step,
         checkpoint_path=saved_checkpoint,
         readings=tuple(readings),
         instrumentation_seconds=health_monitor.instrumentation_seconds,

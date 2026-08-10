@@ -451,12 +451,15 @@ committed summary tier.
 
 ## Noise Characterization
 
-> **Superseded in design, not yet in code.**
+> **Superseded in design, partly in code.**
 > `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
 > replaces the four kinds, the scope rules and the stored characterizations
 > described below with one dispersion per reading, combined at comparison time.
-> This section still describes what the code does today. It is rewritten as that
-> migration lands, and the tracker issue holds the order.
+> The combining has landed: a reading carries its own dispersion and a delta is
+> floored by the two in front of it. The kinds, the scope rules and the
+> characterization store are still here for the sources a reading cannot
+> measure, and this section still describes those. It is rewritten as the rest
+> of that migration lands, and the tracker issue holds the order.
 
 A delta is not a finding until it is larger than the noise in the measurement.
 Reports should annotate every change with the noise floor it did or did not
@@ -524,13 +527,22 @@ question, rather than because it is always large.
 All four reduce to one reportable quantity: the spread of the metric across
 replicates of that noise source. A **floor** is that spread expressed as a
 delta, because a delta is what a report shows and a standard deviation is not
-directly comparable to one. When two measurements use independent inputs, the
-floor covers the difference between two independent replicates at a declared
-confidence. When comparable checkpoints score the same frozen units, the
-data-sampling floor instead comes from resampling their paired per-unit
-differences. One coverage factor is declared per characterization, and
-`anthro_chess.evaluation.results` owns the arithmetic, stored inputs, and
-lookup.
+directly comparable to one.
+
+A reading stores the spread and never a floor built from it. The variance of a
+difference is the sum of the two variances, so the floor of a delta is combined
+from the dispersion each of the two readings carries, each bounded first. That
+matters because the two readings of one metric do not share a spread: the two
+committed to this repository differ by up to two orders of magnitude on the same
+metric, and a floor computed inside either one assumes the other matched it.
+Where the two do agree the arithmetic reduces to the familiar `sqrt(2)`. A
+characterization is the case where they agree by construction, since its
+replicates are draws of one quantity, so a stored floor keeps that factor. When
+comparable checkpoints score the same frozen units, the data-sampling floor
+instead comes from resampling their paired per-unit differences. Coverage is
+applied at comparison time rather than stored on a reading, because a floor is a
+claim the comparison makes; `anthro_chess.evaluation.results` owns the
+arithmetic, stored inputs, and lookup.
 
 ### The Spread A Floor Is Built From
 
@@ -667,16 +679,15 @@ was characterized. `anthro eval noise sample` takes one process's readings and
 and records the resulting floor;
 `anthro_chess.evaluation.execution_noise` owns the procedure.
 
-Because a data-sampling floor costs only a resampling of numbers a run already
-computed, the checkpoint evaluation runner produces its own and records it
-alongside the reading where its inputs are independent. A deterministic
-fixed-input benchmark retains aligned per-unit contributions in the detail tier
-instead; reporting joins those contributions and bootstraps the checkpoint
-delta. Such a floor belongs to the comparison and cannot correctly be attached
-to either checkpoint alone. A benchmark whose floor is a function of its own
-configuration rather than of a series — a distributional distance, whose floor
-grows with the category count and shrinks with the sample — attaches the floor
-to its measurement instead, because that is the only place it can be correct.
+Because a data-sampling spread costs only a resampling of numbers a run already
+computed, the checkpoint evaluation runner produces its own and attaches it to
+each measurement it records. Attaching it is what lets two readings of one
+series each carry their own: a spread filed against the series would be one
+number where the comparison needs two. A deterministic fixed-input benchmark
+retains aligned per-unit contributions in the detail tier instead; reporting
+joins those contributions and bootstraps the checkpoint delta. Such a floor
+belongs to the comparison and cannot correctly be attached to either checkpoint
+alone.
 
 **A pair that could not pair says so.** The contributions are machine-local
 while the summary record is committed, so a reading taken elsewhere routinely
@@ -752,7 +763,10 @@ conservative independent-input estimate is suitable before representative
 checkpoint pairs exist. Once they do, paired pilot deltas give the more relevant
 power calculation for a frozen benchmark. Either floor shrinks with the square
 root of the units behind it, so how many games an axis needs in order to resolve
-an effect of a given size is computable rather than guessed.
+an effect of a given size is computable rather than guessed, and `anthro eval
+noise plan` computes it from the newest reading that measured its own spread
+over a counted sample. No benchmark-level resolution constant is declared or
+kept current for it.
 
 ## Benchmark Data Layers
 
@@ -1754,17 +1768,22 @@ published puzzle set fixes the scale externally, so checkpoints separated by a
 year were measured against the same thing. It is also the one benchmark whose
 inputs are immune to pool generation cuts, needing no re-baselining at a seam.
 
-The fixed yardstick is the built artifact, not the source it is cut from.
+The fixed yardstick is the selected rows, not the source they are cut from.
 Upstream publishes puzzles at a single rolling URL with no dated snapshot
-beside it, so a pinned source digest stops being fetchable the moment upstream
-regenerates, and the build then correctly refuses rather than quietly selecting
-from different data. Recovering means re-pinning to whatever upstream now
-serves, which selects different puzzles and so changes both digests and the set
-identity. That is free only while no puzzle reading has been committed to the
-results store, because there is then nothing to be incomparable with;
-afterwards it is a new set version rather than a repair, and the readings on
-either side of it are separate series. So what decides a re-pin is the store,
-not the source.
+beside it and no history, so a pinned source digest stops being fetchable the
+moment upstream regenerates — which it did three days after the first pin was
+taken. The selection is therefore vendored in the repository and the build reads
+it rather than the archive, so the pinned identity stays reachable on a machine
+that has never downloaded anything.
+`docs/decisions/0044-the-puzzle-selection-is-vendored-not-refetched.md` says why
+that boundary moved.
+
+Re-pinning to whatever upstream now serves selects different puzzles and so
+changes both digests and the set identity. That is free only while no puzzle
+reading has been committed to the results store, because there is then nothing
+to be incomparable with; afterwards it is a new set version rather than a
+repair, and the readings on either side of it are separate series. So what
+decides a re-pin is the store, not the source.
 
 Greedy and sampled solve rates should both be reported against a declared
 reference temperature, since the gap between them is the same quantity the
@@ -1772,20 +1791,22 @@ decision decomposition measures. Multi-move puzzles distinguish first-move
 accuracy from completing the line, and those are separate metrics.
 
 The puzzle set is an external dependency with its own identity and license
-record because a set version change alters what a number means. It follows the
-same boundary as the frozen evaluation pool: the acquisition and selection
-recipe plus expected identity are committed, while the generated records and
-raw source stay under the data root. Puzzle positions derive from real games on
-the same platform the corpus is drawn from, so a source-game-key join against
-the training selection reports the overlap rate as provenance. The measured
-risk is small, since one exposure among millions does not produce recall and
-worst-case inflation is bounded by the overlap fraction. It is worth reporting
-anyway because it grows silently as the corpus expands, and the join is cheap
-enough that there is no reason to carry the uncertainty.
+record because a set version change alters what a number means. The selection
+recipe, expected identity, and selected rows are all committed; the generated
+artifact and the raw archive stay under the data root. Puzzle positions derive
+from real games on the same platform the corpus is drawn from, so a
+source-game-key join against the training selection reports the overlap rate as
+provenance. The measured risk is small, since one exposure among millions does
+not produce recall and worst-case inflation is bounded by the overlap fraction.
+It is worth reporting anyway because it grows silently as the corpus expands,
+and the join is cheap enough that there is no reason to carry the uncertainty.
 
-`anthro eval prepare-puzzles` builds the artifact selected by
-`configs/evaluation/lichess-puzzles-v1.toml`; `anthro eval puzzles`, selected by
-`configs/evaluation/puzzle-rating-response.toml`, reads it. The canonical set is
+`anthro eval prepare-puzzles` builds the artifact from the vendored selection
+and the pin in `configs/evaluation/lichess-puzzles-v1.toml`, refusing when the
+two disagree; `anthro eval puzzles`, selected by
+`configs/evaluation/puzzle-rating-response.toml`, reads it.
+`scripts/vendor-puzzle-selection.py` is the only path that reads the archive,
+and it runs when the set is deliberately re-pinned. The canonical set is
 sized from a conservative two-independent-proportions calculation at declared
 confidence and power. That is a planning bound made before representative
 checkpoint pairs exist. Actual checkpoint reports resample the
@@ -2812,17 +2833,18 @@ arm nobody adopted would otherwise become some later report's baseline.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
 because of which floors exist. Almost every floor that qualifies a checkpoint
-delta today is a data-sampling floor, whether the reading bootstrapped it or a
-report paired it, and such a floor says the delta survives a different draw of
-evaluation games rather than that the change produced it. The exception claims
-less rather than more: a replayed reading states a floor of zero, which says its
-games cannot be redrawn at all and therefore says nothing about a draw that
-could be. Two arms differ by their initialization seeds as well as by the
-change, so clearing either kind establishes that two models differ, not that the
-change is why. That is
-not a theoretical gap. Measured at proof scale, two arms differing only by their
-initialization seed cleared 14 of 54 floored metrics and read better on every
-held-out and legality metric; decision 0029 holds the reading.
+delta today is combined from what the two readings' own games could have moved,
+and such a floor says the delta survives a different draw of evaluation games
+rather than that the change produced it. The report says so beside the verdict:
+`cleared` means larger than benchmark noise, and never that the change caused
+it. The exception claims less rather than more: a replayed reading states a
+floor of zero, which says its games cannot be redrawn at all and therefore says
+nothing about a draw that could be. Two arms differ by their initialization
+seeds as well as by the change, so clearing either kind establishes that two
+models differ, not that the change is why. That is not a theoretical gap.
+Measured at proof scale, two arms differing only by their initialization seed
+cleared 14 of 54 floored metrics and read better on every held-out and legality
+metric; decision 0029 holds the reading.
 
 A claim therefore rests on one of two things: a delta far enough outside seed
 variance that nothing else explains it, or a training floor characterized from

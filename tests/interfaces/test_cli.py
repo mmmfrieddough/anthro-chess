@@ -1392,17 +1392,22 @@ def test_eval_bridge_records_lists_and_revokes(
     assert "No bridges are recorded." in capsys.readouterr().out
 
 
-def _record_sampling_floor(store_root: Path, *, floor: float, games: int) -> None:
-    """Record a data-sampling floor of the kind an evaluation run bootstraps."""
+def _record_sampled_reading(store_root: Path, *, floor: float, games: int) -> None:
+    """Record the reading an evaluation run leaves behind, spread included."""
 
+    import math
     from datetime import UTC, datetime
 
     from anthro_chess.evaluation.results import (
-        FloorEntry,
+        DEFAULT_COVERAGE,
+        BenchmarkReference,
+        CheckpointReference,
+        MetricDispersion,
         ResultsStore,
-        build_characterization,
+        build_result,
+        dataset_reference,
+        measurement,
         projection_content_digest,
-        series_fingerprint,
     )
     from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
 
@@ -1418,21 +1423,34 @@ def _record_sampling_floor(store_root: Path, *, floor: float, games: int) -> Non
         for game_id in (1, 2)
     ]
     component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
-    ResultsStore(store_root).append_characterization(
-        build_characterization(
-            kind="data-sampling",
-            method="bootstrap-over-games",
-            replicates=1_000,
-            source="the fixture pool",
-            floors=[
-                FloorEntry(
-                    metric="held_out.move_loss",
-                    fingerprint=series_fingerprint("held_out.move_loss", component),
-                    floor=floor,
-                    dispersion=floor / 2.0,
-                    dispersion_bound=floor / 2.0,
-                    degrees_of_freedom=games - 1,
-                    sampling_units=games,
+    # Chosen so a delta against a reading like this one faces exactly ``floor``.
+    bound = floor / (DEFAULT_COVERAGE * math.sqrt(2.0))
+    ResultsStore(store_root).append(
+        build_result(
+            kind="held-out-prediction",
+            benchmark=BenchmarkReference(name="move-validation", version=1),
+            checkpoint=CheckpointReference(label="checkpoint-a"),
+            data=dataset_reference(
+                pool_id="fixture-pool",
+                pool_version=1,
+                view="canonical",
+                selected_games=component.games,
+                game_ids_sha256="a" * 64,
+                components=[component],
+            ),
+            measurements=[
+                measurement(
+                    "held_out.move_loss",
+                    3.5,
+                    data=component,
+                    sample_size=games,
+                    dispersion=MetricDispersion(
+                        value=bound,
+                        bound=bound,
+                        units=games,
+                        kind="data-sampling",
+                        source="the fixture pool",
+                    ),
                 )
             ],
             recorded_at=datetime(2026, 7, 9, tzinfo=UTC),
@@ -1596,7 +1614,7 @@ def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _record_sampling_floor(tmp_path / "results", floor=0.04, games=1_000)
+    _record_sampled_reading(tmp_path / "results", floor=0.04, games=1_000)
 
     assert (
         main(
@@ -1622,7 +1640,7 @@ def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(
     assert plan["measured_games"] == 1_000
 
 
-def test_eval_noise_plan_reports_a_missing_floor_without_a_traceback(
+def test_eval_noise_plan_reports_a_missing_spread_without_a_traceback(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1644,7 +1662,7 @@ def test_eval_noise_plan_reports_a_missing_floor_without_a_traceback(
         )
         == 2
     )
-    assert "no data-sampling floor is recorded" in capsys.readouterr().err
+    assert "no reading records a sampled dispersion" in capsys.readouterr().err
 
 
 def test_eval_noise_list_says_when_nothing_is_characterized(

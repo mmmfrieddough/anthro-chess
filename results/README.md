@@ -4,22 +4,25 @@ This directory is the committed **summary tier** of the benchmark results
 store. Benchmarks append here; reports and comparisons are views over it.
 
 - `records/` holds one JSON file per benchmark result: headline metric values,
-  their series fingerprints, and the provenance needed to recompute those
-  fingerprints.
+  their series fingerprints, the dispersion each value's own units moved it by,
+  and the provenance needed to recompute those fingerprints.
 - `bridges/` holds explicit assertions that two fingerprints name the same
   series. A bridge is legitimate only when the fingerprint moved for a reason
   provably independent of the measured quantity, and revoking one is a
   reviewable diff.
-- `floors/` holds characterized noise floors: how far apart two measurements of
-  an unchanged quantity land. A floor is keyed by the same fingerprint as the
+- `floors/` holds noise floors characterized from repeated readings rather
+  than from the units one reading scored; `anthro eval noise characterize`
+  says which sources those are. A floor is keyed by the same fingerprint as the
   measurements it qualifies, so it stops applying when the series moves rather
   than lingering as a stale constant.
 
 `anthro eval run` is what appends here: it scores one checkpoint over a
 deterministic view of the frozen pool, records the held-out prediction,
-legality, and rating-dependency results for it, and bootstraps the
-data-sampling floors for that reading from the same pass. Every recording
-benchmark also appends one `benchmark-cost` record saying what the invocation
+legality, and rating-dependency results for it, and bootstraps each
+measurement's own data-sampling dispersion from the same pass. A delta between
+two such readings is floored by combining the two dispersions in front of it.
+Every recording benchmark also appends one `benchmark-cost` record saying what
+the invocation
 cost, so a claim about what a sweep can afford is a reviewable diff rather than
 a comment; `docs/decisions/0031-committed-benchmark-cost.md` explains why that
 belongs in this tier despite being a property of the machine.
@@ -53,10 +56,10 @@ The records currently here come from the two `anthro eval run` readings taken by
 the first full suite reading, on steps 100 and 8000 of `training-blitz-30k-v4`,
 at a reduced 400-game view rather than the canonical pool view. Each reading
 appends one record per family it covers — held-out prediction, rating
-dependency, and adjudicated decisions — plus its data-sampling floors, so two
-readings produce six records and two floor files. They exist to demonstrate
-that metric movement shows up as a reviewable Git diff, which had not been
-exercised with real data.
+dependency, and adjudicated decisions — each measurement carrying the spread
+bootstrapped for it, so two readings produce six records. They exist to
+demonstrate that metric movement shows up as a reviewable Git diff, which had
+not been exercised with real data.
 
 They are **pre-core**: nothing is protected before the evaluation core is
 designated, so they are deleted at #90 rather than bridged or carried forward.

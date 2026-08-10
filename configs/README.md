@@ -52,9 +52,10 @@ checkpoint, declares the rating grid and reference temperature, and names both
 the generated puzzle artifact and the normalized training selection used only
 for the source-game overlap report. Its companion puzzle-set selection pins the
 source archive, exact-rating sampling recipe, statistical size target, quality
-filters, and expected generated identity for `anthro eval prepare-puzzles`.
-Puzzle records remain under `ANTHRO_CHESS_DATA_ROOT`; only the recipe and
-expected identity are committed.
+filters, and expected generated identity for `anthro eval prepare-puzzles`. The
+generated puzzle artifact remains under `ANTHRO_CHESS_DATA_ROOT`; the rows it is
+built from are vendored beside the puzzles package, and the build refuses when
+they and this pin disagree.
 
 It also contains the generated-play rollout selection for `anthro eval rollout`,
 which declares the matrix a suite plays rather than naming a checkpoint. Values

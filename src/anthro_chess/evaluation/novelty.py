@@ -43,7 +43,6 @@ import logging
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from enum import StrEnum
 from functools import partial
 from hashlib import sha256
@@ -76,7 +75,7 @@ from anthro_chess.evaluation.noise import (
     GameTotals,
     MetricTotal,
     NoiseConfig,
-    characterize_sampling_noise,
+    sampling_dispersions,
 )
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
@@ -104,6 +103,7 @@ from anthro_chess.evaluation.results import (
     DatasetReference,
     ExecutionRecord,
     Measurement,
+    MetricDispersion,
     ResultEnvelope,
     WorkloadComponent,
     measurement,
@@ -124,10 +124,7 @@ from anthro_chess.evaluation.results.metrics import (
     NOVELTY_REALIZED_DOSE,
     MetricDefinition,
 )
-from anthro_chess.evaluation.results.noise import (
-    NoiseCharacterization,
-    NoiseCharacterizationError,
-)
+from anthro_chess.evaluation.results.noise import NoiseCharacterizationError
 from anthro_chess.evaluation.scoring import (
     SCORED_COLUMNS,
     EvaluationLoaderConfig,
@@ -508,6 +505,14 @@ def benchmark_novelty(
         execution = _execution_record(runner, config.perturbation, arm.dose)
         workload = execution.workload_component()
         dose_slug = f"{arm.dose:.4f}".replace(".", "-")
+        recorder.disperse(
+            _arm_dispersions(
+                arm,
+                config.noise,
+                component=component,
+                workload=workload,
+            )
+        )
         recorder.add(
             _arm_measurements(arm, control, component, workload),
             payload=partial(_arm_payload, arm, per_position=config.detail.per_position),
@@ -518,15 +523,6 @@ def benchmark_novelty(
             slug=f"dose-{dose_slug}",
             data=data,
             execution=execution,
-        )
-        recorder.characterize(
-            _characterize_noise(
-                arm,
-                config.noise,
-                component=component,
-                workload=workload,
-                recorded_at=recording.recorded_at,
-            )
         )
     return result
 
@@ -1027,20 +1023,19 @@ def _arm_game_totals(arm: ArmReading) -> tuple[GameTotals, ...]:
     return tuple(totals)
 
 
-def _characterize_noise(
+def _arm_dispersions(
     arm: ArmReading,
     config: NoiseConfig,
     *,
     component: DataComponent,
     workload: WorkloadComponent,
-    recorded_at: datetime,
-) -> NoiseCharacterization | None:
-    """Bootstrap this arm's own data-sampling floor over its derived games."""
+) -> dict[str, MetricDispersion]:
+    """Bootstrap this arm's own data-sampling spread over its derived games."""
 
     if not config.enabled:
-        return None
+        return {}
     try:
-        return characterize_sampling_noise(
+        return sampling_dispersions(
             merge_game_totals(_arm_game_totals(arm)),
             component=component,
             config=config,
@@ -1048,16 +1043,15 @@ def _characterize_noise(
                 f"bootstrap over {len(arm.games)} derived game(s) at novelty "
                 f"dose {arm.dose}"
             ),
-            recorded_at=recorded_at,
             workload=workload,
         )
     except NoiseCharacterizationError as error:
         logger.warning(
-            "Skipping the novelty floor at dose %s: %s",
+            "Skipping the novelty spread at dose %s: %s",
             arm.dose,
             error,
         )
-        return None
+        return {}
 
 
 def _execution_record(

@@ -162,9 +162,8 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     }
     assert result.adjudication is not None
     assert PositionPredicate.MATERIAL_GAIN in result.adjudication.predicates
-    # Three result envelopes, what the invocation cost, and the data-sampling
-    # floors bootstrapped from the same pass, all committed.
-    assert len(result.recorded_paths) == 5
+    # Three result envelopes and what the invocation cost.
+    assert len(result.recorded_paths) == 4
     assert result.checkpoint.step == 1
     assert result.checkpoint.parameter_sha256 is not None
     assert result.dataset.pool_id == "fixture-test"
@@ -272,10 +271,7 @@ def test_counting_training_frequency_commits_the_tier_series(
     )
     # A tier series is an ordinary slice of the same pass, so the bootstrap
     # qualifies it like every other one.
-    assert result.noise is not None
-    assert "held_out.move_loss_common_opening" in {
-        floor.metric for floor in result.noise.floors
-    }
+    assert metrics["held_out.move_loss_common_opening"].dispersion is not None
     held_out.verify()
 
     assert result.opening_tail is not None
@@ -397,16 +393,14 @@ def test_evaluation_records_human_referenced_forced_outcomes(
     assert payload["predicates"]["mate_available"]["overall"]["opportunities"] == 2
     envelope.verify()
 
-    assert result.noise is not None
-    floor_metrics = {entry.metric for entry in result.noise.floors}
-    # The human rate is absent because the human took the mate at both
-    # opportunities, so no resample of these games can move it. A floor of zero
+    # The human rate carries none because the human took the mate at both
+    # opportunities, so no resample of these games can move it. A spread of zero
     # there would clear every later delta rather than describe one.
-    assert "adjudicated.mate_available_policy_mass" in floor_metrics
-    assert "adjudicated.mate_available_human_rate" not in floor_metrics
+    assert metrics["adjudicated.mate_available_policy_mass"].dispersion is not None
+    assert metrics["adjudicated.mate_available_human_rate"].dispersion is None
 
 
-def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
+def test_evaluation_bootstraps_a_spread_for_every_series_it_reports(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
     training_run: Callable[..., Path],
@@ -420,36 +414,35 @@ def test_evaluation_bootstraps_a_floor_for_every_series_it_reports(
 
     result = _evaluate(_config(pool, checkpoint), store=store)
 
-    noise = result.noise
-    assert noise is not None
-    assert noise.kind == "data-sampling"
-
     # One pass bootstraps the held-out and adjudicated series together, so the
-    # floors are checked against everything that pass recorded rather than
+    # spreads are checked against everything that pass recorded rather than
     # against one envelope of it.
     reported = {
-        item.metric: item.fingerprint
+        item.metric: item
         for envelope in result.envelopes
         for item in envelope.measurements
     }
-    floors = {entry.metric: entry for entry in noise.floors}
-    # A floor is only readable beside the value it qualifies, so every floor
-    # has to land on the same series as the measurement it describes.
-    assert set(floors) <= set(reported)
-    assert "held_out.move_loss" in floors
-    # A rate the fixture's games all agree on is absent rather than floored at
-    # zero, since a redraw of those games observed that it could not move the
-    # rate rather than that nothing could.
-    assert "adjudicated.material_gain_best_rank" in floors
-    assert "adjudicated.material_gain_selected_rate" not in floors
-    for metric, entry in floors.items():
-        assert entry.fingerprint == reported[metric]
-        assert entry.sampling_units == result.view.selected_games
+    spread = {
+        metric: item.dispersion
+        for metric, item in reported.items()
+        if item.dispersion is not None
+    }
+    assert "held_out.move_loss" in spread
+    # A rate the fixture's games all agree on carries none rather than a zero,
+    # since a redraw of those games observed that it could not move the rate
+    # rather than that nothing could.
+    assert "adjudicated.material_gain_best_rank" in spread
+    assert "adjudicated.material_gain_selected_rate" not in spread
+    for dispersion in spread.values():
+        assert dispersion.kind == "data-sampling"
+        assert dispersion.bound >= dispersion.value
 
-    assert store.characterizations() == (noise,)
+    # Nothing is filed against the series, so nothing can collide there when
+    # the next reading of the same series measures its own spread.
+    assert store.characterizations() == ()
 
 
-def test_a_noise_floor_is_reproducible_and_can_be_declined(
+def test_a_sampled_spread_is_reproducible_and_can_be_declined(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
     training_run: Callable[..., Path],
@@ -466,10 +459,9 @@ def test_a_noise_floor_is_reproducible_and_can_be_declined(
         _config(pool, checkpoint, noise={"enabled": False}),
     )
 
-    assert first.noise is not None
-    assert second.noise is not None
-    assert first.noise.floors == second.noise.floors
-    assert disabled.noise is None
+    assert first.dispersions
+    assert first.dispersions == second.dispersions
+    assert disabled.dispersions == {}
 
 
 def test_dependency_tests_report_degradation_without_a_verdict(

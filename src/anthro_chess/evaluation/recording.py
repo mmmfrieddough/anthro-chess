@@ -57,7 +57,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ExecutionRecord,
     Measurement,
-    NoiseCharacterization,
+    MetricDispersion,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
@@ -182,7 +182,7 @@ class ResultRecording:
         self.store = store
         self.detail = detail
         self.envelopes: list[ResultEnvelope] = []
-        self.characterizations: list[NoiseCharacterization] = []
+        self.dispersions: dict[str, MetricDispersion] = {}
         self.detail_paths: list[Path] = []
         self._settings = resolved_config.value
         self._error = error
@@ -271,11 +271,7 @@ class ResultRecording:
     def _append(self) -> None:
         if self.store is None:
             return
-        recorded = [self.store.append(item) for item in self.envelopes]
-        recorded.extend(
-            self.store.append_characterization(item) for item in self.characterizations
-        )
-        self._recorded_paths = tuple(recorded)
+        self._recorded_paths = tuple(self.store.append(item) for item in self.envelopes)
 
     @property
     def fields(self) -> dict[str, Any]:
@@ -349,11 +345,30 @@ class ResultRecorder:
                 configuration=self._recording.configuration,
                 data=data,
                 execution=execution,
-                measurements=measurements,
+                measurements=[self._dispersed(item) for item in measurements],
                 detail=reference,
                 recorded_at=self._recording.recorded_at,
             )
         )
+
+    def _dispersed(self, item: Measurement) -> Measurement:
+        """Attach the spread estimated for this measurement's own series.
+
+        Matched on the fingerprint rather than the identifier, because that is
+        what says the estimate was taken over the inputs this measurement was
+        computed from.
+
+        A benchmark that built its measurement with a spread of its own keeps
+        it. Only a benchmark whose estimating pass spans several units registers
+        one here, so the two never describe the same series, and letting an
+        ambient mapping overwrite what a measurement was constructed with would
+        be the wrong way round if they ever did.
+        """
+
+        dispersion = self._recording.dispersions.get(item.fingerprint)
+        if dispersion is None or item.dispersion is not None:
+            return item
+        return item.model_copy(update={"dispersion": dispersion})
 
     def _write(
         self,
@@ -373,11 +388,16 @@ class ResultRecorder:
         self._recording.detail_paths.append(detail.root / relative)
         return reference
 
-    def characterize(self, characterization: NoiseCharacterization | None) -> None:
-        """Keep one noise floor to append beside the envelopes, if there is one."""
+    def disperse(self, dispersions: Mapping[str, MetricDispersion]) -> None:
+        """Carry the spread of each series onto the measurements added after it.
 
-        if characterization is not None:
-            self._recording.characterizations.append(characterization)
+        Registered on the recorder rather than passed to :meth:`add` because one
+        estimating pass covers several units of a reading, and a benchmark that
+        had to route the mapping through each of them would be free to route it
+        to the wrong one.
+        """
+
+        self._recording.dispersions.update(dispersions)
 
 
 __all__ = [

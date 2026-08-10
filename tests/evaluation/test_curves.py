@@ -527,17 +527,18 @@ def test_a_comparison_carries_the_floor_its_own_distances_are_read_against() -> 
         )
     )
 
-    assert comparison.floors is not None
-    assert comparison.floors.resamples == 80
-    for floor in (
-        comparison.floors.conditional,
-        comparison.floors.pooled,
-        comparison.floors.model_variation,
+    assert comparison.dispersions is not None
+    assert comparison.dispersions.resamples == 80
+    for spread in (
+        comparison.dispersions.conditional,
+        comparison.dispersions.pooled,
+        comparison.dispersions.model_variation,
     ):
-        assert floor.kind == "evaluation"
-        assert floor.value > 0.0
-        assert floor.source is not None
-        assert SCALAR_SPEC.name in floor.source
+        assert spread.kind == "evaluation"
+        assert spread.value > 0.0
+        assert spread.bound >= spread.value
+        assert spread.source is not None
+        assert SCALAR_SPEC.name in spread.source
 
 
 @pytest.mark.parametrize("quantity", list(CurveQuantity))
@@ -633,18 +634,19 @@ def test_a_model_side_that_cannot_vary_reports_a_floor_of_exactly_zero() -> None
     )
     comparison = _compare(model, model_varies=False)
 
-    assert comparison.floors is not None
-    assert comparison.floors.method == CURVE_DETERMINISTIC_METHOD
-    assert comparison.floors.resamples == 0
-    for floor in (
-        comparison.floors.conditional,
-        comparison.floors.pooled,
-        comparison.floors.model_variation,
+    assert comparison.dispersions is not None
+    assert comparison.dispersions.method == CURVE_DETERMINISTIC_METHOD
+    assert comparison.dispersions.resamples == 0
+    for spread in (
+        comparison.dispersions.conditional,
+        comparison.dispersions.pooled,
+        comparison.dispersions.model_variation,
     ):
-        assert floor.value == 0.0
-        assert floor.kind == "evaluation"
-        assert floor.source is not None
-        assert CURVE_DETERMINISTIC_METHOD in floor.source
+        assert spread.value == 0.0
+        assert spread.bound == 0.0
+        assert spread.kind == "evaluation"
+        assert spread.source is not None
+        assert CURVE_DETERMINISTIC_METHOD in spread.source
 
 
 def test_a_stated_floor_survives_a_model_side_too_thin_to_bootstrap() -> None:
@@ -659,8 +661,8 @@ def test_a_stated_floor_survives_a_model_side_too_thin_to_bootstrap() -> None:
     thin = _generated(lambda rating, _: _length(rating), per_rating=1, grid=GRID[:1])
     comparison = _compare(thin, model_varies=False)
 
-    assert comparison.floors is not None
-    assert comparison.floors.conditional.value == 0.0
+    assert comparison.dispersions is not None
+    assert comparison.dispersions.conditional.value == 0.0
     assert comparison.references is None
 
 
@@ -689,8 +691,8 @@ def test_declaring_the_model_side_fixed_leaves_the_reading_itself_alone() -> Non
     assert fixed.references is not None
     assert varying.references is not None
     assert fixed.references.conditional == varying.references.conditional
-    assert varying.floors is not None
-    assert varying.floors.conditional.value > 1.0
+    assert varying.dispersions is not None
+    assert varying.dispersions.conditional_floor > 1.0
 
 
 def test_the_reference_size_does_not_move_the_floor() -> None:
@@ -709,12 +711,12 @@ def test_the_reference_size_does_not_move_the_floor() -> None:
     small = _compare(model, human=_human_reference(games=250))
     large = _compare(model, human=_human_reference(games=1000))
 
-    assert small.floors is not None
-    assert large.floors is not None
+    assert small.dispersions is not None
+    assert large.dispersions is not None
     # Not identical: a different reference shifts the bandwidth and so the
-    # curve itself. But the floor must not scale with reference size.
-    assert large.floors.conditional.value == pytest.approx(
-        small.floors.conditional.value, rel=0.5
+    # curve itself. But the spread must not scale with reference size.
+    assert large.dispersions.conditional.value == pytest.approx(
+        small.dispersions.conditional.value, rel=0.5
     )
 
 
@@ -740,9 +742,9 @@ def test_a_floor_shrinks_as_the_games_behind_it_grow() -> None:
         seed=17,
     )
 
-    assert small.floors is not None
-    assert large.floors is not None
-    assert large.floors.pooled.value < small.floors.pooled.value
+    assert small.dispersions is not None
+    assert large.dispersions is not None
+    assert large.dispersions.pooled.value < small.dispersions.pooled.value
 
 
 def test_without_replicates_no_floor_is_invented() -> None:
@@ -751,7 +753,7 @@ def test_without_replicates_no_floor_is_invented() -> None:
         resamples=0,
     )
 
-    assert comparison.floors is None
+    assert comparison.dispersions is None
     assert comparison.references is None
     assert comparison.response is RatingResponse.UNKNOWN
 
@@ -785,8 +787,8 @@ def test_measurements_carry_their_floor_into_the_summary_tier(
     assert measurements[1].value == pytest.approx(comparison.pooled_distance)
     assert measurements[2].value == pytest.approx(comparison.model_variation)
     for entry in measurements:
-        assert entry.noise_floor is not None
-        assert entry.noise_floor.kind == "evaluation"
+        assert entry.dispersion is not None
+        assert entry.dispersion.kind == "evaluation"
         assert entry.sample_size == comparison.human_games + comparison.model_games
 
 
@@ -805,7 +807,7 @@ def test_the_model_variation_metric_is_optional(
         CONDITIONAL_METRIC,
         POOLED_METRIC,
     ]
-    assert all(entry.noise_floor is None for entry in measurements)
+    assert all(entry.dispersion is None for entry in measurements)
 
 
 def test_curve_points_are_stored_as_data_for_the_detail_tier() -> None:
@@ -829,11 +831,11 @@ def test_curve_points_are_stored_as_data_for_the_detail_tier() -> None:
     assert encoded["references"]["flat"] == pytest.approx(
         comparison.references.flat if comparison.references else None
     )
-    assert encoded["floors"]["conditional"]["kind"] == "evaluation"
+    assert encoded["dispersions"]["conditional"]["kind"] == "evaluation"
     # How the floor was arrived at, because a bootstrap over plentiful games
     # and a deterministic reading's exact zero are not distinguishable from the
     # value alone.
-    assert encoded["floors"]["method"] == CURVE_BOOTSTRAP_METHOD
+    assert encoded["dispersions"]["method"] == CURVE_BOOTSTRAP_METHOD
     assert encoded["human_games"] == comparison.human_games
     assert encoded["pooled"]["human"]["games"] > 0
 
@@ -1055,7 +1057,7 @@ def test_a_scalar_comparison_has_no_category_drilldown() -> None:
 
 
 def test_a_floor_only_comparison_skips_the_null_levels() -> None:
-    """A sweep recomputing a distance per ply pays for floors, not for nulls."""
+    """A sweep recomputing a distance per ply pays for spreads, not for nulls."""
 
     comparison = _compare(
         _generated(
@@ -1064,7 +1066,7 @@ def test_a_floor_only_comparison_skips_the_null_levels() -> None:
         references=False,
     )
 
-    assert comparison.floors is not None
+    assert comparison.dispersions is not None
     assert comparison.references is None
     assert comparison.response is RatingResponse.UNKNOWN
 
@@ -1072,10 +1074,10 @@ def test_a_floor_only_comparison_skips_the_null_levels() -> None:
 def test_a_floor_only_comparison_reports_the_same_distances() -> None:
     """Skipping the nulls is a cost decision, not a different measurement.
 
-    That covers the floors as well as the distances, which is why the model
+    That covers the spreads as well as the distances, which is why the model
     side draws its resampling weights before the human side draws the ones only
     the nulls consume. Draw them the other way round and a sweep that skips the
-    nulls to save time reports a different floor for its trouble.
+    nulls to save time reports a different spread for its trouble.
     """
 
     generated = _generated(
@@ -1083,15 +1085,13 @@ def test_a_floor_only_comparison_reports_the_same_distances() -> None:
     )
 
     full = _compare(generated)
-    floors_only = _compare(generated, references=False)
+    spreads_only = _compare(generated, references=False)
 
-    assert floors_only.conditional_distance == pytest.approx(full.conditional_distance)
-    assert floors_only.pooled_distance == pytest.approx(full.pooled_distance)
-    assert full.floors is not None
-    assert floors_only.floors is not None
-    assert floors_only.floors.conditional.value == full.floors.conditional.value
-    assert floors_only.floors.pooled.value == full.floors.pooled.value
-    assert floors_only.floors.model_variation.value == full.floors.model_variation.value
+    assert spreads_only.conditional_distance == pytest.approx(full.conditional_distance)
+    assert spreads_only.pooled_distance == pytest.approx(full.pooled_distance)
+    assert full.dispersions is not None
+    assert spreads_only.dispersions is not None
+    assert spreads_only.dispersions == full.dispersions
 
 
 def test_one_side_can_be_estimated_without_a_counterpart() -> None:

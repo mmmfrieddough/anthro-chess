@@ -18,6 +18,7 @@ from anthro_chess.data import PrepareConfig, SequenceDataLoader, prepare_pgn
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.evaluation.results.budget import build_budget_report
+from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
 from anthro_chess.models import CausalMoveModel, MoveModelBatch
 from anthro_chess.training import (
     CHECKPOINT_VERSION,
@@ -124,8 +125,79 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
     assert run_record["hardware"]["cpu"]["torch_threads"] >= 1
     assert "cuda" not in run_record["hardware"]
     assert run_record["validation"]["position_count"] == 26
+    assert run_record["complete"] is True
     assert "step=1 move_loss=" in log_output.getvalue()
     assert "step=1 move_loss=" not in capsys.readouterr().out
+
+
+def test_an_interrupted_run_leaves_its_checkpoints_loadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="run",
+        validation=True,
+        steps=4,
+        checkpoint_every_steps=1,
+    )
+    record_path = tmp_path / "run" / "run.json"
+    reached: list[object] = []
+
+    def stop_after_the_second_checkpoint(*arguments: Any, **keywords: Any) -> None:
+        reached.append(
+            json.loads(record_path.read_text(encoding="utf-8"))["optimization"][
+                "completed_steps"
+            ]
+        )
+        if len(reached) > 2:
+            # What a signal does to a run: the loop stops where it is, and
+            # nothing scheduled after it writes anything.
+            raise KeyboardInterrupt
+        save_training_checkpoint(*arguments, **keywords)
+
+    monkeypatch.setattr(
+        "anthro_chess.training.runner.save_training_checkpoint",
+        stop_after_the_second_checkpoint,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
+
+    # Read as each checkpoint was about to be written, so the record tracked
+    # the run rather than being written once and left there.
+    assert reached == [0, 1, 2]
+    run_record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert run_record["complete"] is False
+    assert run_record["resolved_config"]["config"]["steps"] == 4
+    assert run_record["optimization"]["completed_steps"] == 2
+    assert run_record["optimization"]["final_parameter_sha256"] is None
+    assert run_record["validation"] is None
+
+    # Loaded by run path, the way the evaluation suite selects a model: that
+    # path reads run.json, so an explicit checkpoint path would not exercise it.
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(run_path=tmp_path / "run", device="cpu")
+    )
+
+    assert runner.global_step == 2
+    assert (
+        runner.selection.checkpoint_path
+        == (tmp_path / "run" / "checkpoints" / "step-00000002.pt").resolve()
+    )
+    assert run_record["optimization"]["checkpoint"] == str(
+        runner.selection.checkpoint_path
+    )
 
 
 def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
