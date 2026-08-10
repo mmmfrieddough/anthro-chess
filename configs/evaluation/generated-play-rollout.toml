@@ -29,6 +29,9 @@ arms = ["standard-start"]
 # The pool supplies both the human reference every curve is compared against and
 # the openings the human-prefix arm continues.
 pool = "artifacts/lichess-blitz-2017-04-test"
+# The generation this reading is defined over. A superseded pool left at that
+# path is refused rather than scored.
+expected_pool_game_ids_sha256 = "b0a26d0e56609a4f971651f18f5804f1ee414e38bf01644d2d80db46eff18f50"
 
 [runtime]
 # Rating, temperature, and seed are supplied per cell and per game, so setting

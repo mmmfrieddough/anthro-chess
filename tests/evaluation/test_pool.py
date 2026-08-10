@@ -1,7 +1,8 @@
 """Tests for freezing and loading the evaluation pool."""
 
 import json
-from collections.abc import Callable
+import tomllib
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -301,6 +302,92 @@ def test_load_pool_rejects_an_incompatible_benchmark_version(
 
     with pytest.raises(EvaluationPoolError, match="benchmark version"):
         load_pool(tmp_path / "pool")
+
+
+def test_a_pool_from_another_generation_is_refused_by_what_pinned_one(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """Every other check asks only whether the pool is intact and readable.
+
+    A superseded pool left on disk passes all of them, so the digest a reader
+    was defined over is the one thing that can tell it from the pool the
+    reading belongs to. A reader that pins nothing still loads it.
+    """
+
+    normalized, manifest = corpus(tmp_path)
+    superseded = freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+    grown, grown_manifest = write_corpus(
+        tmp_path / "grown",
+        [
+            normalized_row(4, split="test", plies=4, result="0-1"),
+            normalized_row(5, split="test", plies=8, rating=900, clocks=False),
+            normalized_row(6, split="test"),
+        ],
+    )
+    later = freeze_pool(_resolved(grown, grown_manifest), tmp_path / "later")
+    games = tuple(sorted((fixture_game_id(4), fixture_game_id(5))))
+
+    assert load_pool(tmp_path / "pool").game_ids == games
+    assert (
+        load_pool(
+            tmp_path / "pool",
+            expected_game_ids_sha256=superseded.game_ids_sha256,
+        ).game_ids
+        == games
+    )
+
+    with pytest.raises(EvaluationPoolError) as refusal:
+        load_pool(tmp_path / "pool", expected_game_ids_sha256=later.game_ids_sha256)
+
+    message = str(refusal.value)
+    assert later.game_ids_sha256 in message
+    assert superseded.game_ids_sha256 in message
+
+
+def test_every_shipped_pin_names_a_generation_this_repository_freezes() -> None:
+    """A generation cut has to move every selection reading that pool.
+
+    The digest is written once by the freeze selection and repeated by each
+    reader, and a half-updated cut otherwise surfaces as a refusal on whichever
+    machine next runs the one benchmark that was missed.
+    """
+
+    selections = {
+        path: tomllib.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(
+            (Path(__file__).parents[2] / "configs/evaluation").glob("*.toml")
+        )
+    }
+    frozen = {
+        document["expected_game_ids_sha256"]
+        for document in selections.values()
+        if "expected_game_ids_sha256" in document
+    }
+    read = [
+        (path.name, digest)
+        for path, document in selections.items()
+        for digest in _pinned_digests(document)
+    ]
+
+    assert frozen
+    assert read
+    assert [pin for pin in read if pin[1] not in frozen] == []
+
+
+def _pinned_digests(document: Mapping[str, Any]) -> list[str]:
+    """Return the generations one selection pins, at whatever depth it sits."""
+
+    pinned = []
+    for key, value in document.items():
+        if key == "expected_pool_game_ids_sha256":
+            pinned.append(value)
+        elif isinstance(value, Mapping):
+            pinned.extend(_pinned_digests(value))
+    return pinned
 
 
 def test_an_empty_selection_fails_rather_than_writing_an_empty_pool(

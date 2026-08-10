@@ -1399,6 +1399,26 @@ def test_the_prefix_arm_needs_a_pool() -> None:
         _config(arms=(RolloutArm.HUMAN_PREFIX,))
 
 
+def test_a_pinned_generation_without_a_pool_is_a_configuration_error() -> None:
+    """A pin that protects nothing reads exactly like one that protects."""
+
+    with pytest.raises(ValidationError, match="does not read"):
+        _config(expected_pool_game_ids_sha256="0" * 64)
+
+
+def test_a_pool_this_suite_is_not_defined_over_is_refused(pool: Path) -> None:
+    """The generation a selection pins reaches the loader from here."""
+
+    config = _config(
+        arms=(RolloutArm.HUMAN_PREFIX,),
+        pool=str(pool),
+        expected_pool_game_ids_sha256="0" * 64,
+    )
+
+    with pytest.raises(RolloutBenchmarkError, match="expected 0{64}"):
+        _run(config)
+
+
 def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
     """Records are bulk diagnostics: referenced from the summary, never in it."""
 

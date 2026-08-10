@@ -73,6 +73,9 @@ enabled = true
 # includes low temperatures needs its variety to come from the position source
 # instead of from sampling.
 pool = "artifacts/lichess-blitz-2017-04-test"
+# The generation these openings are drawn from. A superseded pool left at that
+# path is refused rather than played.
+expected_pool_game_ids_sha256 = "b0a26d0e56609a4f971651f18f5804f1ee414e38bf01644d2d80db46eff18f50"
 plies = 8
 
 [openings.view]

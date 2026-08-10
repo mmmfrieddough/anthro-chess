@@ -443,6 +443,26 @@ def test_a_view_too_short_for_the_window_fails_loudly(
         _measure(_config(pool, checkpoint, onset_plies=500))
 
 
+def test_a_pool_this_sweep_is_not_defined_over_is_refused(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The generation a selection pins reaches the loader from here."""
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus", _corpus_rows(normalized_row)
+    )
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+
+    with pytest.raises(NoveltyBenchmarkError, match="expected 0{64}"):
+        _measure(_config(pool, checkpoint, expected_pool_game_ids_sha256="0" * 64))
+
+
 def test_cli_reads_a_sweep_without_recording_it(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -509,11 +529,13 @@ def _config(
     *,
     doses: list[float] | None = None,
     onset_plies: int = ONSET,
+    expected_pool_game_ids_sha256: str | None = None,
 ) -> ResolvedConfig[NoveltyBenchmarkConfig]:
     return ResolvedConfig(
         value=NoveltyBenchmarkConfig.model_validate(
             {
                 "pool": str(pool),
+                "expected_pool_game_ids_sha256": expected_pool_game_ids_sha256,
                 "view": {"name": "novelty"},
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "loader": {"batch_size": 2},

@@ -90,6 +90,7 @@ from anthro_chess.evaluation.policy import (
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
+    PoolGenerationPin,
     load_pool,
     pool_rows,
 )
@@ -363,7 +364,7 @@ class TerminationDetailConfig(ConfigModel):
     retain_decisions: StrictBool = True
 
 
-class TerminationBenchmarkConfig(CheckpointSelection):
+class TerminationBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     """Code-owned schema for ``anthro eval termination``."""
 
     #: The base runtime settings every seat plays under. Whether the terminal
@@ -1259,7 +1260,10 @@ def _load_pool(config: TerminationBenchmarkConfig) -> FrozenPool:
     """Load the frozen pool every reading here is measured against."""
 
     try:
-        return load_pool(config.pool)
+        return load_pool(
+            config.pool,
+            expected_game_ids_sha256=config.expected_pool_game_ids_sha256,
+        )
     except EvaluationPoolError as error:
         raise TerminationBenchmarkError(str(error)) from error
 

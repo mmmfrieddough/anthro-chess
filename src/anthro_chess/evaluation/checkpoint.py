@@ -80,6 +80,7 @@ from anthro_chess.evaluation.policy import (
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
+    PoolGenerationPin,
     load_pool,
     pool_rows,
 )
@@ -195,7 +196,7 @@ class OpeningConfig(ConfigModel):
     training_frequency: StrictBool = False
 
 
-class CheckpointEvaluationConfig(CheckpointSelection):
+class CheckpointEvaluationConfig(CheckpointSelection, PoolGenerationPin):
     """Code-owned schema for ``anthro eval run``."""
 
     pool: Path
@@ -578,7 +579,10 @@ def evaluate_checkpoint(
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
-    pool = load_pool(config.pool)
+    pool = load_pool(
+        config.pool,
+        expected_game_ids_sha256=config.expected_pool_game_ids_sha256,
+    )
     selection = apply_view(pool.games, config.view)
     if not selection.game_ids:
         raise CheckpointEvaluationError(

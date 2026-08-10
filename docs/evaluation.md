@@ -282,10 +282,12 @@ Series identity is where this metric departs from every other workload-scoped
 one. The declared workload digests the benchmark's whole resolved
 configuration, because a sample count decides how much work was done and the
 work is the quantity being measured — the reverse of the rule that keeps sample
-counts out of a latency series. Two things are taken out of it: the model
+counts out of a latency series. Three things are taken out of it: the model
 selection and its label, since the checkpoint is the coordinate a cost line
-varies along, and the machine prefix of every artifact path, since the artifact
-is the same work wherever it is rooted.
+varies along; the machine prefix of every artifact path, since the artifact is
+the same work wherever it is rooted; and the pool generation a selection pins,
+since that names which data was realized rather than how much work there is,
+and a generation cut would otherwise fracture every cost line.
 
 Read a cost delta against a characterized execution floor. A shared machine
 moves these numbers much further than a model change does, and nothing in a
@@ -811,6 +813,12 @@ game an earlier generation contained and an earlier measurement stays
 reproducible on the subset. Removing games, rejecting previously accepted games
 through a filter change, or changing the split seed destroys that and ends the
 affected series permanently.
+
+A benchmark selection names the generation of the pool it loads, and a pool that
+is not that one is refused rather than scored. Everything else the loader checks
+asks only whether the pool is intact and readable by this code, which a
+superseded pool left where it was materialized is: it would keep scoring after
+the selection moved on, labelled as itself and comparable to nothing.
 
 Once a generation is designated as the **core**, benchmarks report against both
 it and the current full pool. Core gives one continuous line for the rest of the

@@ -849,6 +849,27 @@ def test_evaluation_rejects_an_incompatible_checkpoint(
         _evaluate(_config(pool, checkpoint))
 
 
+def test_evaluation_refuses_a_pool_this_reading_is_not_defined_over(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The generation a selection pins reaches the loader from here.
+
+    `test_pool` owns what the refusal compares; this owns that the canonical
+    reading asks for it at all, which is the half that fails silently.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+
+    with pytest.raises(CheckpointEvaluationError, match="expected 0{64}"):
+        _evaluate(_config(pool, checkpoint, expected_pool_game_ids_sha256="0" * 64))
+
+
 def test_cli_runs_an_evaluation_without_recording_it(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
@@ -935,11 +956,13 @@ def _config(
     noise: dict[str, Any] | None = None,
     dependency: dict[str, Any] | None = None,
     openings: dict[str, Any] | None = None,
+    expected_pool_game_ids_sha256: str | None = None,
 ) -> ResolvedConfig[CheckpointEvaluationConfig]:
     return ResolvedConfig(
         value=CheckpointEvaluationConfig.model_validate(
             {
                 "pool": str(pool),
+                "expected_pool_game_ids_sha256": expected_pool_game_ids_sha256,
                 "view": view or {"name": "canonical"},
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "loader": {"batch_size": 4},
