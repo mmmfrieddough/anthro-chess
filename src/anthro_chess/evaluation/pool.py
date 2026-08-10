@@ -105,7 +105,9 @@ class PoolConfig(ConfigModel):
     manifest: Path
     split: SplitName = "test"
     #: How much of the split the pool admits, absent to admit all of it, which
-    #: is what a generation cut before the bound existed did.
+    #: every shipped selection still does. Raising it later is a generation cut
+    #: and lowering it drops games earlier generations hold, so it only ever
+    #: rises — a direction nothing here can enforce.
     #: ``docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md``
     #: owns why the bound is a fraction rather than a game count.
     sample_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
@@ -444,19 +446,19 @@ def rank_key(seed: str, game_id: int) -> bytes:
 def _admission(fraction: float | None) -> Callable[[int], bool]:
     """Return the predicate a configured sample fraction admits games by.
 
-    A fraction rather than a count, because a count cannot survive a later
-    generation: ranking a larger split and keeping the lowest N displaces games
-    the previous N held, and every generation has to contain the last. A fixed
-    threshold decides a game on its id alone, so growth only ever adds.
+    A fraction and not a count, so that a game is decided on its id alone and
+    growth only ever adds.
+    ``docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md``
+    holds why a count cannot be made to work here.
 
     Split assignment reaches for the same arithmetic and is deliberately not
-    shared with it. That one is versioned in every corpus manifest and may be
-    redrawn; this one may never move, because a redraw drops games an earlier
-    generation contains. What the two have in common is the property, not the
-    code: each is a pure function of the game id.
+    shared with it: that one is versioned in every corpus manifest and may be
+    redrawn, and this one may not. What the two have in common is the property,
+    not the code, and each is a pure function of the game id.
 
-    The threshold is an integer rather than a ratio per game, so membership
-    turns on nothing a float rounded.
+    Where that one divides every candidate into a ratio, this compares whole
+    integers, so the one float conversion happens per freeze rather than per
+    game.
     """
 
     if fraction is None:

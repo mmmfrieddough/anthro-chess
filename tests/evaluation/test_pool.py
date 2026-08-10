@@ -141,9 +141,9 @@ def test_a_sample_fraction_admits_that_share_of_the_split(
 ) -> None:
     """The realized share is what the pool is sized by, so it is what is pinned.
 
-    The bounds are the binomial spread around 100 of 400 at a quarter, wide
-    enough that this fixture's draw sits comfortably inside and narrow enough
-    that a threshold off by a factor of two falls outside.
+    The bounds are three standard deviations either side of Binomial(400, 0.25),
+    wide enough that this fixture's draw sits comfortably inside and narrow
+    enough that a threshold off by a factor of two falls outside.
     """
 
     normalized, manifest = write_corpus(
@@ -169,11 +169,11 @@ def test_the_admission_seed_is_frozen(
 ) -> None:
     """A changed seed redraws membership and drops games earlier pools held.
 
-    Nothing else here can see that. The generation cut verifies containment
-    against the pool before it, and there is no such pool yet, so until there
-    is this is the only thing standing between an edited seed and a break
-    nobody notices. A failure here is repaired by restoring the seed rather
-    than by accepting the new digest.
+    Nothing else here can see that. The check that would is the containment
+    verification a generation cut owes, which is still owed and has no earlier
+    sampled pool to compare against anyway, so this is what stands between an
+    edited seed and a break nobody notices. A failure here is repaired by
+    restoring the seed rather than by accepting the new digest.
     """
 
     normalized, manifest = write_corpus(
@@ -233,7 +233,6 @@ def test_an_admitted_game_in_both_splits_still_fails_the_build(
 
     A duplicate the fraction excludes is no longer caught, which is the price
     of not holding the train split in memory to write a bounded pool from it.
-    What the check still answers is whether the games it wrote are held out.
     """
 
     normalized, manifest = write_corpus(
