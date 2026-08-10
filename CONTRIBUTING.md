@@ -159,6 +159,17 @@ For a check that needs no network and no large download, the repository carries
 a sample game that prepares, trains, and serves UCI in seconds. `README.md` has
 that path.
 
+### An Access Token For The Account Census
+
+`uv run anthro data mark-accounts` asks the source about every account in an
+archive, hundreds of thousands of them, against a per-address rate limit that
+charges an authenticated caller half what it charges an anonymous one. Set
+`LICHESS_TOKEN` to a personal access token to double the pace. The endpoint
+needs no scope, so generate one with none.
+
+It is a credential, so it belongs in the machine's environment rather than in
+any checked-in file. The census runs without it at half speed.
+
 ## Quality Checks
 
 Run the same core checks used by continuous integration before opening a pull

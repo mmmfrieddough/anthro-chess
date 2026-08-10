@@ -5,6 +5,10 @@ Date: 2026-08-08
 ## Status
 
 Accepted. Settles `#105`, and supersedes the prevalence premise in its body.
+Refined by
+`0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md`,
+which found the label is not obtainable for every account and decides what
+recall the filter may therefore claim.
 It is the recorded exception to
 `0016-sampling-axes-versus-measured-distributions.md`, which otherwise keeps
 preparation filters to validity and sends editorial choices to training
@@ -148,8 +152,9 @@ corpus and forgetting to refresh it stops the run instead of quietly keeping
 every account nobody asked about. Naming the snapshot in the first place is not
 enforced that way — an unset `filters.marked_accounts` prepares unfiltered, and
 is indistinguishable from a deliberate choice not to filter. That is why the
-setting lands with the artifact rather than ahead of it, and why `#358` blocks
-`#90` rather than being left as a step to remember.
+setting lands with the artifact rather than ahead of it. It is also why `0047`
+puts the reading at core designation rather than leaving it as a step to
+remember: the census never finishes, so nothing else can wait for it to.
 
 Usernames are stored as truncated salted digests, because membership is all
 preparation needs and this repository is public. What that achieves is bounded
@@ -215,11 +220,10 @@ previous generation do not compare across the seam. `#90` cuts the next
 generation after this one and its superset check applies from there.
 
 None of that has happened yet. The decision is settled and the mechanism is in
-place, but the baseline selection still prepares unfiltered because the snapshot
-it would name is incomplete: the source rate limits the lookup hard enough that
-covering one archive takes several sessions spread over days, and two thirds of
-one is built. The filter turns on when that artifact exists, and the pool
-generation moves then rather than now.
+place, but the baseline selection still prepares unfiltered because no snapshot
+exists to name. `0047` records why building one is a continuous census rather
+than a task with an end, and moves the pool generation to whenever the core is
+designated rather than to whenever the artifact is finished.
 
 `#89` widens the corpus and must refresh the snapshot as part of that work; the
 run fails until it does.
