@@ -537,12 +537,10 @@ committed to this repository differ by up to two orders of magnitude on the same
 metric, and a floor computed inside either one assumes the other matched it.
 Where the two do agree the arithmetic reduces to the familiar `sqrt(2)`. A
 characterization is the case where they agree by construction, since its
-replicates are draws of one quantity, so a stored floor keeps that factor. When
-comparable checkpoints score the same frozen units, the data-sampling floor
-instead comes from resampling their paired per-unit differences. Coverage is
-applied at comparison time rather than stored on a reading, because a floor is a
-claim the comparison makes; `anthro_chess.evaluation.results` owns the
-arithmetic, stored inputs, and lookup.
+replicates are draws of one quantity, so a stored floor keeps that factor.
+Coverage is applied at comparison time rather than stored on a reading, because
+a floor is a claim the comparison makes; `anthro_chess.evaluation.results` owns
+the arithmetic, stored inputs, and lookup.
 
 ### The Spread A Floor Is Built From
 
@@ -683,33 +681,16 @@ Because a data-sampling spread costs only a resampling of numbers a run already
 computed, the checkpoint evaluation runner produces its own and attaches it to
 each measurement it records. Attaching it is what lets two readings of one
 series each carry their own: a spread filed against the series would be one
-number where the comparison needs two. A deterministic fixed-input benchmark
-retains aligned per-unit contributions in the detail tier instead; reporting
-joins those contributions and bootstraps the checkpoint delta. Such a floor
-belongs to the comparison and cannot correctly be attached to either checkpoint
-alone.
+number where the comparison needs two.
 
-**A pair that could not pair says so.** The contributions are machine-local
-while the summary record is committed, so a reading taken elsewhere routinely
-arrives with nothing to difference against — and an independent-input estimate
-is standing by that looks like every other floor. It is not a coarser reading of
-the same quantity: it drops the covariance two checkpoints scored on one sample
-share and reports a width about 1.9x too wide, which turns real improvements
-into noise. So every floor names the estimator that produced it, a metric whose
-floor is the paired one declares that in the registry, and a row qualified by
-anything else states that the paired floor was unavailable and why. The reading
-is annotated rather than withheld, because an unpaired floor errs wide: a delta
-that clears one has cleared the paired floor as well, and only the verdict that
-a delta sits *within* the floor is weakened by the substitution.
-`docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md`
-owns why the difference is an error rather than a resolution setting.
-
-Retention is not always faithful without a weight. A quantity reported as a mean
-over positions cannot be resampled by position, because positions inside one
-game are far from independent; but a plain mean over per-game values is not that
-quantity either, since games differ in size. Where the two disagree the unit
-carries a weight, the metric is treated as the ratio of sums it is, and the
-bootstrap recomputes the denominator on every draw.
+Two checkpoints scored on one frozen set share their draw, so the variance of
+their difference is smaller than the sum of the two variances by the covariance
+between them. The combined floor drops that term and is about 1.9x wider than an
+estimator that keeps it, which costs real improvements rather than inventing
+them.
+`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
+records that width as the accepted price of a bar that is always available and
+always means one thing, and supersedes the records that measured it.
 
 A delta is judged against the widest floor that applies to it, since a finding
 has to clear every noise source, and the report names which one that was. A
@@ -722,8 +703,8 @@ measurement it belongs to that reading, and a kind one side attached and the
 other did not qualifies one operand rather than the difference — the report
 withholds it and names the kind it declined. Nothing says the missing side is
 quieter, and a benchmark that withholds a floor per reading is saying that side
-is not an estimate at all. A characterized floor is a property of the series and
-a paired floor is a property of the comparison, so neither can be one-sided.
+is not an estimate at all. A characterized floor is a property of the series, so
+it cannot be one-sided either.
 
 Withholding reaches the verdict, not only the note. A delta cannot be reported
 as clearing every noise source while one of them is a kind this comparison could
@@ -731,8 +712,7 @@ not size, so such a row is unknown however comfortably it clears the floors that
 remain. A delta *within* one of them is still within it, since a delta inside
 any floor is not a finding whatever else went unmeasured.
 `docs/decisions/0036-a-one-sided-floor-does-not-qualify-a-delta.md` owns the
-rule, and why an unpaired substitution above is annotated where this is
-withheld.
+rule.
 
 **No floor at all is two situations, not one.** A floor may be missing because
 nobody has characterized it yet, which is work somebody could do, or because the
@@ -759,11 +739,11 @@ metric. A report refuses only the sampling floor and judges the delta against
 any other kind it has.
 
 Sampling-noise estimates are also what size the evaluation inputs. A
-conservative independent-input estimate is suitable before representative
-checkpoint pairs exist. Once they do, paired pilot deltas give the more relevant
-power calculation for a frozen benchmark. Either floor shrinks with the square
-root of the units behind it, so how many games an axis needs in order to resolve
-an effect of a given size is computable rather than guessed, and `anthro eval
+conservative independent-input estimate is what a benchmark is sized from before
+any checkpoint has been read, and a reading's own measured spread replaces it as
+soon as one exists. Either shrinks with the square root of the units behind it,
+so how many games an axis needs in order to resolve an effect of a given size is
+computable rather than guessed, and `anthro eval
 noise plan` computes it from the newest reading that measured its own spread
 over a counted sample. No benchmark-level resolution constant is declared or
 kept current for it.
@@ -1093,17 +1073,16 @@ maturity they were measured at. Nothing in them returns a pass or a fail: weak
 dependency on an undertrained checkpoint means the conditioning has not been
 learned yet, which is not the same finding as a miswired input.
 
-The family qualifies its own readings by retaining each game's share of every
-reported quantity that is a mean over the positions it scored, so a later
-comparison can bootstrap the paired delta from them. The share is weighted by
-the positions behind it, because the quantity averages over positions while the
-resampling unit is the game. Two reported quantities are not means over
-positions and can carry no sampling floor: the cross-conditioning match rate
-counts rating slices, and the within-game response splits each slice at that
-slice's own median. A report says `unqualifiable` for those rather than
-`unknown`, since only the latter is waiting on work somebody could do.
+Two reported quantities are not means over positions and can carry no sampling
+floor: the cross-conditioning match rate counts rating slices, and the
+within-game response splits each slice at that slice's own median. A report
+says `unqualifiable` for those rather than `unknown`, since only the latter is
+waiting on work somebody could do.
 `docs/decisions/0028-qualifying-the-rating-dependency-family.md` owns the
-choice.
+choice, and its estimator for the remaining quantities is superseded by
+`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`.
+Until this family resamples its own scored games for a dispersion, those
+quantities report `unknown` rather than a floor.
 
 ## Held-Out Prediction
 
@@ -1808,33 +1787,30 @@ two disagree; `anthro eval puzzles`, selected by
 `scripts/vendor-puzzle-selection.py` is the only path that reads the archive,
 and it runs when the set is deliberately re-pinned. The canonical set is
 sized from a conservative two-independent-proportions calculation at declared
-confidence and power. That is a planning bound made before representative
-checkpoint pairs exist. Actual checkpoint reports resample the
-source-game-aligned differences retained in their machine-local detail
-payloads within exact-rating strata, preserving the selection design; they
-never use the independent-input bound as the comparison floor. The command
-prints that bound at the size actually scored, because a reading beside no
+confidence and power. That is a planning bound on the selection rather than a
+floor on any delta. The command prints that bound at the size actually scored,
+because a reading beside no
 resolution at all was read as a finding about the model once already; it is
 labelled as the independent-sample bound it is, and is not the family's floor.
 
 The solve rates are not the whole reading, and what remains needs a different
 qualifier again. The fitted puzzle rating at each configured rating, the slope
 through them and the pairwise ordering are nonlinear functions of the whole
-draw, so no per-unit retention reproduces them and the paired estimator does not
-reach them. They are qualified inside the reading instead: the scored puzzles
-are redrawn within exact-rating strata, by the rescaled draw a small stratum
-needs, and *every* configured rating is refit from that one draw, because the
-configured-rating grid is one draw asked the same question several times rather
-than several independent readings. Each
+draw, so no per-unit retention reproduces them. They are qualified inside the
+reading instead: the scored puzzles are redrawn within exact-rating strata, by
+the rescaled draw a small stratum needs, and *every* configured rating is refit
+from that one draw, because the configured-rating grid is one draw asked the
+same question several times rather than several independent readings. Each
 refitted quantity is printed with its own spread. A quantity no redraw moved
 says so rather than reporting a spread of zero, which would license every delta;
 that is not a corner case here, since an ordering saturates as soon as the fit
 separates two configured ratings and a fit pinned at the bottom of its search
-range cannot move at all. The spreads stay in the output and the detail payload
-rather than being attached to the stored measurements, because they qualify one
-reading's response and not a delta between checkpoints.
-`docs/decisions/0042-the-puzzle-response-is-qualified-within-its-reading.md`
-owns the rule and why an independent-input floor is not what this family gets.
+range cannot move at all. Those spreads are what this family contributes to a
+delta floor under
+`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`;
+until they are attached to the stored measurements they stay in the output and
+the detail payload, and a delta between two puzzle readings reports its noise as
+unknown.
 
 Selection is uniform over every exact integer puzzle rating in the declared
 range, with deterministic hash ranking only among eligible puzzles at that
@@ -1849,13 +1825,12 @@ same hash the build ranks by, so a subsample is precisely the artifact a build
 at that setting would have written: uniform over exact ratings, nested inside
 every larger reading, and identical on any machine. A flat count would sample
 the design away, leaving some exact ratings unscored and others overweighted.
-Its floor is two per rating rather than one, because the retained paired
-contributions stratify by exact rating and a stratum holding one puzzle can
-only redraw that puzzle, so its bootstrap spread — and the floor built from
-it — would be exactly zero. The realized selection is recorded in the artifact
-and its resolution is printed beside the reading, and because the puzzles
-scored are the data component, a subsampled run is its own series rather than a
-partial full one.
+Its floor is two per rating rather than one, because the response redraw
+stratifies by exact rating and a stratum holding one puzzle can only redraw
+that puzzle, so the redraw would have nothing to take. The realized selection
+is recorded in the artifact and its resolution is printed beside the reading,
+and because the puzzles scored are the data component, a subsampled run is its
+own series rather than a partial full one.
 
 The primary drill-down uses the shared nearest-neighbour curve machinery with a
 frozen bandwidth and grid. The analytic human reference and model response are
@@ -1883,11 +1858,10 @@ That is the infinite-sample solve rate without Monte Carlo noise and remains
 directly comparable with the greedy reading at temperature zero.
 
 The detail artifact carries the configured-rating grid, continuous human and
-model curves with effective local sample sizes, the rating-band drill-down, the
-resampled response resolution, and the aligned per-source-game values needed for
-later paired checkpoint floors.
-The summary tier carries overall solve rates, continuous curve distance,
-fitted-rating slope and pairwise ordering, plus the source-game overlap rate.
+model curves with effective local sample sizes, the rating-band drill-down, and
+the resampled response resolution. The summary tier carries overall solve
+rates, continuous curve distance, fitted-rating slope and pairwise ordering,
+plus the source-game overlap rate.
 The overlap join reads only Lichess train and validation keys; test-only games
 remain excluded because training never consumes that partition.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
@@ -41,7 +41,6 @@ from anthro_chess.evaluation.puzzles.dataset import (
 )
 from anthro_chess.evaluation.recording import ResultRecording, checkpoint_reference
 from anthro_chess.evaluation.results import (
-    PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     CheckpointReference,
     DataComponent,
@@ -52,7 +51,6 @@ from anthro_chess.evaluation.results import (
     ResultsStoreError,
     dataset_reference,
     measurement,
-    paired_contributions,
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -70,10 +68,6 @@ from anthro_chess.evaluation.results.metrics import (
     PUZZLE_TRAINING_OVERLAP_RATE,
 )
 from anthro_chess.evaluation.results.noise import bounded_spread
-from anthro_chess.evaluation.results.paired import (
-    draw_multiplicity,
-    stratum_buckets,
-)
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import (
     CheckpointModelRunner,
@@ -121,10 +115,10 @@ class PuzzleBenchmarkConfig(CheckpointSelection):
     training_normalized: Path
     target_ratings: tuple[StrictInt, ...] = (1000, 1400, 1800, 2200)
     #: How many puzzles to score at each exact puzzle rating, or every one of
-    #: them. Two rather than one is the floor because the retained paired
-    #: contributions stratify by exact rating: a stratum holding one puzzle can
-    #: only ever redraw that puzzle, so a bootstrap over singleton strata
-    #: reports a spread of exactly zero and a floor that qualifies everything.
+    #: them. Two rather than one is the floor because the response redraw
+    #: stratifies by exact rating and takes one fewer than each stratum holds,
+    #: so a stratum of one leaves nothing to draw and the reading would come
+    #: back with no resolution beside it at all.
     puzzles_per_rating: StrictInt | None = Field(default=None, ge=2)
     reference_temperature: float = Field(
         default=1.0,
@@ -459,11 +453,10 @@ def benchmark_puzzles(
     )
     recorder.add(
         _measurements(result, component),
-        payload=partial(_detail_payload, result, scored_ratings, config.noise),
+        payload=result.as_record,
         description=(
             "Puzzle-rating grid, human reference curve, rating-band "
-            "response, source-game overlap provenance, and paired "
-            "comparison inputs."
+            "response, and source-game overlap provenance."
         ),
         data=data,
     )
@@ -952,50 +945,49 @@ def _measurements(
     )
 
 
-def _paired_contributions(
-    scored_ratings: Sequence[_ScoredRating],
-    config: NoiseConfig,
-) -> dict[str, object] | None:
-    """Retain aligned values so later reports can bootstrap checkpoint deltas."""
+def _stratum_buckets(
+    strata: Sequence[Hashable],
+) -> tuple[tuple[int, np.ndarray], ...]:
+    """Group equal-size strata so one bootstrap draw remains vectorized."""
 
-    if not config.enabled:
-        return None
-    if not scored_ratings:
-        return None
-    puzzles = scored_ratings[0].scores
-    metric_values = (
-        (PUZZLE_GREEDY_FIRST_MOVE_ACCURACY, "greedy_first"),
-        (PUZZLE_GREEDY_LINE_COMPLETION, "greedy_line"),
-        (PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE, "sampled_first"),
-        (PUZZLE_SAMPLED_LINE_COMPLETION, "sampled_line"),
+    grouped: dict[Hashable, list[int]] = {}
+    for index, stratum in enumerate(strata):
+        grouped.setdefault(stratum, []).append(index)
+    by_size: dict[int, list[list[int]]] = {}
+    for indices in grouped.values():
+        by_size.setdefault(len(indices), []).append(indices)
+    return tuple(
+        (size, np.asarray(groups, dtype=np.int64))
+        for size, groups in sorted(by_size.items())
     )
-    metrics: dict[str, list[float]] = {
-        definition.identifier: [] for definition, _ in metric_values
-    }
-    unit_ids: list[str] = []
-    strata: list[str] = []
-    for index, puzzle_score in enumerate(puzzles):
-        source_game_key = puzzle_score.puzzle.source_game_key
-        ratings = [scored.scores[index] for scored in scored_ratings]
-        if any(score.puzzle.source_game_key != source_game_key for score in ratings):
-            raise PuzzleBenchmarkError("puzzle score grids are not aligned")
-        unit_ids.append(source_game_key)
-        strata.append(str(puzzle_score.puzzle.rating))
-        for definition, attribute in metric_values:
-            metrics[definition.identifier].append(
-                _mean([float(getattr(score, attribute)) for score in ratings])
-            )
-    return paired_contributions(
-        unit="puzzle-source-game",
-        unit_ids=unit_ids,
-        stratum="puzzle-rating",
-        strata=strata,
-        metrics=metrics,
-        resamples=config.resamples,
-        seed=config.seed,
-        coverage=config.coverage,
-        confidence=config.confidence,
-    ).as_record()
+
+
+def _draw_multiplicity(
+    generator: np.random.Generator,
+    *,
+    units: int,
+    buckets: Sequence[tuple[int, np.ndarray]],
+) -> np.ndarray:
+    """Redraw within every stratum and return each unit's weight in the draw.
+
+    Holding every stratum at its own weight is what keeps the design of a
+    stratified selection fixed across replicates. Each stratum draws one fewer
+    than it holds and the counts are scaled back up, which removes the
+    ``(n-1)/n`` understatement a plug-in draw carries and is exact for a mean.
+    `docs/decisions/0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md`
+    measures what leaving it in costs: at a three-unit stratum the plug-in draw
+    reported 83% of the spread it should. Taking one fewer is also why a
+    stratum has to hold at least two; the caller checks that, since it is the
+    one that can report the reading without a resolution instead of failing.
+    """
+
+    multiplicity = np.zeros(units, dtype=np.float64)
+    for size, grouped_indices in buckets:
+        taken = size - 1
+        offsets = generator.integers(0, size, (grouped_indices.shape[0], taken))
+        drawn = np.take_along_axis(grouped_indices, offsets, axis=1).ravel()
+        multiplicity += np.bincount(drawn, minlength=units) * (size / taken)
+    return multiplicity
 
 
 def _response_resolution(
@@ -1004,11 +996,11 @@ def _response_resolution(
 ) -> PuzzleResponseResolution | None:
     """Refit resampled puzzles and read the spread of the response.
 
-    The draw is stratified by exact puzzle rating, matching both the selection
-    design and the retained paired contributions. That is also what makes the
-    refit cheap: holding each stratum at its own size holds the scored rating
-    composition fixed, so the fit's expected-score sum is one curve every
-    replicate inverts rather than a bisection each has to run for itself.
+    The draw is stratified by exact puzzle rating, matching the selection
+    design. That is also what makes the refit cheap: holding each stratum at
+    its own size holds the scored rating composition fixed, so the fit's
+    expected-score sum is one curve every replicate inverts rather than a
+    bisection each has to run for itself.
     """
 
     if not config.enabled or len(scored_ratings) < 2:
@@ -1018,7 +1010,7 @@ def _response_resolution(
         return None
     target_ratings = [scored.result.target_rating for scored in scored_ratings]
     puzzle_ratings = [score.puzzle.rating for score in scores]
-    buckets = stratum_buckets(puzzle_ratings)
+    buckets = _stratum_buckets(puzzle_ratings)
     thinnest = min(size for size, _ in buckets)
     if thinnest < 2:
         # A fact about the set rather than a failed reading: only an artifact
@@ -1043,11 +1035,10 @@ def _response_resolution(
     greedy_fits = np.empty((config.resamples, len(scored_ratings)), dtype=np.float64)
     sampled_fits = np.empty_like(greedy_fits)
     for index in range(config.resamples):
-        multiplicity = draw_multiplicity(
+        multiplicity = _draw_multiplicity(
             generator,
             units=len(scores),
             buckets=buckets,
-            rescale=True,
         )
         greedy_fits[index] = np.interp(multiplicity @ greedy, totals, fitted)
         sampled_fits[index] = np.interp(multiplicity @ sampled, totals, fitted)
@@ -1163,20 +1154,6 @@ def _column(values: Iterable[float]) -> np.ndarray:
     """Return one reduced quantity across every replicate."""
 
     return np.fromiter(values, dtype=np.float64)
-
-
-def _detail_payload(
-    result: PuzzleBenchmarkResult,
-    scored_ratings: Sequence[_ScoredRating],
-    noise: NoiseConfig,
-) -> dict[str, object]:
-    """Return the bulk record, with the paired inputs a later floor needs."""
-
-    payload = result.as_record()
-    contributions = _paired_contributions(scored_ratings, noise)
-    if contributions is not None:
-        payload[PAIRED_CONTRIBUTIONS_KEY] = contributions
-    return payload
 
 
 def _slope(x_values: Sequence[int], y_values: Sequence[float]) -> float:

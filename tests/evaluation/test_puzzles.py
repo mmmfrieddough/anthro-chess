@@ -46,11 +46,12 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     PuzzleBenchmarkResult,
     _accepted_actions,
     _decision_tasks,
+    _draw_multiplicity,
     _fit_curve,
-    _paired_contributions,
     _response_resolution,
     _score_rating,
     _ScoredRating,
+    _stratum_buckets,
     _training_overlap,
     score_puzzle_set,
 )
@@ -65,9 +66,7 @@ from anthro_chess.evaluation.puzzles.dataset import (
 )
 from anthro_chess.evaluation.results import (
     DetailStore,
-    PairedContributions,
     ResultsStore,
-    metric_definition,
 )
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -312,11 +311,11 @@ def test_a_subsample_is_the_set_a_smaller_build_would_have_written(
 
 
 def test_a_dial_that_leaves_one_puzzle_per_rating_is_refused() -> None:
-    """A stratum of one can only redraw itself, so its floor is always zero.
+    """A stratum of one leaves the redraw nothing to take.
 
-    The retained paired contributions stratify by exact puzzle rating, so a
-    setting that leaves one puzzle at each rating would report a bootstrap
-    spread of exactly zero and a floor that licenses every delta.
+    The response redraw stratifies by exact puzzle rating and draws one fewer
+    than each stratum holds, so a setting that leaves one puzzle at each rating
+    would produce a reading with no response resolution beside it at all.
     """
 
     with pytest.raises(ValidationError):
@@ -610,46 +609,6 @@ def test_one_replay_serves_every_configured_rating() -> None:
         first = shared[0]
         assert all(context.plies is first.plies for context in shared)
         assert all(context.columns is first.columns for context in shared)
-
-
-def test_puzzle_details_retain_source_game_aligned_checkpoint_contributions() -> None:
-    puzzle_set = _fixture_set()
-    runner = _ControlledRunner(puzzle_set.puzzles, fail_continuations=True)
-    tasks = _decision_tasks(puzzle_set.puzzles)
-    scored = tuple(
-        _score_rating(
-            puzzle_set,
-            puzzle_set.puzzles,
-            runner,
-            tasks,
-            target_rating=rating,
-            temperature=0.0,
-            batch_size=2,
-        )
-        for rating in (1000, 2000)
-    )
-
-    raw = _paired_contributions(scored, NoiseConfig())
-
-    assert raw is not None
-    retained = PairedContributions.model_validate(raw)
-    assert retained.unit == "puzzle-source-game"
-    assert retained.stratum == "puzzle-rating"
-    assert retained.strata == tuple(str(puzzle.rating) for puzzle in puzzle_set.puzzles)
-    assert retained.unit_ids == tuple(
-        puzzle.source_game_key for puzzle in puzzle_set.puzzles
-    )
-    assert retained.metrics["puzzle.greedy_line_completion"] == (0.0, 0.5)
-    assert sum(retained.metrics["puzzle.greedy_first_move_accuracy"]) / 2 == (
-        pytest.approx(
-            sum(item.result.greedy_first_move_accuracy for item in scored) / 2
-        )
-    )
-    # A report can only report a paired floor as missing where the metric says
-    # it should have had one, so retaining a metric here and not declaring it
-    # there would restore the silence rather than announce itself.
-    for metric in retained.metrics:
-        assert metric_definition(metric).paired_sampling_floor
 
 
 def _scored_over_strata(
@@ -966,3 +925,31 @@ def test_a_rating_holding_one_puzzle_gets_no_response_resolution(
     )
 
     assert _response_resolution(scored, NoiseConfig()) is None
+
+
+def test_a_rescaled_stratified_redraw_removes_the_plug_in_understatement() -> None:
+    """A plug-in draw of `n` reports `(n-1)/n` of the variance it should.
+
+    Decision 0039 measures what that costs where a stratum is small, and names
+    the correction: take one fewer and scale the counts back up. Two units to a
+    stratum is where it is worst and is what the reduced puzzle sweep scores.
+    """
+
+    values = np.asarray([0.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float64)
+    buckets = _stratum_buckets(["low", "low", "mid", "mid", "high", "high"])
+    means = np.asarray(
+        [
+            _draw_multiplicity(
+                np.random.default_rng(seed),
+                units=len(values),
+                buckets=buckets,
+            )
+            @ values
+            / len(values)
+            for seed in range(4000)
+        ]
+    )
+
+    # Each stratum holds one zero and one one, so a stratified mean has
+    # variance 1/12 exactly; a plug-in draw would report half of it.
+    assert float(np.var(means)) == pytest.approx(1.0 / 12.0, rel=0.05)

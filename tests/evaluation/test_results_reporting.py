@@ -5,25 +5,19 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from anthro_chess.evaluation.results import (
-    BOOTSTRAP_METHOD,
     COMBINED_DISPERSION_METHOD,
     DEFAULT_COVERAGE,
-    PAIRED_BOOTSTRAP_METHOD,
-    PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
     BridgeIndex,
     CheckpointReference,
     Comparability,
     DataComponent,
     DeltaReport,
-    DetailStore,
     FamilyReport,
     FloorEntry,
     MetricDelta,
@@ -33,8 +27,6 @@ from anthro_chess.evaluation.results import (
     Movement,
     NoiseFloorIndex,
     NoiseVerdict,
-    PairedContributions,
-    PairedFloorIndex,
     ReportError,
     ResultEnvelope,
     SeriesGroup,
@@ -45,15 +37,10 @@ from anthro_chess.evaluation.results import (
     build_result,
     execution_reference,
     measurement,
-    paired_contributions,
     render_history,
     render_provenance,
     render_report,
     series_fingerprint,
-)
-from anthro_chess.evaluation.results.paired import (
-    draw_multiplicity,
-    stratum_buckets,
 )
 from anthro_chess.evaluation.results.reporting import (
     MAXIMUM_LINE_WIDTH,
@@ -822,600 +809,6 @@ def test_a_characterized_floor_covers_a_side_that_attached_none(
     assert row.one_sided_floors == ()
 
 
-def test_a_paired_floor_replaces_independent_sampling_floors(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    component = move_prediction_component()
-    independent = _dispersion(
-        1.0,
-        kind="data-sampling",
-        source="independent benchmark draws",
-    )
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[
-            measurement(
-                "held_out.move_loss",
-                3.5,
-                data=component,
-                dispersion=independent,
-            )
-        ],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[
-            measurement(
-                "held_out.move_loss",
-                3.3,
-                data=component,
-                dispersion=independent,
-            )
-        ],
-        recorded_at=CURRENT_AT,
-    )
-    detail = DetailStore(tmp_path / "detail")
-
-    # Enough units to support a floor. The paired bootstrap's dispersion is
-    # bounded for the units behind it, so a two-unit payload would produce a
-    # floor an order of magnitude above the delta no matter how well the two
-    # sides agreed, and would be testing the bound rather than the pairing.
-    units = tuple(f"game-{index}" for index in range(40))
-
-    def retained(values: list[float]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="fixture-game",
-                unit_ids=units,
-                metrics={"held_out.move_loss": values},
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    # The two checkpoints differ by the same small amount on every unit, which
-    # is the case a paired floor exists to see: the spread across units is
-    # large and common to both, and the spread of their difference is not.
-    # Centred so the retained values reproduce the recorded means of 3.5 and
-    # 3.3, which the store checks before it will bootstrap them.
-    offsets = [0.05 * (index - (len(units) - 1) / 2) for index in range(len(units))]
-    baseline_values = [3.5 + offset for offset in offsets]
-    current_values = [value - 0.2 for value in baseline_values]
-    baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained(baseline_values))}
-    )
-    current = current.model_copy(
-        update={"detail": detail.write("current.json", retained(current_values))}
-    )
-
-    report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
-    row = _row(report, "held_out.move_loss")
-
-    assert row.noise is NoiseVerdict.CLEARED
-    assert row.noise_floor is not None
-    assert row.noise_floor < 0.2
-    assert row.noise_floors[0].source is not None
-    assert "paired bootstrap" in row.noise_floors[0].source
-
-
-def test_a_paired_floor_preserves_the_benchmark_strata(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    component = move_prediction_component()
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[measurement("held_out.move_loss", 0.0, data=component)],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[measurement("held_out.move_loss", 0.5, data=component)],
-        recorded_at=CURRENT_AT,
-    )
-    detail = DetailStore(tmp_path / "detail")
-
-    def retained(values: list[float]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="fixture-game",
-                unit_ids=("a", "b", "c", "d"),
-                stratum="rating",
-                strata=("low", "low", "high", "high"),
-                metrics={"held_out.move_loss": values},
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    baseline = baseline.model_copy(
-        update={
-            "detail": detail.write(
-                "stratified-baseline.json",
-                retained([0.0, 0.0, 0.0, 0.0]),
-            )
-        }
-    )
-    current = current.model_copy(
-        update={
-            "detail": detail.write(
-                "stratified-current.json",
-                retained([0.0, 0.0, 1.0, 1.0]),
-            )
-        }
-    )
-
-    report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
-    row = _row(report, "held_out.move_loss")
-
-    # Each stratum's delta is constant. Resampling within the fixed allocation
-    # therefore adds no composition variance between the two strata.
-    assert row.noise_floor == 0.0
-    assert row.noise_floors[0].source is not None
-    assert "stratified paired bootstrap" in row.noise_floors[0].source
-
-
-def test_a_weighted_paired_floor_reproduces_a_mean_over_positions(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    """A dependency degradation is a per-position mean carried by games.
-
-    Games hold different numbers of positions, so the retained per-game values
-    only reproduce the recorded measurement once each is weighted by the
-    positions behind it. Without the weights the store rejects the payload
-    rather than bootstrapping a quantity nobody measured.
-    """
-
-    component = move_prediction_component()
-    units = tuple(f"game-{index}" for index in range(40))
-    # Alternating sizes, so an unweighted mean and a weighted one differ.
-    weights = [1.0 + 9.0 * (index % 2) for index in range(len(units))]
-    offsets = [0.05 * (index - (len(units) - 1) / 2) for index in range(len(units))]
-    baseline_values = [0.5 + offset for offset in offsets]
-    current_values = [value + 0.2 for value in baseline_values]
-
-    def weighted_mean(values: list[float]) -> float:
-        return sum(
-            weight * value for weight, value in zip(weights, values, strict=True)
-        ) / sum(weights)
-
-    metric = "dependency.rating_absent_degradation"
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[
-            measurement(metric, weighted_mean(baseline_values), data=component)
-        ],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[
-            measurement(metric, weighted_mean(current_values), data=component)
-        ],
-        recorded_at=CURRENT_AT,
-    )
-    detail = DetailStore(tmp_path / "detail")
-
-    def retained(values: list[float]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="pool-game",
-                unit_ids=units,
-                metrics={metric: values},
-                weights=weights,
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained(baseline_values))}
-    )
-    current = current.model_copy(
-        update={"detail": detail.write("current.json", retained(current_values))}
-    )
-
-    report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
-    row = _row(report, metric)
-
-    assert row.delta == pytest.approx(0.2)
-    assert row.noise is NoiseVerdict.CLEARED
-    assert row.noise_floor is not None
-    assert row.noise_floor < 0.2
-    assert row.noise_floors[0].source is not None
-    assert "weighted paired bootstrap" in row.noise_floors[0].source
-
-
-def test_a_paired_floor_is_withheld_when_the_weights_disagree(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    """Differently weighted sides do not describe one delta.
-
-    A weight is a property of the frozen view rather than of the checkpoint, so
-    two readings that disagree about it did not average over the same thing,
-    and their difference is not the delta either measurement reports.
-    """
-
-    component = move_prediction_component()
-    metric = "dependency.rating_absent_degradation"
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[measurement(metric, 0.5, data=component)],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[measurement(metric, 0.5, data=component)],
-        recorded_at=CURRENT_AT,
-    )
-    detail = DetailStore(tmp_path / "detail")
-
-    def retained(weights: list[float]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="pool-game",
-                unit_ids=("a", "b", "c", "d"),
-                metrics={metric: [0.5, 0.5, 0.5, 0.5]},
-                weights=weights,
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained([1.0, 1.0, 2.0, 2.0]))}
-    )
-    current = current.model_copy(
-        update={"detail": detail.write("current.json", retained([1.0, 1.0, 1.0, 1.0]))}
-    )
-
-    report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
-    row = _row(report, metric)
-
-    assert row.noise is NoiseVerdict.UNKNOWN
-    assert row.noise_floors == ()
-    assert row.paired_floor_unavailable == (
-        "the retained contributions weight their units differently"
-    )
-
-
-def test_an_unpaired_floor_standing_in_for_a_paired_one_is_reported_as_one(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    """The substitution changes the verdict, so it cannot be left to inference.
-
-    The same two readings and the same characterized floor are reported twice
-    here: once where the retained contributions are on this machine, and once
-    where the current reading's payload is not. Nothing about the measurement
-    differs between them. What differs is that the second is judged against a
-    floor estimated over one reading's own games, which drops the covariance
-    two checkpoints scored on the same games share — and it turns a delta the
-    paired estimator clears into noise.
-    """
-
-    component = move_prediction_component()
-    metric = "dependency.rating_shuffled_degradation"
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[measurement(metric, 0.5, data=component)],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[measurement(metric, 0.9, data=component)],
-        recorded_at=CURRENT_AT,
-    )
-    # Wide across units and identical between checkpoints, which is what the
-    # two estimators disagree about: resampling either side alone sees the
-    # spread, and resampling their difference sees none of it.
-    units = tuple(f"game-{index}" for index in range(40))
-    offsets = [0.5 * (index - (len(units) - 1) / 2) for index in range(len(units))]
-    detail = DetailStore(tmp_path / "detail")
-
-    def retained(mean: float) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="pool-game",
-                unit_ids=units,
-                metrics={metric: [mean + offset for offset in offsets]},
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained(0.5))}
-    )
-    current = current.model_copy(
-        update={"detail": detail.write("current.json", retained(0.9))}
-    )
-    floors = NoiseFloorIndex(
-        [
-            build_characterization(
-                kind="data-sampling",
-                method=BOOTSTRAP_METHOD,
-                replicates=1_000,
-                source="bootstrap over 40 game(s) of pool view 'canonical'",
-                floors=[
-                    FloorEntry(
-                        metric=metric,
-                        fingerprint=series_fingerprint(metric, component),
-                        floor=1.0,
-                        dispersion=0.3,
-                        dispersion_bound=0.36,
-                        degrees_of_freedom=39,
-                    )
-                ],
-                recorded_at=BASELINE_AT,
-            )
-        ]
-    )
-
-    paired = _row(
-        build_delta_report(
-            [baseline, current],
-            BridgeIndex(),
-            floors=floors,
-            comparison_floors=PairedFloorIndex(detail),
-        ),
-        metric,
-    )
-    (tmp_path / "detail" / "current.json").unlink()
-    degraded_report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        floors=floors,
-        comparison_floors=PairedFloorIndex(detail),
-    )
-    degraded = _row(degraded_report, metric)
-
-    assert paired.noise is NoiseVerdict.CLEARED
-    assert [floor.estimator for floor in paired.noise_floors] == [
-        PAIRED_BOOTSTRAP_METHOD
-    ]
-    assert paired.paired_floor_unavailable is None
-
-    # A payload this machine does not hold is the ordinary state of a reading
-    # recorded elsewhere, so it degrades the row rather than ending the report.
-    assert degraded.noise is NoiseVerdict.WITHIN
-    assert [floor.estimator for floor in degraded.noise_floors] == [BOOTSTRAP_METHOD]
-    assert degraded.paired_floor_unavailable == (
-        "the current reading recorded a detail payload this machine does not hold"
-    )
-    rendered = render_report(degraded_report)
-    assert "within (sampling, unpaired)" in rendered
-    assert "paired floor unavailable" in rendered
-
-    # Both sides missing is the routine cross-machine shape, and naming each
-    # separately says the same sentence twice on every row of a report.
-    (tmp_path / "detail" / "baseline.json").unlink()
-    both = _row(
-        build_delta_report(
-            [baseline, current],
-            BridgeIndex(),
-            floors=floors,
-            comparison_floors=PairedFloorIndex(detail),
-        ),
-        metric,
-    )
-
-    assert both.paired_floor_unavailable == (
-        "both readings recorded a detail payload this machine does not hold"
-    )
-
-
-def test_a_metric_only_one_side_retained_names_the_side_that_did_not(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    """Which side is missing decides what is done about it.
-
-    Two readings can match on every field that makes them one comparison and
-    still disagree about what they retained, because the retained set is a
-    property of the build that wrote each payload. Reporting that as though
-    neither had the metric sends a maintainer to re-record the wrong one.
-    """
-
-    component = move_prediction_component()
-    metric = "dependency.rating_constant_degradation"
-    shared = "dependency.rating_absent_degradation"
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[
-            measurement(metric, 0.5, data=component),
-            measurement(shared, 0.5, data=component),
-        ],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[
-            measurement(metric, 0.5, data=component),
-            measurement(shared, 0.5, data=component),
-        ],
-        recorded_at=CURRENT_AT,
-    )
-    detail = DetailStore(tmp_path / "detail")
-
-    def retained(metrics: list[str]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="pool-game",
-                unit_ids=("a", "b", "c", "d"),
-                metrics={name: [0.5, 0.5, 0.5, 0.5] for name in metrics},
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained([metric, shared]))}
-    )
-    current = current.model_copy(
-        update={"detail": detail.write("current.json", retained([shared]))}
-    )
-
-    report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
-
-    assert _row(report, shared).paired_floor_unavailable is None
-    assert _row(report, metric).paired_floor_unavailable == (
-        "the current reading did not retain this metric"
-    )
-
-
-def test_a_report_with_no_detail_root_says_the_paired_floor_needs_one(
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    """Reporting without a detail tier is the loudest form of the same loss.
-
-    Nothing is read, so no reading can pair, and every metric defined against a
-    paired floor is qualified by something else or by nothing. That has to say
-    so: it is a configuration a caller can fix, and it is indistinguishable
-    from an ordinary reading otherwise.
-    """
-
-    component = move_prediction_component()
-    metric = "dependency.rating_anchor_policy_divergence"
-    baseline = recorded_result(
-        label="checkpoint-a",
-        measurements=[measurement(metric, 0.5, data=component)],
-        recorded_at=BASELINE_AT,
-    )
-    current = recorded_result(
-        label="checkpoint-b",
-        measurements=[measurement(metric, 0.9, data=component)],
-        recorded_at=CURRENT_AT,
-    )
-
-    report = build_delta_report([baseline, current], BridgeIndex())
-    row = _row(report, metric)
-
-    assert row.noise is NoiseVerdict.UNKNOWN
-    assert row.paired_floor_unavailable == "no detail-tier root is configured"
-    assert row.as_record()["paired_floor_unavailable"] == (
-        "no detail-tier root is configured"
-    )
-
-
-def test_a_metric_whose_floor_was_never_paired_reports_no_degradation(
-    recorded_result: ResultFactory,
-) -> None:
-    """Most metrics have no pair to lose, and must not be annotated as if they did."""
-
-    report = build_delta_report(
-        [
-            recorded_result(label="checkpoint-a", recorded_at=BASELINE_AT),
-            recorded_result(label="checkpoint-b", recorded_at=CURRENT_AT),
-        ],
-        BridgeIndex(),
-    )
-    row = _row(report, "held_out.move_loss")
-
-    assert row.paired_floor_unavailable is None
-    assert row.note is None
-
-
-def test_a_payload_written_before_weights_existed_still_resolves() -> None:
-    """Retained contributions outlive the build that wrote them.
-
-    Adding the weight vector must not strand the payloads already sitting in
-    machine-local detail directories, which is a property of the stored bytes
-    rather than of anything the current code path produces. So this validates
-    a literal record rather than one built through ``paired_contributions``.
-    """
-
-    stored = {
-        "version": 2,
-        "unit": "puzzle-source-game",
-        "unit_ids": ["a", "b", "c", "d"],
-        "stratum": "puzzle-rating",
-        "strata": ["1000", "1000", "1800", "1800"],
-        "metrics": {"puzzle.greedy_first_move_accuracy": [0.0, 1.0, 0.0, 1.0]},
-        "resamples": 1000,
-        "seed": 0,
-        "coverage": 1.96,
-        "confidence": 0.95,
-    }
-
-    restored = PairedContributions.model_validate(stored)
-
-    assert restored.version == 2
-    # No weights means every unit counts once, which is what version 2 meant.
-    assert restored.weights is None
-    # The ceiling still refuses a payload this build cannot read.
-    with pytest.raises(ValueError, match="version 4"):
-        PairedContributions.model_validate({**stored, "version": 4})
-
-
-@pytest.mark.parametrize(
-    ("weights", "message"),
-    [
-        ([1.0, 2.0, 3.0], "3 weights for 4 units"),
-        ([1.0, 1.0, 0.0, 1.0], "finite and positive"),
-        ([1.0, 1.0, -1.0, 1.0], "finite and positive"),
-    ],
-)
-def test_paired_contribution_weights_are_validated(
-    weights: list[float],
-    message: str,
-) -> None:
-    """A weight decides how much of the metric a unit accounts for.
-
-    A missing or non-positive one silently reweights the reading rather than
-    failing, so it is rejected where it is written instead of surfacing as a
-    floor nobody can explain.
-    """
-
-    with pytest.raises(ValueError, match=message):
-        paired_contributions(
-            unit="pool-game",
-            unit_ids=("a", "b", "c", "d"),
-            metrics={"held_out.move_loss": [1.0, 1.0, 1.0, 1.0]},
-            weights=weights,
-            resamples=1_000,
-            seed=0,
-            coverage=1.96,
-        )
-
-
 def test_a_declared_metric_still_takes_a_floor_the_declaration_does_not_cover(
     two_checkpoints: tuple[ResultEnvelope, ResultEnvelope],
     recorded_result: ResultFactory,
@@ -1473,7 +866,6 @@ def test_a_declared_metric_still_takes_a_floor_the_declaration_does_not_cover(
 
 
 def test_a_metric_that_can_carry_no_sampling_floor_says_so_rather_than_unknown(
-    tmp_path: Path,
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
 ) -> None:
@@ -1489,45 +881,25 @@ def test_a_metric_that_can_carry_no_sampling_floor_says_so_rather_than_unknown(
     metric = "dependency.rating_cross_conditioning_match_rate"
     baseline = recorded_result(
         label="checkpoint-a",
-        measurements=[measurement(metric, 0.25, data=component)],
+        measurements=[
+            measurement(metric, 0.25, data=component, dispersion=_dispersion(0.1))
+        ],
         recorded_at=BASELINE_AT,
     )
     current = recorded_result(
         label="checkpoint-b",
-        measurements=[measurement(metric, 0.75, data=component)],
+        measurements=[
+            measurement(metric, 0.75, data=component, dispersion=_dispersion(0.1))
+        ],
         recorded_at=CURRENT_AT,
     )
-    detail = DetailStore(tmp_path / "detail")
 
-    def retained(values: list[float]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="pool-game",
-                unit_ids=("a", "b", "c", "d"),
-                metrics={metric: values},
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    baseline = baseline.model_copy(
-        update={"detail": detail.write("baseline.json", retained([0.25] * 4))}
-    )
-    current = current.model_copy(
-        update={"detail": detail.write("current.json", retained([0.75] * 4))}
-    )
-
-    report = build_delta_report(
-        [baseline, current],
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
+    report = build_delta_report([baseline, current], BridgeIndex())
     row = _row(report, metric)
 
-    # A sampling floor was retained for it and is still refused, because the
-    # declaration is about what resampling can estimate rather than about
-    # whether anybody produced a number.
+    # Both readings carry a sampling dispersion and the pair is still refused,
+    # because the declaration is about what resampling can estimate rather than
+    # about whether anybody produced a number.
     assert row.noise is NoiseVerdict.UNQUALIFIABLE
     assert row.noise_floor is None
     assert row.noise_floors == ()
@@ -2323,94 +1695,3 @@ def test_short_identifiers_keep_the_column_at_its_minimum() -> None:
     assert _header(rendered).index("better") == (
         indent + MINIMUM_METRIC_COLUMN_WIDTH + separator
     )
-
-
-def test_a_rescaled_stratified_draw_removes_the_plug_in_understatement() -> None:
-    """A plug-in draw of `n` reports `(n-1)/n` of the variance it should.
-
-    Decision 0039 measures what that costs where a stratum is small, and names
-    the correction: take one fewer and scale the counts back up. Two units to a
-    stratum is where it is worst and is what the reduced puzzle sweep scores.
-    """
-
-    values = np.asarray([0.0, 1.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float64)
-    buckets = stratum_buckets(["low", "low", "mid", "mid", "high", "high"])
-    means = {
-        rescale: np.asarray(
-            [
-                draw_multiplicity(
-                    np.random.default_rng(seed),
-                    units=len(values),
-                    buckets=buckets,
-                    rescale=rescale,
-                )
-                @ values
-                / len(values)
-                for seed in range(4000)
-            ]
-        )
-        for rescale in (False, True)
-    }
-
-    # Each stratum holds one zero and one one, so a stratified mean has
-    # variance 1/12 exactly; the plug-in draw reports half of it.
-    assert float(np.var(means[True])) == pytest.approx(1.0 / 12.0, rel=0.05)
-    assert float(np.var(means[False])) == pytest.approx(1.0 / 24.0, rel=0.05)
-
-
-def test_a_stratum_holding_one_unit_withholds_the_paired_floor(
-    tmp_path: Path,
-    recorded_result: ResultFactory,
-    move_prediction_component: Digest,
-) -> None:
-    """A redraw within a stratum of one can only ever return that one unit.
-
-    Its contribution to the spread is absent rather than small, so the floor
-    built from it would be narrow by however much that stratum mattered.
-    """
-
-    component = move_prediction_component()
-    detail = DetailStore(tmp_path / "detail")
-
-    def retained(values: list[float]) -> dict[str, object]:
-        return {
-            PAIRED_CONTRIBUTIONS_KEY: paired_contributions(
-                unit="fixture-game",
-                unit_ids=("a", "b", "c"),
-                stratum="rating",
-                strata=("low", "low", "high"),
-                metrics={"dependency.rating_anchor_top1_agreement": values},
-                resamples=1_000,
-                seed=0,
-                coverage=1.96,
-            ).as_record()
-        }
-
-    envelopes = [
-        recorded_result(
-            label=label,
-            measurements=[
-                measurement(
-                    "dependency.rating_anchor_top1_agreement", value, data=component
-                )
-            ],
-            recorded_at=stamp,
-        ).model_copy(
-            update={"detail": detail.write(f"singleton-{label}.json", retained(values))}
-        )
-        for label, value, stamp, values in (
-            ("checkpoint-a", 0.0, BASELINE_AT, [0.0, 0.0, 0.0]),
-            ("checkpoint-b", 1.0, CURRENT_AT, [1.0, 1.0, 1.0]),
-        )
-    ]
-
-    report = build_delta_report(
-        envelopes,
-        BridgeIndex(),
-        comparison_floors=PairedFloorIndex(detail),
-    )
-    row = _row(report, "dependency.rating_anchor_top1_agreement")
-
-    assert row.noise_floor is None
-    assert row.paired_floor_unavailable is not None
-    assert "a stratum holds one unit" in row.paired_floor_unavailable

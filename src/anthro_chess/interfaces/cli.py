@@ -591,7 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = eval_commands.add_parser(
         "report",
         help="Show the compact benchmark delta view over the results store.",
-        parents=[_STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
+        parents=[_STORE_FLAG, _FORMAT_FLAG],
     )
     report_parser.add_argument(
         "--pivot",
@@ -1737,8 +1737,7 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
         (
             f"Resolution: {selection.minimum_detectable_difference * 100:.2f} pp "
             f"for independent readings at {PUZZLE_DETECTION_CONFIDENCE:.0%} "
-            f"confidence, {PUZZLE_DETECTION_POWER:.0%} power; a paired "
-            "comparison resolves finer"
+            f"confidence, {PUZZLE_DETECTION_POWER:.0%} power"
         ),
         f"Reference temperature: {result.reference_temperature:.3f}",
         "",
@@ -2914,9 +2913,7 @@ def _optional(value: float | None) -> str:
 def _run_eval_report(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         BridgeIndex,
-        DetailStore,
         NoiseFloorIndex,
-        PairedFloorIndex,
         ReportError,
         ResultsStore,
         ResultsStoreError,
@@ -2926,7 +2923,6 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
         render_history,
         render_provenance,
         render_report,
-        resolve_optional_detail_root,
         resolve_store_root,
     )
 
@@ -2942,10 +2938,6 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
                 print(render_history(history), end="")
             return 0
         floors = NoiseFloorIndex(store.characterizations(), bridges)
-        detail_root = resolve_optional_detail_root(arguments.detail_root)
-        comparison_floors = (
-            None if detail_root is None else PairedFloorIndex(DetailStore(detail_root))
-        )
         if arguments.pivot == "environment":
             report = build_environment_report(
                 results,
@@ -2960,7 +2952,6 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
                 results,
                 bridges,
                 floors=floors,
-                comparison_floors=comparison_floors,
                 current=arguments.current,
                 baseline=arguments.baseline,
                 families=arguments.family or None,
@@ -3557,14 +3548,6 @@ def _run_eval_metrics(arguments: argparse.Namespace) -> int:
                 # the source.
                 for line in _wrapped_reason(
                     f"no sampling floor can exist: {metric.no_sampling_floor_reason}"
-                ):
-                    print(line)
-            if metric.paired_sampling_floor:
-                # And where a report reads "paired floor unavailable", this is
-                # what says the row should have had one, so which metrics that
-                # covers is answerable without reading the registry source.
-                for line in _wrapped_reason(
-                    "the data-sampling floor is the paired checkpoint-pair one"
                 ):
                     print(line)
     return 0

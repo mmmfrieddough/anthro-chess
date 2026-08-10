@@ -4,7 +4,11 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted. Extends `0026-conservative-dispersion-bounds.md`.
+Accepted. Extends `0026-conservative-dispersion-bounds.md`. The estimator below
+is superseded by
+`0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which
+removes the paired bootstrap and the module named here; what survives is which
+of this family's quantities can carry a sampling floor at all.
 
 ## Context
 
