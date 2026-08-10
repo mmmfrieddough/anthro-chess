@@ -52,7 +52,7 @@ DEFAULT_RESAMPLES = 1000
 #: recomputes one quotient from differently-rounded sums, so it lands within a
 #: few ulp of itself rather than on itself — measured at 5e-16 relative across
 #: agreeing draws, and a real spread is several percent. Anywhere between is
-#: unoccupied, so the threshold sits four orders above the noise it excludes.
+#: unoccupied, so the threshold sits three orders above the noise it excludes.
 _RESAMPLE_ROUNDING = 1e-12
 
 
@@ -118,16 +118,10 @@ def bootstrap_dispersions(
     The draw observed that it could not move this metric, which is not the same
     as observing that nothing could: a quantity identical in every game scored
     reads this way at any sample size, and the wider sample that would move it
-    is the thing nobody has taken. Exactly zero is the wrong test for it,
-    because recomputing one quotient from differently-rounded sums lands within
-    a few ulp of itself rather than on itself, and a floor of 1e-16 clears every
-    delta as surely as a floor of nothing.
+    is the thing nobody has taken.
 
-    So is a metric only one game realized. Its resample is negligibly spread
-    too, so the test above would reach it, but it is excluded on the count
-    instead: one replicate observes no spread for a bound to rest on, and the
-    degrees of freedom this passes on are only non-zero because that is checked
-    rather than inferred from a threshold.
+    So is a metric only one game realized: one replicate observes no spread for
+    a bound to rest on.
 
     The **games** are what the dispersion bound's degrees of freedom count, not
     the resamples. A bootstrap draws as many resamples as it is asked for, but

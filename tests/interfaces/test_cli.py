@@ -1480,11 +1480,14 @@ def _record_sampled_reading(
     floor: float,
     games: int,
     selected_games: int | None = None,
+    envelope_version: int | None = None,
 ) -> None:
     """Record the reading an evaluation run leaves behind, spread included.
 
     ``games`` is what realized the metric and ``selected_games`` what the pass
-    scored. They differ only for a sliced metric.
+    scored. They differ only for a sliced metric. ``envelope_version`` stamps
+    the record at an older schema version, which is what a store written before
+    units became per-metric holds.
     """
 
     import math
@@ -1517,36 +1520,37 @@ def _record_sampled_reading(
     component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
     # Chosen so a delta against a reading like this one faces exactly ``floor``.
     bound = floor / (DEFAULT_COVERAGE * math.sqrt(2.0))
-    ResultsStore(store_root).append(
-        build_result(
-            kind="held-out-prediction",
-            benchmark=BenchmarkReference(name="move-validation", version=1),
-            checkpoint=CheckpointReference(label="checkpoint-a"),
-            data=dataset_reference(
-                pool_id="fixture-pool",
-                pool_version=1,
-                view="canonical",
-                selected_games=games if selected_games is None else selected_games,
-                game_ids_sha256="a" * 64,
-                components=[component],
-            ),
-            measurements=[
-                measurement(
-                    "held_out.move_loss",
-                    3.5,
-                    data=component,
-                    sample_size=games,
-                    dispersion=MetricDispersion(
-                        value=bound,
-                        bound=bound,
-                        units=games,
-                        source="the fixture pool",
-                    ),
-                )
-            ],
-            recorded_at=datetime(2026, 7, 9, tzinfo=UTC),
-        )
+    envelope = build_result(
+        kind="held-out-prediction",
+        benchmark=BenchmarkReference(name="move-validation", version=1),
+        checkpoint=CheckpointReference(label="checkpoint-a"),
+        data=dataset_reference(
+            pool_id="fixture-pool",
+            pool_version=1,
+            view="canonical",
+            selected_games=games if selected_games is None else selected_games,
+            game_ids_sha256="a" * 64,
+            components=[component],
+        ),
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.5,
+                data=component,
+                sample_size=games,
+                dispersion=MetricDispersion(
+                    value=bound,
+                    bound=bound,
+                    units=games,
+                    source="the fixture pool",
+                ),
+            )
+        ],
+        recorded_at=datetime(2026, 7, 9, tzinfo=UTC),
     )
+    if envelope_version is not None:
+        envelope = envelope.model_copy(update={"envelope_version": envelope_version})
+    ResultsStore(store_root).append(envelope)
 
 
 def test_eval_noise_plan_sizes_an_axis_from_a_measured_floor(
@@ -1639,7 +1643,37 @@ def test_eval_noise_plan_reports_a_missing_spread_without_a_traceback(
         )
         == 2
     )
-    assert "no reading records a sampled dispersion" in capsys.readouterr().err
+    assert "records a sampled dispersion" in capsys.readouterr().err
+
+
+def test_eval_noise_plan_refuses_a_reading_that_counted_the_whole_pass(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Below envelope version 8 a sliced metric's `units` counted every game the
+    # pass scored, so extrapolating from one would size a pool in a unit the
+    # record does not carry.
+    _record_sampled_reading(
+        tmp_path / "results", floor=0.04, games=1_000, envelope_version=7
+    )
+
+    assert (
+        main(
+            [
+                "eval",
+                "noise",
+                "plan",
+                "--store",
+                str(tmp_path / "results"),
+                "--metric",
+                "held_out.move_loss",
+                "--effect",
+                "0.01",
+            ]
+        )
+        == 2
+    )
+    assert "envelope version 8 or above" in capsys.readouterr().err
 
 
 def _inference_config(path: Path, checkpoint: Path) -> Path:

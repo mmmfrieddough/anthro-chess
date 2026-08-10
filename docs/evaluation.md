@@ -636,7 +636,9 @@ The answer is in the same units the spread was read over, so for a sliced metric
 it counts games that realize the slice rather than games in the pool. The
 command reports both, converting through the rate the reading itself observed —
 an identity where every game realizes the metric, and an order of magnitude for
-a rare rule case.
+a rare rule case. A reading recorded before that count became per-metric is
+refused rather than converted, because its count answers the other question and
+nothing on the record distinguishes the two.
 
 ## Benchmark Data Layers
 

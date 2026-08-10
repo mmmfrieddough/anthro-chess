@@ -40,9 +40,7 @@ from anthro_chess.evaluation.results.metrics import (
 from anthro_chess.provenance import code_provenance, environment_provenance
 
 #: Version 8 counts a bootstrap dispersion's units over the games that realized
-#: its metric rather than over every game the pass scored. Records written at 7
-#: stay readable, so a sliced metric's stored ``units`` counts the whole pass in
-#: those and the realizing games in these.
+#: its metric rather than over every game the pass scored.
 #: Version 7 drops the noise source a dispersion declared. A dispersion is now
 #: always the reading's own, so the taxonomy distinguished nothing; ``estimator``
 #: still says how the reading arrived at it.
@@ -51,6 +49,12 @@ from anthro_chess.provenance import code_provenance, environment_provenance
 #: Version 5 records the training identity a training noise floor is scoped to.
 #: Version 4 names the estimator behind a stored noise floor.
 ENVELOPE_VERSION = 8
+
+#: The version from which a bootstrap dispersion's ``units`` counts the games
+#: that realized its metric. Below it the field counts the whole pass, and
+#: nothing else on the record distinguishes the two, so a reader that
+#: extrapolates from ``units`` has to gate on this.
+REALIZING_UNITS_VERSION = 8
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far

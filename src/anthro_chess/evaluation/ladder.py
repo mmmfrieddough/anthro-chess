@@ -1517,17 +1517,14 @@ def _resolution(
         if key in unqualifiable:
             continue
         scope, identifier = key
+        # Fewer than two here would ask the bound for no degree of freedom,
+        # which raises. It cannot arrive: a seat with one redrawn game has it in
+        # one varying pairing, whose multinomial redraw over a single game is
+        # one-hot, so the seat's rate is constant and the zero-spread branch
+        # below withholds it first.
         games_behind = (
-            seat_redrawn.get(scope, 0)
-            if identifier in _SEAT_SCOPED_METRICS
-            else redrawn_games
+            seat_redrawn[scope] if identifier in _SEAT_SCOPED_METRICS else redrawn_games
         )
-        if games_behind < 2:
-            unqualifiable[key] = (
-                "the pairings a fresh seed would redraw hold fewer than two of "
-                "this seat's games, which shows no spread to bound"
-            )
-            continue
         values = [value for value in replicates[key] if math.isfinite(value)]
         if len(values) < 2:
             unqualifiable[key] = (

@@ -192,7 +192,8 @@ def test_agreeing_games_are_omitted_even_where_their_rate_is_inexact(
     move_prediction_component: Digest,
     positions: tuple[int, ...],
 ) -> None:
-    # The same omission as above, at a rate binary floating point cannot hold.
+    # The same omission as test_bootstrap_resamples_games_rather_than_positions,
+    # at a rate binary floating point cannot hold.
     # Every resample recomputes the one value from differently-rounded sums, so
     # it lands within a few ulp of itself instead of on itself, and a test for
     # exactly zero would record a floor no comparison could fail to clear.
@@ -355,7 +356,7 @@ def test_a_metric_one_game_realized_reports_no_dispersion(
     move_prediction_component: Digest,
 ) -> None:
     # One game is one replicate, and a single replicate observes no spread for
-    # a bound to rest on — the count says so without the estimate having to.
+    # a bound to rest on.
     component = move_prediction_component()
     totals = (
         GameTotals(
