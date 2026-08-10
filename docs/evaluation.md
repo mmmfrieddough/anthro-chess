@@ -533,6 +533,14 @@ inside one process share a warm allocator and a compiled kernel, so the
 `docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
 counting either of the cheap numbers would buy.
 
+Which games those are is a per-metric question. A sliced metric — a rule case,
+an opening tier, a rating band — is realized in a fraction of the games a pass
+scored, and only those carry evidence about how far it moves. Each metric's
+spread is bounded for the games that realized it and records that count, so a
+rare slice reads as the thin estimate it is rather than borrowing the whole
+pass's confidence. A metric only one game realized reports no spread at all,
+since one replicate observes none.
+
 The bound is severe at small replicate counts, which is what the replicate
 defaults are chosen against. Resting a floor on two bounds rather than one does
 not weaken the confidence either carries: the floor needs only their combination
@@ -618,6 +626,11 @@ so how many games an axis needs in order to resolve an effect of a given size is
 computable rather than guessed, and `anthro eval noise plan` computes it from the
 newest reading that measured its own spread over a counted sample. No
 benchmark-level resolution constant is declared or kept current for it.
+
+The answer is in the same units the spread was read over, so for a sliced metric
+it counts games that realize the slice rather than games in the pool. Converting
+one to the other takes the rate at which the pool realizes the slice, which the
+command does not yet apply.
 
 ## Benchmark Data Layers
 

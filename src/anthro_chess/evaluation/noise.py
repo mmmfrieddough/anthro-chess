@@ -111,6 +111,11 @@ def bootstrap_dispersions(
     scored reads this way at any sample size, and the wider sample that would
     move it is the thing nobody has taken.
 
+    So is a metric only one game realized, and by its game count rather than by
+    that test. One game is one replicate and observes no spread for a bound to
+    rest on, while resampling it does not quite return a constant — floating
+    point leaves the last bits of the divided total moving.
+
     The **games** are what the dispersion bound's degrees of freedom count, not
     the resamples. A bootstrap draws as many resamples as it is asked for, but
     every one of them is drawn from the same games, so more of them buy a
@@ -118,6 +123,14 @@ def bootstrap_dispersions(
     hand. Counting them as independent replicates would claim near-certainty
     about the dispersion from a number the caller chose for free, which is
     precisely the false precision the bound is here to remove.
+
+    Which games is decided per metric, from the ones that scored a position for
+    it. A sliced metric is realized in a fraction of the pass — a rule case, an
+    opening tier, a rating band — and the games that never met it are evidence
+    about nothing here. Counting the whole pass would size the bound for
+    replicates the metric never had and hand the same inflated count to
+    ``games_to_resolve``, both in the direction that overstates what a rare
+    slice resolved.
 
     ``workload`` is required by a benchmark whose metrics are execution-
     sensitive, because a dispersion has to carry the same fingerprint as the
@@ -149,9 +162,12 @@ def bootstrap_dispersions(
             counts[row, column] = contribution.positions
 
     replicates = _bootstrap_replicates(sums, counts, seed=seed, resamples=resamples)
-    freedom = len(totals) - 1
+    realized = np.count_nonzero(counts, axis=0)
     dispersions: dict[str, MetricDispersion] = {}
     for column, metric in enumerate(metrics):
+        games = int(realized[column])
+        if games < 2:
+            continue
         values = replicates[:, column]
         observed = values[np.isfinite(values)]
         if observed.size < 2:
@@ -162,9 +178,9 @@ def bootstrap_dispersions(
         dispersions[series_fingerprint(metric, component, workload)] = (
             measured_dispersion(
                 dispersion,
-                degrees_of_freedom=freedom,
+                degrees_of_freedom=games - 1,
                 confidence=confidence,
-                units=len(totals),
+                units=games,
                 source=source,
                 estimator=BOOTSTRAP_METHOD,
             )

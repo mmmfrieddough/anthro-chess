@@ -308,7 +308,46 @@ def test_a_metric_absent_from_a_game_is_still_bootstrapped(
         series_fingerprint(METRIC, component),
         series_fingerprint(OTHER_METRIC, component),
     }
-    assert dispersions[series_fingerprint(OTHER_METRIC, component)].value > 0.0
+    sliced = dispersions[series_fingerprint(OTHER_METRIC, component)]
+    pooled = dispersions[series_fingerprint(METRIC, component)]
+    assert sliced.value > 0.0
+    assert (sliced.units, pooled.units) == (2, 3)
+    assert sliced.bound == pytest.approx(
+        dispersion_bound(sliced.value, degrees_of_freedom=1)
+    )
+    assert pooled.bound == pytest.approx(
+        dispersion_bound(pooled.value, degrees_of_freedom=2)
+    )
+
+
+def test_a_metric_one_game_realized_reports_no_dispersion(
+    move_prediction_component: Digest,
+) -> None:
+    # One game is one replicate, and a single replicate observes no spread for
+    # a bound to rest on. The exactly-zero guard does not catch it: resampling
+    # one game leaves the last bits of the divided total moving.
+    component = move_prediction_component()
+    totals = (
+        GameTotals(
+            game_id=1,
+            metrics={
+                METRIC: MetricTotal(total=3.0, positions=3),
+                OTHER_METRIC: MetricTotal(total=1.0, positions=3),
+            },
+        ),
+        GameTotals(game_id=2, metrics={METRIC: MetricTotal(total=9.0, positions=3)}),
+        GameTotals(game_id=3, metrics={METRIC: MetricTotal(total=15.0, positions=3)}),
+    )
+
+    dispersions = bootstrap_dispersions(
+        totals,
+        component=component,
+        seed=0,
+        source="one realizing game",
+        resamples=200,
+    )
+
+    assert set(dispersions) == {series_fingerprint(METRIC, component)}
 
 
 def test_sampling_noise_sizes_the_games_an_axis_needs() -> None:
