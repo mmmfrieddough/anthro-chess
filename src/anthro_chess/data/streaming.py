@@ -25,12 +25,15 @@ from __future__ import annotations
 import json
 import logging
 from array import array
+from bisect import bisect_left
 from collections import deque
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
+from heapq import nsmallest
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +45,7 @@ from anthro_chess.data.artifacts import (
     read_normalized_row_group,
     row_group_column,
     rows_at_positions,
+    sorted_game_ids_sha256,
 )
 from anthro_chess.data.config import (
     SelectionConfig,
@@ -63,6 +67,7 @@ from anthro_chess.data.loading import (
     _rank_key,
     _state_from_record,
     collate_sequences,
+    subsample_size,
 )
 from anthro_chess.data.schema import (
     NormalizedColumn,
@@ -98,12 +103,15 @@ _INDEX_COLUMNS = (
 
 @dataclass(frozen=True)
 class _RowGroupIndex:
-    """Which selected games one row group holds, in file order.
+    """Which games one row group holds, in file order.
 
     The three parallel arrays are typed storage rather than tuples of objects
     on purpose: at corpus scale this index is resident for the whole run, and
     the difference between twelve bytes a game and a hundred is the difference
     between a rounding error and a real share of host memory.
+
+    A scan produces the same shape the index keeps, so a selection that
+    subsamples nothing hands its scan straight over rather than copying it.
     """
 
     shard: int
@@ -134,11 +142,16 @@ class _BatchJob:
     are small next to what they decode into, and sending them keeps every
     Parquet read sequential in one process instead of having every worker seek
     into the same shard.
+
+    The game ids travel with them because the index already derived them. A row
+    does not carry its id, so a worker deriving it again is a SHA-256 per game
+    per epoch for an answer the index has held since it was built.
     """
 
     shard: int
     path: str
     rows: tuple[Mapping[str, Any], ...]
+    game_ids: tuple[int, ...]
     lengths: tuple[int, ...]
     entries: tuple[tuple[int, int, int], ...]
     legal_actions: bool
@@ -183,8 +196,7 @@ def build_sharded_index(
         raise DataLoadingError("at least one normalized shard is required")
     logger.info("Indexing %s shard(s) for the %s split", len(shards), split)
 
-    scanned: list[_ScannedGroup] = []
-    eligible: array[int] = array("Q")
+    scanned: list[_RowGroupIndex] = []
     excluded: dict[str, int] = {}
     for shard_index, shard in enumerate(shards):
         reader = open_normalized_shard(shard.path)
@@ -197,15 +209,21 @@ def build_sharded_index(
                 selection=selection,
                 excluded=excluded,
             )
-            eligible.extend(group.game_ids)
-            scanned.append(group)
+            if len(group):
+                scanned.append(group)
 
-    kept = _kept_game_ids(eligible, selection)
-    groups = tuple(_selected_groups(scanned, kept))
+    eligible = sum(len(group) for group in scanned)
+    kept = _kept_game_ids(scanned, selection)
+    groups = (
+        tuple(scanned)
+        if len(kept) == eligible
+        else tuple(_selected_groups(scanned, kept))
+    )
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
-        game_ids=tuple(sorted(kept)),
-        eligible_games=len(eligible),
+        eligible_games=eligible,
+        selected_games=len(kept),
+        game_ids_sha256=sorted_game_ids_sha256(kept),
         excluded_games=excluded,
     )
     if not groups:
@@ -427,6 +445,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             shard=group.shard,
             path=str(self.index.shards[group.shard].path),
             rows=tuple(rows),
+            game_ids=tuple(group.game_ids[slot] for slot in slots),
             lengths=tuple(group.lengths[slot] for slot in slots),
             entries=tuple(
                 (row_index[example.slot], example.start_ply, example.length)
@@ -470,12 +489,12 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
         plies = decoded.get(row_index)
         if plies is None:
             plies = encode_game(
-                _game_from_row(job.rows[row_index], path),
+                _game_from_row(job.rows[row_index], path, job.game_ids[row_index]),
                 legal_actions=job.legal_actions,
             )
             if len(plies) != job.lengths[row_index]:
                 raise DataLoadingError(
-                    f"{path} game {row_game_id(job.rows[row_index])} "
+                    f"{path} game {job.game_ids[row_index]} "
                     f"decodes to {len(plies)} action(s) where its ply count and "
                     f"terminal action status describe {job.lengths[row_index]}"
                 )
@@ -492,17 +511,6 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
     return collate_sequences(examples)
 
 
-@dataclass(frozen=True)
-class _ScannedGroup:
-    """One row group's eligible games, before the subsample cut is known."""
-
-    shard: int
-    row_group: int
-    positions: array[int]
-    game_ids: array[int]
-    lengths: array[int]
-
-
 def _scan_row_group(
     reader: Any,
     *,
@@ -511,7 +519,7 @@ def _scan_row_group(
     split: str,
     selection: SelectionConfig,
     excluded: dict[str, int],
-) -> _ScannedGroup:
+) -> _RowGroupIndex:
     """Read one row group's index columns and apply the selection filters."""
 
     table = read_normalized_row_group(reader, row_group, _INDEX_COLUMNS)
@@ -536,7 +544,7 @@ def _scan_row_group(
         positions.append(position)
         game_ids.append(row_game_id(row))
         lengths.append(ply_counts[position] + (1 if appended else 0))
-    return _ScannedGroup(
+    return _RowGroupIndex(
         shard=shard_index,
         row_group=row_group,
         positions=positions,
@@ -545,23 +553,53 @@ def _scan_row_group(
     )
 
 
-def _kept_game_ids(eligible: array[int], selection: SelectionConfig) -> frozenset[int]:
-    """Return the game ids a subsample keeps, ranked the same way everywhere."""
+def _kept_game_ids(
+    scanned: Sequence[_RowGroupIndex],
+    selection: SelectionConfig,
+) -> array[int]:
+    """Return the selected game ids in ascending order, eight bytes each.
 
-    if selection.fraction is None and selection.maximum_games is None:
-        return frozenset(eligible)
-    ordered = sorted(eligible, key=lambda game_id: _rank_key(selection.seed, game_id))
-    kept = len(ordered)
-    if selection.fraction is not None:
-        kept = int(len(ordered) * selection.fraction)
-    if selection.maximum_games is not None:
-        kept = min(kept, selection.maximum_games)
-    return frozenset(ordered[:kept])
+    Ascending because both of the things left to do with them read them that
+    way: the digest is defined over the sorted ids, and membership is a binary
+    search rather than a set, which at corpus scale is the difference between
+    the ids and sixteen times the ids.
+    """
+
+    eligible = sum(len(group) for group in scanned)
+    kept = subsample_size(eligible, selection)
+    if kept >= eligible:
+        return _ascending_game_ids(group.game_ids for group in scanned)
+    ranked = nsmallest(
+        kept,
+        chain.from_iterable(group.game_ids for group in scanned),
+        key=partial(_rank_key, selection.seed),
+    )
+    return _ascending_game_ids([array("Q", ranked)])
+
+
+def _ascending_game_ids(sources: Iterable[array[int]]) -> array[int]:
+    """Return the given game ids gathered into one ascending array.
+
+    Sorted through a buffer view because ``sorted`` hands back a list of Python
+    integers, which is five times the width of the ids themselves and is the
+    kind of structure this loader exists not to build.
+    """
+
+    # Deferred the way `collate_sequences` defers it, and for the same reason:
+    # `anthro machine` has to run wherever the package is installed, including
+    # on an install carrying no extras.
+    import numpy as np
+
+    gathered: array[int] = array("Q")
+    for source in sources:
+        gathered.extend(source)
+    np.frombuffer(gathered, dtype=np.uint64).sort()
+    return gathered
 
 
 def _selected_groups(
-    scanned: Sequence[_ScannedGroup],
-    kept: frozenset[int],
+    scanned: Sequence[_RowGroupIndex],
+    kept: array[int],
 ) -> Iterator[_RowGroupIndex]:
     """Drop the games a subsample excluded, and any row group left empty."""
 
@@ -570,7 +608,8 @@ def _selected_groups(
         game_ids: array[int] = array("Q")
         lengths: array[int] = array("i")
         for slot, game_id in enumerate(group.game_ids):
-            if game_id not in kept:
+            found = bisect_left(kept, game_id)
+            if found == len(kept) or kept[found] != game_id:
                 continue
             positions.append(group.positions[slot])
             game_ids.append(game_id)

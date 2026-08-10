@@ -10,6 +10,7 @@ selected the same games.
 from __future__ import annotations
 
 from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from anthro_chess.data import (
     SequenceDataset,
     SequenceLoaderConfig,
 )
+from anthro_chess.data.artifacts import _DIGEST_CHUNK_GAMES, sorted_game_ids_sha256
 
 BLITZ_MS = 300_000
 BULLET_MS = 60_000
@@ -50,9 +52,7 @@ def test_filters_within_one_corpus_by_time_control(
         selection=SelectionConfig(minimum_time_initial_ms=BLITZ_MS),
     )
 
-    assert dataset.resolution.game_ids == tuple(
-        sorted((fixture_game_id(2), fixture_game_id(3)))
-    )
+    assert _loaded(dataset) == tuple(sorted((fixture_game_id(2), fixture_game_id(3))))
     assert dataset.resolution.excluded_games == {"below_minimum_time_initial": 1}
 
 
@@ -75,7 +75,7 @@ def test_rating_band_requires_both_players_inside_it(
         selection=SelectionConfig(minimum_rating=1400, maximum_rating=1600),
     )
 
-    assert dataset.resolution.game_ids == (fixture_game_id(1),)
+    assert _loaded(dataset) == (fixture_game_id(1),)
     assert dataset.resolution.excluded_games == {
         "above_maximum_rating": 1,
         "missing_ratings": 1,
@@ -100,7 +100,7 @@ def test_a_missing_axis_value_is_excluded_rather_than_treated_as_zero(
         selection=SelectionConfig(minimum_time_initial_ms=0),
     )
 
-    assert dataset.resolution.game_ids == (fixture_game_id(2),)
+    assert _loaded(dataset) == (fixture_game_id(2),)
     assert dataset.resolution.excluded_games == {"missing_time_control": 1}
 
 
@@ -185,7 +185,7 @@ def test_a_selection_never_reaches_outside_the_split_it_loads(
         selection=SelectionConfig(fraction=1.0),
     )
 
-    assert dataset.resolution.game_ids == (fixture_game_id(1),)
+    assert _loaded(dataset) == (fixture_game_id(1),)
     assert dataset.resolution.eligible_games == 1
 
 
@@ -273,6 +273,26 @@ def test_a_changed_selection_changes_the_loader_configuration_identity(
     )
 
 
+@pytest.mark.parametrize(
+    "games",
+    [0, 1, _DIGEST_CHUNK_GAMES - 1, _DIGEST_CHUNK_GAMES, _DIGEST_CHUNK_GAMES + 1],
+)
+def test_a_folded_identity_is_the_digest_of_the_string_it_never_builds(
+    games: int,
+) -> None:
+    """A corpus-scale selection's joined ids are tens of gigabytes of string.
+
+    Folding them in a chunk at a time is worth something only if it is the same
+    digest, across the boundary between chunks included, so that a run recorded
+    before still names the games it named.
+    """
+
+    game_ids = [game_id * 2**40 + game_id for game_id in range(games)]
+    joined = ",".join(str(game_id) for game_id in game_ids)
+
+    assert sorted_game_ids_sha256(game_ids) == sha256(joined.encode()).hexdigest()
+
+
 def test_selection_bounds_must_be_ordered() -> None:
     with pytest.raises(ValueError, match="maximum_rating must not be below"):
         SelectionConfig(minimum_rating=1800, maximum_rating=1200)
@@ -298,9 +318,17 @@ def _corpus(
 
 
 def _selected(games: Path, selection: SelectionConfig) -> tuple[int, ...]:
-    dataset = SequenceDataset.from_parquet(
-        games,
-        split="train",
-        selection=selection,
+    return _loaded(
+        SequenceDataset.from_parquet(games, split="train", selection=selection)
     )
-    return dataset.resolution.game_ids
+
+
+def _loaded(dataset: SequenceDataset) -> tuple[int, ...]:
+    """Return the games a dataset actually encoded, in ascending order.
+
+    Read from the examples rather than from the resolution, which records only
+    the digest of what it kept: what a selection claims and what the loader
+    then holds are the two things worth asserting agree.
+    """
+
+    return tuple(sorted({example.game_id for example in dataset}))

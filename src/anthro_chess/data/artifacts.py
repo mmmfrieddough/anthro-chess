@@ -9,7 +9,7 @@ rules belong in one place so they cannot drift between consumers.
 from __future__ import annotations
 
 import bz2
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
@@ -128,8 +128,35 @@ def game_ids_sha256(game_ids: Sequence[int]) -> str:
     two that could drift apart.
     """
 
-    joined = ",".join(str(game_id) for game_id in sorted(game_ids))
-    return sha256(joined.encode()).hexdigest()
+    return sorted_game_ids_sha256(sorted(game_ids))
+
+
+#: How many ids are joined before being folded in. Large enough that the joining
+#: is what costs rather than the call, small enough that the joined form stays a
+#: buffer rather than becoming the structure this exists to avoid building.
+_DIGEST_CHUNK_GAMES = 1 << 16
+
+
+def sorted_game_ids_sha256(game_ids: Iterable[int]) -> str:
+    """Return the same digest over ids that are already in ascending order.
+
+    The joined form the digest is defined over is fed in a chunk at a time
+    rather than built. A corpus-scale selection's is tens of gigabytes of
+    string, read once, to produce sixty-four characters.
+    """
+
+    digest = sha256()
+    chunk: list[str] = []
+    separator = ""
+    for game_id in game_ids:
+        chunk.append(str(game_id))
+        if len(chunk) == _DIGEST_CHUNK_GAMES:
+            digest.update(f"{separator}{','.join(chunk)}".encode())
+            separator = ","
+            chunk.clear()
+    if chunk:
+        digest.update(f"{separator}{','.join(chunk)}".encode())
+    return digest.hexdigest()
 
 
 def normalized_shard_paths(path: Path) -> tuple[Path, ...]:
