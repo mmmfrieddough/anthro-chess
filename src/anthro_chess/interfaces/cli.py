@@ -1168,9 +1168,9 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
     from anthro_chess.data.census import (
         LICHESS_USERS_BATCH,
         CensusError,
-        count_uncounted_archives,
         daily_account_allowance,
         read_census,
+        refresh_archive_counts,
         run_census,
         source_token,
     )
@@ -1184,7 +1184,7 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         if arguments.accounts is not None and arguments.accounts < 1:
             raise ConfigError("--accounts asks about at least one account")
         pinned = _pinned_archives(resolved)
-        count_uncounted_archives(
+        refresh_archive_counts(
             [archive for archive in pinned if archive.path.is_file()],
             workers=arguments.workers,
         )

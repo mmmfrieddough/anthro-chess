@@ -18,6 +18,7 @@ from anthro_chess.data.census import (
     read_account_games,
     read_answers,
     read_census,
+    refresh_archive_counts,
     run_census,
     snapshot_from_census,
     sustainable_pause,
@@ -95,6 +96,34 @@ def test_counts_an_archive_again_when_its_counts_predate_this_format(
     )
 
     assert account_games(archive).games_by_account == {"one": 1}
+
+
+def test_recounts_a_superseded_archive_alongside_the_rest_of_the_backlog(
+    tmp_path: Path,
+) -> None:
+    """A format that supersedes every counts file at once is a backlog, not one."""
+
+    superseded = _archive(tmp_path, "old.pgn", ("One", "Two"))
+    account_games(superseded)
+    superseded.counts_path.write_text(
+        superseded.counts_path.read_text(encoding="utf-8").replace(
+            '"format_version": 2', '"format_version": 1'
+        ),
+        encoding="utf-8",
+    )
+    uncounted = _archive(tmp_path, "new.pgn", ("Three", "Four"))
+    current = _archive(tmp_path, "current.pgn", ("Five", "Six"))
+    account_games(current)
+    current.path.unlink()
+
+    # Recounting the current one would need the archive it no longer has.
+    refresh_archive_counts([superseded, uncounted, current], workers=1)
+
+    assert read_account_games(superseded.counts_path).games_by_account == {
+        "one": 1,
+        "two": 1,
+    }
+    assert uncounted.counts_path.is_file()
 
 
 def test_takes_the_pass_over_an_archive_at_most_once(tmp_path: Path) -> None:

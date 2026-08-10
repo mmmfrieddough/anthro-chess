@@ -309,24 +309,24 @@ def account_games(archive: PinnedArchive) -> ArchiveAccounts:
     return counted
 
 
-def count_uncounted_archives(
+def refresh_archive_counts(
     archives: Sequence[PinnedArchive],
     *,
     workers: int,
 ) -> None:
-    """Count every archive with no counts file yet, several at once.
+    """Count every archive whose counts are missing or superseded, at once.
 
-    One pass decompresses tens of gigabytes, so the backlog left by a batch of
-    newly acquired archives is hours of work that parallelizes exactly. An
-    archive whose counts are merely superseded is left to :func:`account_games`,
-    since a re-pinned archive is one at a time rather than a backlog.
+    One pass decompresses tens of gigabytes, so a batch of newly acquired
+    archives — or a format that supersedes every counts file at once — is hours
+    of work that parallelizes exactly. Leaving it to :func:`account_games`
+    instead would do the same work one archive at a time.
     """
 
-    missing = [archive for archive in archives if not archive.counts_path.is_file()]
+    missing = [archive for archive in archives if not _counts_are_current(archive)]
     if not missing:
         return
     logger.info(
-        "Counting %s archive(s) with no counts yet, %s at a time",
+        "Counting %s archive(s) whose counts are missing or superseded, %s at a time",
         len(missing),
         workers,
     )
@@ -337,6 +337,24 @@ def count_uncounted_archives(
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for _ in pool.map(_count_archive, missing):
             pass
+
+
+def _counts_are_current(archive: PinnedArchive) -> bool:
+    """Return whether an archive's counts are this format's, for these bytes.
+
+    Reads the header alone. Deciding which of fifty archives need counting must
+    not cost a parse of every row of the ones that do not.
+    """
+
+    try:
+        with archive.counts_path.open(encoding="utf-8") as counts_file:
+            header = json.loads(counts_file.readline().removeprefix(_HEADER_PREFIX))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(header, dict) and (
+        header.get("format_version"),
+        header.get("archive_sha256"),
+    ) == (ACCOUNT_GAMES_FORMAT_VERSION, archive.sha256)
 
 
 def _count_archive(archive: PinnedArchive) -> None:
