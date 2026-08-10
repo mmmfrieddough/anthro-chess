@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
-from anthro_chess.config import ConfigProvenance, ResolvedConfig
+from anthro_chess.config import ConfigProvenance, ResolvedConfig, load_config
 from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
@@ -30,7 +30,9 @@ from anthro_chess.evaluation.puzzles import (
     Puzzle,
     PuzzleSet,
     PuzzleSetBuildConfig,
+    PuzzleSetError,
     conservative_detectable_difference,
+    dataset,
     expected_score,
     fitted_rating,
     load_puzzle_set,
@@ -56,6 +58,9 @@ from anthro_chess.evaluation.puzzles.dataset import (
     PUZZLE_FILE_NAME,
     PUZZLE_METADATA_FILE_NAME,
     PUZZLE_SELECTION_ALGORITHM,
+    VENDORED_RECORD_FILE_NAME,
+    build_vendored_puzzle_set,
+    load_vendored_puzzle_set,
     select_puzzles,
 )
 from anthro_chess.evaluation.results import (
@@ -64,6 +69,9 @@ from anthro_chess.evaluation.results import (
     ResultsStore,
     metric_definition,
 )
+
+REPOSITORY_ROOT = Path(__file__).parents[2]
+PUZZLE_SET_CONFIG = REPOSITORY_ROOT / "configs/evaluation/lichess-puzzles-v1.toml"
 
 
 def _measure(
@@ -321,7 +329,7 @@ def test_a_dial_that_leaves_one_puzzle_per_rating_is_refused() -> None:
         )
 
 
-def test_preparation_selects_uniform_exact_ratings_and_records_coverage(
+def test_vendoring_selects_uniform_exact_ratings_and_records_coverage(
     tmp_path: Path,
 ) -> None:
     source_rows = [
@@ -404,22 +412,81 @@ def test_preparation_selects_uniform_exact_ratings_and_records_coverage(
             },
         }
     )
-    result = prepare_puzzle_set(
-        ResolvedConfig(
-            value=config,
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        tmp_path / "artifact",
-        source_path=source,
-    )
-    loaded = load_puzzle_set(result.artifact_path)
+    vendored = build_vendored_puzzle_set(config, source)
 
-    assert result.entries == 2
-    assert [puzzle.rating for puzzle in loaded.puzzles] == [1000, 1001]
-    assert loaded.coverage["eligible_candidates"] == 3
-    assert loaded.coverage["minimum_candidates_per_rating"] == 1
-    assert loaded.sizing["overall_puzzles"] == 2
-    assert loaded.source["last_modified"] == "2026-07-28T00:00:00+00:00"
+    assert vendored.entries == 2
+    assert vendored.content == output_text
+    assert vendored.puzzles_sha256 == config.expected_puzzles_sha256
+    assert vendored.coverage["eligible_candidates"] == 3
+    assert vendored.coverage["minimum_candidates_per_rating"] == 1
+    assert vendored.source["last_modified"] == "2026-07-28T00:00:00+00:00"
+
+
+def test_the_committed_selection_builds_the_artifact_its_configuration_pins(
+    tmp_path: Path,
+) -> None:
+    """Rebuild the canonical artifact with no archive and no network.
+
+    Upstream rotates its puzzle export every few days and keeps no history,
+    so this is the only check that the pinned identity is still reachable on
+    a machine that has never downloaded it.
+    """
+
+    resolved = load_config(PuzzleSetBuildConfig, path=PUZZLE_SET_CONFIG)
+    result = prepare_puzzle_set(resolved, tmp_path / "artifact")
+    loaded = load_puzzle_set(result.artifact_path)
+    vendored = load_vendored_puzzle_set()
+
+    assert result.entries == resolved.value.expected_entries
+    assert result.puzzles_sha256 == resolved.value.expected_puzzles_sha256
+    assert loaded.identity() == {
+        "name": resolved.value.name,
+        "version": resolved.value.version,
+        "entries": resolved.value.expected_entries,
+        "sha256": resolved.value.expected_puzzles_sha256,
+    }
+    assert loaded.coverage == vendored.coverage
+    assert loaded.selection["algorithm"] == PUZZLE_SELECTION_ALGORITHM
+    assert loaded.sizing["overall_puzzles"] == resolved.value.expected_entries
+    assert loaded.sizing["local_rating_span"] == (
+        resolved.value.selection.local_precision_span
+    )
+
+
+def test_a_repin_that_skips_revendoring_is_refused(tmp_path: Path) -> None:
+    repinned = load_config(
+        PuzzleSetBuildConfig,
+        path=PUZZLE_SET_CONFIG,
+        overrides=[f'archive.sha256="{"0" * 64}"'],
+    )
+
+    with pytest.raises(PuzzleSetError, match="disagrees with this configuration"):
+        prepare_puzzle_set(repinned, tmp_path / "artifact")
+
+
+@pytest.mark.parametrize(
+    ("file_name", "content", "expected"),
+    [
+        (PUZZLE_FILE_NAME, "edited\n", "does not match the checksum"),
+        (VENDORED_RECORD_FILE_NAME, "{", "is unusable"),
+        (VENDORED_RECORD_FILE_NAME, '{"name": "x"}', "is unusable"),
+    ],
+)
+def test_a_committed_pair_that_disagrees_with_itself_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    file_name: str,
+    content: str,
+    expected: str,
+) -> None:
+    original = dataset._read_data_file
+    monkeypatch.setattr(
+        dataset,
+        "_read_data_file",
+        lambda name: content if name == file_name else original(name),
+    )
+
+    with pytest.raises(PuzzleSetError, match=expected):
+        load_vendored_puzzle_set()
 
 
 def _source_csv(rows: Sequence[tuple[object, ...]]) -> str:

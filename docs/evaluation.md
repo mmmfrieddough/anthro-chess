@@ -1768,17 +1768,22 @@ published puzzle set fixes the scale externally, so checkpoints separated by a
 year were measured against the same thing. It is also the one benchmark whose
 inputs are immune to pool generation cuts, needing no re-baselining at a seam.
 
-The fixed yardstick is the built artifact, not the source it is cut from.
+The fixed yardstick is the selected rows, not the source they are cut from.
 Upstream publishes puzzles at a single rolling URL with no dated snapshot
-beside it, so a pinned source digest stops being fetchable the moment upstream
-regenerates, and the build then correctly refuses rather than quietly selecting
-from different data. Recovering means re-pinning to whatever upstream now
-serves, which selects different puzzles and so changes both digests and the set
-identity. That is free only while no puzzle reading has been committed to the
-results store, because there is then nothing to be incomparable with;
-afterwards it is a new set version rather than a repair, and the readings on
-either side of it are separate series. So what decides a re-pin is the store,
-not the source.
+beside it and no history, so a pinned source digest stops being fetchable the
+moment upstream regenerates — which it did three days after the first pin was
+taken. The selection is therefore vendored in the repository and the build reads
+it rather than the archive, so the pinned identity stays reachable on a machine
+that has never downloaded anything.
+`docs/decisions/0044-the-puzzle-selection-is-vendored-not-refetched.md` says why
+that boundary moved.
+
+Re-pinning to whatever upstream now serves selects different puzzles and so
+changes both digests and the set identity. That is free only while no puzzle
+reading has been committed to the results store, because there is then nothing
+to be incomparable with; afterwards it is a new set version rather than a
+repair, and the readings on either side of it are separate series. So what
+decides a re-pin is the store, not the source.
 
 Greedy and sampled solve rates should both be reported against a declared
 reference temperature, since the gap between them is the same quantity the
@@ -1786,20 +1791,22 @@ decision decomposition measures. Multi-move puzzles distinguish first-move
 accuracy from completing the line, and those are separate metrics.
 
 The puzzle set is an external dependency with its own identity and license
-record because a set version change alters what a number means. It follows the
-same boundary as the frozen evaluation pool: the acquisition and selection
-recipe plus expected identity are committed, while the generated records and
-raw source stay under the data root. Puzzle positions derive from real games on
-the same platform the corpus is drawn from, so a source-game-key join against
-the training selection reports the overlap rate as provenance. The measured
-risk is small, since one exposure among millions does not produce recall and
-worst-case inflation is bounded by the overlap fraction. It is worth reporting
-anyway because it grows silently as the corpus expands, and the join is cheap
-enough that there is no reason to carry the uncertainty.
+record because a set version change alters what a number means. The selection
+recipe, expected identity, and selected rows are all committed; the generated
+artifact and the raw archive stay under the data root. Puzzle positions derive
+from real games on the same platform the corpus is drawn from, so a
+source-game-key join against the training selection reports the overlap rate as
+provenance. The measured risk is small, since one exposure among millions does
+not produce recall and worst-case inflation is bounded by the overlap fraction.
+It is worth reporting anyway because it grows silently as the corpus expands,
+and the join is cheap enough that there is no reason to carry the uncertainty.
 
-`anthro eval prepare-puzzles` builds the artifact selected by
-`configs/evaluation/lichess-puzzles-v1.toml`; `anthro eval puzzles`, selected by
-`configs/evaluation/puzzle-rating-response.toml`, reads it. The canonical set is
+`anthro eval prepare-puzzles` builds the artifact from the vendored selection
+and the pin in `configs/evaluation/lichess-puzzles-v1.toml`, refusing when the
+two disagree; `anthro eval puzzles`, selected by
+`configs/evaluation/puzzle-rating-response.toml`, reads it.
+`scripts/vendor-puzzle-selection.py` is the only path that reads the archive,
+and it runs when the set is deliberately re-pinned. The canonical set is
 sized from a conservative two-independent-proportions calculation at declared
 confidence and power. That is a planning bound made before representative
 checkpoint pairs exist. Actual checkpoint reports resample the
