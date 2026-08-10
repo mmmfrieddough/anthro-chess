@@ -576,11 +576,10 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     Each timestep's legal action ids are packed when the encoding built them.
     """
 
-    # Deferred, the way `anthro_chess.data.artifacts` defers pyarrow: this is
-    # the only place in the package that needs an array library, and importing
-    # it at module scope would take `anthro machine` — a diagnostic that has to
-    # run wherever the package is installed — down with it on an install
-    # carrying no extras.
+    # Deferred, the way `anthro_chess.data.artifacts` defers pyarrow: importing
+    # an array library at module scope would take `anthro machine` — a
+    # diagnostic that has to run wherever the package is installed — down with
+    # it on an install carrying no extras.
     import numpy as np
 
     if not examples:
@@ -821,10 +820,11 @@ def _exclusion_reason(row: Mapping[str, Any], selection: SelectionConfig) -> str
 def _rank_key(seed: str, game_id: int) -> bytes:
     """Rank uniformly by game id so a subsample stays representative.
 
-    Both loaders take the subsample through ``heapq.nsmallest`` rather than by
-    ranking everything and slicing. It is the same answer — ties break by the
-    order the ids arrived either way — and it holds a rank per kept game rather
-    than one per eligible game.
+    Both loaders select through ``heapq.nsmallest``, which holds a rank per kept
+    game rather than one per eligible game and breaks ties by the order the ids
+    arrived. That tie rule is part of the specification rather than an accident
+    of the heap: it is what a corpus and spec resolving to one digest rests on
+    where two ids rank equal.
     """
 
     return sha256(f"{seed}\0{game_id}".encode()).digest()

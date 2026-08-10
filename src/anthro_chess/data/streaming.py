@@ -27,7 +27,7 @@ import logging
 from array import array
 from bisect import bisect_left
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -213,7 +213,7 @@ def build_sharded_index(
                 scanned.append(group)
 
     eligible = sum(len(group) for group in scanned)
-    kept = _kept_game_ids(scanned, selection)
+    kept = _kept_game_ids(scanned, eligible, selection)
     groups = (
         tuple(scanned)
         if len(kept) == eligible
@@ -555,34 +555,13 @@ def _scan_row_group(
 
 def _kept_game_ids(
     scanned: Sequence[_RowGroupIndex],
+    eligible: int,
     selection: SelectionConfig,
 ) -> array[int]:
     """Return the selected game ids in ascending order, eight bytes each.
 
-    Ascending because both of the things left to do with them read them that
-    way: the digest is defined over the sorted ids, and membership is a binary
-    search rather than a set, which at corpus scale is the difference between
-    the ids and sixteen times the ids.
-    """
-
-    eligible = sum(len(group) for group in scanned)
-    kept = subsample_size(eligible, selection)
-    if kept >= eligible:
-        return _ascending_game_ids(group.game_ids for group in scanned)
-    ranked = nsmallest(
-        kept,
-        chain.from_iterable(group.game_ids for group in scanned),
-        key=partial(_rank_key, selection.seed),
-    )
-    return _ascending_game_ids([array("Q", ranked)])
-
-
-def _ascending_game_ids(sources: Iterable[array[int]]) -> array[int]:
-    """Return the given game ids gathered into one ascending array.
-
-    Sorted through a buffer view because ``sorted`` hands back a list of Python
-    integers, which is five times the width of the ids themselves and is the
-    kind of structure this loader exists not to build.
+    Ascending because both of its readers want them that way: the digest is
+    defined over the sorted ids, and membership is a binary search over them.
     """
 
     # Deferred the way `collate_sequences` defers it, and for the same reason:
@@ -590,9 +569,22 @@ def _ascending_game_ids(sources: Iterable[array[int]]) -> array[int]:
     # on an install carrying no extras.
     import numpy as np
 
+    kept = subsample_size(eligible, selection)
     gathered: array[int] = array("Q")
-    for source in sources:
-        gathered.extend(source)
+    if kept >= eligible:
+        for group in scanned:
+            gathered.extend(group.game_ids)
+    else:
+        gathered.extend(
+            nsmallest(
+                kept,
+                chain.from_iterable(group.game_ids for group in scanned),
+                key=partial(_rank_key, selection.seed),
+            )
+        )
+    # Sorted through a buffer view because `sorted` hands back a list of Python
+    # integers, five times the width of the ids themselves and the kind of
+    # structure this loader exists not to build.
     np.frombuffer(gathered, dtype=np.uint64).sort()
     return gathered
 

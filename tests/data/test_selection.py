@@ -23,7 +23,11 @@ from anthro_chess.data import (
     SequenceDataset,
     SequenceLoaderConfig,
 )
-from anthro_chess.data.artifacts import _DIGEST_CHUNK_GAMES, sorted_game_ids_sha256
+from anthro_chess.data.artifacts import (
+    _DIGEST_CHUNK_GAMES,
+    game_ids_sha256,
+    sorted_game_ids_sha256,
+)
 
 BLITZ_MS = 300_000
 BULLET_MS = 60_000
@@ -273,6 +277,67 @@ def test_a_changed_selection_changes_the_loader_configuration_identity(
     )
 
 
+#: What each spec resolves to over the corpus `_frozen_corpus` writes. Frozen
+#: values rather than a recomputation, because a recomputation compares the
+#: selection rule to itself: only a constant can say that a rewrite of the
+#: ranking, the floor, or the tie order changed which games a run trains on.
+_FROZEN_DIGESTS = {
+    "everything": "b96d1bb0c4fc37a8c19fdc17e5fbc701a8737f17121167dc43af92a556b13d35",
+    "half": "87ab2df502d1063ddbe72ba411f2ff89ced734abc0fa22504d8b4e990ef89af0",
+    "quarter": "662617ba6153b08353b65fa76a0f3cc04bcdce50f2733c6ead3dd77ad41c47e1",
+    "capped": "7eefe287e079a9e7c6305fc92fe2a9823260271fc3d220296f07c29e904ab12b",
+    "other-seed": "24e4a54b145b27728a1acc4f7a77f4a3ff3f3c81ae7e75736bcb08ba72899709",
+}
+
+
+@pytest.mark.parametrize("spec", sorted(_FROZEN_DIGESTS))
+def test_a_corpus_and_spec_still_resolve_to_the_digest_they_always_have(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    spec: str,
+) -> None:
+    """A selection is reproducible only against something outside itself.
+
+    Every other test here compares one resolution to another resolved by the
+    same code, so a rewritten rank, floor, or tie order agrees with itself and
+    passes. A run recorded a year ago cannot be re-resolved to check, which is
+    what these constants stand in for. A failure means this corpus and spec now
+    select different games — decide which of the two moved before updating it.
+    """
+
+    games = _frozen_corpus(tmp_path, normalized_row, write_corpus)
+    dataset = SequenceDataset.from_parquet(
+        games, split="train", selection=_FROZEN_SPECS[spec]
+    )
+
+    assert dataset.resolution.game_ids_sha256 == _FROZEN_DIGESTS[spec]
+
+
+_FROZEN_SPECS = {
+    "everything": SelectionConfig(),
+    "half": SelectionConfig(fraction=0.5),
+    "quarter": SelectionConfig(fraction=0.25),
+    "capped": SelectionConfig(maximum_games=5),
+    "other-seed": SelectionConfig(fraction=0.5, seed="frozen-digest-seed"),
+}
+
+
+def _frozen_corpus(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Write the corpus the frozen digests above were resolved over."""
+
+    return _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 17)],
+    )
+
+
 @pytest.mark.parametrize(
     "games",
     [0, 1, _DIGEST_CHUNK_GAMES - 1, _DIGEST_CHUNK_GAMES, _DIGEST_CHUNK_GAMES + 1],
@@ -327,8 +392,12 @@ def _loaded(dataset: SequenceDataset) -> tuple[int, ...]:
     """Return the games a dataset actually encoded, in ascending order.
 
     Read from the examples rather than from the resolution, which records only
-    the digest of what it kept: what a selection claims and what the loader
-    then holds are the two things worth asserting agree.
+    the digest of what it kept. That leaves the resolution's claim uncheckable
+    from any one test, so it is checked here instead, on every selection any
+    test in this file resolves.
     """
 
-    return tuple(sorted({example.game_id for example in dataset}))
+    game_ids = tuple(sorted({example.game_id for example in dataset}))
+    assert dataset.resolution.selected_games == len(game_ids)
+    assert dataset.resolution.game_ids_sha256 == game_ids_sha256(game_ids)
+    return game_ids
