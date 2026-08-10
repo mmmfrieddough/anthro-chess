@@ -244,6 +244,11 @@ centisecond clock comments. That implies a rough clean timing corpus on the
 order of 1.5B-2.0B games, or tens to hundreds of billions of plies. The exact
 usable count should be computed by the ingestion pipeline rather than assumed.
 
+The corpus the breadth pass builds is that universal export, 2017-04 through
+2021-06, chosen for its clock precision.
+`docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why,
+and what ending in mid-2021 costs.
+
 Lichess records need filters and tags. Early and universal exports can include
 casual games, variants, unknown ratings, correspondence games, AI-level games,
 tournament games, and games without usable clocks. Bot players are often

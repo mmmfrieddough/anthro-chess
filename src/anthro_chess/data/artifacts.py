@@ -8,6 +8,7 @@ rules belong in one place so they cannot drift between consumers.
 
 from __future__ import annotations
 
+import bz2
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,11 +37,26 @@ class DataLoadingError(ValueError):
 
 @contextmanager
 def open_pgn_text(source_path: Path) -> Iterator[TextIO]:
-    """Yield a PGN archive as text, decompressing Zstandard in the stream.
+    """Yield a PGN archive as text, decompressing in the stream.
 
     A second, uncompressed copy of the archive is larger than the corpus it
-    produces, so one is never written to disk.
+    produces, so one is never written to disk. Bzip2 is here because the
+    universal export publishes it and nothing else; it decompresses roughly an
+    order of magnitude slower than Zstandard and still outpaces the game decode
+    it feeds.
     """
+
+    if source_path.suffix == ".bz2":
+        try:
+            with bz2.open(source_path, "rt", encoding="utf-8") as pgn_file:
+                yield pgn_file
+        except (OSError, EOFError) as error:
+            # A truncated stream raises EOFError, which is not an OSError and
+            # would otherwise escape every handler between here and the CLI.
+            raise DataLoadingError(
+                f"cannot decompress input PGN {source_path}: {error}"
+            ) from error
+        return
 
     if source_path.suffix != ".zst":
         with source_path.open("r", encoding="utf-8") as pgn_file:

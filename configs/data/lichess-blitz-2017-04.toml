@@ -9,7 +9,7 @@ rating_namespace = "lichess_blitz"
 rating_system = "glicko2"
 ratings_are_normalized = true
 
-[archive]
+[[archives]]
 artifact_name = "lichess-blitz-2017-04"
 url = "https://database.lichess.org/standard/lichess_db_standard_rated_2017-04.pgn.zst"
 file_name = "lichess_db_standard_rated_2017-04.pgn.zst"

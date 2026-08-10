@@ -1,0 +1,351 @@
+artifact_name = "lichess-univ-2017-04-2021-06"
+
+# The Lichess universal export, every month that carries centisecond clocks.
+# `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why
+# this source, this precision, and this span, and what the span costs.
+#
+# This selection is not ready to prepare from, and preparation refuses it until
+# it is. A corpus spanning speeds needs the rating namespace derived per game
+# (#386) and the speed axis derived from the time control rather than the event
+# label (#387); building one corpus from many archives is #388, and doing it at
+# this volume is #389.
+#
+# Filters are absent for the same reason rather than by oversight: the speed
+# axis is not derivable from the event label across this span, so the filters
+# this needs are not the sibling selection's. `rating_namespace` is unset so
+# that once preparation accepts many archives it writes no namespace rather
+# than a wrong one — an absent value is detectable downstream where a wrong one
+# is not, and that hazard outlives the refusal #388 removes.
+
+[source]
+id = "lichess"
+version = "universal-2017-04-2021-06"
+url = "https://database.lichess.org/db-univ/"
+license = "CC0-1.0"
+rating_system = "glicko2"
+ratings_are_normalized = true
+
+[split]
+# Deliberately the same seed the standard-export selection uses, not a new one.
+# The two exports publish the same games under the same ids, so a fresh seed
+# would reassign every one of them: measured over 200k ids, only 5.2% of the
+# games held out by the existing selection stay held out under a different
+# seed. Sharing the seed keeps the existing frozen pool held out against a
+# model trained here.
+seed = "anthro-lichess-blitz-baseline-v1"
+validation_fraction = 0.05
+test_fraction = 0.05
+require_nonempty = true
+
+[output]
+games_per_shard = 50000
+
+# 51 monthly archives, 3,351,735,159 games as the source publishes them.
+# Digests are Lichess's own, from https://database.lichess.org/db-univ/sha256sums.txt
+
+[[archives]]
+artifact_name = "lichess-univ-2017-04"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-04.pgn.bz2"
+file_name = "lichess_db_univ_2017-04.pgn.bz2"
+sha256 = "90abd4810ff8b95bf0b96bbb30b1242668b0d35822404f1b215e589e93ec10d5"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-05"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-05.pgn.bz2"
+file_name = "lichess_db_univ_2017-05.pgn.bz2"
+sha256 = "a7112c010f28aedbddbfef4a6549838c0801dd4ebe4a9a71b3aed526e54661fd"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-06"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-06.pgn.bz2"
+file_name = "lichess_db_univ_2017-06.pgn.bz2"
+sha256 = "462c4a84b76147985960d6e56203c4ad30bed9c8a73cf30866644182803be110"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-07"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-07.pgn.bz2"
+file_name = "lichess_db_univ_2017-07.pgn.bz2"
+sha256 = "72b1b83900f06e6ac9893c84d34990ed8fd641f1f9171a71f229cb77942e0892"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-08"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-08.pgn.bz2"
+file_name = "lichess_db_univ_2017-08.pgn.bz2"
+sha256 = "a122039d1da101ecedc7919f4b101ae129af75facde0176617441146608aa191"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-09"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-09.pgn.bz2"
+file_name = "lichess_db_univ_2017-09.pgn.bz2"
+sha256 = "7c715cb7c8b4999761788f0925968a17853c6f4cc8ebec50af5c3a9e8c9bc723"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-10"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-10.pgn.bz2"
+file_name = "lichess_db_univ_2017-10.pgn.bz2"
+sha256 = "2defb4ad177f2ff915e745b4b811950d4e9c05c0f5e6fc5a4d04947da0a0b7b8"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-11"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-11.pgn.bz2"
+file_name = "lichess_db_univ_2017-11.pgn.bz2"
+sha256 = "8864d3b13f26fe7fcf3b8b5942f19e26c55938ea6261e66f7056fe74d2ac8fc1"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2017-12"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-12.pgn.bz2"
+file_name = "lichess_db_univ_2017-12.pgn.bz2"
+sha256 = "81eab25187a1671ad410f519d3ba7273212bcac5a770e2b9fbf71af5e3494fd2"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-01"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-01.pgn.bz2"
+file_name = "lichess_db_univ_2018-01.pgn.bz2"
+sha256 = "4fa99534ddd5799d12f59f931ee2b2608024cbb1cc025684dcf4878166258b0c"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-02"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-02.pgn.bz2"
+file_name = "lichess_db_univ_2018-02.pgn.bz2"
+sha256 = "2ec21a3340a46d1697af10203af156cb6e69889b7cc55d916718c5d50826305c"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-03"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-03.pgn.bz2"
+file_name = "lichess_db_univ_2018-03.pgn.bz2"
+sha256 = "4cfe322eee9529295702a548b80f9a3f9c7a35b3c44bb6805c9cb712180d9cfa"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-04"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-04.pgn.bz2"
+file_name = "lichess_db_univ_2018-04.pgn.bz2"
+sha256 = "e71506c5103775809f58e339309bfb2ef6941122cfdf9911db5b471d73b18aa0"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-05"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-05.pgn.bz2"
+file_name = "lichess_db_univ_2018-05.pgn.bz2"
+sha256 = "f3aed3960befe868d075cc6922c29d46cdd77a52f75d6935361e2d207b6843f9"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-06"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-06.pgn.bz2"
+file_name = "lichess_db_univ_2018-06.pgn.bz2"
+sha256 = "d264157c159bd7499020367afc716fb29e6efade43b50980e906ddd3ab05b3ee"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-07"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-07.pgn.bz2"
+file_name = "lichess_db_univ_2018-07.pgn.bz2"
+sha256 = "092de4e72207bf3710e350f485ca7ef89483158c06d0f8e214cee4844843b627"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-08"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-08.pgn.bz2"
+file_name = "lichess_db_univ_2018-08.pgn.bz2"
+sha256 = "41a9fac43e8c0bc19c47bba50fe34501b9782e4b98aa17f98a1101c5ae059802"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-09"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-09.pgn.bz2"
+file_name = "lichess_db_univ_2018-09.pgn.bz2"
+sha256 = "71520f9f567a254bc56e138ee1c82bf074b467fd965c4592fb6f1d10e54e6c4f"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-10"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-10.pgn.bz2"
+file_name = "lichess_db_univ_2018-10.pgn.bz2"
+sha256 = "6c82f16e206d6d23ca25dbce4c97effe39501ec4afa4af28ca13d49f65d60d3c"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-11"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-11.pgn.bz2"
+file_name = "lichess_db_univ_2018-11.pgn.bz2"
+sha256 = "320406890140ca6d63bc1472b940ba465bc63be09612e32fe6ab9ba90ec1f5f4"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2018-12"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-12.pgn.bz2"
+file_name = "lichess_db_univ_2018-12.pgn.bz2"
+sha256 = "256d7e05ae45b183a2823df98f2f3d33b8f6ba1e60fe4c1f18920575edcaaf08"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-01"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-01.pgn.bz2"
+file_name = "lichess_db_univ_2019-01.pgn.bz2"
+sha256 = "99cafb30944e61dad0d4a32c730c190a7fa9cbe22bb787f2a20e36961b860f67"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-02"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-02.pgn.bz2"
+file_name = "lichess_db_univ_2019-02.pgn.bz2"
+sha256 = "edba256c9df80fe3d77fd62e53792378b70d6b176886bbb2aa2850dad62bd466"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-03"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-03.pgn.bz2"
+file_name = "lichess_db_univ_2019-03.pgn.bz2"
+sha256 = "02c5fba09afcca56960c4d1d29a25b8e7594f03dcf43dff3bdf269520bdb2846"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-04"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-04.pgn.bz2"
+file_name = "lichess_db_univ_2019-04.pgn.bz2"
+sha256 = "3b26c82644e3ea47ee4f83ad7a717757f007a4539028b10bb018dcb32f6a9281"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-05"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-05.pgn.bz2"
+file_name = "lichess_db_univ_2019-05.pgn.bz2"
+sha256 = "736c1d43813b0472f895b616fe1887688c35535607c636bb54ed3a53588b8fbf"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-06"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-06.pgn.bz2"
+file_name = "lichess_db_univ_2019-06.pgn.bz2"
+sha256 = "d69fe30eb155151f5ea4958afce509580d28768e359c4cd27e37fa8a6b2d89b0"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-07"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-07.pgn.bz2"
+file_name = "lichess_db_univ_2019-07.pgn.bz2"
+sha256 = "fa5af4bb580f9be1983ac85801030c068c2d54aac5809f635714982707b0ace1"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-08"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-08.pgn.bz2"
+file_name = "lichess_db_univ_2019-08.pgn.bz2"
+sha256 = "d578374baecd7c6d25849fa881978f15598635026bfdb4c80ea77b4fd477f27f"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-09"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-09.pgn.bz2"
+file_name = "lichess_db_univ_2019-09.pgn.bz2"
+sha256 = "ddca344e21cccefd839cf205b1b330babba637156bd79fd8e67896181925ac01"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-10"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-10.pgn.bz2"
+file_name = "lichess_db_univ_2019-10.pgn.bz2"
+sha256 = "66242175590f078dd24c01dd53bab4064070eb27f7dff71451b15f7ace300127"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-11"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-11.pgn.bz2"
+file_name = "lichess_db_univ_2019-11.pgn.bz2"
+sha256 = "8488869cf2d68c595d3f7d95b2cff45c107a0b166d3cbe3440a7718975d2eff2"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2019-12"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2019-12.pgn.bz2"
+file_name = "lichess_db_univ_2019-12.pgn.bz2"
+sha256 = "976ee041ea0cbd783bcef4f326968b704db89415858cb7121fb49824a99ecdca"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-01"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-01.pgn.bz2"
+file_name = "lichess_db_univ_2020-01.pgn.bz2"
+sha256 = "1a5bb5ad1899218a7d3cc76755151a75ad265b632e6438cb908a39026d956a91"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-02"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-02.pgn.bz2"
+file_name = "lichess_db_univ_2020-02.pgn.bz2"
+sha256 = "9848ee5eccc69e8b2879a503edec7a8bc6b5d1606a288a949d34b17dd74c5371"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-03"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-03.pgn.bz2"
+file_name = "lichess_db_univ_2020-03.pgn.bz2"
+sha256 = "b74a3f3876e15eb0931e9ac874e55ff44f9de48897e8e5b40a6c737c22b29f6d"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-04"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-04.pgn.bz2"
+file_name = "lichess_db_univ_2020-04.pgn.bz2"
+sha256 = "f224f9718675d2f8d371959f7699cfaca82680c87c4fa36817344e19abdd8c5c"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-05"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-05.pgn.bz2"
+file_name = "lichess_db_univ_2020-05.pgn.bz2"
+sha256 = "59d068315e2ff222723cf5e7803bfc94540e45c626e0abf59b295238cde59048"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-06"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-06.pgn.bz2"
+file_name = "lichess_db_univ_2020-06.pgn.bz2"
+sha256 = "87f3dccc58b28dfa811f7af5031c08434c885a6840e256fd7ab3757150002174"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-07"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-07.pgn.bz2"
+file_name = "lichess_db_univ_2020-07.pgn.bz2"
+sha256 = "b9e45282385796b4e2d3ddc3600eb1053f0dc1884a4df0d50ceed93658226d59"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-08"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-08.pgn.bz2"
+file_name = "lichess_db_univ_2020-08.pgn.bz2"
+sha256 = "93e34b9be121f7b25b90c1b5d70af28e46d58c2c6e6e57f823e9fcf92c25a07d"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-09"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-09.pgn.bz2"
+file_name = "lichess_db_univ_2020-09.pgn.bz2"
+sha256 = "9182899b65cd106889e8c55b10d1a89825faae3a3235bb95312154f05d4b2a9e"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-10"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-10.pgn.bz2"
+file_name = "lichess_db_univ_2020-10.pgn.bz2"
+sha256 = "ff09b8c613b2956d4fa7be6fd52504d4f4fe660e8b76140e5498b7c7f5243415"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-11"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-11.pgn.bz2"
+file_name = "lichess_db_univ_2020-11.pgn.bz2"
+sha256 = "c2ffc2c84288f5ebf3dceef5a915c55bd05788469e746e452c4a960711653a0e"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2020-12"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2020-12.pgn.bz2"
+file_name = "lichess_db_univ_2020-12.pgn.bz2"
+sha256 = "83214cac9cec11afe32c2e187feffaee3784cfbd65bc6a9986b33b1d871117cf"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2021-01"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2021-01.pgn.bz2"
+file_name = "lichess_db_univ_2021-01.pgn.bz2"
+sha256 = "b7f0fce5d470fd53e29d9167750affd8af1b9f141d4e44b992e515b9a63cfc71"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2021-02"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2021-02.pgn.bz2"
+file_name = "lichess_db_univ_2021-02.pgn.bz2"
+sha256 = "e95db81c4b25b299af9321fc41c7101e0296c096d26d8b1efeda14c37bad596a"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2021-03"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2021-03.pgn.bz2"
+file_name = "lichess_db_univ_2021-03.pgn.bz2"
+sha256 = "7c8899c412883df9e416e84707a07b20ac86e2881a96da62fef127a5efc63e46"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2021-04"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2021-04.pgn.bz2"
+file_name = "lichess_db_univ_2021-04.pgn.bz2"
+sha256 = "9fcc3dbd607e3bc64575c30d408a16a928df5c344ed8f35c8743107415366ba2"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2021-05"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2021-05.pgn.bz2"
+file_name = "lichess_db_univ_2021-05.pgn.bz2"
+sha256 = "3dcd3f26b3ba38791107d9d0a300de4218ef446fdef80638246ae816d36a4cfb"
+compression = "bzip2"
+[[archives]]
+artifact_name = "lichess-univ-2021-06"
+url = "https://database.lichess.org/db-univ/lichess_db_univ_2021-06.pgn.bz2"
+file_name = "lichess_db_univ_2021-06.pgn.bz2"
+sha256 = "335158e4146516824a43773f705174c14396148a0ac32c633778d1226fc697b0"
+compression = "bzip2"

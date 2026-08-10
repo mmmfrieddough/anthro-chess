@@ -130,19 +130,6 @@ class _ParsedGame:
     termination: DerivedTermination | None = None
 
 
-def acquire_archive(
-    output_directory: str | Path,
-    resolved_config: ResolvedConfig[PrepareConfig],
-) -> AcquisitionResult:
-    """Download a pinned source archive and verify its configured digest."""
-    archive = resolved_config.value.archive
-    if archive is None:
-        raise DataPreparationError(
-            "configuration has no archive selection for data acquisition"
-        )
-    return acquire_configured_archive(output_directory, archive)
-
-
 def acquire_configured_archive(
     output_directory: str | Path,
     archive: ArchiveConfig,
@@ -214,11 +201,19 @@ def prepare_pgn(
     if not source_path.is_file():
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
-    input_sha256 = file_sha256(source_path)
-    configured_archive = resolved_config.value.archive
-    if configured_archive is not None and input_sha256 != configured_archive.sha256:
+    archives = resolved_config.value.archives
+    if len(archives) > 1:
+        # One run writes one manifest and renumbers shards from zero, so a
+        # second archive into the same artifact replaces the first rather than
+        # extending it. #388 is what lifts this.
         raise DataPreparationError(
-            f"input archive checksum mismatch: expected {configured_archive.sha256}, "
+            f"this selection pins {len(archives)} archives and preparation "
+            "builds a corpus from one"
+        )
+    input_sha256 = file_sha256(source_path)
+    if archives and input_sha256 != archives[0].sha256:
+        raise DataPreparationError(
+            f"input archive checksum mismatch: expected {archives[0].sha256}, "
             f"observed {input_sha256}"
         )
     marked_accounts = _resolve_marked_accounts(resolved_config, input_sha256)

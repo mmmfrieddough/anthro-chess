@@ -1091,7 +1091,7 @@ def _run_data_acquire(arguments: argparse.Namespace) -> int:
     from anthro_chess.data import (
         DataPreparationError,
         PrepareConfig,
-        acquire_archive,
+        acquire_configured_archive,
     )
 
     try:
@@ -1100,21 +1100,29 @@ def _run_data_acquire(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        archive = resolved.value.archive
-        artifact_name = (
-            archive.artifact_name
-            if archive is not None and archive.artifact_name is not None
-            else resolved.value.artifact_name
-        )
-        output = _data_output_path(arguments.output, artifact_name)
-        result = acquire_archive(output, resolved)
+        archives = resolved.value.archives
+        if not archives:
+            raise ConfigError(
+                "configuration has no archive selection for data acquisition"
+            )
+        reused = 0
+        for archive in archives:
+            # An archive naming its own artifact lets two selections that pin
+            # the same month share one download.
+            output = _data_output_path(
+                arguments.output,
+                archive.artifact_name or resolved.value.artifact_name,
+            )
+            result = acquire_configured_archive(output, archive)
+            disposition = "Reused" if result.reused else "Acquired"
+            print(f"{disposition} verified archive: {result.archive_path}")
+            print(f"SHA-256: {result.sha256}")
+            reused += int(result.reused)
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data acquire: {error}", file=sys.stderr)
         return 2
 
-    disposition = "Reused" if result.reused else "Acquired"
-    print(f"{disposition} verified archive: {result.archive_path}")
-    print(f"SHA-256: {result.sha256}")
+    print(f"{len(archives)} archive(s) verified, {reused} already present.")
     return 0
 
 
@@ -1172,7 +1180,7 @@ def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        configured_archive = resolved.value.archive
+        configured_archives = resolved.value.archives
         input_path = _configured_archive_path(resolved, arguments.input, None)
         if not input_path.is_file():
             raise ConfigError(f"source archive does not exist: {input_path}")
@@ -1190,13 +1198,12 @@ def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
             )
 
         archive_sha256 = file_sha256(input_path)
-        if (
-            configured_archive is not None
-            and archive_sha256 != configured_archive.sha256
+        if configured_archives and all(
+            archive_sha256 != archive.sha256 for archive in configured_archives
         ):
             raise ConfigError(
-                f"archive checksum mismatch: expected {configured_archive.sha256}, "
-                f"observed {archive_sha256}"
+                f"archive checksum {archive_sha256} matches none of the "
+                f"{len(configured_archives)} archive(s) this selection pins"
             )
 
         if output_path.is_file():
@@ -3737,12 +3744,20 @@ def _configured_archive_path(
 
     if explicit_input is not None:
         return explicit_input
-    archive = resolved.value.archive
-    if archive is None:
+    archives = resolved.value.archives
+    if not archives:
         raise ConfigError(
             "input path is required because the selected data "
             "configuration has no archive"
         )
+    if len(archives) > 1:
+        # A selection spanning many archives has no single default input, and
+        # guessing one would silently prepare a different month than intended.
+        raise ConfigError(
+            f"input path is required because the selected data configuration "
+            f"pins {len(archives)} archives"
+        )
+    archive = archives[0]
     root = _data_output_path(
         artifact_root, archive.artifact_name or resolved.value.artifact_name
     )

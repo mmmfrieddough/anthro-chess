@@ -18,9 +18,11 @@ from anthro_chess.chess import (
 )
 from anthro_chess.config import load_config
 from anthro_chess.data import (
+    ArchiveConfig,
     DataPreparationError,
     PrepareConfig,
-    acquire_archive,
+    SourceConfig,
+    acquire_configured_archive,
     prepare_pgn,
 )
 from anthro_chess.data.accounts import (
@@ -36,6 +38,7 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
 SAMPLE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
 BASELINE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-blitz-2017-04.toml"
+UNIV_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-univ-2017-04-2021-06.toml"
 
 
 def test_baseline_selection_pins_one_bounded_verified_rating_namespace() -> None:
@@ -46,8 +49,8 @@ def test_baseline_selection_pins_one_bounded_verified_rating_namespace() -> None
     assert config.filters.maximum_games is not None
     assert config.output.games_per_shard is not None
     assert config.split.require_nonempty is True
-    assert config.archive is not None
-    assert config.archive.sha256 == (
+    assert len(config.archives) == 1
+    assert config.archives[0].sha256 == (
         "559222b0e933bc02281643724fbd9bd46690074b10d784c4f264e0bff6c5992c"
     )
 
@@ -330,15 +333,10 @@ def test_acquires_and_reuses_only_a_checksum_verified_archive(
 ) -> None:
     payload = b"pinned archive bytes"
     expected_sha256 = sha256(payload).hexdigest()
-    resolved = load_config(
-        PrepareConfig,
-        path=SAMPLE_CONFIG,
-        overrides=(
-            'archive.url="https://example.test/archive.pgn.zst"',
-            'archive.file_name="archive.pgn.zst"',
-            f'archive.sha256="{expected_sha256}"',
-            'archive.compression="zstd"',
-        ),
+    archive = ArchiveConfig(
+        url="https://example.test/archive.pgn.zst",
+        file_name="archive.pgn.zst",
+        sha256=expected_sha256,
     )
     prepare_module = import_module("anthro_chess.data.prepare")
     calls = 0
@@ -351,8 +349,8 @@ def test_acquires_and_reuses_only_a_checksum_verified_archive(
 
     monkeypatch.setattr(prepare_module, "urlopen", fake_urlopen)
 
-    acquired = acquire_archive(tmp_path, resolved)
-    reused = acquire_archive(tmp_path, resolved)
+    acquired = acquire_configured_archive(tmp_path, archive)
+    reused = acquire_configured_archive(tmp_path, archive)
 
     assert acquired.archive_path.read_bytes() == payload
     assert acquired.sha256 == expected_sha256
@@ -365,15 +363,10 @@ def test_rejects_download_with_wrong_checksum(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    resolved = load_config(
-        PrepareConfig,
-        path=SAMPLE_CONFIG,
-        overrides=(
-            'archive.url="https://example.test/archive.pgn.zst"',
-            'archive.file_name="archive.pgn.zst"',
-            f'archive.sha256="{"0" * 64}"',
-            'archive.compression="zstd"',
-        ),
+    archive = ArchiveConfig(
+        url="https://example.test/archive.pgn.zst",
+        file_name="archive.pgn.zst",
+        sha256="0" * 64,
     )
     prepare_module = import_module("anthro_chess.data.prepare")
     monkeypatch.setattr(
@@ -383,7 +376,7 @@ def test_rejects_download_with_wrong_checksum(
     )
 
     with pytest.raises(DataPreparationError, match="checksum mismatch"):
-        acquire_archive(tmp_path, resolved)
+        acquire_configured_archive(tmp_path, archive)
 
     assert not (tmp_path / "raw/archive.pgn.zst").exists()
     assert not (tmp_path / "raw/archive.pgn.zst.part").exists()
@@ -392,16 +385,9 @@ def test_rejects_download_with_wrong_checksum(
 def test_prepare_rejects_input_that_does_not_match_pinned_archive(
     tmp_path: Path,
 ) -> None:
-    resolved = load_config(
-        PrepareConfig,
-        path=SAMPLE_CONFIG,
-        overrides=(
-            'archive.url="https://example.test/archive.pgn.zst"',
-            'archive.file_name="archive.pgn.zst"',
-            f'archive.sha256="{"0" * 64}"',
-            'archive.compression="zstd"',
-        ),
-    )
+    # The baseline selection pins the real monthly archive, which the checked-in
+    # sample is not.
+    resolved = load_config(PrepareConfig, path=BASELINE_CONFIG)
 
     with pytest.raises(DataPreparationError, match="input archive checksum mismatch"):
         prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
@@ -844,3 +830,126 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _sha256(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
+
+
+def test_centisecond_selection_pins_every_month_that_carries_clocks() -> None:
+    """The corpus selection is a checked-in fact rather than prose in an issue."""
+
+    config = load_config(PrepareConfig, path=UNIV_CONFIG).value
+
+    assert len(config.archives) == 51
+    assert {archive.compression for archive in config.archives} == {"bzip2"}
+    months = [archive.file_name.split("_")[-1][:7] for archive in config.archives]
+    # Centisecond clocks begin at 2017-04 and the export ends at 2021-06, so a
+    # month outside the span carries nothing this source was chosen for.
+    assert months[0] == "2017-04"
+    assert months[-1] == "2021-06"
+    assert months == sorted(months)
+    assert len(set(months)) == len(months)
+    # Left unset until the namespace is derived per game, because a corpus
+    # spanning speeds cannot be described by one namespace.
+    assert config.source.rating_namespace is None
+
+
+def test_a_selection_refuses_two_archives_that_would_overwrite_each_other() -> None:
+    """Two archives at one path overwrite each other, so neither ever stays."""
+
+    archive = ArchiveConfig(
+        artifact_name="shared",
+        url="https://example.test/a.pgn.zst",
+        file_name="same.pgn.zst",
+        sha256="a" * 64,
+    )
+    twin = archive.model_copy(update={"sha256": "b" * 64})
+
+    with pytest.raises(ValueError, match="acquired to the same path"):
+        PrepareConfig(
+            artifact_name="fixture",
+            source=SourceConfig(
+                id="test", version="v", url="https://example.test/", license="CC0-1.0"
+            ),
+            archives=(archive, twin),
+        )
+
+
+def test_reads_a_bzip2_archive_the_universal_export_publishes(tmp_path: Path) -> None:
+    """The chosen source publishes bzip2 and nothing else."""
+
+    import bz2
+
+    archive_path = tmp_path / "games.pgn.bz2"
+    archive_path.write_bytes(bz2.compress(SAMPLE_PGN.read_bytes()))
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    result = prepare_pgn(archive_path, tmp_path / "artifacts", resolved)
+
+    assert result.accepted_games == 1
+
+
+def _two_archive_selection(tmp_path: Path) -> Path:
+    """Written as TOML so the selection is validated the way a real config is."""
+
+    path = tmp_path / "two-archives.toml"
+    path.write_text(
+        f"""
+artifact_name = "fixture"
+
+[source]
+id = "test"
+version = "fixture"
+url = "https://example.test/"
+license = "CC0-1.0"
+
+[[archives]]
+artifact_name = "fixture-one"
+url = "https://example.test/one.pgn.zst"
+file_name = "one.pgn.zst"
+sha256 = "{"1" * 64}"
+
+[[archives]]
+artifact_name = "fixture-two"
+url = "https://example.test/two.pgn.bz2"
+file_name = "two.pgn.bz2"
+sha256 = "{"2" * 64}"
+compression = "bzip2"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_preparation_refuses_a_selection_it_cannot_build_one_corpus_from(
+    tmp_path: Path,
+) -> None:
+    """One run writes one manifest, so a second archive would replace the first."""
+
+    resolved = load_config(PrepareConfig, path=_two_archive_selection(tmp_path))
+
+    with pytest.raises(DataPreparationError, match="pins 2 archives"):
+        prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
+
+
+def test_an_archive_may_not_declare_a_compression_its_name_contradicts() -> None:
+    """Readers dispatch on the suffix, so the declaration has to agree with it."""
+
+    with pytest.raises(ValueError, match="does not end in .bz2"):
+        ArchiveConfig(
+            url="https://example.test/a.pgn.zst",
+            file_name="a.pgn.zst",
+            sha256="a" * 64,
+            compression="bzip2",
+        )
+
+
+def test_a_truncated_bzip2_archive_reports_rather_than_escapes(tmp_path: Path) -> None:
+    """A truncated stream raises EOFError, not the OSError callers catch."""
+
+    import bz2
+
+    archive_path = tmp_path / "games.pgn.bz2"
+    complete = bz2.compress(SAMPLE_PGN.read_bytes())
+    archive_path.write_bytes(complete[: len(complete) // 2])
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+
+    with pytest.raises(DataPreparationError, match="cannot decompress input PGN"):
+        prepare_pgn(archive_path, tmp_path / "artifacts", resolved)

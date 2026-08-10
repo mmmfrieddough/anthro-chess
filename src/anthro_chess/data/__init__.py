@@ -55,7 +55,6 @@ from anthro_chess.data.prepare import (
     AcquisitionResult,
     DataPreparationError,
     PreparationResult,
-    acquire_archive,
     acquire_configured_archive,
     prepare_pgn,
 )
@@ -127,7 +126,6 @@ __all__ = [
     "TerminalActionStatus",
     "TerminationCategory",
     "TerminationConfig",
-    "acquire_archive",
     "acquire_configured_archive",
     "build_decision_context",
     "build_sharded_index",
