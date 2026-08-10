@@ -18,6 +18,7 @@ from concurrent.futures import BrokenExecutor, Future, ProcessPoolExecutor
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import partial
 from hashlib import sha256
 from io import StringIO
 from itertools import islice
@@ -777,12 +778,17 @@ def _recorded_result(
     )
 
 
-def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
+def _decode_stream(
+    handle: TextIO,
+    config: PrepareConfig,
+    marked_accounts: MarkedAccounts | None,
+) -> Iterator[_ParsedGame]:
+    builder = partial(_RecordBuilder, config, marked_accounts)
     while True:
-        game = chess.pgn.read_game(pgn_file)
-        if game is None:
+        parsed = chess.pgn.read_game(handle, Visitor=builder)
+        if parsed is None:
             return
-        yield game
+        yield parsed
 
 
 class _CapturingReader:
@@ -836,10 +842,7 @@ def _decode_batch(
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
 ) -> list[_ParsedGame]:
-    return [
-        _parse_game(game, config, marked_accounts)
-        for game in _read_games(StringIO(text))
-    ]
+    return list(_decode_stream(StringIO(text), config, marked_accounts))
 
 
 #: What a pooled worker decodes against, sent once when it starts rather than
@@ -874,8 +877,7 @@ def _decoded_games(
     """
 
     if workers < 1:
-        for game in _read_games(pgn_file):
-            yield _parse_game(game, config, marked_accounts)
+        yield from _decode_stream(pgn_file, config, marked_accounts)
         return
 
     batches = _read_game_batches(pgn_file)
@@ -925,38 +927,138 @@ def _resolve_marked_accounts(
     return snapshot
 
 
+class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
+    """Build one normalized record during the parser's own walk of a game.
+
+    ``read_game``'s default visitor allocates a node per ply to assemble a game
+    tree that preparation then discards, replaying the mainline on a fresh
+    board to read the same moves back. Collecting the record here costs one
+    pass over a game rather than two.
+
+    The comment rule is ``GameBuilder``'s and has to stay so. A comment belongs
+    to the ply before it only while ``in_variation`` holds, which any move sets
+    and only ``begin_variation`` clears — so a comment following a variation
+    that contained no move belongs to no ply at all, and dropping it is what
+    agrees with the tree this replaces.
+    """
+
+    def __init__(
+        self,
+        config: PrepareConfig,
+        marked_accounts: MarkedAccounts | None,
+    ) -> None:
+        self._config = config
+        self._marked_accounts = marked_accounts
+
+    def begin_game(self) -> None:
+        self._headers: dict[str, str] = {}
+        self._moves: list[chess.Move] = []
+        self._comments: list[str] = []
+        self._board: chess.Board | None = None
+        self._depth = 0
+        self._in_variation = False
+        self._failed = False
+        self._null_move = False
+
+    def begin_headers(self) -> None:
+        # Nothing, so ``read_game`` builds the ``Headers`` its own variant and
+        # FEN lookups need while this keeps a plain dict beside it. Handing it
+        # one of these instead saves a percent and buys a dependence on how
+        # ``Headers`` is constructed.
+        return None
+
+    def visit_header(self, tagname: str, tagvalue: str) -> None:
+        self._headers[tagname] = tagvalue
+
+    def visit_board(self, board: chess.Board) -> None:
+        # Mainline moves are pushed onto this same board, so the first one is
+        # also the final position once the walk is done.
+        if self._board is None:
+            self._board = board
+
+    def begin_variation(self) -> None:
+        self._depth += 1
+        self._in_variation = False
+
+    def end_variation(self) -> None:
+        self._depth -= 1
+
+    def visit_move(self, board: chess.Board, move: chess.Move) -> None:
+        self._in_variation = True
+        if self._depth:
+            return
+        if not move:
+            # ``parse_san`` promises a move that is legal or null and records
+            # an error for anything else, so the null is the whole of what a
+            # legality test over the replayed mainline used to catch.
+            self._null_move = True
+        self._moves.append(move)
+        self._comments.append("")
+
+    def visit_comment(self, comment: str) -> None:
+        if self._depth or not self._in_variation or not self._comments:
+            return
+        self._comments[-1] = " ".join(filter(None, (self._comments[-1], comment)))
+
+    def visit_result(self, result: str) -> None:
+        if self._headers.get("Result", "*") == "*":
+            self._headers["Result"] = result
+
+    def handle_error(self, error: Exception) -> None:
+        self._failed = True
+        logger.error("%s while parsing %s", error, self._headers.get("Site", "?"))
+
+    def result(self) -> _ParsedGame:
+        return _parse_game(
+            self._headers,
+            self._moves,
+            self._comments,
+            self._board,
+            failed=self._failed,
+            null_move=self._null_move,
+            config=self._config,
+            marked_accounts=self._marked_accounts,
+        )
+
+
 def _parse_game(
-    game: chess.pgn.Game,
+    headers: Mapping[str, str],
+    moves: Sequence[chess.Move],
+    comments: Sequence[str],
+    final_board: chess.Board | None,
+    *,
+    failed: bool,
+    null_move: bool,
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
 ) -> _ParsedGame:
-    if game.errors:
+    if failed:
         return _ParsedGame(None, "pgn_parse_error")
-    variant = game.headers.get("Variant", "Standard")
+    variant = headers.get("Variant", "Standard")
     if variant.casefold() not in {"standard", "from position"}:
         return _ParsedGame(None, "unsupported_variant")
-    if game.headers.get("SetUp") == "1" or game.headers.get("FEN"):
+    if headers.get("SetUp") == "1" or headers.get("FEN"):
         return _ParsedGame(None, "nonstandard_initial_position")
-    termination_text, _ = _parse_text(game.headers.get("Termination"))
+    termination_text, _ = _parse_text(headers.get("Termination"))
     if termination_text == _RULES_INFRACTION_TERMINATION:
         # Ended by the platform on a client-side report rather than played to
         # a finish, so the record is a fragment of a game rather than a
         # completed human one. Rejected for that rather than as a cheating
         # filter, which 0041 measures this label as far too narrow to serve.
         return _ParsedGame(None, "rules_infraction")
-    if config.filters.exclude_bots and _has_bot_player(game):
+    if config.filters.exclude_bots and _has_bot_player(headers):
         return _ParsedGame(None, "bot_game")
     if (
         config.filters.event_speed is not None
-        and _event_speed(game.headers.get("Event")) != config.filters.event_speed
+        and _event_speed(headers.get("Event")) != config.filters.event_speed
     ):
         return _ParsedGame(None, "rating_namespace_mismatch")
     if (
         config.filters.require_rated
-        and "rated" not in game.headers.get("Event", "").casefold()
+        and "rated" not in headers.get("Event", "").casefold()
     ):
         return _ParsedGame(None, "unrated_game")
-    if marked_accounts is not None and _has_marked_player(game, marked_accounts):
+    if marked_accounts is not None and _has_marked_player(headers, marked_accounts):
         # Every game a marked account played is rejected rather than the moves
         # that were assisted, because no method separates the two per game and
         # a marked player's honest games are not what this corpus is for.
@@ -966,28 +1068,26 @@ def _parse_game(
         # archive, which is the number 0041 is checked against.
         return _ParsedGame(None, "marked_account")
 
-    source_game_key = _source_game_key(game.headers.get("Site"))
+    source_game_key = _source_game_key(headers.get("Site"))
     if source_game_key is None:
         return _ParsedGame(None, "missing_source_game_key")
 
-    white_rating = _parse_nonnegative_integer(game.headers.get("WhiteElo"))
-    black_rating = _parse_nonnegative_integer(game.headers.get("BlackElo"))
+    white_rating = _parse_nonnegative_integer(headers.get("WhiteElo"))
+    black_rating = _parse_nonnegative_integer(headers.get("BlackElo"))
     if config.filters.require_ratings and (
         white_rating.status != _STATUS_PRESENT or black_rating.status != _STATUS_PRESENT
     ):
         return _ParsedGame(None, "missing_or_invalid_rating")
-    time_initial, time_increment = _parse_time_control(game.headers.get("TimeControl"))
+    time_initial, time_increment = _parse_time_control(headers.get("TimeControl"))
+    if null_move:
+        return _ParsedGame(None, "illegal_move")
     actions: list[int] = []
     clock_values: list[int | None] = []
     clock_statuses: list[FieldStatus] = []
     clock_precision_ms: int | None = None
-    board = game.board()
-    for node in game.mainline():
-        move = node.move
-        if move not in board.legal_moves:
-            return _ParsedGame(None, "illegal_move")
+    for move, comment in zip(moves, comments, strict=True):
         actions.append(encode_move(move))
-        clock = _parse_clock(node.comment)
+        clock = _parse_clock(comment)
         clock_values.append(clock.value)
         clock_statuses.append(clock.status)
         if clock.precision_ms is not None:
@@ -1000,20 +1100,20 @@ def _parse_game(
                 if clock_precision_ms is None
                 else min(clock_precision_ms, clock.precision_ms)
             )
-        board.push(move)
 
     if len(actions) < config.filters.minimum_plies:
         return _ParsedGame(None, "too_short")
 
-    result = game.headers.get("Result")
+    result = headers.get("Result")
     if result not in {"1-0", "0-1", "1/2-1/2", "*"}:
         return _ParsedGame(None, "invalid_result")
 
-    termination, termination_status = _parse_text(game.headers.get("Termination"))
+    termination, termination_status = _parse_text(headers.get("Termination"))
+    assert final_board is not None
     derived_termination = derive_termination(
         result=result,
         source_termination=termination,
-        final_board=board,
+        final_board=final_board,
         clock_remaining_ms=clock_values,
         time_initial_ms=time_initial.value,
         abandonment_clock_share=config.termination.abandonment_clock_share,
@@ -1021,7 +1121,7 @@ def _parse_game(
     ply_count = len(actions)
     terminal_action_id, terminal_action_status = terminal_action_for(
         derived_termination,
-        board,
+        final_board,
     )
     if terminal_action_id is not None:
         # The per-ply columns stay aligned with the action sequence, and no
@@ -1058,12 +1158,8 @@ def _parse_game(
             NormalizedColumn.SCHEMA_VERSION: SCHEMA_VERSION,
             NormalizedColumn.SOURCE_ID: config.source.id,
             NormalizedColumn.SOURCE_GAME_KEY: source_game_key,
-            NormalizedColumn.WHITE_PLAYER_DIGEST: _player_digest(
-                game.headers.get("White")
-            ),
-            NormalizedColumn.BLACK_PLAYER_DIGEST: _player_digest(
-                game.headers.get("Black")
-            ),
+            NormalizedColumn.WHITE_PLAYER_DIGEST: _player_digest(headers.get("White")),
+            NormalizedColumn.BLACK_PLAYER_DIGEST: _player_digest(headers.get("Black")),
             NormalizedColumn.RULESET: "standard",
             NormalizedColumn.INITIAL_POSITION: chess.STARTING_FEN,
             NormalizedColumn.RESULT: result,
@@ -1102,10 +1198,10 @@ def _parse_game(
     )
 
 
-def _has_marked_player(game: chess.pgn.Game, marked: MarkedAccounts) -> bool:
+def _has_marked_player(headers: Mapping[str, str], marked: MarkedAccounts) -> bool:
     return any(
         marked.contains(name)
-        for name in (game.headers.get("White"), game.headers.get("Black"))
+        for name in (headers.get("White"), headers.get("Black"))
         if name
     )
 
@@ -1116,9 +1212,9 @@ def _player_digest(name: str | None) -> int | None:
     return account_row_digest(name)
 
 
-def _has_bot_player(game: chess.pgn.Game) -> bool:
+def _has_bot_player(headers: Mapping[str, str]) -> bool:
     return any(
-        game.headers.get(header, "").casefold() == "bot"
+        headers.get(header, "").casefold() == "bot"
         for header in ("WhiteTitle", "BlackTitle")
     )
 
