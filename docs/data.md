@@ -150,10 +150,18 @@ See `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`.
 
 Preparation decodes games on a pool of processes. One reader walks the
 decompressed stream and decides where each game ends, and workers do the
-parsing, replay, encoding and classification that dominates the cost. The
+parsing, encoding and classification that dominates the cost, building each
+normalized record in one pass as the parser walks the game. The
 reader consumes their results in source order, so acceptance, duplicate
 rejection, the accepted-game bound and shard boundaries see the same sequence
 whatever the pool size.
+
+A worker reads a game's headers before its moves, and a filter the headers
+alone settle rejects the game there rather than after parsing a movetext no
+record will be built from. Which games a selection accepts is unaffected; what
+the manifest names as a rejected game's reason is not, because a game the
+headers rule out is no longer given the chance to fail to parse first. See
+`docs/decisions/0050-a-header-rejection-outranks-a-parse-error.md`.
 
 Worker count is therefore a statement about the machine and not about the
 corpus. It is a `--workers` argument to `anthro data prepare` rather than a
@@ -202,8 +210,10 @@ stays possible at any time.
 Breadth is sized by evaluation power rather than by training needs. Each axis
 needs enough held-out games to resolve the effects the project will want to
 detect on it, which is a computable quantity given measured sampling noise, and
-which is a much smaller number than training volume. Game-level benchmarks bind
-here well before position-level ones do, since their unit is a game.
+which is a much smaller number than training volume. What has to carry that
+count is the pool rather than the whole held-out split, since the pool is a
+bounded sample of it; `docs/evaluation.md` owns the bound. Game-level benchmarks
+bind here well before position-level ones do, since their unit is a game.
 
 Expansion must preserve containment. The baseline recipe accepts games in source
 order until a configured bound, so relaxing a filter without also raising that

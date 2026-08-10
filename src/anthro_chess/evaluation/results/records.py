@@ -39,6 +39,8 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
+#: Version 8 counts a bootstrap dispersion's units over the games that realized
+#: its metric rather than over every game the pass scored.
 #: Version 7 drops the noise source a dispersion declared. A dispersion is now
 #: always the reading's own, so the taxonomy distinguished nothing; ``estimator``
 #: still says how the reading arrived at it.
@@ -46,7 +48,13 @@ from anthro_chess.provenance import code_provenance, environment_provenance
 #: from it, so a delta is floored by combining the two readings it compares.
 #: Version 5 records the training identity a training noise floor is scoped to.
 #: Version 4 names the estimator behind a stored noise floor.
-ENVELOPE_VERSION = 7
+ENVELOPE_VERSION = 8
+
+#: The version from which a bootstrap dispersion's ``units`` counts the games
+#: that realized its metric. Below it the field counts the whole pass, and
+#: nothing else on the record distinguishes the two, so a reader that
+#: extrapolates from ``units`` has to gate on this.
+REALIZING_UNITS_VERSION = 8
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -337,8 +345,8 @@ class MetricDispersion(ResultModel):
     #: ignorance stays visible.
     bound: float = Field(ge=0.0)
     #: How many independent sampling units the spread was read over, when it
-    #: scales with that count. Set where the units are the games a bootstrap
-    #: resampled, which is what makes the sizing question computable; absent
+    #: scales with that count. Set where the units are the games that realized
+    #: this metric, which is what makes the sizing question computable; absent
     #: where re-measuring does not redraw a sample, and deliberately not the
     #: measurement's own ``sample_size``, which counts scored positions.
     units: int | None = Field(default=None, ge=1)

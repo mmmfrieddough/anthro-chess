@@ -82,6 +82,7 @@ def test_freeze_selects_only_the_test_split_and_records_provenance(
         "leakage",
         "preprocessing_version",
         "resolved_config",
+        "sampling",
         "schema_version",
     }
 
@@ -131,6 +132,145 @@ def test_a_game_in_both_train_and_test_fails_the_build(
 
     with pytest.raises(EvaluationPoolError, match="also appear in the train split"):
         freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+
+def test_a_sample_fraction_admits_that_share_of_the_split(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The realized share is what the pool is sized by, so it is what is pinned.
+
+    The bounds are three standard deviations either side of Binomial(400, 0.25),
+    wide enough that this fixture's draw sits comfortably inside and narrow
+    enough that a threshold off by a factor of two falls outside.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="test") for index in range(400)],
+    )
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.25),
+        tmp_path / "pool",
+    )
+
+    assert 74 <= result.games <= 126
+    sampling = json.loads(result.manifest_path.read_text())["sampling"]
+    assert sampling["fraction"] == 0.25
+    assert sampling["split_games"] == 400
+
+
+def test_the_admission_seed_is_frozen(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A changed seed redraws membership and drops games earlier pools held.
+
+    Nothing else here can see that. The check that would is the containment
+    verification a generation cut owes, which is still owed and has no earlier
+    sampled pool to compare against anyway, so this is what stands between an
+    edited seed and a break nobody notices. A failure here is repaired by
+    restoring the seed rather than by accepting the new digest.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="test") for index in range(40)],
+    )
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.25),
+        tmp_path / "pool",
+    )
+
+    assert pool_module.POOL_SAMPLE_SEED == "anthro-evaluation-pool-v1"
+    assert (
+        result.game_ids_sha256
+        == "7a1604e77f9cb1a35b70ed8b2b8bb270ecd3e7d99c48b89b14d97c55bf9fe013"
+    )
+
+
+def test_a_sampled_pool_still_contains_the_one_a_smaller_corpus_produced(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Containment is what a bounded pool has to keep, and why it is a fraction.
+
+    Every generation must hold everything the last one did. Keeping the lowest
+    ranked N of a larger split would not: the newly available games take ranks
+    among the old ones and push some of them past N.
+    """
+
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:120])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+
+    freeze_pool(
+        _resolved(smaller, smaller_manifest, sample_fraction=0.25),
+        tmp_path / "first",
+    )
+    freeze_pool(
+        _resolved(grown, grown_manifest, sample_fraction=0.25),
+        tmp_path / "second",
+    )
+
+    first = set(load_pool(tmp_path / "first").game_ids)
+    second = set(load_pool(tmp_path / "second").game_ids)
+    assert first <= second
+    assert len(second) > len(first)
+
+
+def test_an_admitted_game_in_both_splits_still_fails_the_build(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Sampling narrows the overlap check to the games that can reach the pool.
+
+    A duplicate the fraction excludes is no longer caught, which is the price
+    of not holding the train split in memory to write a bounded pool from it.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="train") for index in range(40)]
+        + [normalized_row(index, split="test") for index in range(40)],
+    )
+
+    with pytest.raises(EvaluationPoolError, match="also appear in the train split"):
+        freeze_pool(
+            _resolved(normalized, manifest, sample_fraction=0.5),
+            tmp_path / "pool",
+        )
+
+
+def test_an_empty_pool_blames_the_fraction_or_the_split_but_not_both(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Either message sent to the other case costs a reader the wrong search."""
+
+    populated, populated_manifest = corpus(tmp_path)
+    with pytest.raises(EvaluationPoolError, match="sample fraction"):
+        freeze_pool(
+            _resolved(populated, populated_manifest, sample_fraction=1e-9),
+            tmp_path / "sampled-out",
+        )
+
+    empty, empty_manifest = write_corpus(
+        tmp_path / "no-test-games", [normalized_row(1, split="train")]
+    )
+    with pytest.raises(EvaluationPoolError, match="no normalized games"):
+        freeze_pool(
+            _resolved(empty, empty_manifest, sample_fraction=0.5),
+            tmp_path / "empty-split",
+        )
 
 
 def test_coverage_makes_thin_slices_visible(

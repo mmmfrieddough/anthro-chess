@@ -3029,6 +3029,7 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
 
 def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
+        REALIZING_UNITS_VERSION,
         MetricRegistryError,
         NoiseCharacterizationError,
         ResultsStore,
@@ -3044,25 +3045,38 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         store = ResultsStore(resolve_store_root(arguments.store))
         # Results arrive in recording order, so the last reading that read its
         # own spread over a counted draw of games is the one that still
-        # describes the metric.
-        spread = next(
+        # describes the metric. An older envelope counted that draw as the whole
+        # pass, and extrapolating from it would answer the sizing question in a
+        # unit the record cannot be read as carrying.
+        reading = next(
             (
-                measured.dispersion
+                (measured.dispersion, envelope.data)
                 for envelope in reversed(store.results())
-                if (measured := envelope.measurement(metric)) is not None
+                if envelope.envelope_version >= REALIZING_UNITS_VERSION
+                and (measured := envelope.measurement(metric)) is not None
                 and measured.dispersion is not None
             ),
             None,
         )
-        if spread is None:
+        if reading is None:
             print(
-                f"anthro eval noise plan: no reading records a sampled "
+                f"anthro eval noise plan: no reading at envelope version "
+                f"{REALIZING_UNITS_VERSION} or above records a sampled "
                 f"dispersion for {metric}",
                 file=sys.stderr,
             )
             return 2
+        spread, dataset = reading
         required = games_to_resolve(spread, effect=arguments.effect)
         floor = self_combined_floor(spread)
+        # `required` counts games realizing the metric, so a pool has to be
+        # larger by whatever rate it realizes them at. Rounded up in integers:
+        # a tiny effect drives `required` past what a float can divide.
+        pool = (
+            None
+            if dataset is None or spread.units is None
+            else (required * dataset.selected_games + spread.units - 1) // spread.units
+        )
     except (
         MetricRegistryError,
         NoiseCharacterizationError,
@@ -3077,8 +3091,9 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
                 {
                     "metric": metric,
                     "effect": arguments.effect,
-                    "required_games": required,
-                    "measured_games": spread.units,
+                    "required_realizing_games": required,
+                    "required_pool_games": pool,
+                    "measured_realizing_games": spread.units,
                     "measured_floor": floor,
                     "source": spread.source,
                 },
@@ -3089,9 +3104,13 @@ def _run_eval_noise_plan(arguments: argparse.Namespace) -> int:
         return 0
     print(
         f"{metric}: resolving an effect of {arguments.effect:.6g} needs about "
-        f"{required} game(s)."
+        f"{required} game(s) realizing it"
+        + ("." if pool is None else f", or about {pool} pool game(s).")
     )
-    print(f"Measured floor {floor:.6g} over {spread.units} game(s) ({spread.source}).")
+    print(
+        f"Measured floor {floor:.6g} over {spread.units} realizing game(s) "
+        f"({spread.source})."
+    )
     return 0
 
 

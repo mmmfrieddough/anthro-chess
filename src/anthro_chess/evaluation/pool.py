@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -43,6 +43,13 @@ from anthro_chess.evaluation.results.records import Sha256Hex
 BENCHMARK_VERSION = 1
 POOL_GAMES_FILE_NAME = "games.parquet"
 POOL_MANIFEST_FILE_NAME = "manifest.json"
+
+#: The seed the pool's own admission ranks under. Separate from any view seed so
+#: that what a view takes first is independent of what the pool admitted, and a
+#: constant rather than a configured field because a different seed redraws
+#: membership and would drop games an earlier generation contains.
+POOL_SAMPLE_SEED = "anthro-evaluation-pool-v1"
+
 logger = logging.getLogger(__name__)
 
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
@@ -97,6 +104,13 @@ class PoolConfig(ConfigModel):
     normalized: Path
     manifest: Path
     split: SplitName = "test"
+    #: How much of the split the pool admits, absent to admit all of it, which
+    #: every shipped selection still does. Raising it later is a generation cut
+    #: and lowering it drops games earlier generations hold, so it only ever
+    #: rises — a direction nothing here can enforce.
+    #: ``docs/decisions/0052-a-bounded-pool-is-a-fixed-admission-fraction.md``
+    #: owns why the bound is a fraction rather than a game count.
+    sample_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
     expected_game_ids_sha256: Sha256Hex | None = None
 
 
@@ -204,20 +218,35 @@ def _freeze_pool(
         config.split,
         len(source_paths),
     )
+    admits = _admission(config.sample_fraction)
     selected: list[dict[str, Any]] = []
+    split_games = 0
+    # Only an admitted game can reach the pool, so a train id that is not
+    # admitted cannot collide with one and holding it would grow this set with
+    # the corpus for nothing. The narrowing is the pool's to accept: what a
+    # freeze can still see is whether the games it wrote are held out.
     train_game_ids: set[int] = set()
     for path in source_paths:
         for row in read_normalized_rows(path):
             split = row[NormalizedColumn.SPLIT]
             if split == config.split:
-                selected.append(row)
+                split_games += 1
+                if admits(row_game_id(row)):
+                    selected.append(row)
             elif split == "train":
-                train_game_ids.add(row_game_id(row))
+                train_game_id = row_game_id(row)
+                if admits(train_game_id):
+                    train_game_ids.add(train_game_id)
 
     if not selected:
-        raise EvaluationPoolError(
-            f"no normalized games are assigned to the {config.split} split"
-        )
+        if split_games == 0:
+            message = f"no normalized games are assigned to the {config.split} split"
+        else:
+            message = (
+                f"a sample fraction of {config.sample_fraction} admitted none of "
+                f"the {split_games} game(s) in the {config.split} split"
+            )
+        raise EvaluationPoolError(message)
 
     selected.sort(key=lambda row: row_game_id(row))
     games = tuple(pool_game(row) for row in selected)
@@ -268,6 +297,12 @@ def _freeze_pool(
             "inputs": source_inputs,
             "split": source_manifest.get("split"),
             "selection": source_manifest.get("selection"),
+        },
+        "sampling": {
+            "algorithm": "sha256-prefix-fraction-v1",
+            "seed": POOL_SAMPLE_SEED,
+            "fraction": config.sample_fraction,
+            "split_games": split_games,
         },
         "output": {
             "format": "parquet",
@@ -400,6 +435,38 @@ def _load_pool(
             f"loaded {identity}"
         )
     return FrozenPool(games_path=games_path, manifest=manifest, games=games)
+
+
+def rank_key(seed: str, game_id: int) -> bytes:
+    """Rank uniformly by game id so a sample stays representative."""
+
+    return sha256(f"{seed}\0{game_id}".encode()).digest()
+
+
+def _admission(fraction: float | None) -> Callable[[int], bool]:
+    """Return the predicate a configured sample fraction admits games by.
+
+    A fraction and not a count, so that a game is decided on its id alone and
+    growth only ever adds.
+    ``docs/decisions/0052-a-bounded-pool-is-a-fixed-admission-fraction.md``
+    holds why a count cannot be made to work here.
+
+    Split assignment reaches for the same arithmetic and is deliberately not
+    shared with it: that one is versioned in every corpus manifest and may be
+    redrawn, and this one may not. What the two have in common is the property,
+    not the code, and each is a pure function of the game id.
+
+    Where that one divides every candidate into a ratio, this compares whole
+    integers, so the one float conversion happens per freeze rather than per
+    game.
+    """
+
+    if fraction is None:
+        return lambda game_id: True
+    threshold = int(fraction * 2**64)
+    return lambda game_id: (
+        int.from_bytes(rank_key(POOL_SAMPLE_SEED, game_id)[:8], "big") < threshold
+    )
 
 
 def pool_game(row: Mapping[str, Any]) -> PoolGame:

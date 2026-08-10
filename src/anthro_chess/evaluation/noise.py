@@ -47,6 +47,14 @@ from anthro_chess.evaluation.results.noise import (
 #: further resamples buy precision nothing downstream reads.
 DEFAULT_RESAMPLES = 1000
 
+#: How small a spread has to be, against the value it describes, to be the
+#: division's rounding rather than the draw. A resample of games that all agree
+#: recomputes one quotient from differently-rounded sums, so it lands within a
+#: few ulp of itself rather than on itself — measured at 5e-16 relative across
+#: agreeing draws, and a real spread is several percent. Anywhere between is
+#: unoccupied, so the threshold sits three orders above the noise it excludes.
+_RESAMPLE_ROUNDING = 1e-12
+
 
 class NoiseConfig(ConfigModel):
     """How an evaluation estimates its own data-sampling noise."""
@@ -105,11 +113,15 @@ def bootstrap_dispersions(
     frequently contain none of it, and a floor of zero there would license
     every delta as a finding.
 
-    A dispersion the resample measured as exactly zero is omitted on the same
-    ground. The draw observed that it could not move this metric, which is not
-    the same as observing that nothing could: a quantity identical in every game
-    scored reads this way at any sample size, and the wider sample that would
-    move it is the thing nobody has taken.
+    A metric the draw could not move is omitted on the same ground, and by a
+    spread negligible against its own value rather than by one of exactly zero.
+    The draw observed that it could not move this metric, which is not the same
+    as observing that nothing could: a quantity identical in every game scored
+    reads this way at any sample size, and the wider sample that would move it
+    is the thing nobody has taken.
+
+    So is a metric only one game realized: one replicate observes no spread for
+    a bound to rest on.
 
     The **games** are what the dispersion bound's degrees of freedom count, not
     the resamples. A bootstrap draws as many resamples as it is asked for, but
@@ -118,6 +130,14 @@ def bootstrap_dispersions(
     hand. Counting them as independent replicates would claim near-certainty
     about the dispersion from a number the caller chose for free, which is
     precisely the false precision the bound is here to remove.
+
+    Which games is decided per metric, from the ones that scored a position for
+    it. A sliced metric is realized in a fraction of the pass — a rule case, an
+    opening tier, a rating band — and the games that never met it are evidence
+    about nothing here. Counting the whole pass would size the bound for
+    replicates the metric never had and hand the same inflated count to
+    ``games_to_resolve``, both in the direction that overstates what a rare
+    slice resolved.
 
     ``workload`` is required by a benchmark whose metrics are execution-
     sensitive, because a dispersion has to carry the same fingerprint as the
@@ -149,22 +169,25 @@ def bootstrap_dispersions(
             counts[row, column] = contribution.positions
 
     replicates = _bootstrap_replicates(sums, counts, seed=seed, resamples=resamples)
-    freedom = len(totals) - 1
+    realized = np.count_nonzero(counts, axis=0)
     dispersions: dict[str, MetricDispersion] = {}
     for column, metric in enumerate(metrics):
+        games = int(realized[column])
+        if games < 2:
+            continue
         values = replicates[:, column]
         observed = values[np.isfinite(values)]
         if observed.size < 2:
             continue
         dispersion = float(np.std(observed, ddof=1))
-        if dispersion == 0.0:
+        if dispersion <= abs(float(np.mean(observed))) * _RESAMPLE_ROUNDING:
             continue
         dispersions[series_fingerprint(metric, component, workload)] = (
             measured_dispersion(
                 dispersion,
-                degrees_of_freedom=freedom,
+                degrees_of_freedom=games - 1,
                 confidence=confidence,
-                units=len(totals),
+                units=games,
                 source=source,
                 estimator=BOOTSTRAP_METHOD,
             )
