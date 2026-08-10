@@ -119,6 +119,19 @@ def test_rejects_counts_written_by_something_this_code_cannot_read(
         read_account_games(path)
 
 
+def test_rejects_counts_that_lost_rows_after_they_were_written(
+    tmp_path: Path,
+) -> None:
+    """A short counts file would read as an archive with fewer accounts in it."""
+
+    path = _counted(tmp_path, "counts", ARCHIVE_A, one=1, two=2, three=3).counts_path
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+    with pytest.raises(CensusError, match="but its header claims"):
+        read_account_games(path)
+
+
 def test_keeps_every_answer_and_drops_only_a_torn_one(tmp_path: Path) -> None:
     path = tmp_path / "answers.tsv"
 

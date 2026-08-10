@@ -1197,6 +1197,14 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
                 "none of this selection's archives have been counted, and none "
                 "are on disk to count; acquire one first"
             )
+        for archive in pinned:
+            if archive not in counted:
+                logger.warning(
+                    "Censusing without %s, which is neither counted nor on disk; "
+                    "its accounts are absent from the queue and from the coverage "
+                    "below until it is acquired",
+                    archive.path.name,
+                )
         answers_path = _census_answers_path(resolved)
         census = read_census(counted, answers_path)
         budget = arguments.accounts

@@ -191,6 +191,20 @@ def read_account_games(path: Path) -> ArchiveAccounts:
         if not separator or not games.isdecimal():
             raise CensusError(f"{path} holds a row that is not a count: {line!r}")
         games_by_account[name] = int(games)
+    # The header's totals are what makes a short file loud. Nothing else would
+    # notice one: rows that are gone are indistinguishable from accounts the
+    # archive never held, and the census would ask about fewer accounts while
+    # reporting full coverage of a smaller population.
+    if (len(games_by_account), sum(games_by_account.values())) != (
+        header.get("accounts"),
+        header.get("slots"),
+    ):
+        raise CensusError(
+            f"{path} holds {len(games_by_account)} account(s) over "
+            f"{sum(games_by_account.values())} player-slot(s) but its header "
+            f"claims {header.get('accounts')} over {header.get('slots')}; "
+            "delete it to count that archive again"
+        )
     return ArchiveAccounts(
         archive_sha256=str(header["archive_sha256"]),
         games_by_account=games_by_account,
