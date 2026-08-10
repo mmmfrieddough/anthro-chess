@@ -724,7 +724,6 @@ def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
     # Nothing was silently dropped, and the floors say what they claim.
     assert resolution.fitted_resamples == resolution.resamples
     settings = LadderBenchmarkConfig().noise
-    assert resolution.coverage == settings.coverage
     assert resolution.confidence == settings.confidence
     reading = result.reading(1.0)
     for definition in (
@@ -732,16 +731,19 @@ def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
         LADDER_FITTED_RATING_SLOPE,
         LADDER_FITTED_RATING_SPAN,
     ):
-        floor = resolution.floor(reading.label, definition.identifier)
-        assert floor is not None, definition.identifier
-        assert floor.kind == "evaluation"
+        spread = resolution.dispersion(reading.label, definition.identifier)
+        assert spread is not None, definition.identifier
+        assert spread.kind == "evaluation"
     for seat in result.seats:
-        assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
+        assert (
+            resolution.dispersion(seat.label, LADDER_FITTED_RATING.identifier)
+            is not None
+        )
     for definition in (
         LADDER_TEMPERATURE_RESPONSE,
         LADDER_ABLATED_TEMPERATURE_RESPONSE,
     ):
-        assert resolution.floor(RESPONSE_SCOPE, definition.identifier) is not None
+        assert resolution.dispersion(RESPONSE_SCOPE, definition.identifier) is not None
     # An ordering over two configured ratings is one binary comparison, and a
     # fixture that finishes every game has a scored share the redraw cannot
     # move. Either answer is allowed for those; a bare number is not.
@@ -751,14 +753,14 @@ def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
         *((seat.label, LADDER_SCORED_GAME_RATE.identifier) for seat in result.seats),
     ]
     for key in named:
-        assert (key in resolution.floors) != (key in resolution.unqualifiable), key
+        assert (key in resolution.dispersions) != (key in resolution.unqualifiable), key
 
 
-def test_a_recorded_ladder_measurement_carries_its_own_floor(tmp_path: Path) -> None:
-    """The floor travels on the measurement, not on the series.
+def test_a_recorded_ladder_measurement_carries_its_own_spread(tmp_path: Path) -> None:
+    """The spread travels on the measurement, not on the series.
 
     Seeds and games per pairing are deliberately outside a ladder's identity,
-    so a floor filed against the series would later be applied to a reading
+    so a spread filed against the series would later be applied to a reading
     taken at a different sample size.
     """
 
@@ -772,7 +774,7 @@ def test_a_recorded_ladder_measurement_carries_its_own_floor(tmp_path: Path) -> 
         measurement.metric
         for envelope in _readings(result)
         for measurement in envelope.measurements
-        if measurement.noise_floor is not None
+        if measurement.dispersion is not None
     }
 
     assert LADDER_FITTED_RATING.identifier in qualified
@@ -809,8 +811,8 @@ def test_a_ladder_nothing_would_redraw_states_a_floor_of_zero() -> None:
     assert resolution.resamples == 0
     assert resolution.redrawn_games == 0
     assert resolution.replayed_pairings == len(result.pairings)
-    assert resolution.floors
-    assert all(floor.value == 0.0 for floor in resolution.floors.values())
+    assert resolution.dispersions
+    assert all(spread.value == 0.0 for spread in resolution.dispersions.values())
     # A seat that swept is pinned at the declared spread, and a replay pins it
     # there identically both times. Withholding its floor would state that a
     # reading which cannot move might have.
@@ -818,7 +820,10 @@ def test_a_ladder_nothing_would_redraw_states_a_floor_of_zero() -> None:
     swept = _swept(result)
     assert swept
     for seat in swept:
-        assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
+        assert (
+            resolution.dispersion(seat.label, LADDER_FITTED_RATING.identifier)
+            is not None
+        )
 
 
 def test_a_pairing_that_replays_is_held_fixed_while_the_rest_redraw() -> None:
@@ -867,7 +872,7 @@ def test_a_thicker_sample_resolves_a_ladder_more_finely() -> None:
     thick_floor = thick.resolution.floor(seat.label, LADDER_FITTED_RATING.identifier)
     assert thin_floor is not None
     assert thick_floor is not None
-    assert thick_floor.value < thin_floor.value
+    assert thick_floor < thin_floor
 
 
 def test_a_seat_with_no_finite_rating_is_named_rather_than_given_a_zero() -> None:
@@ -885,7 +890,7 @@ def test_a_seat_with_no_finite_rating_is_named_rather_than_given_a_zero() -> Non
     assert swept
     for seat in swept:
         key = (seat.label, LADDER_FITTED_RATING.identifier)
-        assert key not in resolution.floors
+        assert key not in resolution.dispersions
         assert "no finite maximum-likelihood rating" in resolution.unqualifiable[key]
 
 
@@ -906,7 +911,10 @@ def test_a_spread_that_merely_binds_still_qualifies_its_seat() -> None:
     for seat in result.fit.clamped:
         if seat in unbounded:
             continue
-        assert resolution.floor(seat.label, LADDER_FITTED_RATING.identifier) is not None
+        assert (
+            resolution.dispersion(seat.label, LADDER_FITTED_RATING.identifier)
+            is not None
+        )
 
 
 def test_a_quantity_the_redraw_could_not_move_is_named_rather_than_zeroed() -> None:
@@ -922,10 +930,10 @@ def test_a_quantity_the_redraw_could_not_move_is_named_rather_than_zeroed() -> N
 
     assert resolution is not None
     assert resolution.method == LADDER_BOOTSTRAP_METHOD
-    assert all(floor.value > 0.0 for floor in resolution.floors.values())
+    assert all(spread.value > 0.0 for spread in resolution.dispersions.values())
     reading = result.reading(1.0)
     key = (reading.label, LADDER_RATING_ORDER_ACCURACY.identifier)
-    assert key not in resolution.floors
+    assert key not in resolution.dispersions
     assert "every resample returned the same value" in resolution.unqualifiable[key]
 
 
@@ -950,7 +958,7 @@ def test_a_single_redrawn_game_reports_no_floor_rather_than_failing() -> None:
     assert resolution is not None
     assert resolution.method == LADDER_UNRESOLVED_METHOD
     assert resolution.redrawn_games == 1
-    assert not resolution.floors
+    assert not resolution.dispersions
     assert (
         "no spread to bound"
         in resolution.unqualifiable[

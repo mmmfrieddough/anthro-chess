@@ -451,12 +451,15 @@ committed summary tier.
 
 ## Noise Characterization
 
-> **Superseded in design, not yet in code.**
+> **Superseded in design, partly in code.**
 > `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
 > replaces the four kinds, the scope rules and the stored characterizations
 > described below with one dispersion per reading, combined at comparison time.
-> This section still describes what the code does today. It is rewritten as that
-> migration lands, and the tracker issue holds the order.
+> The combining has landed: a reading carries its own dispersion and a delta is
+> floored by the two in front of it. The kinds, the scope rules and the
+> characterization store are still here for the sources a reading cannot
+> measure, and this section still describes those. It is rewritten as the rest
+> of that migration lands, and the tracker issue holds the order.
 
 A delta is not a finding until it is larger than the noise in the measurement.
 Reports should annotate every change with the noise floor it did or did not
@@ -524,13 +527,22 @@ question, rather than because it is always large.
 All four reduce to one reportable quantity: the spread of the metric across
 replicates of that noise source. A **floor** is that spread expressed as a
 delta, because a delta is what a report shows and a standard deviation is not
-directly comparable to one. When two measurements use independent inputs, the
-floor covers the difference between two independent replicates at a declared
-confidence. When comparable checkpoints score the same frozen units, the
-data-sampling floor instead comes from resampling their paired per-unit
-differences. One coverage factor is declared per characterization, and
-`anthro_chess.evaluation.results` owns the arithmetic, stored inputs, and
-lookup.
+directly comparable to one.
+
+A reading stores the spread and never a floor built from it. The variance of a
+difference is the sum of the two variances, so the floor of a delta is combined
+from the dispersion each of the two readings carries, each bounded first. That
+matters because the two readings of one metric do not share a spread: the two
+committed to this repository differ by up to two orders of magnitude on the same
+metric, and a floor computed inside either one assumes the other matched it.
+Where the two do agree the arithmetic reduces to the familiar `sqrt(2)`. A
+characterization is the case where they agree by construction, since its
+replicates are draws of one quantity, so a stored floor keeps that factor. When
+comparable checkpoints score the same frozen units, the data-sampling floor
+instead comes from resampling their paired per-unit differences. Coverage is
+applied at comparison time rather than stored on a reading, because a floor is a
+claim the comparison makes; `anthro_chess.evaluation.results` owns the
+arithmetic, stored inputs, and lookup.
 
 ### The Spread A Floor Is Built From
 
@@ -667,16 +679,15 @@ was characterized. `anthro eval noise sample` takes one process's readings and
 and records the resulting floor;
 `anthro_chess.evaluation.execution_noise` owns the procedure.
 
-Because a data-sampling floor costs only a resampling of numbers a run already
-computed, the checkpoint evaluation runner produces its own and records it
-alongside the reading where its inputs are independent. A deterministic
-fixed-input benchmark retains aligned per-unit contributions in the detail tier
-instead; reporting joins those contributions and bootstraps the checkpoint
-delta. Such a floor belongs to the comparison and cannot correctly be attached
-to either checkpoint alone. A benchmark whose floor is a function of its own
-configuration rather than of a series — a distributional distance, whose floor
-grows with the category count and shrinks with the sample — attaches the floor
-to its measurement instead, because that is the only place it can be correct.
+Because a data-sampling spread costs only a resampling of numbers a run already
+computed, the checkpoint evaluation runner produces its own and attaches it to
+each measurement it records. Attaching it is what lets two readings of one
+series each carry their own: a spread filed against the series would be one
+number where the comparison needs two. A deterministic fixed-input benchmark
+retains aligned per-unit contributions in the detail tier instead; reporting
+joins those contributions and bootstraps the checkpoint delta. Such a floor
+belongs to the comparison and cannot correctly be attached to either checkpoint
+alone.
 
 **A pair that could not pair says so.** The contributions are machine-local
 while the summary record is committed, so a reading taken elsewhere routinely
@@ -752,7 +763,10 @@ conservative independent-input estimate is suitable before representative
 checkpoint pairs exist. Once they do, paired pilot deltas give the more relevant
 power calculation for a frozen benchmark. Either floor shrinks with the square
 root of the units behind it, so how many games an axis needs in order to resolve
-an effect of a given size is computable rather than guessed.
+an effect of a given size is computable rather than guessed, and `anthro eval
+noise plan` computes it from the newest reading that measured its own spread
+over a counted sample. No benchmark-level resolution constant is declared or
+kept current for it.
 
 ## Benchmark Data Layers
 
@@ -2819,17 +2833,18 @@ arm nobody adopted would otherwise become some later report's baseline.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
 because of which floors exist. Almost every floor that qualifies a checkpoint
-delta today is a data-sampling floor, whether the reading bootstrapped it or a
-report paired it, and such a floor says the delta survives a different draw of
-evaluation games rather than that the change produced it. The exception claims
-less rather than more: a replayed reading states a floor of zero, which says its
-games cannot be redrawn at all and therefore says nothing about a draw that
-could be. Two arms differ by their initialization seeds as well as by the
-change, so clearing either kind establishes that two models differ, not that the
-change is why. That is
-not a theoretical gap. Measured at proof scale, two arms differing only by their
-initialization seed cleared 14 of 54 floored metrics and read better on every
-held-out and legality metric; decision 0029 holds the reading.
+delta today is combined from what the two readings' own games could have moved,
+and such a floor says the delta survives a different draw of evaluation games
+rather than that the change produced it. The report says so beside the verdict:
+`cleared` means larger than benchmark noise, and never that the change caused
+it. The exception claims less rather than more: a replayed reading states a
+floor of zero, which says its games cannot be redrawn at all and therefore says
+nothing about a draw that could be. Two arms differ by their initialization
+seeds as well as by the change, so clearing either kind establishes that two
+models differ, not that the change is why. That is not a theoretical gap.
+Measured at proof scale, two arms differing only by their initialization seed
+cleared 14 of 54 floored metrics and read better on every held-out and legality
+metric; decision 0029 holds the reading.
 
 A claim therefore rests on one of two things: a delta far enough outside seed
 variance that nothing else explains it, or a training floor characterized from

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,8 @@ import pytest
 
 from anthro_chess.evaluation.results import (
     BOOTSTRAP_METHOD,
+    COMBINED_DISPERSION_METHOD,
+    DEFAULT_COVERAGE,
     PAIRED_BOOTSTRAP_METHOD,
     PAIRED_CONTRIBUTIONS_KEY,
     BenchmarkReference,
@@ -25,9 +28,9 @@ from anthro_chess.evaluation.results import (
     FloorEntry,
     MetricDelta,
     MetricDirection,
+    MetricDispersion,
     MetricFamily,
     Movement,
-    NoiseFloor,
     NoiseFloorIndex,
     NoiseVerdict,
     PairedContributions,
@@ -67,6 +70,23 @@ BASELINE_AT = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 CURRENT_AT = datetime(2026, 7, 8, 12, 0, tzinfo=UTC)
 
 GENERATED_PLIES = "generated_play.mean_game_plies"
+
+
+def _dispersion(
+    floor: float,
+    *,
+    kind: Any = "data-sampling",
+    source: str | None = None,
+) -> MetricDispersion:
+    """Return the spread a reading stores, chosen to combine to ``floor``.
+
+    Written from the floor back rather than forward from a measured spread,
+    because these tests are about which floor binds and what the row then says.
+    ``test_results_noise`` owns the arithmetic that turns two spreads into one.
+    """
+
+    bound = floor / (DEFAULT_COVERAGE * math.sqrt(2.0))
+    return MetricDispersion(value=bound, bound=bound, kind=kind, source=source)
 
 
 def _row(report: DeltaReport, metric: str) -> MetricDelta:
@@ -323,25 +343,25 @@ def test_a_delta_is_annotated_against_its_noise_floor(
     move_prediction_component: Digest,
 ) -> None:
     component = move_prediction_component()
-    floor = NoiseFloor(value=0.1, kind="training", source="five seeds")
+    floor = _dispersion(0.1, kind="training", source="five seeds")
     baseline = recorded_result(
         label="checkpoint-a",
         measurements=[
-            measurement("held_out.move_loss", 3.5, data=component, noise_floor=floor)
+            measurement("held_out.move_loss", 3.5, data=component, dispersion=floor)
         ],
         recorded_at=BASELINE_AT,
     )
     quiet = recorded_result(
         label="checkpoint-b",
         measurements=[
-            measurement("held_out.move_loss", 3.45, data=component, noise_floor=floor)
+            measurement("held_out.move_loss", 3.45, data=component, dispersion=floor)
         ],
         recorded_at=CURRENT_AT,
     )
     loud = recorded_result(
         label="checkpoint-c",
         measurements=[
-            measurement("held_out.move_loss", 3.0, data=component, noise_floor=floor)
+            measurement("held_out.move_loss", 3.0, data=component, dispersion=floor)
         ],
         recorded_at=datetime(2026, 7, 9, tzinfo=UTC),
     )
@@ -355,6 +375,146 @@ def test_a_delta_is_annotated_against_its_noise_floor(
 
     assert _row(within, "held_out.move_loss").noise is NoiseVerdict.WITHIN
     assert _row(cleared, "held_out.move_loss").noise is NoiseVerdict.CLEARED
+
+
+def test_a_delta_floor_is_combined_from_both_readings_rather_than_one(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Two readings of one metric do not share a spread, so neither one floors.
+
+    The two readings committed to this repository differ by up to two orders of
+    magnitude on the same metric. Reading a delta against either alone assumes
+    the other matched it; combining them is that arithmetic with the assumption
+    taken out.
+    """
+
+    component = move_prediction_component()
+    baseline = recorded_result(
+        label="checkpoint-a",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.5,
+                data=component,
+                dispersion=_dispersion(0.1, source="a thousand games"),
+            )
+        ],
+        recorded_at=BASELINE_AT,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        measurements=[
+            measurement(
+                "held_out.move_loss",
+                3.1,
+                data=component,
+                dispersion=_dispersion(0.5, source="forty games"),
+            )
+        ],
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex())
+    row = _row(report, "held_out.move_loss")
+
+    # Each reading on its own would floor the delta at its own number, and the
+    # combination lands strictly between the two.
+    assert row.noise_floor is not None
+    assert row.noise_floor == pytest.approx(math.sqrt((0.1**2 + 0.5**2) / 2))
+    assert 0.1 < row.noise_floor < 0.5
+    # The wider of the two alone would have called this delta of -0.4 noise.
+    assert row.noise is NoiseVerdict.CLEARED
+    # Which side contributed the width is the first thing a wide floor raises.
+    assert row.noise_floors[0].source == "a thousand games + forty games"
+    assert row.noise_floors[0].estimator == COMBINED_DISPERSION_METHOD
+
+
+def test_a_cleared_delta_is_not_reported_as_a_caused_one(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A floor read off a reading's own units cannot see training-seed noise.
+
+    Decision 0029 measured what that costs: two arms differing only by their
+    initialization seed cleared 14 of 54 floored metrics. ``cleared`` alone does
+    not carry that, so the report says it.
+    """
+
+    component = move_prediction_component()
+    spread = _dispersion(0.1)
+    report = build_delta_report(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                measurements=[
+                    measurement(
+                        "held_out.move_loss", 3.5, data=component, dispersion=spread
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            ),
+            recorded_result(
+                label="checkpoint-b",
+                measurements=[
+                    measurement(
+                        "held_out.move_loss", 3.0, data=component, dispersion=spread
+                    )
+                ],
+                recorded_at=CURRENT_AT,
+            ),
+        ],
+        BridgeIndex(),
+    )
+
+    assert _row(report, "held_out.move_loss").noise is NoiseVerdict.CLEARED
+    # The legend wraps to the terminal width, so it is read unwrapped here.
+    legend = " ".join(render_report(report).split())
+    assert "not that the change caused it" in legend
+    assert "initialization seeds" in legend
+
+
+def test_no_row_reads_as_an_improvement_it_cannot_separate_from_noise(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """``better`` and ``within`` on one row is a contradiction a reader acts on.
+
+    The committed store held such a row, so this is an observed failure rather
+    than a hypothetical one. The floor is what decides whether anything moved.
+    """
+
+    component = move_prediction_component()
+    spread = _dispersion(1.0)
+    report = build_delta_report(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                measurements=[
+                    measurement(
+                        "held_out.move_loss", 3.5, data=component, dispersion=spread
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            ),
+            recorded_result(
+                label="checkpoint-b",
+                measurements=[
+                    measurement(
+                        "held_out.move_loss", 3.2, data=component, dispersion=spread
+                    )
+                ],
+                recorded_at=CURRENT_AT,
+            ),
+        ],
+        BridgeIndex(),
+    )
+    row = _row(report, "held_out.move_loss")
+
+    assert row.noise is NoiseVerdict.WITHIN
+    assert row.movement is Movement.UNCHANGED
+    # The delta itself survives, so a consistent small regression stays visible.
+    assert row.delta == pytest.approx(-0.3)
 
 
 def test_a_floor_only_one_side_offers_does_not_qualify_the_delta(
@@ -384,8 +544,8 @@ def test_a_floor_only_one_side_offers_does_not_qualify_the_delta(
                 "held_out.move_loss",
                 3.0,
                 data=component,
-                noise_floor=NoiseFloor(
-                    value=0.1,
+                dispersion=_dispersion(
+                    0.1,
                     kind="evaluation",
                     source="eight re-measurements of one checkpoint",
                 ),
@@ -458,8 +618,8 @@ def test_a_withheld_floor_stops_the_surviving_kinds_licensing_a_finding(
                 "held_out.move_loss",
                 3.3,
                 data=component,
-                noise_floor=NoiseFloor(
-                    value=0.5,
+                dispersion=_dispersion(
+                    0.5,
                     kind="evaluation",
                     source="eight re-measurements of one checkpoint",
                 ),
@@ -481,7 +641,74 @@ def test_a_withheld_floor_stops_the_surviving_kinds_licensing_a_finding(
     rendered = render_report(report)
     assert "unknown (training)" not in rendered
     # The legend wraps to the terminal width, so it is read unwrapped here.
-    assert "a floor exists but describes one operand" in " ".join(rendered.split())
+    assert "a dispersion exists but describes one operand" in " ".join(rendered.split())
+
+
+def test_a_lone_dispersion_does_not_widen_a_floor_that_spans_both_sides(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """A spread one reading measured is not a wider reading of the delta.
+
+    A characterization describes both operands, so it decides the verdict on its
+    own even where the dispersion the other reading happens to carry is wider.
+    That is the decision's central claim rather than an oversight: what one
+    reading's units moved by says nothing about the difference, so it cannot be
+    the conservative choice for it.
+    """
+
+    component = move_prediction_component()
+    floors = NoiseFloorIndex(
+        [
+            build_characterization(
+                kind="evaluation",
+                method="repeat-measurement",
+                replicates=8,
+                source="eight re-measurements of one checkpoint",
+                floors=[
+                    FloorEntry(
+                        metric="held_out.move_loss",
+                        fingerprint=series_fingerprint("held_out.move_loss", component),
+                        floor=0.1,
+                        dispersion=0.03,
+                        dispersion_bound=0.03,
+                        degrees_of_freedom=7,
+                    )
+                ],
+                recorded_at=BASELINE_AT,
+            )
+        ]
+    )
+    report = build_delta_report(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                measurements=[measurement("held_out.move_loss", 3.5, data=component)],
+                recorded_at=BASELINE_AT,
+            ),
+            recorded_result(
+                label="checkpoint-b",
+                measurements=[
+                    measurement(
+                        "held_out.move_loss",
+                        3.0,
+                        data=component,
+                        dispersion=_dispersion(0.75, kind="evaluation"),
+                    )
+                ],
+                recorded_at=CURRENT_AT,
+            ),
+        ],
+        BridgeIndex(),
+        floors=floors,
+    )
+    row = _row(report, "held_out.move_loss")
+
+    assert row.noise_floor == pytest.approx(0.1)
+    assert row.noise is NoiseVerdict.CLEARED
+    # Nothing is withheld: the characterization covers this kind for both
+    # operands, so there is no qualification the report declined to borrow.
+    assert row.one_sided_floors == ()
 
 
 def test_a_withheld_floor_outranks_the_impossible_sampling_floor_verdict(
@@ -510,8 +737,8 @@ def test_a_withheld_floor_outranks_the_impossible_sampling_floor_verdict(
                 metric,
                 0.75,
                 data=component,
-                noise_floor=NoiseFloor(
-                    value=0.1,
+                dispersion=_dispersion(
+                    0.1,
                     kind="evaluation",
                     source="eight re-measurements of one checkpoint",
                 ),
@@ -558,7 +785,6 @@ def test_a_characterized_floor_covers_a_side_that_attached_none(
                         dispersion=0.2,
                         dispersion_bound=0.2,
                         degrees_of_freedom=7,
-                        sampling_units=8,
                     )
                 ],
                 recorded_at=BASELINE_AT,
@@ -577,8 +803,8 @@ def test_a_characterized_floor_covers_a_side_that_attached_none(
                 "held_out.move_loss",
                 3.0,
                 data=component,
-                noise_floor=NoiseFloor(
-                    value=0.1,
+                dispersion=_dispersion(
+                    0.1,
                     kind="evaluation",
                     source="this reading's own resample",
                 ),
@@ -602,8 +828,8 @@ def test_a_paired_floor_replaces_independent_sampling_floors(
     move_prediction_component: Digest,
 ) -> None:
     component = move_prediction_component()
-    independent = NoiseFloor(
-        value=1.0,
+    independent = _dispersion(
+        1.0,
         kind="data-sampling",
         source="independent benchmark draws",
     )
@@ -614,7 +840,7 @@ def test_a_paired_floor_replaces_independent_sampling_floors(
                 "held_out.move_loss",
                 3.5,
                 data=component,
-                noise_floor=independent,
+                dispersion=independent,
             )
         ],
         recorded_at=BASELINE_AT,
@@ -626,7 +852,7 @@ def test_a_paired_floor_replaces_independent_sampling_floors(
                 "held_out.move_loss",
                 3.3,
                 data=component,
-                noise_floor=independent,
+                dispersion=independent,
             )
         ],
         recorded_at=CURRENT_AT,
@@ -949,7 +1175,6 @@ def test_an_unpaired_floor_standing_in_for_a_paired_one_is_reported_as_one(
                         dispersion=0.3,
                         dispersion_bound=0.36,
                         degrees_of_freedom=39,
-                        sampling_units=40,
                     )
                 ],
                 recorded_at=BASELINE_AT,
@@ -1231,7 +1456,6 @@ def test_a_declared_metric_still_takes_a_floor_the_declaration_does_not_cover(
                         dispersion=0.2,
                         dispersion_bound=0.2,
                         degrees_of_freedom=7,
-                        sampling_units=8,
                     )
                 ],
                 recorded_at=BASELINE_AT,
@@ -1351,7 +1575,6 @@ def test_a_characterized_floor_applies_without_being_attached_to_the_result(
                         dispersion=0.18,
                         dispersion_bound=0.18,
                         degrees_of_freedom=199,
-                        sampling_units=200,
                     )
                 ],
                 recorded_at=BASELINE_AT,
@@ -1392,7 +1615,6 @@ def test_a_delta_is_judged_against_the_widest_floor_that_applies(
                         dispersion=0.02,
                         dispersion_bound=0.02,
                         degrees_of_freedom=199,
-                        sampling_units=200,
                     )
                 ],
                 recorded_at=BASELINE_AT,
@@ -1448,7 +1670,9 @@ def test_a_delta_inside_its_floor_is_shown_rather_than_hidden(
     training_scope: str,
 ) -> None:
     # A consistent small regression only stays visible if a within-floor delta
-    # is still reported with its value.
+    # is still reported with its value. The change column reads ``unchanged``
+    # because the floor is what decides whether anything moved, and the reader
+    # holding both operands can still see which way the number went.
     component = move_prediction_component()
     floors = NoiseFloorIndex(
         [
@@ -1491,7 +1715,7 @@ def test_a_delta_inside_its_floor_is_shown_rather_than_hidden(
 
     assert row.noise is NoiseVerdict.WITHIN
     assert row.delta == pytest.approx(-0.3)
-    assert row.movement is Movement.BETTER
+    assert row.movement is Movement.UNCHANGED
     assert "-0.3" in render_report(report)
 
 
@@ -1594,22 +1818,22 @@ def test_a_training_floor_binds_a_control_arm_against_its_treatment(
             )
         ]
     )
-    sampling = NoiseFloor(
-        value=0.08,
+    sampling = _dispersion(
+        0.08,
         kind="data-sampling",
         source="bootstrap over this reading's games",
     )
     control = recorded_result(
         label="control-arm",
         measurements=[
-            measurement("held_out.move_loss", 3.5, data=component, noise_floor=sampling)
+            measurement("held_out.move_loss", 3.5, data=component, dispersion=sampling)
         ],
         recorded_at=BASELINE_AT,
     )
     treatment = recorded_result(
         label="treatment-arm",
         measurements=[
-            measurement("held_out.move_loss", 3.4, data=component, noise_floor=sampling)
+            measurement("held_out.move_loss", 3.4, data=component, dispersion=sampling)
         ],
         recorded_at=CURRENT_AT,
         training_sha256="9f" * 32,
@@ -1996,7 +2220,7 @@ def test_the_default_text_view_stays_readable(
     # efficiency, which have metrics but no result in this fixture; a family
     # gets its own actionable absence section as soon as it has a metric to be
     # absent.
-    assert len(rendered.splitlines()) <= 34
+    assert len(rendered.splitlines()) <= 35
 
 
 def _width_report(*identifiers: str) -> DeltaReport:

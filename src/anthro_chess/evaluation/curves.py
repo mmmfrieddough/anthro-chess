@@ -65,28 +65,29 @@ from anthro_chess.evaluation.results import (
     BridgeIndex,
     DataComponent,
     Measurement,
-    NoiseFloor,
+    MetricDispersion,
     WorkloadComponent,
     measurement,
 )
 from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
-    floor_from_dispersion,
+    measured_dispersion,
+    self_combined_floor,
 )
 from anthro_chess.evaluation.results.records import NoiseFloorKind
 
-CURVE_COMPARISON_VERSION = 1
+CURVE_COMPARISON_VERSION = 2
 
-#: How a curve comparison estimates its own floor. A distributional distance
-#: has a floor that is a function of its own configuration rather than of a
-#: series, so it is estimated here and carried with the measurement instead of
+#: How a curve comparison estimates its own spread. A distributional distance
+#: moves by an amount that is a function of its own configuration rather than of
+#: a series, so it is estimated here and carried with the measurement instead of
 #: being characterized separately and looked up.
 CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-games"
 
-#: How a curve comparison states the floor of a model side that cannot vary.
+#: How a curve comparison states the spread of a model side that cannot vary.
 #: Re-measuring such a side replays the same games, so its evaluation noise is
-#: exactly zero rather than estimated, and the floor says so instead of
+#: exactly zero rather than estimated, and the record says so instead of
 #: bootstrapping games another seed was never going to change.
 CURVE_DETERMINISTIC_METHOD = "deterministic-model-side"
 
@@ -418,40 +419,50 @@ class CurveOverlay:
 
 
 @dataclass(frozen=True)
-class CurveFloors:
-    """A comparison's own floors, estimated as the comparison was computed.
+class CurveDispersions:
+    """A comparison's own spreads, estimated as the comparison was computed.
 
-    These qualify a **delta between two measurements** — normally two
-    checkpoints read against the same human reference. Only the model side is
-    resampled, because both checkpoints face the identical reference and its
-    sampling error cancels in their difference; including it would inflate every
-    floor and hide real movement.
+    These are what a **delta between two measurements** is floored by —
+    normally two checkpoints read against the same human reference. Only the
+    model side is resampled, because both checkpoints face the identical
+    reference and its sampling error cancels in their difference; including it
+    would inflate every floor and hide real movement.
 
-    A distributional distance has no series-wide floor to look up, because its
-    floor depends on how many games this particular reading generated. So it is
+    A distributional distance has no series-wide spread to look up, because it
+    depends on how many games this particular reading generated. So it is
     estimated here and carried on the measurement rather than characterized
     once and stored separately.
 
-    ``method`` says how these floors were arrived at, because not every model
-    side is resampled to reach one. A side that cannot vary is stated at zero
-    and carries no resamples, and the two cases are not distinguishable from
-    the values alone: a bootstrap over plentiful games also lands near zero.
+    ``method`` says how these were arrived at, because not every model side is
+    resampled to reach one. A side that cannot vary is stated at zero and
+    carries no resamples, and the two cases are not distinguishable from the
+    values alone: a bootstrap over plentiful games also lands near zero.
     """
 
-    conditional: NoiseFloor
-    pooled: NoiseFloor
-    model_variation: NoiseFloor
+    conditional: MetricDispersion
+    pooled: MetricDispersion
+    model_variation: MetricDispersion
     resamples: int
-    coverage: float
     method: str
 
+    @property
+    def conditional_floor(self) -> float:
+        """Return what a delta against a reading like this one would clear."""
+
+        return self_combined_floor(self.conditional)
+
+    @property
+    def pooled_floor(self) -> float:
+        """Return the same for the pooled arm's distance."""
+
+        return self_combined_floor(self.pooled)
+
     def as_record(self) -> dict[str, Any]:
-        """Return the stored form of one comparison's floors."""
+        """Return the stored form of one comparison's spreads."""
 
         return {
             "method": self.method,
             "resamples": self.resamples,
-            "coverage": self.coverage,
             "conditional": self.conditional.model_dump(mode="json"),
             "pooled": self.pooled.model_dump(mode="json"),
             "model_variation": self.model_variation.model_dump(mode="json"),
@@ -577,8 +588,8 @@ class CurveComparison:
     model_variation: float
     human_games: int
     model_games: int
-    #: Delta floors, for reading one checkpoint's distance against another's.
-    floors: CurveFloors | None
+    #: The spreads a delta against another checkpoint's distance is floored by.
+    dispersions: CurveDispersions | None
     #: Null levels, for reading one distance on its own.
     references: CurveReferences | None
 
@@ -674,9 +685,9 @@ class CurveComparison:
     ) -> tuple[Measurement, ...]:
         """Return the scalar measurements the committed summary tier records.
 
-        Each distance carries the floor estimated for it, so a report reads the
-        floor from the measurement rather than looking one up for a series that
-        cannot have a series-wide floor in the first place.
+        Each distance carries the spread estimated for it, so a report combines
+        it with the other reading's rather than looking a floor up for a series
+        that cannot have a series-wide one in the first place.
 
         A comparison whose model side was generated rather than scored passes a
         workload instead of a data component: what identifies that series is the
@@ -685,16 +696,16 @@ class CurveComparison:
         """
 
         games = self.human_games + self.model_games
-        reported: list[tuple[str, float, NoiseFloor | None]] = [
+        reported: list[tuple[str, float, MetricDispersion | None]] = [
             (
                 metrics.conditional,
                 self.conditional_distance,
-                None if self.floors is None else self.floors.conditional,
+                None if self.dispersions is None else self.dispersions.conditional,
             ),
             (
                 metrics.pooled,
                 self.pooled_distance,
-                None if self.floors is None else self.floors.pooled,
+                None if self.dispersions is None else self.dispersions.pooled,
             ),
         ]
         if metrics.model_variation is not None:
@@ -702,7 +713,11 @@ class CurveComparison:
                 (
                     metrics.model_variation,
                     self.model_variation,
-                    None if self.floors is None else self.floors.model_variation,
+                    (
+                        None
+                        if self.dispersions is None
+                        else self.dispersions.model_variation
+                    ),
                 )
             )
         return tuple(
@@ -712,9 +727,9 @@ class CurveComparison:
                 data=data,
                 workload=workload,
                 sample_size=games,
-                noise_floor=floor,
+                dispersion=dispersion,
             )
-            for metric, value, floor in reported
+            for metric, value, dispersion in reported
         )
 
     def as_detail_record(self) -> dict[str, Any]:
@@ -736,7 +751,9 @@ class CurveComparison:
             "model_variation": self.model_variation,
             "unsupported_points": self.unsupported_points,
             "response": self.response.value,
-            "floors": None if self.floors is None else self.floors.as_record(),
+            "dispersions": (
+                None if self.dispersions is None else self.dispersions.as_record()
+            ),
             "references": (
                 None if self.references is None else self.references.as_record()
             ),
@@ -799,12 +816,12 @@ def compare_curves(
     ``model_varies`` says whether re-measuring the model side draws different
     games at all. A caller whose model side is deterministic — greedy seats at
     temperature zero, or a fixed pass over fixed inputs — passes ``False``, and
-    the floor is then stated at zero rather than bootstrapped: another
+    the spread is then stated at zero rather than bootstrapped: another
     measurement replays these games, so there is no evaluation noise to bound
     and resampling them would report the spread of a draw that is not going to
     be redrawn.
 
-    ``references`` may be turned off by a caller that needs only the floor.
+    ``references`` may be turned off by a caller that needs only the spread.
     The null levels cost a permutation pass per replicate on top of the
     resampling, which a sweep recomputing this comparison at every book ply
     pays once per ply for a reading it does not use.
@@ -830,7 +847,7 @@ def compare_curves(
     )
     reading = _read(spec, human_side, model_side, *weights)
     generator = np.random.default_rng(seed)
-    floors, reference_levels = _resample(
+    dispersions, reference_levels = _resample(
         spec,
         human_side,
         model_side,
@@ -873,7 +890,7 @@ def compare_curves(
         model_variation=float(reading.model_variation[0]),
         human_games=len(human),
         model_games=len(model),
-        floors=floors,
+        dispersions=dispersions,
         references=reference_levels,
     )
 
@@ -1354,19 +1371,20 @@ def _resample(
     floor_kind: NoiseFloorKind,
     model_varies: bool,
     references: bool = True,
-) -> tuple[CurveFloors | None, CurveReferences | None]:
-    """Estimate this comparison's own floors and null levels in one pass.
+) -> tuple[CurveDispersions | None, CurveReferences | None]:
+    """Estimate this comparison's own spreads and null levels in one pass.
 
     The two are estimated differently on purpose, because they answer different
     questions.
 
-    A **floor** qualifies a delta between two measurements — in practice, two
-    checkpoints. Both are compared against the *same fixed* human reference, so
-    human sampling error is common-mode and cancels in their difference:
-    including it would inflate every floor and hide real movement. Only the
-    model side is resampled, which is why the floor is evaluation noise rather
-    than data-sampling noise. For a model side that varies the two coincide
-    anyway, since a fresh draw of games is exactly what another seed produces.
+    A **spread** is what a delta between two measurements — in practice, two
+    checkpoints — is floored by, once combined with the other reading's. Both
+    are compared against the *same fixed* human reference, so human sampling
+    error is common-mode and cancels in their difference: including it would
+    inflate every floor and hide real movement. Only the model side is
+    resampled, which is why this is evaluation noise rather than data-sampling
+    noise. For a model side that varies the two coincide anyway, since a fresh
+    draw of games is exactly what another seed produces.
 
     That coincidence is what ``model_varies`` denies, and ``compare_curves``
     documents what a caller passing it is claiming.
@@ -1377,40 +1395,41 @@ def _resample(
     the paired resampling.
 
     ``None`` means nothing could be estimated, which is a reportable state
-    rather than an error: a floor invented from too few replicates would
+    rather than an error: a spread invented from too few replicates would
     license every delta as a finding.
     """
 
     method = CURVE_BOOTSTRAP_METHOD if model_varies else CURVE_DETERMINISTIC_METHOD
     source = f"{spec.name} v{spec.version} {method}"
 
-    floors: CurveFloors | None = None
+    dispersions: CurveDispersions | None = None
     if not model_varies:
         # Exact rather than estimated, and the same for all three readings:
         # none of them can move when the games behind them cannot. Nothing
         # about it depends on resampling, so it stands where a bootstrap could
         # not — a model side too thin to resample is still replayed exactly.
-        exact = NoiseFloor(
+        exact = MetricDispersion(
             value=0.0,
+            bound=0.0,
             kind=floor_kind,
             source=source,
             estimator=method,
         )
-        floors = CurveFloors(
+        dispersions = CurveDispersions(
             conditional=exact,
             pooled=exact,
             model_variation=exact,
             resamples=0,
-            coverage=coverage,
             method=method,
         )
 
-    # Everything below is resampling, which only a bootstrap floor or a null
-    # level needs. A stated floor asked for on its own leaves nothing to draw.
+    # Everything below is resampling, which only a bootstrapped spread or a
+    # null level needs. A stated spread asked for on its own leaves nothing to
+    # draw.
     if not model_varies and not references:
-        return floors, None
+        return dispersions, None
     if resamples < 2 or model.size < 2:
-        return floors, None
+        return dispersions, None
     # The model side draws first, and the human side draws only when the null
     # levels that consume it were asked for. Both halves of that matter. Drawing
     # a whole multinomial over the reference for a floor-only caller to discard
@@ -1439,11 +1458,10 @@ def _resample(
         # it at these radii.
         model_only = _reduce(spec, point.radii, point.human, model, model_weights)
         # The generated games are the independent replicates behind these
-        # floors. The resample count only says how finely their spread was
-        # read, so it is the model side's size that decides how far the bound
-        # sits above it.
+        # spreads. The resample count only says how finely each was read, so it
+        # is the model side's size that decides how far the bound sits above it.
         freedom = int(model.size) - 1
-        bootstrapped: list[NoiseFloor] = []
+        bootstrapped: list[MetricDispersion] = []
         for values in (
             model_only.conditional,
             model_only.pooled,
@@ -1453,24 +1471,20 @@ def _resample(
             if observed.size < 2:
                 return None, None
             bootstrapped.append(
-                NoiseFloor(
-                    value=floor_from_dispersion(
-                        float(np.std(observed, ddof=1)),
-                        degrees_of_freedom=freedom,
-                        coverage=coverage,
-                        confidence=confidence,
-                    ),
+                measured_dispersion(
+                    float(np.std(observed, ddof=1)),
                     kind=floor_kind,
+                    degrees_of_freedom=freedom,
+                    confidence=confidence,
                     source=source,
                     estimator=method,
                 )
             )
-        floors = CurveFloors(
+        dispersions = CurveDispersions(
             conditional=bootstrapped[0],
             pooled=bootstrapped[1],
             model_variation=bootstrapped[2],
             resamples=resamples,
-            coverage=coverage,
             method=method,
         )
 
@@ -1487,7 +1501,7 @@ def _resample(
             coverage=coverage,
         )
     )
-    return floors, levels
+    return dispersions, levels
 
 
 def _references(
@@ -1768,7 +1782,7 @@ __all__ = [
     "CategoryShare",
     "CurveComparison",
     "CurveComparisonError",
-    "CurveFloors",
+    "CurveDispersions",
     "CurveMetrics",
     "CurveOverlay",
     "CurvePoint",

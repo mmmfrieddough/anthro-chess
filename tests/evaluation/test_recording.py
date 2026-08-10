@@ -18,14 +18,11 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     DatasetReference,
     DetailStore,
-    FloorEntry,
     Measurement,
     ResultEnvelope,
     ResultsStore,
-    build_characterization,
     dataset_reference,
     measurement,
-    series_fingerprint,
 )
 from anthro_chess.evaluation.results.store import LOCK_FILE_NAME
 
@@ -275,45 +272,6 @@ def test_a_slug_distinguishes_the_payloads_one_reading_writes(
     first, second = result.detail_paths
     assert first.name.endswith("-cell-r1200.json")
     assert second.name.endswith("-cell-r1800.json")
-
-
-def test_a_noise_floor_is_appended_after_the_envelopes(
-    tmp_path: Path,
-    resolved: ResolvedConfig[_Config],
-    move_prediction_component: Digest,
-) -> None:
-    component = move_prediction_component()
-    store = ResultsStore(tmp_path / "results")
-    characterization = build_characterization(
-        kind="data-sampling",
-        method="bootstrap",
-        replicates=200,
-        source="one evaluation view",
-        floors=[
-            FloorEntry(
-                metric=METRIC,
-                fingerprint=series_fingerprint(METRIC, component),
-                floor=0.1,
-                dispersion=0.05,
-                dispersion_bound=0.05,
-                degrees_of_freedom=5,
-            )
-        ],
-    )
-
-    with _recording(resolved, store=store) as recording:
-        recorder = _measuring(recording)
-        _add_reading(recorder, component)
-        recorder.characterize(characterization)
-        # A benchmark whose floor is disabled hands over nothing rather than
-        # branching at every call site.
-        recorder.characterize(None)
-    result = _Result(**recording.fields)
-
-    first, second = result.recorded_paths
-    assert first.parent == store.records_directory
-    assert second.parent == store.floors_directory
-    assert store.characterizations() == (characterization,)
 
 
 def test_a_store_failure_becomes_the_benchmark_s_own_error(

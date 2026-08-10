@@ -841,16 +841,16 @@ def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
     rendered = _render_termination(result)
     comparison = result.mix("all", 1.0).comparison
     assert comparison.references is not None
-    assert comparison.floors is not None
+    assert comparison.dispersions is not None
     assert (
         f"  conditional {comparison.conditional_distance:.4f}  "
         f"null {comparison.references.conditional:.4f}  "
-        f"floor {comparison.floors.conditional.value:.4f}"
+        f"floor {comparison.dispersions.conditional_floor:.4f}"
     ) in rendered
     assert (
         f"  pooled      {comparison.pooled_distance:.4f}  "
         f"null {comparison.references.pooled:.4f}  "
-        f"floor {comparison.floors.pooled.value:.4f}"
+        f"floor {comparison.dispersions.pooled_floor:.4f}"
     ) in rendered
     assert f"  reads as    {comparison.response.value}" in rendered
 

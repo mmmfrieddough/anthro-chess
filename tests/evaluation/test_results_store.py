@@ -21,7 +21,7 @@ from anthro_chess.evaluation.results import (
     MetricCost,
     MetricDefinition,
     MetricDirection,
-    NoiseFloor,
+    MetricDispersion,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
@@ -352,7 +352,7 @@ def test_measurements_are_ordered_and_unique(
         )
 
 
-def test_a_measurement_carries_its_noise_floor(
+def test_a_measurement_carries_its_own_dispersion(
     move_prediction_component: Callable[..., DataComponent],
 ) -> None:
     component = move_prediction_component()
@@ -362,12 +362,25 @@ def test_a_measurement_carries_its_noise_floor(
         3.5,
         data=component,
         sample_size=12_000,
-        noise_floor=NoiseFloor(value=0.01, kind="training", source="five seeds"),
+        dispersion=MetricDispersion(
+            value=0.01,
+            bound=0.012,
+            kind="data-sampling",
+            source="bootstrap over 12000 game(s)",
+        ),
     )
 
     assert isinstance(value, Measurement)
-    assert value.noise_floor is not None
-    assert value.noise_floor.kind == "training"
+    assert value.dispersion is not None
+    assert value.dispersion.kind == "data-sampling"
+
+
+def test_a_dispersion_bound_below_the_spread_it_bounds_is_refused() -> None:
+    # A reading's stored bound is what a delta floor is combined from, so one
+    # written under the spread it bounds would understate every floor it
+    # reaches.
+    with pytest.raises(ValueError, match="not a conservative limit"):
+        MetricDispersion(value=0.2, bound=0.1, kind="data-sampling")
 
 
 def test_a_non_finite_measurement_is_rejected(
