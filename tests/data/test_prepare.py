@@ -85,8 +85,8 @@ def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
     assert row["clock_precision_ms"] == 1000
 
     manifest = _read_json(result.manifest_path)
-    assert manifest["input"]["sha256"] == _sha256(SAMPLE_PGN)
-    assert manifest["output"]["sha256"] == _sha256(result.normalized_path)
+    assert [entry["sha256"] for entry in manifest["inputs"]] == [_sha256(SAMPLE_PGN)]
+    assert manifest["output"]["shards"][0]["sha256"] == _sha256(result.normalized_path)
     assert manifest["source"]["license"] == "CC0-1.0"
     assert manifest["games"]["accepted"] == 1
     assert manifest["games"]["rejected"] == 0
@@ -96,6 +96,8 @@ def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
     assert manifest["resolved_config"] == resolved.as_record()
     assert manifest["action_vocabulary"]["sha256"]
     assert manifest["split"]["counts"] == result.split_counts
+    assert result.corpus_archives == 1
+    assert result.disposition == "prepared"
 
 
 def test_repeated_runs_produce_equivalent_records_and_splits(tmp_path: Path) -> None:
@@ -290,8 +292,9 @@ def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
     assert result.accepted_games == 1
     manifest = _read_json(result.manifest_path)
     assert manifest["games"]["rejection_reasons"] == {"marked_account": 2}
-    assert manifest["marked_accounts"]["accounts_marked"] == 1
-    assert manifest["marked_accounts"]["accounts_queried"] == 6
+    # Recorded per archive, because a snapshot speaks for one archive.
+    assert manifest["inputs"][0]["marked_accounts"]["accounts_marked"] == 1
+    assert manifest["inputs"][0]["marked_accounts"]["accounts_queried"] == 6
 
 
 def test_refuses_to_prepare_an_archive_the_snapshot_does_not_cover(
@@ -389,7 +392,7 @@ def test_prepare_rejects_input_that_does_not_match_pinned_archive(
     # sample is not.
     resolved = load_config(PrepareConfig, path=BASELINE_CONFIG)
 
-    with pytest.raises(DataPreparationError, match="input archive checksum mismatch"):
+    with pytest.raises(DataPreparationError, match="matches none of the 1 archive"):
         prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
 
 
@@ -886,10 +889,42 @@ def test_reads_a_bzip2_archive_the_universal_export_publishes(tmp_path: Path) ->
     assert result.accepted_games == 1
 
 
-def _two_archive_selection(tmp_path: Path) -> Path:
-    """Written as TOML so the selection is validated the way a real config is."""
+#: Games in each archive :func:`_monthly_archives` writes. Several tests count
+#: against it, as a corpus total and as a bound one archive exactly fills.
+_GAMES_PER_ARCHIVE = 4
 
-    path = tmp_path / "two-archives.toml"
+
+def _monthly_archives(tmp_path: Path) -> tuple[Path, Path]:
+    """Write two archives that stand in for two months of one source."""
+
+    paths = []
+    for month in ("2017-04", "2017-05"):
+        path = tmp_path / f"games-{month}.pgn.zst"
+        games = "".join(
+            _short_game(site=f"{month}-{index}") for index in range(_GAMES_PER_ARCHIVE)
+        )
+        path.write_bytes(zstandard.ZstdCompressor().compress(games.encode()))
+        paths.append(path)
+    return paths[0], paths[1]
+
+
+def _selection_over(tmp_path: Path, *archives: Path) -> Path:
+    """Pin real archives by their observed digests, as a checked-in one does.
+
+    Written as TOML so the selection is validated the way a real config is.
+    """
+
+    entries = "\n".join(
+        f"""
+[[archives]]
+artifact_name = "fixture-{index}"
+url = "https://example.test/{path.name}"
+file_name = "{path.name}"
+sha256 = "{_sha256(path)}"
+"""
+        for index, path in enumerate(archives)
+    )
+    path = tmp_path / "selection.toml"
     path.write_text(
         f"""
 artifact_name = "fixture"
@@ -900,33 +935,354 @@ version = "fixture"
 url = "https://example.test/"
 license = "CC0-1.0"
 
-[[archives]]
-artifact_name = "fixture-one"
-url = "https://example.test/one.pgn.zst"
-file_name = "one.pgn.zst"
-sha256 = "{"1" * 64}"
-
-[[archives]]
-artifact_name = "fixture-two"
-url = "https://example.test/two.pgn.bz2"
-file_name = "two.pgn.bz2"
-sha256 = "{"2" * 64}"
-compression = "bzip2"
+[output]
+games_per_shard = 3
+{entries}
 """.lstrip(),
         encoding="utf-8",
     )
     return path
 
 
-def test_preparation_refuses_a_selection_it_cannot_build_one_corpus_from(
+def test_appends_a_second_archive_to_the_corpus_the_first_built(
     tmp_path: Path,
 ) -> None:
-    """One run writes one manifest, so a second archive would replace the first."""
+    """One corpus is built from many archives, one run at a time."""
 
-    resolved = load_config(PrepareConfig, path=_two_archive_selection(tmp_path))
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
 
-    with pytest.raises(DataPreparationError, match="pins 2 archives"):
-        prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
+    opening = prepare_pgn(first, output, resolved)
+    appended = prepare_pgn(second, output, resolved)
+
+    assert opening.corpus_archives == 1
+    assert appended.corpus_archives == 2
+    manifest = _read_json(appended.manifest_path)
+    assert [entry["sha256"] for entry in manifest["inputs"]] == [
+        _sha256(first),
+        _sha256(second),
+    ]
+    assert [entry["file_name"] for entry in manifest["inputs"]] == [
+        first.name,
+        second.name,
+    ]
+    # Every shard says which archive it came from, and the earlier archive's
+    # shards are still there beside the later one's.
+    shards = manifest["output"]["shards"]
+    assert {shard["input_sha256"] for shard in shards} == {
+        _sha256(first),
+        _sha256(second),
+    }
+    assert len({shard["path"] for shard in shards}) == len(shards)
+    assert all((output / shard["path"]).is_file() for shard in shards)
+    assert sorted(
+        path.name for path in (output / "normalized").glob("games*.parquet")
+    ) == sorted(Path(shard["path"]).name for shard in shards)
+    assert manifest["games"]["accepted"] == sum(
+        entry["games"]["accepted"] for entry in manifest["inputs"]
+    )
+    assert manifest["games"]["scanned"] == 8
+    assert sum(appended.split_counts.values()) == manifest["games"]["accepted"]
+    assert appended.accepted_games == 4
+
+
+def test_the_corpus_blocks_report_every_field_the_archive_ones_do(
+    tmp_path: Path,
+) -> None:
+    """A field added to one and not the other would go silently missing."""
+
+    first, _ = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first))
+
+    result = prepare_pgn(first, tmp_path / "artifacts", resolved)
+
+    manifest = _read_json(result.manifest_path)
+    (entry,) = manifest["inputs"]
+    for block in ("games", "coverage"):
+        assert _shape_of(manifest[block]) == _shape_of(entry[block]), block
+    # With one archive in, the roll-up is that archive, so the numbers agree too.
+    assert manifest["games"] == entry["games"]
+    assert manifest["coverage"] == entry["coverage"]
+    assert manifest["split"]["counts"] == entry["split_counts"]
+
+
+def _shape_of(block: Any) -> Any:
+    """Return a block's nested key structure, ignoring the values under it."""
+
+    if not isinstance(block, dict):
+        return None
+    return {key: _shape_of(value) for key, value in sorted(block.items())}
+
+
+def test_leaves_an_archive_the_corpus_already_holds_alone(tmp_path: Path) -> None:
+    """Re-running an archive is what makes an interrupted pass resumable."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+
+    opening = prepare_pgn(first, output, resolved)
+    prepare_pgn(second, output, resolved)
+    manifest_before = (output / "manifests/manifest.json").read_text(encoding="utf-8")
+
+    result = prepare_pgn(first, output, resolved)
+
+    assert result.disposition == "already_prepared"
+    assert result.accepted_games == 4
+    assert result.corpus_archives == 2
+    assert result.normalized_paths == opening.normalized_paths
+    assert (output / "manifests/manifest.json").read_text(
+        encoding="utf-8"
+    ) == manifest_before
+
+
+def test_refuses_to_append_an_archive_under_a_different_selection(
+    tmp_path: Path,
+) -> None:
+    """A corpus half-filtered one way and half another is not one corpus."""
+
+    first, second = _monthly_archives(tmp_path)
+    selection = _selection_over(tmp_path, first, second)
+    output = tmp_path / "artifacts"
+    prepare_pgn(first, output, load_config(PrepareConfig, path=selection))
+    refiltered = load_config(
+        PrepareConfig,
+        path=selection,
+        overrides=("filters.minimum_plies=4",),
+    )
+
+    with pytest.raises(DataPreparationError, match="different filters"):
+        prepare_pgn(second, output, refiltered)
+
+
+def test_appending_stops_once_the_corpus_reaches_its_bound(tmp_path: Path) -> None:
+    """The bound counts the corpus, not each archive, so 51 do not multiply it."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(
+        PrepareConfig,
+        path=_selection_over(tmp_path, first, second),
+        overrides=("filters.maximum_games=4",),
+    )
+    output = tmp_path / "artifacts"
+
+    prepare_pgn(first, output, resolved)
+    result = prepare_pgn(second, output, resolved)
+
+    assert result.disposition == "corpus_complete"
+    assert result.normalized_paths == ()
+    manifest = _read_json(result.manifest_path)
+    assert len(manifest["inputs"]) == 1
+    assert manifest["games"]["accepted"] == 4
+    assert manifest["selection"]["limit_reached"] is True
+
+
+def test_a_raised_bound_admits_another_archive_into_the_same_corpus(
+    tmp_path: Path,
+) -> None:
+    """Raising a bound keeps every accepted game and adds more, so it appends."""
+
+    first, second = _monthly_archives(tmp_path)
+    selection = _selection_over(tmp_path, first, second)
+    output = tmp_path / "artifacts"
+    prepare_pgn(
+        first,
+        output,
+        load_config(
+            PrepareConfig, path=selection, overrides=("filters.maximum_games=4",)
+        ),
+    )
+
+    result = prepare_pgn(
+        second,
+        output,
+        load_config(
+            PrepareConfig, path=selection, overrides=("filters.maximum_games=6",)
+        ),
+    )
+
+    assert result.disposition == "prepared"
+    assert result.accepted_games == 2
+    assert _read_json(result.manifest_path)["games"]["accepted"] == 6
+
+
+def test_appending_clears_an_interrupted_archive_and_keeps_the_others(
+    tmp_path: Path,
+) -> None:
+    """A previous attempt's orphans go; another archive's shards must not."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+    kept = prepare_pgn(first, output, resolved).normalized_paths
+    orphan = output / "normalized/games-abcdefabcdef-00000.parquet"
+    orphan.write_bytes(b"interrupted")
+
+    prepare_pgn(second, output, resolved)
+
+    assert not orphan.exists()
+    assert all(path.is_file() for path in kept)
+
+
+def test_refuses_a_bound_lowered_below_what_the_corpus_already_holds(
+    tmp_path: Path,
+) -> None:
+    """Adding nothing cannot satisfy a bound the corpus is already past."""
+
+    first, second = _monthly_archives(tmp_path)
+    selection = _selection_over(tmp_path, first, second)
+    output = tmp_path / "artifacts"
+    prepare_pgn(
+        first,
+        output,
+        load_config(
+            PrepareConfig, path=selection, overrides=("filters.maximum_games=4",)
+        ),
+    )
+
+    with pytest.raises(DataPreparationError, match="past the configured maximum"):
+        prepare_pgn(
+            second,
+            output,
+            load_config(
+                PrepareConfig, path=selection, overrides=("filters.maximum_games=2",)
+            ),
+        )
+
+
+def test_records_an_archive_every_filter_rejected_as_an_empty_append(
+    tmp_path: Path,
+) -> None:
+    """A pass over many archives has to be able to mark such a month done."""
+
+    first, second = _monthly_archives(tmp_path)
+    casual = tmp_path / "games-casual.pgn.zst"
+    casual.write_bytes(
+        zstandard.ZstdCompressor().compress(
+            _short_game(site="casual", event="Casual Blitz game").encode()
+        )
+    )
+    resolved = load_config(
+        PrepareConfig, path=_selection_over(tmp_path, first, second, casual)
+    )
+    output = tmp_path / "artifacts"
+    prepare_pgn(first, output, resolved)
+
+    result = prepare_pgn(casual, output, resolved)
+
+    assert result.disposition == "prepared"
+    assert result.accepted_games == 0
+    assert result.normalized_paths == ()
+    manifest = _read_json(result.manifest_path)
+    assert [entry["sha256"] for entry in manifest["inputs"]] == [
+        _sha256(first),
+        _sha256(casual),
+    ]
+    assert manifest["inputs"][-1]["games"]["rejection_reasons"] == {"unrated_game": 1}
+    # Recorded, so the pass moves on rather than re-reading it every restart.
+    assert prepare_pgn(casual, output, resolved).disposition == "already_prepared"
+
+
+def test_refuses_an_empty_first_archive_rather_than_starting_a_corpus_on_none(
+    tmp_path: Path,
+) -> None:
+    """With nothing before it, an archive that accepts nothing is a mistake."""
+
+    casual = tmp_path / "games-casual.pgn.zst"
+    casual.write_bytes(
+        zstandard.ZstdCompressor().compress(
+            _short_game(site="casual", event="Casual Blitz game").encode()
+        )
+    )
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, casual))
+
+    with pytest.raises(DataPreparationError, match="no games passed preparation"):
+        prepare_pgn(casual, tmp_path / "artifacts", resolved)
+
+
+def test_refuses_a_corpus_whose_recorded_shards_have_gone(tmp_path: Path) -> None:
+    """A manifest asserting absent shards must not gain another archive."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+    for shard in prepare_pgn(first, output, resolved).normalized_paths:
+        shard.unlink()
+
+    with pytest.raises(DataPreparationError, match="no longer present"):
+        prepare_pgn(second, output, resolved)
+
+
+def test_refuses_a_corpus_manifest_missing_the_blocks_the_rollup_reads(
+    tmp_path: Path,
+) -> None:
+    """A manifest this code did not write reports rather than dying mid-append."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+    manifest_path = prepare_pgn(first, output, resolved).manifest_path
+    manifest = _read_json(manifest_path)
+    manifest["inputs"][0]["coverage"] = {"clock": {}}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(DataPreparationError, match="input record missing"):
+        prepare_pgn(second, output, resolved)
+
+
+def test_refuses_to_append_under_a_selection_section_it_does_not_know(
+    tmp_path: Path,
+) -> None:
+    """A configuration gaining a section fails closed rather than appending."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+    manifest_path = prepare_pgn(first, output, resolved).manifest_path
+    manifest = _read_json(manifest_path)
+    manifest["resolved_config"]["config"]["future_section"] = {"shapes_records": True}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(DataPreparationError, match="different future_section"):
+        prepare_pgn(second, output, resolved)
+
+
+def test_replaces_the_corpus_manifest_atomically(tmp_path: Path) -> None:
+    """The manifest is the only record of what is in, so a partial write loses it."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+    prepare_pgn(first, output, resolved)
+    written: list[Path] = []
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "anthro_chess.data.prepare.write_text_atomically",
+            lambda path, text: written.append(path),
+        )
+        result = prepare_pgn(second, output, resolved)
+
+    assert written == [result.manifest_path]
+
+
+def test_refuses_a_corpus_prepared_before_a_manifest_could_span_archives(
+    tmp_path: Path,
+) -> None:
+    """An older manifest records one input and no per-archive counts."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+    manifest_path = prepare_pgn(first, output, resolved).manifest_path
+    manifest = _read_json(manifest_path)
+    (entry,) = manifest.pop("inputs")
+    manifest["input"] = {"file_name": entry["file_name"], "sha256": entry["sha256"]}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(DataPreparationError, match="records no per-archive inputs"):
+        prepare_pgn(second, output, resolved)
 
 
 def test_an_archive_may_not_declare_a_compression_its_name_contradicts() -> None:

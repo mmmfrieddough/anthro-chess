@@ -34,7 +34,11 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from anthro_chess.data.artifacts import SOURCE_USER_AGENT, open_pgn_text
+from anthro_chess.data.artifacts import (
+    SOURCE_USER_AGENT,
+    open_pgn_text,
+    write_text_atomically,
+)
 
 #: Bulk account lookup. One request answers for many accounts, which is what
 #: makes covering a whole archive a matter of hours rather than weeks.
@@ -119,8 +123,10 @@ class MarkedAccounts:
     would have to keep every earlier verdict verbatim and ask only about
     genuinely new accounts, since re-deciding a covered account applies a later
     moderation decision retroactively and drops games an earlier pool
-    generation contains. Nothing prepares from two archives yet, so that
-    belongs with whatever does.
+    generation contains. Preparation appends one archive at a time, so a corpus
+    spanning archives cannot set ``filters.marked_accounts`` at all until a
+    snapshot can speak for more than one: ``require_archive`` refuses the second
+    archive rather than preparing it unfiltered.
     """
 
     covers_archive: str
@@ -164,7 +170,7 @@ class MarkedAccounts:
         }
         lines = [f"{_HEADER_PREFIX} {json.dumps(header, sort_keys=True)}"]
         lines.extend(sorted(self.digests))
-        _write_atomically(output_path, "\n".join(lines) + "\n")
+        write_text_atomically(output_path, "\n".join(lines) + "\n")
         return output_path
 
 
@@ -382,7 +388,7 @@ def _save_progress(
         return
     # Unlike the snapshot it is written beside, this holds marked usernames in
     # the clear; ``.gitignore`` is what keeps it out of the repository.
-    _write_atomically(
+    write_text_atomically(
         path,
         json.dumps(
             {
@@ -392,13 +398,6 @@ def _save_progress(
             }
         ),
     )
-
-
-def _write_atomically(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_suffix(path.suffix + ".writing")
-    partial.write_text(text, encoding="utf-8")
-    partial.replace(path)
 
 
 def _post_usernames(batch: list[str]) -> list[dict[str, object]]:

@@ -35,6 +35,20 @@ class DataLoadingError(ValueError):
     """Raised when normalized data or saved loader state is incompatible."""
 
 
+def write_text_atomically(path: Path, text: str) -> None:
+    """Replace a file's contents in one step, or leave the old ones in place.
+
+    A partial write of an artifact that is the only record of something — a
+    corpus manifest, an account snapshot — loses whatever it recorded, and the
+    data it describes is not recoverable without it.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".writing")
+    partial.write_text(text, encoding="utf-8")
+    partial.replace(path)
+
+
 @contextmanager
 def open_pgn_text(source_path: Path) -> Iterator[TextIO]:
     """Yield a PGN archive as text, decompressing in the stream.
