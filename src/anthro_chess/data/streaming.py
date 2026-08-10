@@ -109,9 +109,6 @@ class _RowGroupIndex:
     on purpose: at corpus scale this index is resident for the whole run, and
     the difference between twelve bytes a game and a hundred is the difference
     between a rounding error and a real share of host memory.
-
-    A scan produces the same shape the index keeps, so a selection that
-    subsamples nothing hands its scan straight over rather than copying it.
     """
 
     shard: int
@@ -582,9 +579,9 @@ def _kept_game_ids(
                 key=partial(_rank_key, selection.seed),
             )
         )
-    # Sorted through a buffer view because `sorted` hands back a list of Python
-    # integers, five times the width of the ids themselves and the kind of
-    # structure this loader exists not to build.
+    # Sorted in place through a view over this array's own memory: `sorted`
+    # would hand back a list of Python integers, five times the width of the
+    # ids themselves and the kind of structure this loader exists not to build.
     np.frombuffer(gathered, dtype=np.uint64).sort()
     return gathered
 

@@ -814,12 +814,7 @@ def _exclusion_reason(row: Mapping[str, Any], selection: SelectionConfig) -> str
 
 
 def _rank_key(seed: str, game_id: int) -> bytes:
-    """Rank uniformly by game id so a subsample stays representative.
-
-    Both loaders select through ``heapq.nsmallest``, which holds a rank per kept
-    game rather than one per eligible game — at corpus scale the difference is
-    whether the ranking fits in memory at all.
-    """
+    """Rank uniformly by game id so a subsample stays representative."""
 
     return sha256(f"{seed}\0{game_id}".encode()).digest()
 
