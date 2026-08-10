@@ -133,6 +133,95 @@ def test_a_game_in_both_train_and_test_fails_the_build(
         freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
 
 
+def test_a_sample_fraction_admits_part_of_the_split(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="test") for index in range(120)],
+    )
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.25),
+        tmp_path / "pool",
+    )
+
+    assert 0 < result.games < 120
+    repeated = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.25),
+        tmp_path / "repeated",
+    )
+    assert repeated.game_ids_sha256 == result.game_ids_sha256
+
+
+def test_a_sampled_pool_still_contains_the_one_a_smaller_corpus_produced(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Containment is what a bounded pool has to keep, and why it is a fraction.
+
+    Every generation must hold everything the last one did. Keeping the lowest
+    ranked N of a larger split would not: the newly available games take ranks
+    among the old ones and push some of them past N.
+    """
+
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:120])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+
+    freeze_pool(
+        _resolved(smaller, smaller_manifest, sample_fraction=0.25),
+        tmp_path / "first",
+    )
+    freeze_pool(
+        _resolved(grown, grown_manifest, sample_fraction=0.25),
+        tmp_path / "second",
+    )
+
+    first = set(load_pool(tmp_path / "first").game_ids)
+    second = set(load_pool(tmp_path / "second").game_ids)
+    assert first <= second
+    assert len(second) > len(first)
+
+
+def test_an_admitted_game_in_both_splits_still_fails_the_build(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Sampling narrows what the overlap check compares, never what it catches."""
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="train") for index in range(40)]
+        + [normalized_row(index, split="test") for index in range(40)],
+    )
+
+    with pytest.raises(EvaluationPoolError, match="also appear in the train split"):
+        freeze_pool(
+            _resolved(normalized, manifest, sample_fraction=0.5),
+            tmp_path / "pool",
+        )
+
+
+def test_a_sample_fraction_that_admits_nothing_names_itself(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """Otherwise the failure sends a reader to the split that is not at fault."""
+
+    normalized, manifest = corpus(tmp_path)
+
+    with pytest.raises(EvaluationPoolError, match="sample fraction"):
+        freeze_pool(
+            _resolved(normalized, manifest, sample_fraction=1e-9),
+            tmp_path / "pool",
+        )
+
+
 def test_coverage_makes_thin_slices_visible(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],

@@ -184,8 +184,10 @@ stays possible at any time.
 Breadth is sized by evaluation power rather than by training needs. Each axis
 needs enough held-out games to resolve the effects the project will want to
 detect on it, which is a computable quantity given measured sampling noise, and
-which is a much smaller number than training volume. Game-level benchmarks bind
-here well before position-level ones do, since their unit is a game.
+which is a much smaller number than training volume. What has to carry that
+count is the pool rather than the whole held-out split, since the pool is a
+bounded sample of it; `docs/evaluation.md` owns the bound. Game-level benchmarks
+bind here well before position-level ones do, since their unit is a game.
 
 Expansion must preserve containment. The baseline recipe accepts games in source
 order until a configured bound, so relaxing a filter without also raising that

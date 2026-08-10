@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -43,6 +43,13 @@ from anthro_chess.evaluation.results.records import Sha256Hex
 BENCHMARK_VERSION = 1
 POOL_GAMES_FILE_NAME = "games.parquet"
 POOL_MANIFEST_FILE_NAME = "manifest.json"
+
+#: The seed the pool's own admission ranks under. Separate from any view seed so
+#: that what a view takes first is independent of what the pool admitted, and a
+#: constant rather than a configured field because a different seed redraws
+#: membership and would drop games an earlier generation contains.
+POOL_SAMPLE_SEED = "anthro-evaluation-pool-v1"
+
 logger = logging.getLogger(__name__)
 
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
@@ -97,6 +104,11 @@ class PoolConfig(ConfigModel):
     normalized: Path
     manifest: Path
     split: SplitName = "test"
+    #: How much of the split the pool admits. Absent admits all of it, which is
+    #: what a generation cut before the bound existed did.
+    #: ``docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md``
+    #: owns why the bound is a fraction rather than a game count.
+    sample_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
     expected_game_ids_sha256: Sha256Hex | None = None
 
 
@@ -204,19 +216,29 @@ def _freeze_pool(
         config.split,
         len(source_paths),
     )
+    admits = _admission(config.sample_fraction)
     selected: list[dict[str, Any]] = []
+    train_games = 0
+    # Only an admitted train game can collide with the pool, so holding the
+    # rest would grow this set with the corpus to no effect.
     train_game_ids: set[int] = set()
     for path in source_paths:
         for row in read_normalized_rows(path):
             split = row[NormalizedColumn.SPLIT]
             if split == config.split:
-                selected.append(row)
+                if admits(row_game_id(row)):
+                    selected.append(row)
             elif split == "train":
-                train_game_ids.add(row_game_id(row))
+                train_games += 1
+                if admits(row_game_id(row)):
+                    train_game_ids.add(row_game_id(row))
 
     if not selected:
         raise EvaluationPoolError(
-            f"no normalized games are assigned to the {config.split} split"
+            f"no {config.split} game was admitted by a sample fraction of "
+            f"{config.sample_fraction}"
+            if config.sample_fraction is not None
+            else f"no normalized games are assigned to the {config.split} split"
         )
 
     selected.sort(key=lambda row: row_game_id(row))
@@ -290,7 +312,7 @@ def _freeze_pool(
         "leakage": {
             "algorithm": "game-id-intersection-v1",
             "compared_split": "train",
-            "compared_games": len(train_game_ids),
+            "compared_games": train_games,
             "overlapping_games": len(overlap),
         },
         "coverage": coverage,
@@ -400,6 +422,27 @@ def _load_pool(
             f"loaded {identity}"
         )
     return FrozenPool(games_path=games_path, manifest=manifest, games=games)
+
+
+def rank_key(seed: str, game_id: int) -> bytes:
+    """Rank uniformly by game id so a sample stays representative."""
+
+    return sha256(f"{seed}\0{game_id}".encode()).digest()
+
+
+def _admission(fraction: float | None) -> Callable[[int], bool]:
+    """Return the predicate a configured sample fraction admits games by.
+
+    A fraction rather than a count, because a count cannot survive a later
+    generation: ranking a larger split and keeping the lowest N displaces games
+    the previous N held, and every generation has to contain the last. A fixed
+    threshold decides a game on its id alone, so growth only ever adds.
+    """
+
+    if fraction is None:
+        return lambda game_id: True
+    threshold = round(fraction * 2**256).to_bytes(32, "big")
+    return lambda game_id: rank_key(POOL_SAMPLE_SEED, game_id) < threshold
 
 
 def pool_game(row: Mapping[str, Any]) -> PoolGame:

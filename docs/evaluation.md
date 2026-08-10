@@ -628,8 +628,9 @@ evaluation inputs instead of accumulating a tailored dataset each.
 The **partition** decides what a game may be used for. `test` is held back from
 training entirely; `docs/data.md` owns the split contract.
 
-The **pool** is the `test` partition materialized as one versioned, checksummed
-artifact with its own manifest and coverage statistics. It carries no
+The **pool** is a bounded uniform sample of the `test` partition, materialized
+as one versioned, checksummed artifact with its own manifest and coverage
+statistics. It carries no
 per-benchmark tailoring, and it is a regenerable pipeline output rather than
 committed data. Its manifest records source, split recipe, schema,
 preprocessing, action, encoding, and benchmark versions, the selected game ids
@@ -637,6 +638,17 @@ and their content hashes, and a build-time overlap check against the train
 split. Coverage statistics report ply counts, results, clock presence, and
 position counts by phase, color, legal-move-count bucket, and rating band, so a
 thin slice is visible before a benchmark reports a number computed from it.
+
+The bound is an admission fraction, applied by ranking a game id under a fixed
+seed, so a game is admitted on its id alone and corpus growth only ever adds.
+A game count could not: a later generation would rank a larger split, and the
+games it gains would push some of the previous generation's past the count.
+The fraction is sized at designation from the games each metric needs to
+resolve an effect, which `uv run anthro eval noise plan` reports from measured
+dispersion. It can be raised by a later generation cut and can never be
+lowered, so it is chosen as the smallest size that resolves what the project
+intends to read. Without it the pool is the whole split, which is what the
+pre-designation generation is.
 
 **Views** are per-benchmark deterministic selections over the pool: filtering by
 ply count or rating presence; projecting to prefixes; subsampling by hash rank.
@@ -646,7 +658,9 @@ derivations, never new stored data. A benchmark needing something the view layer
 cannot derive is a signal that the field belongs in the normalized schema.
 
 Benchmarks that must run quickly subsample in their own view rather than forcing
-a smaller pool, so evaluation cost does not grow as the corpus does.
+a smaller pool, so what one benchmark costs is its own to choose. The pool's own
+bound is a different quantity: what every benchmark process materializes before
+any view is applied, which without it is the whole split however small the view.
 
 Representativeness and frozenness belong to different things. The pool recipe is
 uniform and unstratified, so its composition tracks corpus composition
@@ -686,8 +700,9 @@ That is accepted rather than designed away, and is the second reason to keep the
 growing current view alongside the fixed core.
 
 See `docs/decisions/0011-held-out-test-partition.md`,
-`docs/decisions/0012-derived-evaluation-views.md`, and
-`docs/decisions/0013-benchmark-result-comparability.md`.
+`docs/decisions/0012-derived-evaluation-views.md`,
+`docs/decisions/0013-benchmark-result-comparability.md`, and
+`docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md`.
 
 ## Evaluation Layers
 
