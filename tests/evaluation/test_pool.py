@@ -133,14 +133,21 @@ def test_a_game_in_both_train_and_test_fails_the_build(
         freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
 
 
-def test_a_sample_fraction_admits_part_of_the_split(
+def test_a_sample_fraction_admits_that_share_of_the_split(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
+    """The realized share is what the pool is sized by, so it is what is pinned.
+
+    The bounds are the binomial spread around 100 of 400 at a quarter, wide
+    enough that this fixture's draw sits comfortably inside and narrow enough
+    that a threshold off by a factor of two falls outside.
+    """
+
     normalized, manifest = write_corpus(
         tmp_path / "corpus",
-        [normalized_row(index, split="test") for index in range(120)],
+        [normalized_row(index, split="test") for index in range(400)],
     )
 
     result = freeze_pool(
@@ -148,7 +155,7 @@ def test_a_sample_fraction_admits_part_of_the_split(
         tmp_path / "pool",
     )
 
-    assert 0 < result.games < 120
+    assert 74 <= result.games <= 126
     repeated = freeze_pool(
         _resolved(normalized, manifest, sample_fraction=0.25),
         tmp_path / "repeated",
@@ -192,7 +199,12 @@ def test_an_admitted_game_in_both_splits_still_fails_the_build(
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
-    """Sampling narrows what the overlap check compares, never what it catches."""
+    """Sampling narrows the overlap check to the games that can reach the pool.
+
+    A duplicate the fraction excludes is no longer caught, which is the price
+    of not holding the train split in memory to write a bounded pool from it.
+    What the check still answers is whether the games it wrote are held out.
+    """
 
     normalized, manifest = write_corpus(
         tmp_path / "corpus",
@@ -207,18 +219,28 @@ def test_an_admitted_game_in_both_splits_still_fails_the_build(
         )
 
 
-def test_a_sample_fraction_that_admits_nothing_names_itself(
+def test_an_empty_pool_blames_the_fraction_or_the_split_but_not_both(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
-    """Otherwise the failure sends a reader to the split that is not at fault."""
+    """Either message sent to the other case costs a reader the wrong search."""
 
-    normalized, manifest = corpus(tmp_path)
-
+    populated, populated_manifest = corpus(tmp_path)
     with pytest.raises(EvaluationPoolError, match="sample fraction"):
         freeze_pool(
-            _resolved(normalized, manifest, sample_fraction=1e-9),
-            tmp_path / "pool",
+            _resolved(populated, populated_manifest, sample_fraction=1e-9),
+            tmp_path / "sampled-out",
+        )
+
+    empty, empty_manifest = write_corpus(
+        tmp_path / "no-test-games", [normalized_row(1, split="train")]
+    )
+    with pytest.raises(EvaluationPoolError, match="no normalized games"):
+        freeze_pool(
+            _resolved(empty, empty_manifest, sample_fraction=0.5),
+            tmp_path / "empty-split",
         )
 
 

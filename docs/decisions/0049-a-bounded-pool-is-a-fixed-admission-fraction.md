@@ -13,10 +13,13 @@ pool is therefore the whole test split: 50,073 games today, and roughly 110
 million once the corpus `#89` widens is prepared, since the split holds 5% of
 2.21 billion games.
 
-Benchmark work does not grow with that. Every benchmark declares a bounded view,
-and the largest declared one takes 12,000 games. What grows is everything a
-process pays before a view is applied. Measured on the frozen 50,073-game pool,
-and extrapolated from that per-game cost:
+Two things scale with that split, and they are worth separating.
+
+Most benchmark work does not. Every benchmark but one declares a bounded view,
+and the largest of those takes 12,000 games, so what they score is fixed however
+large the pool is. What still grows is everything a process pays before any view
+is applied. Measured on the frozen 50,073-game pool, and extrapolated from that
+per-game cost:
 
 | per benchmark process | at 50,073 games | at 110 million |
 | --- | --- | --- |
@@ -25,8 +28,15 @@ and extrapolated from that per-game cost:
 | peak while loading | 60 MB | ~132 GB |
 | artifact re-checksummed on every load | 10.4 MB | ~23 GB, ~14 s |
 
-So the shape is bounded work behind unbounded startup, and the largest view
-would use about 0.01% of what every process materializes.
+So for those the shape is bounded work behind unbounded startup, and the largest
+of their views would use about 0.01% of what every process materializes.
+
+The exception is the `canonical` view of the checkpoint suite, which declares no
+bound and is the whole pool. That is the end-of-run held-out reading, and it is
+the family the sizing below binds on. For it the pool bound is not startup cost
+at all: it is the number of games the reading scores. Both readings ever taken
+of that family used the reduced sweep's 400 games, so no full one has been taken
+of this pool or the one before it.
 
 Shrinking `split.test_fraction` fixes the arithmetic and is the wrong lever.
 Games leaving `test` is what containment forbids once a core is designated, so a
@@ -70,11 +80,22 @@ rates above. It does not buy the rare-rule tail, and nothing cuttable buys the
 stalemate-availability family, whose noise at 400 games is the same size as the
 quantity it measures.
 
+The size is bounded from the other side by what a canonical reading costs, since
+that view scores whatever the pool holds. 100,000 is about twice the untaken
+full reading of the pool that exists, which is a step worth taking deliberately
+and not one worth taking by accident on a split three orders of magnitude wider.
+
 **Raising the bound later is available; lowering it never is.** A threshold that
 only rises admits a superset, which is what a generation cut already is. The
 number to choose is therefore the smallest defensible one rather than the
 largest affordable one, and the rare-rule tail is what a later raise would be
 for.
+
+Nothing here enforces that direction, and prose does not. The check that does is
+the one `#90` already owes: a generation cut verifies it is a superset of the
+previous generation and fails clearly when a game present before is absent
+after. A lowered fraction and an edited seed both surface there, as a missing
+game rather than as a changed setting.
 
 ## Consequences
 
@@ -101,7 +122,13 @@ That growth is the growth `current` exists to have, and it is nothing like the
 Freezing becomes bounded too. Both the rows a freeze accumulates and the train
 ids it holds for the overlap check are filtered by admission, so the pass over
 the corpus no longer has to hold the split in memory to write a pool from it.
-The recorded count of compared train games still covers the whole split.
+
+That narrows the overlap check, and the narrowing is accepted rather than
+hidden. It asked whether any game was in both `train` and `test`; it now asks
+whether any game the pool holds is also in `train`, and the manifest records how
+many train games were compared. Answering the wider question means holding every
+train id, which is the cost the bound exists to remove, and the pool's own claim
+is the narrower one.
 
 The sizing rests on one dispersion per metric, measured at proof scale, and
 `games_to_resolve` deliberately errs high. A later reading that measures a

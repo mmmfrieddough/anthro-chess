@@ -658,9 +658,10 @@ derivations, never new stored data. A benchmark needing something the view layer
 cannot derive is a signal that the field belongs in the normalized schema.
 
 Benchmarks that must run quickly subsample in their own view rather than forcing
-a smaller pool, so what one benchmark costs is its own to choose. The pool's own
-bound is a different quantity: what every benchmark process materializes before
-any view is applied, which without it is the whole split however small the view.
+a smaller pool, so what one benchmark costs is its own to choose. The pool's
+bound answers what a view cannot: what every benchmark process materializes
+before any view is applied, and what the `canonical` view scores, since that one
+declares no bound and is the whole pool.
 
 Representativeness and frozenness belong to different things. The pool recipe is
 uniform and unstratified, so its composition tracks corpus composition
@@ -674,8 +675,9 @@ Pool versions are **generations**, and each is a superset of the last. Split
 assignment is stable under corpus growth, so appending games preserves every
 game an earlier generation contained and an earlier measurement stays
 reproducible on the subset. Removing games, rejecting previously accepted games
-through a filter change, or changing the split seed destroys that and ends the
-affected series permanently.
+through a filter change, changing the split seed, and lowering the pool's
+admission fraction or changing the seed it ranks under all destroy that and end
+the affected series permanently.
 
 A benchmark selection names the generation of the pool it loads, and a pool that
 is not that one is refused rather than scored. Everything else the loader checks

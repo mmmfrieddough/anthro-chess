@@ -218,28 +218,33 @@ def _freeze_pool(
     )
     admits = _admission(config.sample_fraction)
     selected: list[dict[str, Any]] = []
-    train_games = 0
-    # Only an admitted train game can collide with the pool, so holding the
-    # rest would grow this set with the corpus to no effect.
+    split_games = 0
+    # Only an admitted game can reach the pool, so a train id that is not
+    # admitted cannot collide with one and holding it would grow this set with
+    # the corpus for nothing. The narrowing is the pool's to accept: what a
+    # freeze can still see is whether the games it wrote are held out.
     train_game_ids: set[int] = set()
     for path in source_paths:
         for row in read_normalized_rows(path):
             split = row[NormalizedColumn.SPLIT]
             if split == config.split:
+                split_games += 1
                 if admits(row_game_id(row)):
                     selected.append(row)
             elif split == "train":
-                train_games += 1
-                if admits(row_game_id(row)):
-                    train_game_ids.add(row_game_id(row))
+                train_game_id = row_game_id(row)
+                if admits(train_game_id):
+                    train_game_ids.add(train_game_id)
 
     if not selected:
-        raise EvaluationPoolError(
-            f"no {config.split} game was admitted by a sample fraction of "
-            f"{config.sample_fraction}"
-            if config.sample_fraction is not None
-            else f"no normalized games are assigned to the {config.split} split"
-        )
+        if split_games == 0:
+            message = f"no normalized games are assigned to the {config.split} split"
+        else:
+            message = (
+                f"a sample fraction of {config.sample_fraction} admitted none of "
+                f"the {split_games} game(s) in the {config.split} split"
+            )
+        raise EvaluationPoolError(message)
 
     selected.sort(key=lambda row: row_game_id(row))
     games = tuple(pool_game(row) for row in selected)
@@ -312,7 +317,7 @@ def _freeze_pool(
         "leakage": {
             "algorithm": "game-id-intersection-v1",
             "compared_split": "train",
-            "compared_games": train_games,
+            "compared_games": len(train_game_ids),
             "overlapping_games": len(overlap),
         },
         "coverage": coverage,
@@ -437,12 +442,17 @@ def _admission(fraction: float | None) -> Callable[[int], bool]:
     generation: ranking a larger split and keeping the lowest N displaces games
     the previous N held, and every generation has to contain the last. A fixed
     threshold decides a game on its id alone, so growth only ever adds.
+
+    Thresholded the way :mod:`anthro_chess.data.prepare` assigns a split, since
+    this is the same operation one layer down and rests on the same stability.
     """
 
     if fraction is None:
         return lambda game_id: True
-    threshold = round(fraction * 2**256).to_bytes(32, "big")
-    return lambda game_id: rank_key(POOL_SAMPLE_SEED, game_id) < threshold
+    return lambda game_id: (
+        int.from_bytes(rank_key(POOL_SAMPLE_SEED, game_id)[:8], "big") / 2**64
+        < fraction
+    )
 
 
 def pool_game(row: Mapping[str, Any]) -> PoolGame:
