@@ -198,7 +198,13 @@ def read_account_games(path: Path) -> ArchiveAccounts:
 
 
 def account_games(archive: PinnedArchive) -> ArchiveAccounts:
-    """Return an archive's counts, taking the pass over it at most once."""
+    """Return an archive's counts, taking the pass over it at most once.
+
+    The counts outlive the archive they came from, so a census keeps asking
+    about an archive whose raw file was reclaimed after preparation. Only a
+    first count, or one the selection has invalidated by pinning different
+    bytes, needs the archive back.
+    """
 
     if archive.counts_path.is_file():
         counted = read_account_games(archive.counts_path)
@@ -207,6 +213,11 @@ def account_games(archive: PinnedArchive) -> ArchiveAccounts:
         logger.info(
             "%s counts an archive this selection no longer pins; counting again",
             archive.counts_path,
+        )
+    if not archive.path.is_file():
+        raise CensusError(
+            f"{archive.path} is not on disk, so the accounts this selection "
+            "pins there cannot be counted; acquire it again"
         )
     logger.info("Counting the accounts in %s", archive.path.name)
     digest = file_sha256(archive.path)

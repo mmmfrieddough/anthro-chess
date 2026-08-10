@@ -443,6 +443,46 @@ sha256 = "{digests[1]}"
     return config
 
 
+def test_data_census_keeps_asking_about_an_archive_that_was_reclaimed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counts outlive the archive, so deleting a prepared one costs nothing."""
+
+    config = _census_fixture(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+        asked.extend(batch)
+        return [{"id": name} for name in batch]
+
+    monkeypatch.setattr("anthro_chess.data.census._post_usernames", fake_post)
+    command = [
+        "data",
+        "census",
+        "--config",
+        str(config),
+        "--pause-seconds",
+        "0",
+        "--workers",
+        "1",
+        "--accounts",
+    ]
+    assert main([*command, "1"]) == 0
+    capsys.readouterr()
+
+    (tmp_path / "datasets/month-1/raw/1.pgn.zst").unlink()
+    assert main([*command, "2"]) == 0
+
+    # The deleted archive still contributes its accounts and its counts, so the
+    # queue and the coverage denominators are what they were.
+    assert asked == ["busy", "middling", "quiet"]
+    assert "Coverage: 3 of 3 account(s) (100.00%), 100.00% of player-slots" in (
+        capsys.readouterr().out
+    )
+
+
 def test_data_census_asks_the_busiest_accounts_first_and_stores_every_answer(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

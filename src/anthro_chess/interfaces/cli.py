@@ -1182,17 +1182,23 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         )
         if arguments.accounts is not None and arguments.accounts < 1:
             raise ConfigError("--accounts asks about at least one account")
-        acquired = [
-            archive for archive in _pinned_archives(resolved) if archive.path.is_file()
-        ]
-        if not acquired:
+        pinned = _pinned_archives(resolved)
+        count_uncounted_archives(
+            [archive for archive in pinned if archive.path.is_file()],
+            workers=arguments.workers,
+        )
+        # An archive's counts outlive the archive, so reclaiming a raw file once
+        # it is prepared costs the census nothing. Selecting on the raw file
+        # instead drops its accounts out of the queue without a word, and the
+        # snapshot would claim archives the census had stopped asking about.
+        counted = [archive for archive in pinned if archive.counts_path.is_file()]
+        if not counted:
             raise ConfigError(
-                "none of this selection's archives are on disk, so there is "
-                "nothing to census yet; acquire one first"
+                "none of this selection's archives have been counted, and none "
+                "are on disk to count; acquire one first"
             )
-        count_uncounted_archives(acquired, workers=arguments.workers)
         answers_path = _census_answers_path(resolved)
-        census = read_census(acquired, answers_path)
+        census = read_census(counted, answers_path)
         budget = arguments.accounts
         if budget is None:
             budget = daily_account_allowance(
@@ -1229,8 +1235,8 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
     print(
         f"Coverage: {accounts_queried} of {census.accounts_total} account(s) "
         f"({_share(accounts_queried, census.accounts_total)}), "
-        f"{_share(slots_queried, census.slots_total)} of player-slots, "
-        f"over {len(census.archives)} archive(s)."
+        f"{_share(slots_queried, census.slots_total)} of player-slots, over "
+        f"{len(census.archives)} of {len(pinned)} pinned archive(s)."
     )
     return 0
 

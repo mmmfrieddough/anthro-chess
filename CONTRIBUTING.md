@@ -174,6 +174,11 @@ deleted it. Each archive's account counts sit beside that archive; the answers
 sit under the source rather than the selection, so a second selection over the
 same source inherits them instead of spending the same rate limit twice.
 
+An archive is read once, to count it. Its counts outlive it, so a raw archive
+can be reclaimed once it has been counted and prepared and the census carries on
+asking about its accounts — only a first count, or one invalidated by re-pinning
+the archive, needs the file back.
+
 Set `LICHESS_TOKEN` to a personal access token to double the day's allowance:
 the limit is per address and charges an authenticated caller half. The endpoint
 needs no scope, so generate one with none. It is a credential, so it belongs in

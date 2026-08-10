@@ -90,6 +90,14 @@ def test_counts_an_archive_again_when_the_selection_pins_a_different_one(
     assert len(account_games(widened).games_by_account) == 4
 
 
+def test_says_so_when_counting_needs_an_archive_that_is_gone(tmp_path: Path) -> None:
+    archive = _archive(tmp_path, "games.pgn", ("One", "Two"))
+    archive.path.unlink()
+
+    with pytest.raises(CensusError, match="not on disk"):
+        account_games(archive)
+
+
 def test_refuses_an_archive_that_is_not_the_one_pinned(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "games.pgn", ("One", "Two"))
     impostor = PinnedArchive(
