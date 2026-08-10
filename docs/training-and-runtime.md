@@ -701,10 +701,10 @@ overlays earlier runs by optimizer step.
 Event files are a derived view rather than a source of truth. The metrics stream
 and the evaluation results store stay authoritative, and event files remain
 regenerable and safe to delete. Training curves and in-training evaluation
-readings belong there; cross-version project history does not, because
-TensorBoard has no notion of which results are comparable and would happily
-overlay series that are not. See
-`docs/decisions/0014-evaluation-result-storage.md`.
+readings belong there; cross-version project history does not. See
+`docs/decisions/0014-evaluation-result-storage.md`, and
+`docs/decisions/0023-series-separated-tensorboard-history.md`, which owns why
+and refines it.
 
 See `docs/evaluation.md` for the full evaluation design, including legality,
 rating calibration, timing rollouts, human-likeness metrics, and

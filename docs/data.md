@@ -273,16 +273,11 @@ using `%clkc` in many timed games. The export spans 2013-01 through 2021-06 and
 has roughly 3.7B games total. The 2017-04 through 2021-06 portion has roughly
 3.35B games.
 
-A local sample of the 2017-04 universal export suggested that about half of all
-records were standard rated games with ratings, numeric time controls, and
-centisecond clock comments. That implies a rough clean timing corpus on the
-order of 1.5B-2.0B games, or tens to hundreds of billions of plies. The exact
-usable count should be computed by the ingestion pipeline rather than assumed.
-
 The corpus the breadth pass builds is that universal export, 2017-04 through
 2021-06, chosen for its clock precision.
 `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why,
-and what ending in mid-2021 costs.
+what the export holds before and after filtering, and what ending in mid-2021
+costs.
 
 Lichess records need filters and tags. Early and universal exports can include
 casual games, variants, unknown ratings, correspondence games, AI-level games,
@@ -752,13 +747,11 @@ overrepresented groups. Training should use sampling recipes to decide how
 often different slices appear.
 
 Not every axis may be reweighted. Resampling is safe on an axis the model is
-explicitly conditioned on, because it changes the marginal distribution of an
-input rather than the conditional behavior benchmarks read. Resampling an axis
-the model must reproduce unconditionally moves the very distribution its
-benchmark measures, so the benchmark reports the sampling recipe instead of the
-model. Weighting the loss by an axis is the same operation as resampling it.
+explicitly conditioned on and unsafe on one the model must reproduce
+unconditionally, and weighting the loss by an axis is the same operation as
+resampling it.
 `docs/decisions/0016-sampling-axes-versus-measured-distributions.md` owns this
-rule and the axes currently closed under it.
+rule, why the two cases differ, and the axes currently closed under it.
 
 Sampling axes available for balancing:
 
