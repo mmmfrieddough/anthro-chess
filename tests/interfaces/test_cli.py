@@ -1530,165 +1530,12 @@ def _record_sampled_reading(store_root: Path, *, floor: float, games: int) -> No
                         value=bound,
                         bound=bound,
                         units=games,
-                        kind="data-sampling",
                         source="the fixture pool",
                     ),
                 )
             ],
             recorded_at=datetime(2026, 7, 9, tzinfo=UTC),
         )
-    )
-
-
-def test_eval_noise_characterizes_training_noise_from_replicate_runs(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store = str(tmp_path / "results")
-    _record_fixture_results(tmp_path / "results")
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                store,
-                "--kind",
-                "training",
-                "--checkpoint",
-                "checkpoint-a",
-                "--checkpoint",
-                "checkpoint-b",
-                "--metric",
-                "held_out.move_loss",
-                "--source",
-                "two smoke-scale seeds",
-            ]
-        )
-        == 0
-    )
-    assert "held_out.move_loss" in capsys.readouterr().out
-
-    assert main(["eval", "noise", "list", "--store", store]) == 0
-    listed = capsys.readouterr().out
-    assert "training" in listed
-    assert "two smoke-scale seeds" in listed
-    # Two floors from different configurations would otherwise render alike.
-    assert f"valid for training configuration {CLI_TRAINING_SHA256[:16]}" in listed
-
-    # The report now judges the delta against the floor it just characterized
-    # rather than reporting that no floor is known.
-    assert main(["eval", "report", "--store", store]) == 0
-    assert "(training)" in capsys.readouterr().out
-
-
-def test_eval_noise_characterize_needs_more_than_one_replicate(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _record_fixture_results(tmp_path / "results")
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                str(tmp_path / "results"),
-                "--kind",
-                "training",
-                "--checkpoint",
-                "checkpoint-a",
-                "--source",
-                "one run",
-            ]
-        )
-        == 2
-    )
-    assert "at least two checkpoints" in capsys.readouterr().err
-
-
-def test_eval_noise_characterize_refuses_replicates_with_no_training_identity(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A floor is stored for later lookup, so it has to say what it describes.
-
-    Recording one whose scope cannot be established would put back exactly the
-    floor that qualifies every configuration on the pool.
-    """
-
-    _record_fixture_results(tmp_path / "results", training_sha256=None)
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                str(tmp_path / "results"),
-                "--kind",
-                "training",
-                "--checkpoint",
-                "checkpoint-a",
-                "--checkpoint",
-                "checkpoint-b",
-                "--source",
-                "two seeds",
-            ]
-        )
-        == 2
-    )
-    assert "records no training identity" in capsys.readouterr().err
-
-
-def test_eval_noise_characterize_reads_the_scope_off_the_replicates_it_used(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """An older reading of the same checkpoint is history, not a second replicate.
-
-    The store appends, so a label routinely carries readings this floor was not
-    built from — including ones recorded before the identity existed. Refusing
-    on those would be unsatisfiable, since nothing can retract them.
-    """
-
-    store = str(tmp_path / "results")
-    _record_fixture_results(tmp_path / "results", training_sha256=None, month=6)
-    _record_fixture_results(tmp_path / "results")
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                store,
-                "--kind",
-                "training",
-                "--checkpoint",
-                "checkpoint-a",
-                "--checkpoint",
-                "checkpoint-b",
-                "--metric",
-                "held_out.move_loss",
-                "--source",
-                "two smoke-scale seeds",
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()
-
-    assert main(["eval", "noise", "list", "--store", store]) == 0
-    assert (
-        f"valid for training configuration {CLI_TRAINING_SHA256[:16]}"
-        in capsys.readouterr().out
     )
 
 
@@ -1745,15 +1592,6 @@ def test_eval_noise_plan_reports_a_missing_spread_without_a_traceback(
         == 2
     )
     assert "no reading records a sampled dispersion" in capsys.readouterr().err
-
-
-def test_eval_noise_list_says_when_nothing_is_characterized(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert main(["eval", "noise", "list", "--store", str(tmp_path / "results")]) == 0
-
-    assert "No noise characterization is recorded." in capsys.readouterr().out
 
 
 def _inference_config(path: Path, checkpoint: Path) -> Path:
@@ -1829,7 +1667,7 @@ def _run_worker_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_noise_module.subprocess, "run", fake_run)
 
 
-def test_eval_noise_sample_measures_repeatedly_and_records_nothing(
+def test_eval_noise_sample_measures_one_reading_and_records_nothing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     inference_run: Callable[..., Path],
@@ -1838,140 +1676,12 @@ def test_eval_noise_sample_measures_repeatedly_and_records_nothing(
     config = _inference_config(tmp_path / "inference.toml", checkpoint)
     monkeypatch_store = tmp_path / "results"
 
-    assert (
-        main(["eval", "noise", "sample", "--config", str(config), "--repeats", "2"])
-        == 0
-    )
+    assert main(["eval", "noise", "sample", "--config", str(config)]) == 0
 
     output = capsys.readouterr().out
-    assert "2 reading(s) in this process, recorded nowhere" in output
+    assert "One reading in this process, recorded nowhere" in output
     assert "inference.move_latency_p50_ms" in output
     assert not monkeypatch_store.exists()
-
-
-def test_eval_noise_characterizes_this_machines_timing_noise(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-    inference_run: Callable[..., Path],
-) -> None:
-    checkpoint = inference_run(tmp_path / "run", seed=22)
-    config = _inference_config(tmp_path / "inference.toml", checkpoint)
-    store = str(tmp_path / "results")
-    _run_worker_in_process(monkeypatch)
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                store,
-                "--kind",
-                "execution",
-                "--config",
-                str(config),
-                "--processes",
-                "2",
-                "--repeats",
-                "1",
-                "--source",
-                "two processes on the test machine",
-            ]
-        )
-        == 0
-    )
-    characterized = capsys.readouterr().out
-    assert "Characterized execution noise over 2 reading(s) in 2 process(es)" in (
-        characterized
-    )
-    assert "Valid on:" in characterized
-
-    assert main(["eval", "noise", "list", "--store", store]) == 0
-    listed = capsys.readouterr().out
-    assert "execution" in listed
-    assert "valid on" in listed
-    assert "inference.move_latency_p50_ms" in listed
-
-
-def test_eval_noise_characterize_execution_needs_a_workload_to_repeat(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                str(tmp_path / "results"),
-                "--kind",
-                "execution",
-                "--source",
-                "this machine",
-            ]
-        )
-        == 2
-    )
-    assert "needs --config" in capsys.readouterr().err
-
-
-def test_eval_noise_characterize_execution_takes_no_checkpoint_list(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """An execution floor describes a machine, not a set of checkpoints."""
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                str(tmp_path / "results"),
-                "--kind",
-                "execution",
-                "--config",
-                str(tmp_path / "inference.toml"),
-                "--checkpoint",
-                "checkpoint-a",
-                "--source",
-                "this machine",
-            ]
-        )
-        == 2
-    )
-    assert "takes no --checkpoint" in capsys.readouterr().err
-
-
-def test_eval_noise_characterize_reads_other_kinds_from_the_store(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Only execution noise is measured; the rest are already recorded."""
-
-    assert (
-        main(
-            [
-                "eval",
-                "noise",
-                "characterize",
-                "--store",
-                str(tmp_path / "results"),
-                "--kind",
-                "training",
-                "--config",
-                str(tmp_path / "inference.toml"),
-                "--source",
-                "three seeds",
-            ]
-        )
-        == 2
-    )
-    assert "reads replicates the store already holds" in capsys.readouterr().err
 
 
 def test_eval_suite_plans_the_shipped_selection_without_running_it(

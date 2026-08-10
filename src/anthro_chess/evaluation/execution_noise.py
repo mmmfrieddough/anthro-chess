@@ -1,53 +1,50 @@
 """Execution noise: how far a timing reading moves when nothing changed.
 
-Every other floor this project characterizes can be estimated from numbers a
-run already computed. This one cannot. The noise in an efficiency metric comes
+Every other dispersion this project reports is estimated from numbers a run
+already computed. This one cannot be. The noise in an efficiency metric comes
 from the machine — scheduler contention, thermal state, other processes,
 allocator and kernel warmth — and no amount of resampling an already-measured
 latency will reveal it. It has to be measured by measuring again.
 
-So a characterization here *runs the benchmark*, several times, across several
-processes:
+So the inference benchmark *runs itself again*, in several processes, and
+reports the spread across them beside its own value. That is the whole reason
+this module exists as something other than a bootstrap.
 
 **Across processes, because that is what a report compares.** Two efficiency
 readings in the store were taken by two invocations of ``anthro eval
 inference``, days apart. Each paid its own model load, its own lazy kernel
-compilation, and its own allocator growth. A floor built from repeats inside
-one process would omit exactly those and license a difference that is only
-process luck.
+compilation, and its own allocator growth. A dispersion built from repeats
+inside one process would omit exactly those and license a difference that is
+only process luck.
 
-**Within a process, because it says where the noise lives.** Repeating inside
-one process measures the part a second process would *not* have to pay for
-again. Reported beside the total, it tells a reader whether the cheap form of
-replication would have been enough here, which is not knowable in advance and
-differs by device.
+**In the same session as the reading it qualifies.** A dispersion measured now
+describes the machine now, and a machine drifts: #161 measured a floor taken on
+a quiet machine licensing four times as many false findings once the machine was
+hot, which is further than any arithmetic on the replicates moves anything.
 
-Cold-start metrics are the exception and are treated as one reading per
-process. A second load in the same process reads a warm file cache and an
-already-imported Torch, so repeating it in process would report a dispersion
-several times narrower than two real cold starts — a floor too narrow is worse
-than none, because it licenses noise as a finding.
-
-The floor this produces is valid on the machine that produced it and nowhere
-else. ``anthro_chess.evaluation.results.noise`` owns that scoping rule and the
-stored record; this module owns the driving.
+One reading per process, and no repeats inside one. A second reading is cheap
+and would widen the estimate rather than firm it up: it shares an allocator, a
+warm file cache and a compiled kernel with the first, and #369 measured the
+pooled estimator under-weighting the between-process term — the only term here —
+whenever a process contributes more than one.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.inference import (
-    COLD_START_METRICS,
     INFERENCE_KIND,
     InferenceBenchmarkConfig,
     InferenceBenchmarkError,
@@ -56,29 +53,13 @@ from anthro_chess.evaluation.results import (
     PROCESS_REPLICATE_METHOD,
     CheckpointReference,
     ExecutionRecord,
-    NoiseCharacterization,
+    Measurement,
+    MetricDispersion,
     NoiseCharacterizationError,
-    build_characterization,
-    environment_key,
-    process_replicate_floors,
-    series_fingerprint,
+    measured_dispersion,
+    process_dispersion,
 )
-from anthro_chess.evaluation.results.noise import DEFAULT_CONFIDENCE, DEFAULT_COVERAGE
-
-#: Processes to spread the replicates across. The process is the independent
-#: replicate a floor's dispersion bound counts, so this is the one lever that
-#: narrows a floor honestly rather than by assuming the spread is better known
-#: than it is. Three processes leave two degrees of freedom, where the bound
-#: sits more than four times above the measured dispersion and every floor is
-#: too wide to resolve anything; six leave five, where it sits about twice
-#: above. Past that the curve flattens — twelve processes would buy another
-#: quarter for twice the model loads — so this is where the cost stops paying.
-DEFAULT_PROCESSES = 6
-
-#: Readings per process. Two is enough to see whether repeating in process
-#: reproduces the spread; more of them buys precision in the diagnostic rather
-#: than in the floor, which is dominated by the process count.
-DEFAULT_REPEATS = 2
+from anthro_chess.evaluation.results.noise import DEFAULT_CONFIDENCE
 
 
 class ExecutionNoiseError(ValueError):
@@ -91,10 +72,27 @@ class ProcessSample:
 
     execution: ExecutionRecord
     checkpoint: CheckpointReference
-    #: One mapping of metric identifier to value per reading, in the order the
-    #: process took them. The first reading is the only one whose cold start is
-    #: a cold start.
-    readings: tuple[Mapping[str, float], ...]
+    reading: Mapping[str, float]
+
+    @classmethod
+    def from_measurements(
+        cls,
+        execution: ExecutionRecord,
+        checkpoint: CheckpointReference,
+        values: Sequence[Measurement],
+    ) -> ProcessSample:
+        """Return the sample one process's measurements amount to.
+
+        Built here rather than at each call site because the process taking the
+        reading and the processes qualifying it have to reduce their
+        measurements the same way, or their values are not poolable.
+        """
+
+        return cls(
+            execution=execution,
+            checkpoint=checkpoint,
+            reading={value.metric: value.value for value in values},
+        )
 
     def as_record(self) -> dict[str, Any]:
         """Return the JSON-compatible record a worker process prints."""
@@ -102,7 +100,7 @@ class ProcessSample:
         return {
             "execution": self.execution.model_dump(mode="json"),
             "checkpoint": self.checkpoint.model_dump(mode="json"),
-            "readings": [dict(reading) for reading in self.readings],
+            "reading": dict(self.reading),
         }
 
     @classmethod
@@ -113,12 +111,12 @@ class ProcessSample:
             return cls(
                 execution=ExecutionRecord.model_validate(payload["execution"]),
                 checkpoint=CheckpointReference.model_validate(payload["checkpoint"]),
-                readings=tuple(
-                    {str(metric): float(value) for metric, value in reading.items()}
-                    for reading in payload["readings"]
-                ),
+                reading={
+                    str(metric): float(value)
+                    for metric, value in payload["reading"].items()
+                },
             )
-        except (KeyError, TypeError, ValueError) as error:
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
             raise ExecutionNoiseError(
                 f"a replicate process produced an unreadable sample: {error}"
             ) from error
@@ -127,58 +125,61 @@ class ProcessSample:
 def sample_execution_noise(
     resolved_config: ResolvedConfig[InferenceBenchmarkConfig],
     *,
-    repeats: int = DEFAULT_REPEATS,
     run_root: Path | None = None,
 ) -> ProcessSample:
-    """Measure one checkpoint's efficiency ``repeats`` times in this process.
+    """Measure one checkpoint's efficiency once in this process.
 
-    Nothing is recorded. These readings are evidence about the machine rather
-    than about the model, and committing them would put a checkpoint's history
-    at the mercy of how many times its noise was characterized.
+    Nothing is recorded. The reading is evidence about the machine rather than
+    about the model, and committing it would put a checkpoint's history at the
+    mercy of how many times its noise was measured.
+
+    Pinning the selection to one replicate is what stops the recursion: the
+    benchmark spawns this sampler, so a sampled run that spawned its own
+    replicates would never terminate.
     """
 
-    if repeats < 1:
-        raise ExecutionNoiseError("a process has to take at least one reading")
-
-    inference = benchmark_registry()["inference"]
-    readings: list[Mapping[str, float]] = []
-    execution: ExecutionRecord | None = None
-    checkpoint: CheckpointReference | None = None
-    for _ in range(repeats):
-        try:
-            # Through the driver, with no store: the envelopes are assembled
-            # and nothing is appended, which is what this sampler wants.
-            result = run_benchmark(inference, resolved_config, run_root=run_root)
-        except InferenceBenchmarkError as error:
-            raise ExecutionNoiseError(str(error)) from error
-        # The invocation also records what it cost, on its own workload. A
-        # characterization covers one workload, so folding that reading in here
-        # would produce a floor keyed to neither.
-        (envelope,) = (item for item in result.envelopes if item.kind == INFERENCE_KIND)
-        readings.append({item.metric: item.value for item in envelope.measurements})
-        execution, checkpoint = result.execution, result.checkpoint
-
-    assert execution is not None and checkpoint is not None  # repeats >= 1
-    return ProcessSample(
-        execution=execution,
-        checkpoint=checkpoint,
-        readings=tuple(readings),
+    pinned = ResolvedConfig(
+        value=resolved_config.value.model_copy(update={"replicates": 1}),
+        provenance=resolved_config.provenance,
+    )
+    try:
+        # Through the driver, with no store: the envelopes are assembled and
+        # nothing is appended, which is what this sampler wants.
+        result = run_benchmark(
+            benchmark_registry()["inference"],
+            pinned,
+            run_root=run_root,
+        )
+    except InferenceBenchmarkError as error:
+        raise ExecutionNoiseError(str(error)) from error
+    # The invocation also records what it cost, on its own workload. A
+    # dispersion covers one workload, so folding that reading in here would
+    # produce one keyed to neither.
+    (envelope,) = (item for item in result.envelopes if item.kind == INFERENCE_KIND)
+    return ProcessSample.from_measurements(
+        result.execution,
+        result.checkpoint,
+        envelope.measurements,
     )
 
 
 def subprocess_sampler(
+    selection: InferenceBenchmarkConfig,
     *,
-    config_path: Path,
-    overrides: Sequence[str] = (),
-    repeats: int = DEFAULT_REPEATS,
     timeout_seconds: float | None = None,
 ) -> Callable[[], ProcessSample]:
-    """Return a sampler that measures in a fresh interpreter each time.
+    """Return a sampler that measures ``selection`` in a fresh interpreter.
 
     A separate process is the whole point rather than an implementation
     detail: the state that makes the first reading in a process different —
     an unwarmed allocator, uncompiled kernels, an unread checkpoint file — is
     only reset by leaving the process.
+
+    The already-resolved selection is handed over rather than the file and
+    overrides it came from. A replicate has to measure what the parent
+    measured, and re-deriving that from a selection file cannot: the sweep
+    replaces a benchmark's model in memory, and a default selection resolves
+    against whatever the machine currently points at.
     """
 
     command = [
@@ -188,20 +189,24 @@ def subprocess_sampler(
         "eval",
         "noise",
         "sample",
-        "--config",
-        str(config_path),
-        "--repeats",
-        str(repeats),
+        "--selection",
+        "-",
         "--format",
         "json",
     ]
-    for override in overrides:
-        command.extend(("--set", override))
+    payload = json.dumps(selection.model_dump(mode="json"))
+    # A fresh interpreter picks its own intra-op thread count, and the count is
+    # part of the environment a reading declares — so a parent that pinned one
+    # would refuse its own replicates for measuring a different machine. It also
+    # changes what a CPU reading measures, which is the substantive half.
+    environment = dict(os.environ, OMP_NUM_THREADS=str(torch.get_num_threads()))
 
     def sample() -> ProcessSample:
         try:
             completed = subprocess.run(  # noqa: S603 - fixed command, no shell
                 command,
+                input=payload,
+                env=environment,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -217,65 +222,76 @@ def subprocess_sampler(
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
             )
         try:
-            payload = json.loads(completed.stdout)
+            sampled = json.loads(completed.stdout)
         except json.JSONDecodeError as error:
             raise ExecutionNoiseError(
                 f"a replicate process printed no readable sample: {error}"
             ) from error
-        return ProcessSample.from_record(payload)
+        return ProcessSample.from_record(sampled)
 
     return sample
 
 
-def characterize_execution_noise(
+def measure_execution_dispersions(
+    own: ProcessSample,
     sampler: Callable[[], ProcessSample],
     *,
-    processes: int = DEFAULT_PROCESSES,
-    source: str,
-    coverage: float = DEFAULT_COVERAGE,
-    confidence: float = DEFAULT_CONFIDENCE,
-    recorded_at: datetime | None = None,
-) -> NoiseCharacterization:
-    """Return the recordable execution floor for one machine and workload.
+    processes: int,
+) -> dict[str, float]:
+    """Return one dispersion per metric, spread across ``processes`` processes.
 
-    Fewer processes do not produce a narrower floor here, only a less certain
-    one: the dispersion bound widens as the degrees of freedom fall, so cutting
-    the count trades measurement time for a floor that resolves less. Two
-    processes are permitted because a coarse floor beats none, but they leave
-    one degree of freedom and a floor an order of magnitude above the spread.
+    ``own`` is the reading being qualified, and it counts as one of them: the
+    dispersion has to describe the reading it travels with, not a neighbouring
+    measurement of the same thing.
+
+    Fewer processes do not produce a narrower dispersion here, only a less
+    certain one: the bound widens as the degrees of freedom fall, so cutting the
+    count trades measurement time for a floor that resolves less. Two processes
+    are permitted because a coarse floor beats none, but they leave one degree
+    of freedom and a floor an order of magnitude above the spread.
     """
 
     if processes < 2:
         raise ExecutionNoiseError(
-            "an execution floor needs at least two processes; one process "
+            "an execution dispersion needs at least two processes; one process "
             "cannot observe what a second one would pay for again"
         )
-    samples = [sampler() for _ in range(processes)]
-    _require_one_execution(samples)
-    replicates = _grouped_readings(samples)
-    execution = samples[0].execution
-    workload = execution.workload_component()
+    samples = [own]
+    for _ in range(processes - 1):
+        samples.append(sampler())
+        # Checked as each arrives rather than at the end: a replicate that fell
+        # back to another device makes every later one wasted work, and each is
+        # a whole benchmark run.
+        _require_one_execution(samples)
     try:
-        floors = process_replicate_floors(
-            replicates,
-            fingerprints={
-                metric: series_fingerprint(metric, None, workload)
-                for metric in replicates
-            },
-            coverage=coverage,
-            confidence=confidence,
-        )
-        return build_characterization(
-            kind="execution",
-            method=PROCESS_REPLICATE_METHOD,
-            replicates=sum(len(sample.readings) for sample in samples),
-            processes=len(samples),
-            coverage=coverage,
+        return {
+            metric: process_dispersion(values)
+            for metric, values in _readings_by_metric(samples).items()
+        }
+    except NoiseCharacterizationError as error:
+        raise ExecutionNoiseError(str(error)) from error
+
+
+def execution_dispersion_record(
+    dispersion: float,
+    *,
+    processes: int,
+    source: str,
+    confidence: float = DEFAULT_CONFIDENCE,
+) -> MetricDispersion:
+    """Return the record a reading stores for what its replicates measured.
+
+    No ``units``: this spread is a property of the machine rather than of a
+    sample that could be enlarged, so no pool size follows from it.
+    """
+
+    try:
+        return measured_dispersion(
+            dispersion,
+            degrees_of_freedom=processes - 1,
             confidence=confidence,
             source=source,
-            execution=execution,
-            floors=floors,
-            recorded_at=recorded_at,
+            estimator=PROCESS_REPLICATE_METHOD,
         )
     except NoiseCharacterizationError as error:
         raise ExecutionNoiseError(str(error)) from error
@@ -295,8 +311,8 @@ def _require_one_execution(samples: Sequence[ProcessSample]) -> None:
             "the replicate processes measured different declared workloads, so "
             "their spread is not one measurement's noise"
         )
-    environments = {environment_key(sample.execution) for sample in samples}
-    if len(environments) > 1:
+    environments = [sample.execution.environment() for sample in samples]
+    if any(environment != environments[0] for environment in environments):
         raise ExecutionNoiseError(
             "the replicate processes ran in different environments, so their "
             "spread is not one machine's noise"
@@ -309,55 +325,33 @@ def _require_one_execution(samples: Sequence[ProcessSample]) -> None:
         )
 
 
-def _grouped_readings(
+def _readings_by_metric(
     samples: Sequence[ProcessSample],
-) -> dict[str, tuple[tuple[float, ...], ...]]:
-    """Return each metric's readings, grouped by the process that took them.
+) -> dict[str, tuple[float, ...]]:
+    """Return each metric's one value per process, in process order."""
 
-    A cold-start metric keeps only each process's first reading, since a
-    reload inside one process is not a second cold start.
-    """
-
-    metrics = {
-        metric
-        for sample in samples
-        for reading in sample.readings
-        for metric in reading
-    }
+    metrics = {metric for sample in samples for metric in sample.reading}
     missing = [
         metric
         for metric in sorted(metrics)
-        if any(
-            metric not in reading for sample in samples for reading in sample.readings
-        )
+        if any(metric not in sample.reading for sample in samples)
     ]
     if missing:
         raise ExecutionNoiseError(
             f"not every replicate reported {', '.join(missing)}; the replicates "
             "do not describe one measurement"
         )
-    grouped: dict[str, tuple[tuple[float, ...], ...]] = {}
-    for metric in sorted(metrics):
-        grouped[metric] = tuple(
-            tuple(
-                reading[metric]
-                for reading in (
-                    sample.readings[:1]
-                    if metric in COLD_START_METRICS
-                    else sample.readings
-                )
-            )
-            for sample in samples
-        )
-    return grouped
+    return {
+        metric: tuple(sample.reading[metric] for sample in samples)
+        for metric in sorted(metrics)
+    }
 
 
 __all__ = [
-    "DEFAULT_PROCESSES",
-    "DEFAULT_REPEATS",
     "ExecutionNoiseError",
     "ProcessSample",
-    "characterize_execution_noise",
+    "execution_dispersion_record",
+    "measure_execution_dispersions",
     "sample_execution_noise",
     "subprocess_sampler",
 ]

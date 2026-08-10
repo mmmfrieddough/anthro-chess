@@ -10,17 +10,18 @@
     "version": 1
   },
   "checkpoint": {
-    "label": "training-blitz-30k-v4-step-00008000",
-    "parameter_sha256": "909b7eafc39c47583c505e1d88355ee7612e56a81af6e1d038be4505ebcd1d2f",
+    "label": "training-blitz-30k-v4-step-00000100",
+    "parameter_sha256": "da1697571bc9a83225806b0407ccb6400699343fbf89670759395d303be105dd",
     "run_id": "training-blitz-30k-v4",
-    "step": 8000
+    "step": 100,
+    "training_sha256": null
   },
   "configuration": {
     "overrides": [
-      "model.checkpoint_path=\"/Users/pspagnardi/.local/share/anthro-chess/runs/training-blitz-30k-v4/checkpoints/step-00008000.pt\"",
+      "model.checkpoint_path=\"/Users/pspagnardi/.local/share/anthro-chess/runs/training-blitz-30k-v4/checkpoints/step-00000100.pt\"",
       "view.maximum_games=400"
     ],
-    "sha256": "bd9d56c8f4d37cffcdc663c56608400078258d253f7de43b8dd0276b62966a2d",
+    "sha256": "6c1e8990e9a66d7c35ab6d2fffe7e612dc1ee20a8dab95df6182b1ffa3c144aa",
     "source": "/Users/pspagnardi/Documents/Repositories/anthro-chess/configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
   },
   "data": {
@@ -39,10 +40,10 @@
     "view": "canonical"
   },
   "detail": {
-    "bytes": 2548646,
+    "bytes": 2564968,
     "description": "Slice tables and view provenance for one evaluation.",
-    "path": "held-out-prediction/training-blitz-30k-v4-step-00008000/20260801T073838Z.json",
-    "sha256": "53b3ba08f6252d54b69f0126a01ea28d9a120c3290b51f3918b8d559b7619090"
+    "path": "held-out-prediction/training-blitz-30k-v4-step-00000100/20260801T073755Z.json",
+    "sha256": "acd2122dc6543f3add3be8683992919654b84749186b934c69f5525e7890bfaa"
   },
   "encoding": {
     "action_vocabulary": {
@@ -56,7 +57,7 @@
     "schema_sha256": "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9",
     "version": 4
   },
-  "envelope_version": 6,
+  "envelope_version": 7,
   "environment": {
     "dependencies": {
       "chess": "1.11.2",
@@ -73,177 +74,164 @@
   "measurements": [
     {
       "dispersion": {
-        "bound": 0.019175730431654384,
+        "bound": 0.012318920088808503,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.01805437696364678
+        "value": 0.011598537425267787
       },
       "fingerprint": "9ba42b4e6f5496fb137835b9d139eb2aa40ce9580d672f11dbedf68e41e9cc4a",
       "metric": "held_out.legal_move_loss",
       "sample_size": 28668,
-      "value": 2.890620413411937
+      "value": 3.586189180873011
     },
     {
       "dispersion": {
-        "bound": 0.025455165703833153,
+        "bound": 0.020351194719236566,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.02396660502331889
+        "value": 0.0191611027507532
       },
       "fingerprint": "c2d75c2d2ec946754dc2d8830725f8dd1e957bf6842c0541e297e95261da8649",
       "metric": "held_out.move_loss",
       "sample_size": 28668,
-      "value": 3.632417023456692
+      "value": 6.240095192548005
     },
     {
       "dispersion": {
-        "bound": 0.04457013701662985,
+        "bound": 0.037533278001655596,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.04196377592434681
+        "value": 0.035338416554116
       },
       "fingerprint": "570774d1d8cbcb5139d936b24db2c13354823d889d8e31cc9b28633a005c5e61",
       "metric": "held_out.move_loss_1200_to_1599",
       "sample_size": 9695,
-      "value": 3.5524761012548853
+      "value": 6.154238700795424
     },
     {
       "dispersion": {
-        "bound": 0.034077083929033976,
+        "bound": 0.026797873921009935,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.03208433291599673
+        "value": 0.025230794692207778
       },
       "fingerprint": "a2bc351241cdbfd02c67a8e508fdcaefbca0d0c703021790988f5c56db942d2d",
       "metric": "held_out.move_loss_1600_to_1999",
       "sample_size": 13917,
-      "value": 3.6502442414626883
+      "value": 6.279814857148686
     },
     {
       "dispersion": {
-        "bound": 0.06759966464680671,
+        "bound": 0.05484213409962019,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.06364658871793802
+        "value": 0.05163508978468603
       },
       "fingerprint": "314c456d808366c58ba2fff4749a49858d6ed4d86ed600426c542aa2ba617923",
       "metric": "held_out.move_loss_2000_plus",
       "sample_size": 3344,
-      "value": 3.7287885447166023
+      "value": 6.267108497914208
     },
     {
       "dispersion": {
-        "bound": 0.05891575912730303,
+        "bound": 0.022099047688406797,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.055470498408126234
+        "value": 0.02080674522027482
       },
       "fingerprint": "ac6b341e9224cb1f0ec307b608d61b9acf667b011811b5e8d2cd771b0017575d",
       "metric": "held_out.move_loss_endgame",
       "sample_size": 4031,
-      "value": 4.057929491632185
+      "value": 6.939651473784056
     },
     {
       "dispersion": {
-        "bound": 0.027551358004681094,
+        "bound": 0.012659399072334633,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.025940216726022498
+        "value": 0.011919105965730403
       },
       "fingerprint": "67ad0da695ab92d681c1704245183a3f86662468c0e042af6fe42c8f3af95fee",
       "metric": "held_out.move_loss_middlegame",
       "sample_size": 15166,
-      "value": 4.318561449005709
+      "value": 6.914542602286323
     },
     {
       "dispersion": {
-        "bound": 0.02738967754011536,
+        "bound": 0.020523911601185996,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.025787990970381466
+        "value": 0.01932371953898011
       },
       "fingerprint": "f6bff5139cbe630a60d8ae599f3c99e0646805bbead8e40c1daf18da2e5ca3d9",
       "metric": "held_out.move_loss_opening",
       "sample_size": 9471,
-      "value": 2.352583097040016
+      "value": 4.862354638672568
     },
     {
       "dispersion": {
-        "bound": 0.08366406598316785,
+        "bound": 0.059478855564312615,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.07877158009470471
+        "value": 0.05600066623546883
       },
       "fingerprint": "d1fa129fe1f31affebcd00b1ac0d0bbae51fd5982195c6a18d195c8aa6cf2a07",
       "metric": "held_out.move_loss_under_1200",
       "sample_size": 1712,
-      "value": 3.751961112629136
+      "value": 6.350648710158045
     },
     {
       "dispersion": {
-        "bound": 0.0035113858937212503,
+        "bound": 0.002281531634121622,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.003306047965996867
+        "value": 0.002148112809769145
       },
       "fingerprint": "ead855cd65b053baae692670e29a53d2b32af6f47bb0859e6ae81dd75e2e74d9",
       "metric": "held_out.top1_accuracy",
       "sample_size": 28668,
-      "value": 0.239430724152365
+      "value": 0.07705455560206502
     },
     {
       "dispersion": {
-        "bound": 0.004713995813509849,
+        "bound": 0.003090916649273526,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.0044383319699606814
+        "value": 0.0029101668146667677
       },
       "fingerprint": "013b0132451cdbe48f4241d058f7dcc0d431a0ec7f27116b45e172df92ab1c49",
       "metric": "held_out.top3_accuracy",
       "sample_size": 28668,
-      "value": 0.45269987442444537
+      "value": 0.22547788474954653
     },
     {
       "dispersion": {
-        "bound": 0.0049642697625495195,
+        "bound": 0.003949381955738109,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.004673970462911319
+        "value": 0.0037184310061334483
       },
       "fingerprint": "031e778019714fe48ae7d681e4516cabb82a678f09d0e98ae7550ae88e9fe17e",
       "metric": "held_out.top5_accuracy",
       "sample_size": 28668,
-      "value": 0.567182921724571
+      "value": 0.32241523650062787
     },
     {
       "dispersion": {
         "bound": 0.013327452038022554,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.012548092700666024
@@ -255,229 +243,213 @@
     },
     {
       "dispersion": {
-        "bound": 0.028339168935536372,
+        "bound": 0.009678718501296032,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.02668195825041644
+        "value": 0.00911272887206232
       },
       "fingerprint": "3ec745907fbf24972f2ab76ba2288d1fe12d69dc0166af8e204c4a2ce9b452de",
       "metric": "legality.legal_margin",
       "sample_size": 28668,
-      "value": 1.4077532312203704
+      "value": 0.3099376204681809
     },
     {
       "dispersion": {
-        "bound": 0.00515017392964176,
+        "bound": 0.0016876338502178955,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.004849003373587595
+        "value": 0.0015889448288315224
       },
       "fingerprint": "61907971ffabf05d717cdf8cfb2d68e2505a7dbfbf3a56f80ef4c8c22e301a75",
       "metric": "legality.legal_mass",
       "sample_size": 28668,
-      "value": 0.5699018899716504
+      "value": 0.1042960530693015
     },
     {
       "dispersion": {
-        "bound": 0.02463454804151469,
+        "bound": 0.014091215428366997,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.02319397523112766
+        "value": 0.013267192930483023
       },
       "fingerprint": "f78a4f0b90b4ad759c77b1579928ee79888272e7b6631b548e67309829c88ad1",
       "metric": "legality.legality_lift",
       "sample_size": 28668,
-      "value": 4.891389524439575
+      "value": 1.7706430410298382
     },
     {
       "dispersion": {
-        "bound": 0.012706782973857562,
+        "bound": 0.021571048296670968,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.011963718963558695
+        "value": 0.02030962204215386
       },
       "fingerprint": "2f4094fa70fec73e532f0246588a31e08c12a8478685c3e8262eaa23619e8fb1",
       "metric": "legality.mask_penalty",
       "sample_size": 28668,
-      "value": 0.7417966100447629
+      "value": 2.653906011674989
     },
     {
       "dispersion": {
-        "bound": 0.01282179261222715,
+        "bound": 0.017702517325304857,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.012072003097661328
+        "value": 0.016667314037172136
       },
       "fingerprint": "c79806adc9e3df5e771e6de785413852ccc4b5c371c3c15c62bf7dced9f017a5",
       "metric": "legality.mask_penalty_castling_available",
       "sample_size": 2691,
-      "value": 0.34013268998691976
+      "value": 1.9559268365259335
     },
     {
       "dispersion": {
-        "bound": 0.012860986913633465,
+        "bound": 0.017515563683581994,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.01210890540471756
+        "value": 0.016491293022774724
       },
       "fingerprint": "e8aac82149efb6398a9f49dc2caac648790b959167eca9df843084fc545da700",
       "metric": "legality.mask_penalty_castling_rights",
       "sample_size": 10381,
-      "value": 0.28122217740480054
+      "value": 1.8199403525873863
     },
     {
       "dispersion": {
-        "bound": 0.03796397708820904,
+        "bound": 0.00968312582355958,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.035743929329457164
+        "value": 0.00911687846405987
       },
       "fingerprint": "a4b66eb8f971ff89b46fde0d4e096de026aba4637979240aa7c81804366af93d",
       "metric": "legality.mask_penalty_check",
       "sample_size": 1954,
-      "value": 2.089614371047358
+      "value": 4.316830857879021
     },
     {
       "dispersion": {
-        "bound": 0.10352062341858183,
+        "bound": 0.11862712141016234,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.09746697083442205
+        "value": 0.11169007489362096
       },
       "fingerprint": "186e87062fed0d39ea148e6b8b056fc7061eb548182a52e70e69365872cd8dd6",
       "metric": "legality.mask_penalty_en_passant",
       "sample_size": 39,
-      "value": 0.7142307449533467
+      "value": 2.4555481585816303
     },
     {
       "dispersion": {
-        "bound": 0.023781893535411817,
+        "bound": 0.019722261290967907,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.02239118203752282
+        "value": 0.0185689479309161
       },
       "fingerprint": "d2df79edff3438daddc01f4bca1c252e521442df277665c6be76009d234eb96e",
       "metric": "legality.mask_penalty_endgame",
       "sample_size": 4031,
-      "value": 1.2557266646975032
+      "value": 3.7712724325708926
     },
     {
       "dispersion": {
-        "bound": 0.013442991333576975,
+        "bound": 0.01395582584130453,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.012656875518795876
+        "value": 0.013139720621123521
       },
       "fingerprint": "35f686435fc33e861884c6a3fd8a00efc3f17d154ca3867b3618fd81e1d44b35",
       "metric": "legality.mask_penalty_middlegame",
       "sample_size": 15166,
-      "value": 0.9497854780369605
+      "value": 2.9555053009431256
     },
     {
       "dispersion": {
-        "bound": 0.08564532482642508,
+        "bound": 0.018401969589548588,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.08063697938920442
+        "value": 0.01732586391049986
       },
       "fingerprint": "698af87d57179f6ccac02720f77144267701e744eff786c4cabb6bf7693c3e98",
       "metric": "legality.mask_penalty_only_move",
       "sample_size": 256,
-      "value": 2.7915242436369345
+      "value": 4.624222340936678
     },
     {
       "dispersion": {
-        "bound": 0.004729180125445197,
+        "bound": 0.0058973184084282395,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.004452628337579713
+        "value": 0.005552456528313378
       },
       "fingerprint": "9431c3ae056d45e058a20a26054c31df0a0e23bba3550e925c35b7df42d61440",
       "metric": "legality.mask_penalty_opening",
       "sample_size": 9471,
-      "value": 0.19000575139467615
+      "value": 1.6953843282548533
     },
     {
       "dispersion": {
-        "bound": 0.022598965392852752,
+        "bound": 0.027657848573780675,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.0212774288648451
+        "value": 0.026040479966812708
       },
       "fingerprint": "2d42053f5e75f26a133ff06f658b9ed2b680273b4083567039439fe6218486c9",
       "metric": "legality.mask_penalty_pin",
       "sample_size": 2454,
-      "value": 0.835961773047562
+      "value": 2.816912320516581
     },
     {
       "dispersion": {
-        "bound": 0.0566412805202595,
+        "bound": 0.05138426323790462,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.053329026180318574
+        "value": 0.04837942741231731
       },
       "fingerprint": "0fdeee60c04ebd23c713f0c67b3ec4fddfca400639a5aec64a1775007eb0708a",
       "metric": "legality.mask_penalty_promotion",
       "sample_size": 196,
-      "value": 1.2596329609556165
+      "value": 3.638425538329674
     },
     {
       "dispersion": {
-        "bound": 0.005143388243621171,
+        "bound": 0.006973720700000928,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.004842614499181515
+        "value": 0.006565913241519265
       },
       "fingerprint": "c6f69e1b5858758c2294411dac63d7f7a7a728ccde70f718e9a9d4e344845b43",
       "metric": "legality.top1_illegal_rate",
       "sample_size": 28668,
-      "value": 0.23008232175247664
+      "value": 0.29764894656062507
     },
     {
       "dispersion": {
-        "bound": 0.004684869319160008,
+        "bound": 0.0032240994592547703,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
-        "value": 0.0044109087273105085
+        "value": 0.0030355613942917416
       },
       "fingerprint": "432774586de38295387e0d2d38d94dd273fadd60a8009bb4075e0ec7d4fe0778",
       "metric": "legality.top_illegal_fraction",
       "sample_size": 28668,
-      "value": 0.2925631365982818
+      "value": 0.6281707827541648
     }
   ],
-  "recorded_at": "2026-08-01T07:38:38.083420Z",
-  "result_id": "1225588fbb3b4c13"
+  "recorded_at": "2026-08-01T07:37:55.982882Z",
+  "result_id": "f0fe99318f2b0bf3"
 }

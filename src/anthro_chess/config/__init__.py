@@ -6,6 +6,7 @@ from anthro_chess.config.core import (
     ConfigProvenance,
     ResolvedConfig,
     load_config,
+    load_config_json,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "ConfigProvenance",
     "ResolvedConfig",
     "load_config",
+    "load_config_json",
 ]

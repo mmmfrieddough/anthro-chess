@@ -98,6 +98,25 @@ def load_config(
     return ResolvedConfig(value=value, provenance=provenance)
 
 
+def load_config_json(schema: type[ConfigT], text: str) -> ResolvedConfig[ConfigT]:
+    """Load a configuration that was already resolved elsewhere.
+
+    For handing a resolved selection to a child process, where re-deriving it
+    from a file and overrides would not reproduce it. There is no provenance to
+    record: the selection arrived as a value rather than as a way of arriving at
+    one, and whatever produced it owns saying where it came from.
+    """
+
+    try:
+        value = schema.model_validate_json(text)
+    except ValidationError as error:
+        raise ConfigError(f"invalid configuration: {error}") from error
+    return ResolvedConfig(
+        value=value,
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+
 def _apply_override(target: dict[str, object], override: str) -> None:
     key, separator, raw_value = override.partition("=")
     parts = key.split(".")

@@ -453,14 +453,13 @@ def test_a_measurement_carries_its_own_dispersion(
         dispersion=MetricDispersion(
             value=0.01,
             bound=0.012,
-            kind="data-sampling",
             source="bootstrap over 12000 game(s)",
         ),
     )
 
     assert isinstance(value, Measurement)
     assert value.dispersion is not None
-    assert value.dispersion.kind == "data-sampling"
+    assert value.dispersion.source == "bootstrap over 12000 game(s)"
 
 
 def test_a_dispersion_bound_below_the_spread_it_bounds_is_refused() -> None:
@@ -468,7 +467,7 @@ def test_a_dispersion_bound_below_the_spread_it_bounds_is_refused() -> None:
     # written under the spread it bounds would understate every floor it
     # reaches.
     with pytest.raises(ValueError, match="not a conservative limit"):
-        MetricDispersion(value=0.2, bound=0.1, kind="data-sampling")
+        MetricDispersion(value=0.2, bound=0.1)
 
 
 def test_a_non_finite_measurement_is_rejected(

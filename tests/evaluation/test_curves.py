@@ -534,7 +534,6 @@ def test_a_comparison_carries_the_floor_its_own_distances_are_read_against() -> 
         comparison.dispersions.pooled,
         comparison.dispersions.model_variation,
     ):
-        assert spread.kind == "evaluation"
         assert spread.value > 0.0
         assert spread.bound >= spread.value
         assert spread.source is not None
@@ -644,7 +643,6 @@ def test_a_model_side_that_cannot_vary_reports_a_floor_of_exactly_zero() -> None
     ):
         assert spread.value == 0.0
         assert spread.bound == 0.0
-        assert spread.kind == "evaluation"
         assert spread.source is not None
         assert CURVE_DETERMINISTIC_METHOD in spread.source
 
@@ -788,7 +786,6 @@ def test_measurements_carry_their_floor_into_the_summary_tier(
     assert measurements[2].value == pytest.approx(comparison.model_variation)
     for entry in measurements:
         assert entry.dispersion is not None
-        assert entry.dispersion.kind == "evaluation"
         assert entry.sample_size == comparison.human_games + comparison.model_games
 
 
@@ -831,7 +828,6 @@ def test_curve_points_are_stored_as_data_for_the_detail_tier() -> None:
     assert encoded["references"]["flat"] == pytest.approx(
         comparison.references.flat if comparison.references else None
     )
-    assert encoded["dispersions"]["conditional"]["kind"] == "evaluation"
     # How the floor was arrived at, because a bootstrap over plentiful games
     # and a deterministic reading's exact zero are not distinguishable from the
     # value alone.
