@@ -129,11 +129,33 @@ class SuiteBenchmarkConfig(ConfigModel):
     #: grids: a reduced sweep measures the same quantities less precisely
     #: rather than measuring fewer of them.
     reduced: tuple[str, ...] = ()
-    #: Which sweeps include this step. A benchmark whose cost is a grid rather
-    #: than a sample size has no affordable reduction at all — shrinking the
-    #: grid would measure something else — so it declares the full sweep alone
-    #: instead of being nominally reduced and still unaffordable.
-    scales: tuple[SuiteScale, ...] = (SuiteScale.REDUCED, SuiteScale.FULL)
+    #: Which sweeps include this step. A benchmark with no reduction that says
+    #: anything declares the full sweep alone, instead of being nominally
+    #: reduced and read at a size nobody argued for. Empty is refused rather
+    #: than read as a step that runs nowhere: ``enabled`` is how a sweep says
+    #: that, and a step no scale reaches would put ``overrides`` out of every
+    #: schema's sight the way the check below keeps ``reduced`` from being.
+    scales: tuple[SuiteScale, ...] = Field(
+        default=(SuiteScale.REDUCED, SuiteScale.FULL), min_length=1
+    )
+
+    @model_validator(mode="after")
+    def _reduction_is_reachable(self) -> SuiteBenchmarkConfig:
+        """Refuse a reduction no sweep can apply.
+
+        Every override that reaches a selection is checked against its schema
+        when the plan resolves, so a typo fails in the first second. One that
+        reaches nothing is checked by nothing, and a step excluded from the
+        reduced sweep is exactly where such a list survives being wrong.
+        """
+
+        if self.reduced and SuiteScale.REDUCED not in self.scales:
+            raise ValueError(
+                "reduced overrides are applied only by a reduced sweep, which "
+                f"scales {', '.join(self.scales)} excludes; add the reduced "
+                "scale or drop the overrides"
+            )
+        return self
 
 
 class SuiteConfig(CheckpointSelection):
@@ -659,10 +681,10 @@ def _resolve_benchmark(
     """Load one benchmark's own selection and point it at this checkpoint."""
 
     if benchmark.schema is None:
-        if entry.config is not None:
+        if entry.config is not None or entry.overrides or entry.reduced:
             raise SuiteError(
-                f"the {name} step reads another step's output and takes no "
-                "configuration file of its own"
+                f"the {name} step reads another step's output, so it takes no "
+                "configuration file and no overrides of its own"
             )
         return None
     if entry.config is None:

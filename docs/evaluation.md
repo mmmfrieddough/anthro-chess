@@ -232,17 +232,18 @@ curve comparisons are smoothed against: at a neighbour-count bandwidth its size
 is the smoothing radius rather than a sample size, so it is declared by the
 benchmarks that read it and left alone by both scales.
 
-That rule has a consequence worth stating, because it looks like an omission
-otherwise: **a benchmark whose cost is a grid rather than a sample size has no
-reduction at all**, and belongs to the full sweep alone. The rating ladder is
-the case. Its cost is quadratic in its seat count, the seats are the
-measurement, and its only sample dials — seeds and openings — are already at
-their floor while it is still playing hundreds of games. Shrinking the seat
-grid instead would not merely be less precise: one joint fit places every seat
-on a single internal scale, so a ladder fitted on a different set of seats
-cannot be read against this one at all. A step declares which scales include
-it rather than being nominally reduced and still unaffordable, since a reduced
-sweep nobody can run is worse than one that says what it left out.
+**Every step runs at both scales**, so a reduced sweep answers the same
+questions a full one does and answers them less precisely. The rating ladder is
+the step that makes this cost something: it is the only head-to-head strength
+reading, its cost is quadratic in a seat count that is the measurement rather
+than a dial, and its reduction is thin enough that what it resolves is not yet
+established.
+`docs/decisions/0051-every-suite-step-declares-both-scales.md` owns why it is
+shipped qualified rather than withheld, and where that is reassessed.
+
+A step may still declare a narrower `scales` list, and a reduction no sweep
+would apply is refused rather than left standing: an override no scale applies
+reaches no schema, and a plan validates only what it applies.
 
 The suite adds no measurement of its own and registers no metric. Decision
 decomposition is the one step it cannot commit, because that family has no
@@ -1546,11 +1547,11 @@ already groups decisions by the dials they were made under and a ladder's seats
 are exactly those groups.
 
 **A full ladder is a scheduled reading rather than a routine one.** The declared
-grid plays thousands of games per checkpoint and has run in a couple of hours per
-checkpoint at that size, so it is affordable on purpose rather than by habit: it
-is taken when a checkpoint is worth that much time, not on every checkpoint, and
-it is the one benchmark the reduced sweep leaves out entirely. Seats and their
-sample are the two things not to confuse when that cost is under discussion.
+grid plays thousands of games per checkpoint, so it is taken when a checkpoint is
+worth the time rather than on every one; a reduced sweep reads the same ladder at
+a fraction of the seeds and openings, and is the majority of what that sweep
+costs. Seats and their sample are the two things not to confuse when that cost is
+under discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
 linearly, because a round robin gives each seat one pairing per opponent — so a
 cheaper ladder is also a noisier one, on the axis the benchmark exists to

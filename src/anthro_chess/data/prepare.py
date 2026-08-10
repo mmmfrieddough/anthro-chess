@@ -5,13 +5,25 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections import Counter, deque
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from concurrent.futures import BrokenExecutor, Future, ProcessPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import partial
 from hashlib import sha256
+from io import StringIO
+from itertools import islice
 from pathlib import Path
-from typing import Any, Literal, TextIO
+from typing import Any, Literal, TextIO, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -72,6 +84,27 @@ _EVENT_SPEED_RE = re.compile(
     re.IGNORECASE,
 )
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+#: What ``chess.pgn.Headers`` seeds a game with when a tag is absent. Collecting
+#: headers into a plain dict is what makes the decode one pass, and it is these
+#: the dict would otherwise be missing: a game carrying no ``Result`` tag and no
+#: result token is unfinished rather than invalid.
+_TAG_ROSTER_DEFAULTS: dict[str, str] = {
+    "Event": "?",
+    "Site": "?",
+    "Date": "????.??.??",
+    "Round": "?",
+    "White": "?",
+    "Black": "?",
+    "Result": "*",
+}
+#: Games framed into one decoding job. A job has to cost far more than the
+#: round trip that dispatched it, and a full pool's worth of the records they
+#: return has to stay small beside the shard being filled.
+_GAMES_PER_JOB = 256
+#: Jobs queued beyond one per worker. ``StreamingLoaderConfig`` argues why the
+#: two add rather than compete; the number is smaller than the loader's because
+#: a job here is a quarter-thousand games of records rather than one batch.
+_JOB_PREFETCH = 2
 #: How many hex characters of an input's digest name that input's shards. A
 #: shard name has to be unique across every archive one corpus is built from,
 #: and deriving it from the content rather than from a running count keeps a
@@ -193,6 +226,17 @@ class _ParsedGame:
     termination: DerivedTermination | None = None
 
 
+@dataclass(frozen=True)
+class _ScreenedHeaders:
+    """What the headers gave up, once they have not ruled the game out."""
+
+    source_game_key: str
+    white_rating: _OptionalInteger
+    black_rating: _OptionalInteger
+    termination: str | None
+    termination_status: FieldStatus
+
+
 def acquire_configured_archive(
     output_directory: str | Path,
     archive: ArchiveConfig,
@@ -256,6 +300,8 @@ def prepare_pgn(
     input_path: str | Path,
     output_directory: str | Path,
     resolved_config: ResolvedConfig[PrepareConfig],
+    *,
+    workers: int = 0,
 ) -> PreparationResult:
     """Append one PGN archive to the corpus beneath an output directory.
 
@@ -268,6 +314,10 @@ def prepare_pgn(
     One corpus directory takes one writer at a time: two runs appending at once
     each rewrite the manifest without the other's archive, and the loser's
     shards are then swept as orphans.
+
+    ``workers`` decodes games on that many processes, and none of it reaches
+    what is written: the artifact of a run on thirty processes is the artifact
+    of a run on none, byte for byte.
     """
     source_path = Path(input_path)
     output_path = Path(output_directory)
@@ -343,9 +393,13 @@ def prepare_pgn(
     stopped_at_limit = False
 
     try:
-        with open_pgn_text(source_path) as pgn_file:
-            for game in _read_games(pgn_file):
-                parsed = _parse_game(game, config, marked_accounts)
+        with (
+            open_pgn_text(source_path) as pgn_file,
+            closing(
+                _decoded_games(pgn_file, config, marked_accounts, workers)
+            ) as decoded,
+        ):
+            for parsed in decoded:
                 if parsed.record is None:
                     assert parsed.rejection is not None
                     rejections[parsed.rejection] += 1
@@ -435,6 +489,12 @@ def prepare_pgn(
     except (OSError, UnicodeError, DataLoadingError) as error:
         raise DataPreparationError(
             f"cannot read input PGN {source_path}: {error}"
+        ) from error
+    except BrokenExecutor as error:
+        # A decoder killed from outside — the out-of-memory killer is the one
+        # to expect on a run this long — takes the pool down with it.
+        raise DataPreparationError(
+            f"a decoding worker died while preparing {source_path}: {error}"
         ) from error
 
     if accepted_games == 0 and not corpus.inputs:
@@ -742,12 +802,129 @@ def _recorded_result(
     )
 
 
-def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
+def _decode_stream(
+    handle: TextIO,
+    config: PrepareConfig,
+    marked_accounts: MarkedAccounts | None,
+) -> Iterator[_ParsedGame]:
+    """Yield every game a handle holds, decoded but not yet accepted."""
+
+    builder = partial(_RecordBuilder, config, marked_accounts)
     while True:
-        game = chess.pgn.read_game(pgn_file)
-        if game is None:
+        parsed: _ParsedGame | None = chess.pgn.read_game(handle, Visitor=builder)
+        if parsed is None:
             return
-        yield game
+        yield parsed
+
+
+class _CapturingReader:
+    """Hand ``read_game`` its lines while keeping the ones it consumed.
+
+    ``read_game`` touches the handle only through ``readline``, which is what
+    lets this stand in for the ``TextIO`` it is cast to.
+    """
+
+    def __init__(self, handle: TextIO) -> None:
+        self._handle = handle
+        self.lines: list[str] = []
+
+    def readline(self) -> str:
+        line = self._handle.readline()
+        if line:
+            self.lines.append(line)
+        return line
+
+
+def _framed_games(pgn_file: TextIO) -> Iterator[str]:
+    """Yield each game's raw text, framed but not parsed.
+
+    Deciding where one game ends is the part that cannot be divided, so it runs
+    on ``python-chess``'s own game-skipping scanner rather than on a second
+    account of PGN framing. That scanner reads 16,800 games/s against the 576
+    a full decode manages, which is what keeps one reader ahead of a machine
+    full of workers.
+    """
+
+    reader = _CapturingReader(pgn_file)
+    while True:
+        reader.lines = []
+        framed = chess.pgn.read_game(
+            cast(TextIO, reader),
+            Visitor=chess.pgn.SkipVisitor,
+        )
+        if framed is None:
+            return
+        yield "".join(reader.lines)
+
+
+def _read_game_batches(pgn_file: TextIO) -> Iterator[str]:
+    games = _framed_games(pgn_file)
+    while batch := list(islice(games, _GAMES_PER_JOB)):
+        yield "".join(batch)
+
+
+def _decode_batch(
+    text: str,
+    config: PrepareConfig,
+    marked_accounts: MarkedAccounts | None,
+) -> list[_ParsedGame]:
+    return list(_decode_stream(StringIO(text), config, marked_accounts))
+
+
+#: What a pooled worker decodes against, sent once when it starts rather than
+#: with every job: a marked-account snapshot dwarfs the text a job carries.
+_WORKER_CONTEXT: tuple[PrepareConfig, MarkedAccounts | None] | None = None
+
+
+def _start_worker(
+    config: PrepareConfig,
+    marked_accounts: MarkedAccounts | None,
+) -> None:
+    global _WORKER_CONTEXT
+    _WORKER_CONTEXT = (config, marked_accounts)
+
+
+def _decode_batch_in_worker(text: str) -> list[_ParsedGame]:
+    assert _WORKER_CONTEXT is not None
+    return _decode_batch(text, *_WORKER_CONTEXT)
+
+
+def _decoded_games(
+    pgn_file: TextIO,
+    config: PrepareConfig,
+    marked_accounts: MarkedAccounts | None,
+    workers: int,
+) -> Generator[_ParsedGame, None, None]:
+    """Yield every game's decode in source order, across ``workers`` processes.
+
+    Order is what keeps the worker count out of the artifact. Acceptance,
+    deduplication, the game bound and shard boundaries all read this one
+    sequence, so a run on one process and a run on thirty write the same bytes.
+    """
+
+    if workers < 1:
+        yield from _decode_stream(pgn_file, config, marked_accounts)
+        return
+
+    batches = _read_game_batches(pgn_file)
+    pool = ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_start_worker,
+        initargs=(config, marked_accounts),
+    )
+    inflight: deque[Future[list[_ParsedGame]]] = deque()
+    try:
+        while True:
+            queued = workers + _JOB_PREFETCH - len(inflight)
+            for text in islice(batches, queued):
+                inflight.append(pool.submit(_decode_batch_in_worker, text))
+            if not inflight:
+                return
+            yield from inflight.popleft().result()
+    finally:
+        # A caller that stopped at the game bound leaves jobs queued for games
+        # past it, and the archive stays open until every worker is done.
+        pool.shutdown(cancel_futures=True)
 
 
 def _resolve_marked_accounts(
@@ -776,38 +953,136 @@ def _resolve_marked_accounts(
     return snapshot
 
 
-def _parse_game(
-    game: chess.pgn.Game,
+class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
+    """Build one normalized record during the parser's own walk of a game.
+
+    ``read_game``'s default visitor allocates a node per ply to assemble a game
+    tree that preparation then discards, replaying the mainline on a fresh
+    board to read the same moves back. Collecting the record here costs one
+    pass over a game rather than two.
+
+    The comment rule is ``GameBuilder``'s and has to stay so. A comment belongs
+    to the ply before it only while ``in_variation`` holds, which any move sets
+    and only ``begin_variation`` clears — so a comment following a variation
+    that contained no move belongs to no ply at all, and dropping it is what
+    agrees with the tree this replaces.
+
+    A game the headers alone reject is skipped at ``end_headers``, so its
+    movetext is scanned for the end of the game rather than parsed. Nothing
+    past that point can then name a different reason: see
+    ``docs/decisions/0050-a-header-rejection-outranks-a-parse-error.md``.
+    """
+
+    def __init__(
+        self,
+        config: PrepareConfig,
+        marked_accounts: MarkedAccounts | None,
+    ) -> None:
+        self._config = config
+        self._marked_accounts = marked_accounts
+
+    def begin_game(self) -> None:
+        self._headers = dict(_TAG_ROSTER_DEFAULTS)
+        self._moves: list[chess.Move] = []
+        self._comments: list[str] = []
+        self._board: chess.Board | None = None
+        self._depth = 0
+        self._in_variation = False
+        self._failed = False
+
+    def visit_header(self, tagname: str, tagvalue: str) -> None:
+        self._headers[tagname] = tagvalue
+
+    def end_headers(self) -> chess.pgn.SkipType | None:
+        self._screened: _ScreenedHeaders | str = _screen_headers(
+            self._headers,
+            self._config,
+            self._marked_accounts,
+        )
+        return chess.pgn.SKIP if isinstance(self._screened, str) else None
+
+    def visit_board(self, board: chess.Board) -> None:
+        # Mainline moves are pushed onto this same board, so the first one is
+        # also the final position once the walk is done.
+        if self._board is None:
+            self._board = board
+
+    def begin_variation(self) -> None:
+        self._depth += 1
+        self._in_variation = False
+
+    def end_variation(self) -> None:
+        # Clamped because ``read_game`` also closes an error-skip through this
+        # callback, with no ``begin_variation`` to match it.
+        self._depth = max(self._depth - 1, 0)
+
+    def visit_move(self, board: chess.Board, move: chess.Move) -> None:
+        self._in_variation = True
+        if self._depth:
+            return
+        self._moves.append(move)
+        self._comments.append("")
+
+    def visit_comment(self, comment: str) -> None:
+        if self._depth or not self._in_variation or not self._comments:
+            return
+        self._comments[-1] = " ".join(filter(None, (self._comments[-1], comment)))
+
+    def visit_result(self, result: str) -> None:
+        if self._headers.get("Result", "*") == "*":
+            self._headers["Result"] = result
+
+    def handle_error(self, error: Exception) -> None:
+        self._failed = True
+        logger.error("%s while parsing %s", error, self._headers.get("Site", "?"))
+
+    def result(self) -> _ParsedGame:
+        if isinstance(self._screened, str):
+            return _ParsedGame(None, self._screened)
+        if self._failed:
+            return _ParsedGame(None, "pgn_parse_error")
+        return _parse_game(
+            self._headers,
+            self._moves,
+            self._comments,
+            self._board,
+            self._screened,
+            config=self._config,
+        )
+
+
+def _screen_headers(
+    headers: Mapping[str, str],
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
-) -> _ParsedGame:
-    if game.errors:
-        return _ParsedGame(None, "pgn_parse_error")
-    variant = game.headers.get("Variant", "Standard")
+) -> _ScreenedHeaders | str:
+    """Read the headers, returning why they rule the game out if they do."""
+
+    variant = headers.get("Variant", "Standard")
     if variant.casefold() not in {"standard", "from position"}:
-        return _ParsedGame(None, "unsupported_variant")
-    if game.headers.get("SetUp") == "1" or game.headers.get("FEN"):
-        return _ParsedGame(None, "nonstandard_initial_position")
-    termination_text, _ = _parse_text(game.headers.get("Termination"))
-    if termination_text == _RULES_INFRACTION_TERMINATION:
+        return "unsupported_variant"
+    if headers.get("SetUp") == "1" or headers.get("FEN"):
+        return "nonstandard_initial_position"
+    termination, termination_status = _parse_text(headers.get("Termination"))
+    if termination == _RULES_INFRACTION_TERMINATION:
         # Ended by the platform on a client-side report rather than played to
         # a finish, so the record is a fragment of a game rather than a
         # completed human one. Rejected for that rather than as a cheating
         # filter, which 0041 measures this label as far too narrow to serve.
-        return _ParsedGame(None, "rules_infraction")
-    if config.filters.exclude_bots and _has_bot_player(game):
-        return _ParsedGame(None, "bot_game")
+        return "rules_infraction"
+    if config.filters.exclude_bots and _has_bot_player(headers):
+        return "bot_game"
     if (
         config.filters.event_speed is not None
-        and _event_speed(game.headers.get("Event")) != config.filters.event_speed
+        and _event_speed(headers.get("Event")) != config.filters.event_speed
     ):
-        return _ParsedGame(None, "rating_namespace_mismatch")
+        return "rating_namespace_mismatch"
     if (
         config.filters.require_rated
-        and "rated" not in game.headers.get("Event", "").casefold()
+        and "rated" not in headers.get("Event", "").casefold()
     ):
-        return _ParsedGame(None, "unrated_game")
-    if marked_accounts is not None and _has_marked_player(game, marked_accounts):
+        return "unrated_game"
+    if marked_accounts is not None and _has_marked_player(headers, marked_accounts):
         # Every game a marked account played is rejected rather than the moves
         # that were assisted, because no method separates the two per game and
         # a marked player's honest games are not what this corpus is for.
@@ -815,30 +1090,54 @@ def _parse_game(
         # Ordered after the speed, rated, and bot filters so the manifest's
         # count is a share of the corpus being built rather than of the whole
         # archive, which is the number 0041 is checked against.
-        return _ParsedGame(None, "marked_account")
+        return "marked_account"
 
-    source_game_key = _source_game_key(game.headers.get("Site"))
+    source_game_key = _source_game_key(headers.get("Site"))
     if source_game_key is None:
-        return _ParsedGame(None, "missing_source_game_key")
+        return "missing_source_game_key"
 
-    white_rating = _parse_nonnegative_integer(game.headers.get("WhiteElo"))
-    black_rating = _parse_nonnegative_integer(game.headers.get("BlackElo"))
+    white_rating = _parse_nonnegative_integer(headers.get("WhiteElo"))
+    black_rating = _parse_nonnegative_integer(headers.get("BlackElo"))
     if config.filters.require_ratings and (
         white_rating.status != _STATUS_PRESENT or black_rating.status != _STATUS_PRESENT
     ):
-        return _ParsedGame(None, "missing_or_invalid_rating")
-    time_initial, time_increment = _parse_time_control(game.headers.get("TimeControl"))
+        return "missing_or_invalid_rating"
+    return _ScreenedHeaders(
+        source_game_key,
+        white_rating,
+        black_rating,
+        termination,
+        termination_status,
+    )
+
+
+def _parse_game(
+    headers: Mapping[str, str],
+    moves: Sequence[chess.Move],
+    comments: Sequence[str],
+    final_board: chess.Board | None,
+    screened: _ScreenedHeaders,
+    *,
+    config: PrepareConfig,
+) -> _ParsedGame:
+    source_game_key = screened.source_game_key
+    white_rating = screened.white_rating
+    black_rating = screened.black_rating
+    termination = screened.termination
+    termination_status = screened.termination_status
+    time_initial, time_increment = _parse_time_control(headers.get("TimeControl"))
+    if not all(moves):
+        # ``parse_san`` promises a move that is legal or null and records an
+        # error for anything else, so the null is the whole of what a legality
+        # test over the replayed mainline used to catch.
+        return _ParsedGame(None, "illegal_move")
     actions: list[int] = []
     clock_values: list[int | None] = []
     clock_statuses: list[FieldStatus] = []
     clock_precision_ms: int | None = None
-    board = game.board()
-    for node in game.mainline():
-        move = node.move
-        if move not in board.legal_moves:
-            return _ParsedGame(None, "illegal_move")
+    for move, comment in zip(moves, comments, strict=True):
         actions.append(encode_move(move))
-        clock = _parse_clock(node.comment)
+        clock = _parse_clock(comment)
         clock_values.append(clock.value)
         clock_statuses.append(clock.status)
         if clock.precision_ms is not None:
@@ -851,20 +1150,20 @@ def _parse_game(
                 if clock_precision_ms is None
                 else min(clock_precision_ms, clock.precision_ms)
             )
-        board.push(move)
 
     if len(actions) < config.filters.minimum_plies:
         return _ParsedGame(None, "too_short")
 
-    result = game.headers.get("Result")
+    result = headers.get("Result")
     if result not in {"1-0", "0-1", "1/2-1/2", "*"}:
         return _ParsedGame(None, "invalid_result")
 
-    termination, termination_status = _parse_text(game.headers.get("Termination"))
+    if final_board is None:
+        return _ParsedGame(None, "pgn_parse_error")
     derived_termination = derive_termination(
         result=result,
         source_termination=termination,
-        final_board=board,
+        final_board=final_board,
         clock_remaining_ms=clock_values,
         time_initial_ms=time_initial.value,
         abandonment_clock_share=config.termination.abandonment_clock_share,
@@ -872,7 +1171,7 @@ def _parse_game(
     ply_count = len(actions)
     terminal_action_id, terminal_action_status = terminal_action_for(
         derived_termination,
-        board,
+        final_board,
     )
     if terminal_action_id is not None:
         # The per-ply columns stay aligned with the action sequence, and no
@@ -909,12 +1208,8 @@ def _parse_game(
             NormalizedColumn.SCHEMA_VERSION: SCHEMA_VERSION,
             NormalizedColumn.SOURCE_ID: config.source.id,
             NormalizedColumn.SOURCE_GAME_KEY: source_game_key,
-            NormalizedColumn.WHITE_PLAYER_DIGEST: _player_digest(
-                game.headers.get("White")
-            ),
-            NormalizedColumn.BLACK_PLAYER_DIGEST: _player_digest(
-                game.headers.get("Black")
-            ),
+            NormalizedColumn.WHITE_PLAYER_DIGEST: _player_digest(headers.get("White")),
+            NormalizedColumn.BLACK_PLAYER_DIGEST: _player_digest(headers.get("Black")),
             NormalizedColumn.RULESET: "standard",
             NormalizedColumn.INITIAL_POSITION: chess.STARTING_FEN,
             NormalizedColumn.RESULT: result,
@@ -953,10 +1248,10 @@ def _parse_game(
     )
 
 
-def _has_marked_player(game: chess.pgn.Game, marked: MarkedAccounts) -> bool:
+def _has_marked_player(headers: Mapping[str, str], marked: MarkedAccounts) -> bool:
     return any(
         marked.contains(name)
-        for name in (game.headers.get("White"), game.headers.get("Black"))
+        for name in (headers.get("White"), headers.get("Black"))
         if name
     )
 
@@ -967,9 +1262,9 @@ def _player_digest(name: str | None) -> int | None:
     return account_row_digest(name)
 
 
-def _has_bot_player(game: chess.pgn.Game) -> bool:
+def _has_bot_player(headers: Mapping[str, str]) -> bool:
     return any(
-        game.headers.get(header, "").casefold() == "bot"
+        headers.get(header, "").casefold() == "bot"
         for header in ("WhiteTitle", "BlackTitle")
     )
 

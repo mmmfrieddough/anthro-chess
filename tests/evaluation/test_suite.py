@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import chess
 import pytest
+from pydantic import ValidationError
 
 from anthro_chess.chess import encode_move
 from anthro_chess.config import ConfigModel, ConfigProvenance, ResolvedConfig
@@ -770,7 +771,7 @@ def test_record_only_cannot_ask_for_a_step_with_no_result_kind(
 
 
 def test_a_step_can_declare_the_full_sweep_alone(tmp_path: Path) -> None:
-    """A benchmark whose cost is a grid has no honest reduction at all."""
+    """A benchmark with no reduction worth reading is left out rather than shrunk."""
 
     payload = {
         "benchmarks": {
@@ -790,6 +791,46 @@ def test_a_step_can_declare_the_full_sweep_alone(tmp_path: Path) -> None:
 
     assert [step.name for step in reduced.steps] == ["alpha"]
     assert [step.name for step in full.steps] == ["alpha", "beta"]
+
+
+def test_a_reduction_no_sweep_would_apply_is_refused() -> None:
+    """The refusal is the schema's, so no selection is read before it fires."""
+
+    with pytest.raises(ValidationError, match="add the reduced scale"):
+        _suite(
+            benchmarks={
+                "alpha": {
+                    "config": "alpha.toml",
+                    "scales": ["full"],
+                    "reduced": ["games_per_position=1"],
+                }
+            }
+        )
+
+
+def test_a_step_that_runs_at_no_scale_is_refused() -> None:
+    """An emptied scale list drops the step from every sweep and says nothing."""
+
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        _suite(benchmarks={"alpha": {"config": "alpha.toml", "scales": []}})
+
+
+@pytest.mark.parametrize("field", ["overrides", "reduced"])
+def test_overrides_on_a_step_with_no_selection_are_refused(
+    tmp_path: Path, field: str
+) -> None:
+    """There is no schema behind them, so nothing would ever read or check them."""
+
+    with pytest.raises(SuiteError, match="no overrides of its own"):
+        resolve_suite(
+            _suite(
+                benchmarks={
+                    "alpha": {"config": str(_selection(tmp_path))},
+                    "gamma": {"record": False, field: ["nothing=1"]},
+                }
+            ),
+            registry=_registry(Recorder()),
+        )
 
 
 def test_a_scale_that_excludes_every_step_is_refused(tmp_path: Path) -> None:

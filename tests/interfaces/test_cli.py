@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -83,6 +84,52 @@ def test_data_prepare_command_routes_to_importable_pipeline(
     assert "Prepared 1 game(s); rejected 0." in command_output
     assert "Corpus: 1 game(s) from 1 archive(s)." in command_output
     assert "manifests/manifest.json" in command_output
+
+
+def test_data_prepare_decodes_on_the_workers_it_is_given(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag reaches preparation, and its absence leaves the reader a core."""
+
+    import anthro_chess.data as data
+    from anthro_chess.interfaces.cli import _prepare_workers
+
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    config = repository_root / "configs/data/lichess-sample.toml"
+    requested: list[int] = []
+
+    def capture(
+        _input_path: Path,
+        output: Path,
+        _resolved: object,
+        *,
+        workers: int,
+    ) -> PreparationResult:
+        requested.append(workers)
+        return PreparationResult(
+            normalized_paths=(output / "normalized/games-0.parquet",),
+            manifest_path=output / "manifests/manifest.json",
+            accepted_games=1,
+            rejected_games=0,
+            split_counts={"train": 1, "validation": 0},
+            corpus_archives=1,
+        )
+
+    monkeypatch.setattr(data, "prepare_pgn", capture)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False
+    )
+    argv = ["data", "prepare", str(sample), str(tmp_path), "--config", str(config)]
+
+    assert main([*argv, "--workers", "3"]) == 0
+    assert main(argv) == 0
+    with pytest.raises(SystemExit):
+        main([*argv, "--workers", "-4"])
+
+    assert requested == [3, 7]
+    assert _prepare_workers(0) == 0
 
 
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(
@@ -349,6 +396,8 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         input_path: Path,
         output: Path,
         _resolved: object,
+        *,
+        workers: int,
     ) -> PreparationResult:
         captured_paths.append((input_path, output))
         return PreparationResult(
@@ -1796,9 +1845,6 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
     # Decision decomposition reads the games the rollout played, so it can
     # never be planned ahead of it.
     assert names.index("decisions") > names.index("rollout")
-    # The ladder sits out the reduced sweep: its cost is a seat grid rather
-    # than a sample size, so it has no reduction that is both honest and
-    # affordable. Every other benchmark is here.
     assert set(names) == {
         "inference",
         "run",
@@ -1807,6 +1853,7 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
         "rollout",
         "decisions",
         "termination",
+        "ladder",
     }
     decisions = next(step for step in plan["steps"] if step["benchmark"] == "decisions")
     assert decisions["record"] is False
@@ -1841,10 +1888,10 @@ def test_eval_suite_full_scale_is_opt_in(
     full_run = next(s for s in full["steps"] if s["benchmark"] == "run")
     assert "view.maximum_games=400" in reduced_run["overrides"]
     assert full_run["overrides"] == []
-    # The full sweep also carries the steps that have no honest reduction.
+    # The two scales differ by what each step reads, not by which steps run.
     reduced_names = {step["benchmark"] for step in reduced["steps"]}
     full_names = {step["benchmark"] for step in full["steps"]}
-    assert reduced_names < full_names
+    assert reduced_names == full_names
     # Two scales are two series, so a resume can never cross between them.
     assert reduced["plan_sha256"] != full["plan_sha256"]
 
@@ -1918,33 +1965,39 @@ def test_eval_suite_needs_somewhere_to_keep_its_ledger(
     assert "--sweep-root" in capsys.readouterr().err
 
 
-def test_eval_suite_runs_the_ladder_only_at_full_scale(
+def test_eval_suite_shrinks_the_ladder_rather_than_dropping_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Measured at roughly four hours reduced, it is a full-sweep step."""
+    """The reduction is reached at one scale and absent at the other.
+
+    Against the shipped selection rather than a fixture, because the state this
+    pins against is a `reduced` list beside a `scales` that drops the step: the
+    overrides then reach no schema at either scale and nothing finds them wrong.
+    """
 
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(tmp_path / "datasets"))
+    arguments = [
+        "eval",
+        "suite",
+        "--config",
+        "configs/evaluation/checkpoint-suite.toml",
+        "--plan",
+        "--format",
+        "json",
+    ]
 
-    assert (
-        main(
-            [
-                "eval",
-                "suite",
-                "--config",
-                "configs/evaluation/checkpoint-suite.toml",
-                "--plan",
-                "--full",
-                "--format",
-                "json",
-            ]
-        )
-        == 0
-    )
+    assert main(arguments) == 0
+    reduced = json.loads(capsys.readouterr().out)
+    assert main([*arguments, "--full"]) == 0
+    full = json.loads(capsys.readouterr().out)
 
-    plan = json.loads(capsys.readouterr().out)
-    assert "ladder" in {step["benchmark"] for step in plan["steps"]}
+    reduced_ladder = next(s for s in reduced["steps"] if s["benchmark"] == "ladder")
+    full_ladder = next(s for s in full["steps"] if s["benchmark"] == "ladder")
+    assert "grid.seeds=[0]" in reduced_ladder["overrides"]
+    assert "openings.view.maximum_games=4" in reduced_ladder["overrides"]
+    assert full_ladder["overrides"] == []
 
 
 def _retained_run(

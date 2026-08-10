@@ -5,10 +5,10 @@ artifact_name = "lichess-univ-2017-04-2021-06"
 # this source, this precision, and this span, and what the span costs.
 #
 # Preparation appends one archive at a time, so each run names its own
-# `--input` and the corpus grows across these 51. It is still not ready to
-# prepare from: a corpus spanning speeds needs the rating namespace derived per
-# game (#386) and the speed axis derived from the time control rather than the
-# event label (#387), and doing it at this volume is #389.
+# `--input` and the corpus grows across these 51, decoding on as many processes
+# as `--workers` asks for. It is still not ready to prepare from: a corpus
+# spanning speeds needs the rating namespace derived per game (#386) and the
+# speed axis derived from the time control rather than the event label (#387).
 #
 # Filters are absent for the same reason rather than by oversight: the speed
 # axis is not derivable from the event label across this span, so the filters

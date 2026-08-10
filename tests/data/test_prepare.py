@@ -1,11 +1,12 @@
 import json
 from hashlib import sha256
 from importlib import import_module
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, cast
 
 import chess
+import chess.pgn
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 import zstandard
@@ -1309,3 +1310,260 @@ def test_a_truncated_bzip2_archive_reports_rather_than_escapes(tmp_path: Path) -
 
     with pytest.raises(DataPreparationError, match="cannot decompress input PGN"):
         prepare_pgn(archive_path, tmp_path / "artifacts", resolved)
+
+
+def test_decoding_across_processes_writes_the_bytes_one_process_would(
+    tmp_path: Path,
+) -> None:
+    """Worker count is a runtime choice, so it may not reach the artifact.
+
+    The corpus spans several decoding jobs and stops at a bound partway
+    through one, so the comparison covers the boundaries between them and the
+    early exit that leaves jobs queued for games past the bound.
+    """
+
+    from anthro_chess.data.prepare import _GAMES_PER_JOB
+
+    games = "".join(
+        _short_game(site=f"game-{index}") for index in range(_GAMES_PER_JOB * 2 + 40)
+    )
+    input_path = tmp_path / "games.pgn"
+    input_path.write_text(games + _short_game(site="game-0"), encoding="utf-8")
+    overrides = (
+        'source.id="test"',
+        f"filters.maximum_games={_GAMES_PER_JOB * 2 + 10}",
+        "output.games_per_shard=200",
+        "split.test_fraction=0.2",
+        "split.require_nonempty=true",
+    )
+
+    written = []
+    for name, workers in (("one", 0), ("many", 3)):
+        resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG, overrides=overrides)
+        output = tmp_path / name
+        result = prepare_pgn(input_path, output, resolved, workers=workers)
+        assert result.accepted_games == _GAMES_PER_JOB * 2 + 10
+        written.append(
+            {
+                path.relative_to(output): path.read_bytes()
+                for path in sorted(output.rglob("*"))
+                if path.is_file()
+            }
+        )
+
+    assert written[0] == written[1]
+
+
+#: PGN the framing has to survive, since a run splits the stream on game
+#: boundaries before anything parses it: leading noise, an escaped line, one
+#: blank line between headers, and a comment holding a blank line of its own.
+_AWKWARDLY_FRAMED_PGN = """
+
+% an escaped line the parser ignores
+[Event "Rated Blitz game"]
+[Site "https://example.test/first"]
+
+[Result "1-0"]
+1. e4 { a comment
+
+carrying a blank line } e5 2. Qh5 Nc6 3. Qxf7# 1-0
+
+[Event "Rated Blitz game"]
+[Site "https://example.test/second"]
+[Result "0-1"]
+1. f3 e5 2. g4 Qh4# 0-1"""
+
+
+def test_framing_splits_the_stream_where_the_parser_ends_a_game() -> None:
+    """A framed game reparses into the game reading the whole stream gives."""
+
+    from anthro_chess.data.prepare import _framed_games
+
+    framed = list(_framed_games(StringIO(_AWKWARDLY_FRAMED_PGN)))
+    streamed = StringIO(_AWKWARDLY_FRAMED_PGN)
+
+    assert "".join(framed) == _AWKWARDLY_FRAMED_PGN
+    assert len(framed) == 2
+    for text in framed:
+        expected = chess.pgn.read_game(streamed)
+        actual = chess.pgn.read_game(StringIO(text))
+        assert expected is not None and actual is not None
+        assert dict(actual.headers) == dict(expected.headers)
+        assert list(actual.mainline_moves()) == list(expected.mainline_moves())
+    assert chess.pgn.read_game(streamed) is None
+
+
+def _decoded(moves: str, site: str = "edge") -> Any:
+    """Decode one rated game and return its single parsed result."""
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    (parsed,) = _decode_batch(_short_game(site=site, moves=moves), config, None)
+    return parsed
+
+
+@pytest.mark.parametrize("null", ["--", "Z0", "0000", "@@@@"])
+def test_rejects_a_null_move_the_parser_reports_no_error_for(null: str) -> None:
+    """The one move ``parse_san`` returns without vouching for its legality.
+
+    Nothing else covers this branch, and the guard that catches it is what
+    stands between a null move and ``encode_move`` raising mid-archive.
+    """
+
+    parsed = _decoded(f"1. e4 {null} 1-0")
+
+    assert parsed.record is None
+    assert parsed.rejection == "illegal_move"
+
+
+def test_a_comment_after_a_move_less_variation_belongs_to_no_ply() -> None:
+    """``in_variation`` is cleared by the variation and no move restores it."""
+
+    parsed = _decoded("1. e4 e5 ( { [%clk 0:01:01] } ) { [%clk 0:04:00] } 2. Nf3 1-0")
+
+    assert parsed.record is not None
+    assert parsed.record["clock_status"] == ["unavailable"] * 3
+    assert parsed.record["clock_precision_ms"] is None
+
+
+def test_a_comment_after_a_variation_holding_a_move_belongs_to_the_mainline() -> None:
+    """A move inside the variation sets ``in_variation``, and nothing clears it."""
+
+    parsed = _decoded("1. e4 e5 ( 1... c5 ) { [%clk 0:04:00] } 2. Nf3 1-0")
+
+    assert parsed.record is not None
+    assert parsed.record["clock_status"] == [
+        "unavailable",
+        "present",
+        "unavailable",
+    ]
+
+
+def test_an_illegal_move_inside_a_variation_rejects_the_whole_game() -> None:
+    """Skipping variations outright would accept this game instead.
+
+    The move has to be legal SAN that the position refuses; an unparseable
+    token is dropped by the movetext scanner and never reaches the board.
+    """
+
+    parsed = _decoded("1. e4 e5 ( 1... Qh4 ) 2. Nf3 1-0")
+
+    assert parsed.record is None
+    assert parsed.rejection == "pgn_parse_error"
+
+
+def _headerless_game(headers: str, moves: str) -> str:
+    return f'[Event "Rated Blitz game"]\n[Site "https://example.test/edge"]\n{headers}\n{moves}\n\n'
+
+
+def test_a_game_with_no_result_tag_and_no_result_token_is_unfinished() -> None:
+    """``read_game``'s own headers default ``Result`` to ``*``, and so must these.
+
+    Collecting headers into a plain dict is what makes the decode one pass, and
+    a dict starts without the roster defaults a game is entitled to.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _headerless_game('[WhiteElo "1200"]\n[BlackElo "1200"]\n', "1. e4 e5 2. Nf3")
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is not None
+    assert parsed.record["result"] == "*"
+
+
+def test_a_result_token_fills_a_result_tag_that_is_still_open() -> None:
+    """The movetext token is the only writer of a header this never reads."""
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _headerless_game(
+        '[Result "*"]\n[WhiteElo "1200"]\n[BlackElo "1200"]\n',
+        "1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0",
+    )
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is not None
+    assert parsed.record["result"] == "1-0"
+
+
+def test_an_illegal_mainline_move_is_a_parse_error_not_an_encoded_action() -> None:
+    """Pins the ``parse_san`` contract the mainline legality test used to enforce.
+
+    Nothing else would notice if a ``python-chess`` bump started returning a
+    move the position refuses, and the pin admits a minor one.
+    """
+
+    parsed = _decoded("1. e4 e5 2. Qh4 1-0")
+
+    assert parsed.record is None
+    assert parsed.rejection == "pgn_parse_error"
+
+
+def test_a_header_rejection_outranks_an_error_in_the_movetext() -> None:
+    """The movetext of a game the headers reject is skipped, not parsed.
+
+    Reaching the same verdict by parsing it anyway would report whichever of
+    the two the movetext raised, which is the reason this changed.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _short_game(
+        site="edge", event="Casual Blitz game", moves="1. e4 e5 2. Qh4 1-0"
+    )
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is None
+    assert parsed.rejection == "unrated_game"
+
+
+def test_a_skipped_game_leaves_the_stream_where_the_next_one_starts() -> None:
+    """A batch is one handle, so the skip has to end a game where a parse would.
+
+    Comments and variations are what the skipping scanner tracks instead of
+    parsing, and getting either wrong would swallow the game after it.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _short_game(
+        site="skipped",
+        event="Casual Blitz game",
+        moves="1. e4 { good } e5 ( 1... c5 { sicilian } ) 2. Nf3 1-0",
+    ) + _short_game(site="kept")
+
+    skipped, kept = _decode_batch(text, config, None)
+
+    assert skipped.rejection == "unrated_game"
+    assert kept.record is not None
+    assert kept.record["source_game_key"] == "kept"
+
+
+def test_a_header_the_parser_itself_chokes_on_is_still_a_header_rejection() -> None:
+    """The other shape of the rule, which a real archive does not supply.
+
+    ``read_game`` builds the board from ``FEN`` before it reads a move, so an
+    unparseable one used to be reported as a parse error. Nothing in the pinned
+    export carries one, so only this says which reason such a game now gets.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _short_game(
+        site="edge", extra_headers='[SetUp "1"]\n[FEN "not a position"]\n'
+    )
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is None
+    assert parsed.rejection == "nonstandard_initial_position"
