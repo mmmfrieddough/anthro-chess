@@ -9,7 +9,10 @@ Accepted. Supersedes `0033-pairing-is-a-correctness-fix-not-a-resolution-lever.m
 `0036-a-one-sided-floor-does-not-qualify-a-delta.md`,
 `0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,
 and `0042-the-puzzle-response-is-qualified-within-its-reading.md`. Narrows
-`0025-machine-scoped-execution-noise-floors.md` to the efficiency families. Rests
+`0025-machine-scoped-execution-noise-floors.md` to the efficiency families, and
+supersedes the estimator half of
+`0028-qualifying-the-rating-dependency-family.md`, whose ruling on which of that
+family's quantities can be resampled at all is retained. Rests
 on `0026-conservative-dispersion-bounds.md`, which is retained unchanged.
 
 ## Context
