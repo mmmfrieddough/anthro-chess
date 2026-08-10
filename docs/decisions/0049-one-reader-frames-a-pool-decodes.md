@@ -5,7 +5,10 @@ Date: 2026-08-10
 ## Status
 
 Accepted. Defines how preparation divides work across processes, and what a
-run may assume about the artifact when it does.
+run may assume about the artifact when it does. Refined by
+`0050-a-header-rejection-outranks-a-parse-error.md`, which stops a worker
+parsing a game the headers already reject, and gives up part of what this
+record says a run may assume about the artifact to do it.
 
 ## Context
 
