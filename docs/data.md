@@ -818,11 +818,14 @@ recorded as one in
 [`0041-games-of-marked-accounts-leave-the-corpus.md`](decisions/0041-games-of-marked-accounts-leave-the-corpus.md).
 
 The baseline selection does not name a snapshot yet, so it prepares unfiltered
-until one exists. Building it means asking the source about every account in an
-archive, which it rate limits hard enough to take several sessions; the
-selection carries the setting commented out rather than pointing at a file that
-is not there, because preparation refuses a missing or non-covering snapshot
-rather than quietly preparing without it.
+until one exists. Building one is a continuous census rather than a task with an
+end, so a snapshot states the coverage it reached instead of implying totality;
+[`0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md`](decisions/0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md)
+records why, and what that coverage does and does not claim. The selection
+carries the setting
+commented out rather than pointing at a file that is not there, because
+preparation refuses a missing or non-covering snapshot rather than quietly
+preparing without it.
 
 The filter acts on accounts rather than on moves because no method separates
 assisted moves from honest ones within a game at any useful confidence, while
