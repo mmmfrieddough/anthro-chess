@@ -42,6 +42,13 @@ successful build so a rebuild elsewhere is verified rather than assumed. A
 mismatch afterwards means the corpus, its filters, or its split seed moved, and
 the benchmark needs a new pool version rather than a quietly different pool.
 
+A selection that *reads* a pool records that digest too, because the checks a
+materialized pool answers on its own ask whether it is intact and readable by
+this code, and every generation of it is. Without the digest a superseded pool
+left at the configured path keeps scoring, labelled as itself and comparable to
+nothing the selection has moved on to. A selection recording none loads whatever
+the path holds, which is what a pool with no designated generation needs.
+
 It also contains the checkpoint-evaluation selection for `anthro eval run`,
 which names the pool and the view to score without naming a checkpoint. Leaving
 the model selection out keeps the canonical reading defined by its inputs

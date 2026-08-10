@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -18,6 +19,7 @@ from anthro_chess.chess import (
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
+from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
@@ -352,6 +354,48 @@ def test_a_ladder_with_no_scored_game_is_a_generation_failure() -> None:
             _config(generation={"maximum_generated_plies": 4}),
             runner=NeverEndingRunner(),
         )
+
+
+def test_a_pinned_generation_without_a_pool_is_a_configuration_error() -> None:
+    """A pin that protects nothing reads exactly like one that protects."""
+
+    with pytest.raises(ValidationError, match="does not read"):
+        _config(openings={"expected_pool_game_ids_sha256": "0" * 64})
+
+
+def test_openings_from_a_pool_this_ladder_is_not_defined_over_are_refused(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The generation a selection pins reaches the loader from here."""
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus", [normalized_row(1, split="test", plies=10)]
+    )
+    pool = tmp_path / "pool"
+    freeze_pool(
+        ResolvedConfig(
+            value=PoolConfig.model_validate(
+                {
+                    "pool_id": "ladder-fixture",
+                    "normalized": str(normalized),
+                    "manifest": str(manifest),
+                }
+            ),
+            provenance=ConfigProvenance(source=None, overrides=()),
+        ),
+        pool,
+    )
+    config = _config(
+        openings={
+            "pool": str(pool),
+            "expected_pool_game_ids_sha256": "0" * 64,
+        }
+    )
+
+    with pytest.raises(LadderBenchmarkError, match="expected 0{64}"):
+        _run(config)
 
 
 def test_every_pair_of_seats_meets_and_both_colors_are_played() -> None:

@@ -4,7 +4,8 @@ Date: 2026-08-03
 
 ## Status
 
-Accepted. Extends `0018-workload-scoped-efficiency-series.md`.
+Accepted. Extends `0018-workload-scoped-efficiency-series.md`, and refined by
+`0048-a-pinned-pool-generation-is-not-a-cost-workload.md`.
 
 ## Context
 
@@ -87,7 +88,8 @@ sweep's checkpoint reading and a full one's are two different amounts of work,
 and putting them on one line would report a reduction as an improvement.
 
 So the declared workload is a digest of the benchmark's resolved configuration,
-with two normalizations:
+with two normalizations — decision 0048 adds a third, for the realized pool
+generation a selection came to pin after this was written:
 
 - the **model selection and the label chosen for it are removed**, because the
   checkpoint is the coordinate a cost series varies along. Leaving it in would

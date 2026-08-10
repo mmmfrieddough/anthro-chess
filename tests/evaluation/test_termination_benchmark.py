@@ -921,6 +921,13 @@ def test_a_single_rating_is_a_point_rather_than_a_curve(pool: Path) -> None:
         _run(_config(pool, grid={"target_ratings": (1500,)}))
 
 
+def test_a_pool_this_suite_is_not_defined_over_is_refused(pool: Path) -> None:
+    """The generation a selection pins reaches the loader from here."""
+
+    with pytest.raises(TerminationBenchmarkError, match="expected 0{64}"):
+        _run(_config(pool, expected_pool_game_ids_sha256="0" * 64))
+
+
 # --- Recording ------------------------------------------------------------
 
 

@@ -38,6 +38,7 @@ from anthro_chess.data.schema import (
     row_game_id,
 )
 from anthro_chess.evaluation.coverage import pool_coverage
+from anthro_chess.evaluation.results.records import Sha256Hex
 
 BENCHMARK_VERSION = 1
 POOL_GAMES_FILE_NAME = "games.parquet"
@@ -67,6 +68,27 @@ class EvaluationPoolError(ValueError):
     """Raised when a pool cannot be built from or loaded for a selection."""
 
 
+class PoolGenerationPin(ConfigModel):
+    """The pool generation a benchmark selection is defined over.
+
+    Held by a type rather than by repetition, because the cost workload has to
+    know which configured field names realized data identity so it can leave it
+    out: a pool joins that digest as the artifact it names, and a pin moving at
+    every generation cut would otherwise start a fresh cost line at each one.
+    ``docs/decisions/0048-a-pinned-pool-generation-is-not-a-cost-workload.md``
+    owns that rule, so a later field naming realized data belongs here too.
+
+    Inherited rather than nested, for the reason
+    :mod:`anthro_chess.evaluation.selection` gives: a field typed as another
+    model is a table in the TOML, so composing this in would move the pin under
+    one and rewrite every shipped selection.
+    """
+
+    #: Absent loads whatever the configured path holds, which is what a pool
+    #: with no designated generation needs.
+    expected_pool_game_ids_sha256: Sha256Hex | None = None
+
+
 class PoolConfig(ConfigModel):
     """Code-owned schema for ``anthro eval freeze``."""
 
@@ -75,10 +97,7 @@ class PoolConfig(ConfigModel):
     normalized: Path
     manifest: Path
     split: SplitName = "test"
-    expected_game_ids_sha256: str | None = Field(
-        default=None,
-        pattern=r"^[a-f0-9]{64}$",
-    )
+    expected_game_ids_sha256: Sha256Hex | None = None
 
 
 @dataclass(frozen=True)
@@ -298,21 +317,34 @@ def _freeze_pool(
     )
 
 
-def load_pool(directory: str | Path) -> FrozenPool:
+def load_pool(
+    directory: str | Path,
+    *,
+    expected_game_ids_sha256: str | None = None,
+) -> FrozenPool:
     """Load a frozen pool and verify it against its recorded identity.
 
     A load repeated in the same process reuses the games an earlier one
     parsed, but skips none of the verification: the manifest is re-read, the
     artifact re-checksummed, and the recorded identity re-derived every time.
+
+    Every check but one asks whether the pool is intact and readable by this
+    code, which any pool of any generation can be. ``expected_game_ids_sha256``
+    is what the caller's configuration expected to find here, and it is the
+    only check that can tell a superseded pool left on disk from the one the
+    reading is defined over.
     """
 
     try:
-        return _load_pool(directory)
+        return _load_pool(directory, expected_game_ids_sha256)
     except DataLoadingError as error:
         raise EvaluationPoolError(str(error)) from error
 
 
-def _load_pool(directory: str | Path) -> FrozenPool:
+def _load_pool(
+    directory: str | Path,
+    expected_game_ids_sha256: str | None,
+) -> FrozenPool:
     pool_path = Path(directory)
     games_path = pool_path / POOL_GAMES_FILE_NAME
     manifest_path = pool_path / POOL_MANIFEST_FILE_NAME
@@ -360,6 +392,12 @@ def _load_pool(directory: str | Path) -> FrozenPool:
     if recorded.get("game_ids_sha256") != identity:
         raise EvaluationPoolError(
             f"evaluation pool contents do not match the recorded identity: {games_path}"
+        )
+    if expected_game_ids_sha256 is not None and identity != expected_game_ids_sha256:
+        raise EvaluationPoolError(
+            f"the evaluation pool at {pool_path} is not the one this "
+            f"configuration is defined over: expected {expected_game_ids_sha256}, "
+            f"loaded {identity}"
         )
     return FrozenPool(games_path=games_path, manifest=manifest, games=games)
 

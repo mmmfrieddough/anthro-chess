@@ -22,12 +22,16 @@ measuring more estimates the same quantity more precisely. For cost the
 reasoning inverts: measuring more costs more, and the cost is the quantity, so
 the workload is a digest of the benchmark's whole configuration.
 
-Two normalizations, and only two: the model selection goes, and every path
-drops its machine prefix while keeping the artifact it names.
+Three normalizations, and only three: the model selection goes, every path
+drops its machine prefix while keeping the artifact it names, and the pool
+generation a selection pins goes because it is realized data identity rather
+than work.
 
 ``docs/decisions/0031-committed-benchmark-cost.md`` owns the reasoning, the
 measurements behind it, and why a cost reading needs an execution floor before
-a delta in it means much.
+a delta in it means much;
+``docs/decisions/0048-a-pinned-pool-generation-is-not-a-cost-workload.md`` owns
+the third.
 """
 
 from __future__ import annotations
@@ -37,11 +41,12 @@ from datetime import datetime
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
 from anthro_chess.evaluation.execution import execution_record, runner_device
+from anthro_chess.evaluation.pool import PoolGenerationPin
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -178,17 +183,21 @@ def _normalized_configuration(config: CheckpointSelection) -> dict[str, Any]:
     """
 
     root = optional_root(DATA_ROOT_VARIABLE)
-    return {
-        field: _workload_value(value, root)
+    declared = {
+        field: value
         for field, value in config.model_dump().items()
         if field not in CheckpointSelection.model_fields
     }
+    return cast(dict[str, Any], _workload_value(declared, root))
 
 
 def _workload_value(value: Any, root: Path | None) -> Any:
     """Render one configured value as a comparable, machine-independent scalar.
 
     Key order is left to ``canonical_json``, which sorts at every depth.
+
+    A pool generation is dropped wherever it sits: decision 0048 keeps realized
+    data identity out of a cost workload.
     """
 
     if isinstance(value, Path):
@@ -196,7 +205,11 @@ def _workload_value(value: Any, root: Path | None) -> Any:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Mapping):
-        return {key: _workload_value(item, root) for key, item in value.items()}
+        return {
+            key: _workload_value(item, root)
+            for key, item in value.items()
+            if key not in PoolGenerationPin.model_fields
+        }
     if isinstance(value, str | bool | int | float) or value is None:
         return value
     if isinstance(value, Sequence):

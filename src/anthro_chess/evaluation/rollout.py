@@ -126,6 +126,7 @@ from anthro_chess.evaluation.openings import (
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
+    PoolGenerationPin,
     load_pool,
     pool_rows,
 )
@@ -366,7 +367,7 @@ class RolloutDetailConfig(ConfigModel):
     retain_games: StrictBool = True
 
 
-class RolloutBenchmarkConfig(CheckpointSelection):
+class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     """Code-owned schema for ``anthro eval rollout``."""
 
     #: The base runtime settings every seat plays under. Rating, temperature,
@@ -409,6 +410,11 @@ class RolloutBenchmarkConfig(CheckpointSelection):
                     "point at a frozen evaluation pool; set "
                     "reference.enabled to false to record the rollout scalars "
                     "alone"
+                )
+            if self.expected_pool_game_ids_sha256 is not None:
+                raise ValueError(
+                    "expected_pool_game_ids_sha256 names the generation of a "
+                    "pool this selection does not read"
                 )
         if self.reference.enabled:
             validate_reference_size(
@@ -1055,7 +1061,10 @@ def _load_pool(config: RolloutBenchmarkConfig) -> FrozenPool:
     if config.pool is None:  # pragma: no cover - validated on the config
         raise RolloutBenchmarkError("this suite needs a frozen evaluation pool")
     try:
-        return load_pool(config.pool)
+        return load_pool(
+            config.pool,
+            expected_game_ids_sha256=config.expected_pool_game_ids_sha256,
+        )
     except EvaluationPoolError as error:
         raise RolloutBenchmarkError(str(error)) from error
 

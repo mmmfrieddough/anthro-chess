@@ -105,6 +105,7 @@ from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
+    PoolGenerationPin,
     load_pool,
     pool_rows,
 )
@@ -351,7 +352,7 @@ class LadderAblationConfig(ConfigModel):
     enabled: StrictBool = True
 
 
-class LadderOpeningsConfig(ConfigModel):
+class LadderOpeningsConfig(PoolGenerationPin):
     """Where the ladder's games start.
 
     The standard position alone is a poor ladder at low temperature: two
@@ -367,6 +368,15 @@ class LadderOpeningsConfig(ConfigModel):
     view: ViewConfig = ViewConfig(name="ladder-openings", maximum_games=16)
     #: How many plies of each source game are replayed before the seats decide.
     plies: Annotated[StrictInt, Field(ge=1)] = 8
+
+    @model_validator(mode="after")
+    def _validate_pool(self) -> LadderOpeningsConfig:
+        if self.pool is None and self.expected_pool_game_ids_sha256 is not None:
+            raise ValueError(
+                "expected_pool_game_ids_sha256 names the generation of a pool "
+                "this selection does not read"
+            )
+        return self
 
 
 class LadderFitConfig(ConfigModel):
@@ -1753,7 +1763,9 @@ def _position_source(
             None,
             None,
         )
-    pool = _load_pool(config.openings.pool)
+    pool = _load_pool(
+        config.openings.pool, config.openings.expected_pool_game_ids_sha256
+    )
     view_config = config.openings.view.model_copy(
         update={"prefix_plies": config.openings.plies}
     )
@@ -1800,11 +1812,11 @@ def _position_source(
     )
 
 
-def _load_pool(path: Path) -> FrozenPool:
+def _load_pool(path: Path, expected_game_ids_sha256: str | None) -> FrozenPool:
     """Load the frozen pool the ladder's openings are projected out of."""
 
     try:
-        return load_pool(path)
+        return load_pool(path, expected_game_ids_sha256=expected_game_ids_sha256)
     except EvaluationPoolError as error:
         raise LadderBenchmarkError(str(error)) from error
 

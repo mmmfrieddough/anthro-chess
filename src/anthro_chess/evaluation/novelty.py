@@ -88,6 +88,7 @@ from anthro_chess.evaluation.policy import (
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
     FrozenPool,
+    PoolGenerationPin,
     load_pool,
     pool_rows,
 )
@@ -203,7 +204,7 @@ class PerturbationConfig(ConfigModel):
         return self
 
 
-class NoveltyBenchmarkConfig(CheckpointSelection):
+class NoveltyBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     """Code-owned schema for ``anthro eval novelty``."""
 
     pool: Path
@@ -1084,7 +1085,10 @@ def _execution_record(
 def _load_inputs(
     config: NoveltyBenchmarkConfig,
 ) -> tuple[FrozenPool, ViewSelection, tuple[dict[str, Any], ...]]:
-    pool = load_pool(config.pool)
+    pool = load_pool(
+        config.pool,
+        expected_game_ids_sha256=config.expected_pool_game_ids_sha256,
+    )
     selection = apply_view(pool.games, config.view)
     if not selection.game_ids:
         raise NoveltyBenchmarkError(

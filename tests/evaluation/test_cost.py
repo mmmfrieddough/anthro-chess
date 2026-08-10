@@ -18,6 +18,7 @@ from anthro_chess.evaluation.cost import (
     cost_device,
     cost_workload,
 )
+from anthro_chess.evaluation.ladder import LadderBenchmarkConfig
 from anthro_chess.evaluation.results import (
     CheckpointReference,
     ConfigurationReference,
@@ -91,6 +92,33 @@ def test_a_reduction_measures_a_different_amount_of_work() -> None:
     reduced = _workload(_config(view={"name": "canonical", "maximum_games": 400}))
 
     assert full != reduced
+
+
+def test_the_pinned_pool_generation_is_not_part_of_the_workload() -> None:
+    """Decision 0046 keeps realized data identity out of a cost line.
+
+    The pin moves at every re-freeze, and a re-freeze changes which games are
+    in the pool rather than how much of it is read. The ladder is here because
+    it pins under its own table, which is a second place the pin has to be
+    dropped from.
+    """
+
+    digest = "b0" * 32
+    ladder = LadderBenchmarkConfig(openings={"pool": Path("artifacts/pool")})  # type: ignore[arg-type]
+
+    assert _workload(_config()) == _workload(
+        _config(expected_pool_game_ids_sha256=digest)
+    )
+    assert cost_workload(CHECKPOINT_COST_BENCHMARK, ladder) == cost_workload(
+        CHECKPOINT_COST_BENCHMARK,
+        ladder.model_copy(
+            update={
+                "openings": ladder.openings.model_copy(
+                    update={"expected_pool_game_ids_sha256": digest}
+                )
+            }
+        ),
+    )
 
 
 def test_the_recorded_cost_reproduces_its_own_series_identity() -> None:
