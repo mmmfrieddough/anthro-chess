@@ -7,7 +7,7 @@ import logging
 import re
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import BrokenExecutor, Future, ProcessPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
@@ -452,6 +452,13 @@ def prepare_pgn(
         raise DataPreparationError(
             f"cannot read input PGN {source_path}: {error}"
         ) from error
+    except BrokenExecutor as error:
+        # A decoder killed from outside — the out-of-memory killer is the one
+        # to expect on a run this long — takes the pool down with it, and
+        # nothing below this catches a RuntimeError.
+        raise DataPreparationError(
+            f"a decoding worker died while preparing {source_path}: {error}"
+        ) from error
 
     if accepted_games == 0 and not corpus.inputs:
         # With no earlier archive there is no corpus for an empty append to
@@ -777,7 +784,7 @@ def _read_game_batches(pgn_file: TextIO, games_per_batch: int) -> Iterator[str]:
 
     Deciding where one game ends is the part that cannot be divided, so it runs
     on ``python-chess``'s own game-skipping scanner rather than on a second
-    account of PGN framing. That scanner reads 16,400 games/s against the 600
+    account of PGN framing. That scanner reads 16,800 games/s against the 576
     a full decode manages, which is what keeps one reader ahead of a machine
     full of workers.
     """
@@ -818,7 +825,7 @@ def _decode_batch(
 
 
 #: What a pooled worker decodes against, sent once when it starts rather than
-#: with every job: a marked-account snapshot is a set of millions of digests.
+#: with every job: a marked-account snapshot dwarfs the text a job carries.
 _WORKER_CONTEXT: tuple[PrepareConfig, MarkedAccounts | None] | None = None
 
 

@@ -115,6 +115,15 @@ def _named_directory(value: str) -> Path:
     return path
 
 
+def _worker_count(value: str) -> int:
+    """Read a pool size, refusing a negative that would read as serial."""
+
+    count = int(value)
+    if count < 0:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a worker count")
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level command parser."""
     parser = argparse.ArgumentParser(
@@ -196,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare_parser.add_argument(
         "--workers",
-        type=int,
+        type=_worker_count,
         help=(
             "Processes decoding games, 0 to decode in the reader's own. "
             "Defaults to one per core beyond the reader. Nothing about it "
@@ -1141,7 +1150,12 @@ def _prepare_workers(requested: int | None) -> int:
 
     if requested is not None:
         return requested
-    return max((os.cpu_count() or 1) - 1, 0)
+    # What this process may run on rather than what the machine holds: under a
+    # cgroup or a taskset the two disagree, and the machine's count would fork
+    # a decoder per core onto a handful of them.
+    affinity = getattr(os, "sched_getaffinity", None)
+    cores = len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
+    return max(cores - 1, 0)
 
 
 def _run_data_prepare(arguments: argparse.Namespace) -> int:

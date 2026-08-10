@@ -85,26 +85,42 @@ def test_data_prepare_command_routes_to_importable_pipeline(
     assert "manifests/manifest.json" in command_output
 
 
-def test_data_prepare_decodes_on_the_workers_it_is_given(tmp_path: Path) -> None:
-    """The flag reaches preparation, and none of it reaches what is written."""
+def test_data_prepare_decodes_on_the_workers_it_is_given(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag reaches preparation, and its absence asks for the machine."""
+
+    import anthro_chess.data as data
 
     repository_root = Path(__file__).parents[2]
     sample = repository_root / "samples/lichess/standard-export-sample.pgn"
     config = repository_root / "configs/data/lichess-sample.toml"
-    written = []
-    for name, workers in (("one", "0"), ("two", "2")):
-        output = tmp_path / name
-        argv = ["data", "prepare", str(sample), str(output), "--config", str(config)]
-        assert main([*argv, "--workers", workers]) == 0
-        written.append(
-            {
-                path.relative_to(output): path.read_bytes()
-                for path in sorted(output.rglob("*"))
-                if path.is_file()
-            }
-        )
+    requested: list[int] = []
+    prepare_pgn = data.prepare_pgn
 
-    assert written[0] == written[1]
+    def capture(
+        input_path: Path,
+        output: Path,
+        resolved: Any,
+        *,
+        workers: int,
+    ) -> Any:
+        requested.append(workers)
+        return prepare_pgn(input_path, output, resolved, workers=workers)
+
+    monkeypatch.setattr(data, "prepare_pgn", capture)
+
+    def argv(name: str) -> list[str]:
+        return ["data", "prepare", str(sample), str(tmp_path / name), "--config"]
+
+    assert main([*argv("given"), str(config), "--workers", "3"]) == 0
+    assert main([*argv("derived"), str(config)]) == 0
+
+    assert requested[0] == 3
+    assert requested[1] >= 1
+    with pytest.raises(SystemExit):
+        main([*argv("refused"), str(config), "--workers", "-4"])
 
 
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(

@@ -97,7 +97,8 @@ at roughly half its solo rate, and throughput flattens near 5,600 games/s
 whatever the pool size. The reader is not the constraint — it can frame three
 times faster than the pool consumes — so tuning it further buys nothing on this
 machine. A machine with more physical cores will go faster without any change
-here.
+here, until it has roughly three times as many and the reader becomes the
+constraint it is not today.
 
 **Shard writing stalls the pipeline.** Writing a 50,000-game shard and digesting
 it takes 1.2s in the reader, during which nothing is framed and every worker
