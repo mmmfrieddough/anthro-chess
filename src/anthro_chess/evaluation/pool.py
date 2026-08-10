@@ -75,7 +75,7 @@ class PoolGenerationPin(ConfigModel):
     know which configured field names realized data identity so it can leave it
     out: a pool joins that digest as the artifact it names, and a pin moving at
     every generation cut would otherwise start a fresh cost line at each one.
-    ``docs/decisions/0046-a-pinned-pool-generation-is-not-a-cost-workload.md``
+    ``docs/decisions/0047-a-pinned-pool-generation-is-not-a-cost-workload.md``
     owns that rule, so a later field naming realized data belongs here too.
 
     Inherited rather than nested, for the reason

@@ -1,4 +1,4 @@
-# 0046: A Pinned Pool Generation Is Not Part Of A Cost Workload
+# 0047: A Pinned Pool Generation Is Not Part Of A Cost Workload
 
 Date: 2026-08-10
 

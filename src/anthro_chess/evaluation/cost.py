@@ -30,7 +30,7 @@ than work.
 ``docs/decisions/0031-committed-benchmark-cost.md`` owns the reasoning, the
 measurements behind it, and why a cost reading needs an execution floor before
 a delta in it means much;
-``docs/decisions/0046-a-pinned-pool-generation-is-not-a-cost-workload.md`` owns
+``docs/decisions/0047-a-pinned-pool-generation-is-not-a-cost-workload.md`` owns
 the third.
 """
 
@@ -196,7 +196,7 @@ def _workload_value(value: Any, root: Path | None) -> Any:
 
     Key order is left to ``canonical_json``, which sorts at every depth.
 
-    A pool generation is dropped wherever it sits: decision 0046 keeps realized
+    A pool generation is dropped wherever it sits: decision 0047 keeps realized
     data identity out of a cost workload.
     """
 
