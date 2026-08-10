@@ -82,6 +82,7 @@ def test_freeze_selects_only_the_test_split_and_records_provenance(
         "leakage",
         "preprocessing_version",
         "resolved_config",
+        "sampling",
         "schema_version",
     }
 
@@ -156,11 +157,40 @@ def test_a_sample_fraction_admits_that_share_of_the_split(
     )
 
     assert 74 <= result.games <= 126
-    repeated = freeze_pool(
-        _resolved(normalized, manifest, sample_fraction=0.25),
-        tmp_path / "repeated",
+    sampling = json.loads(result.manifest_path.read_text())["sampling"]
+    assert sampling["fraction"] == 0.25
+    assert sampling["split_games"] == 400
+
+
+def test_the_admission_seed_is_frozen(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A changed seed redraws membership and drops games earlier pools held.
+
+    Nothing else here can see that. The generation cut verifies containment
+    against the pool before it, and there is no such pool yet, so until there
+    is this is the only thing standing between an edited seed and a break
+    nobody notices. A failure here is repaired by restoring the seed rather
+    than by accepting the new digest.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="test") for index in range(40)],
     )
-    assert repeated.game_ids_sha256 == result.game_ids_sha256
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.25),
+        tmp_path / "pool",
+    )
+
+    assert pool_module.POOL_SAMPLE_SEED == "anthro-evaluation-pool-v1"
+    assert (
+        result.game_ids_sha256
+        == "7a1604e77f9cb1a35b70ed8b2b8bb270ecd3e7d99c48b89b14d97c55bf9fe013"
+    )
 
 
 def test_a_sampled_pool_still_contains_the_one_a_smaller_corpus_produced(

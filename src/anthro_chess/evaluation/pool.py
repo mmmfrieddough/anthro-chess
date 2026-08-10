@@ -104,8 +104,8 @@ class PoolConfig(ConfigModel):
     normalized: Path
     manifest: Path
     split: SplitName = "test"
-    #: How much of the split the pool admits. Absent admits all of it, which is
-    #: what a generation cut before the bound existed did.
+    #: How much of the split the pool admits, absent to admit all of it, which
+    #: is what a generation cut before the bound existed did.
     #: ``docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md``
     #: owns why the bound is a fraction rather than a game count.
     sample_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
@@ -296,6 +296,12 @@ def _freeze_pool(
             "split": source_manifest.get("split"),
             "selection": source_manifest.get("selection"),
         },
+        "sampling": {
+            "algorithm": "sha256-prefix-fraction-v1",
+            "seed": POOL_SAMPLE_SEED,
+            "fraction": config.sample_fraction,
+            "split_games": split_games,
+        },
         "output": {
             "format": "parquet",
             "compression": "zstd",
@@ -443,15 +449,21 @@ def _admission(fraction: float | None) -> Callable[[int], bool]:
     the previous N held, and every generation has to contain the last. A fixed
     threshold decides a game on its id alone, so growth only ever adds.
 
-    Thresholded the way :mod:`anthro_chess.data.prepare` assigns a split, since
-    this is the same operation one layer down and rests on the same stability.
+    Split assignment reaches for the same arithmetic and is deliberately not
+    shared with it. That one is versioned in every corpus manifest and may be
+    redrawn; this one may never move, because a redraw drops games an earlier
+    generation contains. What the two have in common is the property, not the
+    code: each is a pure function of the game id.
+
+    The threshold is an integer rather than a ratio per game, so membership
+    turns on nothing a float rounded.
     """
 
     if fraction is None:
         return lambda game_id: True
+    threshold = int(fraction * 2**64)
     return lambda game_id: (
-        int.from_bytes(rank_key(POOL_SAMPLE_SEED, game_id)[:8], "big") / 2**64
-        < fraction
+        int.from_bytes(rank_key(POOL_SAMPLE_SEED, game_id)[:8], "big") < threshold
     )
 
 
