@@ -1145,16 +1145,32 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
         print(f"anthro data prepare: {error}", file=sys.stderr)
         return 2
 
-    print(
-        f"Prepared {result.accepted_games} game(s); rejected {result.rejected_games}."
-    )
-    if len(result.normalized_paths) == 1:
-        print(f"Normalized: {result.normalized_path}")
+    if result.disposition == "corpus_complete":
+        print("Corpus already holds its configured maximum; nothing prepared.")
     else:
-        print(
-            f"Normalized: {len(result.normalized_paths)} shard(s) under "
-            f"{result.normalized_paths[0].parent}"
-        )
+        if result.disposition == "already_prepared":
+            print(
+                f"Archive already in this corpus, contributing "
+                f"{result.accepted_games} game(s)."
+            )
+        else:
+            print(
+                f"Prepared {result.accepted_games} game(s); "
+                f"rejected {result.rejected_games}."
+            )
+        if not result.normalized_paths:
+            print("Normalized: no shards, because this archive accepted no games.")
+        elif len(result.normalized_paths) == 1:
+            print(f"Normalized: {result.normalized_path}")
+        else:
+            print(
+                f"Normalized: {len(result.normalized_paths)} shard(s) under "
+                f"{result.normalized_paths[0].parent}"
+            )
+    print(
+        f"Corpus: {sum(result.split_counts.values())} game(s) from "
+        f"{result.corpus_archives} archive(s)."
+    )
     print(f"Manifest: {result.manifest_path}")
     return 0
 
@@ -1218,8 +1234,8 @@ def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
             raise ConfigError(
                 f"{output_path} covers a different archive. Widening one snapshot "
                 "across archives has to keep every earlier verdict rather than "
-                "re-decide covered accounts, and nothing prepares from two "
-                "archives yet; write this one to its own --output path"
+                "re-decide covered accounts, and nothing does that yet; write "
+                "this one to its own --output path"
             )
 
         resume_path = output_path.with_suffix(output_path.suffix + ".partial")
