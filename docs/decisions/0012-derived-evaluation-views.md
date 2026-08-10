@@ -4,7 +4,9 @@ Date: 2026-07-25
 
 ## Status
 
-Accepted.
+Accepted. Refined by `0052-a-bounded-pool-is-a-fixed-admission-fraction.md`,
+under which the pool is a bounded uniform sample of the split rather than the
+whole of it.
 
 ## Context
 
@@ -88,3 +90,4 @@ digest in every artifact keeps that answerable rather than implicit.
 - `docs/data.md`
 - `docs/decisions/0004-source-agnostic-normalized-data.md`
 - `docs/decisions/0011-held-out-test-partition.md`
+- `docs/decisions/0052-a-bounded-pool-is-a-fixed-admission-fraction.md`

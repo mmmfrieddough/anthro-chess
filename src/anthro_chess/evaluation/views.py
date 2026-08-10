@@ -9,12 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from hashlib import sha256
 
 from pydantic import Field, StrictBool
 
 from anthro_chess.config import ConfigModel
-from anthro_chess.evaluation.pool import PoolGame, game_ids_sha256
+from anthro_chess.evaluation.pool import PoolGame, game_ids_sha256, rank_key
 
 VIEW_SPEC_VERSION = 1
 
@@ -77,7 +76,7 @@ def apply_view(games: Sequence[PoolGame], config: ViewConfig) -> ViewSelection:
         else:
             excluded[reason] = excluded.get(reason, 0) + 1
 
-    ordered = sorted(eligible, key=lambda game: _rank_key(config.seed, game.game_id))
+    ordered = sorted(eligible, key=lambda game: rank_key(config.seed, game.game_id))
     if config.maximum_games is not None:
         ordered = ordered[: config.maximum_games]
 
@@ -100,9 +99,3 @@ def _exclusion_reason(game: PoolGame, config: ViewConfig) -> str | None:
     if config.require_ratings and not game.has_ratings:
         return "missing_ratings"
     return None
-
-
-def _rank_key(seed: str, game_id: int) -> bytes:
-    """Rank uniformly by game id so a subsample stays representative."""
-
-    return sha256(f"{seed}\0{game_id}".encode()).digest()
