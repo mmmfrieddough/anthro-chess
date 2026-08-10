@@ -150,10 +150,18 @@ See `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`.
 
 Preparation decodes games on a pool of processes. One reader walks the
 decompressed stream and decides where each game ends, and workers do the
-parsing, replay, encoding and classification that dominates the cost. The
+parsing, encoding and classification that dominates the cost, building each
+normalized record in one pass as the parser walks the game. The
 reader consumes their results in source order, so acceptance, duplicate
 rejection, the accepted-game bound and shard boundaries see the same sequence
 whatever the pool size.
+
+A worker reads a game's headers before its moves, and a filter the headers
+alone settle rejects the game there rather than after parsing a movetext no
+record will be built from. Which games a selection accepts is unaffected; what
+the manifest names as a rejected game's reason is not, because a game the
+headers rule out is no longer given the chance to fail to parse first. See
+`docs/decisions/0050-a-header-rejection-outranks-a-parse-error.md`.
 
 Worker count is therefore a statement about the machine and not about the
 corpus. It is a `--workers` argument to `anthro data prepare` rather than a
