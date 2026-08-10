@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -89,38 +90,46 @@ def test_data_prepare_decodes_on_the_workers_it_is_given(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The flag reaches preparation, and its absence asks for the machine."""
+    """The flag reaches preparation, and its absence leaves the reader a core."""
 
     import anthro_chess.data as data
+    from anthro_chess.interfaces.cli import _prepare_workers
 
     repository_root = Path(__file__).parents[2]
     sample = repository_root / "samples/lichess/standard-export-sample.pgn"
     config = repository_root / "configs/data/lichess-sample.toml"
     requested: list[int] = []
-    prepare_pgn = data.prepare_pgn
 
     def capture(
-        input_path: Path,
+        _input_path: Path,
         output: Path,
-        resolved: Any,
+        _resolved: object,
         *,
         workers: int,
-    ) -> Any:
+    ) -> PreparationResult:
         requested.append(workers)
-        return prepare_pgn(input_path, output, resolved, workers=workers)
+        return PreparationResult(
+            normalized_paths=(output / "normalized/games-0.parquet",),
+            manifest_path=output / "manifests/manifest.json",
+            accepted_games=1,
+            rejected_games=0,
+            split_counts={"train": 1, "validation": 0},
+            corpus_archives=1,
+        )
 
     monkeypatch.setattr(data, "prepare_pgn", capture)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False
+    )
+    argv = ["data", "prepare", str(sample), str(tmp_path), "--config", str(config)]
 
-    def argv(name: str) -> list[str]:
-        return ["data", "prepare", str(sample), str(tmp_path / name), "--config"]
-
-    assert main([*argv("given"), str(config), "--workers", "3"]) == 0
-    assert main([*argv("derived"), str(config)]) == 0
-
-    assert requested[0] == 3
-    assert requested[1] >= 1
+    assert main([*argv, "--workers", "3"]) == 0
+    assert main(argv) == 0
     with pytest.raises(SystemExit):
-        main([*argv("refused"), str(config), "--workers", "-4"])
+        main([*argv, "--workers", "-4"])
+
+    assert requested == [3, 7]
+    assert _prepare_workers(0) == 0
 
 
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(

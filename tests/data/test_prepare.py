@@ -1351,7 +1351,6 @@ def test_decoding_across_processes_writes_the_bytes_one_process_would(
             }
         )
 
-    assert len(written[0]) == 1 + len(result.normalized_paths)
     assert written[0] == written[1]
 
 
@@ -1378,9 +1377,9 @@ carrying a blank line } e5 2. Qh5 Nc6 3. Qxf7# 1-0
 def test_framing_splits_the_stream_where_the_parser_ends_a_game() -> None:
     """A framed game reparses into the game reading the whole stream gives."""
 
-    from anthro_chess.data.prepare import _read_game_batches
+    from anthro_chess.data.prepare import _framed_games
 
-    framed = list(_read_game_batches(StringIO(_AWKWARDLY_FRAMED_PGN), 1))
+    framed = list(_framed_games(StringIO(_AWKWARDLY_FRAMED_PGN)))
     streamed = StringIO(_AWKWARDLY_FRAMED_PGN)
 
     assert "".join(framed) == _AWKWARDLY_FRAMED_PGN

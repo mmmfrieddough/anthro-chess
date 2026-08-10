@@ -6,8 +6,16 @@ import json
 import logging
 import re
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from concurrent.futures import BrokenExecutor, Future, ProcessPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
@@ -79,8 +87,9 @@ _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 #: round trip that dispatched it, and a full pool's worth of the records they
 #: return has to stay small beside the shard being filled.
 _GAMES_PER_JOB = 256
-#: Jobs queued beyond one per worker, so a worker that finishes one has its
-#: next already waiting instead of idling until the consumer comes back.
+#: Jobs queued beyond one per worker. ``StreamingLoaderConfig`` argues why the
+#: two add rather than compete; the number is smaller than the loader's because
+#: a job here is a quarter-thousand games of records rather than one batch.
 _JOB_PREFETCH = 2
 #: How many hex characters of an input's digest name that input's shards. A
 #: shard name has to be unique across every archive one corpus is built from,
@@ -360,8 +369,13 @@ def prepare_pgn(
     stopped_at_limit = False
 
     try:
-        with open_pgn_text(source_path) as pgn_file:
-            for parsed in _decoded_games(pgn_file, config, marked_accounts, workers):
+        with (
+            open_pgn_text(source_path) as pgn_file,
+            closing(
+                _decoded_games(pgn_file, config, marked_accounts, workers)
+            ) as decoded,
+        ):
+            for parsed in decoded:
                 if parsed.record is None:
                     assert parsed.rejection is not None
                     rejections[parsed.rejection] += 1
@@ -765,6 +779,14 @@ def _recorded_result(
     )
 
 
+def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
+    while True:
+        game = chess.pgn.read_game(pgn_file)
+        if game is None:
+            return
+        yield game
+
+
 class _CapturingReader:
     """Hand ``read_game`` its lines while keeping the ones it consumed."""
 
@@ -779,8 +801,8 @@ class _CapturingReader:
         return line
 
 
-def _read_game_batches(pgn_file: TextIO, games_per_batch: int) -> Iterator[str]:
-    """Yield the raw text of consecutive games, framed but not parsed.
+def _framed_games(pgn_file: TextIO) -> Iterator[str]:
+    """Yield each game's raw text, framed but not parsed.
 
     Deciding where one game ends is the part that cannot be divided, so it runs
     on ``python-chess``'s own game-skipping scanner rather than on a second
@@ -790,8 +812,6 @@ def _read_game_batches(pgn_file: TextIO, games_per_batch: int) -> Iterator[str]:
     """
 
     reader = _CapturingReader(pgn_file)
-    batch: list[str] = []
-    games = 0
     while True:
         reader.lines = []
         framed = chess.pgn.read_game(
@@ -799,14 +819,13 @@ def _read_game_batches(pgn_file: TextIO, games_per_batch: int) -> Iterator[str]:
             Visitor=chess.pgn.SkipVisitor,
         )
         if framed is None:
-            break
-        batch.extend(reader.lines)
-        games += 1
-        if games == games_per_batch:
-            yield "".join(batch)
-            batch = []
-            games = 0
-    if batch:
+            return
+        yield "".join(reader.lines)
+
+
+def _read_game_batches(pgn_file: TextIO) -> Iterator[str]:
+    games = _framed_games(pgn_file)
+    while batch := list(islice(games, _GAMES_PER_JOB)):
         yield "".join(batch)
 
 
@@ -815,13 +834,10 @@ def _decode_batch(
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
 ) -> list[_ParsedGame]:
-    handle = StringIO(text)
-    decoded: list[_ParsedGame] = []
-    while True:
-        game = chess.pgn.read_game(handle)
-        if game is None:
-            return decoded
-        decoded.append(_parse_game(game, config, marked_accounts))
+    return [
+        _parse_game(game, config, marked_accounts)
+        for game in _read_games(StringIO(text))
+    ]
 
 
 #: What a pooled worker decodes against, sent once when it starts rather than
@@ -847,7 +863,7 @@ def _decoded_games(
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
     workers: int,
-) -> Iterator[_ParsedGame]:
+) -> Generator[_ParsedGame, None, None]:
     """Yield every game's decode in source order, across ``workers`` processes.
 
     Order is what keeps the worker count out of the artifact. Acceptance,
@@ -855,12 +871,12 @@ def _decoded_games(
     sequence, so a run on one process and a run on thirty write the same bytes.
     """
 
-    batches = _read_game_batches(pgn_file, _GAMES_PER_JOB)
     if workers < 1:
-        for text in batches:
-            yield from _decode_batch(text, config, marked_accounts)
+        for game in _read_games(pgn_file):
+            yield _parse_game(game, config, marked_accounts)
         return
 
+    batches = _read_game_batches(pgn_file)
     pool = ProcessPoolExecutor(
         max_workers=workers,
         initializer=_start_worker,

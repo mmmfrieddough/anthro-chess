@@ -66,9 +66,11 @@ per core:
 | 31 | 5,600 | 9.7x |
 
 The corpus falls from 67 days of decoding to about 7. The shards and manifest a
-31-process run wrote were byte-identical to the ones a single-process run wrote
-over the same input, including across job boundaries and across the bound that
-stops a run partway through a batch.
+pooled run wrote were byte-identical to the ones a single-process run wrote over
+the same input, including across job boundaries and across the bound that stops
+a run partway through a batch. A run on no workers reads the stream straight
+into the parser and never frames, so that comparison is also what checks the
+framing against the thing it has to agree with.
 
 ## Why not the obvious alternatives
 
