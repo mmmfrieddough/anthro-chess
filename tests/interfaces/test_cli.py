@@ -382,6 +382,147 @@ def test_data_acquire_uses_data_root_when_output_is_omitted(
     assert captured_output == [data_root / "lichess-blitz-2017-04"]
 
 
+def _census_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Acquire two small archives under a data root and return the selection."""
+
+    from hashlib import sha256
+
+    import zstandard
+
+    def _game(white: str, black: str) -> str:
+        return (
+            f'[Event "Rated Blitz game"]\n[White "{white}"]\n[Black "{black}"]\n\n'
+            "1. e4 e5 1-0\n"
+        )
+
+    data_root = tmp_path / "datasets"
+    digests = []
+    for index, games in enumerate(
+        (
+            [("Busy", "Quiet"), ("Busy", "Middling")],
+            [("Busy", "Middling")],
+        ),
+        start=1,
+    ):
+        archive = data_root / f"month-{index}" / "raw" / f"{index}.pgn.zst"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(
+            zstandard.ZstdCompressor().compress(
+                "".join(_game(*pair) for pair in games).encode()
+            )
+        )
+        digests.append(sha256(archive.read_bytes()).hexdigest())
+
+    config = tmp_path / "selection.toml"
+    config.write_text(
+        f"""
+artifact_name = "fixture"
+
+[source]
+id = "test"
+version = "fixture"
+url = "https://example.test/"
+license = "CC0-1.0"
+
+[[archives]]
+artifact_name = "month-1"
+url = "https://example.test/1.pgn.zst"
+file_name = "1.pgn.zst"
+sha256 = "{digests[0]}"
+
+[[archives]]
+artifact_name = "month-2"
+url = "https://example.test/2.pgn.zst"
+file_name = "2.pgn.zst"
+sha256 = "{digests[1]}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    monkeypatch.delenv("LICHESS_TOKEN", raising=False)
+    return config
+
+
+def test_data_census_asks_the_busiest_accounts_first_and_stores_every_answer(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _census_fixture(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+        asked.extend(batch)
+        return [{"id": name, "tosViolation": name == "busy"} for name in batch]
+
+    monkeypatch.setattr("anthro_chess.data.census._post_usernames", fake_post)
+
+    assert (
+        main(
+            [
+                "data",
+                "census",
+                "--config",
+                str(config),
+                "--accounts",
+                "2",
+                "--pause-seconds",
+                "0",
+                "--workers",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    # Busiest first across both archives, and the counts stay beside each one.
+    assert asked == ["busy", "middling"]
+    data_root = tmp_path / "datasets"
+    assert (data_root / "month-1/census/account-games.tsv").is_file()
+    assert (data_root / "month-2/census/account-games.tsv").is_file()
+    answers = (data_root / "fixture/census/answers.tsv").read_text(encoding="utf-8")
+    assert answers.splitlines()[0].startswith("busy\t1\t")
+    output = capsys.readouterr().out
+    assert "Asked about 2 account(s); 1 marked. The day's allowance is spent." in output
+    assert "Coverage: 2 of 3 account(s) (66.67%), 83.33% of player-slots" in output
+
+
+def test_data_mark_accounts_cuts_a_snapshot_from_the_census_as_it_stands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anthro_chess.data.accounts import load_marked_accounts
+
+    config = _census_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "anthro_chess.data.census._post_usernames",
+        lambda batch, token: [
+            {"id": name, "tosViolation": name == "busy"} for name in batch
+        ],
+    )
+    assert (
+        main(["data", "census", "--config", str(config), "--pause-seconds", "0"]) == 0
+    )
+    capsys.readouterr()
+
+    output_path = tmp_path / "marked.txt"
+    command = ["data", "mark-accounts", "--config", str(config), "--output"]
+    assert main([*command, str(output_path)]) == 0
+
+    snapshot = load_marked_accounts(output_path)
+    assert snapshot.contains("BUSY")
+    assert snapshot.accounts_queried == 3
+    assert snapshot.slot_coverage == 1.0
+    assert len(snapshot.covers_archives) == 2
+    assert "Coverage: 100.00% of accounts" in capsys.readouterr().out
+
+    # A snapshot cut from a later census rejects games this one keeps, so it is
+    # a new corpus rather than an overwrite.
+    assert main([*command, str(output_path)]) == 2
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

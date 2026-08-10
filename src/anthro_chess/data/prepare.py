@@ -530,9 +530,12 @@ def prepare_pgn(
             None
             if marked_accounts is None
             else {
-                "covers_archive": marked_accounts.covers_archive,
+                "covers_archives": list(marked_accounts.covers_archives),
                 "queried_at": marked_accounts.queried_at,
+                "accounts_total": marked_accounts.accounts_total,
                 "accounts_queried": marked_accounts.accounts_queried,
+                "slots_total": marked_accounts.slots_total,
+                "slots_queried": marked_accounts.slots_queried,
                 "accounts_marked": marked_accounts.accounts_marked,
             }
         ),
@@ -945,10 +948,11 @@ def _resolve_marked_accounts(
     except MarkedAccountError as error:
         raise DataPreparationError(str(error)) from error
     logger.info(
-        "Rejecting games of %s marked account(s) observed %s across %s account(s)",
+        "Rejecting games of %s marked account(s), from a census cut %s that had "
+        "answered for %.1f%% of these archives' player-slots",
         snapshot.accounts_marked,
         snapshot.queried_at,
-        snapshot.accounts_queried,
+        100 * snapshot.slot_coverage,
     )
     return snapshot
 

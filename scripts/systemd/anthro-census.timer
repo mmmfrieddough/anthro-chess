@@ -1,0 +1,12 @@
+[Unit]
+Description=Ask the source about more accounts once a day
+
+[Timer]
+OnCalendar=daily
+# The census accrues rather than finishing, so a machine that was off overnight
+# runs the missed day when it comes back rather than skipping it silently.
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

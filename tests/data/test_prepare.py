@@ -27,8 +27,9 @@ from anthro_chess.data import (
     prepare_pgn,
 )
 from anthro_chess.data.accounts import (
+    MarkedAccounts,
+    account_digest,
     account_row_digest,
-    marked_accounts_from_usernames,
 )
 from anthro_chess.data.schema import (
     NORMALIZED_COLUMNS,
@@ -275,11 +276,14 @@ def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
         + _short_game(site="marked-black", black="Cheater"),
         encoding="utf-8",
     )
-    snapshot = marked_accounts_from_usernames(
-        ["cheater"],
-        archive_sha256=sha256(input_path.read_bytes()).hexdigest(),
+    snapshot = MarkedAccounts(
+        covers_archives=(sha256(input_path.read_bytes()).hexdigest(),),
         queried_at="2026-08-08",
+        accounts_total=8,
         accounts_queried=6,
+        slots_total=100,
+        slots_queried=90,
+        digests=frozenset({account_digest("cheater")}),
     ).write(tmp_path / "marked-accounts.txt")
     resolved = load_config(
         PrepareConfig,
@@ -293,9 +297,11 @@ def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
     assert result.accepted_games == 1
     manifest = _read_json(result.manifest_path)
     assert manifest["games"]["rejection_reasons"] == {"marked_account": 2}
-    # Recorded per archive, because a snapshot speaks for one archive.
+    # Recorded per archive, with the coverage the census had reached, because a
+    # snapshot rejects what it caught rather than everything there is.
     assert manifest["inputs"][0]["marked_accounts"]["accounts_marked"] == 1
     assert manifest["inputs"][0]["marked_accounts"]["accounts_queried"] == 6
+    assert manifest["inputs"][0]["marked_accounts"]["slots_queried"] == 90
 
 
 def test_refuses_to_prepare_an_archive_the_snapshot_does_not_cover(
@@ -303,11 +309,14 @@ def test_refuses_to_prepare_an_archive_the_snapshot_does_not_cover(
 ) -> None:
     input_path = tmp_path / "widened.pgn"
     input_path.write_text(_short_game(site="accepted"), encoding="utf-8")
-    snapshot = marked_accounts_from_usernames(
-        ["cheater"],
-        archive_sha256="f" * 64,
+    snapshot = MarkedAccounts(
+        covers_archives=("f" * 64,),
         queried_at="2026-08-08",
+        accounts_total=8,
         accounts_queried=6,
+        slots_total=100,
+        slots_queried=90,
+        digests=frozenset({account_digest("cheater")}),
     ).write(tmp_path / "marked-accounts.txt")
     resolved = load_config(
         PrepareConfig,

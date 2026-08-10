@@ -224,7 +224,8 @@ __marimo__/
 /results/**/.*.tmp
 
 # Anthro Chess marked-account snapshots
-#   The snapshot itself is checked in. Its sidecars are not: a resumable
-#   query's progress, and the temporary file it is replaced through.
-/configs/data/marked-accounts/*.partial
+#   The snapshot itself is checked in; the temporary file it is replaced
+#   through is not. The census it is cut from keeps its progress under the data
+#   root instead, because `git worktree remove` deletes ignored files and that
+#   is how the first census was lost.
 /configs/data/marked-accounts/*.writing

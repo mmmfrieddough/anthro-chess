@@ -8,16 +8,22 @@ reading the source directly would therefore produce a different corpus on every
 run and quietly shrink an evaluation pool that later generations are required
 to contain.
 
-So the answer is taken once, pinned to the archive it covers, and checked in.
+So the answer is taken once, pinned to the archives it covers, and checked in.
 Refreshing it is a deliberate act that starts a new corpus, exactly as changing
-the archive digest does. A snapshot built against one archive refuses to
-prepare another, which is what stops a widened corpus from silently keeping the
-accounts nobody asked about.
+an archive digest does. A snapshot refuses an archive it never counted, which
+is what stops a widened corpus from silently keeping the accounts nobody asked
+about.
+
+What a snapshot does not claim is that everyone in those archives was asked
+about. The census it is cut from asks the source about accounts continuously
+and in descending order of games played, so a snapshot is a moment in that
+rather than the end of it, and its header carries the coverage it had reached.
+Decision record 0047 owns what that number is and is not.
 
 Usernames are stored as truncated salted digests. Membership is all preparation
 needs and a digest serves it as well as a name, so the checked-in file is not a
-readable roster. The salt is public and the account space is the archive's, so
-this obscures rather than protects — anyone holding the same archive can
+readable roster. The salt is public and the account space is the archives', so
+this obscures rather than protects — anyone holding the same archives can
 recover the names from it. What it buys is that the repository does not itself
 publish the list.
 """
@@ -25,55 +31,13 @@ publish the list.
 from __future__ import annotations
 
 import json
-import logging
-import os
-import time
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-from anthro_chess.data.artifacts import (
-    SOURCE_USER_AGENT,
-    open_pgn_text,
-    write_text_atomically,
-)
+from anthro_chess.data.artifacts import write_text_atomically
 
-#: Bulk account lookup. One request answers for many accounts, which is what
-#: makes covering a whole archive a matter of hours rather than weeks.
-LICHESS_USERS_ENDPOINT = "https://lichess.org/api/users"
-#: The endpoint's documented maximum names per request. Names past it are
-#: dropped rather than refused, so a larger batch loses accounts silently.
-LICHESS_USERS_BATCH = 300
-#: An access token for the source, which buys nothing but a larger allowance:
-#: the endpoint needs no scope, so a token with none is enough. It is read from
-#: the environment rather than any checked-in file because it is a credential.
-LICHESS_TOKEN_VARIABLE = "LICHESS_TOKEN"
-#: The source's own limiter, transcribed from where it enforces it rather than
-#: inferred from refusals: ``lichess-org/lila``, ``Limiters.scala`` (the
-#: ``apiUsers`` composite) and ``Api.scala`` (``usersByIds``). It charges the
-#: calling address against a burst bucket and a daily one at once, and each
-#: request costs ``len(batch) // divisor`` credits. Re-read those two files
-#: before trusting these numbers again. Decision record 0047 owns the daily
-#: ceiling and why the pace is derived rather than tuned.
-_BURST_CREDITS = 2_000
-_BURST_WINDOW_SECONDS = 600.0
-#: What a token is worth: it halves the cost of every request.
-_ANONYMOUS_DIVISOR = 3
-_AUTHENTICATED_DIVISOR = 6
-#: A refusal is a bucket emptying, and the burst one refills over the window
-#: above, so one wait clears it. A second refusal is the daily bucket or
-#: something else entirely, and neither is waited out within a run. Stopping is
-#: cheap because progress is checkpointed, so the next run resumes.
-_REFUSAL_ATTEMPTS = 2
-_PLAYER_TAGS = ('[White "', '[Black "')
-#: Both player tags are the same width, so the name starts at a fixed offset.
-_PLAYER_TAG_LENGTH = len(_PLAYER_TAGS[0])
-logger = logging.getLogger(__name__)
-
-SNAPSHOT_FORMAT_VERSION = 1
+SNAPSHOT_FORMAT_VERSION = 2
 #: Fixed, checked-in, and part of the artifact's identity. Changing it
 #: invalidates every stored digest, so it is versioned with the format rather
 #: than configured per selection.
@@ -114,26 +78,34 @@ def account_row_digest(username: str) -> int:
 
 @dataclass(frozen=True)
 class MarkedAccounts:
-    """Marked accounts observed across the archive a snapshot covers.
+    """Marked accounts found among the archives a snapshot covers.
 
-    ``covers_archive`` is a coverage claim rather than provenance: the snapshot
-    speaks for every account appearing anywhere in that archive, so preparation
-    may read an unlisted account as unmarked instead of as unknown, and must
-    refuse any other archive.
+    ``covers_archives`` is a coverage claim rather than provenance: the
+    snapshot speaks for those archives and must refuse any other, so widening
+    the corpus stops the run instead of quietly keeping the accounts nobody
+    asked about.
 
-    Growing a snapshot to cover a second archive is deliberately absent: it
-    would have to keep every earlier verdict verbatim and ask only about
-    genuinely new accounts, since re-deciding a covered account applies a later
-    moderation decision retroactively and drops games an earlier pool
-    generation contains. Preparation appends one archive at a time, so a corpus
-    spanning archives cannot set ``filters.marked_accounts`` at all until a
-    snapshot can speak for more than one: ``require_archive`` refuses the second
-    archive rather than preparing it unfiltered.
+    Within them it speaks partially, and the counts say how partially. An
+    account that is listed is marked; an account that is not was either
+    answered for and clean, or never asked about, and preparation cannot tell
+    the two apart, so it keeps the games either way. ``slots_queried`` against
+    ``slots_total`` is what that costs, in the player-slots the corpus is
+    actually made of rather than in accounts, because marked accounts play more
+    games than average.
+
+    Growing a snapshot is deliberately absent. A later census answers for more
+    accounts and re-answers for none, but re-cutting a snapshot from it applies
+    later moderation decisions retroactively and drops games an earlier pool
+    generation contains, which is why a refresh starts a new corpus rather than
+    amending this one.
     """
 
-    covers_archive: str
+    covers_archives: tuple[str, ...]
     queried_at: str
+    accounts_total: int
     accounts_queried: int
+    slots_total: int
+    slots_queried: int
     digests: frozenset[str]
 
     @property
@@ -142,20 +114,26 @@ class MarkedAccounts:
 
         return len(self.digests)
 
+    @property
+    def slot_coverage(self) -> float:
+        """Return the share of player-slots the census had answered for."""
+
+        return self.slots_queried / self.slots_total if self.slots_total else 0.0
+
     def contains(self, username: str) -> bool:
         """Return whether one source username is marked."""
 
         return account_digest(username) in self.digests
 
     def require_archive(self, archive_sha256: str) -> None:
-        """Reject an archive this snapshot never asked about."""
+        """Reject an archive this snapshot never counted."""
 
-        if archive_sha256 != self.covers_archive:
+        if archive_sha256 not in self.covers_archives:
             raise MarkedAccountError(
                 f"marked-account snapshot does not cover archive {archive_sha256} "
-                f"(it covers {self.covers_archive}); build one for this archive "
-                "with `uv run anthro data mark-accounts --config <selection> "
-                "--output <path>` before preparing"
+                f"(it covers {len(self.covers_archives)} other archive(s)); count "
+                "that archive into the census with `uv run anthro data census "
+                "--config <selection>` and cut a new snapshot before preparing it"
             )
 
     def write(self, path: str | Path) -> Path:
@@ -164,9 +142,12 @@ class MarkedAccounts:
         output_path = Path(path)
         header = {
             "format_version": SNAPSHOT_FORMAT_VERSION,
-            "covers_archive": self.covers_archive,
+            "covers_archives": sorted(self.covers_archives),
             "queried_at": self.queried_at,
+            "accounts_total": self.accounts_total,
             "accounts_queried": self.accounts_queried,
+            "slots_total": self.slots_total,
+            "slots_queried": self.slots_queried,
             "accounts_marked": self.accounts_marked,
             "salt": DIGEST_SALT,
         }
@@ -224,22 +205,33 @@ def load_marked_accounts(path: str | Path) -> MarkedAccounts:
             f"marked-account snapshot {snapshot_path} holds {len(digests)} digest(s) "
             f"but its header claims {header.get('accounts_marked')}"
         )
-    covers_archive = header.get("covers_archive")
+    covers_archives = header.get("covers_archives")
     queried_at = header.get("queried_at")
+    accounts_total = header.get("accounts_total")
     accounts_queried = header.get("accounts_queried")
+    slots_total = header.get("slots_total")
+    slots_queried = header.get("slots_queried")
     if (
-        not isinstance(covers_archive, str)
+        not isinstance(covers_archives, list)
+        or not covers_archives
+        or not all(isinstance(archive, str) for archive in covers_archives)
         or not isinstance(queried_at, str)
+        or not isinstance(accounts_total, int)
         or not isinstance(accounts_queried, int)
+        or not isinstance(slots_total, int)
+        or not isinstance(slots_queried, int)
     ):
         raise MarkedAccountError(
-            f"marked-account snapshot {snapshot_path} does not record the archive "
-            "it covers, when it was built, or how many accounts it asked about"
+            f"marked-account snapshot {snapshot_path} does not record the archives "
+            "it covers, when it was cut, or how much of them it asked about"
         )
     return MarkedAccounts(
-        covers_archive=covers_archive,
+        covers_archives=tuple(covers_archives),
         queried_at=queried_at,
+        accounts_total=accounts_total,
         accounts_queried=accounts_queried,
+        slots_total=slots_total,
+        slots_queried=slots_queried,
         digests=digests,
     )
 
@@ -261,225 +253,3 @@ def resolve_snapshot_path(configured: Path, config_source: str | None) -> Path:
             "loaded from a file, so there is nothing to resolve it against"
         )
     return Path(config_source).parent / configured
-
-
-def marked_accounts_from_usernames(
-    marked: Iterable[str],
-    *,
-    archive_sha256: str,
-    queried_at: str,
-    accounts_queried: int,
-) -> MarkedAccounts:
-    """Build a first snapshot from the usernames a source reported as marked."""
-
-    return MarkedAccounts(
-        covers_archive=archive_sha256,
-        queried_at=queried_at,
-        accounts_queried=accounts_queried,
-        digests=frozenset(account_digest(username) for username in marked),
-    )
-
-
-def scan_archive_accounts(archive_path: str | Path) -> list[str]:
-    """Return every distinct account name appearing in one PGN archive.
-
-    The whole archive is covered rather than the games a selection would
-    accept, so raising a game bound or widening to another speed within the
-    same archive needs no new snapshot.
-
-    The order is deterministic because the query's resume file is an offset
-    into this list.
-    """
-
-    accounts: set[str] = set()
-    with open_pgn_text(Path(archive_path)) as pgn_file:
-        for line in pgn_file:
-            if line.startswith(_PLAYER_TAGS):
-                name = line[_PLAYER_TAG_LENGTH:].partition('"')[0].strip()
-                if name:
-                    accounts.add(name)
-    return sorted(accounts)
-
-
-def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
-    """Return the shortest pause between batches the burst allowance sustains.
-
-    Only the burst bucket is paced against. Nothing here spends the daily one
-    slowly enough to matter, so a long enough run ends by exhausting it.
-    """
-
-    divisor = _AUTHENTICATED_DIVISOR if authenticated else _ANONYMOUS_DIVISOR
-    credits = max(batch_size // divisor, 1)
-    return _BURST_WINDOW_SECONDS * credits / _BURST_CREDITS
-
-
-def query_marked_accounts(
-    usernames: Sequence[str],
-    *,
-    batch_size: int = LICHESS_USERS_BATCH,
-    pause_seconds: float | None = None,
-    resume_path: str | Path | None = None,
-) -> set[str]:
-    """Return which of ``usernames`` the source reports as marked.
-
-    A closed account reports no status at all, so it is left unmarked here
-    rather than guessed at; the snapshot's coverage count records that it was
-    asked about.
-
-    Covering an archive takes hundreds of requests against a service that rate
-    limits them, so progress is written to ``resume_path`` after every batch
-    and a later call continues from it. Without that, any one refusal discards
-    an hour of answers and the retry is likelier to be refused than the first
-    attempt was.
-    """
-
-    if batch_size > LICHESS_USERS_BATCH:
-        raise MarkedAccountError(
-            f"a batch of {batch_size} exceeds the {LICHESS_USERS_BATCH} the source "
-            "answers for; it drops the excess silently, and the resume file would "
-            "record the dropped accounts as asked about"
-        )
-    token = os.environ.get(LICHESS_TOKEN_VARIABLE, "").strip() or None
-    pause = (
-        sustainable_pause(batch_size, authenticated=token is not None)
-        if pause_seconds is None
-        else pause_seconds
-    )
-    progress_path = None if resume_path is None else Path(resume_path)
-    fingerprint = _usernames_fingerprint(usernames)
-    logger.info(
-        "Querying %s, one batch of %s every %.1fs",
-        "as an authenticated caller" if token else "anonymously",
-        batch_size,
-        pause,
-    )
-    marked, completed = _load_progress(progress_path, fingerprint)
-    if completed:
-        logger.info(
-            "Resuming after %s already-queried account(s); %s marked so far",
-            completed,
-            len(marked),
-        )
-    remaining = list(usernames[completed:])
-    batches = [
-        remaining[start : start + batch_size]
-        for start in range(0, len(remaining), batch_size)
-    ]
-    for index, batch in enumerate(batches, start=1):
-        started = time.monotonic()
-        for record in _post_usernames(batch, token):
-            if record.get("tosViolation"):
-                name = record.get("username") or record.get("id")
-                if isinstance(name, str):
-                    marked.add(name)
-        completed += len(batch)
-        _save_progress(progress_path, marked, completed, fingerprint)
-        if index % 25 == 0 or index == len(batches):
-            logger.info(
-                "Queried %s/%s account(s); %s marked so far",
-                completed,
-                len(usernames),
-                len(marked),
-            )
-        if index < len(batches):
-            # The limiter charges per request, so the pause is the interval
-            # between them rather than time added to each.
-            time.sleep(max(0.0, pause - (time.monotonic() - started)))
-    return marked
-
-
-def _usernames_fingerprint(usernames: Sequence[str]) -> str:
-    digest = sha256()
-    for name in usernames:
-        digest.update(f"{name}\0".encode())
-    return digest.hexdigest()
-
-
-def _load_progress(path: Path | None, fingerprint: str) -> tuple[set[str], int]:
-    if path is None or not path.is_file():
-        return set(), 0
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-        stored = record["usernames"]
-        marked, completed = set(record["marked"]), int(record["completed"])
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise MarkedAccountError(
-            f"cannot resume from {path}: {error}; delete it to start over"
-        ) from error
-    if stored != fingerprint:
-        raise MarkedAccountError(
-            f"{path} records progress through a different account list, so "
-            "resuming from it would skip accounts and keep the other list's "
-            "marks; delete it to start over"
-        )
-    return marked, completed
-
-
-def _save_progress(
-    path: Path | None, marked: set[str], completed: int, fingerprint: str
-) -> None:
-    if path is None:
-        return
-    # Unlike the snapshot it is written beside, this holds marked usernames in
-    # the clear; ``.gitignore`` is what keeps it out of the repository.
-    write_text_atomically(
-        path,
-        json.dumps(
-            {
-                "usernames": fingerprint,
-                "completed": completed,
-                "marked": sorted(marked),
-            }
-        ),
-    )
-
-
-def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, object]]:
-    headers = {"User-Agent": SOURCE_USER_AGENT}
-    if token is not None:
-        headers["Authorization"] = f"Bearer {token}"
-    request = Request(
-        LICHESS_USERS_ENDPOINT,
-        data=",".join(batch).encode(),
-        method="POST",
-        headers=headers,
-    )
-    for attempt in range(1, _REFUSAL_ATTEMPTS + 1):
-        try:
-            with urlopen(request, timeout=60) as response:  # noqa: S310
-                payload = json.loads(response.read())
-        except HTTPError as error:
-            if error.code != 429:
-                raise MarkedAccountError(
-                    f"cannot query account status from {LICHESS_USERS_ENDPOINT}: "
-                    f"{error}"
-                ) from error
-            if attempt == _REFUSAL_ATTEMPTS:
-                raise MarkedAccountError(
-                    "the source is still refusing after a full burst window, so "
-                    "what is exhausted is the daily allowance or something this "
-                    "run cannot see; try again tomorrow. Progress is "
-                    "checkpointed, so a later run resumes rather than repeating "
-                    "what is done"
-                ) from error
-            logger.warning(
-                "Rate limited; waiting %ss for the allowance to refill "
-                "(attempt %s of %s)",
-                _BURST_WINDOW_SECONDS,
-                attempt,
-                _REFUSAL_ATTEMPTS,
-            )
-            time.sleep(_BURST_WINDOW_SECONDS)
-        except (URLError, OSError, json.JSONDecodeError) as error:
-            raise MarkedAccountError(
-                f"cannot query account status from {LICHESS_USERS_ENDPOINT}: {error}"
-            ) from error
-        else:
-            if not isinstance(payload, list):
-                raise MarkedAccountError(
-                    "account status endpoint returned an unexpected payload"
-                )
-            return [record for record in payload if isinstance(record, dict)]
-    raise MarkedAccountError(  # pragma: no cover - the loop returns or raises
-        "account status endpoint was never reached"
-    )

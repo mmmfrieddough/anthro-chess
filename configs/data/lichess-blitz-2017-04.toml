@@ -37,7 +37,8 @@ exclude_bots = true
 # `docs/decisions/0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md`.
 # Uncommenting this without the file present fails the run rather than
 # preparing unfiltered, which is why it waits for the artifact instead of
-# landing ahead of it. `#358` carries it. Build it with
+# landing ahead of it. `#358` carries it. Run `uv run anthro data census` until
+# the coverage it reports is worth claiming, cut the snapshot with
 # `uv run anthro data mark-accounts`, then set:
 # marked_accounts = "marked-accounts/lichess-standard-rated-2017-04.txt"
 event_speed = "blitz"
