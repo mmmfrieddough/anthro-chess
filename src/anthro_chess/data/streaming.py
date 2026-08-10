@@ -595,13 +595,14 @@ def _selected_groups(
 ) -> Iterator[_RowGroupIndex]:
     """Drop the games a subsample excluded, and any row group left empty."""
 
+    end = len(kept)
     for group in scanned:
         positions: array[int] = array("I")
         game_ids: array[int] = array("Q")
         lengths: array[int] = array("i")
         for slot, game_id in enumerate(group.game_ids):
             found = bisect_left(kept, game_id)
-            if found == len(kept) or kept[found] != game_id:
+            if found == end or kept[found] != game_id:
                 continue
             positions.append(group.positions[slot])
             game_ids.append(game_id)

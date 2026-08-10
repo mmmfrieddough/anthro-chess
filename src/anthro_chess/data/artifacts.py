@@ -147,15 +147,15 @@ def sorted_game_ids_sha256(game_ids: Iterable[int]) -> str:
 
     digest = sha256()
     chunk: list[str] = []
-    separator = ""
     for game_id in game_ids:
         chunk.append(str(game_id))
         if len(chunk) == _DIGEST_CHUNK_GAMES:
-            digest.update(f"{separator}{','.join(chunk)}".encode())
-            separator = ","
-            chunk.clear()
-    if chunk:
-        digest.update(f"{separator}{','.join(chunk)}".encode())
+            digest.update(",".join(chunk).encode())
+            # The empty entry is the comma between this chunk and the next,
+            # written by the join that flushes the next one. A tail that never
+            # grows past it joins to nothing and updates nothing.
+            chunk = [""]
+    digest.update(",".join(chunk).encode())
     return digest.hexdigest()
 
 

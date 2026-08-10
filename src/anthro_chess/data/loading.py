@@ -712,11 +712,7 @@ def _resolve_selection(
                 excluded[reason] = excluded.get(reason, 0) + 1
 
     kept = subsample_size(len(eligible), selection)
-    selected = sorted(
-        eligible
-        if kept >= len(eligible)
-        else nsmallest(kept, eligible, key=partial(_rank_key, selection.seed))
-    )
+    selected = sorted(nsmallest(kept, eligible, key=partial(_rank_key, selection.seed)))
     return (
         SelectionResolution(
             spec=selection.model_dump(mode="json"),
@@ -821,10 +817,8 @@ def _rank_key(seed: str, game_id: int) -> bytes:
     """Rank uniformly by game id so a subsample stays representative.
 
     Both loaders select through ``heapq.nsmallest``, which holds a rank per kept
-    game rather than one per eligible game and breaks ties by the order the ids
-    arrived. That tie rule is part of the specification rather than an accident
-    of the heap: it is what a corpus and spec resolving to one digest rests on
-    where two ids rank equal.
+    game rather than one per eligible game — at corpus scale the difference is
+    whether the ranking fits in memory at all.
     """
 
     return sha256(f"{seed}\0{game_id}".encode()).digest()
