@@ -261,14 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare_puzzles_parser = eval_commands.add_parser(
         "prepare-puzzles",
-        help="Acquire and build the pinned external puzzle benchmark artifact.",
+        help="Install the committed external puzzle benchmark artifact.",
         parents=[_SET_FLAG],
-    )
-    prepare_puzzles_parser.add_argument(
-        "input",
-        type=Path,
-        nargs="?",
-        help="Pinned Lichess puzzle archive; downloaded when omitted.",
     )
     prepare_puzzles_parser.add_argument(
         "output",
@@ -1292,17 +1286,11 @@ def _run_eval_prepare_puzzles(arguments: argparse.Namespace) -> int:
             arguments.output,
             resolved.value.artifact_name,
         )
-        result = prepare_puzzle_set(
-            resolved,
-            output,
-            source_path=arguments.input,
-        )
+        result = prepare_puzzle_set(resolved, output)
     except (ConfigError, PuzzleSetError) as error:
         print(f"anthro eval prepare-puzzles: {error}", file=sys.stderr)
         return 2
 
-    disposition = "Reused" if result.source_reused else "Acquired"
-    print(f"{disposition} verified source: {result.source_path}")
     print(f"Prepared {result.entries} puzzle(s): {result.puzzle_path}")
     print(f"Manifest: {result.manifest_path}")
     print(f"Identity: {result.puzzles_sha256}")
