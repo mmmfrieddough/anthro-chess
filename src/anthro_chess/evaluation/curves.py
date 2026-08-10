@@ -75,7 +75,6 @@ from anthro_chess.evaluation.results.noise import (
     measured_dispersion,
     self_combined_floor,
 )
-from anthro_chess.evaluation.results.records import NoiseFloorKind
 
 CURVE_COMPARISON_VERSION = 2
 
@@ -798,7 +797,6 @@ def compare_curves(
     seed: int = 0,
     coverage: float = DEFAULT_COVERAGE,
     confidence: float = DEFAULT_CONFIDENCE,
-    floor_kind: NoiseFloorKind = "evaluation",
     model_varies: bool = True,
     references: bool = True,
 ) -> CurveComparison:
@@ -808,10 +806,6 @@ def compare_curves(
     and the generated side is estimated at exactly that bandwidth, so the
     smoothing bias in the two curves cancels in their difference instead of
     accumulating in it.
-
-    ``floor_kind`` says what re-measuring this comparison's model side would
-    mean. The default suits a generated model side, where another run draws
-    fresh games and the spread across those draws is evaluation noise.
 
     ``model_varies`` says whether re-measuring the model side draws different
     games at all. A caller whose model side is deterministic — greedy seats at
@@ -856,7 +850,6 @@ def compare_curves(
         generator=generator,
         coverage=coverage,
         confidence=confidence,
-        floor_kind=floor_kind,
         model_varies=model_varies,
         references=references,
     )
@@ -1368,7 +1361,6 @@ def _resample(
     generator: np.random.Generator,
     coverage: float,
     confidence: float,
-    floor_kind: NoiseFloorKind,
     model_varies: bool,
     references: bool = True,
 ) -> tuple[CurveDispersions | None, CurveReferences | None]:
@@ -1411,7 +1403,6 @@ def _resample(
         exact = MetricDispersion(
             value=0.0,
             bound=0.0,
-            kind=floor_kind,
             source=source,
             estimator=method,
         )
@@ -1473,7 +1464,6 @@ def _resample(
             bootstrapped.append(
                 measured_dispersion(
                     float(np.std(observed, ddof=1)),
-                    kind=floor_kind,
                     degrees_of_freedom=freedom,
                     confidence=confidence,
                     source=source,

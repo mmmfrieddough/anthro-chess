@@ -149,7 +149,6 @@ from anthro_chess.evaluation.results.metrics import (
     LADDER_TEMPERATURE_RESPONSE_ATTENUATION,
     MOVE_PREDICTION_PROJECTION,
 )
-from anthro_chess.evaluation.results.records import NoiseFloorKind
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
@@ -188,12 +187,6 @@ LADDER_DETERMINISTIC_METHOD = "deterministic-seats"
 #: as the bootstrap's method, so a stored record does not claim a resample that
 #: was never drawn.
 LADDER_UNRESOLVED_METHOD = "too-few-redrawn-games"
-
-#: The noise a ladder spread bounds. A rollout has no fixed data to re-measure
-#: on — the games are the draw — so resampling them and re-running under another
-#: seed estimate the same quantity, and that quantity is what qualifies a delta
-#: between two checkpoints.
-LADDER_FLOOR_KIND: NoiseFloorKind = "evaluation"
 
 #: What the temperature response's spreads are filed under. Seats and rows name
 #: themselves; the response spans the whole grid and has no narrower scope.
@@ -1441,7 +1434,6 @@ def _resolution(
                 key: MetricDispersion(
                     value=0.0,
                     bound=0.0,
-                    kind=LADDER_FLOOR_KIND,
                     source=_floor_source(LADDER_DETERMINISTIC_METHOD),
                     estimator=LADDER_DETERMINISTIC_METHOD,
                 )
@@ -1536,7 +1528,6 @@ def _resolution(
             continue
         dispersions[key] = measured_dispersion(
             dispersion,
-            kind=LADDER_FLOOR_KIND,
             # The games are the independent replicates, and the resample count
             # is not — but a spread read off three surviving refits is known no
             # better than three numbers allow, whichever is the scarcer of the
@@ -2259,7 +2250,6 @@ __all__ = [
     "LADDER_BOOTSTRAP_METHOD",
     "LADDER_DETERMINISTIC_METHOD",
     "LADDER_UNRESOLVED_METHOD",
-    "LADDER_FLOOR_KIND",
     "LADDER_KIND",
     "RATING_SCALE",
     "RESPONSE_SCOPE",

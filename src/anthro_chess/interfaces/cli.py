@@ -44,10 +44,7 @@ if TYPE_CHECKING:
         TerminationBenchmarkResult,
     )
     from anthro_chess.evaluation.results import (
-        BridgeIndex,
         DetailStore,
-        NoiseCharacterization,
-        ResultEnvelope,
         ResultsStore,
     )
     from anthro_chess.evaluation.rollout import RolloutReading
@@ -715,116 +712,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     noise_parser = eval_commands.add_parser(
         "noise",
-        help="Characterize, list, and apply benchmark noise floors.",
+        help="Sample a process's efficiency readings, and size a pool from one.",
     )
     noise_commands = noise_parser.add_subparsers(
         dest="noise_command",
         required=True,
     )
-    noise_characterize_parser = noise_commands.add_parser(
-        "characterize",
-        help="Estimate a noise floor from recorded replicate measurements.",
-        parents=[_SET_FLAG, _STORE_FLAG],
-    )
-    noise_characterize_parser.add_argument(
-        "--kind",
-        choices=("evaluation", "training", "execution"),
-        required=True,
-        help=(
-            "Which noise source the replicates vary. Data-sampling noise is "
-            "bootstrapped by the evaluation run itself and is not estimated "
-            "here. Execution noise is measured rather than read from the "
-            "store, so it takes --config instead of --checkpoint."
-        ),
-    )
-    noise_characterize_parser.add_argument(
-        "--checkpoint",
-        action="append",
-        default=[],
-        metavar="LABEL",
-        help="A recorded checkpoint label to use as one replicate; repeat it.",
-    )
-    noise_characterize_parser.add_argument(
-        "--metric",
-        action="append",
-        default=[],
-        help="Restrict the characterization to one metric; may be repeated.",
-    )
-    noise_characterize_parser.add_argument(
-        "--config",
-        type=Path,
-        help=(
-            "Execution noise only: the inference-benchmark selection to repeat. "
-            "The floor it produces describes this machine under that workload."
-        ),
-    )
-    noise_characterize_parser.add_argument(
-        "--processes",
-        type=int,
-        help=(
-            "Execution noise only: how many separate processes to measure in. "
-            "A reading a report compares is one process's, so this is the "
-            "count that decides the floor."
-        ),
-    )
-    noise_characterize_parser.add_argument(
-        "--repeats",
-        type=int,
-        help=(
-            "Execution noise only: readings per process. These say how much of "
-            "the spread a repeat inside one process reproduces."
-        ),
-    )
-    noise_characterize_parser.add_argument(
-        "--source",
-        required=True,
-        help="What the replicates are, such as which seeds produced them.",
-    )
-    noise_characterize_parser.add_argument(
-        "--coverage",
-        type=float,
-        help=(
-            "Normal coverage factor for the floor. Defaults to the two-sided "
-            "95 percent factor."
-        ),
-    )
-    noise_characterize_parser.add_argument(
-        "--confidence",
-        type=float,
-        help=(
-            "How sure the floor is that the dispersion is no larger than it "
-            "assumes. A measured dispersion is a point estimate that lands "
-            "below the truth about half the time, so the floor is built from a "
-            "chi-squared upper limit at this confidence instead. Defaults to "
-            "95 percent."
-        ),
-    )
-    noise_characterize_parser.set_defaults(handler=_run_eval_noise_characterize)
-
     noise_sample_parser = noise_commands.add_parser(
         "sample",
-        help="Measure one process's repeated efficiency readings, recording nothing.",
+        help="Measure one process's efficiency reading, recording nothing.",
         parents=[_SET_FLAG, _FORMAT_FLAG],
     )
-    noise_sample_parser.add_argument(
+    noise_selection = noise_sample_parser.add_mutually_exclusive_group(required=True)
+    noise_selection.add_argument(
         "--config",
         type=Path,
-        required=True,
         help="Explicit TOML inference-benchmark selection to repeat.",
     )
-    noise_sample_parser.add_argument(
-        "--repeats",
-        type=int,
-        help="Readings to take in this process.",
+    noise_selection.add_argument(
+        "--selection",
+        help=(
+            "An already-resolved selection as JSON, or '-' to read it from "
+            "standard input. This is how the inference benchmark hands its own "
+            "resolved selection to a replicate process, so that the replicate "
+            "measures what the parent measured rather than re-resolving it."
+        ),
     )
     noise_sample_parser.set_defaults(handler=_run_eval_noise_sample)
-
-    noise_list_parser = noise_commands.add_parser(
-        "list",
-        help="List recorded noise characterizations and their floors.",
-        parents=[_STORE_FLAG, _FORMAT_FLAG],
-    )
-    noise_list_parser.set_defaults(handler=_run_eval_noise_list)
 
     noise_plan_parser = noise_commands.add_parser(
         "plan",
@@ -1930,8 +1844,38 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
             f"{sample.forward_decisions_per_second:8.1f} decisions/s"
             for sample in result.throughput_sweep
         )
+    lines.extend(_replicate_lines(result))
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
+
+
+def _replicate_lines(result: InferenceBenchmarkResult) -> list[str]:
+    """Say what the replicate processes measured, which is most of the run time.
+
+    Printed because the spread is what the extra processes were paid for, and a
+    reader who cannot see it has no way to judge whether the count is worth its
+    wall clock.
+    """
+
+    from anthro_chess.evaluation.results import metric_column_width
+
+    if not result.dispersions:
+        return [
+            "",
+            "Spread across processes: not measured; this reading was taken at one "
+            "replicate, so a delta against it reports unknown noise.",
+        ]
+    lines = [
+        "",
+        f"Spread of this reading across {result.replicates} process(es), which is "
+        "what floors a delta against it:",
+    ]
+    width = metric_column_width(result.dispersions)
+    lines.extend(
+        f"  {metric:<{width}} {spread:.6g}"
+        for metric, spread in sorted(result.dispersions.items())
+    )
+    return lines
 
 
 #: Column widths for the rollout comparison table. The conditional and pooled
@@ -2950,7 +2894,6 @@ def _optional(value: float | None) -> str:
 def _run_eval_report(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         BridgeIndex,
-        NoiseFloorIndex,
         ReportError,
         ResultsStore,
         ResultsStoreError,
@@ -2974,12 +2917,10 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
             else:
                 print(render_history(history), end="")
             return 0
-        floors = NoiseFloorIndex(store.characterizations(), bridges)
         if arguments.pivot == "environment":
             report = build_environment_report(
                 results,
                 bridges,
-                floors=floors,
                 checkpoint=arguments.current,
                 families=arguments.family or None,
                 metrics=arguments.metric or None,
@@ -2988,7 +2929,6 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
             report = build_delta_report(
                 results,
                 bridges,
-                floors=floors,
                 current=arguments.current,
                 baseline=arguments.baseline,
                 families=arguments.family or None,
@@ -3046,271 +2986,29 @@ def _run_eval_tensorboard(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _run_eval_noise_characterize(arguments: argparse.Namespace) -> int:
-    from anthro_chess.evaluation.results import (
-        DEFAULT_CONFIDENCE,
-        DEFAULT_COVERAGE,
-        REPLICATE_METHOD,
-        BridgeIndex,
-        MetricRegistryError,
-        NoiseCharacterizationError,
-        ResultsStore,
-        ResultsStoreError,
-        build_characterization,
-        metric_column_width,
-        metric_definition,
-        replicate_floors,
-        resolve_store_root,
-        training_scope,
-    )
-
-    if arguments.kind == "execution":
-        return _run_eval_noise_characterize_execution(arguments)
-    if arguments.config is not None or arguments.set:
-        print(
-            f"anthro eval noise characterize: --config and --set describe a "
-            f"measurement to repeat, which a {arguments.kind} floor is not; it "
-            "reads replicates the store already holds",
-            file=sys.stderr,
-        )
-        return 2
-    if arguments.processes is not None or arguments.repeats is not None:
-        print(
-            "anthro eval noise characterize: --processes and --repeats apply "
-            "only to --kind execution",
-            file=sys.stderr,
-        )
-        return 2
-
-    labels: list[str] = arguments.checkpoint
-    if len(labels) < 2:
-        print(
-            "anthro eval noise characterize: name at least two checkpoints; a "
-            "floor is the spread across replicates and one reading has none",
-            file=sys.stderr,
-        )
-        return 2
-
-    try:
-        store = ResultsStore(resolve_store_root(arguments.store))
-        results = store.results()
-        bridges = BridgeIndex(store.bridges())
-        wanted = [metric_definition(name).identifier for name in arguments.metric]
-        replicates, skipped, drawn = _collect_replicates(
-            results, bridges, labels, wanted
-        )
-        if not replicates:
-            print(
-                "anthro eval noise characterize: no metric is measured on the "
-                "same series for every named checkpoint",
-                file=sys.stderr,
-            )
-            return 2
-        coverage = (
-            DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
-        )
-        confidence = (
-            DEFAULT_CONFIDENCE if arguments.confidence is None else arguments.confidence
-        )
-        characterization = build_characterization(
-            kind=arguments.kind,
-            method=REPLICATE_METHOD,
-            replicates=len(labels),
-            coverage=coverage,
-            confidence=confidence,
-            source=arguments.source,
-            training=(training_scope(drawn) if arguments.kind == "training" else None),
-            floors=replicate_floors(
-                replicates,
-                coverage=coverage,
-                confidence=confidence,
-            ),
-        )
-        path = store.append_characterization(characterization)
-    except (
-        MetricRegistryError,
-        NoiseCharacterizationError,
-        ResultsStoreError,
-    ) as error:
-        print(f"anthro eval noise characterize: {error}", file=sys.stderr)
-        return 2
-
-    print(
-        f"Characterized {arguments.kind} noise over {len(labels)} replicate(s) "
-        f"for {len(characterization.floors)} metric(s)."
-    )
-    print(_confidence_note(characterization))
-    width = metric_column_width(
-        [entry.metric for entry in characterization.floors]
-        + [metric for metric, _ in skipped]
-    )
-    for entry in characterization.floors:
-        print(
-            f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
-            f"dispersion {entry.dispersion:.6g} "
-            f"bounded at {entry.dispersion_bound:.6g}"
-        )
-    for metric, reason in skipped:
-        print(f"  {metric:<{width}} skipped: {reason}")
-    print(f"Recorded: {path}")
-    return 0
-
-
-def _confidence_note(characterization: NoiseCharacterization) -> str:
-    """Say what the recorded floors claim, and how much ignorance widened them.
-
-    Printed because the gap between the measured dispersion and the bound the
-    floor was built from is the actionable part of a characterization: a wide
-    gap says the floor is wide for lack of replicates, which more of them fix,
-    and a narrow one says the machine really is that noisy.
-    """
-
-    freedoms = sorted({entry.degrees_of_freedom for entry in characterization.floors})
-    span = f"{freedoms[0]}" if len(freedoms) == 1 else f"{freedoms[0]}-{freedoms[-1]}"
-    inflation = sorted(
-        entry.dispersion_bound / entry.dispersion
-        for entry in characterization.floors
-        if entry.dispersion > 0.0
-    )
-    widened = ""
-    if inflation:
-        low, high = inflation[0], inflation[-1]
-        factor = f"{low:.2f}x" if low == high else f"{low:.2f}x-{high:.2f}x"
-        widened = f", which widens the measured dispersion by {factor}"
-    return (
-        f"Floors cover {characterization.coverage:.6g} sigma of a same-weights "
-        f"delta, with {characterization.confidence:.0%} confidence in the "
-        f"dispersion from {span} degree(s) of freedom{widened}."
-    )
-
-
-def _run_eval_noise_characterize_execution(arguments: argparse.Namespace) -> int:
-    """Measure this machine's own timing noise and record the floor.
-
-    Unlike every other kind, the replicates do not exist yet: the noise is the
-    machine's, so it is observed by measuring again rather than by reading
-    numbers the store already holds.
-    """
-
-    from anthro_chess.evaluation.execution_noise import (
-        DEFAULT_PROCESSES,
-        DEFAULT_REPEATS,
-        ExecutionNoiseError,
-        characterize_execution_noise,
-        subprocess_sampler,
-    )
-    from anthro_chess.evaluation.results import (
-        DEFAULT_CONFIDENCE,
-        DEFAULT_COVERAGE,
-        NoiseCharacterizationError,
-        ResultsStore,
-        ResultsStoreError,
-        metric_column_width,
-        resolve_store_root,
-    )
-
-    if arguments.config is None:
-        print(
-            "anthro eval noise characterize: --kind execution measures a "
-            "workload rather than reading one, so it needs --config",
-            file=sys.stderr,
-        )
-        return 2
-    if arguments.checkpoint:
-        print(
-            "anthro eval noise characterize: an execution floor describes a "
-            "machine rather than a set of checkpoints, so it takes no "
-            "--checkpoint; the configuration names the model it measures with",
-            file=sys.stderr,
-        )
-        return 2
-    if arguments.metric:
-        print(
-            "anthro eval noise characterize: an execution floor covers every "
-            "metric the measured benchmark reports, so it takes no --metric",
-            file=sys.stderr,
-        )
-        return 2
-
-    processes = (
-        DEFAULT_PROCESSES if arguments.processes is None else arguments.processes
-    )
-    repeats = DEFAULT_REPEATS if arguments.repeats is None else arguments.repeats
-    coverage = DEFAULT_COVERAGE if arguments.coverage is None else arguments.coverage
-    confidence = (
-        DEFAULT_CONFIDENCE if arguments.confidence is None else arguments.confidence
-    )
-    try:
-        store = ResultsStore(resolve_store_root(arguments.store))
-        characterization = characterize_execution_noise(
-            subprocess_sampler(
-                config_path=arguments.config,
-                overrides=arguments.set,
-                repeats=repeats,
-            ),
-            processes=processes,
-            source=arguments.source,
-            coverage=coverage,
-            confidence=confidence,
-        )
-        path = store.append_characterization(characterization)
-    except (
-        ExecutionNoiseError,
-        NoiseCharacterizationError,
-        ResultsStoreError,
-    ) as error:
-        print(f"anthro eval noise characterize: {error}", file=sys.stderr)
-        return 2
-
-    execution = characterization.execution
-    assert execution is not None  # the record refuses an execution floor without one
-    print(
-        f"Characterized execution noise over {characterization.replicates} "
-        f"reading(s) in {processes} process(es) for "
-        f"{len(characterization.floors)} metric(s)."
-    )
-    print(f"Valid on: {execution.environment_label()}")
-    print(_confidence_note(characterization))
-    width = metric_column_width(entry.metric for entry in characterization.floors)
-    for entry in characterization.floors:
-        within = (
-            ""
-            if entry.within_process_dispersion is None
-            else f"  in-process {entry.within_process_dispersion:.6g}"
-        )
-        print(
-            f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
-            f"dispersion {entry.dispersion:.6g} "
-            f"bounded at {entry.dispersion_bound:.6g}{within}"
-        )
-    print(f"Recorded: {path}")
-    return 0
-
-
 def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
     """Take one process's readings, so a caller can measure across processes."""
 
-    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.config import ConfigError, load_config, load_config_json
     from anthro_chess.evaluation import InferenceBenchmarkConfig
     from anthro_chess.evaluation.execution_noise import (
-        DEFAULT_REPEATS,
         ExecutionNoiseError,
         sample_execution_noise,
     )
     from anthro_chess.evaluation.results import metric_column_width
 
-    repeats = DEFAULT_REPEATS if arguments.repeats is None else arguments.repeats
     try:
-        resolved = load_config(
-            InferenceBenchmarkConfig,
-            path=arguments.config,
-            overrides=arguments.set,
-        )
-        sample = sample_execution_noise(
-            resolved,
-            repeats=repeats,
-            run_root=_run_root(),
-        )
+        if arguments.selection is not None:
+            selected = arguments.selection
+            raw = sys.stdin.read() if selected == "-" else selected
+            resolved = load_config_json(InferenceBenchmarkConfig, raw)
+        else:
+            resolved = load_config(
+                InferenceBenchmarkConfig,
+                path=arguments.config,
+                overrides=arguments.set,
+            )
+        sample = sample_execution_noise(resolved, run_root=_run_root())
     except (ConfigError, ExecutionNoiseError) as error:
         print(f"anthro eval noise sample: {error}", file=sys.stderr)
         return 2
@@ -3322,133 +3020,10 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
         f"Checkpoint: {sample.checkpoint.label} on "
         f"{sample.execution.environment_label()}"
     )
-    print(f"{len(sample.readings)} reading(s) in this process, recorded nowhere:")
-    width = metric_column_width(sample.readings[0])
-    for metric in sorted(sample.readings[0]):
-        values = "  ".join(f"{reading[metric]:.6g}" for reading in sample.readings)
-        print(f"  {metric:<{width}} {values}")
-    return 0
-
-
-def _collect_replicates(
-    results: Sequence[ResultEnvelope],
-    bridges: BridgeIndex,
-    labels: Sequence[str],
-    metrics: Sequence[str],
-) -> tuple[
-    dict[str, list[tuple[str, float]]],
-    list[tuple[str, str]],
-    tuple[ResultEnvelope, ...],
-]:
-    """Gather one measurement per named checkpoint for every eligible metric.
-
-    A metric is eligible only when every named checkpoint measured it on the
-    same series. Replicates drawn from different series would describe the
-    spread of two different measurements rather than the noise in one.
-
-    The readings the values came from are returned beside them, because a
-    checkpoint may have several recorded results and only the ones a floor was
-    actually built from describe what that floor covers.
-    """
-
-    from anthro_chess.evaluation.results import (
-        ResultsStoreError,
-        latest_measurement,
-        registered_metrics,
-        results_for_checkpoint,
-    )
-
-    by_label = {label: results_for_checkpoint(results, label) for label in labels}
-    missing = [label for label, found in by_label.items() if not found]
-    if missing:
-        raise ResultsStoreError(
-            f"no result is recorded for checkpoint(s): {', '.join(sorted(missing))}"
-        )
-
-    candidates = (
-        list(metrics)
-        if metrics
-        else [definition.identifier for definition in registered_metrics()]
-    )
-    replicates: dict[str, list[tuple[str, float]]] = {}
-    skipped: list[tuple[str, str]] = []
-    drawn: list[ResultEnvelope] = []
-    for metric in candidates:
-        found = [latest_measurement(by_label[label], metric) for label in labels]
-        if any(item is None for item in found):
-            if metrics:
-                skipped.append((metric, "not measured for every named checkpoint"))
-            continue
-        selected = [item for item in found if item is not None]
-        values = [value for _, value in selected]
-        series = {bridges.series(value.fingerprint) for value in values}
-        if len(series) > 1:
-            skipped.append((metric, "the named checkpoints are not on one series"))
-            continue
-        replicates[metric] = [(value.fingerprint, value.value) for value in values]
-        drawn.extend(envelope for envelope, _ in selected)
-    return replicates, skipped, tuple(drawn)
-
-
-def _run_eval_noise_list(arguments: argparse.Namespace) -> int:
-    from anthro_chess.evaluation.results import (
-        ResultsStore,
-        ResultsStoreError,
-        metric_column_width,
-        resolve_store_root,
-    )
-
-    try:
-        store = ResultsStore(resolve_store_root(arguments.store))
-        characterizations = store.characterizations()
-    except ResultsStoreError as error:
-        print(f"anthro eval noise list: {error}", file=sys.stderr)
-        return 2
-
-    if arguments.format == "json":
-        print(
-            json.dumps(
-                [record.as_record() for record in characterizations],
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    if not characterizations:
-        print("No noise characterization is recorded.")
-        return 0
-    width = metric_column_width(
-        entry.metric for record in characterizations for entry in record.floors
-    )
-    for record in characterizations:
-        processes = (
-            "" if record.processes is None else f" in {record.processes} process(es)"
-        )
-        print(
-            f"{record.recorded_at.date().isoformat()}  {record.kind}  "
-            f"{record.method}  {record.replicates} replicate(s){processes}  "
-            f"coverage {record.coverage:.6g}  "
-            f"confidence {record.confidence:.0%}  "
-            f"{record.source}"
-        )
-        # A scoped floor is only valid within what it measured, and two rows
-        # identical in every other column differ only here.
-        if record.execution is not None:
-            print(f"  valid on {record.execution.environment_label()}")
-        if record.training is not None:
-            print(f"  valid for training configuration {record.training[:16]}")
-        for entry in record.floors:
-            within = (
-                ""
-                if entry.within_process_dispersion is None
-                else f"  in-process {entry.within_process_dispersion:.6g}"
-            )
-            print(
-                f"  {entry.metric:<{width}} floor {entry.floor:.6g}  "
-                f"dispersion {entry.dispersion:.6g} "
-                f"bounded at {entry.dispersion_bound:.6g} "
-                f"(df {entry.degrees_of_freedom}){within}"
-            )
+    print("One reading in this process, recorded nowhere:")
+    width = metric_column_width(sample.reading)
+    for metric, value in sorted(sample.reading.items()):
+        print(f"  {metric:<{width}} {value:.6g}")
     return 0
 
 

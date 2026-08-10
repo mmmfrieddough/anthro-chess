@@ -29,7 +29,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -51,6 +51,7 @@ from anthro_chess.evaluation.results import (
     CheckpointReference,
     ExecutionRecord,
     Measurement,
+    MetricDispersion,
     ResultEnvelope,
     WorkloadComponent,
     measurement,
@@ -66,6 +67,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import CheckpointModelRunner
+from anthro_chess.inference.config import LATEST_CHECKPOINT
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import DecisionRuntimeError, GameSession, RuntimeConfig
@@ -81,16 +83,18 @@ INFERENCE_BENCHMARK = BenchmarkReference(
     version=INFERENCE_BENCHMARK_VERSION,
 )
 
-#: What a process pays once. Measuring these again inside the same process
-#: reads a warm file cache, an imported Torch, and compiled kernels, so a
-#: repeat is not a second cold start. Anything replicating this benchmark has
-#: to know which readings are per-process rather than per-measurement.
-COLD_START_METRICS: frozenset[str] = frozenset(
-    {
-        INFERENCE_MODEL_LOAD_SECONDS.identifier,
-        INFERENCE_FIRST_DECISION_SECONDS.identifier,
-    }
-)
+#: Processes one reading's dispersion is measured over, including the one taking
+#: the reading. The process is the independent replicate the dispersion bound
+#: counts, so this is the one lever that narrows the bound honestly rather than
+#: by assuming the spread is better known than it is. Three processes leave two
+#: degrees of freedom, where the bound sits more than four times above the
+#: measured dispersion and every floor is too wide to resolve anything; six
+#: leave five, where it sits about twice above.
+#:
+#: **This is a dial, and every one of them costs a whole benchmark run**, so it
+#: is a live trade between the width of every efficiency floor and the wall
+#: clock of every inference reading.
+DEFAULT_PROCESSES = 6
 
 SampleT = TypeVar("SampleT")
 
@@ -158,6 +162,12 @@ class InferenceBenchmarkConfig(CheckpointSelection):
     runtime: RuntimeConfig = RuntimeConfig(seed=0)
     latency: LatencyWorkloadConfig = LatencyWorkloadConfig()
     throughput: ThroughputWorkloadConfig = ThroughputWorkloadConfig()
+    #: Processes this reading's dispersion is measured over, itself included,
+    #: each one a whole benchmark run. Deliberately outside the declared
+    #: workload: it decides how well the spread is known rather than what was
+    #: measured, so changing it does not end the series. ``1`` measures no
+    #: dispersion, and the reading is then reported without a floor.
+    replicates: StrictInt = Field(default=DEFAULT_PROCESSES, ge=1)
 
 
 @dataclass(frozen=True)
@@ -288,6 +298,10 @@ class InferenceBenchmarkResult:
     latency_sweep: tuple[LatencySample, ...]
     reference_throughput: ThroughputSample
     throughput_sweep: tuple[ThroughputSample, ...]
+    replicates: int = 1
+    #: Each committed metric's spread across those processes. Empty at one
+    #: replicate, where there is nothing to spread over.
+    dispersions: Mapping[str, float] = field(default_factory=dict)
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
@@ -306,6 +320,8 @@ class InferenceBenchmarkResult:
             "throughput_sweep": [
                 sample.as_record() for sample in self.throughput_sweep
             ],
+            "replicates": self.replicates,
+            "dispersions": dict(sorted(self.dispersions.items())),
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -321,6 +337,11 @@ def benchmark_inference(
     A recording opened without a store measures everything and records nothing,
     which is what an exploratory reading on a busy machine wants: a figure taken
     beside a training run is real but does not belong in the committed history.
+
+    ``config.replicates`` is how many processes this reading's dispersion is
+    measured over, this one included. Nothing inside a timing reading can be
+    resampled into a spread, so the benchmark measures its own by running
+    again — see :mod:`anthro_chess.evaluation.execution_noise`.
     """
 
     config = resolved_config.value
@@ -388,18 +409,124 @@ def benchmark_inference(
         throughput_sweep=throughput_sweep,
     )
 
+    values = _measurements(result, execution.workload_component())
+    spreads = _replicate_spreads(
+        config,
+        result,
+        values,
+        checkpoint_path=runner.selection.checkpoint_path,
+        processes=config.replicates,
+    )
+    result = replace(result, replicates=config.replicates, dispersions=spreads)
+
     recorder = recording.measuring(
         checkpoint,
         kind=INFERENCE_KIND,
         benchmark=INFERENCE_BENCHMARK,
     )
+    recorder.disperse(_dispersions(values, spreads, config.replicates, execution))
     recorder.add(
-        _measurements(result, execution.workload_component()),
+        values,
         payload=result.as_record,
         description="Latency depth sweep, batch-size sweep, and stage attribution.",
         execution=execution,
     )
     return result
+
+
+def replicate_selection(
+    config: InferenceBenchmarkConfig,
+    *,
+    checkpoint_path: Path,
+) -> InferenceBenchmarkConfig:
+    """Return the selection a replicate process measures.
+
+    Every dial the parent measured under, with two things pinned. The
+    **checkpoint** becomes the absolute file the parent actually loaded, so a
+    replicate cannot resolve a different one — the sweep replaces a benchmark's
+    model selection in memory rather than through overrides, and a default
+    selection resolves against whatever the machine currently points at.
+    **Replicates** becomes one, which is what stops the recursion.
+    """
+
+    return config.model_copy(
+        update={
+            "model": config.model.model_copy(
+                update={
+                    "checkpoint_path": checkpoint_path,
+                    "run_path": None,
+                    "checkpoint": LATEST_CHECKPOINT,
+                }
+            ),
+            "replicates": 1,
+        }
+    )
+
+
+def _replicate_spreads(
+    config: InferenceBenchmarkConfig,
+    result: InferenceBenchmarkResult,
+    values: Sequence[Measurement],
+    *,
+    checkpoint_path: Path,
+    processes: int,
+) -> dict[str, float]:
+    """Measure this reading's spread by taking it again in fresh processes.
+
+    The replicates run one after another rather than together: they contend for
+    the device they are timing, so measuring them concurrently would report the
+    spread of the contention instead of the spread of the machine.
+    """
+
+    if processes < 2:
+        return {}
+    # Imported here rather than at module scope because the sampler drives this
+    # benchmark, so the two modules would otherwise import each other.
+    from anthro_chess.evaluation.execution_noise import (
+        ExecutionNoiseError,
+        ProcessSample,
+        measure_execution_dispersions,
+        subprocess_sampler,
+    )
+
+    own = ProcessSample.from_measurements(
+        result.execution,
+        result.checkpoint,
+        values,
+    )
+    logger.info("Measuring the spread of this reading across %d process(es)", processes)
+    try:
+        return measure_execution_dispersions(
+            own,
+            subprocess_sampler(
+                replicate_selection(config, checkpoint_path=checkpoint_path)
+            ),
+            processes=processes,
+        )
+    except ExecutionNoiseError as error:
+        raise InferenceBenchmarkError(str(error)) from error
+
+
+def _dispersions(
+    values: Sequence[Measurement],
+    spreads: Mapping[str, float],
+    processes: int,
+    execution: ExecutionRecord,
+) -> dict[str, MetricDispersion]:
+    """Return each series' spread, keyed the way the recorder carries one."""
+
+    from anthro_chess.evaluation.execution_noise import execution_dispersion_record
+
+    source = f"{processes} process replicates on {execution.environment_label()}"
+    return {
+        value.fingerprint: execution_dispersion_record(
+            spreads[value.metric],
+            processes=processes,
+            source=source,
+        )
+        for value in values
+        if value.metric in spreads
+    }
 
 
 class _HistoryFactory:

@@ -613,7 +613,7 @@ def test_a_distance_carries_the_floor_it_has_to_clear(
         assert conditional is not None
         assert conditional.value >= 0.0
         assert conditional.dispersion is not None
-        assert conditional.dispersion.kind == "evaluation"
+        assert conditional.dispersion.bound >= conditional.dispersion.value
 
 
 def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(

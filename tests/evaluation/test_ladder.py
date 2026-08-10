@@ -777,7 +777,6 @@ def test_every_fitted_quantity_carries_what_the_reading_can_resolve() -> None:
     ):
         spread = resolution.dispersion(reading.label, definition.identifier)
         assert spread is not None, definition.identifier
-        assert spread.kind == "evaluation"
     for seat in result.seats:
         assert (
             resolution.dispersion(seat.label, LADDER_FITTED_RATING.identifier)

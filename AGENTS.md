@@ -62,11 +62,11 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   `uv run anthro machine` before concluding that this machine has no corpus or
   no checkpoints; an empty worktree is not evidence, because unset roots and a
   machine with no artifacts look identical from inside the repository.
-- A `noise cleared` verdict does not say a change worked. A data-sampling or
-  evaluation floor says the delta survived a different draw of games; only a
-  training floor separates a change from seed variance, and two arms differ by
-  their seeds as well as by the change. `docs/evaluation.md` (Regression
-  Comparisons) says what a claim rests on.
+- A `noise cleared` verdict does not say a change worked. A floor says the delta
+  survived a different draw of the units the two readings scored; no floor here
+  sees training-seed noise, and two arms differ by their seeds as well as by the
+  change. `docs/evaluation.md` (Regression Comparisons) says what a claim rests
+  on.
 - Use exact chess logic for board reconstruction, legal move generation, and
   rule bookkeeping.
 - Legal-mask model move outputs before sampling.
@@ -95,7 +95,7 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   `docs/issue-workflow.md`. A finding from your own work is filed with that
   metadata already on it; only submissions from outside the project wait to be
   placed.
-- When choosing the next issue, select only a `type: task` issue in the active
+- When choosing the next issue, select a `type: task` or `type: decision` issue in the active
   milestone that is attached to its tracker and has no open blockers. Treat any
   issue missing that metadata as intake rather than as available work. An issue
   labeled `execution: gpu-required` needs the GPU environment its body

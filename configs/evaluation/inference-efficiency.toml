@@ -23,6 +23,13 @@
 # the forward figure re-runs a batch built once, which isolates launch cost and
 # is the wrong number for sizing a generated run.
 
+# Processes this reading's spread is measured over, itself included. Nothing
+# inside a timing reading can be resampled into a spread, so the benchmark
+# measures its own by running again — and the whole command costs this many
+# readings. Lower it where a reading is wanted sooner than it is wanted
+# precisely; set it to 1 for an exploratory reading with no floor at all.
+replicates = 6
+
 [runtime]
 # Fixed so the measured decisions are reproducible. Temperature is recorded in
 # the workload because it changes the sampling work per decision.
@@ -37,8 +44,9 @@ reference_plies = 40
 # Reaches the 300-ply cap the generated benchmarks play their games to.
 sweep_plies = [0, 20, 40, 60, 80, 120, 160, 200, 250, 300]
 # Sample counts buy resolution rather than a different quantity, which is why
-# they are outside series identity. The whole command is around 20 s on one
-# CUDA device at these counts.
+# they are outside series identity. One reading is around 15 s on one CUDA
+# device at these counts, and the command pays that once per replicate: about
+# 90 s at the default of six, measured on an RTX 4090 on 2026-08-10.
 decisions = 100
 warmup_decisions = 5
 

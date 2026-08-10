@@ -4,12 +4,18 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted. Refines `0018-workload-scoped-efficiency-series.md`. Refined by
-`0026-conservative-dispersion-bounds.md`. Its shape is applied to a second noise
-kind by
-`0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`.
-Narrowed to the efficiency families by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which removes the other
-noise kinds this scoping served.
+Superseded by
+`0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which
+folds the measurement into the benchmark's own run so that nothing is stored,
+looked up, or scoped. The reasoning below is not refuted — a spread measured on
+one machine still describes no other — but scoping is how a *stored* floor
+avoids being applied where it does not belong, and a dispersion measured beside
+the reading it qualifies is never applied to a second reading at all.
+Refines `0018-workload-scoped-efficiency-series.md`. Refined by
+`0026-conservative-dispersion-bounds.md`. Its shape was applied to a second
+noise kind by
+`0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,
+which 0043 also supersedes.
 
 ## Context
 

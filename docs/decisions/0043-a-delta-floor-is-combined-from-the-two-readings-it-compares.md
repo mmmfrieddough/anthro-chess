@@ -8,9 +8,9 @@ Accepted. Supersedes `0033-pairing-is-a-correctness-fix-not-a-resolution-lever.m
 `0035-a-degraded-floor-is-annotated-rather-than-withheld.md`,
 `0036-a-one-sided-floor-does-not-qualify-a-delta.md`,
 `0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,
-and `0042-the-puzzle-response-is-qualified-within-its-reading.md`. Narrows
-`0025-machine-scoped-execution-noise-floors.md` to the efficiency families, and
-supersedes the estimator half of
+`0042-the-puzzle-response-is-qualified-within-its-reading.md`, and
+`0025-machine-scoped-execution-noise-floors.md`, whose scoping rule has nothing
+left to scope once no floor is stored. Supersedes the estimator half of
 `0028-qualifying-the-rating-dependency-family.md`, whose ruling on which of that
 family's quantities can be resampled at all is retained. Rests
 on `0026-conservative-dispersion-bounds.md`, which is retained unchanged.
@@ -76,11 +76,21 @@ There are no floor kinds for model quality, no characterization records, no
 index, no scope rules, and no paired estimator. A delta is qualified by the two
 readings in front of it or not at all.
 
-Efficiency remains separate. Latency, throughput and training-step metrics vary
-with the machine rather than with the sample, and nothing in a reading's own
-units estimates that, so those families keep a measured execution floor and the
-machine scoping decision 0025 defines. That is the narrowing rather than the
-removal of 0025.
+Efficiency measures its dispersion differently, and stores it the same way.
+Latency, throughput and training-step metrics vary with the machine rather than
+with the sample, and nothing inside a reading estimates that, so the inference
+benchmark measures its own by running itself again in several processes and
+reports the spread beside its value. Same shape, same field, same arithmetic at
+comparison time; only the estimator differs.
+
+That removes 0025 rather than narrowing it. Scoping a floor to the machine was
+how a *stored* floor avoided being applied where it did not belong, and it is
+unnecessary once the dispersion is measured beside the reading it qualifies and
+never applied to a second one. It also closes a gap 0025 could not: a stored
+floor is scoped to the machine but not to the moment, and #161 measured a
+characterization taken on a quiet machine licensing four times as many false
+findings once the machine was hot — further than the dispersion bound moves
+anything. Measuring in the same session is one of the shapes #161 named.
 
 ## What This Gives Up, Deliberately
 
