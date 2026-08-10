@@ -210,11 +210,11 @@ def test_data_acquire_command_routes_to_importable_pipeline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository_root = Path(__file__).parents[2]
-    config = repository_root / "configs/data/lichess-sample.toml"
+    config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
     archive_path = tmp_path / "raw/archive.pgn.zst"
     monkeypatch.setattr(
-        "anthro_chess.data.acquire_archive",
-        lambda output, resolved: AcquisitionResult(
+        "anthro_chess.data.acquire_configured_archive",
+        lambda output, archive: AcquisitionResult(
             archive_path=archive_path,
             sha256="a" * 64,
             size_bytes=123,
@@ -229,17 +229,74 @@ def test_data_acquire_command_routes_to_importable_pipeline(
     assert f"SHA-256: {'a' * 64}" in command_output
 
 
+def test_data_acquire_fetches_every_archive_into_its_own_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each archive resolves its own directory, so selections can share files."""
+
+    config = tmp_path / "two.toml"
+    config.write_text(
+        f"""
+artifact_name = "fixture"
+
+[source]
+id = "test"
+version = "fixture"
+url = "https://example.test/"
+license = "CC0-1.0"
+
+[[archives]]
+artifact_name = "month-one"
+url = "https://example.test/one.pgn.zst"
+file_name = "one.pgn.zst"
+sha256 = "{"1" * 64}"
+
+[[archives]]
+artifact_name = "month-two"
+url = "https://example.test/two.pgn.zst"
+file_name = "two.pgn.zst"
+sha256 = "{"2" * 64}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    data_root = tmp_path / "datasets"
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    seen: list[tuple[Path, str]] = []
+
+    def fake_acquire(output: Path, archive: object) -> AcquisitionResult:
+        file_name = archive.file_name  # type: ignore[attr-defined]
+        seen.append((output, file_name))
+        return AcquisitionResult(
+            archive_path=output / "raw" / file_name,
+            sha256="a" * 64,
+            size_bytes=1,
+            reused=False,
+        )
+
+    monkeypatch.setattr("anthro_chess.data.acquire_configured_archive", fake_acquire)
+
+    assert main(["data", "acquire", "--config", str(config)]) == 0
+
+    assert seen == [
+        (data_root / "month-one", "one.pgn.zst"),
+        (data_root / "month-two", "two.pgn.zst"),
+    ]
+    assert "2 archive(s) verified" in capsys.readouterr().out
+
+
 def test_data_acquire_uses_data_root_when_output_is_omitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository_root = Path(__file__).parents[2]
-    config = repository_root / "configs/data/lichess-sample.toml"
+    config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
     data_root = tmp_path / "datasets"
     captured_output: list[Path] = []
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
 
-    def fake_acquire(output: Path, _resolved: object) -> AcquisitionResult:
+    def fake_acquire(output: Path, _archive: object) -> AcquisitionResult:
         captured_output.append(output)
         return AcquisitionResult(
             archive_path=output / "raw/archive.pgn.zst",
@@ -248,10 +305,10 @@ def test_data_acquire_uses_data_root_when_output_is_omitted(
             reused=False,
         )
 
-    monkeypatch.setattr("anthro_chess.data.acquire_archive", fake_acquire)
+    monkeypatch.setattr("anthro_chess.data.acquire_configured_archive", fake_acquire)
 
     assert main(["data", "acquire", "--config", str(config)]) == 0
-    assert captured_output == [data_root / "lichess-sample"]
+    assert captured_output == [data_root / "lichess-blitz-2017-04"]
 
 
 def test_data_prepare_infers_shared_archive_independently_of_prepared_name(

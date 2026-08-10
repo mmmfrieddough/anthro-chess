@@ -136,8 +136,8 @@ uv run anthro eval prepare-puzzles --config configs/evaluation/lichess-puzzles-v
 Three digests carry that verification, and a mismatch in each means something
 different:
 
-- `[archive] sha256` in the corpus configuration — the downloaded release is the
-  pinned one. A mismatch means the source moved, not that the download is
+- `[[archives]] sha256` in the corpus configuration — the downloaded release is
+  the pinned one. A mismatch means the source moved, not that the download is
   corrupt in some recoverable way.
 - `expected_game_ids_sha256` in the pool configuration — the frozen pool holds
   exactly the games the recorded one did. A mismatch means the corpus, the

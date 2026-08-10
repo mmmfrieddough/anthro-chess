@@ -23,6 +23,9 @@ class SourceConfig(ConfigModel):
     ratings_are_normalized: StrictBool = False
 
 
+_COMPRESSION_SUFFIXES = {"zstd": ".zst", "bzip2": ".bz2"}
+
+
 class ArchiveConfig(ConfigModel):
     """Pinned downloadable archive used by a reproducible source selection."""
 
@@ -37,7 +40,20 @@ class ArchiveConfig(ConfigModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
     )
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    compression: Literal["zstd"] = "zstd"
+    compression: Literal["zstd", "bzip2"] = "zstd"
+
+    @model_validator(mode="after")
+    def _validate_compression_matches_name(self) -> ArchiveConfig:
+        # ``compression`` is declaration only: ``open_pgn_text`` dispatches on
+        # the suffix, so a disagreement describes one format while another is
+        # read. A new format is added in both places or in neither.
+        expected = _COMPRESSION_SUFFIXES[self.compression]
+        if not self.file_name.endswith(expected):
+            raise ValueError(
+                f"archive declares {self.compression} but {self.file_name} "
+                f"does not end in {expected}"
+            )
+        return self
 
 
 class SplitConfig(ConfigModel):
@@ -123,11 +139,28 @@ class PrepareConfig(ConfigModel):
         pattern=r"^[a-z0-9][a-z0-9_-]*$",
     )
     source: SourceConfig
-    archive: ArchiveConfig | None = None
+    archives: tuple[ArchiveConfig, ...] = ()
     split: SplitConfig = SplitConfig()
     filters: FilterConfig = FilterConfig()
     termination: TerminationConfig = TerminationConfig()
     output: OutputConfig = OutputConfig()
+
+    @model_validator(mode="after")
+    def _validate_archives(self) -> PrepareConfig:
+        digests = [archive.sha256 for archive in self.archives]
+        if len(set(digests)) != len(digests):
+            raise ValueError("each archive may appear once in a selection")
+        # Acquisition resolves a directory per archive, so a shared file name
+        # only collides when the artifact it resolves to is shared too.
+        targets = [
+            (archive.artifact_name or self.artifact_name, archive.file_name)
+            for archive in self.archives
+        ]
+        if len(set(targets)) != len(targets):
+            raise ValueError(
+                "two archives in a selection would be acquired to the same path"
+            )
+        return self
 
 
 class SelectionConfig(ConfigModel):
