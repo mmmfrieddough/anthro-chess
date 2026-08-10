@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -124,3 +124,25 @@ def test_columns_unique_to_every_row_are_not_dictionary_encoded(
     assert undictionaried - boolean_columns == {
         NormalizedColumn.SOURCE_GAME_KEY.value,
     }
+
+
+def test_stored_deltas_match_the_definition_over_every_short_hole_pattern() -> None:
+    """The encoder reads a stride behind, so a hole moves what the next entry is.
+
+    Enumerating the patterns is what says the loop agrees with the rule the
+    docstring states, rather than with the traces the other tests happen to use.
+    """
+
+    for length in range(6):
+        for holes in range(1 << length):
+            trace: list[int | None] = [
+                None if holes >> index & 1 else 100_000 - 500 * index
+                for index in range(length)
+            ]
+            expected = [
+                value
+                if value is None or index < 2 or trace[index - 2] is None
+                else cast(int, trace[index - 2]) - value
+                for index, value in enumerate(trace)
+            ]
+            assert encode_clock_remaining_deltas(trace) == expected

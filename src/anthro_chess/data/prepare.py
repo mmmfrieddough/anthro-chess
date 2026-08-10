@@ -217,11 +217,12 @@ class _OptionalInteger:
     status: FieldStatus
 
 
-@dataclass(frozen=True)
-class _ParsedClock:
-    value: int | None
-    status: FieldStatus
-    precision_ms: int | None
+#: One ply's clock reading: value, status, and the tick the source printed it
+#: at. A plain tuple rather than a record, because building one runs once per
+#: ply of every game prepared and nothing holds onto it.
+_ParsedClock = tuple[int | None, FieldStatus, int | None]
+_REJECTED_CLOCK: _ParsedClock = (None, _STATUS_REJECTED, None)
+_UNAVAILABLE_CLOCK: _ParsedClock = (None, _STATUS_UNAVAILABLE, None)
 
 
 @dataclass(frozen=True)
@@ -1078,7 +1079,11 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
     def visit_comment(self, comment: str) -> None:
         if self._depth or not self._in_variation or not self._comments:
             return
-        self._comments[-1] = " ".join(filter(None, (self._comments[-1], comment)))
+        existing = self._comments[-1]
+        if not existing:
+            self._comments[-1] = comment
+        elif comment:
+            self._comments[-1] = f"{existing} {comment}"
 
     def visit_result(self, result: str) -> None:
         if self._headers.get("Result", "*") == "*":
@@ -1189,18 +1194,18 @@ def _parse_game(
     clock_precision_ms: int | None = None
     for move, comment in zip(moves, comments, strict=True):
         actions.append(encode_move(move))
-        clock = _parse_clock(comment)
-        clock_values.append(clock.value)
-        clock_statuses.append(clock.status)
-        if clock.precision_ms is not None:
+        clock_value, clock_status, precision_ms = _parse_clock(comment)
+        clock_values.append(clock_value)
+        clock_statuses.append(clock_status)
+        if precision_ms is not None:
             # Precision is inferred per ply from how the source printed the
             # clock, so an exporter that strips a trailing zero infers a coarser
             # tick for that ply alone. The finest tick describes every reading,
             # since a coarser one is representable in it.
             clock_precision_ms = (
-                clock.precision_ms
+                precision_ms
                 if clock_precision_ms is None
-                else min(clock_precision_ms, clock.precision_ms)
+                else min(clock_precision_ms, precision_ms)
             )
 
     if len(actions) < config.filters.minimum_plies:
@@ -1372,22 +1377,22 @@ def _parse_clock(comment: str) -> _ParsedClock:
         clock_text = clock_match.group(1)
         value = _clock_text_to_milliseconds(clock_text)
         return (
-            _ParsedClock(value, _STATUS_PRESENT, _clock_precision_ms(clock_text))
+            (value, _STATUS_PRESENT, _clock_precision_ms(clock_text))
             if value is not None
-            else _ParsedClock(None, _STATUS_REJECTED, None)
+            else _REJECTED_CLOCK
         )
     centiseconds_match = _CLOCK_CENTISECONDS_RE.search(comment)
     if centiseconds_match is not None:
         try:
             centiseconds = int(centiseconds_match.group(1))
         except ValueError:
-            return _ParsedClock(None, _STATUS_REJECTED, None)
+            return _REJECTED_CLOCK
         if centiseconds < 0:
-            return _ParsedClock(None, _STATUS_REJECTED, None)
-        return _ParsedClock(centiseconds * 10, _STATUS_PRESENT, 10)
+            return _REJECTED_CLOCK
+        return (centiseconds * 10, _STATUS_PRESENT, 10)
     if _CLOCK_SHAPED_RE.search(comment):
-        return _ParsedClock(None, _STATUS_REJECTED, None)
-    return _ParsedClock(None, _STATUS_UNAVAILABLE, None)
+        return _REJECTED_CLOCK
+    return _UNAVAILABLE_CLOCK
 
 
 def _clock_text_to_milliseconds(value: str) -> int | None:

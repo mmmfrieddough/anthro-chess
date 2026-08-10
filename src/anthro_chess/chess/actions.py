@@ -40,8 +40,27 @@ def _standard_moves() -> tuple[chess.Move, ...]:
     return tuple(sorted(moves, key=lambda move: move.uci()))
 
 
+def _move_key(move: chess.Move) -> int:
+    """Pack a move into the integer the vocabulary is keyed by.
+
+    ``chess.Move`` is a dataclass that hashes and compares through a four-field
+    tuple, which is most of what a lookup costs on a path that runs once per
+    ply of every game prepared. ``drop`` is packed rather than dropped so that
+    a drop move misses the table instead of colliding with a standard one.
+    """
+
+    return (
+        move.from_square
+        | move.to_square << 6
+        | (move.promotion or 0) << 12
+        | (move.drop or 0) << 15
+    )
+
+
 _MOVES = _standard_moves()
-_MOVE_TO_ACTION_ID = {move: action_id for action_id, move in enumerate(_MOVES)}
+_ACTION_ID_BY_MOVE_KEY = {
+    _move_key(move): action_id for action_id, move in enumerate(_MOVES)
+}
 
 MOVE_ACTION_COUNT = len(_MOVES)
 RESIGNATION_ACTION_ID = MOVE_ACTION_COUNT
@@ -73,7 +92,7 @@ def encode_move(move: chess.Move) -> int:
     """Return the stable action id for a standard-chess move."""
 
     try:
-        return _MOVE_TO_ACTION_ID[move]
+        return _ACTION_ID_BY_MOVE_KEY[_move_key(move)]
     except KeyError as error:
         raise ValueError(
             f"move is outside the standard action vocabulary: {move.uci()}"
