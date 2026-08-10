@@ -12,11 +12,13 @@ import pytest
 import torch
 from pydantic import ValidationError
 
+import anthro_chess.evaluation.execution_noise as execution_noise_module
 import anthro_chess.evaluation.inference as inference_module
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
+from anthro_chess.evaluation.execution_noise import ProcessSample
 from anthro_chess.evaluation.inference import (
     INFERENCE_KIND,
     InferenceBenchmarkConfig,
@@ -38,18 +40,15 @@ from anthro_chess.evaluation.results import (
     DeltaReport,
     DetailStore,
     ExecutionRecord,
-    FloorEntry,
     MetricDelta,
+    MetricDispersion,
     Movement,
-    NoiseCharacterization,
-    NoiseFloorIndex,
     NoiseVerdict,
     ReportError,
     ReportPivot,
     ResultEnvelope,
     ResultRecordError,
     ResultsStore,
-    build_characterization,
     build_delta_report,
     build_environment_report,
     build_history,
@@ -57,7 +56,6 @@ from anthro_chess.evaluation.results import (
     execution_reference,
     measurement,
     render_history,
-    series_fingerprint,
     workload_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -117,6 +115,9 @@ def _config(
         "runtime": RuntimeConfig(seed=7),
         "latency": FAST_LATENCY,
         "throughput": FAST_THROUGHPUT,
+        # One process, so these read what the benchmark measures rather than
+        # paying for the replicate runs that qualify it.
+        "replicates": 1,
     }
     fields.update(overrides)
     return ResolvedConfig(
@@ -161,6 +162,106 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
     }
     assert result.recorded_paths and result.recorded_paths[0].exists()
     assert result.detail_paths and result.detail_paths[0].exists()
+
+
+def test_a_reading_carries_the_spread_its_own_replicate_processes_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inference_run: Callable[..., Path],
+) -> None:
+    """Nothing inside a timing reading can be resampled, so it is re-measured.
+
+    The replicate processes are stubbed rather than spawned: what is under test
+    is that the benchmark's own reading is one of the replicates and that the
+    spread reaches the recorded measurement, not that a subprocess starts.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=23)
+    sampled: list[InferenceBenchmarkConfig] = []
+
+    def fake_sampler(
+        selection: InferenceBenchmarkConfig,
+        **kwargs: object,
+    ) -> Callable[[], ProcessSample]:
+        def sample() -> ProcessSample:
+            sampled.append(selection)
+            # Each replicate reads a little slower than the last, so the spread
+            # is non-zero and the parent's own reading is not the whole of it.
+            offset = 0.5 * len(sampled)
+            return ProcessSample(
+                execution=parent.execution,
+                checkpoint=parent.checkpoint,
+                reading={
+                    item.metric: item.value + offset
+                    for item in parent.envelopes[0].measurements
+                },
+            )
+
+        return sample
+
+    parent = _measure(_config(checkpoint, replicates=1))
+    monkeypatch.setattr(execution_noise_module, "subprocess_sampler", fake_sampler)
+
+    result = _measure(_config(checkpoint, replicates=3))
+
+    # Two sampled, because the reading being qualified is the third.
+    assert len(sampled) == 2
+    assert {item.model.checkpoint_path for item in sampled} == {checkpoint}
+    assert result.replicates == 3
+    assert set(result.dispersions) == {
+        item.metric for item in result.envelopes[0].measurements
+    }
+    for item in result.envelopes[0].measurements:
+        assert item.dispersion is not None
+        assert item.dispersion.estimator == PROCESS_REPLICATE_METHOD
+        assert item.dispersion.bound >= item.dispersion.value
+        # A machine spread does not shrink with a game count, so it sizes no pool.
+        assert item.dispersion.units is None
+
+
+def test_a_single_replicate_reads_without_measuring_a_spread(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The replicate processes are what stop the recursion, so they take this.
+
+    It is also the exploratory reading: one process, no dispersion, and the
+    report says the noise is unknown rather than claiming a floor.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=24)
+
+    result = _measure(_config(checkpoint, replicates=1))
+
+    assert result.replicates == 1
+    assert result.dispersions == {}
+    assert all(item.dispersion is None for item in result.envelopes[0].measurements)
+
+
+def test_a_replicate_process_measures_the_checkpoint_it_was_handed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The whole handoff, through a real interpreter rather than a stub.
+
+    Everything else about replication is tested with the sampler patched out,
+    which cannot catch the selection failing to survive the trip: a replicate
+    resolving its own checkpoint is the failure mode this hands the resolved
+    path over to avoid, and it shows up as a refusal rather than a wrong number.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=26)
+    # No default selection to fall back on, so a replicate that re-resolved
+    # instead of reading what it was handed would fail to load anything at all.
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "empty"))
+
+    result = _measure(_config(checkpoint, replicates=2))
+
+    assert result.replicates == 2
+    assert set(result.dispersions) == {
+        item.metric for item in result.envelopes[0].measurements
+    }
 
 
 def test_the_stage_attribution_never_claims_more_than_the_whole(
@@ -735,8 +836,13 @@ def _efficiency_result(
     torch_version: str = "2.7.0",
     weights: str = "a" * 64,
     day: int | None = None,
+    dispersion: float | None = None,
 ) -> ResultEnvelope:
-    """Build one recorded efficiency result on a named machine."""
+    """Build one recorded efficiency result on a named machine.
+
+    ``dispersion`` is the spread this reading measured across its own replicate
+    processes, which is where an efficiency floor comes from.
+    """
 
     execution = execution_reference(
         device="cpu",
@@ -762,6 +868,16 @@ def _efficiency_result(
                 INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier,
                 latency_ms,
                 workload=execution.workload_component(),
+                dispersion=(
+                    None
+                    if dispersion is None
+                    else MetricDispersion(
+                        value=dispersion,
+                        bound=dispersion,
+                        source=f"6 process replicates on {device_name}",
+                        estimator=PROCESS_REPLICATE_METHOD,
+                    )
+                ),
             )
         ],
         recorded_at=datetime(
@@ -934,76 +1050,41 @@ def test_an_os_patch_alone_does_not_confound_a_delta() -> None:
     assert _delta(report).environment == ()
 
 
-def _execution_floor(
-    *,
-    device_name: str,
-    floor: float,
-    plies: int = 40,
-) -> NoiseCharacterization:
-    """Return a characterized machine floor for the p50 latency series."""
-
-    execution = execution_reference(
-        device="cpu",
-        device_name=device_name,
-        precision="float32",
-        torch_version="2.7.0",
-        platform_key="Fixture-x86",
-        platform="fixture-1.2.3",
-        cpu_threads=8,
-        workload={"latency_reference_plies": plies},
-    )
-    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
-    return build_characterization(
-        kind="execution",
-        method=PROCESS_REPLICATE_METHOD,
-        replicates=6,
-        processes=3,
-        source=f"three processes on {device_name}",
-        execution=execution,
-        floors=[
-            FloorEntry(
-                metric=metric,
-                fingerprint=series_fingerprint(
-                    metric,
-                    None,
-                    execution.workload_component(),
-                ),
-                floor=floor,
-                dispersion=floor / 2,
-                dispersion_bound=floor / 2,
-                degrees_of_freedom=2,
-            )
-        ],
-        recorded_at=datetime(2026, 7, 1, tzinfo=UTC),
-    )
-
-
 def test_run_to_run_jitter_stops_reading_as_a_regression() -> None:
     """The reading this benchmark most often produces is noise, not a finding.
 
     Two readings of the same checkpoint minutes apart move by a fraction of a
-    millisecond. With no characterized floor the report can only say the number
-    moved, which is how sub-percent jitter gets written up as a regression.
+    millisecond. A reading that measured no spread leaves the report able only
+    to say the number moved, which is how sub-percent jitter gets written up as
+    a regression.
     """
 
     metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
-    results = [
-        _efficiency_result("checkpoint-a", 12.000, device_name="laptop"),
-        _efficiency_result("checkpoint-b", 12.008, device_name="laptop"),
-    ]
-
-    unknown = build_delta_report(results, BridgeIndex(), metrics=[metric])
-    qualified = build_delta_report(
-        results,
+    unknown = build_delta_report(
+        [
+            _efficiency_result("checkpoint-a", 12.000, device_name="laptop"),
+            _efficiency_result("checkpoint-b", 12.008, device_name="laptop"),
+        ],
         BridgeIndex(),
         metrics=[metric],
-        floors=NoiseFloorIndex([_execution_floor(device_name="laptop", floor=0.4)]),
+    )
+    qualified = build_delta_report(
+        [
+            _efficiency_result(
+                "checkpoint-a", 12.000, device_name="laptop", dispersion=0.1
+            ),
+            _efficiency_result(
+                "checkpoint-b", 12.008, device_name="laptop", dispersion=0.1
+            ),
+        ],
+        BridgeIndex(),
+        metrics=[metric],
     )
 
     assert _delta(unknown).noise is NoiseVerdict.UNKNOWN
     assert _delta(unknown).noise_floor is None
     assert _delta(qualified).noise is NoiseVerdict.WITHIN
-    assert _delta(qualified).noise_floor_kind == "execution"
+    assert _delta(qualified).noise_floor_source == ("6 process replicates on laptop")
     # The delta is still shown, so a small regression that repeats across
     # checkpoints stays visible rather than being filtered away.
     assert _delta(qualified).delta == pytest.approx(0.008)
@@ -1013,31 +1094,16 @@ def test_a_real_movement_still_clears_the_machine_floor() -> None:
     metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
     report = build_delta_report(
         [
-            _efficiency_result("checkpoint-a", 12.0, device_name="laptop"),
-            _efficiency_result("checkpoint-b", 9.0, device_name="laptop"),
+            _efficiency_result(
+                "checkpoint-a", 12.0, device_name="laptop", dispersion=0.1
+            ),
+            _efficiency_result(
+                "checkpoint-b", 9.0, device_name="laptop", dispersion=0.1
+            ),
         ],
         BridgeIndex(),
         metrics=[metric],
-        floors=NoiseFloorIndex([_execution_floor(device_name="laptop", floor=0.4)]),
     )
 
     assert _delta(report).noise is NoiseVerdict.CLEARED
     assert _delta(report).movement is Movement.BETTER
-
-
-def test_a_floor_from_one_machine_does_not_qualify_another_machines_delta() -> None:
-    """The series is continuous across machines; the noise in it is not."""
-
-    metric = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
-    report = build_delta_report(
-        [
-            _efficiency_result("checkpoint-a", 12.000, device_name="laptop"),
-            _efficiency_result("checkpoint-b", 12.008, device_name="workstation"),
-        ],
-        BridgeIndex(),
-        metrics=[metric],
-        floors=NoiseFloorIndex([_execution_floor(device_name="laptop", floor=0.4)]),
-    )
-
-    assert _delta(report).noise is NoiseVerdict.UNKNOWN
-    assert _delta(report).movement is Movement.CONFOUNDED

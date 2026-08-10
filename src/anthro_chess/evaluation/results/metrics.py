@@ -187,12 +187,10 @@ class MetricDefinition:
     #: for two situations: a sampling floor nobody has produced yet, and one
     #: that cannot exist. Only the first is worth waiting for.
     #:
-    #: It is deliberately scoped to data-sampling rather than to floors in
-    #: general. Evaluation and training noise are read from repeated
-    #: measurements rather than from per-unit contributions, so either could
-    #: still qualify a metric named here, and a report judges against one when
-    #: it exists. It annotates the metric rather than redefining it, so it stays
-    #: out of series identity and needs no ``definition_version`` bump.
+    #: A metric that declares one is refused a floor from any estimator, not
+    #: only a resampled one: the declaration says the quantity has no spread
+    #: worth stating. It annotates the metric rather than redefining it, so it
+    #: stays out of series identity and needs no ``definition_version`` bump.
     no_sampling_floor_reason: str | None = None
 
 

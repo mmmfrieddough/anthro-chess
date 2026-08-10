@@ -162,7 +162,6 @@ def bootstrap_dispersions(
         dispersions[series_fingerprint(metric, component, workload)] = (
             measured_dispersion(
                 dispersion,
-                kind="data-sampling",
                 degrees_of_freedom=freedom,
                 confidence=confidence,
                 units=len(totals),

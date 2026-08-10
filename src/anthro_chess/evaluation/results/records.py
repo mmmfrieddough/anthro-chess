@@ -20,7 +20,7 @@ import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -39,11 +39,14 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.provenance import code_provenance, environment_provenance
 
+#: Version 7 drops the noise source a dispersion declared. A dispersion is now
+#: always the reading's own, so the taxonomy distinguished nothing; ``estimator``
+#: still says how the reading arrived at it.
 #: Version 6 carries a measurement's own dispersion in place of a floor built
 #: from it, so a delta is floored by combining the two readings it compares.
 #: Version 5 records the training identity a training noise floor is scoped to.
 #: Version 4 names the estimator behind a stored noise floor.
-ENVELOPE_VERSION = 6
+ENVELOPE_VERSION = 7
 BRIDGE_VERSION = 1
 
 #: Cap on one committed summary record. Generous for scalar headlines and far
@@ -53,12 +56,6 @@ MAXIMUM_SUMMARY_BYTES = 64 * 1024
 
 Sha256Hex = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Identifier = Annotated[str, Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._-]*$")]
-
-#: How a noise floor was characterized. Conflating these is the usual mistake,
-#: so a stored floor has to say which one it is. ``execution`` is the machine's
-#: own contribution — scheduler contention, thermal state, allocator and kernel
-#: warmth — which no resampling of an already-computed number can estimate.
-NoiseFloorKind = Literal["evaluation", "data-sampling", "training", "execution"]
 
 
 class ResultRecordError(ValueError):
@@ -320,22 +317,6 @@ class ExecutionRecord(ResultModel):
         return f"{self.device_name} ({self.device}, torch {self.torch_version})"
 
 
-class NoiseFloor(ResultModel):
-    """How large a delta has to be before it is a finding rather than noise."""
-
-    value: float = Field(ge=0.0)
-    kind: NoiseFloorKind
-    source: str | None = Field(default=None, min_length=1)
-    #: Which estimator produced the value, named rather than described. One
-    #: kind can be estimated more than one way, and the ways are not
-    #: interchangeable: a data-sampling floor combined from two readings'
-    #: dispersions and one taken from a series characterization answer
-    #: different questions. ``source`` carries that in prose for a reader; this
-    #: carries it for a reader who has to tell the two apart without parsing a
-    #: sentence.
-    estimator: Identifier | None = None
-
-
 class MetricDispersion(ResultModel):
     """How far one reading's own units move the metric it reports.
 
@@ -361,7 +342,6 @@ class MetricDispersion(ResultModel):
     #: where re-measuring does not redraw a sample, and deliberately not the
     #: measurement's own ``sample_size``, which counts scored positions.
     units: int | None = Field(default=None, ge=1)
-    kind: NoiseFloorKind
     source: str | None = Field(default=None, min_length=1)
     estimator: Identifier | None = None
 

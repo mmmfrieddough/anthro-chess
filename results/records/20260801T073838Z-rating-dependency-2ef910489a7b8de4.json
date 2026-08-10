@@ -13,7 +13,8 @@
     "label": "training-blitz-30k-v4-step-00008000",
     "parameter_sha256": "909b7eafc39c47583c505e1d88355ee7612e56a81af6e1d038be4505ebcd1d2f",
     "run_id": "training-blitz-30k-v4",
-    "step": 8000
+    "step": 8000,
+    "training_sha256": null
   },
   "configuration": {
     "overrides": [
@@ -56,7 +57,7 @@
     "schema_sha256": "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9",
     "version": 4
   },
-  "envelope_version": 6,
+  "envelope_version": 7,
   "environment": {
     "dependencies": {
       "chess": "1.11.2",
@@ -122,5 +123,5 @@
     }
   ],
   "recorded_at": "2026-08-01T07:38:38.083420Z",
-  "result_id": "5cc78ef3fc76a9f1"
+  "result_id": "2ef910489a7b8de4"
 }

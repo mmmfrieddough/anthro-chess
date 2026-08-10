@@ -43,7 +43,9 @@
 # 2026-08-02 against training-blitz-1m step 500, over three reduced sweeps: the
 # longest step was the rollout, then the checkpoint reading, then termination
 # and novelty within a few percent of each other, with the inference and
-# decision steps together under one percent of the total. The puzzle step is
+# decision steps together under one percent of the total. The inference share
+# is six times that ordering's figure since #374, which made every inference
+# reading measure its own spread across six processes. The puzzle step is
 # absent from that ordering because the pinned puzzle artifact was not on the
 # host.
 #

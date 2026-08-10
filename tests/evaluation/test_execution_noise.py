@@ -1,4 +1,4 @@
-"""Measuring what a timing reading costs in noise, and what that floor covers."""
+"""Measuring what a timing reading costs in noise, beside the reading itself."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,10 +13,10 @@ import pytest
 import anthro_chess.evaluation.execution_noise as execution_noise_module
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.evaluation.execution_noise import (
-    DEFAULT_REPEATS,
     ExecutionNoiseError,
     ProcessSample,
-    characterize_execution_noise,
+    execution_dispersion_record,
+    measure_execution_dispersions,
     sample_execution_noise,
     subprocess_sampler,
 )
@@ -30,10 +29,9 @@ from anthro_chess.evaluation.results import (
     PROCESS_REPLICATE_METHOD,
     CheckpointReference,
     ExecutionRecord,
-    ResultsStore,
     dispersion_bound,
     execution_reference,
-    series_fingerprint,
+    replicate_dispersion,
 )
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_BATCH_THROUGHPUT,
@@ -46,8 +44,6 @@ from anthro_chess.runtime import RuntimeConfig
 LATENCY = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
 THROUGHPUT = INFERENCE_BATCH_THROUGHPUT.identifier
 LOAD = INFERENCE_MODEL_LOAD_SECONDS.identifier
-
-RECORDED_AT = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
 
 def _execution(*, device_name: str = "fixture-laptop") -> ExecutionRecord:
@@ -64,7 +60,7 @@ def _execution(*, device_name: str = "fixture-laptop") -> ExecutionRecord:
 
 
 def _sample(
-    readings: Sequence[dict[str, float]],
+    reading: dict[str, float],
     *,
     device_name: str = "fixture-laptop",
     weights: str = "a" * 64,
@@ -76,7 +72,7 @@ def _sample(
             step=1,
             parameter_sha256=weights,
         ),
-        readings=tuple(readings),
+        reading=reading,
     )
 
 
@@ -91,64 +87,37 @@ def _sampler(samples: Sequence[ProcessSample]) -> Callable[[], ProcessSample]:
     return sample
 
 
-def test_the_floor_spans_processes_rather_than_repeats_within_one() -> None:
-    """A reading a report compares is one process's, so the floor must be too.
+def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
+    """The spread has to describe the reading it travels with.
 
-    These readings agree closely inside each process and disagree between
-    them, which is the shape a lazily compiled kernel or a warm allocator
-    produces. Building the floor from within-process spread alone would report
-    a floor an order of magnitude narrower than the numbers a reader compares.
+    Measuring it over neighbouring readings alone would describe a different
+    set of processes than the one that produced the number being floored.
     """
 
-    samples = [
-        _sample([{LATENCY: 10.0}, {LATENCY: 10.1}]),
-        _sample([{LATENCY: 12.0}, {LATENCY: 12.1}]),
-        _sample([{LATENCY: 14.0}, {LATENCY: 14.1}]),
-    ]
+    own = _sample({LATENCY: 10.0})
+    others = [_sample({LATENCY: 12.0}), _sample({LATENCY: 14.0})]
 
-    characterization = characterize_execution_noise(
-        _sampler(samples),
+    spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
+
+    assert spreads == {LATENCY: pytest.approx(replicate_dispersion([10.0, 12.0, 14.0]))}
+
+
+def test_the_bound_counts_the_processes_behind_the_spread() -> None:
+    own = _sample({LATENCY: 10.0})
+    others = [_sample({LATENCY: 12.0}), _sample({LATENCY: 14.0})]
+
+    spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
+    record = execution_dispersion_record(
+        spreads[LATENCY],
         processes=3,
         source="fixture replicates",
-        recorded_at=RECORDED_AT,
     )
 
-    (entry,) = characterization.floors
-    assert entry.metric == LATENCY
-    assert entry.within_process_dispersion is not None
-    assert entry.within_process_dispersion == pytest.approx(0.1 / 2**0.5, rel=1e-6)
-    assert entry.dispersion > 10 * entry.within_process_dispersion
-    assert entry.floor > entry.dispersion
-
-
-def test_the_bound_counts_processes_rather_than_readings() -> None:
-    """Readings inside one process are not independent evidence about spread.
-
-    They widen the dispersion, which is why they are taken, but two of them
-    share an allocator, a warm file cache and a compiled kernel. Counting them
-    as replicates would claim the estimate is firmer than the design supports
-    and narrow the bound on the strength of a repeat that cost nothing.
-    """
-
-    samples = [
-        _sample([{LATENCY: 10.0}, {LATENCY: 10.1}]),
-        _sample([{LATENCY: 12.0}, {LATENCY: 12.1}]),
-        _sample([{LATENCY: 14.0}, {LATENCY: 14.1}]),
-    ]
-
-    characterization = characterize_execution_noise(
-        _sampler(samples),
-        processes=3,
-        source="fixture replicates",
-        recorded_at=RECORDED_AT,
+    # Three processes, and therefore two degrees of freedom.
+    assert record.bound == pytest.approx(
+        dispersion_bound(record.value, degrees_of_freedom=2)
     )
-
-    (entry,) = characterization.floors
-    assert characterization.replicates == 6
-    assert entry.degrees_of_freedom == 2
-    assert entry.dispersion_bound == pytest.approx(
-        dispersion_bound(entry.dispersion, degrees_of_freedom=2)
-    )
+    assert record.estimator == PROCESS_REPLICATE_METHOD
 
 
 def test_more_processes_narrow_the_floor_a_thin_estimate_widens() -> None:
@@ -160,142 +129,78 @@ def test_more_processes_narrow_the_floor_a_thin_estimate_widens() -> None:
     """
 
     readings = (10.0, 12.0, 14.0, 10.0, 12.0, 14.0)
-    floors = []
+    bounds = []
     for processes in (3, 6):
-        samples = [_sample([{LATENCY: readings[index]}]) for index in range(processes)]
-        characterization = characterize_execution_noise(
-            _sampler(samples),
+        samples = [_sample({LATENCY: readings[index]}) for index in range(processes)]
+        spreads = measure_execution_dispersions(
+            samples[0],
+            _sampler(samples[1:]),
             processes=processes,
-            source="fixture replicates",
-            recorded_at=RECORDED_AT,
         )
-        (entry,) = characterization.floors
-        floors.append(entry.floor)
+        bounds.append(
+            execution_dispersion_record(
+                spreads[LATENCY],
+                processes=processes,
+                source="fixture replicates",
+            ).bound
+        )
 
-    assert floors[1] < floors[0]
-
-
-def test_a_cold_start_keeps_only_the_first_reading_of_each_process() -> None:
-    """A reload inside one process is warm, so it is not a second cold start.
-
-    Including the warm reloads would collapse the dispersion toward zero and
-    produce a floor that licenses ordinary machine noise as a finding.
-    """
-
-    samples = [
-        _sample([{LOAD: 1.0}, {LOAD: 0.1}]),
-        _sample([{LOAD: 1.4}, {LOAD: 0.1}]),
-    ]
-
-    characterization = characterize_execution_noise(
-        _sampler(samples),
-        processes=2,
-        source="fixture replicates",
-        recorded_at=RECORDED_AT,
-    )
-
-    (entry,) = characterization.floors
-    # Two cold starts, 1.0 and 1.4, rather than four readings around 0.55.
-    assert entry.dispersion == pytest.approx(0.2 * 2**0.5, rel=1e-6)
-    assert entry.within_process_dispersion is None
+    assert bounds[1] < bounds[0]
 
 
-def test_the_characterization_records_the_machine_it_is_valid_on() -> None:
-    execution = _execution()
-    samples = [
-        _sample([{LATENCY: 10.0}]),
-        _sample([{LATENCY: 11.0}]),
-    ]
-
-    characterization = characterize_execution_noise(
-        _sampler(samples),
-        processes=2,
-        source="fixture replicates",
-        recorded_at=RECORDED_AT,
-    )
-
-    assert characterization.kind == "execution"
-    assert characterization.method == PROCESS_REPLICATE_METHOD
-    assert characterization.processes == 2
-    assert characterization.replicates == 2
-    assert characterization.execution == execution
-    (entry,) = characterization.floors
-    assert entry.fingerprint == series_fingerprint(
-        LATENCY,
-        None,
-        execution.workload_component(),
-    )
-
-
-def test_one_process_cannot_characterize_execution_noise() -> None:
+def test_one_process_cannot_measure_execution_noise() -> None:
     with pytest.raises(ExecutionNoiseError, match="at least two processes"):
-        characterize_execution_noise(
-            _sampler([_sample([{LATENCY: 10.0}, {LATENCY: 10.5}])]),
+        measure_execution_dispersions(
+            _sample({LATENCY: 10.0}),
+            _sampler([]),
             processes=1,
-            source="fixture replicates",
         )
 
 
 def test_replicates_from_two_machines_are_not_one_machines_noise() -> None:
     samples = [
-        _sample([{LATENCY: 10.0}], device_name="fixture-laptop"),
-        _sample([{LATENCY: 30.0}], device_name="fixture-workstation"),
+        _sample({LATENCY: 10.0}, device_name="fixture-laptop"),
+        _sample({LATENCY: 30.0}, device_name="fixture-workstation"),
     ]
 
     with pytest.raises(ExecutionNoiseError, match="different environments"):
-        characterize_execution_noise(
-            _sampler(samples),
+        measure_execution_dispersions(
+            samples[0],
+            _sampler(samples[1:]),
             processes=2,
-            source="fixture replicates",
         )
 
 
 def test_replicates_of_two_checkpoints_include_a_model_difference() -> None:
     samples = [
-        _sample([{LATENCY: 10.0}], weights="a" * 64),
-        _sample([{LATENCY: 30.0}], weights="b" * 64),
+        _sample({LATENCY: 10.0}, weights="a" * 64),
+        _sample({LATENCY: 30.0}, weights="b" * 64),
     ]
 
     with pytest.raises(ExecutionNoiseError, match="different checkpoints"):
-        characterize_execution_noise(
-            _sampler(samples),
+        measure_execution_dispersions(
+            samples[0],
+            _sampler(samples[1:]),
             processes=2,
-            source="fixture replicates",
         )
 
 
 def test_a_metric_missing_from_one_replicate_is_refused() -> None:
     samples = [
-        _sample([{LATENCY: 10.0, THROUGHPUT: 40.0}]),
-        _sample([{LATENCY: 11.0}]),
+        _sample({LATENCY: 10.0, THROUGHPUT: 40.0}),
+        _sample({LATENCY: 11.0}),
     ]
 
     with pytest.raises(ExecutionNoiseError, match="not every replicate reported"):
-        characterize_execution_noise(
-            _sampler(samples),
+        measure_execution_dispersions(
+            samples[0],
+            _sampler(samples[1:]),
             processes=2,
-            source="fixture replicates",
         )
 
 
-def test_the_characterization_is_recordable(tmp_path: Path) -> None:
-    store = ResultsStore(tmp_path / "results")
-    characterization = characterize_execution_noise(
-        _sampler([_sample([{LATENCY: 10.0}]), _sample([{LATENCY: 11.0}])]),
-        processes=2,
-        source="fixture replicates",
-        recorded_at=RECORDED_AT,
-    )
-
-    path = store.append_characterization(characterization)
-
-    assert path.exists()
-    (recorded,) = store.characterizations()
-    assert recorded == characterization
-
-
 def test_a_sample_survives_the_round_trip_a_worker_process_makes() -> None:
-    sample = _sample([{LATENCY: 10.0, THROUGHPUT: 40.0}, {LATENCY: 10.5}])
+    sample = _sample({LATENCY: 10.0, THROUGHPUT: 40.0})
 
     restored = ProcessSample.from_record(json.loads(json.dumps(sample.as_record())))
 
@@ -304,21 +209,27 @@ def test_a_sample_survives_the_round_trip_a_worker_process_makes() -> None:
 
 def test_an_unreadable_sample_is_an_error_rather_than_a_crash() -> None:
     with pytest.raises(ExecutionNoiseError, match="unreadable sample"):
-        ProcessSample.from_record({"readings": []})
+        ProcessSample.from_record({"reading": {}})
 
 
 def test_the_subprocess_sampler_measures_in_a_fresh_interpreter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The command has to be the one that records nothing and prints readings."""
+    """The command records nothing, prints readings, and measures what it is given.
 
-    sample = _sample([{LATENCY: 10.0}])
-    seen: list[list[str]] = []
+    The selection is handed over already resolved rather than as the file it
+    came from: a replicate has to measure the checkpoint the parent loaded, and
+    a sweep replaces a benchmark's model in memory rather than through the
+    overrides a file could be re-read with.
+    """
+
+    sample = _sample({LATENCY: 10.0})
+    seen: list[tuple[list[str], object]] = []
 
     def fake_run(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        seen.append(command)
+        seen.append((command, kwargs.get("input")))
         return subprocess.CompletedProcess(
             command,
             returncode=0,
@@ -327,29 +238,27 @@ def test_the_subprocess_sampler_measures_in_a_fresh_interpreter(
         )
 
     monkeypatch.setattr(execution_noise_module.subprocess, "run", fake_run)
+    selection = InferenceBenchmarkConfig(
+        model=ModelRunnerConfig(checkpoint_path=Path("/pinned/step-00000200.pt")),
+        replicates=1,
+    )
 
-    measured = subprocess_sampler(
-        config_path=Path("configs/evaluation/inference-efficiency.toml"),
-        overrides=("model.device='cpu'",),
-        repeats=2,
-    )()
+    measured = subprocess_sampler(selection)()
 
     assert measured == sample
-    (command,) = seen
+    ((command, piped),) = seen
     assert command[:2] == [sys.executable, "-m"]
     assert command[2:8] == [
         "anthro_chess",
         "eval",
         "noise",
         "sample",
-        "--config",
-        "configs/evaluation/inference-efficiency.toml",
+        "--selection",
+        "-",
     ]
-    assert "--repeats" in command and command[command.index("--repeats") + 1] == "2"
     assert "--format" in command and command[command.index("--format") + 1] == "json"
-    assert "--set" in command and command[command.index("--set") + 1] == (
-        "model.device='cpu'"
-    )
+    assert isinstance(piped, str)
+    assert json.loads(piped)["model"]["checkpoint_path"] == "/pinned/step-00000200.pt"
 
 
 def test_a_failed_replicate_process_reports_what_it_printed(
@@ -368,7 +277,7 @@ def test_a_failed_replicate_process_reports_what_it_printed(
     monkeypatch.setattr(execution_noise_module.subprocess, "run", fake_run)
 
     with pytest.raises(ExecutionNoiseError, match="no checkpoint is selected"):
-        subprocess_sampler(config_path=Path("fixture.toml"))()
+        subprocess_sampler(InferenceBenchmarkConfig())()
 
 
 def test_sampling_measures_repeatedly_and_records_nothing(
@@ -376,7 +285,7 @@ def test_sampling_measures_repeatedly_and_records_nothing(
     monkeypatch: pytest.MonkeyPatch,
     inference_run: Callable[..., Path],
 ) -> None:
-    """The readings are evidence about the machine, not about the model."""
+    """The reading is evidence about the machine, not about the model."""
 
     checkpoint = inference_run(tmp_path / "run", seed=11)
     resolved = ResolvedConfig(
@@ -403,25 +312,8 @@ def test_sampling_measures_repeatedly_and_records_nothing(
     )
     monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "results"))
 
-    sample = sample_execution_noise(resolved, repeats=2)
+    sample = sample_execution_noise(resolved)
 
-    assert len(sample.readings) == 2
-    assert LATENCY in sample.readings[0]
-    assert sample.readings[0][LATENCY] > 0.0
+    assert LATENCY in sample.reading
+    assert sample.reading[LATENCY] > 0.0
     assert not (tmp_path / "results").exists()
-
-
-def test_a_process_takes_at_least_one_reading() -> None:
-    resolved = ResolvedConfig(
-        value=InferenceBenchmarkConfig(),
-        provenance=ConfigProvenance(source=None, overrides=()),
-    )
-
-    with pytest.raises(ExecutionNoiseError, match="at least one reading"):
-        sample_execution_noise(resolved, repeats=0)
-
-
-def test_the_default_repeat_count_sees_within_process_variation() -> None:
-    """One reading per process would leave the diagnostic unmeasurable."""
-
-    assert DEFAULT_REPEATS >= 2

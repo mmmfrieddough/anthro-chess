@@ -10,16 +10,11 @@ store. Benchmarks append here; reports and comparisons are views over it.
   series. A bridge is legitimate only when the fingerprint moved for a reason
   provably independent of the measured quantity, and revoking one is a
   reviewable diff.
-- `floors/` holds noise floors characterized from repeated readings rather
-  than from the units one reading scored; `anthro eval noise characterize`
-  says which sources those are. A floor is keyed by the same fingerprint as the
-  measurements it qualifies, so it stops applying when the series moves rather
-  than lingering as a stale constant.
 
 `anthro eval run` is what appends here: it scores one checkpoint over a
 deterministic view of the frozen pool, records the held-out prediction,
 legality, and rating-dependency results for it, and bootstraps each
-measurement's own data-sampling dispersion from the same pass. A delta between
+measurement's own sampling dispersion from the same pass. A delta between
 two such readings is floored by combining the two dispersions in front of it.
 Every recording benchmark also appends one `benchmark-cost` record saying what
 the invocation
@@ -34,9 +29,9 @@ resampled response resolution in the detail tier.
 Read the numbers with ordinary file tools, or with `anthro eval report` for a
 compact delta view, which annotates every delta with the floor it did or did
 not clear. `anthro eval metrics` lists every metric identifier and its declared
-direction of improvement. `anthro eval noise` characterizes evaluation and
-training floors from recorded replicates, lists what is characterized, and
-reports how many games an axis needs to resolve an effect of a given size.
+direction of improvement. `anthro eval noise plan` reports how many games an
+axis needs to resolve an effect of a given size, read off the newest reading
+that measured its own spread.
 `anthro eval tensorboard OUTPUT` regenerates a disposable checkpoint-history
 view outside this directory, with one TensorBoard line per raw series
 fingerprint.

@@ -120,8 +120,9 @@ between identity and coordinates.
 record schema, metric registry, fingerprint algorithm, and size budget.
 
 The committed summary tier is one small JSON file per result under the store
-root, beside the bridges that rejoin a broken series and the characterized
-noise floors that qualify one. One file per record is what keeps concurrent
+root, beside the bridges that rejoin a broken series. Each measurement carries
+the spread its own reading measured, so nothing separate has to be stored to
+qualify a delta. One file per record is what keeps concurrent
 appends and Git merges additive; a concurrent write into the same store fails
 on an exclusive lock rather than producing a partial record. The store root
 defaults to `results/` in the repository and can be pointed elsewhere with
@@ -149,8 +150,9 @@ change instead of showing two half-rows that never say why. A metric declaring
 no workload can still land on more than one series when the inputs underneath
 it move, and there the most recent reading is shown together with how many
 series stand behind it. `anthro eval bridge` records, lists, and revokes bridges.
-`anthro eval noise` characterizes floors, lists them, and answers how many
-games an axis needs. `anthro eval inference` measures what a checkpoint costs
+`anthro eval noise plan` answers how many games an axis needs to resolve an
+effect of a given size, read off the newest reading that measured its own
+spread. `anthro eval inference` measures what a checkpoint costs
 to play with; see inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
@@ -288,9 +290,10 @@ the same work wherever it is rooted; and the pool generation a selection pins,
 since that names which data was realized rather than how much work there is,
 and a generation cut would otherwise fracture every cost line.
 
-Read a cost delta against a characterized execution floor: nothing in a record
-says the machine was busy. Decision 0031 carries the measurements and what a
-cost reading is worth without one.
+**A cost reading carries no spread**, so a cost delta is reported as unknown
+noise and nothing in a record says the machine was busy. It is the one recorded
+family with no producer: #218 owns closing that, and until it does, decision
+0031 carries the measurements and what a cost reading is worth without one.
 
 `anthro_chess.evaluation.cost` owns the record and the workload normalization;
 `docs/decisions/0031-committed-benchmark-cost.md` owns the reasoning.
@@ -450,66 +453,44 @@ committed summary tier.
 
 ## Noise Characterization
 
-> **Superseded in design, partly in code.**
-> `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
-> replaces the four kinds, the scope rules and the stored characterizations
-> described below with one dispersion per reading, combined at comparison time.
-> The combining has landed: a reading carries its own dispersion and a delta is
-> floored by the two in front of it. The kinds, the scope rules and the
-> characterization store are still here for the sources a reading cannot
-> measure, and this section still describes those. It is rewritten as the rest
-> of that migration lands, and the tracker issue holds the order.
-
 A delta is not a finding until it is larger than the noise in the measurement.
 Reports should annotate every change with the noise floor it did or did not
 clear, and a delta inside the floor should be visible but marked rather than
 hidden, so a consistent small regression is not lost.
 
-Four sources of noise are distinct, and conflating them is the usual mistake.
-Each one licenses a different comparison, so the useful way to name them is by
-the question they answer rather than by how they are computed:
+**Every reading measures the spread of its own units and stores it.** That
+number is the **dispersion**, and it is the only thing a benchmark reports about
+its own noise. Comparing two readings combines them, because the variance of a
+difference is the sum of the two variances. Nothing is characterized ahead of a
+comparison, stored between runs, or looked up.
+`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
+owns the design, and replaced a taxonomy of four noise sources with scope rules
+and a stored characterization per series.
 
-- **evaluation noise**: the same checkpoint re-measured. This is the floor that
-  qualifies a **delta between two checkpoints**, which is the project's central
-  comparison. Deterministic offline metrics over a frozen pool have none;
-  rollout metrics have a lot, driven by seeds.
-- **data-sampling noise**: how much the metric would move on a different draw of
-  the same size from the same population. It sizes a **view or a pool** and does
-  *not* qualify a checkpoint delta. Estimable by bootstrapping from a single
-  run, so it costs nothing.
-- **training noise**: the same configuration trained from a different seed. This
-  qualifies a **configuration change** rather than a checkpoint delta, and it is
-  the expensive one, since it needs several training runs.
-- **execution noise**: the same checkpoint timed again on the same machine. This
-  qualifies a **delta between two efficiency readings**, and it is the one
-  source that cannot be estimated from numbers already computed, because what
-  varies is the machine rather than the sample.
+The dispersions are not interchangeable even though the reported quantity is,
+and what separates them is whether a benchmark can produce its own. Held-out
+prediction scores four hundred games, so it holds four hundred numbers to
+resample and one run yields the value and its spread together. A latency
+percentile is a single number with nothing inside it to resample, and the spread
+that matters is the one *between processes*, so the inference benchmark measures
+its own by running itself again — **Execution Noise** below.
 
-Which of these a reading needs follows from what is being claimed, and the two
-questions are easy to conflate. Whether one run improved between two of its own
-steps is a checkpoint delta. Whether a change to the model, the data, or the
-training setup improved anything is a configuration change, and clearing a
-sampling or evaluation floor does not establish it: the two arms differ by their
-initialization seeds as well as by the change. **Regression Comparisons** below
-holds what a claim rests on, and decision 0029 holds the measurement that settled
-it.
+A floor is that dispersion expressed as a delta, because a delta is what a
+report shows and a standard deviation is not directly comparable to one.
+Coverage is applied at comparison time rather than stored on a reading, since a
+floor is a claim the comparison makes; the readings only say how far their own
+units move. Where the two readings happen to agree, the arithmetic reduces to
+the familiar `sqrt(2)`; they routinely do not, and the two readings committed to
+this repository differ by up to two orders of magnitude on the same metric.
+`anthro_chess.evaluation.results` owns the arithmetic.
 
-The first two coincide for generated play, and that is worth stating plainly
-because the definitions above read as if they never could. A rollout has no
-fixed data to re-measure on — the games *are* the draw — so bootstrapping the
-generated games and re-running under another seed estimate the same quantity.
-That is why a generated-play floor is evaluation noise even though it is
-computed by a bootstrap, and why rollout metrics need no separate expensive
-characterization.
-
-They coincide only where re-running redraws the games. Greedy seats replay
-theirs, so a temperature-zero reading is the deterministic case the first bullet
-already names: another seed reproduces it exactly, and its evaluation noise is
-zero rather than small. Such a reading states a floor of zero rather than
-estimating one, and records that it was stated.
-`docs/decisions/0032-a-replayed-reading-has-no-evaluation-noise.md` owns the
-rule, what a bootstrap over those games reports instead, and why no floor at all
-would understate what is known.
+Which reading qualifies which claim is easy to conflate. Whether one run
+improved between two of its own steps is a checkpoint delta. Whether a change to
+the model, the data, or the training setup improved anything is a configuration
+change, and clearing a floor does not establish it: the two arms differ by their
+initialization seeds as well as by the change, and no floor built from a
+reading's own units can see that. **Regression Comparisons** below holds what a
+claim rests on, and decision 0029 holds the measurement that settled it.
 
 A floor that qualifies a delta must exclude anything the two sides of that delta
 share. Two checkpoints are compared against the *same fixed* human reference, so
@@ -521,23 +502,13 @@ noticeably, while at the declared bandwidth over the frozen blitz pool the
 difference was under a percent. It is excluded because it is not part of the
 question, rather than because it is always large.
 
-All four reduce to one reportable quantity: the spread of the metric across
-replicates of that noise source. A **floor** is that spread expressed as a
-delta, because a delta is what a report shows and a standard deviation is not
-directly comparable to one.
-
-A reading stores the spread and never a floor built from it. The variance of a
-difference is the sum of the two variances, so the floor of a delta is combined
-from the dispersion each of the two readings carries, each bounded first. That
-matters because the two readings of one metric do not share a spread: the two
-committed to this repository differ by up to two orders of magnitude on the same
-metric, and a floor computed inside either one assumes the other matched it.
-Where the two do agree the arithmetic reduces to the familiar `sqrt(2)`. A
-characterization is the case where they agree by construction, since its
-replicates are draws of one quantity, so a stored floor keeps that factor.
-Coverage is applied at comparison time rather than stored on a reading, because
-a floor is a claim the comparison makes; `anthro_chess.evaluation.results` owns
-the arithmetic, stored inputs, and lookup.
+Re-measuring does not always redraw. Greedy seats replay their games, so a
+temperature-zero reading is deterministic: another seed reproduces it exactly,
+and its dispersion is zero rather than small. Such a reading states a spread of
+zero rather than estimating one, and records that it was stated.
+`docs/decisions/0032-a-replayed-reading-has-no-evaluation-noise.md` owns the
+rule, what a bootstrap over those games reports instead, and why no spread at
+all would understate what is known.
 
 ### The Spread A Floor Is Built From
 
@@ -558,64 +529,21 @@ What counts as a degree of freedom is the independent replicate, not the
 number of values in hand. Bootstrap resamples are drawn from one sample, so the
 **games** are the replicates and the resample count is not; readings repeated
 inside one process share a warm allocator and a compiled kernel, so the
-**processes** are the replicates and the readings are not.
+**processes** are the replicates and re-reading inside one buys nothing.
 `docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
 counting either of the cheap numbers would buy.
 
-The bound is severe at small replicate counts, which is what the
-characterization defaults are chosen against.
+The bound is severe at small replicate counts, which is what the replicate
+defaults are chosen against. Resting a floor on two bounds rather than one does
+not weaken the confidence either carries: the floor needs only their combination
+to hold, and a bound that overshoots covers for one that undershoots.
 
-One thing the bound does not cover, and it is the larger term. The bound
-describes how well the spread *within* a characterization is known. A report
-compares readings taken later, when the machine is in a different thermal and
-contention state, and no arithmetic on the characterization's own replicates can
-reach that drift.
-
-That drift was measured rather than assumed, and it moves the result further
-than the bound does. So an execution floor is re-characterized when conditions
-have plainly moved rather than treated as a constant of the hardware, and
-whether storing one for later lookup is the right shape at all is an open
-question rather than a settled design.
-`docs/decisions/0026-conservative-dispersion-bounds.md` holds the readings.
-
-The estimators differ even though the reported quantity does not. Data-sampling
-noise is bootstrapped by resampling the **games** a run scored, since positions
+The estimators differ even though the reported quantity does not. A sampling
+spread is bootstrapped by resampling the **games** a run scored, since positions
 within one game are far from independent and resampling them would report a
-floor several times too narrow. Evaluation and training noise are read from
-repeated measurements the store already holds, which is what keeps the
-expensive kind a matter of recording several short runs rather than building a
-second harness.
-
-Noise characterizations are stored in the results store under the same
-fingerprint rules as any other measurement, so they invalidate on the same
-terms rather than lingering as stale constants. A floor characterized on a pool
-that has since been regenerated stops matching and the report says the floor is
-unknown, which is the honest answer.
-
-### Training Noise
-
-Training noise should be characterized early, while runs are short. It is the
-most valuable of the three and the only one that becomes harder to obtain over
-time: once runs are long and expensive, several repeat runs stop being
-affordable, and the project loses the ability to distinguish a small improvement
-from seed luck for the rest of its life.
-
-The floor is a property of the training configuration its replicates shared
-rather than of the pool they were scored on, and the series fingerprint carries
-nothing about the training run by design — decisions 0018 and 0021 keep it out
-so that a delta across model size stays interpretable. A training
-characterization therefore records the training identity it was measured under,
-and a report applies it only to a delta that identity describes.
-
-What that takes is not what an execution floor takes: one operand carrying the
-characterized configuration is what makes a training floor apply, where an
-execution floor needs both sides to match. A delta describing neither is
-reported as unknown, and where both operands carry characterized configurations
-the widest of the two floors binds. A reading recorded without an identity
-carries no configuration to match, and replicates that do not all share one are
-refused rather than characterized.
-`docs/decisions/0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`
-owns that rule and what the scope deliberately leaves out.
+floor several times too narrow. An execution spread is measured by running the
+benchmark again in fresh processes, because nothing inside a timing reading can
+be resampled into one.
 
 ### Execution Noise
 
@@ -626,83 +554,50 @@ say the number changed, so sub-percent jitter renders as a regression.
 
 The noise source here is the machine — scheduler contention, thermal state,
 other processes, allocator and kernel warmth — so it cannot be bootstrapped out
-of an already-measured latency. It is characterized by **measuring again**, and
-by measuring in more than one process. A reading a report compares was produced
-by its own invocation, which paid its own model load and its own lazy kernel
-compilation, so a floor built only from repeats inside one process omits the
-component most likely to dominate. Repeats within a process are still taken, and
-what they add is the answer to whether that cheaper form of replication would
-have sufficed on this device; that share is reported beside the floor rather
-than folded into it. Cold-start metrics take one reading per process, because a
-reload inside a warm process is not a second cold start.
+of an already-measured latency. It is measured by **measuring again**, in a
+fresh process each time. A reading a report compares was produced by its own
+invocation, which paid its own model load and its own lazy kernel compilation,
+so a second reading inside one process shares an allocator, a warm file cache
+and a compiled kernel with the first and cannot see the component most likely to
+dominate. One reading per process, and the process count is what the estimate
+rests on.
 
-The process count is therefore what the floor's dispersion bound rests on, and
-it is the one setting that trades measurement time for resolving power. Cutting
-it does not produce a narrower floor, only a less certain one. The default is
-set where the bound stops improving quickly enough to be worth another model
-load, and the code owns the exact value.
+**The inference benchmark does this during its own run**, and the reading it
+records carries the result as its dispersion, exactly as every other benchmark
+does. The reading being qualified is itself one of the processes. The rest run
+one after another rather than together, since they would otherwise contend for
+the device they are timing, and each is a complete run of the benchmark; they
+record nothing, because they are evidence about the machine rather than about
+the model.
+`anthro eval noise sample` is the single-process entry point the benchmark
+spawns, and `anthro_chess.evaluation.execution_noise` owns the procedure.
 
-The floor is a property of a machine and a workload rather than of a checkpoint.
-Decision 0018 deliberately keeps the machine out of an efficiency series so that
-a latency history stays continuous across a hardware change, which means the
-series fingerprint alone cannot stop one machine's floor from qualifying
-another's delta. An execution characterization therefore carries the execution
-it was measured under, and a report applies it only where that environment
-matches on both sides of the delta; anywhere else the noise is reported as
-unknown. `docs/decisions/0025-machine-scoped-execution-noise-floors.md` owns
-that rule.
+Measuring inside the run is also what keeps the answer honest over time. A
+stored floor is scoped to the machine that produced it but says nothing about
+*when*: a characterization taken on a quiet machine licensed four times as many
+false findings once the machine was hot, which is further than the dispersion
+bound moves anything. A dispersion measured beside the reading it qualifies
+cannot be applied across that drift, because it is never applied to a second
+reading at all.
 
-Nothing measured during a characterization is appended to the results store.
-The readings are evidence about the machine rather than about the model, and
-recording them would let a checkpoint's history depend on how often its noise
-was characterized. `anthro eval noise sample` takes one process's readings and
-`anthro eval noise characterize --kind execution` spreads them across processes
-and records the resulting floor;
-`anthro_chess.evaluation.execution_noise` owns the procedure.
+The process count is what the dispersion bound rests on, and it is the one
+setting that trades measurement time for resolving power. Cutting it does not
+produce a narrower floor, only a less certain one. It is now paid on every
+inference reading rather than once per machine, so it is a live cost rather than
+a fixed one; the code owns the default and the configuration overrides it.
 
-Because a data-sampling spread costs only a resampling of numbers a run already
-computed, the checkpoint evaluation runner produces its own and attaches it to
-each measurement it records. Attaching it is what lets two readings of one
-series each carry their own: a spread filed against the series would be one
-number where the comparison needs two.
+### What A Missing Floor Means
 
-The combined floor drops the covariance between two checkpoints scored on one
-frozen set, so it is wider than an estimator that keeps that term.
-`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
-records how much wider, accepts that width as the price of a bar that is always
-available and always means one thing, and supersedes the records that measured
-it.
-
-A delta is judged against the widest floor that applies to it, since a finding
-has to clear every noise source, and the report names which one that was. A
-delta inside its floor is still shown with its value, so a small regression that
-repeats across checkpoints stays visible instead of being filtered away.
-
-**A floor has to describe both operands.** Widest-of-the-two chooses between two
-descriptions of the same delta, so it needs two. Where a floor is attached to a
-measurement it belongs to that reading, and a kind one side attached and the
-other did not qualifies one operand rather than the difference — the report
-withholds it and names the kind it declined. A characterized floor is a property
-of the series, so it cannot be one-sided either.
-
-Withholding reaches the verdict, not only the note. A delta cannot be reported
-as clearing every noise source while one of them is a kind this comparison could
-not size, so such a row is unknown however comfortably it clears the floors that
-remain. A delta *within* one of them is still within it, since a delta inside
-any floor is not a finding whatever else went unmeasured.
-`docs/decisions/0036-a-one-sided-floor-does-not-qualify-a-delta.md` owns the
-rule and why nothing licenses assuming the missing side is quieter.
-
-**No floor at all is two situations, not one.** A floor may be missing because
-nobody has characterized it yet, which is work somebody could do, or because the
-metric counts something resampling cannot estimate, which is not. A metric of
-the second kind declares why in the registry, and a report renders it
+**No floor at all is two situations, not one.** A floor may be missing because a
+reading did not measure its spread, which is work somebody could do, or because
+the metric counts something resampling cannot estimate, which is not. A metric
+of the second kind declares why in the registry, and a report renders it
 `unqualifiable` rather than `unknown`. Reporting both as unknown sets a reader to
 work that cannot be done, and it is the same ambiguity as a floor rendering as
 exactly zero.
 
 That second ambiguity is why a bootstrap that could not move a quantity reports
-no floor rather than a floor of zero. What the resample observed is that *this*
+no spread rather than a spread of zero. What the resample observed is that *this*
 draw could not move the number, which is not the observation that nothing could:
 a quantity identical in every unit scored reads that way at any sample size, and
 the wider draw that would move it is exactly the work `unknown` points at. A zero
@@ -710,22 +605,19 @@ would instead clear every later delta, which is the failure a floor exists to
 prevent. The genuine zero is the *stated* one, where re-measuring replays the
 same games, and a reading records that it stated rather than estimated.
 
-That declaration rules out one estimator rather than every floor. It says
-resampling the units a reading scored cannot estimate this metric's dispersion,
-so no data-sampling floor can exist for it — but evaluation and training noise
-are read from repeated measurements instead, and either still describes such a
-metric. A report refuses only the sampling floor and judges the delta against
-any other kind it has.
+**A floor needs both operands.** A dispersion one reading measured and the other
+did not describes that operand rather than the difference, and nothing licenses
+assuming the side carrying none is the quieter, so the delta is reported as
+unknown rather than floored by half of itself.
 
-Sampling-noise estimates are also what size the evaluation inputs. A
-conservative independent-input estimate is what a benchmark is sized from before
-any checkpoint has been read, and a reading's own measured spread replaces it as
+Sampling spreads are also what size the evaluation inputs. A conservative
+independent-input estimate is what a benchmark is sized from before any
+checkpoint has been read, and a reading's own measured spread replaces it as
 soon as one exists. Either shrinks with the square root of the units behind it,
 so how many games an axis needs in order to resolve an effect of a given size is
-computable rather than guessed, and `anthro eval
-noise plan` computes it from the newest reading that measured its own spread
-over a counted sample. No benchmark-level resolution constant is declared or
-kept current for it.
+computable rather than guessed, and `anthro eval noise plan` computes it from the
+newest reading that measured its own spread over a counted sample. No
+benchmark-level resolution constant is declared or kept current for it.
 
 ## Benchmark Data Layers
 
@@ -2616,9 +2508,9 @@ including by the author of the reading — as the cost of playing a move.
 
 Both are taken from the median batch rather than the mean, so one descheduled
 batch cannot carry the reported rate. That does not narrow run-to-run spread,
-which is a property of the machine between invocations; qualifying a delta
-against that is what a characterized execution floor is for, and this benchmark
-reports readings rather than floors.
+which is a property of the machine between invocations; the benchmark measures
+that separately, by running itself again in fresh processes and reporting the
+spread across them beside each value.
 
 The depth sweep reaches the 300-ply cap the generated benchmarks play to, since
 around half a full-size ladder's games reach that cap and they are its most
@@ -2675,10 +2567,10 @@ workload change does break the line, because that genuinely is a different
 measurement.
 
 Whether a delta between two of these readings means anything is a separate
-question from whether it is comparable, and it is answered by the execution
-noise floor described above. Without one characterized on the machine that took
-both readings, a report says the noise is unknown rather than calling ordinary
-run-to-run jitter an improvement.
+question from whether it is comparable, and it is answered by the spread each
+reading measured across its own replicate processes. A reading taken at one
+replicate carries none, and a report then says the noise is unknown rather than
+calling ordinary run-to-run jitter an improvement.
 
 `anthro eval inference` records; `anthro eval report --pivot` reads.
 `anthro_chess.evaluation.inference` owns the exact metrics, defaults, and
@@ -2765,29 +2657,27 @@ rather than the committed one: a candidate arm is not project history, and an
 arm nobody adopted would otherwise become some later report's baseline.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
-because of which floors exist. Almost every floor that qualifies a checkpoint
-delta today is combined from what the two readings' own games could have moved,
-and such a floor says the delta survives a different draw of evaluation games
-rather than that the change produced it. The report says so beside the verdict:
-`cleared` means larger than benchmark noise, and never that the change caused
-it. The exception claims less rather than more: a replayed reading states a
-floor of zero, which says its games cannot be redrawn at all and therefore says
-nothing about a draw that could be. Two arms differ by their initialization
-seeds as well as by the change, so clearing either kind establishes that two
-models differ, not that the change is why. That is not a theoretical gap.
-Measured at proof scale, two arms differing only by their initialization seed
-cleared 14 of 54 floored metrics and read better on every held-out and legality
-metric; decision 0029 holds the reading.
+because of what a floor is built from. **No floor here sees training-seed
+noise.** A floor is combined from what the two readings' own units could have
+moved, and seed variance is a property of the training run rather than of the
+benchmark, so nothing a reading measures can reach it. Such a floor says the
+delta survives a different draw rather than that the change produced it. The
+report says so beside the verdict: `cleared` means larger than benchmark noise,
+and never that the change caused it. The exception claims less rather than more:
+a replayed reading states a spread of zero, which says its games cannot be
+redrawn at all and therefore says nothing about a draw that could be. Two arms
+differ by their initialization seeds as well as by the change, so clearing a
+floor establishes that two models differ, not that the change is why. That is
+not a theoretical gap. Measured at proof scale, two arms differing only by their
+initialization seed cleared 14 of 54 floored metrics and read better on every
+held-out and legality metric; decision 0029 holds the reading.
 
-A claim therefore rests on one of two things: a delta far enough outside seed
-variance that nothing else explains it, or a training floor characterized from
-arms trained at several seeds, which `uv run anthro eval noise characterize`
-already produces. Such a floor describes the training configuration its arms
-shared, records it, and is resolved only within it, so characterizing one once
-qualifies every later comparison against that same base.
-Anything narrower is reported as what it is, a delta not distinguished from seed
-variance, rather than as an improvement. A family with no floor at all can show
-that nothing else moved; it cannot carry the claim.
+A claim therefore rests on a delta far enough outside seed variance that nothing
+else explains it, or on arms read at several seeds — a deliberate, occasional
+act for a result worth its cost, rather than machinery riding on every
+comparison. Anything narrower is reported as what it is, a delta not
+distinguished from seed variance, rather than as an improvement. A family with
+no floor at all can show that nothing else moved; it cannot carry the claim.
 
 A null reading is a reading. Arms are not re-run until a number improves, and a
 delta inside its floor is a null result rather than a small win.

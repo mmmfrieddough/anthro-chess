@@ -535,7 +535,7 @@ class SeedSpread:
         # them leaves few degrees of freedom and a wide bound. That is the
         # honest reading of a spread measured this thinly, and it is another
         # reason this stays a diagnostic rather than a floor a report applies.
-        _, floor = bounded_floor(
+        floor = bounded_floor(
             stdev([value for _, value in values]),
             degrees_of_freedom=len(values) - 1,
         )

@@ -13,7 +13,8 @@
     "label": "training-blitz-30k-v4-step-00000100",
     "parameter_sha256": "da1697571bc9a83225806b0407ccb6400699343fbf89670759395d303be105dd",
     "run_id": "training-blitz-30k-v4",
-    "step": 100
+    "step": 100,
+    "training_sha256": null
   },
   "configuration": {
     "overrides": [
@@ -56,7 +57,7 @@
     "schema_sha256": "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9",
     "version": 4
   },
-  "envelope_version": 6,
+  "envelope_version": 7,
   "environment": {
     "dependencies": {
       "chess": "1.11.2",
@@ -75,7 +76,6 @@
       "dispersion": {
         "bound": 1.192626361030083,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 1.122884261205258
@@ -89,7 +89,6 @@
       "dispersion": {
         "bound": 0.05273968365777771,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.04965558590295906
@@ -103,7 +102,6 @@
       "dispersion": {
         "bound": 0.05273968365777771,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.04965558590295906
@@ -117,7 +115,6 @@
       "dispersion": {
         "bound": 0.00010193838013777933,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 9.597725357219721e-05
@@ -131,7 +128,6 @@
       "dispersion": {
         "bound": 0.0,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0
@@ -145,7 +141,6 @@
       "dispersion": {
         "bound": 0.27670632603986284,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.2605251641576412
@@ -159,7 +154,6 @@
       "dispersion": {
         "bound": 0.03679802635533265,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.034646160765833565
@@ -173,7 +167,6 @@
       "dispersion": {
         "bound": 0.03373365151514204,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.03176098365511513
@@ -187,7 +180,6 @@
       "dispersion": {
         "bound": 0.0015444400426396553,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0014541246721709031
@@ -201,7 +193,6 @@
       "dispersion": {
         "bound": 0.019441092383224525,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.01830422114676836
@@ -215,7 +206,6 @@
       "dispersion": {
         "bound": 0.20740619015893502,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.19527754392822658
@@ -229,7 +219,6 @@
       "dispersion": {
         "bound": 0.008307644224145403,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.007821831926411978
@@ -243,7 +232,6 @@
       "dispersion": {
         "bound": 0.008243770411254323,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.007761693310042124
@@ -257,7 +245,6 @@
       "dispersion": {
         "bound": 6.81989169285427e-05,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 6.421079807775084e-05
@@ -271,7 +258,6 @@
       "dispersion": {
         "bound": 0.0011945918325674365,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0011247347963998977
@@ -285,7 +271,6 @@
       "dispersion": {
         "bound": 0.0,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0
@@ -299,7 +284,6 @@
       "dispersion": {
         "bound": 0.01090054276566424,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.01026310360906945
@@ -313,7 +297,6 @@
       "dispersion": {
         "bound": 0.01090054276566424,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.01026310360906945
@@ -327,7 +310,6 @@
       "dispersion": {
         "bound": 6.60412771618194e-05,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 6.217933221839185e-05
@@ -341,7 +323,6 @@
       "dispersion": {
         "bound": 0.0,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0
@@ -355,7 +336,6 @@
       "dispersion": {
         "bound": 3.5555159842616293,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 3.3475974283704435
@@ -369,7 +349,6 @@
       "dispersion": {
         "bound": 0.039274765315028895,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.03697806561703503
@@ -383,7 +362,6 @@
       "dispersion": {
         "bound": 0.039274765315028895,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.03697806561703503
@@ -397,7 +375,6 @@
       "dispersion": {
         "bound": 0.0008415279495209946,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0007923172929577921
@@ -411,7 +388,6 @@
       "dispersion": {
         "bound": 0.0,
         "estimator": "bootstrap-over-games",
-        "kind": "data-sampling",
         "source": "bootstrap over 400 game(s) of pool view 'canonical'",
         "units": 400,
         "value": 0.0
@@ -423,5 +399,5 @@
     }
   ],
   "recorded_at": "2026-08-01T07:37:55.982882Z",
-  "result_id": "b7e4b360d4758bcb"
+  "result_id": "3f010877854c3db2"
 }

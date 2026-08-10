@@ -431,12 +431,7 @@ def test_evaluation_bootstraps_a_spread_for_every_series_it_reports(
     assert "adjudicated.material_gain_best_rank" in spread
     assert "adjudicated.material_gain_selected_rate" not in spread
     for dispersion in spread.values():
-        assert dispersion.kind == "data-sampling"
         assert dispersion.bound >= dispersion.value
-
-    # Nothing is filed against the series, so nothing can collide there when
-    # the next reading of the same series measures its own spread.
-    assert store.characterizations() == ()
 
 
 def test_a_sampled_spread_is_reproducible_and_can_be_declined(
