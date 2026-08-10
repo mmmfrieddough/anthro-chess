@@ -67,7 +67,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
 
 from pydantic import Field, model_validator
 
@@ -305,11 +304,6 @@ class NoiseCharacterization(ResultModel):
                 f"bytes; the committed summary tier caps a record at "
                 f"{MAXIMUM_SUMMARY_BYTES}"
             )
-
-    def as_record(self) -> dict[str, Any]:
-        """Return the JSON-compatible record written to the store."""
-
-        return self.model_dump(mode="json")
 
 
 class NoiseFloorIndex:
@@ -858,15 +852,15 @@ def build_characterization(
             training=training,
             floors=ordered,
         )
+        payload = record.as_record()
+        payload.pop("characterization_id", None)
+        identified = record.model_copy(
+            update={
+                "characterization_id": sha256(canonical_json(payload)).hexdigest()[:16],
+            }
+        )
     except ValueError as error:
         raise NoiseCharacterizationError(str(error)) from error
-    payload = record.model_dump(mode="json")
-    payload.pop("characterization_id", None)
-    identified = record.model_copy(
-        update={
-            "characterization_id": sha256(canonical_json(payload)).hexdigest()[:16],
-        }
-    )
     identified.verify()
     return identified
 

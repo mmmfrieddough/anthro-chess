@@ -146,7 +146,7 @@ class ResultsStore:
 
         try:
             characterization.verify()
-        except NoiseCharacterizationError as error:
+        except (NoiseCharacterizationError, ResultRecordError) as error:
             raise ResultsStoreError(str(error)) from error
 
         path = self.floors_directory / _characterization_file_name(characterization)
