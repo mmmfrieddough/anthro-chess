@@ -226,6 +226,17 @@ class _ParsedGame:
     termination: DerivedTermination | None = None
 
 
+@dataclass(frozen=True)
+class _ScreenedHeaders:
+    """What the headers gave up, once they have not ruled the game out."""
+
+    source_game_key: str
+    white_rating: _OptionalInteger
+    black_rating: _OptionalInteger
+    termination: str | None
+    termination_status: FieldStatus
+
+
 def acquire_configured_archive(
     output_directory: str | Path,
     archive: ArchiveConfig,
@@ -955,6 +966,11 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
     and only ``begin_variation`` clears — so a comment following a variation
     that contained no move belongs to no ply at all, and dropping it is what
     agrees with the tree this replaces.
+
+    A game the headers alone reject is skipped at ``end_headers``, so its
+    movetext is scanned for the end of the game rather than parsed. Nothing
+    past that point can then name a different reason: see
+    ``docs/decisions/0050-a-header-rejection-outranks-a-parse-error.md``.
     """
 
     def __init__(
@@ -976,6 +992,14 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
 
     def visit_header(self, tagname: str, tagvalue: str) -> None:
         self._headers[tagname] = tagvalue
+
+    def end_headers(self) -> chess.pgn.SkipType | None:
+        self._screened: _ScreenedHeaders | str = _screen_headers(
+            self._headers,
+            self._config,
+            self._marked_accounts,
+        )
+        return chess.pgn.SKIP if isinstance(self._screened, str) else None
 
     def visit_board(self, board: chess.Board) -> None:
         # Mainline moves are pushed onto this same board, so the first one is
@@ -1013,53 +1037,51 @@ class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):
         logger.error("%s while parsing %s", error, self._headers.get("Site", "?"))
 
     def result(self) -> _ParsedGame:
+        if isinstance(self._screened, str):
+            return _ParsedGame(None, self._screened)
+        if self._failed:
+            return _ParsedGame(None, "pgn_parse_error")
         return _parse_game(
             self._headers,
             self._moves,
             self._comments,
             self._board,
-            failed=self._failed,
+            self._screened,
             config=self._config,
-            marked_accounts=self._marked_accounts,
         )
 
 
-def _parse_game(
+def _screen_headers(
     headers: Mapping[str, str],
-    moves: Sequence[chess.Move],
-    comments: Sequence[str],
-    final_board: chess.Board | None,
-    *,
-    failed: bool,
     config: PrepareConfig,
     marked_accounts: MarkedAccounts | None,
-) -> _ParsedGame:
-    if failed:
-        return _ParsedGame(None, "pgn_parse_error")
+) -> _ScreenedHeaders | str:
+    """Read the headers, returning why they rule the game out if they do."""
+
     variant = headers.get("Variant", "Standard")
     if variant.casefold() not in {"standard", "from position"}:
-        return _ParsedGame(None, "unsupported_variant")
+        return "unsupported_variant"
     if headers.get("SetUp") == "1" or headers.get("FEN"):
-        return _ParsedGame(None, "nonstandard_initial_position")
-    termination_text, _ = _parse_text(headers.get("Termination"))
-    if termination_text == _RULES_INFRACTION_TERMINATION:
+        return "nonstandard_initial_position"
+    termination, termination_status = _parse_text(headers.get("Termination"))
+    if termination == _RULES_INFRACTION_TERMINATION:
         # Ended by the platform on a client-side report rather than played to
         # a finish, so the record is a fragment of a game rather than a
         # completed human one. Rejected for that rather than as a cheating
         # filter, which 0041 measures this label as far too narrow to serve.
-        return _ParsedGame(None, "rules_infraction")
+        return "rules_infraction"
     if config.filters.exclude_bots and _has_bot_player(headers):
-        return _ParsedGame(None, "bot_game")
+        return "bot_game"
     if (
         config.filters.event_speed is not None
         and _event_speed(headers.get("Event")) != config.filters.event_speed
     ):
-        return _ParsedGame(None, "rating_namespace_mismatch")
+        return "rating_namespace_mismatch"
     if (
         config.filters.require_rated
         and "rated" not in headers.get("Event", "").casefold()
     ):
-        return _ParsedGame(None, "unrated_game")
+        return "unrated_game"
     if marked_accounts is not None and _has_marked_player(headers, marked_accounts):
         # Every game a marked account played is rejected rather than the moves
         # that were assisted, because no method separates the two per game and
@@ -1068,18 +1090,41 @@ def _parse_game(
         # Ordered after the speed, rated, and bot filters so the manifest's
         # count is a share of the corpus being built rather than of the whole
         # archive, which is the number 0041 is checked against.
-        return _ParsedGame(None, "marked_account")
+        return "marked_account"
 
     source_game_key = _source_game_key(headers.get("Site"))
     if source_game_key is None:
-        return _ParsedGame(None, "missing_source_game_key")
+        return "missing_source_game_key"
 
     white_rating = _parse_nonnegative_integer(headers.get("WhiteElo"))
     black_rating = _parse_nonnegative_integer(headers.get("BlackElo"))
     if config.filters.require_ratings and (
         white_rating.status != _STATUS_PRESENT or black_rating.status != _STATUS_PRESENT
     ):
-        return _ParsedGame(None, "missing_or_invalid_rating")
+        return "missing_or_invalid_rating"
+    return _ScreenedHeaders(
+        source_game_key,
+        white_rating,
+        black_rating,
+        termination,
+        termination_status,
+    )
+
+
+def _parse_game(
+    headers: Mapping[str, str],
+    moves: Sequence[chess.Move],
+    comments: Sequence[str],
+    final_board: chess.Board | None,
+    screened: _ScreenedHeaders,
+    *,
+    config: PrepareConfig,
+) -> _ParsedGame:
+    source_game_key = screened.source_game_key
+    white_rating = screened.white_rating
+    black_rating = screened.black_rating
+    termination = screened.termination
+    termination_status = screened.termination_status
     time_initial, time_increment = _parse_time_control(headers.get("TimeControl"))
     if not all(moves):
         # ``parse_san`` promises a move that is legal or null and records an
@@ -1113,7 +1158,6 @@ def _parse_game(
     if result not in {"1-0", "0-1", "1/2-1/2", "*"}:
         return _ParsedGame(None, "invalid_result")
 
-    termination, termination_status = _parse_text(headers.get("Termination"))
     if final_board is None:
         return _ParsedGame(None, "pgn_parse_error")
     derived_termination = derive_termination(

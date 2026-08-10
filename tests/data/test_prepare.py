@@ -1503,3 +1503,67 @@ def test_an_illegal_mainline_move_is_a_parse_error_not_an_encoded_action() -> No
 
     assert parsed.record is None
     assert parsed.rejection == "pgn_parse_error"
+
+
+def test_a_header_rejection_outranks_an_error_in_the_movetext() -> None:
+    """The movetext of a game the headers reject is skipped, not parsed.
+
+    Reaching the same verdict by parsing it anyway would report whichever of
+    the two the movetext raised, which is the reason this changed.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _short_game(
+        site="edge", event="Casual Blitz game", moves="1. e4 e5 2. Qh4 1-0"
+    )
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is None
+    assert parsed.rejection == "unrated_game"
+
+
+def test_a_skipped_game_leaves_the_stream_where_the_next_one_starts() -> None:
+    """A batch is one handle, so the skip has to end a game where a parse would.
+
+    Comments and variations are what the skipping scanner tracks instead of
+    parsing, and getting either wrong would swallow the game after it.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _short_game(
+        site="skipped",
+        event="Casual Blitz game",
+        moves="1. e4 { good } e5 ( 1... c5 { sicilian } ) 2. Nf3 1-0",
+    ) + _short_game(site="kept")
+
+    skipped, kept = _decode_batch(text, config, None)
+
+    assert skipped.rejection == "unrated_game"
+    assert kept.record is not None
+    assert kept.record["source_game_key"] == "kept"
+
+
+def test_a_header_the_parser_itself_chokes_on_is_still_a_header_rejection() -> None:
+    """The other shape of the rule, which a real archive does not supply.
+
+    ``read_game`` builds the board from ``FEN`` before it reads a move, so an
+    unparseable one used to be reported as a parse error. Nothing in the pinned
+    export carries one, so only this says which reason such a game now gets.
+    """
+
+    from anthro_chess.data.prepare import _decode_batch
+
+    config = load_config(PrepareConfig, path=SAMPLE_CONFIG).value
+    text = _short_game(
+        site="edge", extra_headers='[SetUp "1"]\n[FEN "not a position"]\n'
+    )
+
+    (parsed,) = _decode_batch(text, config, None)
+
+    assert parsed.record is None
+    assert parsed.rejection == "nonstandard_initial_position"
