@@ -909,7 +909,10 @@ def _monthly_archives(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _selection_over(tmp_path: Path, *archives: Path) -> Path:
-    """Pin real archives by their observed digests, as a checked-in one does."""
+    """Pin real archives by their observed digests, as a checked-in one does.
+
+    Written as TOML so the selection is validated the way a real config is.
+    """
 
     entries = "\n".join(
         f"""
@@ -976,7 +979,6 @@ def test_appends_a_second_archive_to_the_corpus_the_first_built(
     assert sorted(
         path.name for path in (output / "normalized").glob("games*.parquet")
     ) == sorted(Path(shard["path"]).name for shard in shards)
-    # Corpus totals are the sum of the parts rather than a separate tally.
     assert manifest["games"]["accepted"] == sum(
         entry["games"]["accepted"] for entry in manifest["inputs"]
     )

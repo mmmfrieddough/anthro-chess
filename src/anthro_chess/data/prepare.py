@@ -120,7 +120,6 @@ class AcquisitionResult:
     reused: bool
 
 
-#: What one preparation run did to the corpus it was pointed at.
 PreparationDisposition = Literal["prepared", "already_prepared", "corpus_complete"]
 
 
@@ -158,21 +157,15 @@ class _ExistingCorpus:
 
     @property
     def accepted_games(self) -> int:
-        """Return how many games the recorded archives accepted between them."""
-
         return sum(int(entry["games"]["accepted"]) for entry in self.inputs)
 
     def entry_for(self, input_sha256: str) -> dict[str, Any] | None:
-        """Return the record of one already-prepared archive, if it is in."""
-
         return next(
             (entry for entry in self.inputs if entry["sha256"] == input_sha256),
             None,
         )
 
     def shard_paths(self, output_path: Path, input_sha256: str) -> tuple[Path, ...]:
-        """Return the shards one recorded archive contributed."""
-
         return tuple(
             output_path / shard["path"]
             for shard in self.shards
@@ -271,6 +264,10 @@ def prepare_pgn(
     prepares and deletes each in turn. An archive the manifest already records
     is left alone rather than prepared twice, which is what lets an interrupted
     pass be re-run from its beginning.
+
+    One corpus directory takes one writer at a time: two runs appending at once
+    each rewrite the manifest without the other's archive, and the loser's
+    shards are then swept as orphans.
     """
     source_path = Path(input_path)
     output_path = Path(output_directory)
@@ -441,11 +438,9 @@ def prepare_pgn(
         ) from error
 
     if accepted_games == 0 and not corpus.inputs:
-        # An archive contributing nothing to a corpus that already holds games
-        # is recorded as an empty append instead, because a pass over many
-        # archives has to be able to mark it done and move on. With nothing
-        # before it there is no corpus, and this is the misconfiguration it has
-        # always been.
+        # With no earlier archive there is no corpus for an empty append to
+        # extend, so an archive that accepts nothing is a misconfigured
+        # selection rather than a month with nothing eligible in it.
         detail = ", ".join(
             f"{reason}={count}" for reason, count in sorted(rejections.items())
         )
@@ -557,9 +552,9 @@ def prepare_pgn(
 
     recorded_paths = {output_path / shard["path"] for shard in corpus_shards}
     present_paths = set(normalized_directory.glob("games*.parquet"))
-    # One enumeration answers both directions. A manifest asserting shards that
-    # are gone is otherwise not detected until a training or freeze run reads
-    # the corpus, by which point more archives sit on top of the claim.
+    # A manifest asserting shards that are gone is otherwise not detected until
+    # a training or freeze run reads the corpus, by which point more archives
+    # sit on top of the claim.
     missing_paths = sorted(recorded_paths - present_paths)
     if missing_paths:
         raise DataPreparationError(
@@ -598,8 +593,6 @@ def prepare_pgn(
         "coverage": _corpus_coverage(inputs),
         "resolved_config": resolved_config.as_record(),
     }
-    # Atomically, because this is the only record of which archives are in and
-    # the shards it describes cannot be identified without it.
     write_text_atomically(
         manifest_path,
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -625,10 +618,8 @@ def prepare_pgn(
 def _selection_identity(config: Mapping[str, Any]) -> dict[str, object]:
     """Reduce a recorded selection to what decides what a game becomes.
 
-    Read from the config record rather than from named sections, so that a
-    selection gaining a field or a section fails closed. The data contract —
-    schema, preprocessing and vocabulary versions — is not here because
-    ``validate_manifest_compatibility`` owns it for every consumer.
+    The data contract — schema, preprocessing and vocabulary versions — is not
+    here because ``validate_manifest_compatibility`` owns it for every consumer.
     """
 
     identity: dict[str, Any] = deepcopy(dict(config))
@@ -1153,9 +1144,8 @@ def _flush_records(
         {
             "path": normalized_path.relative_to(output_path).as_posix(),
             "sha256": file_sha256(normalized_path),
-            # Named as well as recorded: the name is what keeps two archives
-            # from colliding, and the field is what a reader checks a shard's
-            # provenance against without parsing one.
+            # Recorded as well as named, so a shard's provenance can be checked
+            # without parsing its file name.
             "input_sha256": input_sha256,
             "games": len(records),
             "split_counts": {
