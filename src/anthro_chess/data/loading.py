@@ -29,6 +29,7 @@ from anthro_chess.data.schema import (
     SCHEMA_VERSION,
     NormalizedColumn,
     clock_remaining_ms,
+    row_game_id,
 )
 
 if TYPE_CHECKING:
@@ -40,7 +41,8 @@ logger = logging.getLogger(__name__)
 #: The columns a selection filters on. Reading only these keeps the pass that
 #: resolves which games to keep far cheaper than the pass that encodes them.
 _SELECTION_COLUMNS = (
-    NormalizedColumn.GAME_ID,
+    NormalizedColumn.SOURCE_ID,
+    NormalizedColumn.SOURCE_GAME_KEY,
     NormalizedColumn.WHITE_NORMALIZED_RATING,
     NormalizedColumn.BLACK_NORMALIZED_RATING,
     NormalizedColumn.TIME_INITIAL_MS,
@@ -49,7 +51,8 @@ _SELECTION_COLUMNS = (
 )
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
-    NormalizedColumn.GAME_ID,
+    NormalizedColumn.SOURCE_ID,
+    NormalizedColumn.SOURCE_GAME_KEY,
     NormalizedColumn.RULESET,
     NormalizedColumn.INITIAL_POSITION,
     NormalizedColumn.ACTION_IDS,
@@ -351,7 +354,7 @@ class SequenceDataset(Sequence[SequenceExample]):
             for row in read_normalized_rows(path, _LOADER_COLUMNS):
                 if row[NormalizedColumn.SPLIT] != split:
                     continue
-                if row[NormalizedColumn.GAME_ID] not in selected:
+                if row_game_id(row) not in selected:
                     continue
                 game = _game_from_row(row, path)
                 plies = encode_game(game, legal_actions=legal_actions)
@@ -703,7 +706,7 @@ def _resolve_selection(
                 continue
             reason = _exclusion_reason(row, selection)
             if reason is None:
-                eligible.append(row[NormalizedColumn.GAME_ID])
+                eligible.append(row_game_id(row))
             else:
                 excluded[reason] = excluded.get(reason, 0) + 1
 
@@ -815,7 +818,7 @@ def _game_from_row(row: Mapping[str, Any], path: Path) -> GameEncodingInput:
         action_ids = tuple(row[NormalizedColumn.ACTION_IDS])
         clocks = clock_remaining_ms(row)
         return GameEncodingInput(
-            game_id=row[NormalizedColumn.GAME_ID],
+            game_id=row_game_id(row),
             ruleset=row[NormalizedColumn.RULESET],
             initial_position=row[NormalizedColumn.INITIAL_POSITION],
             action_ids=action_ids,

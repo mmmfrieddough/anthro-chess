@@ -17,6 +17,7 @@ FORCED_FEN = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
 
 def test_adjudication_reports_human_model_and_rating_band_rates(
     normalized_row: Callable[..., dict[str, Any]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     row = normalized_row(
         41,
@@ -32,11 +33,11 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
         length_bucket_width=None,
         identity_sha256="a" * 64,
     )
-    key = (41, 0)
+    key = (fixture_game_id(41), 0)
     target = inputs.plies[key].target_action_id
     scores = tuple(
         ActionSetPolicy(
-            game_id=41,
+            game_id=fixture_game_id(41),
             ply_index=0,
             name=predicate.value,
             selected_action_id=target,
@@ -87,6 +88,7 @@ def test_no_realized_predicate_is_explicitly_unavailable(
 
 def test_action_sets_narrow_to_the_positions_a_reading_keeps(
     normalized_row: Callable[..., dict[str, Any]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     """A benchmark scoring a window inside longer games asks for the window.
 
@@ -114,5 +116,6 @@ def test_action_sets_narrow_to_the_positions_a_reading_keeps(
     )
     wide = action_sets(inputs)
 
-    assert set(wide) == {(43, 0), (44, 0)}
-    assert action_sets(inputs, [(44, 0)]) == {(44, 0): wide[(44, 0)]}
+    assert set(wide) == {(fixture_game_id(43), 0), (fixture_game_id(44), 0)}
+    narrowed = (fixture_game_id(44), 0)
+    assert action_sets(inputs, [narrowed]) == {narrowed: wide[narrowed]}

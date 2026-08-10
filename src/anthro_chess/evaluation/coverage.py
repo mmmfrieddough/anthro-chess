@@ -16,6 +16,7 @@ from anthro_chess.data.artifacts import DataLoadingError
 from anthro_chess.data.schema import (
     NormalizedColumn,
     clock_remaining_ms,
+    row_game_id,
 )
 from anthro_chess.evaluation.slices import position_slices
 
@@ -81,7 +82,7 @@ def pool_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 def _encoding_input(row: Mapping[str, Any]) -> GameEncodingInput:
     try:
         return GameEncodingInput(
-            game_id=int(row[NormalizedColumn.GAME_ID]),
+            game_id=row_game_id(row),
             ruleset=row[NormalizedColumn.RULESET],
             initial_position=row[NormalizedColumn.INITIAL_POSITION],
             action_ids=tuple(row[NormalizedColumn.ACTION_IDS]),

@@ -44,6 +44,7 @@ from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    derive_game_id,
     encode_clock_remaining_deltas,
     normalized_parquet_schema,
 )
@@ -177,7 +178,6 @@ def _normalized_row(
         clock_statuses.append("unavailable")
     return {
         "schema_version": SCHEMA_VERSION,
-        "game_id": game_id,
         "source_id": "fixture",
         "source_game_key": f"game{game_id}",
         "white_player_digest": account_row_digest(f"white{game_id}"),
@@ -303,6 +303,21 @@ def action_ids() -> Callable[[tuple[str, ...]], tuple[int, ...]]:
     """Return a helper converting UCI move strings into action ids."""
 
     return _action_ids
+
+
+def _fixture_game_id(index: int) -> int:
+    return derive_game_id("fixture", f"game{index}")
+
+
+@pytest.fixture
+def fixture_game_id() -> Callable[[int], int]:
+    """Return the id a fixture row of that index derives to.
+
+    The row no longer stores one, so a test naming a game derives it the way a
+    reader does rather than assuming the index is the id.
+    """
+
+    return _fixture_game_id
 
 
 @pytest.fixture
@@ -489,7 +504,8 @@ def _scored_row(game_id: int, **overrides: Any) -> dict[str, Any]:
     """Return one projected row as a benchmark would hand it to a digest."""
 
     row: dict[str, Any] = {
-        "game_id": game_id,
+        "source_id": "fixture",
+        "source_game_key": f"game{game_id}",
         "ruleset": "standard",
         "initial_position": "startpos",
         "action_ids": [1, 2, 3],

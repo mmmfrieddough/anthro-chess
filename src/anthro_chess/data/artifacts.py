@@ -204,7 +204,6 @@ def rows_at_positions(table: Any, positions: Sequence[int]) -> list[dict[str, An
 #: many of a shard's games.
 _UNIQUE_PER_ROW_COLUMNS = frozenset(
     {
-        NormalizedColumn.GAME_ID.value,
         NormalizedColumn.SOURCE_GAME_KEY.value,
     }
 )

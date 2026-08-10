@@ -57,7 +57,12 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 from anthro_chess.chess import decode_move, encode_move, is_terminal_action
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DataLoadingError, SequenceDataLoader
-from anthro_chess.data.schema import SPLIT_NAMES, NormalizedColumn, SplitName
+from anthro_chess.data.schema import (
+    SPLIT_NAMES,
+    NormalizedColumn,
+    SplitName,
+    row_game_id,
+)
 from anthro_chess.evaluation.adjudication import action_sets, merge_game_totals
 from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, SliceTable
 from anthro_chess.evaluation.checkpoint import (
@@ -422,7 +427,7 @@ def derive_arm(
         raise NoveltyBenchmarkError(f"unsupported perturbation recipe: {config.recipe}")
     return tuple(
         derived
-        for row in sorted(rows, key=lambda item: int(item[NormalizedColumn.GAME_ID]))
+        for row in sorted(rows, key=lambda item: row_game_id(item))
         if (derived := _derive_game(row, dose=dose, config=config)) is not None
     )
 
@@ -538,7 +543,7 @@ def _derive_game(
     contributing a shorter window, which would make the arms incomparable.
     """
 
-    game_id = int(row[NormalizedColumn.GAME_ID])
+    game_id = row_game_id(row)
     action_ids = [int(value) for value in row[NormalizedColumn.ACTION_IDS]]
     board = _initial_board(row)
     player = _player_color(config.seed, game_id)

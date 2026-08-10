@@ -23,6 +23,7 @@ from anthro_chess.data import (
 )
 from anthro_chess.data.schema import (
     SCHEMA_VERSION,
+    derive_game_id,
     encode_clock_remaining_deltas,
 )
 from anthro_chess.models import MoveModelBatch
@@ -65,28 +66,39 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
 
     batch = next(loader)
 
+    # Rows are ordered by game id, which no fixture controls, so each game is
+    # found by its own id rather than assumed to be at the index it was written.
+    order = [row[0] for row in batch.game_ids.tolist()]
+    full = order.index(_game_id(1))
+    padded = order.index(_game_id(2))
+
     assert batch.batch_size == 2
     assert batch.sequence_length == 3
-    assert batch.attention_mask.tolist() == [[True, True, True], [True, False, False]]
+    assert batch.attention_mask[full].tolist() == [True, True, True]
+    assert batch.attention_mask[padded].tolist() == [True, False, False]
     assert batch.action_loss_mask.tolist() == batch.attention_mask.tolist()
-    assert batch.action_targets[0].tolist() == list(
+    assert batch.action_targets[full].tolist() == list(
         _action_ids(("e2e4", "e7e5", "g1f3"))
     )
-    assert batch.action_targets[1].tolist() == [_action_ids(("d2d4",))[0], 0, 0]
+    assert batch.action_targets[padded].tolist() == [_action_ids(("d2d4",))[0], 0, 0]
     assert batch.legal_action_ids is not None
-    assert batch.legal_action_ids[1][0]
-    assert batch.legal_action_ids[1][1:] == ((), ())
-    assert batch.inputs.piece_ids[1][1].tolist() == [0] * 64
+    assert batch.legal_action_ids[padded][0]
+    assert batch.legal_action_ids[padded][1:] == ((), ())
+    assert batch.inputs.piece_ids[padded][1].tolist() == [0] * 64
     # The padded row's two trailing timesteps have no en-passant square and no
     # previous action either, so both read the row that names absence.
-    assert batch.inputs.en_passant_token[1].tolist() == [en_passant_token(None)] * 3
     assert (
-        batch.inputs.previous_action_token[1].tolist()
+        batch.inputs.en_passant_token[padded].tolist() == [en_passant_token(None)] * 3
+    )
+    assert (
+        batch.inputs.previous_action_token[padded].tolist()
         == [previous_action_token(None)] * 3
     )
-    assert batch.inputs.target_rating.values[0].tolist() == [1400, 1401, 1400]
-    assert batch.game_ids.tolist() == [[1, 1, 1], [2, 0, 0]]
-    assert batch.ply_indices.tolist() == [[0, 1, 2], [0, 0, 0]]
+    assert batch.inputs.target_rating.values[full].tolist() == [1400, 1401, 1400]
+    assert batch.game_ids.tolist()[full] == [_game_id(1)] * 3
+    assert batch.game_ids.tolist()[padded] == [_game_id(2), 0, 0]
+    assert batch.ply_indices[full].tolist() == [0, 1, 2]
+    assert batch.ply_indices[padded].tolist() == [0, 0, 0]
 
 
 def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
@@ -170,8 +182,10 @@ def test_length_buckets_keep_similarly_sized_full_games_together(
     short_batch = next(loader)
     long_batch = next(loader)
 
-    assert tuple(sum(mask) for mask in short_batch.attention_mask) == (1, 2)
-    assert tuple(sum(mask) for mask in long_batch.attention_mask) == (7, 8)
+    # Which of a bucket's two games lands first follows their ids, which no
+    # fixture controls; what the bucketing owes is that they share a batch.
+    assert sorted(sum(mask) for mask in short_batch.attention_mask) == [1, 2]
+    assert sorted(sum(mask) for mask in long_batch.attention_mask) == [7, 8]
     assert short_batch.sequence_length == 2
     assert long_batch.sequence_length == 8
 
@@ -338,7 +352,7 @@ def test_dataset_identity_covers_content_and_canonical_shard_order(
         name="changed.parquet",
     )
 
-    assert [example.game_id for example in ordered] == [1, 2]
+    assert [example.game_id for example in ordered] == [_game_id(1), _game_id(2)]
     assert ordered.identity_sha256 == reversed_input.identity_sha256
     assert (
         ordered.identity_sha256
@@ -386,7 +400,8 @@ def _row(
 ) -> dict[str, Any]:
     return {
         "schema_version": schema_version,
-        "game_id": game_id,
+        "source_id": "fixture",
+        "source_game_key": f"game{game_id}",
         "ruleset": "standard",
         "initial_position": chess.STARTING_FEN,
         "action_ids": list(_action_ids(moves)),
@@ -399,6 +414,12 @@ def _row(
         ),
         "split": "train",
     }
+
+
+def _game_id(index: int) -> int:
+    """Return the id ``_row`` of that index derives to."""
+
+    return derive_game_id("fixture", f"game{index}")
 
 
 def _action_ids(moves: tuple[str, ...]) -> tuple[int, ...]:

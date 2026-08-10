@@ -88,6 +88,7 @@ def test_freeze_selects_only_the_test_split_and_records_provenance(
 def test_manifest_records_ids_and_content_hashes_for_later_leakage_checks(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     """#29 compares these against an evaluated checkpoint's training identity."""
 
@@ -97,7 +98,9 @@ def test_manifest_records_ids_and_content_hashes_for_later_leakage_checks(
 
     record = json.loads(result.manifest_path.read_text())
     games = record["identity"]["games"]
-    assert [entry["game_id"] for entry in games] == [4, 5]
+    assert [entry["game_id"] for entry in games] == sorted(
+        (fixture_game_id(4), fixture_game_id(5))
+    )
     assert all(len(entry["content_sha256"]) == 64 for entry in games)
 
 
@@ -195,18 +198,19 @@ def test_freezing_is_reproducible(
 def test_load_pool_round_trips_and_exposes_game_level_facts(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     normalized, manifest = corpus(tmp_path)
     freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
 
     pool = load_pool(tmp_path / "pool")
 
-    assert pool.game_ids == (4, 5)
+    assert pool.game_ids == tuple(sorted((fixture_game_id(4), fixture_game_id(5))))
     by_id = {game.game_id: game for game in pool.games}
-    assert by_id[4].ply_count == 4
-    assert by_id[4].result == "0-1"
-    assert by_id[5].ply_count == 8
-    assert by_id[5].has_ratings is True
+    assert by_id[fixture_game_id(4)].ply_count == 4
+    assert by_id[fixture_game_id(4)].result == "0-1"
+    assert by_id[fixture_game_id(5)].ply_count == 8
+    assert by_id[fixture_game_id(5)].has_ratings is True
 
 
 def test_a_second_load_reuses_the_parsed_games_without_reading_again(
@@ -253,12 +257,15 @@ def test_a_pool_rewritten_in_place_is_loaded_again_rather_than_remembered(
     corpus: Callable[[Path], tuple[Path, Path]],
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     """Reuse is keyed on the artifact's checksum, not on where it sits."""
 
     normalized, manifest = corpus(tmp_path)
     freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
-    assert load_pool(tmp_path / "pool").game_ids == (4, 5)
+    assert load_pool(tmp_path / "pool").game_ids == tuple(
+        sorted((fixture_game_id(4), fixture_game_id(5)))
+    )
 
     replacement, replacement_manifest = write_corpus(
         tmp_path / "replacement",
@@ -266,7 +273,7 @@ def test_a_pool_rewritten_in_place_is_loaded_again_rather_than_remembered(
     )
     freeze_pool(_resolved(replacement, replacement_manifest), tmp_path / "pool")
 
-    assert load_pool(tmp_path / "pool").game_ids == (9,)
+    assert load_pool(tmp_path / "pool").game_ids == (fixture_game_id(9),)
 
 
 def test_load_pool_rejects_a_tampered_artifact(

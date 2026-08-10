@@ -34,7 +34,10 @@ from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     read_normalized_rows,
 )
-from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.data.schema import (
+    NormalizedColumn,
+    row_game_id,
+)
 from anthro_chess.evaluation.pool import FrozenPool
 
 LEAKAGE_CHECK_VERSION = 1
@@ -45,7 +48,8 @@ CONTENT_HASH_ALGORITHM = "content-hash-intersection-v1"
 logger = logging.getLogger(__name__)
 
 _IDENTITY_COLUMNS = (
-    NormalizedColumn.GAME_ID.value,
+    NormalizedColumn.SOURCE_ID.value,
+    NormalizedColumn.SOURCE_GAME_KEY.value,
     NormalizedColumn.SPLIT.value,
 )
 _CONTENT_COLUMNS = (
@@ -241,7 +245,7 @@ def _training_game_ids(paths: Sequence[Path], split: str) -> tuple[set[int], int
         for path in paths:
             for row in _read(path, _IDENTITY_COLUMNS):
                 if row[NormalizedColumn.SPLIT.value] == split:
-                    identifiers.add(int(row[NormalizedColumn.GAME_ID.value]))
+                    identifiers.add(row_game_id(row))
         if not identifiers:
             raise LeakageError(
                 f"the checkpoint's training corpus holds no {split} split games"

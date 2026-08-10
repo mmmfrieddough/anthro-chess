@@ -44,7 +44,11 @@ from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     read_normalized_rows,
 )
-from anthro_chess.data.schema import NormalizedColumn, SplitName
+from anthro_chess.data.schema import (
+    NormalizedColumn,
+    SplitName,
+    row_game_id,
+)
 from anthro_chess.evaluation.aggregation import SliceTable
 from anthro_chess.evaluation.policy import PositionPolicy, active_batch, score_positions
 from anthro_chess.evaluation.pool import pool_game
@@ -529,7 +533,7 @@ def _prepare_view(
         raise CadenceError(f"preview view {view.name!r} selected no games")
 
     wanted = set(selection.game_ids)
-    selected = [row for row in rows if int(row[NormalizedColumn.GAME_ID]) in wanted]
+    selected = [row for row in rows if row_game_id(row) in wanted]
     inputs = build_scoring_inputs(
         selected,
         split=split,

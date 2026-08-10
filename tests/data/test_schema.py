@@ -122,6 +122,5 @@ def test_columns_unique_to_every_row_are_not_dictionary_encoded(
     # Asserted as the whole partition rather than as the two exempt columns, so
     # a column added later cannot inherit an encoding nobody chose for it.
     assert undictionaried - boolean_columns == {
-        NormalizedColumn.GAME_ID.value,
         NormalizedColumn.SOURCE_GAME_KEY.value,
     }

@@ -35,7 +35,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
-from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.data.schema import (
+    row_game_id,
+)
 from anthro_chess.evaluation.results.metrics import (
     DataProjection,
     MetricDefinition,
@@ -145,6 +147,22 @@ def workload_digest(workload: Mapping[str, Any]) -> str:
     )
 
 
+def _projected_game_id(row: Mapping[str, Any]) -> int:
+    """Return the identity a projected row is keyed by.
+
+    Two kinds of row reach this boundary. One is a normalized corpus row, whose
+    identity the schema derives from its source and source game key. The other
+    is synthesized by a benchmark over something that is not a corpus game at
+    all — a puzzle — and carries the identity it chose. Preferring the carried
+    one leaves a benchmark's own series keyed the way it always was.
+    """
+
+    carried = row.get("game_id")
+    if carried is not None:
+        return int(carried)
+    return row_game_id(row)
+
+
 def projection_content_digest(
     rows: Iterable[Mapping[str, Any]],
     projection: DataProjection,
@@ -159,10 +177,10 @@ def projection_content_digest(
     entries: dict[int, str] = {}
     for row in rows:
         try:
-            game_id = int(row[NormalizedColumn.GAME_ID.value])
+            game_id = _projected_game_id(row)
         except KeyError:
             raise FingerprintError(
-                "projected rows must carry the normalized game id"
+                "projected rows must carry a game id or the columns deriving one"
             ) from None
         missing = tuple(column for column in projection.columns if column not in row)
         if missing:

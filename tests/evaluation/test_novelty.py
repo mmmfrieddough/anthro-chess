@@ -12,6 +12,7 @@ import pytest
 
 from anthro_chess.chess import decode_move, is_terminal_action
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
+from anthro_chess.data.schema import row_game_id
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
@@ -92,11 +93,14 @@ def _rows(normalized_row: Callable[..., dict[str, Any]]) -> list[dict[str, Any]]
             moves=LONG_LINE[:length],
             result="*",
         )
+        # The perturbation draws which colour the model plays from the game
+        # id, so these indices are chosen to span both draws: a pool scoring
+        # one side only reaches whichever predicates that side happens to meet.
         for game_id, rating, length in (
             (11, 1100, 24),
             (12, 1500, 22),
-            (13, 2100, 20),
-            (14, None, 18),
+            (15, 2100, 20),
+            (16, None, 18),
         )
     ]
 
@@ -125,6 +129,7 @@ def _perturbation(**overrides: Any) -> PerturbationConfig:
 
 def test_the_control_arm_is_the_source_game_and_the_window_is_paired(
     normalized_row: Callable[..., dict[str, Any]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     rows = _rows(normalized_row)
     config = _perturbation()
@@ -132,10 +137,12 @@ def test_the_control_arm_is_the_source_game_and_the_window_is_paired(
     control = derive_arm(rows, dose=0.0, config=config)
     perturbed = derive_arm(rows, dose=1.0, config=config)
 
-    assert {game.game_id for game in control} == {11, 12, 13, 14}
+    assert {game.game_id for game in control} == {
+        fixture_game_id(index) for index in (11, 12, 15, 16)
+    }
     by_id = {game.game_id: game for game in perturbed}
     for game in control:
-        source = next(row for row in rows if row["game_id"] == game.game_id)
+        source = next(row for row in rows if row_game_id(row) == game.game_id)
         # Dose zero replaces nothing, so the control arm's actions are the
         # human game itself over the window it measures.
         derived = game.row["action_ids"]
@@ -155,6 +162,7 @@ def test_the_control_arm_is_the_source_game_and_the_window_is_paired(
 
 def test_only_the_opponent_is_perturbed_and_divergence_is_absorbing(
     normalized_row: Callable[..., dict[str, Any]],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     rows = _rows(normalized_row)
     games = derive_arm(rows, dose=1.0, config=_perturbation())
@@ -162,7 +170,7 @@ def test_only_the_opponent_is_perturbed_and_divergence_is_absorbing(
     assert games
     departures = 0
     for game in games:
-        source = next(row for row in rows if row["game_id"] == game.game_id)
+        source = next(row for row in rows if row_game_id(row) == game.game_id)
         source_actions = list(source["action_ids"])
         board = chess.Board()
         opponent_plies_in_window = 0
@@ -256,6 +264,7 @@ def test_the_benchmark_reports_retention_against_its_own_control(
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
     training_run: Callable[..., Path],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     normalized, manifest = write_corpus(
         tmp_path / "corpus", _corpus_rows(normalized_row)
@@ -352,6 +361,7 @@ def test_predicates_and_phase_slices_reach_the_detail_tier(
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
     training_run: Callable[..., Path],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     normalized, manifest = write_corpus(
         tmp_path / "corpus", _corpus_rows(normalized_row)

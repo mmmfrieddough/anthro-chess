@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
@@ -48,7 +49,6 @@ class NormalizedColumn(StrEnum):
     """
 
     SCHEMA_VERSION = "schema_version"
-    GAME_ID = "game_id"
     SOURCE_ID = "source_id"
     SOURCE_GAME_KEY = "source_game_key"
     WHITE_PLAYER_DIGEST = "white_player_digest"
@@ -97,7 +97,6 @@ def normalized_parquet_schema() -> Schema:
         pa.schema(
             [
                 pa.field(column.SCHEMA_VERSION, pa.int16(), nullable=False),
-                pa.field(column.GAME_ID, pa.uint64(), nullable=False),
                 pa.field(column.SOURCE_ID, pa.string(), nullable=False),
                 pa.field(column.SOURCE_GAME_KEY, pa.string(), nullable=False),
                 pa.field(column.WHITE_PLAYER_DIGEST, pa.uint64()),
@@ -191,6 +190,35 @@ def encode_clock_remaining_deltas(
         else:
             stored.append(previous - value)
     return stored
+
+
+def derive_game_id(source_id: str, source_game_key: str) -> int:
+    """Return the internal identifier for one source game.
+
+    Both parts are hashed because a source game key is unique only within its
+    source, and the corpus is meant to hold several. The result is derived
+    rather than stored: it is a pure function of two columns that are, and a
+    fixed-width unsigned integer is what a batch array, a set intersection and
+    a split threshold all want, none of which a source's own key gives.
+    """
+
+    digest = sha256(f"{source_id}\0{source_game_key}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
+
+
+def row_game_id(row: Mapping[str, Any]) -> int:
+    """Return one normalized row's internal game identifier."""
+
+    return derive_game_id(
+        row[NormalizedColumn.SOURCE_ID], row[NormalizedColumn.SOURCE_GAME_KEY]
+    )
+
+
+#: What a reader must project to derive a game id.
+GAME_IDENTITY_COLUMNS: tuple[NormalizedColumn, ...] = (
+    NormalizedColumn.SOURCE_ID,
+    NormalizedColumn.SOURCE_GAME_KEY,
+)
 
 
 def clock_remaining_ms(row: Mapping[str, Any]) -> tuple[int | None, ...]:

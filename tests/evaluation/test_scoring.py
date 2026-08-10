@@ -55,6 +55,7 @@ def test_rule_labels_are_derived_only_where_a_reading_asks_for_them(
 def test_an_opening_family_is_classified_once_per_game(
     normalized_row: Callable[..., dict[str, Any]],
     monkeypatch: pytest.MonkeyPatch,
+    fixture_game_id: Callable[[int], int],
 ) -> None:
     """Every position of a game shares one label, so one replay covers them."""
 
@@ -76,9 +77,9 @@ def test_an_opening_family_is_classified_once_per_game(
     )
 
     assert replays == []
-    assert inputs.opening_family(51) == "Ruy Lopez"
-    assert inputs.opening_family(52) == "Ruy Lopez"
-    assert inputs.opening_family(51) == "Ruy Lopez"
+    assert inputs.opening_family(fixture_game_id(51)) == "Ruy Lopez"
+    assert inputs.opening_family(fixture_game_id(52)) == "Ruy Lopez"
+    assert inputs.opening_family(fixture_game_id(51)) == "Ruy Lopez"
     assert replays == ["Ruy Lopez", "Ruy Lopez"]
 
 
