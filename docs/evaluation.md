@@ -232,17 +232,18 @@ curve comparisons are smoothed against: at a neighbour-count bandwidth its size
 is the smoothing radius rather than a sample size, so it is declared by the
 benchmarks that read it and left alone by both scales.
 
-That rule has a consequence worth stating, because it looks like an omission
-otherwise: **a benchmark whose cost is a grid rather than a sample size has no
-reduction at all**, and belongs to the full sweep alone. The rating ladder is
-the case. Its cost is quadratic in its seat count, the seats are the
-measurement, and its only sample dials — seeds and openings — are already at
-their floor while it is still playing hundreds of games. Shrinking the seat
-grid instead would not merely be less precise: one joint fit places every seat
-on a single internal scale, so a ladder fitted on a different set of seats
-cannot be read against this one at all. A step declares which scales include
-it rather than being nominally reduced and still unaffordable, since a reduced
-sweep nobody can run is worse than one that says what it left out.
+**Every step runs at both scales**, so a reduced sweep answers the same
+questions a full one does and answers them less precisely. The rating ladder is
+the step that makes this cost something: it is the only head-to-head strength
+reading, its cost is quadratic in a seat count that is the measurement rather
+than a dial, and its reduction is thin enough that what it resolves is not yet
+established.
+`docs/decisions/0051-every-suite-step-declares-both-scales.md` owns why it is
+shipped qualified rather than withheld, and where that is reassessed.
+
+A step may still declare a narrower `scales` list, and a reduction no sweep
+would apply is refused rather than left standing: an override no scale applies
+reaches no schema, and a plan validates only what it applies.
 
 The suite adds no measurement of its own and registers no metric. Decision
 decomposition is the one step it cannot commit, because that family has no
@@ -533,6 +534,19 @@ inside one process share a warm allocator and a compiled kernel, so the
 `docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
 counting either of the cheap numbers would buy.
 
+Which games those are is a per-metric question. A sliced metric — a rule case,
+an opening tier, a rating band — is realized in a fraction of the games a pass
+scored, and only those carry evidence about how far it moves. Each metric's
+spread is bounded for the games that realized it and records that count, so a
+rare slice reads as the thin estimate it is rather than borrowing the whole
+pass's confidence. A metric only one game realized reports no spread at all,
+since one replicate observes none.
+
+The ladder's refit answers the same question about its own quantities. A seat's
+score rate counts the games that seat played; its fitted rating counts every
+redrawn game in the grid, because the fit that produces a rating is joint and
+every game anywhere in it moves every rating.
+
 The bound is severe at small replicate counts, which is what the replicate
 defaults are chosen against. Resting a floor on two bounds rather than one does
 not weaken the confidence either carries: the floor needs only their combination
@@ -618,6 +632,14 @@ so how many games an axis needs in order to resolve an effect of a given size is
 computable rather than guessed, and `anthro eval noise plan` computes it from the
 newest reading that measured its own spread over a counted sample. No
 benchmark-level resolution constant is declared or kept current for it.
+
+The answer is in the same units the spread was read over, so for a sliced metric
+it counts games that realize the slice rather than games in the pool. The
+command reports both, converting through the rate the reading itself observed —
+an identity where every game realizes the metric, and an order of magnitude for
+a rare rule case. A reading recorded before that count became per-metric is
+refused rather than converted, because its count answers the other question and
+nothing on the record distinguishes the two.
 
 ## Benchmark Data Layers
 
@@ -1542,11 +1564,11 @@ already groups decisions by the dials they were made under and a ladder's seats
 are exactly those groups.
 
 **A full ladder is a scheduled reading rather than a routine one.** The declared
-grid plays thousands of games per checkpoint and has run in a couple of hours per
-checkpoint at that size, so it is affordable on purpose rather than by habit: it
-is taken when a checkpoint is worth that much time, not on every checkpoint, and
-it is the one benchmark the reduced sweep leaves out entirely. Seats and their
-sample are the two things not to confuse when that cost is under discussion.
+grid plays thousands of games per checkpoint, so it is taken when a checkpoint is
+worth the time rather than on every one; a reduced sweep reads the same ladder at
+a fraction of the seeds and openings, and is the majority of what that sweep
+costs. Seats and their sample are the two things not to confuse when that cost is
+under discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
 linearly, because a round robin gives each seat one pairing per opponent — so a
 cheaper ladder is also a noisier one, on the axis the benchmark exists to

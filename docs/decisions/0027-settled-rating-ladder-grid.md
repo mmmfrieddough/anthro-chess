@@ -5,8 +5,11 @@ Date: 2026-08-02
 ## Status
 
 Accepted. Extends `0022-one-joint-rating-ladder-fit.md`. Extended by
-`0030-ladder-ply-limit-at-the-trained-bound.md`, and
-`0034-qualifying-a-rating-ladder-reading.md` settles a gap it left open.
+`0030-ladder-ply-limit-at-the-trained-bound.md`,
+`0034-qualifying-a-rating-ladder-reading.md` settles a gap it left open, and
+`0051-every-suite-step-declares-both-scales.md` withdraws the
+affordability consequence below: the reduced sweep's ladder was later measured
+in minutes rather than the hours argued from here, and the sweep now runs one.
 
 ## Context
 

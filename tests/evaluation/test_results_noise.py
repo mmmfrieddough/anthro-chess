@@ -187,6 +187,38 @@ def test_bootstrap_resamples_games_rather_than_positions(
     assert spread.estimator == BOOTSTRAP_METHOD
 
 
+@pytest.mark.parametrize("positions", [(3, 3, 3), (121, 42, 149)])
+def test_agreeing_games_are_omitted_even_where_their_rate_is_inexact(
+    move_prediction_component: Digest,
+    positions: tuple[int, ...],
+) -> None:
+    # The same omission as test_bootstrap_resamples_games_rather_than_positions,
+    # at a rate binary floating point cannot hold.
+    # Every resample recomputes the one value from differently-rounded sums, so
+    # it lands within a few ulp of itself instead of on itself, and a test for
+    # exactly zero would record a floor no comparison could fail to clear.
+    # Unequal position counts are the case that reaches several distinct
+    # quotients rather than one, so identity is not the test either.
+    rate = 0.9233579079706695
+    agreeing = tuple(
+        GameTotals(
+            game_id=game_id,
+            metrics={METRIC: MetricTotal(total=rate * count, positions=count)},
+        )
+        for game_id, count in enumerate(positions)
+    )
+
+    identical = bootstrap_dispersions(
+        agreeing,
+        component=move_prediction_component(),
+        seed=5,
+        source="agreeing games at an inexact rate",
+        resamples=200,
+    )
+
+    assert identical == {}
+
+
 def test_a_bootstrap_bound_rests_on_the_games_rather_than_the_resamples(
     move_prediction_component: Digest,
 ) -> None:
@@ -308,7 +340,45 @@ def test_a_metric_absent_from_a_game_is_still_bootstrapped(
         series_fingerprint(METRIC, component),
         series_fingerprint(OTHER_METRIC, component),
     }
-    assert dispersions[series_fingerprint(OTHER_METRIC, component)].value > 0.0
+    sliced = dispersions[series_fingerprint(OTHER_METRIC, component)]
+    pooled = dispersions[series_fingerprint(METRIC, component)]
+    assert sliced.value > 0.0
+    assert (sliced.units, pooled.units) == (2, 3)
+    assert sliced.bound == pytest.approx(
+        dispersion_bound(sliced.value, degrees_of_freedom=1)
+    )
+    assert pooled.bound == pytest.approx(
+        dispersion_bound(pooled.value, degrees_of_freedom=2)
+    )
+
+
+def test_a_metric_one_game_realized_reports_no_dispersion(
+    move_prediction_component: Digest,
+) -> None:
+    # One game is one replicate, and a single replicate observes no spread for
+    # a bound to rest on.
+    component = move_prediction_component()
+    totals = (
+        GameTotals(
+            game_id=1,
+            metrics={
+                METRIC: MetricTotal(total=3.0, positions=3),
+                OTHER_METRIC: MetricTotal(total=1.0, positions=3),
+            },
+        ),
+        GameTotals(game_id=2, metrics={METRIC: MetricTotal(total=9.0, positions=3)}),
+        GameTotals(game_id=3, metrics={METRIC: MetricTotal(total=15.0, positions=3)}),
+    )
+
+    dispersions = bootstrap_dispersions(
+        totals,
+        component=component,
+        seed=0,
+        source="one realizing game",
+        resamples=200,
+    )
+
+    assert set(dispersions) == {series_fingerprint(METRIC, component)}
 
 
 def test_sampling_noise_sizes_the_games_an_axis_needs() -> None:
