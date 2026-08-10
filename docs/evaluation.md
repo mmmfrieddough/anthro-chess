@@ -506,13 +506,11 @@ characterization.
 They coincide only where re-running redraws the games. Greedy seats replay
 theirs, so a temperature-zero reading is the deterministic case the first bullet
 already names: another seed reproduces it exactly, and its evaluation noise is
-zero rather than small. A bootstrap over those games still returns a number, and
-that number is data-sampling noise wearing an evaluation floor's label — it says
-how far a different draw of games would have landed, which two checkpoints read
-on the identical games are not exposed to. Such a reading therefore states a
-floor of zero rather than estimating one, and records that it was stated.
+zero rather than small. Such a reading states a floor of zero rather than
+estimating one, and records that it was stated.
 `docs/decisions/0032-a-replayed-reading-has-no-evaluation-noise.md` owns the
-rule and why reporting no floor at all would understate what is known.
+rule, what a bootstrap over those games reports instead, and why no floor at all
+would understate what is known.
 
 A floor that qualifies a delta must exclude anything the two sides of that delta
 share. Two checkpoints are compared against the *same fixed* human reference, so
@@ -558,19 +556,15 @@ deltas the floor covers if the spread were known exactly. **Confidence** says
 how sure the bound is that the spread is no larger than assumed. They multiply.
 
 What counts as a degree of freedom is the independent replicate, not the
-number of values in hand, and the distinction decides whether the bound means
-anything. Bootstrap resamples are drawn from one sample, so the **games** are
-the replicates and the resample count is not; readings repeated inside one
-process share a warm allocator and a compiled kernel, so the **processes** are
-the replicates and the readings are not. Counting either of the cheap numbers
-would buy apparent certainty about the spread for free, which is the failure
-the bound exists to remove. `docs/decisions/0026-conservative-dispersion-bounds.md`
-owns this rule.
+number of values in hand. Bootstrap resamples are drawn from one sample, so the
+**games** are the replicates and the resample count is not; readings repeated
+inside one process share a warm allocator and a compiled kernel, so the
+**processes** are the replicates and the readings are not.
+`docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
+counting either of the cheap numbers would buy.
 
-The bound is severe at small replicate counts and that is the honest reading:
-three or four replicates say very little about a spread. It also means adding
-replicates is the only way to narrow a floor without weakening what it claims,
-which is what the characterization defaults are chosen against.
+The bound is severe at small replicate counts, which is what the
+characterization defaults are chosen against.
 
 One thing the bound does not cover, and it is the larger term. The bound
 describes how well the spread *within* a characterization is known. A report
@@ -578,16 +572,12 @@ compares readings taken later, when the machine is in a different thermal and
 contention state, and no arithmetic on the characterization's own replicates can
 reach that drift.
 
-Measured rather than assumed: one configuration characterized and then read back
-on a quiet machine had 3.8% of its same-weights deltas clear their floors, and
-the identical configuration after an hour of sustained benchmarking had 15.9%.
-Machine state moved the result four times further than replacing the point
-estimate with its bound did, and it moved the median and mean latency series as
-much as the tail. So an execution floor is re-characterized when conditions have
-plainly moved rather than treated as a constant of the hardware, and whether
-storing one for later lookup is the right shape at all is an open question
-rather than a settled design.
-`docs/decisions/0026-conservative-dispersion-bounds.md` holds the evidence.
+That drift was measured rather than assumed, and it moves the result further
+than the bound does. So an execution floor is re-characterized when conditions
+have plainly moved rather than treated as a constant of the hardware, and
+whether storing one for later lookup is the right shape at all is an open
+question rather than a settled design.
+`docs/decisions/0026-conservative-dispersion-bounds.md` holds the readings.
 
 The estimators differ even though the reported quantity does not. Data-sampling
 noise is bootstrapped by resampling the **games** a run scored, since positions
@@ -618,19 +608,13 @@ so that a delta across model size stays interpretable. A training
 characterization therefore records the training identity it was measured under,
 and a report applies it only to a delta that identity describes.
 
-What that takes is not what an execution floor takes, because the two scopes are
-different sorts of thing. A machine is a condition a reading was taken under, so
-a delta spanning two machines is described by neither. A training configuration
-is a **null distribution** — the spread a different seed of it would have
-produced — and the question a delta asks is whether its other operand falls
-outside that spread. That is the control-arm comparison, whose two sides differ
-in configuration by construction, so requiring both to match would refuse the
-one comparison the floor exists for. One operand carrying the characterized
-configuration is therefore what makes the floor apply; a delta describing
-neither is reported as unknown, and where both operands carry characterized
-configurations the widest of the two floors binds. A reading recorded without an
-identity carries no configuration to match, and replicates that do not all share
-one are refused rather than characterized.
+What that takes is not what an execution floor takes: one operand carrying the
+characterized configuration is what makes a training floor apply, where an
+execution floor needs both sides to match. A delta describing neither is
+reported as unknown, and where both operands carry characterized configurations
+the widest of the two floors binds. A reading recorded without an identity
+carries no configuration to match, and replicates that do not all share one are
+refused rather than characterized.
 `docs/decisions/0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`
 owns that rule and what the scope deliberately leaves out.
 
@@ -683,14 +667,12 @@ each measurement it records. Attaching it is what lets two readings of one
 series each carry their own: a spread filed against the series would be one
 number where the comparison needs two.
 
-Two checkpoints scored on one frozen set share their draw, so the variance of
-their difference is smaller than the sum of the two variances by the covariance
-between them. The combined floor drops that term and is about 1.9x wider than an
-estimator that keeps it, which costs real improvements rather than inventing
-them.
+The combined floor drops the covariance between two checkpoints scored on one
+frozen set, so it is wider than an estimator that keeps that term.
 `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
-records that width as the accepted price of a bar that is always available and
-always means one thing, and supersedes the records that measured it.
+records how much wider, accepts that width as the price of a bar that is always
+available and always means one thing, and supersedes the records that measured
+it.
 
 A delta is judged against the widest floor that applies to it, since a finding
 has to clear every noise source, and the report names which one that was. A
@@ -701,10 +683,8 @@ repeats across checkpoints stays visible instead of being filtered away.
 descriptions of the same delta, so it needs two. Where a floor is attached to a
 measurement it belongs to that reading, and a kind one side attached and the
 other did not qualifies one operand rather than the difference — the report
-withholds it and names the kind it declined. Nothing says the missing side is
-quieter, and a benchmark that withholds a floor per reading is saying that side
-is not an estimate at all. A characterized floor is a property of the series, so
-it cannot be one-sided either.
+withholds it and names the kind it declined. A characterized floor is a property
+of the series, so it cannot be one-sided either.
 
 Withholding reaches the verdict, not only the note. A delta cannot be reported
 as clearing every noise source while one of them is a kind this comparison could
@@ -712,7 +692,7 @@ not size, so such a row is unknown however comfortably it clears the floors that
 remain. A delta *within* one of them is still within it, since a delta inside
 any floor is not a finding whatever else went unmeasured.
 `docs/decisions/0036-a-one-sided-floor-does-not-qualify-a-delta.md` owns the
-rule.
+rule and why nothing licenses assuming the missing side is quieter.
 
 **No floor at all is two situations, not one.** A floor may be missing because
 nobody has characterized it yet, which is work somebody could do, or because the
