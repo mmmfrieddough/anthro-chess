@@ -14,7 +14,6 @@ import math
 from collections import Counter
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -109,11 +108,6 @@ class PairedContributions(ResultModel):
             if any(not math.isfinite(value) for value in values):
                 raise ValueError(f"paired contribution {metric} values must be finite")
         return self
-
-    def as_record(self) -> dict[str, Any]:
-        """Return the JSON-compatible detail-tier record."""
-
-        return self.model_dump(mode="json")
 
 
 def paired_contributions(

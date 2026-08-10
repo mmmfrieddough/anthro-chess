@@ -403,6 +403,14 @@ def test_a_characterization_round_trips_through_the_store(
     assert store.append_characterization(characterization) == path
 
 
+def test_a_characterization_the_serializer_refuses_is_the_module_s_own_error() -> None:
+    # An execution scope carries the benchmark's declared coordinates, which
+    # nothing validates. The floors tier commits records like any other, and a
+    # refusal here would otherwise leave its command with a bare traceback.
+    with pytest.raises(NoiseCharacterizationError, match="cannot serialize"):
+        _execution_characterization(coordinates={"rate": float("nan")})
+
+
 def test_a_different_characterization_cannot_take_a_recorded_identity(
     tmp_path: Path,
     move_prediction_component: Digest,
@@ -657,7 +665,11 @@ def test_a_bound_below_the_dispersion_it_bounds_is_refused(
         )
 
 
-def _execution_scope(*, device_name: str = "fixture-laptop") -> ExecutionRecord:
+def _execution_scope(
+    *,
+    device_name: str = "fixture-laptop",
+    coordinates: Mapping[str, object] | None = None,
+) -> ExecutionRecord:
     """Return one machine's execution record for the efficiency workload."""
 
     return execution_reference(
@@ -669,6 +681,7 @@ def _execution_scope(*, device_name: str = "fixture-laptop") -> ExecutionRecord:
         platform="fixture-1.2.3",
         cpu_threads=8,
         workload={"latency_reference_plies": 40},
+        coordinates=coordinates,
     )
 
 
@@ -676,8 +689,9 @@ def _execution_characterization(
     *,
     device_name: str = "fixture-laptop",
     floor: float = 0.4,
+    coordinates: Mapping[str, object] | None = None,
 ) -> NoiseCharacterization:
-    execution = _execution_scope(device_name=device_name)
+    execution = _execution_scope(device_name=device_name, coordinates=coordinates)
     return build_characterization(
         kind="execution",
         method=PROCESS_REPLICATE_METHOD,
