@@ -31,7 +31,7 @@ from anthro_chess.machine import (
 )
 
 if TYPE_CHECKING:
-    from anthro_chess.data import PrepareConfig, SequenceDataConfig
+    from anthro_chess.data import ArchiveConfig, PrepareConfig, SequenceDataConfig
     from anthro_chess.data.census import PinnedArchive
     from anthro_chess.evaluation import (
         CheckpointEvaluationResult,
@@ -1209,10 +1209,9 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         print(f"anthro data census: {error}", file=sys.stderr)
         return 2
 
-    asked = queue[: run.accounts_asked]
     accounts_queried = census.accounts_queried + run.accounts_asked
     slots_queried = census.slots_queried + sum(
-        census.games_by_account[name] for name in asked
+        census.games_by_account[name] for name in run.asked
     )
     unanswered = census.accounts_total - accounts_queried
     if run.refused:
@@ -3480,11 +3479,27 @@ def _configured_archive_path(
             f"input path is required because the selected data configuration "
             f"pins {len(archives)} archives"
         )
-    archive = archives[0]
-    root = _data_output_path(
+    return (
+        _archive_artifact_root(resolved, archives[0], artifact_root)
+        / "raw"
+        / (archives[0].file_name)
+    )
+
+
+def _archive_artifact_root(
+    resolved: ResolvedConfig[PrepareConfig],
+    archive: ArchiveConfig,
+    artifact_root: Path | None,
+) -> Path:
+    """Return the artifact directory one of a selection's archives lives in.
+
+    An archive names its own directory when it has one so that selections can
+    share an acquired file, and falls back to the selection's.
+    """
+
+    return _data_output_path(
         artifact_root, archive.artifact_name or resolved.value.artifact_name
     )
-    return root / "raw" / archive.file_name
 
 
 def _pinned_archives(
@@ -3500,9 +3515,7 @@ def _pinned_archives(
 
     archives = []
     for archive in resolved.value.archives:
-        root = _data_output_path(
-            None, archive.artifact_name or resolved.value.artifact_name
-        )
+        root = _archive_artifact_root(resolved, archive, None)
         archives.append(
             PinnedArchive(
                 path=root / "raw" / archive.file_name,

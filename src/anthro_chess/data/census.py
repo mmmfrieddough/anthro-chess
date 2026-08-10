@@ -385,11 +385,19 @@ class CensusRun:
     ``refused`` is not a failure. A run paced at the sustainable rate ends by
     emptying the daily bucket, and a scheduler that read that as a fault would
     report one every day the census worked as intended.
+
+    ``asked`` names the accounts now answered for rather than how many, so what
+    a run added to the census is read from the run rather than re-derived from
+    how it consumed its queue.
     """
 
-    accounts_asked: int
+    asked: tuple[str, ...]
     accounts_marked: int
     refused: bool
+
+    @property
+    def accounts_asked(self) -> int:
+        return len(self.asked)
 
 
 def run_census(
@@ -430,7 +438,7 @@ def run_census(
     batches = [
         queue[start : start + batch_size] for start in range(0, len(queue), batch_size)
     ]
-    asked = 0
+    asked: list[str] = []
     marked = 0
     for index, batch in enumerate(batches, start=1):
         started = time.monotonic()
@@ -439,21 +447,24 @@ def run_census(
         except SourceExhausted:
             logger.info(
                 "The source's allowance is spent; %s account(s) asked about",
-                asked,
+                len(asked),
             )
-            return CensusRun(accounts_asked=asked, accounts_marked=marked, refused=True)
+            return CensusRun(asked=tuple(asked), accounts_marked=marked, refused=True)
         append_answers(answers_path, answers, queried_at)
-        asked += len(batch)
+        asked.extend(batch)
         marked += sum(answers.values())
         if index % 25 == 0 or index == len(batches):
             logger.info(
-                "Asked about %s/%s account(s); %s marked", asked, len(queue), marked
+                "Asked about %s/%s account(s); %s marked",
+                len(asked),
+                len(queue),
+                marked,
             )
         if index < len(batches):
             # The limiter charges per request, so the pause is the interval
             # between them rather than time added to each.
             time.sleep(max(0.0, pause - (time.monotonic() - started)))
-    return CensusRun(accounts_asked=asked, accounts_marked=marked, refused=False)
+    return CensusRun(asked=tuple(asked), accounts_marked=marked, refused=False)
 
 
 def snapshot_from_census(census: Census, *, queried_at: str) -> MarkedAccounts:
