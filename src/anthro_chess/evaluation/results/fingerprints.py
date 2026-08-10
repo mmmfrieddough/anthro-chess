@@ -302,13 +302,22 @@ def _validate_workload_component(
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-        default=_canonical_default,
-    ).encode()
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+            default=_canonical_default,
+        ).encode()
+    # A ``ValueError`` subclass, so the clause below would otherwise re-wrap
+    # what ``_canonical_default`` already refused by name.
+    except FingerprintError:
+        raise
+    except (RecursionError, TypeError, ValueError) as error:
+        # A declared workload carries settings straight from configuration, and
+        # a `--set` override can make a float one non-finite.
+        raise FingerprintError(f"cannot digest these inputs: {error}") from error
 
 
 def _canonical_digest(value: object) -> str:
