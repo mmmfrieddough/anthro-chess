@@ -1151,7 +1151,7 @@ def _prepare_workers(requested: int | None) -> int:
     if requested is not None:
         return requested
     # What this process may run on rather than what the machine holds: under a
-    # cgroup or a taskset the two disagree, and the machine's count would fork
+    # cpuset or a taskset the two disagree, and the machine's count would fork
     # a decoder per core onto a handful of them.
     affinity = getattr(os, "sched_getaffinity", None)
     cores = len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)

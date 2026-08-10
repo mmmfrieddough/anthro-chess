@@ -292,8 +292,7 @@ def prepare_pgn(
 
     ``workers`` decodes games on that many processes, and none of it reaches
     what is written: the artifact of a run on thirty processes is the artifact
-    of a run on none, byte for byte. The default is none, so a caller that
-    wants the machine has to say so — ``anthro data prepare`` does.
+    of a run on none, byte for byte.
     """
     source_path = Path(input_path)
     output_path = Path(output_directory)
@@ -468,8 +467,7 @@ def prepare_pgn(
         ) from error
     except BrokenExecutor as error:
         # A decoder killed from outside — the out-of-memory killer is the one
-        # to expect on a run this long — takes the pool down with it, and
-        # nothing below this catches a RuntimeError.
+        # to expect on a run this long — takes the pool down with it.
         raise DataPreparationError(
             f"a decoding worker died while preparing {source_path}: {error}"
         ) from error
@@ -788,7 +786,11 @@ def _read_games(pgn_file: TextIO) -> Iterator[chess.pgn.Game]:
 
 
 class _CapturingReader:
-    """Hand ``read_game`` its lines while keeping the ones it consumed."""
+    """Hand ``read_game`` its lines while keeping the ones it consumed.
+
+    ``read_game`` touches the handle only through ``readline``, which is what
+    lets this stand in for the ``TextIO`` it is cast to.
+    """
 
     def __init__(self, handle: TextIO) -> None:
         self._handle = handle
