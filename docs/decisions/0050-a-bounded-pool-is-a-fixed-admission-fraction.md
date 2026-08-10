@@ -1,4 +1,4 @@
-# 0049: A Bounded Pool Is A Fixed Admission Fraction
+# 0050: A Bounded Pool Is A Fixed Admission Fraction
 
 Date: 2026-08-10
 

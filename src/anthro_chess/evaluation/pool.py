@@ -108,7 +108,7 @@ class PoolConfig(ConfigModel):
     #: every shipped selection still does. Raising it later is a generation cut
     #: and lowering it drops games earlier generations hold, so it only ever
     #: rises — a direction nothing here can enforce.
-    #: ``docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md``
+    #: ``docs/decisions/0050-a-bounded-pool-is-a-fixed-admission-fraction.md``
     #: owns why the bound is a fraction rather than a game count.
     sample_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
     expected_game_ids_sha256: Sha256Hex | None = None
@@ -448,7 +448,7 @@ def _admission(fraction: float | None) -> Callable[[int], bool]:
 
     A fraction and not a count, so that a game is decided on its id alone and
     growth only ever adds.
-    ``docs/decisions/0049-a-bounded-pool-is-a-fixed-admission-fraction.md``
+    ``docs/decisions/0050-a-bounded-pool-is-a-fixed-admission-fraction.md``
     holds why a count cannot be made to work here.
 
     Split assignment reaches for the same arithmetic and is deliberately not
