@@ -67,11 +67,10 @@ and it is what makes "compare against a checkpoint from a year ago" a query
 rather than a task.
 
 Results are layered like the diagnostics they contain. A small summary tier is
-committed to the repository, so history is versioned with the code, metric
-movement shows up as a reviewable diff, and agents read results with ordinary
-file tools rather than through a service. Bulk diagnostics stay machine-local.
-`docs/decisions/0014-evaluation-result-storage.md` owns that split and the
-reasoning behind not adopting an experiment-tracking platform.
+committed to the repository and bulk diagnostics stay machine-local.
+`docs/decisions/0014-evaluation-result-storage.md` owns that split, what the
+committed tier buys, and the reasoning behind not adopting an
+experiment-tracking platform.
 
 Every result carries a **fingerprint** identifying the series it belongs to.
 Results with matching fingerprints are comparable; results without are not, and
@@ -287,9 +286,9 @@ selection and its label, since the checkpoint is the coordinate a cost line
 varies along, and the machine prefix of every artifact path, since the artifact
 is the same work wherever it is rooted.
 
-Read a cost delta against a characterized execution floor. A shared machine
-moves these numbers much further than a model change does, and nothing in a
-record says the machine was busy; decision 0031 carries the measurements.
+Read a cost delta against a characterized execution floor: nothing in a record
+says the machine was busy. Decision 0031 carries the measurements and what a
+cost reading is worth without one.
 
 `anthro_chess.evaluation.cost` owns the record and the workload normalization;
 `docs/decisions/0031-committed-benchmark-cost.md` owns the reasoning.
@@ -394,15 +393,13 @@ cross-validation, then freeze and declare it; changing it is a benchmark version
 bump.
 
 Because the bandwidth is a neighbour count, **the reference size is part of
-it**. The same declared count spans a wider rating range on a smaller reference,
-so shrinking the reference does not sample the curve more coarsely — it smooths
-it more heavily, until every evaluation point is estimated from the same games
-and the grid resolves fewer points than it plots. The reference is therefore
-declared at a size the grid can resolve, is neither shrunk by a reduced sweep nor
-left uncapped at full scale, and joins the declared workload so two readings
-smoothed differently cannot share a series.
+it**: shrinking the reference smooths the curve more heavily rather than
+sampling it more coarsely. The reference is therefore declared at a size the
+grid can resolve, is neither shrunk by a reduced sweep nor left uncapped at full
+scale, and joins the declared workload so two readings smoothed differently
+cannot share a series.
 `docs/decisions/0037-the-human-reference-is-bandwidth-not-sample-size.md` owns
-that rule.
+that rule and the measurements behind it.
 
 Report the effective local sample size alongside the curve, so a difference
 where the human reference is thin is not read as the same strength of claim as
@@ -506,13 +503,11 @@ characterization.
 They coincide only where re-running redraws the games. Greedy seats replay
 theirs, so a temperature-zero reading is the deterministic case the first bullet
 already names: another seed reproduces it exactly, and its evaluation noise is
-zero rather than small. A bootstrap over those games still returns a number, and
-that number is data-sampling noise wearing an evaluation floor's label — it says
-how far a different draw of games would have landed, which two checkpoints read
-on the identical games are not exposed to. Such a reading therefore states a
-floor of zero rather than estimating one, and records that it was stated.
+zero rather than small. Such a reading states a floor of zero rather than
+estimating one, and records that it was stated.
 `docs/decisions/0032-a-replayed-reading-has-no-evaluation-noise.md` owns the
-rule and why reporting no floor at all would understate what is known.
+rule, what a bootstrap over those games reports instead, and why no floor at all
+would understate what is known.
 
 A floor that qualifies a delta must exclude anything the two sides of that delta
 share. Two checkpoints are compared against the *same fixed* human reference, so
@@ -558,19 +553,15 @@ deltas the floor covers if the spread were known exactly. **Confidence** says
 how sure the bound is that the spread is no larger than assumed. They multiply.
 
 What counts as a degree of freedom is the independent replicate, not the
-number of values in hand, and the distinction decides whether the bound means
-anything. Bootstrap resamples are drawn from one sample, so the **games** are
-the replicates and the resample count is not; readings repeated inside one
-process share a warm allocator and a compiled kernel, so the **processes** are
-the replicates and the readings are not. Counting either of the cheap numbers
-would buy apparent certainty about the spread for free, which is the failure
-the bound exists to remove. `docs/decisions/0026-conservative-dispersion-bounds.md`
-owns this rule.
+number of values in hand. Bootstrap resamples are drawn from one sample, so the
+**games** are the replicates and the resample count is not; readings repeated
+inside one process share a warm allocator and a compiled kernel, so the
+**processes** are the replicates and the readings are not.
+`docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
+counting either of the cheap numbers would buy.
 
-The bound is severe at small replicate counts and that is the honest reading:
-three or four replicates say very little about a spread. It also means adding
-replicates is the only way to narrow a floor without weakening what it claims,
-which is what the characterization defaults are chosen against.
+The bound is severe at small replicate counts, which is what the
+characterization defaults are chosen against.
 
 One thing the bound does not cover, and it is the larger term. The bound
 describes how well the spread *within* a characterization is known. A report
@@ -578,16 +569,12 @@ compares readings taken later, when the machine is in a different thermal and
 contention state, and no arithmetic on the characterization's own replicates can
 reach that drift.
 
-Measured rather than assumed: one configuration characterized and then read back
-on a quiet machine had 3.8% of its same-weights deltas clear their floors, and
-the identical configuration after an hour of sustained benchmarking had 15.9%.
-Machine state moved the result four times further than replacing the point
-estimate with its bound did, and it moved the median and mean latency series as
-much as the tail. So an execution floor is re-characterized when conditions have
-plainly moved rather than treated as a constant of the hardware, and whether
-storing one for later lookup is the right shape at all is an open question
-rather than a settled design.
-`docs/decisions/0026-conservative-dispersion-bounds.md` holds the evidence.
+That drift was measured rather than assumed, and it moves the result further
+than the bound does. So an execution floor is re-characterized when conditions
+have plainly moved rather than treated as a constant of the hardware, and
+whether storing one for later lookup is the right shape at all is an open
+question rather than a settled design.
+`docs/decisions/0026-conservative-dispersion-bounds.md` holds the readings.
 
 The estimators differ even though the reported quantity does not. Data-sampling
 noise is bootstrapped by resampling the **games** a run scored, since positions
@@ -618,19 +605,13 @@ so that a delta across model size stays interpretable. A training
 characterization therefore records the training identity it was measured under,
 and a report applies it only to a delta that identity describes.
 
-What that takes is not what an execution floor takes, because the two scopes are
-different sorts of thing. A machine is a condition a reading was taken under, so
-a delta spanning two machines is described by neither. A training configuration
-is a **null distribution** — the spread a different seed of it would have
-produced — and the question a delta asks is whether its other operand falls
-outside that spread. That is the control-arm comparison, whose two sides differ
-in configuration by construction, so requiring both to match would refuse the
-one comparison the floor exists for. One operand carrying the characterized
-configuration is therefore what makes the floor apply; a delta describing
-neither is reported as unknown, and where both operands carry characterized
-configurations the widest of the two floors binds. A reading recorded without an
-identity carries no configuration to match, and replicates that do not all share
-one are refused rather than characterized.
+What that takes is not what an execution floor takes: one operand carrying the
+characterized configuration is what makes a training floor apply, where an
+execution floor needs both sides to match. A delta describing neither is
+reported as unknown, and where both operands carry characterized configurations
+the widest of the two floors binds. A reading recorded without an identity
+carries no configuration to match, and replicates that do not all share one are
+refused rather than characterized.
 `docs/decisions/0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`
 owns that rule and what the scope deliberately leaves out.
 
@@ -683,14 +664,12 @@ each measurement it records. Attaching it is what lets two readings of one
 series each carry their own: a spread filed against the series would be one
 number where the comparison needs two.
 
-Two checkpoints scored on one frozen set share their draw, so the variance of
-their difference is smaller than the sum of the two variances by the covariance
-between them. The combined floor drops that term and is about 1.9x wider than an
-estimator that keeps it, which costs real improvements rather than inventing
-them.
+The combined floor drops the covariance between two checkpoints scored on one
+frozen set, so it is wider than an estimator that keeps that term.
 `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
-records that width as the accepted price of a bar that is always available and
-always means one thing, and supersedes the records that measured it.
+records how much wider, accepts that width as the price of a bar that is always
+available and always means one thing, and supersedes the records that measured
+it.
 
 A delta is judged against the widest floor that applies to it, since a finding
 has to clear every noise source, and the report names which one that was. A
@@ -701,10 +680,8 @@ repeats across checkpoints stays visible instead of being filtered away.
 descriptions of the same delta, so it needs two. Where a floor is attached to a
 measurement it belongs to that reading, and a kind one side attached and the
 other did not qualifies one operand rather than the difference — the report
-withholds it and names the kind it declined. Nothing says the missing side is
-quieter, and a benchmark that withholds a floor per reading is saying that side
-is not an estimate at all. A characterized floor is a property of the series, so
-it cannot be one-sided either.
+withholds it and names the kind it declined. A characterized floor is a property
+of the series, so it cannot be one-sided either.
 
 Withholding reaches the verdict, not only the note. A delta cannot be reported
 as clearing every noise source while one of them is a kind this comparison could
@@ -712,7 +689,7 @@ not size, so such a row is unknown however comfortably it clears the floors that
 remain. A delta *within* one of them is still within it, since a delta inside
 any floor is not a finding whatever else went unmeasured.
 `docs/decisions/0036-a-one-sided-floor-does-not-qualify-a-delta.md` owns the
-rule.
+rule and why nothing licenses assuming the missing side is quieter.
 
 **No floor at all is two situations, not one.** A floor may be missing because
 nobody has characterized it yet, which is work somebody could do, or because the
@@ -805,10 +782,8 @@ is cut, so the new generation overlaps the previous one and a shift at the seam
 is attributable to the pool rather than mistaken for a model regression.
 
 Comparing checkpoints on the pool applies selection pressure to it over time.
-That is accepted rather than designed away, and is why the pool is drawn from a
-partition the training loop never consumes. Over a long project the pressure on
-a fixed core is more than mild, which is the second reason to keep the growing
-current view alongside it.
+That is accepted rather than designed away, and is the second reason to keep the
+growing current view alongside the fixed core.
 
 See `docs/decisions/0011-held-out-test-partition.md`,
 `docs/decisions/0012-derived-evaluation-views.md`, and
@@ -1481,12 +1456,7 @@ reader to infer from differing sample sizes.
 **Retention is paired on position**, and this is not a refinement. A perturbed
 arm scores a subset of the control's positions, so reading its mean against the
 control's mean over everything reports the composition difference as a novelty
-effect. On a shakedown reading the artifact inverted the answer at every
-checkpoint measured: legality appeared to *improve* under perturbation, by three
-to ten percent depending on how far the checkpoint had trained. Restricting the
-control to the plies the arm actually reached moved the same readings to at or
-just below one, which is the honest result. Every retention here reads the
-control over the arm's own positions.
+effect. Every retention here reads the control over the arm's own positions.
 
 The material-gain probe is not a private criterion here. It is a heuristic entry
 in the shared predicate registry, so the same pass scores it on every arm and it
@@ -1494,7 +1464,8 @@ carries a human reference at dose zero, which is the reporting rule heuristic
 predicates require.
 
 `docs/decisions/0024-one-sided-perturbation-derived-novelty.md` owns the
-derivation contract and why the alternatives were rejected.
+derivation contract, the shakedown reading where unpaired retention inverted the
+answer, and why the alternatives were rejected.
 
 ## Rating Calibration
 
@@ -1608,50 +1579,34 @@ game at all: a game that reaches the ply limit has no result and informs no
 comparison, so it is counted rather than adjudicated into a draw, and a suite
 where nothing finished fails loudly as a generation problem.
 
-**Every number carries what the reading can resolve.** A flat transfer and a
-sample too thin to see one in are the same output without that, which is the
-distinction the first full-size reading could not draw. Nothing here is a
-per-game additive contribution the suite's data-sampling bootstrap could
-resample, and two checkpoints generate their own games so there is no shared
-sample to pair on either, so the ladder estimates its own floor a third way: it
-redraws the games each pairing played, refits, and reads the spread of
-everything one fit yields. Ordering, slope, span, ladder error and both
-temperature responses are functions of the fitted ratings, so they are reached
-by the reduction rather than by propagating a standard error through it — which
-would not work for an ordering, since a step function has no derivative to
-propagate through.
+**Every number carries what the reading can resolve.** The ladder estimates its
+own floor a third way: it redraws the games each pairing played, refits, and
+reads the spread of everything one fit yields, so ordering, slope, span, ladder
+error and both temperature responses are reached by the reduction rather than by
+propagating a standard error through it.
 
 The floor is evaluation noise for the reason generated play always is, and it
-travels on the measurement rather than being characterized against the series,
-because a ladder's sample size is deliberately outside its identity and a floor
-looked up beside a reading of a different size would be wrong by the difference.
+travels on the measurement rather than being characterized against the series.
 Pairings whose seats are all greedy replay rather than redraw and are held
-fixed, so a ladder is qualified against the games that would actually have
-differed, and one whose every seat is greedy states a floor of zero rather than
+fixed, and one whose every seat is greedy states a floor of zero rather than
 estimating one.
 
 Two situations are treated apart from the rest. A number the redraw could not
 move carries no floor and the reading names it: a seat that scored nothing or
 scored everything has no finite fitted rating and reports the declared spread
-instead, and a step function that saturates cannot be resampled either, so a
-floor of zero from a bootstrap would read as perfect resolution rather than as
-the exact statement a replayed ladder makes. The error profile beside each seat
-is a mean over decisions rather than an output of the fit, so the refit does not
-reach it and its noise reports as unknown — a floor somebody could still
-produce, rather than one that cannot exist.
-`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns all of this.
+instead, and a saturated step function cannot be resampled either. The error
+profile beside each seat is a mean over decisions rather than an output of the
+fit, so the refit does not reach it and its noise reports as unknown — a floor
+somebody could still produce, rather than one that cannot exist.
+`docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns all of this,
+including why refitting beats propagating and what the degenerate readings cost.
 
 The draw is over a pairing's games without regard to which of the frozen
-openings each came from. Two checkpoints are read on the same openings, so a
-spread between them would be common-mode and the shared-component rule above
-would bar it from the floor. Measured, there is none to bar, and stratifying the
-draw by opening and colour would leave every floor narrower than the true
-run-to-run spread rather than wider, because a stratum holds few enough games
-that drawing inside one understates its own spread by more than the openings
-contribute.
+openings each came from. Stratifying by opening and colour would leave every
+floor narrower than the true run-to-run spread rather than wider.
 `docs/decisions/0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md`
-holds that measurement, what it says for the curve family, and what would
-reopen it.
+holds that measurement, why the openings' own contribution is not there to
+remove, what it says for the curve family, and what would reopen it.
 
 **Read the unfinished count as a reading, not as overhead.** About half a
 full-size ladder's games reach the limit, and they are its most expensive games,
@@ -1747,15 +1702,12 @@ published puzzle set fixes the scale externally, so checkpoints separated by a
 year were measured against the same thing. It is also the one benchmark whose
 inputs are immune to pool generation cuts, needing no re-baselining at a seam.
 
-The fixed yardstick is the selected rows, not the source they are cut from.
-Upstream publishes puzzles at a single rolling URL with no dated snapshot
-beside it and no history, so a pinned source digest stops being fetchable the
-moment upstream regenerates — which it did three days after the first pin was
-taken. The selection is therefore vendored in the repository and the build reads
-it rather than the archive, so the pinned identity stays reachable on a machine
-that has never downloaded anything.
+The fixed yardstick is the selected rows, not the source they are cut from. The
+selection is vendored in the repository and the build reads it rather than the
+archive, so the pinned identity stays reachable on a machine that has never
+downloaded anything.
 `docs/decisions/0044-the-puzzle-selection-is-vendored-not-refetched.md` says why
-that boundary moved.
+that boundary moved and how long the first pin survived upstream.
 
 Re-pinning to whatever upstream now serves selects different puzzles and so
 changes both digests and the set identity. That is free only while no puzzle
@@ -2768,11 +2720,10 @@ The comparison above watches the project's own lineage. This one attributes a
 change: a change that decides what a training run learns is read as a delta
 between two **arms**, a control trained without the change and a treatment
 trained with it, identical in everything else. The control is what makes the
-delta attributable. The most recent recorded reading is not one, because it came
-from a run whose corpus, step budget, machine, and code have all moved since,
-and a delta against it confounds the change with everything else in between.
-`docs/decisions/0029-model-change-control-arm.md` owns why the control is
-required rather than recommended, what it costs, and what it still does not buy.
+delta attributable. The most recent recorded reading is not one.
+`docs/decisions/0029-model-change-control-arm.md` owns why it is not, why the
+control is required rather than recommended, what it costs, and what it still
+does not buy.
 
 Both arms are read the same way — the default reduced sweep at the same
 checkpoint step, on one machine — and the claim is written down before either
