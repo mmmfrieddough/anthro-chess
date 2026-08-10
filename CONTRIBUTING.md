@@ -180,6 +180,11 @@ accounts. `anthro data census` counts an archive nothing has prepared, and an
 archive whose preparation stopped at `filters.maximum_games` before the end —
 those are the only two cases that need the file back.
 
+A run asks first and counts afterwards, because the day's allowance does not
+roll over while hours of counting can wait a day. So a newly acquired archive
+joins the queue on the run after the one that counted it, and only the very
+first run — with nothing counted to ask about — counts before it asks.
+
 Set `LICHESS_TOKEN` to a personal access token to double the day's allowance:
 the limit is per address and charges an authenticated caller half. The endpoint
 needs no scope, so generate one with none. It is a credential, so it belongs in

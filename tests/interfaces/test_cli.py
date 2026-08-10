@@ -484,6 +484,47 @@ def test_data_census_keeps_asking_about_an_archive_that_was_reclaimed(
     )
 
 
+def test_data_census_spends_the_allowance_before_it_counts_a_new_archive(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A day's allowance does not roll over; hours of counting can wait."""
+
+    config = _census_fixture(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+        asked.extend(batch)
+        return [{"id": name} for name in batch]
+
+    monkeypatch.setattr("anthro_chess.data.census._post_usernames", fake_post)
+    command = [
+        "data",
+        "census",
+        "--config",
+        str(config),
+        "--pause-seconds",
+        "0",
+        "--workers",
+        "1",
+    ]
+    counts = tmp_path / "datasets/month-2/census/2.pgn.zst.accounts.tsv"
+
+    # Counting comes first only where there is nothing to ask about yet.
+    assert main([*command, "--accounts", "1"]) == 0
+    assert asked == ["busy"]
+    capsys.readouterr()
+
+    # A newly acquired archive waits behind the day's asking rather than in
+    # front of it, because the allowance is what does not roll over.
+    counts.unlink()
+    assert main([*command, "--accounts", "1"]) == 0
+
+    assert asked == ["busy", "middling"]
+    assert counts.is_file()
+
+
 def test_data_census_asks_the_busiest_accounts_first_and_stores_every_answer(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

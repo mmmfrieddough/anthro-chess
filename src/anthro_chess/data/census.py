@@ -309,6 +309,17 @@ def account_games(archive: PinnedArchive) -> ArchiveAccounts:
     return counted
 
 
+def counted_archives(archives: Sequence[PinnedArchive]) -> list[PinnedArchive]:
+    """Return the archives whose counts stand as they are.
+
+    What a run can ask about is decided from these rather than from what it
+    could count, so a day's allowance is spent before a backlog of counting
+    rather than behind it.
+    """
+
+    return [archive for archive in archives if _counts_are_current(archive)]
+
+
 def refresh_archive_counts(
     archives: Sequence[PinnedArchive],
     *,

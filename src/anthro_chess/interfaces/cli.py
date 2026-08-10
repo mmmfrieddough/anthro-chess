@@ -1168,6 +1168,7 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
     from anthro_chess.data.census import (
         LICHESS_USERS_BATCH,
         CensusError,
+        counted_archives,
         daily_account_allowance,
         read_census,
         refresh_archive_counts,
@@ -1184,20 +1185,22 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         if arguments.accounts is not None and arguments.accounts < 1:
             raise ConfigError("--accounts asks about at least one account")
         pinned = _pinned_archives(resolved)
-        refresh_archive_counts(
-            [archive for archive in pinned if archive.path.is_file()],
-            workers=arguments.workers,
-        )
         # An archive's counts outlive the archive, so reclaiming a raw file once
         # it is prepared costs the census nothing. Selecting on the raw file
         # instead drops its accounts out of the queue without a word, and the
         # snapshot would claim archives the census had stopped asking about.
-        counted = [archive for archive in pinned if archive.counts_path.is_file()]
-        if not counted:
+        counted = counted_archives(pinned)
+        countable = [archive for archive in pinned if archive.path.is_file()]
+        if not counted and not countable:
             raise ConfigError(
-                "none of this selection's archives have been counted, and none "
-                "are on disk to count; acquire one first"
+                "none of this selection's archives are counted or on disk to "
+                "count; acquire one first"
             )
+        if not counted:
+            # Asking comes before counting below, which it cannot do on the one
+            # run that has nothing counted to ask about.
+            refresh_archive_counts(countable, workers=arguments.workers)
+            counted = counted_archives(pinned)
         for archive in pinned:
             if archive not in counted:
                 logger.warning(
@@ -1231,6 +1234,8 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
     unanswered = census.accounts_total - accounts_queried
     if run.refused:
         outcome = "The source's allowance is spent."
+    elif not census.accounts_total:
+        outcome = "No archive is counted yet, so this run counts rather than asks."
     elif not unanswered:
         outcome = "Every account in these archives has been asked about."
     elif arguments.accounts is None:
@@ -1247,6 +1252,15 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         f"{_share(slots_queried, census.slots_total)} of player-slots, over "
         f"{len(census.archives)} of {len(pinned)} pinned archive(s)."
     )
+
+    # Counting last. The day's allowance does not roll over and a count of a
+    # newly acquired archive is hours, so a run that counted first would spend
+    # the scarce thing only if it survived the cheap one.
+    try:
+        refresh_archive_counts(countable, workers=arguments.workers)
+    except (DataLoadingError, CensusError) as error:
+        print(f"anthro data census: {error}", file=sys.stderr)
+        return 2
     return 0
 
 
