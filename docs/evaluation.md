@@ -238,7 +238,7 @@ the step that makes this cost something: it is the only head-to-head strength
 reading, its cost is quadratic in a seat count that is the measurement rather
 than a dial, and its reduction is thin enough that what it resolves is not yet
 established.
-`docs/decisions/0050-every-suite-step-declares-both-scales.md` owns why it is
+`docs/decisions/0051-every-suite-step-declares-both-scales.md` owns why it is
 shipped qualified rather than withheld, and where that is reassessed.
 
 A step may still declare a narrower `scales` list, and a reduction no sweep
