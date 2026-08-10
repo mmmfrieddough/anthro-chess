@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -43,29 +44,30 @@ from anthro_chess.data.artifacts import (
 #: Bulk account lookup. One request answers for many accounts, which is what
 #: makes covering a whole archive a matter of hours rather than weeks.
 LICHESS_USERS_ENDPOINT = "https://lichess.org/api/users"
-#: The endpoint's documented maximum names per request.
+#: The endpoint's documented maximum names per request. Names past it are
+#: dropped rather than refused, so a larger batch loses accounts silently.
 LICHESS_USERS_BATCH = 300
-#: Covering an archive takes hundreds of requests, so a refusal partway through
-#: is ordinary rather than exceptional and waiting one out belongs here rather
-#: than in whatever invokes the command.
-#:
-#: The length is chosen rather than measured, on thin evidence: a refusal was
-#: once cleared by five minutes of silence and never by one minute, and asking
-#: again sooner than that appeared to renew it rather than wait it out.
-_REFUSAL_WAIT = 600.0
-_REFUSAL_ATTEMPTS = 5
-#: Between batches. The source documents no budget for this endpoint and
-#: serves no ``Retry-After``, so this is chosen rather than derived, and the
-#: choice is deliberately slow. What covering one archive established: a
-#: refusal is a burst allowance running out rather than a rate being exceeded,
-#: faster pauses spend it sooner and buy a long wait instead of throughput, and
-#: a refusal compounds — once enough of them accumulate, pauses that had been
-#: working are refused too. Nothing here was ever shown sustainable across
-#: hundreds of batches, because the accumulated penalty spoiled every later
-#: measurement. So this errs well past anything observed to fail rather than
-#: near the fastest thing observed to work: a whole archive is a few hours
-#: either way, and the alternative cost a day. Lower it with evidence.
-_DEFAULT_PAUSE = 10.0
+#: An access token for the source, which buys nothing but a larger allowance:
+#: the endpoint needs no scope, so a token with none is enough. It is read from
+#: the environment rather than any checked-in file because it is a credential.
+LICHESS_TOKEN_VARIABLE = "LICHESS_TOKEN"
+#: The source's own limiter, transcribed from where it enforces it rather than
+#: inferred from refusals: ``lichess-org/lila``, ``Limiters.scala`` (the
+#: ``apiUsers`` composite) and ``Api.scala`` (``usersByIds``). It charges the
+#: calling address against a burst bucket and a daily one at once, and each
+#: request costs ``len(batch) // divisor`` credits. Re-read those two files
+#: before trusting these numbers again. Decision record 0047 owns the daily
+#: ceiling and why the pace is derived rather than tuned.
+_BURST_CREDITS = 2_000
+_BURST_WINDOW_SECONDS = 600.0
+#: What a token is worth: it halves the cost of every request.
+_ANONYMOUS_DIVISOR = 3
+_AUTHENTICATED_DIVISOR = 6
+#: A refusal is a bucket emptying, and the burst one refills over the window
+#: above, so one wait clears it. A second refusal is the daily bucket or
+#: something else entirely, and neither is waited out within a run. Stopping is
+#: cheap because progress is checkpointed, so the next run resumes.
+_REFUSAL_ATTEMPTS = 2
 _PLAYER_TAGS = ('[White "', '[Black "')
 #: Both player tags are the same width, so the name starts at a fixed offset.
 _PLAYER_TAG_LENGTH = len(_PLAYER_TAGS[0])
@@ -299,6 +301,18 @@ def scan_archive_accounts(archive_path: str | Path) -> list[str]:
     return sorted(accounts)
 
 
+def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
+    """Return the shortest pause between batches the burst allowance sustains.
+
+    Only the burst bucket is paced against. Nothing here spends the daily one
+    slowly enough to matter, so a long enough run ends by exhausting it.
+    """
+
+    divisor = _AUTHENTICATED_DIVISOR if authenticated else _ANONYMOUS_DIVISOR
+    credits = max(batch_size // divisor, 1)
+    return _BURST_WINDOW_SECONDS * credits / _BURST_CREDITS
+
+
 def query_marked_accounts(
     usernames: Sequence[str],
     *,
@@ -319,9 +333,26 @@ def query_marked_accounts(
     attempt was.
     """
 
-    pause = _DEFAULT_PAUSE if pause_seconds is None else pause_seconds
+    if batch_size > LICHESS_USERS_BATCH:
+        raise MarkedAccountError(
+            f"a batch of {batch_size} exceeds the {LICHESS_USERS_BATCH} the source "
+            "answers for; it drops the excess silently, and the resume file would "
+            "record the dropped accounts as asked about"
+        )
+    token = os.environ.get(LICHESS_TOKEN_VARIABLE, "").strip() or None
+    pause = (
+        sustainable_pause(batch_size, authenticated=token is not None)
+        if pause_seconds is None
+        else pause_seconds
+    )
     progress_path = None if resume_path is None else Path(resume_path)
     fingerprint = _usernames_fingerprint(usernames)
+    logger.info(
+        "Querying %s, one batch of %s every %.1fs",
+        "as an authenticated caller" if token else "anonymously",
+        batch_size,
+        pause,
+    )
     marked, completed = _load_progress(progress_path, fingerprint)
     if completed:
         logger.info(
@@ -335,7 +366,8 @@ def query_marked_accounts(
         for start in range(0, len(remaining), batch_size)
     ]
     for index, batch in enumerate(batches, start=1):
-        for record in _post_usernames(batch):
+        started = time.monotonic()
+        for record in _post_usernames(batch, token):
             if record.get("tosViolation"):
                 name = record.get("username") or record.get("id")
                 if isinstance(name, str):
@@ -350,7 +382,9 @@ def query_marked_accounts(
                 len(marked),
             )
         if index < len(batches):
-            time.sleep(pause)
+            # The limiter charges per request, so the pause is the interval
+            # between them rather than time added to each.
+            time.sleep(max(0.0, pause - (time.monotonic() - started)))
     return marked
 
 
@@ -400,12 +434,15 @@ def _save_progress(
     )
 
 
-def _post_usernames(batch: list[str]) -> list[dict[str, object]]:
+def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    headers = {"User-Agent": SOURCE_USER_AGENT}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
     request = Request(
         LICHESS_USERS_ENDPOINT,
         data=",".join(batch).encode(),
         method="POST",
-        headers={"User-Agent": SOURCE_USER_AGENT},
+        headers=headers,
     )
     for attempt in range(1, _REFUSAL_ATTEMPTS + 1):
         try:
@@ -419,19 +456,20 @@ def _post_usernames(batch: list[str]) -> list[dict[str, object]]:
                 ) from error
             if attempt == _REFUSAL_ATTEMPTS:
                 raise MarkedAccountError(
-                    f"the source is still rate limiting after "
-                    f"{_REFUSAL_ATTEMPTS} waits; leave it alone for a while and "
-                    "run the command again. Progress is checkpointed, so a "
-                    "later run resumes rather than repeating what is done"
+                    "the source is still refusing after a full burst window, so "
+                    "what is exhausted is the daily allowance or something this "
+                    "run cannot see; try again tomorrow. Progress is "
+                    "checkpointed, so a later run resumes rather than repeating "
+                    "what is done"
                 ) from error
             logger.warning(
                 "Rate limited; waiting %ss for the allowance to refill "
                 "(attempt %s of %s)",
-                _REFUSAL_WAIT,
+                _BURST_WINDOW_SECONDS,
                 attempt,
                 _REFUSAL_ATTEMPTS,
             )
-            time.sleep(_REFUSAL_WAIT)
+            time.sleep(_BURST_WINDOW_SECONDS)
         except (URLError, OSError, json.JSONDecodeError) as error:
             raise MarkedAccountError(
                 f"cannot query account status from {LICHESS_USERS_ENDPOINT}: {error}"

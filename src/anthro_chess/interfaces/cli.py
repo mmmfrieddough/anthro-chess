@@ -227,8 +227,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--pause-seconds",
         type=float,
         help=(
-            "Seconds between requests, overriding the checked-in default. "
-            "Refusals compound, so raise this before lowering it."
+            "Seconds between requests, overriding the pace derived from the "
+            "source's rate limiter and whether LICHESS_TOKEN is set."
         ),
     )
     mark_accounts_parser.set_defaults(handler=_run_data_mark_accounts)
