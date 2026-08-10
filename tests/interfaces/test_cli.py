@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -83,6 +84,52 @@ def test_data_prepare_command_routes_to_importable_pipeline(
     assert "Prepared 1 game(s); rejected 0." in command_output
     assert "Corpus: 1 game(s) from 1 archive(s)." in command_output
     assert "manifests/manifest.json" in command_output
+
+
+def test_data_prepare_decodes_on_the_workers_it_is_given(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag reaches preparation, and its absence leaves the reader a core."""
+
+    import anthro_chess.data as data
+    from anthro_chess.interfaces.cli import _prepare_workers
+
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    config = repository_root / "configs/data/lichess-sample.toml"
+    requested: list[int] = []
+
+    def capture(
+        _input_path: Path,
+        output: Path,
+        _resolved: object,
+        *,
+        workers: int,
+    ) -> PreparationResult:
+        requested.append(workers)
+        return PreparationResult(
+            normalized_paths=(output / "normalized/games-0.parquet",),
+            manifest_path=output / "manifests/manifest.json",
+            accepted_games=1,
+            rejected_games=0,
+            split_counts={"train": 1, "validation": 0},
+            corpus_archives=1,
+        )
+
+    monkeypatch.setattr(data, "prepare_pgn", capture)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False
+    )
+    argv = ["data", "prepare", str(sample), str(tmp_path), "--config", str(config)]
+
+    assert main([*argv, "--workers", "3"]) == 0
+    assert main(argv) == 0
+    with pytest.raises(SystemExit):
+        main([*argv, "--workers", "-4"])
+
+    assert requested == [3, 7]
+    assert _prepare_workers(0) == 0
 
 
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(
@@ -349,6 +396,8 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         input_path: Path,
         output: Path,
         _resolved: object,
+        *,
+        workers: int,
     ) -> PreparationResult:
         captured_paths.append((input_path, output))
         return PreparationResult(
