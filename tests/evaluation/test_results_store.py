@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     DetailReference,
     DetailStore,
+    ExecutionRecord,
     Measurement,
     MetricCost,
     MetricDefinition,
@@ -30,6 +32,7 @@ from anthro_chess.evaluation.results import (
     build_result,
     configuration_reference,
     dataset_reference,
+    execution_reference,
     measurement,
     register_metric,
     registry_snapshot,
@@ -266,6 +269,91 @@ def test_a_detail_payload_the_serializer_refuses_is_the_store_s_own_error(
     # The caller carries on past this error, so a directory made for a payload
     # that never arrives is one nothing will ever remove.
     assert not detail.root.exists()
+
+
+def _execution(
+    *,
+    workload: Mapping[str, object] | None = None,
+    **coordinates: object,
+) -> ExecutionRecord:
+    """Return one benchmark's declared conditions, sound unless overridden.
+
+    Coordinates are the committed tier's one unvalidated freeform slot: a
+    workload is digested on the way in, an encoding and an action vocabulary are
+    code-owned, and a measurement is checked finite.
+    """
+
+    return execution_reference(
+        device="cpu",
+        device_name="fixture-cpu",
+        precision="float32",
+        torch_version="2.0.0",
+        platform_key="Linux-x86_64",
+        platform="Linux-x86_64-fixture",
+        workload={"reference_plies": 40} if workload is None else workload,
+        coordinates=coordinates,
+    )
+
+
+def test_a_committed_record_the_serializer_refuses_is_the_store_s_own_error(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    # The committed tier's twin of the detail-tier refusal above, and it arrives
+    # at the same late moment: after the benchmark has finished measuring.
+    store = ResultsStore(tmp_path / "results")
+    refused = recorded_result().model_copy(
+        update={"execution": _execution(slope=object())}
+    )
+
+    with pytest.raises(ResultsStoreError, match="cannot serialize"):
+        store.append(refused)
+
+    assert store.results() == ()
+
+
+def test_a_non_finite_freeform_value_is_refused_rather_than_rewritten(
+    recorded_result: ResultFactory,
+) -> None:
+    # Rendering it as `null` would be the quieter failure: the record would
+    # commit, and digest, a value its configuration never held.
+    tainted = recorded_result().model_copy(
+        update={"execution": _execution(rate=float("nan"))}
+    )
+
+    assert math.isnan(tainted.as_record()["execution"]["coordinates"]["rate"])
+    with pytest.raises(ResultRecordError, match="cannot serialize"):
+        tainted.verify()
+
+
+def test_a_record_that_cannot_be_serialized_still_reads_back(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    # `json.loads` accepts `NaN`, and reading re-encodes nothing, so one record
+    # carrying a literal the canonical writer refuses does not take the whole
+    # committed history with it.
+    store = ResultsStore(tmp_path / "results")
+    path = store.append(recorded_result())
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["execution"] = {
+        **_execution().as_record(),
+        "coordinates": {"rate": float("nan")},
+    }
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    (loaded,) = store.results()
+
+    assert loaded.execution is not None
+    assert math.isnan(loaded.execution.coordinates["rate"])
+
+
+def test_a_declared_workload_the_serializer_refuses_is_a_record_error() -> None:
+    # A declared workload carries settings straight from configuration — the
+    # termination benchmark puts `guardrails.premature_material_balance` in
+    # one — and reaches its digest before it reaches any record.
+    with pytest.raises(ResultRecordError, match="cannot digest"):
+        _execution(workload={"temperature": float("nan")})
 
 
 def test_a_record_that_cannot_be_read_back_is_the_store_s_own_error(
