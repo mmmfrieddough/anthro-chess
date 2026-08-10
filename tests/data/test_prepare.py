@@ -27,8 +27,9 @@ from anthro_chess.data import (
     prepare_pgn,
 )
 from anthro_chess.data.accounts import (
+    MarkedAccounts,
+    account_digest,
     account_row_digest,
-    marked_accounts_from_usernames,
 )
 from anthro_chess.data.schema import (
     NORMALIZED_COLUMNS,
@@ -275,11 +276,14 @@ def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
         + _short_game(site="marked-black", black="Cheater"),
         encoding="utf-8",
     )
-    snapshot = marked_accounts_from_usernames(
-        ["cheater"],
-        archive_sha256=sha256(input_path.read_bytes()).hexdigest(),
+    snapshot = MarkedAccounts(
+        covers_archives=(sha256(input_path.read_bytes()).hexdigest(),),
         queried_at="2026-08-08",
+        accounts_total=8,
         accounts_queried=6,
+        slots_total=100,
+        slots_queried=90,
+        digests=frozenset({account_digest("cheater")}),
     ).write(tmp_path / "marked-accounts.txt")
     resolved = load_config(
         PrepareConfig,
@@ -293,9 +297,11 @@ def test_rejects_every_game_a_marked_account_played(tmp_path: Path) -> None:
     assert result.accepted_games == 1
     manifest = _read_json(result.manifest_path)
     assert manifest["games"]["rejection_reasons"] == {"marked_account": 2}
-    # Recorded per archive, because a snapshot speaks for one archive.
+    # Recorded per archive, with the coverage the census had reached, because a
+    # snapshot rejects what it caught rather than everything there is.
     assert manifest["inputs"][0]["marked_accounts"]["accounts_marked"] == 1
     assert manifest["inputs"][0]["marked_accounts"]["accounts_queried"] == 6
+    assert manifest["inputs"][0]["marked_accounts"]["slots_queried"] == 90
 
 
 def test_refuses_to_prepare_an_archive_the_snapshot_does_not_cover(
@@ -303,11 +309,14 @@ def test_refuses_to_prepare_an_archive_the_snapshot_does_not_cover(
 ) -> None:
     input_path = tmp_path / "widened.pgn"
     input_path.write_text(_short_game(site="accepted"), encoding="utf-8")
-    snapshot = marked_accounts_from_usernames(
-        ["cheater"],
-        archive_sha256="f" * 64,
+    snapshot = MarkedAccounts(
+        covers_archives=("f" * 64,),
         queried_at="2026-08-08",
+        accounts_total=8,
         accounts_queried=6,
+        slots_total=100,
+        slots_queried=90,
+        digests=frozenset({account_digest("cheater")}),
     ).write(tmp_path / "marked-accounts.txt")
     resolved = load_config(
         PrepareConfig,
@@ -1374,12 +1383,74 @@ carrying a blank line } e5 2. Qh5 Nc6 3. Qxf7# 1-0
 1. f3 e5 2. g4 Qh4# 0-1"""
 
 
+@pytest.mark.parametrize("workers", [0, 2])
+def test_counts_the_accounts_the_census_orders_by_while_it_reads(
+    tmp_path: Path,
+    workers: int,
+) -> None:
+    """Whichever pass counts an archive has to produce the same counts."""
+
+    from anthro_chess.data.census import count_archive_accounts, read_account_games
+
+    input_path = tmp_path / "counted.pgn"
+    input_path.write_text(
+        _short_game(site="one", white="Busy", black="Quiet")
+        + _short_game(site="two", white="BUSY", black="Middling")
+        # A game preparation rejects still holds accounts the corpus's archive
+        # holds, so the census asks about them too.
+        + _short_game(site="three", white="Busy", black="Botted", event="Casual game"),
+        encoding="utf-8",
+    )
+    resolved = load_config(PrepareConfig, path=SAMPLE_CONFIG)
+    counts_path = tmp_path / "census/counted.pgn.accounts.tsv"
+
+    prepare_pgn(
+        input_path,
+        tmp_path / "artifacts",
+        resolved,
+        workers=workers,
+        counts_path=counts_path,
+    )
+
+    counted = read_account_games(counts_path)
+    assert counted.archive_sha256 == _sha256(input_path)
+    assert counted.games_by_account == {
+        "busy": 3,
+        "quiet": 1,
+        "middling": 1,
+        "botted": 1,
+    }
+    assert counted.games_by_account == count_archive_accounts(input_path)
+
+
+def test_leaves_no_counts_for_an_archive_the_game_bound_cut_short(
+    tmp_path: Path,
+) -> None:
+    """Counts that spoke for part of an archive would read as the whole of it."""
+
+    input_path = tmp_path / "bounded.pgn"
+    input_path.write_text(
+        _short_game(site="one") + _short_game(site="two"), encoding="utf-8"
+    )
+    resolved = load_config(
+        PrepareConfig, path=SAMPLE_CONFIG, overrides=("filters.maximum_games=1",)
+    )
+    counts_path = tmp_path / "census/bounded.pgn.accounts.tsv"
+
+    prepare_pgn(input_path, tmp_path / "artifacts", resolved, counts_path=counts_path)
+
+    assert not counts_path.exists()
+
+
 def test_framing_splits_the_stream_where_the_parser_ends_a_game() -> None:
     """A framed game reparses into the game reading the whole stream gives."""
 
+    from anthro_chess.data.census import ArchiveAccountCounter
     from anthro_chess.data.prepare import _framed_games
 
-    framed = list(_framed_games(StringIO(_AWKWARDLY_FRAMED_PGN)))
+    framed = list(
+        _framed_games(StringIO(_AWKWARDLY_FRAMED_PGN), ArchiveAccountCounter())
+    )
     streamed = StringIO(_AWKWARDLY_FRAMED_PGN)
 
     assert "".join(framed) == _AWKWARDLY_FRAMED_PGN

@@ -106,6 +106,7 @@ def test_data_prepare_decodes_on_the_workers_it_is_given(
         _resolved: object,
         *,
         workers: int,
+        counts_path: Path | None,
     ) -> PreparationResult:
         requested.append(workers)
         return PreparationResult(
@@ -382,6 +383,253 @@ def test_data_acquire_uses_data_root_when_output_is_omitted(
     assert captured_output == [data_root / "lichess-blitz-2017-04"]
 
 
+def _census_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Acquire two small archives under a data root and return the selection."""
+
+    from hashlib import sha256
+
+    import zstandard
+
+    def _game(white: str, black: str) -> str:
+        return (
+            f'[Event "Rated Blitz game"]\n[White "{white}"]\n[Black "{black}"]\n\n'
+            "1. e4 e5 1-0\n"
+        )
+
+    data_root = tmp_path / "datasets"
+    digests = []
+    for index, games in enumerate(
+        (
+            [("Busy", "Quiet"), ("Busy", "Middling")],
+            [("Busy", "Middling")],
+        ),
+        start=1,
+    ):
+        archive = data_root / f"month-{index}" / "raw" / f"{index}.pgn.zst"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(
+            zstandard.ZstdCompressor().compress(
+                "".join(_game(*pair) for pair in games).encode()
+            )
+        )
+        digests.append(sha256(archive.read_bytes()).hexdigest())
+
+    config = tmp_path / "selection.toml"
+    config.write_text(
+        f"""
+artifact_name = "fixture"
+
+[source]
+id = "test"
+version = "fixture"
+url = "https://example.test/"
+license = "CC0-1.0"
+
+[[archives]]
+artifact_name = "month-1"
+url = "https://example.test/1.pgn.zst"
+file_name = "1.pgn.zst"
+sha256 = "{digests[0]}"
+
+[[archives]]
+artifact_name = "month-2"
+url = "https://example.test/2.pgn.zst"
+file_name = "2.pgn.zst"
+sha256 = "{digests[1]}"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    monkeypatch.delenv("LICHESS_TOKEN", raising=False)
+    return config
+
+
+def test_data_census_keeps_asking_about_an_archive_that_was_reclaimed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counts outlive the archive, so deleting a prepared one costs nothing."""
+
+    config = _census_fixture(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+        asked.extend(batch)
+        return [{"id": name} for name in batch]
+
+    monkeypatch.setattr("anthro_chess.data.census._post_usernames", fake_post)
+    command = [
+        "data",
+        "census",
+        "--config",
+        str(config),
+        "--pause-seconds",
+        "0",
+        "--workers",
+        "1",
+        "--accounts",
+    ]
+    assert main([*command, "1"]) == 0
+    capsys.readouterr()
+
+    (tmp_path / "datasets/month-1/raw/1.pgn.zst").unlink()
+    assert main([*command, "2"]) == 0
+
+    # The deleted archive still contributes its accounts and its counts, so the
+    # queue and the coverage denominators are what they were.
+    assert asked == ["busy", "middling", "quiet"]
+    assert "Coverage: 3 of 3 account(s) (100.00%), 100.00% of player-slots" in (
+        capsys.readouterr().out
+    )
+
+
+def test_data_census_spends_the_allowance_before_it_counts_a_new_archive(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A day's allowance does not roll over; hours of counting can wait."""
+
+    config = _census_fixture(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+        asked.extend(batch)
+        return [{"id": name} for name in batch]
+
+    monkeypatch.setattr("anthro_chess.data.census._post_usernames", fake_post)
+    command = [
+        "data",
+        "census",
+        "--config",
+        str(config),
+        "--pause-seconds",
+        "0",
+        "--workers",
+        "1",
+    ]
+    counts = tmp_path / "datasets/month-2/census/2.pgn.zst.accounts.tsv"
+
+    # Counting comes first only where there is nothing to ask about yet.
+    assert main([*command, "--accounts", "1"]) == 0
+    assert asked == ["busy"]
+    capsys.readouterr()
+
+    # A newly acquired archive waits behind the day's asking rather than in
+    # front of it, because the allowance is what does not roll over.
+    counts.unlink()
+    assert main([*command, "--accounts", "1"]) == 0
+
+    assert asked == ["busy", "middling"]
+    assert counts.is_file()
+
+
+def test_data_census_asks_the_busiest_accounts_first_and_stores_every_answer(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _census_fixture(tmp_path, monkeypatch)
+    asked: list[str] = []
+
+    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+        asked.extend(batch)
+        return [{"id": name, "tosViolation": name == "busy"} for name in batch]
+
+    monkeypatch.setattr("anthro_chess.data.census._post_usernames", fake_post)
+
+    assert (
+        main(
+            [
+                "data",
+                "census",
+                "--config",
+                str(config),
+                "--accounts",
+                "2",
+                "--pause-seconds",
+                "0",
+                "--workers",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    # Busiest first across both archives, and the counts stay beside each one.
+    assert asked == ["busy", "middling"]
+    data_root = tmp_path / "datasets"
+    assert (data_root / "month-1/census/1.pgn.zst.accounts.tsv").is_file()
+    assert (data_root / "month-2/census/2.pgn.zst.accounts.tsv").is_file()
+    # The answers are the source's, not the selection's, so another selection
+    # over the same source inherits them.
+    answers = (data_root / "test-account-census/answers.tsv").read_text(
+        encoding="utf-8"
+    )
+    assert answers.splitlines()[0].startswith("busy\t1\t")
+    output = capsys.readouterr().out
+    assert (
+        "Asked about 2 account(s); 1 marked. The requested accounts are asked about."
+        in output
+    )
+    assert "Coverage: 2 of 3 account(s) (66.67%), 83.33% of player-slots" in output
+
+
+def test_data_mark_accounts_cuts_a_snapshot_from_the_census_as_it_stands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anthro_chess.data.accounts import load_marked_accounts
+
+    config = _census_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "anthro_chess.data.census._post_usernames",
+        lambda batch, token: [
+            {"id": name, "tosViolation": name == "busy"} for name in batch
+        ],
+    )
+    output_path = tmp_path / "marked.txt"
+    command = ["data", "mark-accounts", "--config", str(config), "--output"]
+
+    # A snapshot the census cannot speak for would stop preparation partway
+    # through a corpus that cannot be repaired one archive at a time.
+    assert main([*command, str(output_path)]) == 2
+    assert "counted 0 of this selection's 2 archive(s)" in capsys.readouterr().err
+
+    assert (
+        main(
+            [
+                "data",
+                "census",
+                "--config",
+                str(config),
+                "--pause-seconds",
+                "0",
+                "--workers",
+                "2",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main([*command, str(output_path)]) == 0
+
+    snapshot = load_marked_accounts(output_path)
+    assert snapshot.contains("BUSY")
+    assert snapshot.accounts_queried == 3
+    assert snapshot.slot_coverage == 1.0
+    assert len(snapshot.covers_archives) == 2
+    assert "Coverage: 100.00% of accounts" in capsys.readouterr().out
+
+    # A snapshot cut from a later census rejects games this one keeps, so it is
+    # a new corpus rather than an overwrite.
+    assert main([*command, str(output_path)]) == 2
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -389,7 +637,7 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     repository_root = Path(__file__).parents[2]
     config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
     data_root = tmp_path / "datasets"
-    captured_paths: list[tuple[Path, Path]] = []
+    captured_paths: list[tuple[Path, Path, Path | None]] = []
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
 
     def fake_prepare(
@@ -398,8 +646,9 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         _resolved: object,
         *,
         workers: int,
+        counts_path: Path | None,
     ) -> PreparationResult:
-        captured_paths.append((input_path, output))
+        captured_paths.append((input_path, output, counts_path))
         return PreparationResult(
             normalized_paths=(output / "normalized/games-0.parquet",),
             manifest_path=output / "manifests/manifest.json",
@@ -424,11 +673,15 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
         )
         == 0
     )
+    # The corpus is named for this run; the archive and the account counts it
+    # leaves behind belong to the archive, which selections share.
     assert captured_paths == [
         (
             data_root / "lichess-blitz-2017-04/raw/"
             "lichess_db_standard_rated_2017-04.pgn.zst",
             data_root / "proof-slice",
+            data_root / "lichess-blitz-2017-04/census/"
+            "lichess_db_standard_rated_2017-04.pgn.zst.accounts.tsv",
         )
     ]
 

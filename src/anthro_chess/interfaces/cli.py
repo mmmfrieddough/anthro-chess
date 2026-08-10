@@ -31,7 +31,8 @@ from anthro_chess.machine import (
 )
 
 if TYPE_CHECKING:
-    from anthro_chess.data import PrepareConfig, SequenceDataConfig
+    from anthro_chess.data import ArchiveConfig, PrepareConfig, SequenceDataConfig
+    from anthro_chess.data.census import PinnedArchive
     from anthro_chess.evaluation import (
         CheckpointEvaluationResult,
         DecisionDecomposition,
@@ -88,6 +89,11 @@ _DETAIL_ROOT_FLAG.add_argument(
         "ANTHRO_CHESS_RUN_ROOT."
     ),
 )
+
+#: Counting an archive's accounts decompresses tens of gigabytes and is pure
+#: work per archive, so several run at once. Kept well below the core count
+#: because this machine's cores belong to training runs.
+_DEFAULT_CENSUS_WORKERS = 8
 
 _FORMAT_FLAG = argparse.ArgumentParser(add_help=False)
 _FORMAT_FLAG.add_argument(
@@ -211,19 +217,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
 
-    mark_accounts_parser = data_commands.add_parser(
-        "mark-accounts",
+    census_parser = data_commands.add_parser(
+        "census",
         help=(
-            "Snapshot which of an archive's accounts the source has marked, so "
-            "preparation can reject their games without querying it."
+            "Spend one day's allowance asking the source which of the "
+            "selection's accounts it has marked, busiest accounts first."
         ),
         parents=[_SET_FLAG],
     )
-    mark_accounts_parser.add_argument(
-        "input",
+    census_parser.add_argument(
+        "--config",
         type=Path,
-        nargs="?",
-        help="Raw source PGN file. Defaults to the configured acquired archive.",
+        required=True,
+        help="Explicit TOML source and archive selection.",
+    )
+    census_parser.add_argument(
+        "--accounts",
+        type=int,
+        help=(
+            "How many accounts to ask about, overriding the day's allowance "
+            "derived from the source's rate limiter."
+        ),
+    )
+    census_parser.add_argument(
+        "--pause-seconds",
+        type=float,
+        help=(
+            "Seconds between requests, overriding the pace derived from the "
+            "source's rate limiter and whether LICHESS_TOKEN is set."
+        ),
+    )
+    census_parser.add_argument(
+        "--workers",
+        type=int,
+        default=_DEFAULT_CENSUS_WORKERS,
+        help=(
+            "How many archives to count at once when an archive has no counts "
+            f"yet. Defaults to {_DEFAULT_CENSUS_WORKERS}."
+        ),
+    )
+    census_parser.set_defaults(handler=_run_data_census)
+
+    mark_accounts_parser = data_commands.add_parser(
+        "mark-accounts",
+        help=(
+            "Cut a marked-account snapshot from the census as it stands, so "
+            "preparation can reject their games without querying the source."
+        ),
+        parents=[_SET_FLAG],
     )
     mark_accounts_parser.add_argument(
         "--config",
@@ -237,14 +278,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Snapshot to write. Defaults to the configured "
             "filters.marked_accounts path."
-        ),
-    )
-    mark_accounts_parser.add_argument(
-        "--pause-seconds",
-        type=float,
-        help=(
-            "Seconds between requests, overriding the pace derived from the "
-            "source's rate limiter and whether LICHESS_TOKEN is set."
         ),
     )
     mark_accounts_parser.set_defaults(handler=_run_data_mark_accounts)
@@ -1091,6 +1124,7 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             output,
             resolved,
             workers=_prepare_workers(arguments.workers),
+            counts_path=_archive_counts_path(resolved, input_path, arguments.output),
         )
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
@@ -1126,20 +1160,21 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
+def _run_data_census(arguments: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
     from anthro_chess.config import ConfigError, load_config
     from anthro_chess.data import DataLoadingError, PrepareConfig
-    from anthro_chess.data.accounts import (
-        MarkedAccountError,
-        load_marked_accounts,
-        marked_accounts_from_usernames,
-        query_marked_accounts,
-        resolve_snapshot_path,
-        scan_archive_accounts,
+    from anthro_chess.data.census import (
+        LICHESS_USERS_BATCH,
+        CensusError,
+        counted_archives,
+        daily_account_allowance,
+        read_census,
+        refresh_archive_counts,
+        run_census,
+        source_token,
     )
-    from anthro_chess.data.artifacts import file_sha256
 
     try:
         resolved = load_config(
@@ -1147,11 +1182,102 @@ def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
             path=arguments.config,
             overrides=arguments.set,
         )
-        configured_archives = resolved.value.archives
-        input_path = _configured_archive_path(resolved, arguments.input, None)
-        if not input_path.is_file():
-            raise ConfigError(f"source archive does not exist: {input_path}")
+        if arguments.accounts is not None and arguments.accounts < 1:
+            raise ConfigError("--accounts asks about at least one account")
+        pinned = _pinned_archives(resolved)
+        # An archive's counts outlive the archive, so reclaiming a raw file once
+        # it is prepared costs the census nothing. Selecting on the raw file
+        # instead drops its accounts out of the queue without a word, and the
+        # snapshot would claim archives the census had stopped asking about.
+        counted = counted_archives(pinned)
+        countable = [archive for archive in pinned if archive.path.is_file()]
+        if not counted and not countable:
+            raise ConfigError(
+                "none of this selection's archives are counted or on disk to "
+                "count; acquire one first"
+            )
+        if not counted:
+            # Asking comes before counting below, which it cannot do on the one
+            # run that has nothing counted to ask about.
+            refresh_archive_counts(countable, workers=arguments.workers)
+            counted = counted_archives(pinned)
+        for archive in pinned:
+            if archive not in counted:
+                logger.warning(
+                    "Censusing without %s, which is neither counted nor on disk; "
+                    "its accounts are absent from the queue and from the coverage "
+                    "below until it is acquired",
+                    archive.path.name,
+                )
+        answers_path = _census_answers_path(resolved)
+        census = read_census(counted, answers_path)
+        budget = arguments.accounts
+        if budget is None:
+            budget = daily_account_allowance(
+                LICHESS_USERS_BATCH, authenticated=source_token() is not None
+            )
+        queue = census.queue(budget)
+        run = run_census(
+            queue,
+            answers_path,
+            queried_at=datetime.now(tz=UTC).date().isoformat(),
+            pause_seconds=arguments.pause_seconds,
+        )
+    except (ConfigError, DataLoadingError, CensusError) as error:
+        print(f"anthro data census: {error}", file=sys.stderr)
+        return 2
 
+    accounts_queried = census.accounts_queried + run.accounts_asked
+    slots_queried = census.slots_queried + sum(
+        census.games_by_account[name] for name in run.asked
+    )
+    unanswered = census.accounts_total - accounts_queried
+    if run.refused:
+        outcome = "The source's allowance is spent."
+    elif not census.accounts_total:
+        outcome = "No archive is counted yet, so this run counts rather than asks."
+    elif not unanswered:
+        outcome = "Every account in these archives has been asked about."
+    elif arguments.accounts is None:
+        outcome = "The day's allowance is spent."
+    else:
+        outcome = "The requested accounts are asked about."
+    print(
+        f"Asked about {run.accounts_asked} account(s); "
+        f"{run.accounts_marked} marked. {outcome}"
+    )
+    print(
+        f"Coverage: {accounts_queried} of {census.accounts_total} account(s) "
+        f"({_share(accounts_queried, census.accounts_total)}), "
+        f"{_share(slots_queried, census.slots_total)} of player-slots, over "
+        f"{len(census.archives)} of {len(pinned)} pinned archive(s)."
+    )
+
+    # Counting last. The day's allowance does not roll over and a count of a
+    # newly acquired archive is hours, so a run that counted first would spend
+    # the scarce thing only if it survived the cheap one.
+    try:
+        refresh_archive_counts(countable, workers=arguments.workers)
+    except (DataLoadingError, CensusError) as error:
+        print(f"anthro data census: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
+    from datetime import UTC, datetime
+
+    from anthro_chess.config import ConfigError, load_config
+    from anthro_chess.data import DataLoadingError, PrepareConfig
+    from anthro_chess.data.accounts import MarkedAccountError, resolve_snapshot_path
+    from anthro_chess.data.census import CensusError, read_census, snapshot_from_census
+
+    try:
+        resolved = load_config(
+            PrepareConfig,
+            path=arguments.config,
+            overrides=arguments.set,
+        )
         output_path = arguments.output
         if output_path is None:
             configured_output = resolved.value.filters.marked_accounts
@@ -1163,59 +1289,54 @@ def _run_data_mark_accounts(arguments: argparse.Namespace) -> int:
             output_path = resolve_snapshot_path(
                 configured_output, resolved.provenance.source
             )
-
-        archive_sha256 = file_sha256(input_path)
-        if configured_archives and all(
-            archive_sha256 != archive.sha256 for archive in configured_archives
-        ):
+        if output_path.exists():
             raise ConfigError(
-                f"archive checksum {archive_sha256} matches none of the "
-                f"{len(configured_archives)} archive(s) this selection pins"
+                f"{output_path} already exists. A snapshot cut from a later census "
+                "answers for more accounts, so it rejects games this one keeps and "
+                "starts a new corpus rather than amending it; write it to its own "
+                "--output path"
             )
 
-        if output_path.is_file():
-            existing = load_marked_accounts(output_path)
-            if archive_sha256 == existing.covers_archive:
-                print(
-                    f"{output_path} already covers this archive "
-                    f"({existing.accounts_marked} marked of "
-                    f"{existing.accounts_queried})."
-                )
-                return 0
+        pinned = _pinned_archives(resolved)
+        uncounted = [archive for archive in pinned if not archive.counts_path.is_file()]
+        if uncounted:
             raise ConfigError(
-                f"{output_path} covers a different archive. Widening one snapshot "
-                "across archives has to keep every earlier verdict rather than "
-                "re-decide covered accounts, and nothing does that yet; write "
-                "this one to its own --output path"
+                f"the census has counted {len(pinned) - len(uncounted)} of this "
+                f"selection's {len(pinned)} archive(s). Preparation appends one "
+                "archive at a time and refuses any the snapshot does not cover, so "
+                "a snapshot cut now stops a corpus partway through and it cannot be "
+                "repaired incrementally; acquire and census the rest first"
             )
-
-        resume_path = output_path.with_suffix(output_path.suffix + ".partial")
-        print(f"Scanning {input_path} for distinct accounts...")
-        accounts = scan_archive_accounts(input_path)
-        print(f"Querying the source about {len(accounts)} account(s)...")
-        marked = query_marked_accounts(
-            accounts,
-            pause_seconds=arguments.pause_seconds,
-            resume_path=resume_path,
-        )
-        snapshot = marked_accounts_from_usernames(
-            marked,
-            archive_sha256=archive_sha256,
-            queried_at=datetime.now(tz=UTC).date().isoformat(),
-            accounts_queried=len(accounts),
+        census = read_census(pinned, _census_answers_path(resolved))
+        if not census.answers:
+            raise ConfigError(
+                "the census has answered for none of these archives' accounts, so "
+                "a snapshot would claim nobody is marked; run `anthro data census "
+                "--config <selection>` first"
+            )
+        snapshot = snapshot_from_census(
+            census, queried_at=datetime.now(tz=UTC).date().isoformat()
         )
         snapshot.write(output_path)
-        resume_path.unlink(missing_ok=True)
-    except (ConfigError, DataLoadingError, MarkedAccountError) as error:
+    except (ConfigError, DataLoadingError, MarkedAccountError, CensusError) as error:
         print(f"anthro data mark-accounts: {error}", file=sys.stderr)
         return 2
 
     print(
-        f"Marked {snapshot.accounts_marked} of {len(accounts)} account(s) "
-        f"({100 * snapshot.accounts_marked / max(len(accounts), 1):.2f}%)."
+        f"Marked {snapshot.accounts_marked} of {snapshot.accounts_queried} account(s) "
+        f"asked about ({_share(snapshot.accounts_marked, snapshot.accounts_queried)})."
+    )
+    print(
+        f"Coverage: {_share(snapshot.accounts_queried, snapshot.accounts_total)} of "
+        f"accounts and {_share(snapshot.slots_queried, snapshot.slots_total)} of "
+        f"player-slots, over {len(snapshot.covers_archives)} archive(s)."
     )
     print(f"Snapshot: {output_path}")
     return 0
+
+
+def _share(part: int, whole: int) -> str:
+    return f"{100 * part / whole:.2f}%" if whole else "0.00%"
 
 
 def _run_eval_freeze(arguments: argparse.Namespace) -> int:
@@ -3387,11 +3508,87 @@ def _configured_archive_path(
             f"input path is required because the selected data configuration "
             f"pins {len(archives)} archives"
         )
-    archive = archives[0]
-    root = _data_output_path(
+    return (
+        _archive_artifact_root(resolved, archives[0], artifact_root)
+        / "raw"
+        / (archives[0].file_name)
+    )
+
+
+def _archive_artifact_root(
+    resolved: ResolvedConfig[PrepareConfig],
+    archive: ArchiveConfig,
+    artifact_root: Path | None,
+) -> Path:
+    """Return the artifact directory one of a selection's archives lives in.
+
+    An archive names its own directory when it has one so that selections can
+    share an acquired file, and falls back to the selection's.
+    """
+
+    return _data_output_path(
         artifact_root, archive.artifact_name or resolved.value.artifact_name
     )
-    return root / "raw" / archive.file_name
+
+
+def _pinned_archives(
+    resolved: ResolvedConfig[PrepareConfig],
+) -> list[PinnedArchive]:
+    """Return where each pinned archive was acquired to and its account counts."""
+
+    from anthro_chess.data.census import PinnedArchive
+
+    archives = []
+    for archive in resolved.value.archives:
+        root = _archive_artifact_root(resolved, archive, None)
+        archives.append(
+            PinnedArchive(
+                path=root / "raw" / archive.file_name,
+                counts_path=_counts_path(root, archive.file_name),
+                sha256=archive.sha256,
+            )
+        )
+    return archives
+
+
+def _counts_path(artifact_root: Path, file_name: str) -> Path:
+    from anthro_chess.data.census import ACCOUNT_GAMES_SUFFIX, CENSUS_DIRECTORY
+
+    return artifact_root / CENSUS_DIRECTORY / f"{file_name}{ACCOUNT_GAMES_SUFFIX}"
+
+
+def _archive_counts_path(
+    resolved: ResolvedConfig[PrepareConfig],
+    input_path: Path,
+    artifact_root: Path | None,
+) -> Path | None:
+    """Return where preparing this input leaves the census its account counts.
+
+    An input that is not one of the selection's acquired archives leaves none.
+    The census asks about the accounts of archives a corpus is built from, and
+    a PGN handed to `--input` from anywhere on the machine is not one of those.
+    """
+
+    for archive in resolved.value.archives:
+        root = _archive_artifact_root(resolved, archive, artifact_root)
+        if root / "raw" / archive.file_name == input_path:
+            return _counts_path(root, archive.file_name)
+    return None
+
+
+def _census_answers_path(resolved: ResolvedConfig[PrepareConfig]) -> Path:
+    """Return where the census records what the source said about an account.
+
+    Keyed by the source rather than by the selection, because account status is
+    the source's judgement about an account and not a property of any corpus.
+    A second selection over the same source inherits every answer instead of
+    spending weeks of the same rate limit asking again.
+    """
+
+    from anthro_chess.data.census import ANSWERS_FILE
+
+    root = _data_output_path(None, f"{resolved.value.source.id}-account-census")
+    return root / ANSWERS_FILE
 
 
 def _environment_root(name: str) -> Path:

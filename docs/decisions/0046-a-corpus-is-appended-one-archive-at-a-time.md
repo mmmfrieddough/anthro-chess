@@ -91,10 +91,12 @@ already recorded is skipped, so correcting one month means rebuilding the
 corpus. Supporting it would mean subtracting a set of games from a bound applied
 in run order, and nothing needs it yet.
 
-**A marked-account snapshot still covers one archive**, and `require_archive`
-refuses the second. A corpus spanning archives therefore cannot set
-`filters.marked_accounts` until a snapshot can speak for more than one; `0041`
-and the `MarkedAccounts` docstring carry that end.
+**A marked-account snapshot covers the archives its census counted**, and
+`require_archive` refuses any other. Appending an archive the snapshot does not
+cover stops the run rather than preparing it unfiltered, and this rule is why a
+snapshot is cut only once the census has counted every archive a selection pins:
+a corpus that dies on its fortieth append cannot be repaired incrementally.
+`0041` and `0047` carry that end.
 
 **Duplicate detection is per archive, not per corpus.** A run rejects a game id
 it has already seen in the archive it is reading, and holding every id of a

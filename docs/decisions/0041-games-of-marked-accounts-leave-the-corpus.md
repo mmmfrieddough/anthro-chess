@@ -25,10 +25,19 @@ blitz selection:
 
 | Quantity | Estimate |
 | --- | --- |
-| Accounts since marked | 4.27% (3.36-5.41%, n=1500) |
+| Player-slots held by a since-marked account | 4.27% (3.36-5.41%, n=1500) |
 | Games with at least one since-marked player | 8-10.4% |
 | Same, engine marks rather than boosting | ~6-8% |
 | Assisted **moves**, inferred | 0.2-2%, unmeasured |
+
+The first row was originally labelled an account rate, and it is not one. The
+census `0047` sizes measured the population rather than a sample of it, across
+37 archives: **3.19% of accounts** are marked and **4.26% of player-slots**,
+because marked accounts play more games than average. The sample was drawn from
+games, so what it measured was the slot rate, which its point estimate matches
+almost exactly. Nothing below moves, because the argument rests on the slot
+rate throughout: two slots at 4.26% put a marked player in 8.3% of games, which
+is the "roughly a tenth" this decision trades against.
 
 The source does not help. Lichess's monthly exports select on creation month,
 rated flag, and variant, with no filter on marks or account status, and the
@@ -140,11 +149,11 @@ property `0013-benchmark-result-comparability.md` depends on.
 
 So the answer is taken once, pinned to the archives it covers, and checked in.
 Refreshing it is a deliberate act that starts a new corpus, exactly as changing
-an archive digest is. A snapshot covers the one archive it was built for, and
-widening one to a second is left to whatever first prepares from two: it has to
-carry every earlier verdict over untouched and query only genuinely new
-accounts, because re-deciding an account an earlier snapshot already spoke for
-applies a later moderation decision retroactively.
+an archive digest is. A snapshot covers every archive the census has counted,
+and is cut from a store that only ever adds answers, so a later one re-decides
+nobody. It is still a new corpus rather than an amendment: it answers for
+accounts the earlier one had not reached, and their games leave a corpus that
+already contains them.
 
 Preparation refuses an archive the snapshot does not cover rather than
 preparing it unfiltered, so once a selection names a snapshot, widening the
@@ -159,11 +168,38 @@ remember: the census never finishes, so nothing else can wait for it to.
 Usernames are stored as truncated salted digests, because membership is all
 preparation needs and this repository is public. What that achieves is bounded
 and worth stating: the salt is checked in and the account space is the covered
-archive's, so anyone holding that archive can recover the names. The mark is
+archives', so anyone holding them can recover the names. The mark is
 the source's own published judgement rather than a finding of this project's,
 and the digests keep the repository from republishing it as a list anyone can
 read or search — which is the sense in which `docs/evaluation.md` says this
 project makes no claims about real player cheating.
+
+## What the filter claims
+
+It rejects the games of the marked accounts the census had reached, not the
+games of every marked account. Those are different quantities, and the snapshot
+carries the difference rather than leaving it to be inferred: its header records
+how many of the covered archives' accounts were asked about and what share of
+the player-slots they hold, and preparation copies both into the corpus
+manifest. The number a corpus claims is that share, read off the snapshot it
+names.
+
+It is a share of the archives rather than of the corpus, and the two differ: the
+census counts every game an archive holds, including the casual games
+preparation rejects, so an account that only ever played casual games is in the
+denominator and none of its games are in the corpus. The figure therefore
+understates what the corpus caught rather than overstating it, which is the
+direction to err in. Counting the corpus instead would make the counts a
+property of one selection's filters rather than of the archive, and every
+selection would then pay for its own census.
+
+Two reductions sit under it, and both are `0047`'s. A closed account's mark is
+never disclosed, and closure runs at 13.15% of player-slots, so a snapshot
+covering a given share of slots catches roughly 87% of that share of the marks
+the source holds. And what the source holds is not what happened, which is the
+residual below. Neither is a reason to keep asking: the gap between any two
+plausible coverage figures is smaller than the undetected fraction, which is why
+`0047` gives the census no stopping rule to choose.
 
 ## The residual, which is smaller but not zero
 

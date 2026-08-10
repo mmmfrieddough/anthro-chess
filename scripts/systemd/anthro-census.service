@@ -1,0 +1,12 @@
+[Unit]
+Description=Spend a day's allowance on the Anthro Chess account census
+
+[Service]
+Type=oneshot
+# The checkout, the artifact roots, and LICHESS_TOKEN. Machine-specific and
+# holding a credential, so it lives outside the repository.
+EnvironmentFile=%h/.config/anthro-chess/census.env
+# Counting a newly acquired archive is hours of decompression, and the cores it
+# runs on belong to whatever this machine is training.
+Nice=10
+ExecStart=%h/.local/bin/uv run --directory ${ANTHRO_CHESS_CHECKOUT} anthro data census --config ${ANTHRO_CHESS_CENSUS_CONFIG}

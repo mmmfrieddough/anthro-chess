@@ -159,16 +159,59 @@ For a check that needs no network and no large download, the repository carries
 a sample game that prepares, trains, and serves UCI in seconds. `README.md` has
 that path.
 
-### An Access Token For The Account Census
+### Running The Account Census
 
-`uv run anthro data mark-accounts` asks the source about every account in an
-archive, hundreds of thousands of them, against a per-address rate limit that
-charges an authenticated caller half what it charges an anonymous one. Set
-`LICHESS_TOKEN` to a personal access token to double the pace. The endpoint
-needs no scope, so generate one with none.
+`uv run anthro data census --config <selection>` asks the source which of a
+selection's accounts it has marked, busiest accounts first, until the day's
+allowance is spent. It does not finish: the account universe is millions deep
+and the source answers for a bounded number a day, so the census accrues while
+everything downstream proceeds, and `uv run anthro data mark-accounts` cuts a
+snapshot from wherever it has reached.
 
-It is a credential, so it belongs in the machine's environment rather than in
-any checked-in file. The census runs without it at half speed.
+Everything it accumulates lives under `ANTHRO_CHESS_DATA_ROOT`, because an
+earlier census checkpointed itself inside a worktree and `git worktree remove`
+deleted it. Each archive's account counts sit beside that archive; the answers
+sit under the source rather than the selection, so a second selection over the
+same source inherits them instead of spending the same rate limit twice.
+
+Preparation writes those counts as it reads, so an archive can be reclaimed as
+soon as it has been prepared and the census carries on asking about its
+accounts. `anthro data census` counts an archive nothing has prepared, and an
+archive whose preparation stopped at `filters.maximum_games` before the end —
+those are the only two cases that need the file back.
+
+A run asks first and counts afterwards, because the day's allowance does not
+roll over while hours of counting can wait a day. So a newly acquired archive
+joins the queue on the run after the one that counted it, and only the very
+first run — with nothing counted to ask about — counts before it asks.
+
+Set `LICHESS_TOKEN` to a personal access token to double the day's allowance:
+the limit is per address and charges an authenticated caller half. The endpoint
+needs no scope, so generate one with none. It is a credential, so it belongs in
+the machine's environment rather than in any checked-in file, and the census
+runs without it at half the rate.
+
+To spend the allowance every day this machine is up, install the units in
+`scripts/systemd/` as user units:
+
+```console
+mkdir -p ~/.config/anthro-chess ~/.config/systemd/user
+cp scripts/systemd/anthro-census.* ~/.config/systemd/user/
+cat > ~/.config/anthro-chess/census.env <<'ENV'
+ANTHRO_CHESS_CHECKOUT=/absolute/path/to/anthro-chess
+ANTHRO_CHESS_CENSUS_CONFIG=configs/data/lichess-univ-2017-04-2021-06.toml
+ANTHRO_CHESS_DATA_ROOT=/absolute/path/to/datasets
+LICHESS_TOKEN=...
+ENV
+systemctl --user enable --now anthro-census.timer
+loginctl enable-linger "$USER"
+```
+
+The linger is what makes it a daily job rather than a login-session one, and
+`Persistent=true` runs the missed day when a machine that was off comes back.
+`systemctl --user status anthro-census` and `journalctl --user -u anthro-census`
+say what the last run reached. A spent allowance is a successful run: the units
+have no failure to report on the day the census works as intended.
 
 ## Quality Checks
 
