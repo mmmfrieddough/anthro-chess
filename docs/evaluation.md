@@ -726,7 +726,7 @@ growing current view alongside the fixed core.
 See `docs/decisions/0011-held-out-test-partition.md`,
 `docs/decisions/0012-derived-evaluation-views.md`,
 `docs/decisions/0013-benchmark-result-comparability.md`, and
-`docs/decisions/0050-a-bounded-pool-is-a-fixed-admission-fraction.md`.
+`docs/decisions/0052-a-bounded-pool-is-a-fixed-admission-fraction.md`.
 
 ## Evaluation Layers
 

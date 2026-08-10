@@ -1,4 +1,4 @@
-# 0050: A Bounded Pool Is A Fixed Admission Fraction
+# 0052: A Bounded Pool Is A Fixed Admission Fraction
 
 Date: 2026-08-10
 
@@ -60,25 +60,44 @@ that evicts is not a bound this project can have. Bounded and contained together
 force a fixed fraction; there is no third form.
 
 **The bound is sized from evaluation power, and is at least 100,000 games at
-designation.** The number comes from the dispersions the committed readings in
-`results/records/` measured over 400 games, extrapolated by `uv run anthro eval
-noise plan`:
+designation.** What binds is the sharpest demand any metric realized in every
+scored game makes, extrapolated by `uv run anthro eval noise plan` from the
+dispersions the committed readings measured over 400 games:
 
 | to resolve | binding metric | games |
 | --- | --- | --- |
-| 1% of value, held-out family | `held_out.move_loss_under_1200` | 15,282 |
 | 1% of value, legality family | `legality.mask_penalty_castling_rights` | 64,277 |
-| 0.5% of value, held-out family | `held_out.move_loss_under_1200` | 61,126 |
-| 1% of value, en passant slice | `legality.mask_penalty_en_passant` | 645,623 |
-| 1% of value, stalemate availability | `adjudicated.stalemate_available_best_rank` | 1,727,807 |
+| 1% of value, held-out family | `held_out.move_loss` | 1,510 |
 
-100,000 games therefore resolves a 1% relative effect on every held-out and
-legality metric except the rare-rule slices, and a 0.5% effect across the whole
-held-out family, with headroom for the view filters that discard part of a pool
-before ranking it. It costs roughly 74 MB resident and 3.2 s per process at the
-rates above. It does not buy the rare-rule tail, and nothing cuttable buys the
-stalemate-availability family, whose noise at 400 games is the same size as the
-quantity it measures.
+100,000 games clears that with headroom for the view filters that discard part
+of a pool before ranking it, and costs roughly 74 MB resident and 3.2 s per
+process at the rates above.
+
+**A sliced metric is not sized by this table, and cannot be yet.** A slice is
+realized in a fraction of the games a pass scores, and counting the whole pass
+sizes its bound for replicates it never had; `docs/evaluation.md` owns the rule
+and `0026-conservative-dispersion-bounds.md` the bound behind it. Measured on a
+400-game reading, 37 of 52 metrics are realized in fewer games than were scored:
+
+| axis | realized in |
+| --- | --- |
+| `held_out.move_loss_middlegame`, `legality.mask_penalty_check` | 86–92% |
+| `held_out.move_loss_1200_to_1599`, `legality.mask_penalty_pin` | 46–84% |
+| `adjudicated.only_move_*`, `adjudicated.mate_threatened_*` | 26–39% |
+| `held_out.move_loss_under_1200`, `legality.mask_penalty_promotion` | 7–13% |
+| `adjudicated.stalemate_available_*` | 2% |
+
+So a pool of 100,000 gives the thinnest axes a few thousand realizing games, and
+the rarest around two thousand. Whether that resolves what those axes are for is
+the question this table cannot answer, because every committed reading predates
+the per-metric count and records only the whole pass. `anthro eval noise plan`
+refuses those readings rather than answering in a unit they cannot carry.
+
+The count above is therefore a floor established on the metrics that correction
+does not touch, not a ceiling justified across every axis. **Deriving the
+per-axis demand is part of designating the core**, from a reading that records
+per-metric realization against the generation being cut, which is where 0013
+already fixes per-axis power permanently.
 
 The size is bounded from the other side by what a canonical reading costs, since
 that view scores whatever the pool holds. 100,000 is about twice the untaken
@@ -88,8 +107,10 @@ and not one worth taking by accident on a split three orders of magnitude wider.
 **Raising the bound later is available; lowering it never is.** A threshold that
 only rises admits a superset, which is what a generation cut already is. The
 number to choose is therefore the smallest defensible one rather than the
-largest affordable one, and the rare-rule tail is what a later raise would be
-for.
+largest affordable one, and the thin axes above are what a later raise would be
+for — with the caveat that a raise gives a later generation power the core does
+not have, since the core is the intersection with the generation designated
+here.
 
 Nothing here enforces that direction, and prose does not. The check that does is
 the one `#90` already owes: a generation cut verifies it is a superset of the
@@ -133,7 +154,15 @@ is the narrower one.
 The sizing rests on one dispersion per metric, measured at proof scale, and
 `games_to_resolve` deliberately errs high. A later reading that measures a
 different spread moves the number a future generation is cut at, not the
-mechanism this record decides.
+mechanism this record decides — and the floor here is deliberately the weaker
+claim of the two, because the per-axis half is owed a reading nobody has taken.
+
+That asymmetry is worth stating plainly, because the two halves fail
+differently. The mechanism is settled and cheap to be wrong about: a fraction
+set too low is raised by a later cut. The per-axis power is neither. It is fixed
+permanently for the core at designation, and a later raise buys the *current*
+view rather than the core, so an axis the core cannot resolve stays unresolvable
+for as long as the core is the reference.
 
 ## References
 
