@@ -29,12 +29,7 @@ belongs in this tier despite being a property of the machine.
 Other benchmark commands append through the same boundary. In particular,
 `anthro eval puzzles` records rating-response headlines over the owned external
 puzzle set while leaving its continuous response curves, band drill-downs, and
-source-game-aligned comparison contributions in the detail tier. Because
-comparable puzzle checkpoints always score the same frozen set, `anthro eval
-report` uses those contributions to bootstrap the paired delta instead of
-applying an independent-input floor. Pass `--detail-root`, or configure the
-ordinary detail-root environment, when reading those floors; without retained
-details the paired floor is reported as unknown.
+resampled response resolution in the detail tier.
 
 Read the numbers with ordinary file tools, or with `anthro eval report` for a
 compact delta view, which annotates every delta with the floor it did or did

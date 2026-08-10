@@ -110,15 +110,6 @@ BOOTSTRAP_METHOD = "bootstrap-over-games"
 REPLICATE_METHOD = "independent-replicates"
 PROCESS_REPLICATE_METHOD = "repeated-process-replicates"
 
-#: The estimator a comparison-scoped data-sampling floor is produced by, named
-#: here beside the others so the two ways of estimating that one kind are
-#: written down in one place. ``BOOTSTRAP_METHOD`` resamples one reading's own
-#: games and reports a width about 1.9x too wide for a delta between two
-#: checkpoints scored on the same ones;
-#: ``docs/decisions/0033-pairing-is-a-correctness-fix-not-a-resolution-lever.md``
-#: owns why that is an error rather than a coarser estimate.
-PAIRED_BOOTSTRAP_METHOD = "paired-bootstrap-over-units"
-
 #: How a delta floor built from the two readings in front of it was arrived at.
 #: It fills the same field an estimator's name does while estimating nothing:
 #: both readings already measured their spread, and this is only the arithmetic
@@ -946,7 +937,6 @@ __all__ = [
     "COMBINED_DISPERSION_METHOD",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_COVERAGE",
-    "PAIRED_BOOTSTRAP_METHOD",
     "PROCESS_REPLICATE_METHOD",
     "REPLICATE_METHOD",
     "FloorEntry",

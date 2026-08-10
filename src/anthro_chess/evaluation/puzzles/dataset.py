@@ -764,8 +764,9 @@ def _sizing_record(selection: PuzzleSelectionConfig) -> dict[str, object]:
             conservative_detectable_difference(local)
         ),
         "note": (
-            "Conservative independent-checkpoint calculation; scoring the same "
-            "puzzles across checkpoints is paired and generally more sensitive."
+            "Conservative independent-checkpoint calculation sizing the "
+            "selection; it is not the floor any reported delta is judged "
+            "against."
         ),
     }
 

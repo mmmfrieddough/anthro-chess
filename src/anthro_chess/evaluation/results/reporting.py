@@ -20,7 +20,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
 
 from anthro_chess.evaluation.results.comparability import (
     UNSCOPED_WORKLOAD,
@@ -50,7 +49,6 @@ from anthro_chess.evaluation.results.noise import (
     NoiseFloorIndex,
     combined_floor,
 )
-from anthro_chess.evaluation.results.paired import NO_DETAIL_ROOT, PairedFloor
 from anthro_chess.evaluation.results.records import (
     ExecutionRecord,
     Measurement,
@@ -133,17 +131,6 @@ class ReportError(ValueError):
     """Raised when a report cannot be built from the requested selection."""
 
 
-class ComparisonFloorProvider(Protocol):
-    """Supply a floor that depends on both operands of one comparison."""
-
-    def floor(
-        self,
-        baseline: ResultEnvelope,
-        current: ResultEnvelope,
-        metric: str,
-    ) -> PairedFloor: ...
-
-
 class Movement(StrEnum):
     """Whether a delta is an improvement, judged only by declared direction."""
 
@@ -213,23 +200,13 @@ class MetricDelta:
     noise_floors: tuple[NoiseFloor, ...]
     bridges: tuple[str, ...]
     note: str | None
-    #: Why this row's data-sampling floor is not the paired one the metric is
-    #: defined against, when it should have been. ``None`` for a metric whose
-    #: floor was never paired, and for one whose pair was found. Reported as
-    #: its own field rather than only in the note because it changes what the
-    #: verdict beside it means: the substituted floor is the wider one, so
-    #: ``within`` on such a row is a weaker statement than ``within`` on any
-    #: other, and automation that cannot see the difference will read a real
-    #: improvement as noise.
-    paired_floor_unavailable: str | None = None
     #: The floor kinds this delta declined to borrow, because one reading
     #: measured a dispersion of that kind and the other measured none. Reported
-    #: rather than absorbed into the ``unknown`` verdict for the same reason as
-    #: the field above: a dispersion that describes one operand says nothing
-    #: about the difference, and a benchmark that withholds one per reading is
-    #: also saying the other operand was never an estimate. Automation reading
-    #: only the verdict would send somebody to re-measure a reading that has
-    #: already been measured.
+    #: rather than absorbed into the ``unknown`` verdict: a dispersion that
+    #: describes one operand says nothing about the difference, and a benchmark
+    #: that withholds one per reading is also saying the other operand was never
+    #: an estimate. Automation reading only the verdict would send somebody to
+    #: re-measure a reading that has already been measured.
     one_sided_floors: tuple[str, ...] = ()
     #: Which coordinates moved. ``None`` for a metric with no execution
     #: context, where the model is the only thing that can have moved.
@@ -265,7 +242,6 @@ class MetricDelta:
             ],
             "bridges": list(self.bridges),
             "note": self.note,
-            "paired_floor_unavailable": self.paired_floor_unavailable,
             "one_sided_floors": list(self.one_sided_floors),
             "attribution": (
                 None if self.attribution is None else self.attribution.as_record()
@@ -440,7 +416,6 @@ def build_delta_report(
     bridges: BridgeIndex,
     *,
     floors: NoiseFloorIndex | None = None,
-    comparison_floors: ComparisonFloorProvider | None = None,
     current: str | None = None,
     baseline: str | None = None,
     families: Sequence[str] | None = None,
@@ -495,7 +470,6 @@ def build_delta_report(
                 baseline_results,
                 bridges,
                 resolved_floors,
-                comparison_floors,
                 current_label,
                 baseline_label,
                 pivot,
@@ -587,7 +561,6 @@ def build_environment_report(
                 baseline_results,
                 bridges,
                 resolved_floors,
-                None,
                 _environment_name(current_results),
                 _environment_name(baseline_results),
                 pivot,
@@ -943,11 +916,6 @@ def _render_noise(metric: MetricDelta) -> str:
     floor, because the three are not interchangeable and a reader has to know
     whether their comparison is even exposed to it.
 
-    A sampling floor standing in for the paired one is named in the column
-    rather than only in the row's note, because it is the verdict itself that
-    the substitution weakens: such a floor is the wider of the two, so "within"
-    beside it covers real improvements as well as noise.
-
     A verdict the floors did not decide names none of them, even where some
     applied. A delta that clears what it has but carries a withheld kind is
     unknown because of the kind that is missing, so naming the one that bound
@@ -960,11 +928,6 @@ def _render_noise(metric: MetricDelta) -> str:
     ):
         return metric.noise.value
     kind = _NOISE_KIND_LABELS.get(metric.noise_floor_kind, metric.noise_floor_kind)
-    if (
-        metric.paired_floor_unavailable is not None
-        and metric.noise_floor_kind == SAMPLING_FLOOR_KIND
-    ):
-        kind = f"{kind}, unpaired"
     return f"{metric.noise.value} ({kind})"
 
 
@@ -1022,7 +985,6 @@ def _family_report(
     baseline_results: Sequence[ResultEnvelope],
     bridges: BridgeIndex,
     floors: NoiseFloorIndex,
-    comparison_floors: ComparisonFloorProvider | None,
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
@@ -1070,7 +1032,6 @@ def _family_report(
                 current=current,
                 bridges=bridges,
                 floors=floors,
-                comparison_floors=comparison_floors,
                 current_label=current_label,
                 baseline_label=baseline_label,
                 pivot=pivot,
@@ -1286,7 +1247,6 @@ def _metric_delta(
     current: tuple[ResultEnvelope, Measurement] | None,
     bridges: BridgeIndex,
     floors: NoiseFloorIndex,
-    comparison_floors: ComparisonFloorProvider | None,
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
@@ -1354,26 +1314,11 @@ def _metric_delta(
         else ()
     )
     delta = current_measurement.value - baseline_measurement.value
-    paired = (
-        NO_DETAIL_ROOT
-        if comparison_floors is None
-        else comparison_floors.floor(
-            baseline_envelope,
-            current_envelope,
-            definition.identifier,
-        )
-    )
-    # Silence here is only correct for a metric whose floor was never paired.
-    # Where the metric declares one, an unpaired floor is not a coarser reading
-    # of the same quantity, so the substitution is named rather than left for a
-    # reader to infer from a floor that looks like every other floor.
-    unpaired = paired.unavailable if definition.paired_sampling_floor else None
     applicable, one_sided = _applicable_floors(
         definition,
         baseline_measurement,
         current_measurement,
         floors,
-        comparison_floor=paired.floor,
         executions=(baseline_envelope.execution, current_envelope.execution),
         trainings=(
             baseline_envelope.checkpoint.training_sha256,
@@ -1414,11 +1359,9 @@ def _metric_delta(
             "bridged series seam"
             if comparison.comparability is Comparability.BRIDGED
             else None,
-            None if unpaired is None else f"paired floor unavailable: {unpaired}",
             _one_sided_note(one_sided),
             _hidden_note(hidden_series),
         ),
-        paired_floor_unavailable=unpaired,
         one_sided_floors=one_sided,
     )
 
@@ -1551,7 +1494,6 @@ def _applicable_floors(
     current: Measurement,
     floors: NoiseFloorIndex,
     *,
-    comparison_floor: NoiseFloor | None,
     executions: Sequence[ExecutionRecord | None] = (),
     trainings: Sequence[str | None] = (),
 ) -> tuple[tuple[NoiseFloor, ...], tuple[str, ...]]:
@@ -1606,12 +1548,9 @@ def _applicable_floors(
         else None
     )
     # What a source spanning the whole delta covers: a series characterization,
-    # the paired estimator, or the two readings combined. Read off the combined
-    # floor itself, so a kind cannot be reported as spanning with no floor
-    # behind it.
+    # or the two readings combined. Read off the combined floor itself, so a
+    # kind cannot be reported as spanning with no floor behind it.
     spanning = {floor.kind for floor in indexed}
-    if comparison_floor is not None:
-        spanning.add(comparison_floor.kind)
     if combined is not None:
         spanning.add(combined.kind)
     one_sided = {
@@ -1619,14 +1558,6 @@ def _applicable_floors(
     } - spanning
     candidates = [] if combined is None else [combined]
     candidates.extend(indexed)
-    if comparison_floor is not None:
-        # A paired floor is the data-sampling uncertainty of this exact delta.
-        # An independently characterized sampling floor answers a different,
-        # wider question and must not bind the same fixed-input comparison.
-        candidates = [
-            floor for floor in candidates if floor.kind != comparison_floor.kind
-        ]
-        candidates.append(comparison_floor)
     if definition.no_sampling_floor_reason is not None:
         candidates = [
             floor for floor in candidates if floor.kind != SAMPLING_FLOOR_KIND

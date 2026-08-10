@@ -307,11 +307,11 @@ class NoiseFloor(ResultModel):
     source: str | None = Field(default=None, min_length=1)
     #: Which estimator produced the value, named rather than described. One
     #: kind can be estimated more than one way, and the ways are not
-    #: interchangeable: a data-sampling floor bootstrapped over one reading's
-    #: own games and one bootstrapped over two checkpoints' paired differences
-    #: answer different questions and differ by a known factor. ``source``
-    #: carries that in prose for a reader; this carries it for a reader who has
-    #: to tell the two apart without parsing a sentence.
+    #: interchangeable: a data-sampling floor combined from two readings'
+    #: dispersions and one taken from a series characterization answer
+    #: different questions. ``source`` carries that in prose for a reader; this
+    #: carries it for a reader who has to tell the two apart without parsing a
+    #: sentence.
     estimator: Identifier | None = None
 
 
