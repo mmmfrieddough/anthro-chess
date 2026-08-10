@@ -535,7 +535,7 @@ def prepare_pgn(
             counts_path,
             ArchiveAccounts(
                 archive_sha256=input_sha256,
-                games_by_account=counter.games_by_account,
+                games_by_account=counter.account_games(),
             ),
         )
 

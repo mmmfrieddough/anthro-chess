@@ -86,7 +86,9 @@ _PLAYER_TAG_LENGTH = len(_PLAYER_TAGS[0])
 CENSUS_DIRECTORY = "census"
 ACCOUNT_GAMES_SUFFIX = ".accounts.tsv"
 ANSWERS_FILE = "answers.tsv"
-ACCOUNT_GAMES_FORMAT_VERSION = 1
+#: Version 2 drops the players that are not accounts, so a version 1 file
+#: counts a third more player-slots than any account holds.
+ACCOUNT_GAMES_FORMAT_VERSION = 2
 _HEADER_PREFIX = "#"
 logger = logging.getLogger(__name__)
 
@@ -130,6 +132,20 @@ def source_token() -> str | None:
     return os.environ.get(LICHESS_TOKEN_VARIABLE, "").strip() or None
 
 
+def is_account_name(name: str) -> bool:
+    """Return whether a PGN player name could be an account at all.
+
+    Not every player is one. A PGN prints ``?`` where the player was anonymous
+    and ``AI level 3`` where the opponent was the source's own engine, and
+    across this corpus those hold a third of every player-slot — enough to make
+    a coverage figure that counted them meaningless, on top of the requests
+    spent asking about names no account can carry. Both fail the source's
+    username alphabet, which is what this tests rather than naming them.
+    """
+
+    return name.isascii() and name.replace("-", "").replace("_", "").isalnum()
+
+
 class ArchiveAccountCounter:
     """Counts an account's games from the PGN lines it is shown.
 
@@ -143,7 +159,7 @@ class ArchiveAccountCounter:
     """
 
     def __init__(self) -> None:
-        self.games_by_account: dict[str, int] = {}
+        self._games_by_name: dict[str, int] = {}
 
     def observe(self, line: str) -> None:
         """Count one PGN line, which is a player tag or nothing of interest."""
@@ -151,7 +167,21 @@ class ArchiveAccountCounter:
         if line.startswith(_PLAYER_TAGS):
             name = line[_PLAYER_TAG_LENGTH:].partition('"')[0].strip().casefold()
             if name:
-                self.games_by_account[name] = self.games_by_account.get(name, 0) + 1
+                self._games_by_name[name] = self._games_by_name.get(name, 0) + 1
+
+    def account_games(self) -> dict[str, int]:
+        """Return the counts, less the players that are not accounts.
+
+        Sorting the non-accounts out here rather than in :meth:`observe` keeps
+        the test off a path that runs twice per game across billions of them,
+        and onto one that runs once per distinct name.
+        """
+
+        return {
+            name: games
+            for name, games in self._games_by_name.items()
+            if is_account_name(name)
+        }
 
 
 def count_archive_accounts(archive_path: Path) -> dict[str, int]:
@@ -168,7 +198,7 @@ def count_archive_accounts(archive_path: Path) -> dict[str, int]:
     with open_pgn_text(archive_path) as pgn_file:
         for line in pgn_file:
             counter.observe(line)
-    return counter.games_by_account
+    return counter.account_games()
 
 
 def write_account_games(path: Path, counted: ArchiveAccounts) -> None:
@@ -207,8 +237,7 @@ def read_account_games(path: Path) -> ArchiveAccounts:
         or not isinstance(header.get("archive_sha256"), str)
     ):
         raise CensusError(
-            f"{path} does not record the archive it counted in a format this "
-            "code reads; delete it to count that archive again"
+            f"{path} does not record the archive it counted in a format this code reads"
         )
     games_by_account: dict[str, int] = {}
     for line in body.splitlines():
@@ -227,8 +256,7 @@ def read_account_games(path: Path) -> ArchiveAccounts:
         raise CensusError(
             f"{path} holds {len(games_by_account)} account(s) over "
             f"{sum(games_by_account.values())} player-slot(s) but its header "
-            f"claims {header.get('accounts')} over {header.get('slots')}; "
-            "delete it to count that archive again"
+            f"claims {header.get('accounts')} over {header.get('slots')}"
         )
     return ArchiveAccounts(
         archive_sha256=str(header["archive_sha256"]),
@@ -246,13 +274,21 @@ def account_games(archive: PinnedArchive) -> ArchiveAccounts:
     """
 
     if archive.counts_path.is_file():
-        counted = read_account_games(archive.counts_path)
-        if counted.archive_sha256 == archive.sha256:
-            return counted
-        logger.info(
-            "%s counts an archive this selection no longer pins; counting again",
-            archive.counts_path,
-        )
+        try:
+            counted = read_account_games(archive.counts_path)
+        except CensusError as error:
+            # Recounting is the repair for every way a counts file can be
+            # unusable — an older format, a short write — and it is available
+            # whenever the archive still is. Raising instead would leave a
+            # scheduled census failing nightly on something one pass fixes.
+            logger.warning("%s; counting that archive again", error)
+        else:
+            if counted.archive_sha256 == archive.sha256:
+                return counted
+            logger.info(
+                "%s counts an archive this selection no longer pins; counting again",
+                archive.counts_path,
+            )
     if not archive.path.is_file():
         raise CensusError(
             f"{archive.path} is not on disk, so the accounts this selection "

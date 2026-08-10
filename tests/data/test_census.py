@@ -66,6 +66,37 @@ def test_counts_both_player_tags_as_one_account_whatever_case_it_printed(
     assert count_archive_accounts(archive.path) == {"one": 2, "two": 3, "three": 1}
 
 
+def test_leaves_out_the_players_that_are_not_accounts(tmp_path: Path) -> None:
+    """A third of this corpus's player-slots belong to no account at all."""
+
+    archive = _archive(
+        tmp_path,
+        "games.pgn",
+        ("One", "?"),
+        ("?", "AI level 2"),
+        ("Two", "AI level 8"),
+    )
+
+    assert count_archive_accounts(archive.path) == {"one": 1, "two": 1}
+
+
+def test_counts_an_archive_again_when_its_counts_predate_this_format(
+    tmp_path: Path,
+) -> None:
+    """A scheduled census repairs its own store rather than failing nightly."""
+
+    archive = _archive(tmp_path, "games.pgn", ("One", "?"))
+    account_games(archive)
+    archive.counts_path.write_text(
+        archive.counts_path.read_text(encoding="utf-8").replace(
+            '"format_version": 2', '"format_version": 1'
+        ),
+        encoding="utf-8",
+    )
+
+    assert account_games(archive).games_by_account == {"one": 1}
+
+
 def test_takes_the_pass_over_an_archive_at_most_once(tmp_path: Path) -> None:
     archive = _archive(tmp_path, "games.pgn", ("One", "Two"))
 
@@ -113,9 +144,9 @@ def test_rejects_counts_written_by_something_this_code_cannot_read(
 ) -> None:
     path = _counted(tmp_path, "counts", ARCHIVE_A, one=1).counts_path
     text = path.read_text(encoding="utf-8")
-    path.write_text(text.replace('"format_version": 1', '"format_version": 9'))
+    path.write_text(text.replace('"format_version": 2', '"format_version": 9'))
 
-    with pytest.raises(CensusError, match="delete it to count that archive again"):
+    with pytest.raises(CensusError, match="a format this code reads"):
         read_account_games(path)
 
 
