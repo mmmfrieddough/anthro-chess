@@ -263,6 +263,8 @@ def _freeze_pool(
                     if admits(train_game_id):
                         train_game_ids.add(train_game_id)
             if positions:
+                # A projection does not reorder a row group, so a position the
+                # scan found names the same game in the full read.
                 full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
                 selected.extend(rows_at_positions(full, positions))
 

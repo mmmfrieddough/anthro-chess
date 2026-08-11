@@ -671,11 +671,8 @@ def test_an_unreadable_row_group_names_the_shard_it_could_not_be_read_from(
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
-    """Parquet reports a bad page by row-group index and names no file at all.
-
-    An index identifies nothing on a corpus of tens of thousands of shards,
-    and whoever reads the failure is the one who has to find the shard to
-    rebuild.
+    """Whoever reads this failure is the one who has to find the shard and
+    rebuild it, and what the read itself raises locates no file at all.
     """
 
     shards, manifest_sha256 = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))

@@ -211,8 +211,9 @@ def read_normalized_rows(
 class _OpenShard:
     """An opened shard, carrying the path its read failures have to name.
 
-    Parquet reports a bad page by row-group index and nothing else, and an
-    index identifies no file on a corpus of tens of thousands of shards.
+    A failed page read raises a bare thrift message, so the row-group index
+    this module supplies is the whole locator, and an index identifies no file
+    on a corpus of tens of thousands of shards.
     """
 
     path: Path
