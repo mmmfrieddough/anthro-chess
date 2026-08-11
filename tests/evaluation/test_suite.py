@@ -299,6 +299,32 @@ def test_a_producer_that_discards_its_games_is_refused_before_the_sweep_runs(
         )
 
 
+def test_a_plan_resolves_against_an_artifact_that_is_not_there(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decision 0055: what a step reads is the step's to find, not the plan's.
+
+    Through the shipped path rather than an absolute one, because rooting is
+    where a plan-time check would be cheapest to add: it is already the pass
+    that knows which fields name artifacts.
+    """
+
+    data_root = tmp_path / "datasets"
+    monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
+    selection = _selection(tmp_path, body='pool = "artifacts/absent-pool"\n')
+
+    plan = resolve_suite(
+        _suite(benchmarks={"alpha": {"config": str(selection)}}),
+        registry=_registry(Recorder()),
+    )
+
+    resolved = plan.steps[0].resolved
+    assert resolved is not None
+    assert resolved.value.pool == data_root / "absent-pool"
+    assert not resolved.value.pool.exists()
+
+
 def test_a_cycle_is_refused(tmp_path: Path) -> None:
     """Two steps each waiting for the other never becomes an order."""
 

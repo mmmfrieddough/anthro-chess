@@ -18,9 +18,8 @@ script cannot:
 - **Ordering.** Decision decomposition reads the games the rollout generated,
   so it runs after it. That constraint is declared and enforced here rather
   than documented, and the whole plan resolves before the first benchmark
-  runs: an unreadable selection, a missing pool, or a rollout that was
-  configured to discard its games fails in the first second rather than the
-  first hour.
+  runs: an unreadable selection or a rollout that was configured to discard
+  its games fails in the first second rather than the first hour.
 - **Recording.** Whether a reading is committed is decided per benchmark
   within one sweep, so a sweep can commit the readings it meant to keep and
   leave the rest as evidence about the instrument.
@@ -308,11 +307,16 @@ def resolve_suite(
 ) -> SuitePlan:
     """Resolve every benchmark's configuration and the order they run in.
 
-    Everything that can fail cheaply fails here: an unknown benchmark, a
-    missing or invalid selection file, a cycle, a dependency on a step that is
-    not in the sweep, and a step configured to discard the games another step
-    needs. A sweep measured in hours should not discover any of those at the
-    end of it.
+    Everything the configuration alone decides fails here: an unknown
+    benchmark, a missing or invalid selection file, a cycle, a dependency on a
+    step that is not in the sweep, and a step configured to discard the games
+    another step needs. A sweep measured in hours should not discover any of
+    those at the end of it.
+
+    What a step will read is not among them, and deliberately: an artifact that
+    is not on this host is found by the step that reads it rather than by the
+    plan, per
+    ``docs/decisions/0055-a-missing-artifact-fails-its-step-not-the-plan.md``.
     """
 
     known = dict(registry) if registry is not None else benchmark_registry()
