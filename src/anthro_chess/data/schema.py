@@ -180,15 +180,11 @@ def encode_clock_remaining_deltas(
     shorten a game by slicing the column.
     """
 
-    stored: list[int | None] = []
-    for index, value in enumerate(remaining_ms):
-        previous = (
-            remaining_ms[index - _CLOCK_STRIDE] if index >= _CLOCK_STRIDE else None
-        )
-        if value is None or previous is None:
-            stored.append(value)
-        else:
-            stored.append(previous - value)
+    stored: list[int | None] = list(remaining_ms[:_CLOCK_STRIDE])
+    for previous, value in zip(
+        remaining_ms, remaining_ms[_CLOCK_STRIDE:], strict=False
+    ):
+        stored.append(value if value is None or previous is None else previous - value)
     return stored
 
 

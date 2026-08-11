@@ -245,3 +245,25 @@ def test_rejects_invalid_move_action_ids(action_id: int) -> None:
 def test_rejects_move_outside_the_standard_vocabulary() -> None:
     with pytest.raises(ValueError):
         encode_move(chess.Move.null())
+
+
+def test_every_move_in_the_vocabulary_encodes_to_its_own_id() -> None:
+    """The packed key has to be injective over the whole vocabulary.
+
+    ``encode_move`` looks a move up by packing its fields into an integer
+    rather than by hashing it, and the vocabulary is small and closed, so
+    agreement can be checked outright instead of sampled.
+    """
+
+    from anthro_chess.chess.actions import _MOVES
+
+    assert [encode_move(move) for move in _MOVES] == list(range(len(_MOVES)))
+
+
+def test_a_drop_is_not_a_standard_move_however_it_is_packed() -> None:
+    """``drop`` is in the key so a drop cannot collide with a standard move."""
+
+    drop = chess.Move(chess.E2, chess.E4, drop=chess.QUEEN)
+
+    with pytest.raises(ValueError):
+        encode_move(drop)
