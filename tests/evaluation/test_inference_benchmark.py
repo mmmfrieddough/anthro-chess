@@ -219,6 +219,31 @@ def test_a_reading_carries_the_spread_its_own_replicate_processes_measured(
         assert item.dispersion.units is None
 
 
+def test_a_metric_the_replicates_read_identically_is_left_unqualified(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """A floor of zero would clear every later delta on that metric.
+
+    What the replicates observed is that these processes did not separate the
+    number, which is not the observation that nothing could. The measured spread
+    stays in the reading's diagnostics; only the stored floor is withheld.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=27)
+    result = _measure(_config(checkpoint, replicates=1))
+    values = result.envelopes[0].measurements
+    unseparated = INFERENCE_MODEL_LOAD_SECONDS.identifier
+    spreads = {
+        item.metric: 0.0 if item.metric == unseparated else 0.5 for item in values
+    }
+
+    records = inference_module._dispersions(values, spreads, 3, result.execution)
+
+    qualified = {item.metric for item in values if item.fingerprint in records}
+    assert qualified == {item.metric for item in values} - {unseparated}
+
+
 def test_a_single_replicate_reads_without_measuring_a_spread(
     tmp_path: Path,
     inference_run: Callable[..., Path],
