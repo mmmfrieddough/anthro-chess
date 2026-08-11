@@ -60,10 +60,9 @@ POOL_SAMPLE_SEED = "anthro-evaluation-pool-v1"
 
 logger = logging.getLogger(__name__)
 
-#: What deciding one game's admission reads. A freeze scans every row in the
-#: corpus and keeps a fraction of a percent of them, so the schema it does not
-#: name here — the per-ply action and clock arrays above all — is nearly the
-#: whole cost of the pass that decides nothing from it.
+#: What deciding one game's admission reads. A freeze scans every corpus row to
+#: keep one split's admitted share of it, so reading the rest of the schema for
+#: the rows it discards is most of what a freeze costs.
 _FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
     NormalizedColumn.SPLIT,
     *GAME_IDENTITY_COLUMNS,
@@ -244,38 +243,28 @@ def _freeze_pool(
     # freeze can still see is whether the games it wrote are held out.
     train_game_ids: set[int] = set()
     for path in source_paths:
-        reader = open_normalized_shard(path)
-        for row_group in range(normalized_row_group_count(reader)):
-            scan = read_normalized_row_group(reader, row_group, _FREEZE_SCAN_COLUMNS)
-            splits = row_group_column(scan, NormalizedColumn.SPLIT)
-            source_ids = row_group_column(scan, NormalizedColumn.SOURCE_ID)
-            game_keys = row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY)
+        shard = open_normalized_shard(path)
+        for row_group in range(normalized_row_group_count(shard)):
+            scan = read_normalized_row_group(shard, row_group, _FREEZE_SCAN_COLUMNS)
+            identities = zip(
+                row_group_column(scan, NormalizedColumn.SPLIT),
+                row_group_column(scan, NormalizedColumn.SOURCE_ID),
+                row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
+                strict=True,
+            )
             positions: list[int] = []
-            for position, split in enumerate(splits):
+            for position, (split, source_id, game_key) in enumerate(identities):
                 if split == config.split:
                     split_games += 1
-                    if admits(
-                        derive_game_id(source_ids[position], game_keys[position])
-                    ):
+                    if admits(derive_game_id(source_id, game_key)):
                         positions.append(position)
                 elif split == "train":
-                    train_game_id = derive_game_id(
-                        source_ids[position], game_keys[position]
-                    )
+                    train_game_id = derive_game_id(source_id, game_key)
                     if admits(train_game_id):
                         train_game_ids.add(train_game_id)
-            # A row group is the smallest unit Parquet can read, so the full
-            # schema is paid for wherever the scan admitted anything and skipped
-            # entirely everywhere else.
             if positions:
-                selected.extend(
-                    rows_at_positions(
-                        read_normalized_row_group(
-                            reader, row_group, NORMALIZED_COLUMNS
-                        ),
-                        positions,
-                    )
-                )
+                full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
+                selected.extend(rows_at_positions(full, positions))
 
     if not selected:
         if split_games == 0:
