@@ -86,10 +86,6 @@ def test_an_absent_normalized_clock_bands_into_nothing(
     initial_ms: int | None,
     increment_ms: int | None,
 ) -> None:
-    """Preparation records an unlimited control as an absent one.
-
-    A game played without a clock is therefore indistinguishable here from one
-    whose control the source never reported, and neither is correspondence.
-    """
+    """A clockless game reaches these columns as absent, not as correspondence."""
 
     assert speed_from_clock_ms(initial_ms, increment_ms) is None

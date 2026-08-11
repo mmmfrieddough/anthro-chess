@@ -71,10 +71,8 @@ def test_a_speed_class_selects_a_diagonal_the_clock_bounds_cannot_draw(
     write_corpus: Callable[..., tuple[Path, Path]],
     fixture_game_id: Callable[[int], int],
 ) -> None:
-    # Five minutes and one minute with three seconds added are both blitz,
-    # while one minute alone is bullet: the class bands the initial clock plus
-    # forty increments, so no rectangle over the two columns keeps the first
-    # two and drops the third.
+    # 5+0 and 1+3 are blitz while 1+0 is bullet, so no bounds over the two
+    # clock columns keep the first two rows and drop the third.
     rows = [
         normalized_row(1, split="train", time_initial_ms=BLITZ_MS),
         normalized_row(

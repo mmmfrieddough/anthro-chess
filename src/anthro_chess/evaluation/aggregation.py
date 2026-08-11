@@ -29,10 +29,9 @@ TOP_K_ACCURACIES: tuple[int, ...] = (1, 3, 5)
 #: ratings are reported as their own slice rather than folded into a band.
 UNRATED_SLICE = "unrated"
 
-#: Slice name used for positions whose game carries no readable time control.
-#: A game played without a clock lands here too, since the normalized columns
-#: record an unlimited control as an absent one, so the slice says the class is
-#: unknown rather than naming correspondence.
+#: Speed slice for positions whose game names no readable time control, which
+#: is where a clockless game lands as well: the normalized columns record an
+#: unlimited control as an absent one.
 UNTIMED_SLICE = "untimed"
 
 #: Rule cases that can hold at a scored decision. Terminal, checkmate, and

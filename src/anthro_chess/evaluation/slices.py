@@ -708,8 +708,8 @@ def position_slices(
     an encoding also enables are left out: they are available in every position
     and would shift every bucket by a constant.
 
-    Speed labels the game rather than the position, so every decision in a
-    blitz game counts toward blitz, endgame included.
+    Speed comes from the game's control rather than the clock left at the ply,
+    so every decision in a blitz game counts toward blitz, endgame included.
     """
 
     legal_moves = sum(

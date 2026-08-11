@@ -26,8 +26,6 @@ _TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")
 #: estimated from the clock, which is how the source bands its own speeds.
 _ESTIMATED_MOVES = 40
 
-_MILLISECONDS_PER_SECOND = 1000
-
 
 class Speed(StrEnum):
     """How fast a game was played, banded by its estimated total length."""
@@ -94,9 +92,7 @@ def speed_from_clock_ms(
 
     if initial_ms is None or increment_ms is None:
         return None
-    return _band(
-        (initial_ms + _ESTIMATED_MOVES * increment_ms) / _MILLISECONDS_PER_SECOND
-    )
+    return _band((initial_ms + _ESTIMATED_MOVES * increment_ms) / 1000)
 
 
 def _band(estimated_seconds: float) -> Speed:

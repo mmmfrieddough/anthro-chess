@@ -39,8 +39,6 @@ if TYPE_CHECKING:
     import numpy as np
 
 LOADER_STATE_VERSION = 4
-#: Bumped when the recorded spec gains or loses an axis, so a stored resolution
-#: says whether an axis it does not mention was unset or did not yet exist.
 SELECTION_SPEC_VERSION = 2
 logger = logging.getLogger(__name__)
 #: The columns a selection filters on. Reading only these keeps the pass that
