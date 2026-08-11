@@ -33,6 +33,7 @@ from anthro_chess.data.schema import (
     clock_remaining_ms,
     row_game_id,
 )
+from anthro_chess.data.speed import speed_from_clock_ms
 
 if TYPE_CHECKING:
     import numpy as np
@@ -780,6 +781,13 @@ def _exclusion_reason(row: Mapping[str, Any], selection: SelectionConfig) -> str
         rating is None for rating in ratings
     ):
         return "missing_ratings"
+
+    if selection.speed is not None:
+        speed = speed_from_clock_ms(time_initial, time_increment)
+        if speed is None:
+            return "missing_time_control"
+        if speed != selection.speed:
+            return "speed_mismatch"
 
     checks: tuple[tuple[str, int | None, int | None, int | None], ...] = (
         (

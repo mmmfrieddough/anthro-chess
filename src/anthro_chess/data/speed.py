@@ -26,6 +26,8 @@ _TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")
 #: estimated from the clock, which is how the source bands its own speeds.
 _ESTIMATED_MOVES = 40
 
+_MILLISECONDS_PER_SECOND = 1000
+
 
 class Speed(StrEnum):
     """How fast a game was played, banded by its estimated total length."""
@@ -73,8 +75,30 @@ def speed_from_time_control(value: str | None) -> Speed | None:
     if parsed is None:
         return None
     initial_seconds, increment_seconds = parsed
-    estimate = initial_seconds + _ESTIMATED_MOVES * increment_seconds
+    return _band(initial_seconds + _ESTIMATED_MOVES * increment_seconds)
+
+
+def speed_from_clock_ms(
+    initial_ms: int | None,
+    increment_ms: int | None,
+) -> Speed | None:
+    """Band a normalized time control, or ``None`` when it says nothing.
+
+    Correspondence is unreachable here. Preparation reads ``TimeControl "-"``
+    as an unavailable initial clock, so a game played without one and a game
+    whose control was never reported are the same pair of nulls in these
+    columns, and neither is claimed as a class.
+    """
+
+    if initial_ms is None or increment_ms is None:
+        return None
+    return _band(
+        (initial_ms + _ESTIMATED_MOVES * increment_ms) / _MILLISECONDS_PER_SECOND
+    )
+
+
+def _band(estimated_seconds: float) -> Speed:
     for upper_bound, speed in _UPPER_BOUND_SECONDS:
-        if estimate <= upper_bound:
+        if estimated_seconds <= upper_bound:
             return speed
     return Speed.CORRESPONDENCE

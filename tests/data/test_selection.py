@@ -23,6 +23,7 @@ from anthro_chess.data import (
     SequenceDataLoader,
     SequenceDataset,
     SequenceLoaderConfig,
+    Speed,
     build_sharded_index,
 )
 from anthro_chess.data.artifacts import (
@@ -62,6 +63,39 @@ def test_filters_within_one_corpus_by_time_control(
 
     assert _loaded(dataset) == tuple(sorted((fixture_game_id(2), fixture_game_id(3))))
     assert dataset.resolution.excluded_games == {"below_minimum_time_initial": 1}
+
+
+def test_a_speed_class_selects_a_diagonal_the_clock_bounds_cannot_draw(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    # Three minutes and one minute with three seconds added are both blitz,
+    # while one minute alone is bullet: the class runs against the initial
+    # clock plus forty increments, so no rectangle over the two columns keeps
+    # the first two and drops the third.
+    rows = [
+        normalized_row(1, split="train", time_initial_ms=BLITZ_MS),
+        normalized_row(
+            2, split="train", time_initial_ms=BULLET_MS, time_increment_ms=3_000
+        ),
+        normalized_row(3, split="train", time_initial_ms=BULLET_MS),
+        normalized_row(4, split="train", time_initial_ms=None, time_increment_ms=None),
+    ]
+    normalized_directory, _ = write_corpus(tmp_path, rows)
+
+    dataset = SequenceDataset.from_parquet(
+        normalized_directory / "games.parquet",
+        split="train",
+        selection=SelectionConfig(speed=Speed.BLITZ),
+    )
+
+    assert _loaded(dataset) == tuple(sorted((fixture_game_id(1), fixture_game_id(2))))
+    assert dataset.resolution.excluded_games == {
+        "speed_mismatch": 1,
+        "missing_time_control": 1,
+    }
 
 
 def test_rating_band_requires_both_players_inside_it(

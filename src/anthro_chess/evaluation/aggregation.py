@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.slices import PositionCharacteristic, PositionSlices
 
-SLICE_TABLE_VERSION = 1
+SLICE_TABLE_VERSION = 2
 
 #: Reported top-k human-move accuracies. Top-1 says how often the model would
 #: play the human move outright; the wider cutoffs say whether it was close.
@@ -28,6 +28,12 @@ TOP_K_ACCURACIES: tuple[int, ...] = (1, 3, 5)
 #: Slice name used for positions whose player rating is unavailable. Missing
 #: ratings are reported as their own slice rather than folded into a band.
 UNRATED_SLICE = "unrated"
+
+#: Slice name used for positions whose game carries no readable time control.
+#: A game played without a clock lands here too, since the normalized columns
+#: record an unlimited control as an absent one, so the slice says the class is
+#: unknown rather than naming correspondence.
+UNTIMED_SLICE = "untimed"
 
 #: Rule cases that can hold at a scored decision. Terminal, checkmate, and
 #: stalemate positions offer no move to predict, so they never appear here.
@@ -44,6 +50,7 @@ REPORTED_CHARACTERISTICS: tuple[PositionCharacteristic, ...] = (
 PHASE_DIMENSION = "phase"
 COLOR_DIMENSION = "color"
 RATING_DIMENSION = "rating_band"
+SPEED_DIMENSION = "speed"
 LEGAL_MOVE_COUNT_DIMENSION = "legal_move_count"
 RULE_CASE_DIMENSION = "rule_case"
 OPENING_FAMILY_DIMENSION = "opening_family"
@@ -53,6 +60,7 @@ SLICE_DIMENSIONS: tuple[str, ...] = (
     PHASE_DIMENSION,
     COLOR_DIMENSION,
     RATING_DIMENSION,
+    SPEED_DIMENSION,
     LEGAL_MOVE_COUNT_DIMENSION,
     RULE_CASE_DIMENSION,
     OPENING_FAMILY_DIMENSION,
@@ -240,6 +248,10 @@ class SliceAggregator:
         self._bucket(
             RATING_DIMENSION,
             slices.rating_band if slices.rating_band is not None else UNRATED_SLICE,
+        ).add(position)
+        self._bucket(
+            SPEED_DIMENSION,
+            str(slices.speed) if slices.speed is not None else UNTIMED_SLICE,
         ).add(position)
         self._bucket(
             LEGAL_MOVE_COUNT_DIMENSION,

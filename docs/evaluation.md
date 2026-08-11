@@ -328,8 +328,11 @@ case. Phase is committed on the evidence that held-out mask penalty varies
 severalfold between opening, middlegame, and endgame positions: a pool-wide
 average sits between those populations, and a comparison that does not hold
 phase fixed reads a shift in game-length or phase composition as a legality
-change. Everything else — color, legal-move-count buckets, cross-conditioning
-tables, per-position records — stays in the machine-local detail tier.
+change. Everything else — color, speed, legal-move-count buckets,
+cross-conditioning tables, per-position records — stays in the machine-local
+detail tier. Speed stays there while one corpus is one class: the slice is what
+makes a mixed pool readable, and committing a series over it is a question for
+the generation that spans speeds.
 
 Rating-band series are committed only when the run uses the default bands. A
 changed band boundary is a different measurement rather than movement in an
