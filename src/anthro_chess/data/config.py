@@ -9,6 +9,7 @@ from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data.schema import SplitName
+from anthro_chess.data.speed import Speed
 
 
 class SourceConfig(ConfigModel):
@@ -88,6 +89,10 @@ class FilterConfig(ConfigModel):
     rejected. A relative path resolves against the selection file naming it,
     because the snapshot is checked in beside that selection rather than built
     during preparation; ``configs/data/marked-accounts/`` says why.
+
+    ``speed`` is matched against the class
+    :func:`~anthro_chess.data.speed.speed_from_time_control` derives, so a game
+    whose time control says nothing is rejected along with the other classes.
     """
 
     minimum_plies: int = Field(default=1, ge=1)
@@ -95,16 +100,7 @@ class FilterConfig(ConfigModel):
     require_ratings: StrictBool = False
     exclude_bots: StrictBool = True
     marked_accounts: Path | None = None
-    event_speed: (
-        Literal[
-            "bullet",
-            "blitz",
-            "rapid",
-            "classical",
-            "correspondence",
-        ]
-        | None
-    ) = None
+    speed: Speed | None = None
     maximum_games: int | None = Field(default=None, ge=1)
 
 

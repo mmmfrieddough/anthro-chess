@@ -41,7 +41,7 @@ exclude_bots = true
 # the coverage it reports is worth claiming, cut the snapshot with
 # `uv run anthro data mark-accounts`, then set:
 # marked_accounts = "marked-accounts/lichess-standard-rated-2017-04.txt"
-event_speed = "blitz"
+speed = "blitz"
 # Bound the first real training proof while retaining enough games for learned signal.
 maximum_games = 1000000
 
