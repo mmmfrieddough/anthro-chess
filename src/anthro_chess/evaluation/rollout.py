@@ -533,9 +533,10 @@ class SeedSpread:
             return None
         dispersion = stdev([value for _, value in values])
         if dispersion == 0.0:
-            # Absent for the same reason as below three seeds: the seeds agreeing
-            # says this draw of them could not move the distance, not that a
-            # re-run would not.
+            # ``bounded_floor`` refuses a zero, and absent is the right answer
+            # anyway, for the same reason as below three seeds: the seeds
+            # agreeing says this draw of them could not move the distance, not
+            # that a re-run would not.
             return None
         # The seeds are the replicates, so a suite run at the usual handful of
         # them leaves few degrees of freedom and a wide bound. That is the
