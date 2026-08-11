@@ -25,16 +25,24 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     game_ids_sha256,
+    normalized_row_group_count,
     normalized_shard_paths,
+    open_normalized_shard,
+    read_normalized_row_group,
     read_normalized_rows,
+    row_group_column,
+    rows_at_positions,
     validate_manifest_compatibility,
     write_normalized_rows,
 )
 from anthro_chess.data.schema import (
+    GAME_IDENTITY_COLUMNS,
+    NORMALIZED_COLUMNS,
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
     NormalizedColumn,
     SplitName,
+    derive_game_id,
     row_game_id,
 )
 from anthro_chess.evaluation.coverage import pool_coverage
@@ -51,6 +59,14 @@ POOL_MANIFEST_FILE_NAME = "manifest.json"
 POOL_SAMPLE_SEED = "anthro-evaluation-pool-v1"
 
 logger = logging.getLogger(__name__)
+
+#: What deciding one game's admission reads. A freeze scans every corpus row to
+#: keep one split's admitted share of it, so reading the rest of the schema for
+#: the rows it discards is most of what a freeze costs.
+_FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
+    NormalizedColumn.SPLIT,
+    *GAME_IDENTITY_COLUMNS,
+)
 
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
 #: remaining columns only to discard them is most of what a load costs.
@@ -227,16 +243,30 @@ def _freeze_pool(
     # freeze can still see is whether the games it wrote are held out.
     train_game_ids: set[int] = set()
     for path in source_paths:
-        for row in read_normalized_rows(path):
-            split = row[NormalizedColumn.SPLIT]
-            if split == config.split:
-                split_games += 1
-                if admits(row_game_id(row)):
-                    selected.append(row)
-            elif split == "train":
-                train_game_id = row_game_id(row)
-                if admits(train_game_id):
-                    train_game_ids.add(train_game_id)
+        shard = open_normalized_shard(path)
+        for row_group in range(normalized_row_group_count(shard)):
+            scan = read_normalized_row_group(shard, row_group, _FREEZE_SCAN_COLUMNS)
+            identities = zip(
+                row_group_column(scan, NormalizedColumn.SPLIT),
+                row_group_column(scan, NormalizedColumn.SOURCE_ID),
+                row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
+                strict=True,
+            )
+            positions: list[int] = []
+            for position, (split, source_id, game_key) in enumerate(identities):
+                if split == config.split:
+                    split_games += 1
+                    if admits(derive_game_id(source_id, game_key)):
+                        positions.append(position)
+                elif split == "train":
+                    train_game_id = derive_game_id(source_id, game_key)
+                    if admits(train_game_id):
+                        train_game_ids.add(train_game_id)
+            if positions:
+                # A projection does not reorder a row group, so a position the
+                # scan found names the same game in the full read.
+                full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
+                selected.extend(rows_at_positions(full, positions))
 
     if not selected:
         if split_games == 0:

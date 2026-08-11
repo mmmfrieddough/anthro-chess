@@ -23,6 +23,7 @@ from anthro_chess.data import (
     DataPreparationError,
     PrepareConfig,
     SourceConfig,
+    Speed,
     acquire_configured_archive,
     prepare_archives,
     prepare_pgn,
@@ -48,7 +49,7 @@ def test_baseline_selection_pins_one_bounded_verified_rating_namespace() -> None
     config = load_config(PrepareConfig, path=BASELINE_CONFIG).value
 
     assert config.source.rating_namespace == "lichess_blitz"
-    assert config.filters.event_speed == "blitz"
+    assert config.filters.speed is Speed.BLITZ
     assert config.filters.maximum_games is not None
     assert config.output.games_per_shard is not None
     assert config.split.require_nonempty is True
@@ -207,6 +208,36 @@ def test_filters_games_and_records_rejection_reasons(tmp_path: Path) -> None:
         "rules_infraction": 1,
         "unrated_game": 1,
     }
+
+
+def test_a_speed_filter_rejects_a_game_whose_time_control_says_nothing(
+    tmp_path: Path,
+) -> None:
+    """A speed label in the event text is not evidence of the speed."""
+
+    input_path = tmp_path / "unclocked.pgn"
+    input_path.write_text(
+        _short_game(site="blitz-by-clock")
+        + _short_game(site="labelled-but-unclocked", time_control=None),
+        encoding="utf-8",
+    )
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(
+            'source.id="test"',
+            'source.version="fixture"',
+            'source.url="https://example.test/"',
+            'source.license="CC0-1.0"',
+            'filters.speed="blitz"',
+        ),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    assert result.accepted_games == 1
+    manifest = _read_json(result.manifest_path)
+    assert manifest["games"]["rejection_reasons"] == {"speed_mismatch": 1}
 
 
 def test_keeps_a_game_whose_clock_precision_varies_at_its_finest_tick(
@@ -407,11 +438,11 @@ def test_prepare_rejects_input_that_does_not_match_pinned_archive(
         prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
 
 
-def test_streams_zstandard_input_into_bounded_shards_and_one_namespace(
+def test_streams_zstandard_input_into_bounded_shards_and_one_speed(
     tmp_path: Path,
 ) -> None:
     games = (
-        _short_game(site="rapid", event="Rated Rapid game")
+        _short_game(site="rapid", time_control="600+0")
         + _short_game(site="game-0")
         + _short_game(site="game-0")
         + "".join(_short_game(site=f"game-{index}") for index in range(1, 8))
@@ -427,7 +458,7 @@ def test_streams_zstandard_input_into_bounded_shards_and_one_namespace(
             'source.url="https://example.test/"',
             'source.license="CC0-1.0"',
             'source.rating_namespace="test_blitz"',
-            'filters.event_speed="blitz"',
+            'filters.speed="blitz"',
             "filters.require_ratings=true",
             "filters.maximum_games=5",
             "output.games_per_shard=2",
@@ -461,7 +492,7 @@ def test_streams_zstandard_input_into_bounded_shards_and_one_namespace(
     assert manifest["games"]["scanned"] == 7
     assert manifest["games"]["rejection_reasons"] == {
         "duplicate_game": 1,
-        "rating_namespace_mismatch": 1,
+        "speed_mismatch": 1,
     }
     assert [shard["games"] for shard in manifest["output"]["shards"]] == [2, 2, 1]
     assert manifest["coverage"]["source_rating"] == {
@@ -815,11 +846,15 @@ def _short_game(
     *,
     site: str,
     event: str = "Rated Blitz game",
+    time_control: str | None = "300+0",
     extra_headers: str = "",
     white: str = "White",
     black: str = "Black",
     moves: str = "1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0",
 ) -> str:
+    time_control_header = (
+        f'[TimeControl "{time_control}"]\n' if time_control is not None else ""
+    )
     return f"""
 [Event "{event}"]
 [Site "https://example.test/{site}"]
@@ -830,7 +865,7 @@ def _short_game(
 [Result "1-0"]
 [WhiteElo "1200"]
 [BlackElo "1200"]
-{extra_headers}
+{time_control_header}{extra_headers}
 {moves}
 
 """.lstrip()

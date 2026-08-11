@@ -664,6 +664,28 @@ def test_a_stated_floor_survives_a_model_side_too_thin_to_bootstrap() -> None:
     assert comparison.references is None
 
 
+def test_a_redraw_that_moves_nothing_states_its_zero_rather_than_refusing() -> None:
+    """This family keeps the estimated zero every other estimator refuses.
+
+    Decision 0042 settles it here rather than in the shared arithmetic, which
+    rejects a zero outright. The games generated for a curve are themselves the
+    draw, so a distance no resample moved is a statement about the play this
+    reading produced rather than a sample that came out flat, and the reading
+    carries ``model_variation`` beside the distance so a reader sees as much.
+    """
+
+    # Deterministic in the rating, so every game at a rating is the same game
+    # and no resample of them can move the curve.
+    identical = _generated(lambda rating, _: _length(rating), per_rating=8)
+    comparison = _compare(identical)
+
+    assert comparison.dispersions is not None
+    assert comparison.dispersions.method == CURVE_BOOTSTRAP_METHOD
+    assert comparison.dispersions.conditional.value == 0.0
+    assert comparison.dispersions.conditional.bound == 0.0
+    assert comparison.dispersions.conditional_floor == 0.0
+
+
 def test_declaring_the_model_side_fixed_leaves_the_reading_itself_alone() -> None:
     """Only the floor's claim changes, which is the point of the distinction.
 

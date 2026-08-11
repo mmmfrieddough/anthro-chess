@@ -712,6 +712,32 @@ def test_an_empty_selection_fails_instead_of_starting_a_run_on_nothing(
         )
 
 
+def test_an_unreadable_row_group_names_the_shard_it_could_not_be_read_from(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Whoever reads this failure is the one who has to find the shard and
+    rebuild it, and what the read itself raises locates no file at all.
+    """
+
+    shards, manifest_sha256 = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+    raw = bytearray(shards[0].path.read_bytes())
+    # A read parses the footer first, so corrupting only the data pages ahead
+    # of it fails the row group rather than the open.
+    footer = len(raw) - 8 - int.from_bytes(raw[-8:-4], "little")
+    raw[4:footer] = bytes(footer - 4)
+    shards[0].path.write_bytes(bytes(raw))
+
+    with pytest.raises(DataLoadingError, match=str(shards[0].path)):
+        build_sharded_index(
+            shards,
+            split="train",
+            selection=SelectionConfig(),
+            manifest_sha256=manifest_sha256,
+        )
+
+
 def test_a_game_that_decodes_to_another_length_than_indexed_fails_clearly(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],

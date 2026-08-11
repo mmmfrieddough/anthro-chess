@@ -683,7 +683,15 @@ def test_the_seeds_re_measure_each_distance_independently(
     assert set(reading.seed_spread) == set(ComparedQuantity)
     for spread in reading.seed_spread.values():
         assert [seed for seed, _ in spread.distances] == [0, 1, 2]
-        assert spread.floor is not None and spread.floor >= 0.0
+        # A floor exactly where the seeds moved. Three that agreed observed that
+        # this draw of them could not move the distance, which is not a spread
+        # of zero for every later delta to clear.
+        moved = len({value for _, value in spread.distances}) > 1
+        assert (spread.floor is not None) == moved
+    # A stub policy saturates several of these quantities whatever the seed, so
+    # the check above passes vacuously if the play ever shrinks to where none of
+    # them move.
+    assert any(spread.floor is not None for spread in reading.seed_spread.values())
 
 
 def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(
@@ -761,6 +769,12 @@ def _comparison_table(rendered: str) -> tuple[str, dict[str, str]]:
     return lines[start], rows
 
 
+def _dashed(value: float | None) -> str:
+    """Return the cell the table prints for an optional qualifier."""
+
+    return "-" if value is None else f"{value:.4f}"
+
+
 def test_the_comparison_table_qualifies_each_arm_with_its_own_numbers(
     reference_pool: Path,
     small_bandwidth: None,
@@ -790,17 +804,16 @@ def test_the_comparison_table_qualifies_each_arm_with_its_own_numbers(
         assert comparison.references is not None
         assert comparison.dispersions is not None
         spread = reading.seed_spread[quantity]
-        assert spread.floor is not None and spread.pooled_floor is not None
         assert rows[quantity.value].split() == [
             quantity.value,
             f"{comparison.conditional_distance:.4f}",
             f"{comparison.references.conditional:.4f}",
             f"{comparison.dispersions.conditional_floor:.4f}",
-            f"{spread.floor:.4f}",
+            _dashed(spread.floor),
             f"{comparison.pooled_distance:.4f}",
             f"{comparison.references.pooled:.4f}",
             f"{comparison.dispersions.pooled_floor:.4f}",
-            f"{spread.pooled_floor:.4f}",
+            _dashed(spread.pooled_floor),
             comparison.response.value,
         ]
 
