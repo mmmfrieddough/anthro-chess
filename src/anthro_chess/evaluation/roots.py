@@ -7,8 +7,9 @@ which happens to hold an ``artifacts/`` tree, so it is rewritten beneath
 
 Which fields a schema roots is declared here rather than at a call site, and
 each benchmark's registry entry in :mod:`anthro_chess.evaluation.benchmarks`
-names the list it is resolved through. A benchmark whose pool silently failed
-to resolve is the one failure a sweep should never discover an hour in.
+names the list it is resolved through. A field left off that list is never
+rewritten, and downstream nothing can tell such a path from one the caller wrote
+deliberately.
 """
 
 from __future__ import annotations
