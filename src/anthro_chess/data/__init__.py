@@ -59,6 +59,7 @@ from anthro_chess.data.prepare import (
     prepare_archives,
     prepare_pgn,
 )
+from anthro_chess.data.rating_namespace import rating_namespace_from_event
 from anthro_chess.data.speed import Speed, speed_from_time_control
 from anthro_chess.data.streaming import (
     STREAMING_IDENTITY_VERSION,
@@ -141,6 +142,7 @@ __all__ = [
     "prepare_archives",
     "prepare_pgn",
     "previous_action_token",
+    "rating_namespace_from_event",
     "speed_from_time_control",
     "terminal_action_for",
 ]

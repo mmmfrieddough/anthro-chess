@@ -97,9 +97,9 @@ reuses it only while that identity still matches.
 
 Preparation reads Zstandard-compressed PGN directly, so it does not need a
 second uncompressed copy. The baseline selection accepts one explicit Lichess
-speed and rating namespace, rejects missing or invalid source ratings and bot
-games, stops at a deterministic accepted-game bound, and writes bounded
-Parquet shards through the existing shared PGN parser and action codec.
+speed, rejects missing or invalid source ratings and bot games, stops at a
+deterministic accepted-game bound, and writes bounded Parquet shards through
+the existing shared PGN parser and action codec.
 Game-id hashing keeps split assignments stable and ensures a duplicate source
 game cannot cross the split boundary.
 
@@ -317,7 +317,7 @@ The main initial source should be the Lichess open database:
 
 The first bounded baseline uses a standard rated monthly export rather than the
 much larger universal archive. It selects the first month in which the standard
-exports include clock comments, then isolates one speed namespace. This keeps
+exports include clock comments, then isolates one speed. This keeps
 the acquisition practical enough for the first training proof while preserving
 a direct path to a larger or higher-precision selection through configuration
 once downstream evidence justifies it.
@@ -501,6 +501,16 @@ Glicko-2 number and a Chess.com rapid one are not the same quantity, and a
 reader that treats them as one has silently pooled two scales. The normalized
 value is a separate column rather than an overwrite, so revisiting the
 conversion never destroys what the source actually said.
+
+The namespace is read per game from the source's own label rather than declared
+per selection, because one source rates one player in several pools at once and
+a selection can span them. That label is the only evidence a game carries about
+its pool: the time control the speed axis is derived from disagrees with it
+wherever the source's vocabulary has moved since. A game whose label names no
+pool records no namespace instead of a plausible one, and
+`docs/decisions/0057-the-rating-namespace-is-derived-per-game.md` says why the
+absence is worth more than the guess — and where an export that relabelled its
+own history leaves the evidence weaker than that.
 
 For initial training, use Lichess ratings directly as the normalized rating.
 Other sources can still contribute move, style, player, opening, evaluation, or

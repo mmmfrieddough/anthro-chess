@@ -8,20 +8,42 @@ from typing import Literal
 from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
+from anthro_chess.data.rating_namespace import names_a_pool
 from anthro_chess.data.schema import SplitName
 from anthro_chess.data.speed import Speed
 
 
 class SourceConfig(ConfigModel):
-    """Identity and rating semantics for one source selection."""
+    """Identity and rating semantics for one source selection.
+
+    ``rating_namespace_prefix`` names the family of pools a source rates in
+    rather than one of them; which pool rated a game is read per game by
+    :func:`~anthro_chess.data.rating_namespace.rating_namespace_from_event`.
+    """
 
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     version: str = Field(min_length=1)
     url: str = Field(min_length=1)
     license: str = Field(min_length=1)
-    rating_namespace: str | None = None
+    rating_namespace_prefix: str | None = Field(
+        default=None,
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
     rating_system: str | None = None
     ratings_are_normalized: StrictBool = False
+
+    @model_validator(mode="after")
+    def _validate_prefix_leaves_the_pool_to_the_game(self) -> SourceConfig:
+        # A selection that moved a whole namespace under this key rather than
+        # splitting it would stamp every row ``lichess_blitz_blitz``.
+        prefix = self.rating_namespace_prefix
+        if prefix is not None and names_a_pool(prefix):
+            raise ValueError(
+                f"rating namespace prefix {prefix!r} already names a pool, and "
+                "the pool is read per game from the source's own label"
+            )
+        return self
 
 
 _COMPRESSION_SUFFIXES = {"zstd": ".zst", "bzip2": ".bz2"}
