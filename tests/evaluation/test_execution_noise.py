@@ -102,6 +102,25 @@ def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
     assert spreads == {LATENCY: pytest.approx(replicate_dispersion([10.0, 12.0, 14.0]))}
 
 
+def test_a_metric_the_processes_did_not_separate_carries_no_spread() -> None:
+    """A floor of zero here would clear every later delta on that metric.
+
+    What the replicates observed is that these processes did not separate the
+    number — a clock too coarse for what was timed reads this way at any process
+    count — so the metric is left bare rather than qualified by a zero.
+    """
+
+    own = _sample({LATENCY: 10.0, THROUGHPUT: 40.0})
+    others = [
+        _sample({LATENCY: 12.0, THROUGHPUT: 40.0}),
+        _sample({LATENCY: 14.0, THROUGHPUT: 40.0}),
+    ]
+
+    spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
+
+    assert set(spreads) == {LATENCY}
+
+
 def test_the_bound_counts_the_processes_behind_the_spread() -> None:
     own = _sample({LATENCY: 10.0})
     others = [_sample({LATENCY: 12.0}), _sample({LATENCY: 14.0})]

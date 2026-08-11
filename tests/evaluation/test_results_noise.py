@@ -36,6 +36,7 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_MOVE_LATENCY_BY_PERCENTILE,
 )
+from anthro_chess.evaluation.results.noise import bounded_spread
 
 Digest = Callable[..., DataComponent]
 
@@ -72,7 +73,6 @@ def test_a_floor_is_the_delta_two_independent_measurements_produce() -> None:
     bound = dispersion_bound(0.1, degrees_of_freedom=200, confidence=0.5)
     floor = bounded_floor(0.1, degrees_of_freedom=200, coverage=1.0, confidence=0.5)
     assert floor == pytest.approx(math.sqrt(2) * bound)
-    assert bounded_floor(0.0, degrees_of_freedom=5) == 0.0
     single = bounded_floor(0.1, degrees_of_freedom=5, coverage=1.0)
     doubled = bounded_floor(0.1, degrees_of_freedom=5, coverage=2.0)
     assert doubled == pytest.approx(2 * single)
@@ -144,6 +144,22 @@ def test_a_bound_needs_a_spread_to_bound() -> None:
         dispersion_bound(0.1, degrees_of_freedom=0)
     with pytest.raises(NoiseCharacterizationError, match="between zero and one"):
         dispersion_bound(0.1, degrees_of_freedom=5, confidence=1.0)
+
+
+def test_a_dispersion_of_zero_is_refused_by_every_producer() -> None:
+    # The bound is a multiple of what it bounds, so no arithmetic downstream
+    # rescues a zero: the floor comes out zero and clears every delta, and a
+    # zero floor and a missing one take opposite branches in a verdict. Checked
+    # on each entry point rather than only on the shared one, because covering
+    # all of them from a single guard is the reason it sits where it does.
+    for produce in (
+        dispersion_bound,
+        bounded_floor,
+        bounded_spread,
+        measured_dispersion,
+    ):
+        with pytest.raises(NoiseCharacterizationError, match="no bound to compute"):
+            produce(0.0, degrees_of_freedom=5)
 
 
 def test_one_replicate_cannot_produce_a_floor() -> None:

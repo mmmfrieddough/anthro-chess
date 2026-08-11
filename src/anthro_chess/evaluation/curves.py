@@ -1461,9 +1461,19 @@ def _resample(
             observed = values[np.isfinite(values)]
             if observed.size < 2:
                 return None, None
+            dispersion = float(np.std(observed, ddof=1))
+            # A zero is built here rather than bounded, which is what every
+            # other estimator's is refused for. Decision 0042 keeps this
+            # family's: the games generated for a curve are themselves the draw,
+            # so a distance no resample moved is a statement about the play this
+            # reading produced rather than a sample that came out flat, and the
+            # reading carries ``model_variation`` beside the distance so a
+            # reader sees as much.
             bootstrapped.append(
-                measured_dispersion(
-                    float(np.std(observed, ddof=1)),
+                MetricDispersion(value=0.0, bound=0.0, source=source, estimator=method)
+                if dispersion == 0.0
+                else measured_dispersion(
+                    dispersion,
                     degrees_of_freedom=freedom,
                     confidence=confidence,
                     source=source,
