@@ -1452,7 +1452,7 @@ maximum_games = 2
     ]
     assert budget.points[0].processed_positions < budget.points[1].processed_positions
     assert budget.points[0].training_seconds < budget.points[1].training_seconds
-    assert budget.points[0].view == "preview-small"
+    assert budget.points[0].view == "preview-small-2"
     # A preview reads the validation split, so it can never score a game the
     # training loop consumed.
     preview = next(item for item in recorded if item.kind == "held-out-preview")

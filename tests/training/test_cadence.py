@@ -359,7 +359,7 @@ def test_a_firing_records_previews_and_health_as_separate_results(
     health = next(item for item in reading.envelopes if item.kind == HEALTH_KIND)
     assert {item.metric for item in preview.measurements} == set(HELD_OUT_METRICS)
     assert preview.data is not None
-    assert preview.data.view == "preview-small"
+    assert preview.data.view == "preview-small-2"
     # A training-batch statistic never carries evaluation inputs at all.
     assert health.data is None
     assert len(reading.recorded_paths) == 2
