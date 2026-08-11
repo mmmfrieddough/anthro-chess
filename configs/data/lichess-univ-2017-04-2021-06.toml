@@ -9,9 +9,10 @@ artifact_name = "lichess-univ-2017-04-2021-06"
 # It is still not ready to prepare from: a corpus
 # spanning speeds needs the rating namespace derived per game (#386).
 #
-# Filters are absent for the same reason rather than by oversight, and this
-# selection keeps every speed rather than isolating one, so the filters it
-# needs are not the sibling selection's. `rating_namespace` is unset so
+# No `[filters]` section is written yet, so preparation applies the schema's
+# defaults. This selection keeps every speed rather than isolating one, so the
+# section the sibling selection writes is not the one this needs, and what it
+# should say waits on the same issue. `rating_namespace` is unset so
 # that a corpus spanning speeds writes no namespace rather than a wrong one —
 # an absent value is detectable downstream where a wrong one is not.
 

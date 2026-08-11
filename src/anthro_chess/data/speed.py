@@ -9,7 +9,7 @@ time control does not move, which is why the axis is derived from it here.
 The bands and the forty-move length estimate are the source's own, so this
 reproduces the archive's labels wherever the archive's vocabulary was already
 the current one. See
-``0055-the-speed-axis-is-derived-from-the-time-control.md``.
+``0056-the-speed-axis-is-derived-from-the-time-control.md``.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def parse_time_control(value: str | None) -> tuple[int, int] | None:
 def speed_from_time_control(value: str | None) -> Speed | None:
     """Band a PGN ``TimeControl`` value, or ``None`` when it says nothing."""
 
-    if value is not None and value.strip() == _UNLIMITED:
+    if value == _UNLIMITED:
         return Speed.CORRESPONDENCE
     parsed = parse_time_control(value)
     if parsed is None:

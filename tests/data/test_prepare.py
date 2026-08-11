@@ -218,7 +218,7 @@ def test_a_speed_filter_rejects_a_game_whose_time_control_says_nothing(
     input_path = tmp_path / "unclocked.pgn"
     input_path.write_text(
         _short_game(site="blitz-by-clock")
-        + _short_game(site="blitz-by-label-only", time_control="-"),
+        + _short_game(site="labelled-but-unclocked", time_control=None),
         encoding="utf-8",
     )
     resolved = load_config(
@@ -846,12 +846,15 @@ def _short_game(
     *,
     site: str,
     event: str = "Rated Blitz game",
-    time_control: str = "300+0",
+    time_control: str | None = "300+0",
     extra_headers: str = "",
     white: str = "White",
     black: str = "Black",
     moves: str = "1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0",
 ) -> str:
+    time_control_header = (
+        f'[TimeControl "{time_control}"]\n' if time_control is not None else ""
+    )
     return f"""
 [Event "{event}"]
 [Site "https://example.test/{site}"]
@@ -862,8 +865,7 @@ def _short_game(
 [Result "1-0"]
 [WhiteElo "1200"]
 [BlackElo "1200"]
-[TimeControl "{time_control}"]
-{extra_headers}
+{time_control_header}{extra_headers}
 {moves}
 
 """.lstrip()

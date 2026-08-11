@@ -7,7 +7,7 @@ Date: 2026-08-10
 Accepted as initial design direction. Names the source, precision and span the
 corpus in `#89` is built from, and the limitations that choice accepts
 permanently. Extended by
-`0055-the-speed-axis-is-derived-from-the-time-control.md`, which takes the
+`0056-the-speed-axis-is-derived-from-the-time-control.md`, which takes the
 speed axis off the source's own label because this span is one the label does
 not hold still across.
 

@@ -1,4 +1,4 @@
-# 0055: The Speed Axis Is Derived From The Time Control
+# 0056: The Speed Axis Is Derived From The Time Control
 
 Date: 2026-08-11
 
@@ -27,9 +27,9 @@ Cross-tabulating the archive's own label against the class derived from
 | classical | classical | 218,979 |
 | correspondence | correspondence | 41,491 |
 
-11,348,506 games, and the classes disagree nowhere except that split. The
-archive's Classical bucket is seven parts games any later month calls Rapid to
-one part games still called Classical.
+11,348,506 games, and the classes disagree nowhere except that split. Twelve
+parts of the archive's Classical bucket are games any later month calls Rapid,
+against one part still called Classical.
 
 A corpus spanning 2017-04 and any later month would therefore carry a speed
 axis meaning two different things depending on which archive a game came from.
@@ -59,9 +59,10 @@ in the event text is not evidence about the game.
 
 The class is derivable from a normalized row's time fields for every game with
 a clock, so slicing a benchmark by speed needs no schema column — which is what
-`docs/data.md` (Corpus Expansion) assumes. Correspondence is the exception: the
-row records no clock, so a row alone cannot tell an unlimited game from one
-whose control was unreadable.
+`docs/data.md` (Corpus Expansion) assumes. Correspondence is the exception: an
+unlimited control and an absent one both record the initial clock as
+unavailable, so a row alone cannot tell the two apart. A control that was
+present and unreadable is separable, being recorded as rejected instead.
 
 Two names changed with the derivation. The filter is `filters.speed` rather
 than `filters.event_speed`, and preparation reports a rejection under it as
@@ -74,6 +75,10 @@ being silently reinterpreted.
 that class was previously unnameable and its games were rejected by any speed
 filter.
 
-The pinned baseline selection is unaffected: blitz membership is identical
-under both derivations for all 11,348,506 games of its archive, so the corpus
-it prepares, and any model trained on it, are unchanged.
+What the pinned baseline selection prepares is unchanged: blitz membership is
+identical under both derivations for all 11,348,506 games of its archive, so
+its shards, and any model trained on them, are the same. What it records is
+not, and the recorded selection is the corpus's identity — so a corpus prepared
+before this cannot be appended to, and is rebuilt rather than extended. That
+refusal is loud and says so. No multi-archive corpus had been started when this
+landed, and the baseline had already reached its bound.
