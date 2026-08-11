@@ -7,12 +7,11 @@ artifact_name = "lichess-univ-2017-04-2021-06"
 # Preparation names no input against this selection and appends every archive
 # of it that has been acquired, decoding as many at once as fill the machine.
 # It is still not ready to prepare from: a corpus
-# spanning speeds needs the rating namespace derived per game (#386) and the
-# speed axis derived from the time control rather than the event label (#387).
+# spanning speeds needs the rating namespace derived per game (#386).
 #
-# Filters are absent for the same reason rather than by oversight: the speed
-# axis is not derivable from the event label across this span, so the filters
-# this needs are not the sibling selection's. `rating_namespace` is unset so
+# Filters are absent for the same reason rather than by oversight, and this
+# selection keeps every speed rather than isolating one, so the filters it
+# needs are not the sibling selection's. `rating_namespace` is unset so
 # that a corpus spanning speeds writes no namespace rather than a wrong one —
 # an absent value is detectable downstream where a wrong one is not.
 
