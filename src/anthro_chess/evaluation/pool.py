@@ -25,16 +25,24 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     game_ids_sha256,
+    normalized_row_group_count,
     normalized_shard_paths,
+    open_normalized_shard,
+    read_normalized_row_group,
     read_normalized_rows,
+    row_group_column,
+    rows_at_positions,
     validate_manifest_compatibility,
     write_normalized_rows,
 )
 from anthro_chess.data.schema import (
+    GAME_IDENTITY_COLUMNS,
+    NORMALIZED_COLUMNS,
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
     NormalizedColumn,
     SplitName,
+    derive_game_id,
     row_game_id,
 )
 from anthro_chess.evaluation.coverage import pool_coverage
@@ -51,6 +59,15 @@ POOL_MANIFEST_FILE_NAME = "manifest.json"
 POOL_SAMPLE_SEED = "anthro-evaluation-pool-v1"
 
 logger = logging.getLogger(__name__)
+
+#: What deciding one game's admission reads. A freeze scans every row in the
+#: corpus and keeps a fraction of a percent of them, so the schema it does not
+#: name here — the per-ply action and clock arrays above all — is nearly the
+#: whole cost of the pass that decides nothing from it.
+_FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
+    NormalizedColumn.SPLIT,
+    *GAME_IDENTITY_COLUMNS,
+)
 
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
 #: remaining columns only to discard them is most of what a load costs.
@@ -227,16 +244,38 @@ def _freeze_pool(
     # freeze can still see is whether the games it wrote are held out.
     train_game_ids: set[int] = set()
     for path in source_paths:
-        for row in read_normalized_rows(path):
-            split = row[NormalizedColumn.SPLIT]
-            if split == config.split:
-                split_games += 1
-                if admits(row_game_id(row)):
-                    selected.append(row)
-            elif split == "train":
-                train_game_id = row_game_id(row)
-                if admits(train_game_id):
-                    train_game_ids.add(train_game_id)
+        reader = open_normalized_shard(path)
+        for row_group in range(normalized_row_group_count(reader)):
+            scan = read_normalized_row_group(reader, row_group, _FREEZE_SCAN_COLUMNS)
+            splits = row_group_column(scan, NormalizedColumn.SPLIT)
+            source_ids = row_group_column(scan, NormalizedColumn.SOURCE_ID)
+            game_keys = row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY)
+            positions: list[int] = []
+            for position, split in enumerate(splits):
+                if split == config.split:
+                    split_games += 1
+                    if admits(
+                        derive_game_id(source_ids[position], game_keys[position])
+                    ):
+                        positions.append(position)
+                elif split == "train":
+                    train_game_id = derive_game_id(
+                        source_ids[position], game_keys[position]
+                    )
+                    if admits(train_game_id):
+                        train_game_ids.add(train_game_id)
+            # A row group is the smallest unit Parquet can read, so the full
+            # schema is paid for wherever the scan admitted anything and skipped
+            # entirely everywhere else.
+            if positions:
+                selected.extend(
+                    rows_at_positions(
+                        read_normalized_row_group(
+                            reader, row_group, NORMALIZED_COLUMNS
+                        ),
+                        positions,
+                    )
+                )
 
     if not selected:
         if split_games == 0:

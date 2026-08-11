@@ -87,6 +87,44 @@ def test_freeze_selects_only_the_test_split_and_records_provenance(
     }
 
 
+def test_freeze_takes_the_admitted_rows_of_each_row_group(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """Admission is decided from a projection and the rows are taken by position.
+
+    A position is only meaningful against the row group it was found in, so a
+    take resolved against the wrong one writes a real game that is the wrong
+    game — which no count and no digest of the ids alone would show. Each row's
+    ply count differs, so the pool says which row it actually holds.
+    """
+
+    plies = {index: index + 1 for index in range(10)}
+    admitted = (1, 2, 4, 9)
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [
+            normalized_row(
+                index,
+                split="test" if index in admitted else "train",
+                plies=plies[index],
+            )
+            for index in plies
+        ],
+        games_per_shard=4,
+        row_group_size=2,
+    )
+
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+    pool = load_pool(tmp_path / "pool")
+    assert {game.game_id: game.ply_count for game in pool.games} == {
+        fixture_game_id(index): plies[index] for index in admitted
+    }
+
+
 def test_manifest_records_ids_and_content_hashes_for_later_leakage_checks(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
