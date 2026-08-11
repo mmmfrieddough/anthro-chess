@@ -51,16 +51,38 @@ at a time**, whatever `--concurrency` asks for. What an archive may admit is the
 bound less what every archive before it contributed, so deciding that for two at
 once would overshoot by whatever the second one took.
 
+**Archives prepared at once divide the machine rather than each taking it.**
+`0053`'s cap is what one reader can be fed, which is a bound per archive; the
+default is now the smaller of that and the machine's cores divided between the
+archives sharing it. Without the second bound the default forks a full pool per
+archive, and eight archives ask for 96 decoders on 32 threads.
+
 ## What it bought
 
 Two real archives of 250,000 games each, on an idle machine:
 
 | Arrangement | Wall | Rate | |
 | --- | --- | --- | --- |
-| One at a time, 12 workers | 55.9s | 8,942 scanned/s | 1.00x |
-| Both at once, 6 workers each | 38.7s | 12,921 scanned/s | **1.44x** |
+| One at a time, 12 workers | 55.4s | 9,027 scanned/s | 1.00x |
+| Both at once, 4 workers each | 49.9s | 10,017 scanned/s | 1.11x |
+| Both at once, 6 workers each | 37.6s | 13,302 scanned/s | 1.47x |
+| Both at once, 8 workers each | 35.7s | 13,998 scanned/s | 1.55x |
+| Both at once, 12 workers each | 33.4s | 14,988 scanned/s | **1.66x** |
+| Both at once, 15 workers each | 33.7s | 14,854 scanned/s | 1.65x |
 
 The output was byte-identical between them, over every shard and the manifest.
+
+Two archives are enough to show that the gain is not a tail effect: alone they
+take 27.6s and 28.7s, so the slower one is 1.04x the faster and the wall clock
+of a concurrent pair is not being set by an imbalance between them. The default
+picks twelve here, which is the measured best of that column.
+
+`0053` measured further than two archives will go, by preparing one archive
+under several names: eight at three workers each reach 18,417 scanned/s,
+**2.14x** one preparation with the machine to itself. It is a weaker reading
+than this table — one cached archive rather than eight distinct ones — but it
+is the shape the sizing rule is drawn from, and its optimum at eight archives is
+the three decoders that rule picks.
 
 `0053` measured the ceiling this approaches with more archives in flight: eight
 at three workers each reach 18,417 scanned/s, **2.14x** one preparation with the

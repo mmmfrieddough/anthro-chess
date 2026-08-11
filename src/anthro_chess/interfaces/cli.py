@@ -227,8 +227,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=_worker_count,
         help=(
-            "Processes decoding games, 0 to decode in the reader's own. "
-            "Defaults to as many as one reader can keep fed. Nothing about it "
+            "Processes decoding games per archive, 0 to decode in the "
+            "reader's own. Defaults to as many as one reader can keep fed, "
+            "divided by the archives sharing the machine. Nothing about it "
             "reaches the artifact."
         ),
     )
@@ -1119,8 +1120,13 @@ def _run_data_acquire(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _prepare_workers(requested: int | None) -> int:
-    """Size preparation's decoding pool, leaving the reader a core of its own."""
+def _prepare_workers(requested: int | None, concurrency: int = 1) -> int:
+    """Size the decoding pool one archive gets, of however many share the machine.
+
+    Two bounds, whichever is smaller. A reader cannot feed more than
+    ``_MAXIMUM_PREPARE_WORKERS`` whatever else is running, and archives prepared
+    at once divide the machine between them rather than each taking all of it.
+    """
 
     if requested is not None:
         return requested
@@ -1129,7 +1135,8 @@ def _prepare_workers(requested: int | None) -> int:
     # a decoder per core onto a handful of them.
     affinity = getattr(os, "sched_getaffinity", None)
     cores = len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
-    return min(max(cores - 1, 0), _MAXIMUM_PREPARE_WORKERS)
+    share = max(cores // concurrency - 1, 0)
+    return min(share, _MAXIMUM_PREPARE_WORKERS)
 
 
 def _run_data_prepare(arguments: argparse.Namespace) -> int:
@@ -1163,7 +1170,7 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
                 [path for path, _ in acquired],
                 output,
                 resolved,
-                workers=_prepare_workers(arguments.workers),
+                workers=_prepare_workers(arguments.workers, arguments.concurrency),
                 concurrency=arguments.concurrency,
                 counts_paths=[counts_path for _, counts_path in acquired],
             )
