@@ -102,12 +102,12 @@ def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
     assert spreads == {LATENCY: pytest.approx(replicate_dispersion([10.0, 12.0, 14.0]))}
 
 
-def test_a_metric_the_processes_did_not_separate_carries_no_spread() -> None:
-    """A floor of zero here would clear every later delta on that metric.
+def test_a_metric_the_processes_did_not_separate_is_measured_at_zero() -> None:
+    """The measurement says so; withholding the floor is the recorder's job.
 
-    What the replicates observed is that these processes did not separate the
-    number — a clock too coarse for what was timed reads this way at any process
-    count — so the metric is left bare rather than qualified by a zero.
+    A spread of zero is what these processes observed, and it stays in the
+    reading's diagnostics for that reason. What must not follow is a stored
+    floor of zero, which would clear every later delta on the metric.
     """
 
     own = _sample({LATENCY: 10.0, THROUGHPUT: 40.0})
@@ -118,7 +118,11 @@ def test_a_metric_the_processes_did_not_separate_carries_no_spread() -> None:
 
     spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
 
-    assert set(spreads) == {LATENCY}
+    assert spreads[THROUGHPUT] == 0.0
+    with pytest.raises(ExecutionNoiseError, match="no bound to compute"):
+        execution_dispersion_record(
+            spreads[THROUGHPUT], processes=3, source="fixture replicates"
+        )
 
 
 def test_the_bound_counts_the_processes_behind_the_spread() -> None:

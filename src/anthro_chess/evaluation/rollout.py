@@ -496,7 +496,7 @@ class SeedSpread:
     Independent replicates of the same measurement, which is the definition of
     evaluation noise. Two seeds are enough to report the values and too few to
     derive a floor from, so the floor is absent below three rather than
-    invented.
+    invented, and absent again where the seeds all agreed.
 
     Recorded as a diagnostic rather than used as a floor, and the distinction
     matters. Each seed plays only its share of the suite's games, so a per-seed

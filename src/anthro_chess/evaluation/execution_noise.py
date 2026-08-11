@@ -244,10 +244,6 @@ def measure_execution_dispersions(
     dispersion has to describe the reading it travels with, not a neighbouring
     measurement of the same thing.
 
-    A metric the processes did not separate is absent from the result rather
-    than carrying a zero, so a caller qualifies what was measured and leaves the
-    rest bare.
-
     Fewer processes do not produce a narrower dispersion here, only a less
     certain one: the bound widens as the degrees of freedom fall, so cutting the
     count trades measurement time for a floor that resolves less. Two processes
@@ -268,17 +264,12 @@ def measure_execution_dispersions(
         # a whole benchmark run.
         _require_one_execution(samples)
     try:
-        dispersions = {
+        return {
             metric: process_dispersion(values)
             for metric, values in _readings_by_metric(samples).items()
         }
     except NoiseCharacterizationError as error:
         raise ExecutionNoiseError(str(error)) from error
-    # A metric every process timed identically is omitted rather than qualified
-    # by a floor of zero, which would clear every later delta. What the
-    # replicates observed is that these processes did not separate the metric —
-    # a clock too coarse for what was timed reads this way at any process count.
-    return {metric: value for metric, value in dispersions.items() if value > 0.0}
 
 
 def execution_dispersion_record(

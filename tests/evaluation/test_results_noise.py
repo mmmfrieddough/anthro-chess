@@ -146,12 +146,14 @@ def test_a_bound_needs_a_spread_to_bound() -> None:
         dispersion_bound(0.1, degrees_of_freedom=5, confidence=1.0)
 
 
-def test_a_dispersion_of_zero_is_refused_by_every_producer() -> None:
+def test_a_dispersion_of_zero_is_refused_at_every_entry_point() -> None:
     # The bound is a multiple of what it bounds, so no arithmetic downstream
     # rescues a zero: the floor comes out zero and clears every delta, and a
     # zero floor and a missing one take opposite branches in a verdict. Checked
     # on each entry point rather than only on the shared one, because covering
-    # all of them from a single guard is the reason it sits where it does.
+    # all of them from a single guard is the reason it sits where it does. An
+    # estimator that means its zero states it as a record instead, which is how
+    # the generated-play curves keep theirs.
     for produce in (
         dispersion_bound,
         bounded_floor,
