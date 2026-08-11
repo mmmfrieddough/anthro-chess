@@ -80,8 +80,13 @@ def apply_view(games: Sequence[PoolGame], config: ViewConfig) -> ViewSelection:
     if config.maximum_games is not None:
         ordered = ordered[: config.maximum_games]
 
+    # A declared name describes the selection its own config asks for, and a
+    # sweep override that caps the games leaves it describing something larger
+    # than what ran. Naming the cap where it bit is what keeps a stored name
+    # from outliving the reading it labels.
+    truncated = len(ordered) < len(eligible)
     return ViewSelection(
-        name=config.name,
+        name=f"{config.name}-{len(ordered)}" if truncated else config.name,
         game_ids=tuple(sorted(game.game_id for game in ordered)),
         prefix_plies=config.prefix_plies,
         eligible_games=len(eligible),

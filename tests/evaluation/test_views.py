@@ -121,7 +121,7 @@ def test_the_spec_record_identifies_exactly_which_games_were_measured() -> None:
 
     record = selection.as_record()
 
-    assert record["name"] == "fast"
+    assert record["name"] == "fast-5"
     assert record["selected_games"] == 5
     assert record["eligible_games"] == 30
     assert len(str(record["game_ids_sha256"])) == 64
@@ -131,6 +131,18 @@ def test_the_spec_record_identifies_exactly_which_games_were_measured() -> None:
             "game_ids_sha256"
         ]
     )
+
+
+def test_a_view_that_took_everything_records_the_name_it_declared() -> None:
+    selection = apply_view(_pool(30), ViewConfig(name="canonical"))
+
+    assert selection.as_record()["name"] == "canonical"
+
+
+def test_a_cap_that_bit_nothing_leaves_the_declared_name_alone() -> None:
+    selection = apply_view(_pool(5), ViewConfig(name="canonical", maximum_games=50))
+
+    assert selection.as_record()["name"] == "canonical"
 
 
 def test_contradictory_ply_bounds_are_rejected() -> None:

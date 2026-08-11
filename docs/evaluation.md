@@ -622,7 +622,11 @@ a quantity identical in every unit scored reads that way at any sample size, and
 the wider draw that would move it is exactly the work `unknown` points at. A zero
 would instead clear every later delta, which is the failure a floor exists to
 prevent. The genuine zero is the *stated* one, where re-measuring replays the
-same games, and a reading records that it stated rather than estimated.
+same games, and a reading records that it stated rather than estimated. The
+arithmetic that bounds a dispersion refuses a zero outright, so an estimator
+that reaches it has already decided which of the two it holds. Generated-play
+curves are the one family that keeps a zero its own resample produced, for the
+reason decision 0042 gives.
 
 **A floor needs both operands.** A dispersion one reading measured and the other
 did not describes that operand rather than the difference, and nothing licenses
@@ -689,6 +693,10 @@ a smaller pool, so what one benchmark costs is its own to choose. The pool's
 bound answers what a view cannot: what every benchmark process materializes
 before any view is applied, and what the `canonical` view scores, since that one
 declares no bound and is the whole pool.
+
+A recorded view name describes the selection that ran rather than the one its
+config asked for: a view a cap actually shortened records that cap, so a sweep
+override cannot leave a stored name claiming more than the reading behind it.
 
 Representativeness and frozenness belong to different things. The pool recipe is
 uniform and unstratified, so its composition tracks corpus composition

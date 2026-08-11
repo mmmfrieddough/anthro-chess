@@ -513,7 +513,15 @@ def _dispersions(
     processes: int,
     execution: ExecutionRecord,
 ) -> dict[str, MetricDispersion]:
-    """Return each series' spread, keyed the way the recorder carries one."""
+    """Return each series' spread, keyed the way the recorder carries one.
+
+    A metric the processes read identically is left bare rather than qualified
+    by a floor of zero, which would clear every later delta on it. What the
+    replicates observed is that these processes did not separate the number — a
+    clock too coarse for what was timed reads that way at any process count. The
+    measured spread still travels in the reading's own diagnostics, so the zero
+    stays visible without becoming a floor.
+    """
 
     from anthro_chess.evaluation.execution_noise import execution_dispersion_record
 
@@ -525,7 +533,7 @@ def _dispersions(
             source=source,
         )
         for value in values
-        if value.metric in spreads
+        if spreads.get(value.metric, 0.0) > 0.0
     }
 
 

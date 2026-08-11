@@ -66,6 +66,7 @@ from anthro_chess.data.schema import (
     encode_clock_remaining_deltas,
     row_game_id,
 )
+from anthro_chess.data.speed import parse_time_control, speed_from_time_control
 from anthro_chess.data.termination import (
     TERMINAL_ACTION_STATUSES,
     TERMINATION_CATEGORIES,
@@ -80,14 +81,9 @@ _STATUS_REJECTED: FieldStatus = "rejected"
 _CLOCK_RE = re.compile(r"\[%clk\s+([^\]\s]+)\]")
 _CLOCK_CENTISECONDS_RE = re.compile(r"\[%clkc\s+([^\]\s]+)\]")
 _CLOCK_SHAPED_RE = re.compile(r"\[%clk(?:c)?\b")
-_TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")
 _SOURCE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 #: PGN ``Termination "Rules infraction"`` in the form ``_parse_text`` yields.
 _RULES_INFRACTION_TERMINATION = "rules_infraction"
-_EVENT_SPEED_RE = re.compile(
-    r"\b(bullet|blitz|rapid|classical|correspondence)\b",
-    re.IGNORECASE,
-)
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 #: What ``chess.pgn.Headers`` seeds a game with when a tag is absent. Collecting
 #: headers into a plain dict is what makes the decode one pass, and it is these
@@ -1388,10 +1384,10 @@ def _screen_headers(
     if config.filters.exclude_bots and _has_bot_player(headers):
         return "bot_game"
     if (
-        config.filters.event_speed is not None
-        and _event_speed(headers.get("Event")) != config.filters.event_speed
+        config.filters.speed is not None
+        and speed_from_time_control(headers.get("TimeControl")) != config.filters.speed
     ):
-        return "rating_namespace_mismatch"
+        return "speed_mismatch"
     if (
         config.filters.require_rated
         and "rated" not in headers.get("Event", "").casefold()
@@ -1584,13 +1580,6 @@ def _has_bot_player(headers: Mapping[str, str]) -> bool:
     )
 
 
-def _event_speed(event: str | None) -> str | None:
-    if event is None:
-        return None
-    match = _EVENT_SPEED_RE.search(event)
-    return match.group(1).casefold() if match is not None else None
-
-
 def _source_game_key(site: str | None) -> str | None:
     if site is None:
         return None
@@ -1619,13 +1608,14 @@ def _parse_time_control(
     if value is None or not value.strip() or value in {"-", "?"}:
         unavailable = _OptionalInteger(None, _STATUS_UNAVAILABLE)
         return unavailable, unavailable
-    match = _TIME_CONTROL_RE.fullmatch(value.strip())
-    if match is None:
+    parsed = parse_time_control(value)
+    if parsed is None:
         rejected = _OptionalInteger(None, _STATUS_REJECTED)
         return rejected, rejected
+    initial_seconds, increment_seconds = parsed
     return (
-        _OptionalInteger(int(match.group(1)) * 1000, _STATUS_PRESENT),
-        _OptionalInteger(int(match.group(2)) * 1000, _STATUS_PRESENT),
+        _OptionalInteger(initial_seconds * 1000, _STATUS_PRESENT),
+        _OptionalInteger(increment_seconds * 1000, _STATUS_PRESENT),
     )
 
 

@@ -80,11 +80,27 @@ def dispersion_bound(
     what makes that visible instead of letting a confident-looking floor come
     out of a measurement that could not support one. Adding replicates is the
     only way to narrow it.
+
+    A dispersion of exactly zero is refused, because the limit is a multiple of
+    what it bounds and cannot rescue one. An estimator whose replicates all
+    agreed observed that it could not move this quantity, which is not the same
+    as observing that nothing could, and the zero floor that would follow clears
+    every delta. Deciding what to do about that is the estimator's — a caller
+    with an answer withholds the quantity before reaching here, and a reading
+    whose replicates genuinely cannot differ states its zero rather than
+    estimating one.
     """
 
     if dispersion < 0.0 or not math.isfinite(dispersion):
         raise NoiseCharacterizationError(
             "a dispersion must be a finite, non-negative number"
+        )
+    if dispersion == 0.0:
+        raise NoiseCharacterizationError(
+            "a dispersion of exactly zero has no bound to compute; a floor of "
+            "zero would clear every delta, so an estimator that could not move "
+            "a quantity withholds it and a reading that cannot vary states its "
+            "zero instead"
         )
     if degrees_of_freedom < 1:
         raise NoiseCharacterizationError(
