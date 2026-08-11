@@ -1008,8 +1008,10 @@ waiting on work somebody could do.
 `docs/decisions/0028-qualifying-the-rating-dependency-family.md` owns the
 choice, and its estimator for the remaining quantities is superseded by
 `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`.
-Until this family resamples its own scored games for a dispersion, those
-quantities report `unknown` rather than a floor.
+The rest resample the games the reading scored, on the pass that produced it.
+Each is weighted by the positions that carry it, which for the two anchor
+quantities are the ones a trajectory signal was computed for rather than every
+rated position.
 
 ## Held-Out Prediction
 

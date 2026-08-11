@@ -46,6 +46,7 @@ from anthro_chess.evaluation.adjudication import (
 )
 from anthro_chess.evaluation.aggregation import SliceTable
 from anthro_chess.evaluation.dependency import (
+    DEGRADATION_METRICS,
     Conditioning,
     ConditioningKind,
     DependencyError,
@@ -100,12 +101,9 @@ from anthro_chess.evaluation.results import (
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
-    DEPENDENCY_RATING_ABSENT_DEGRADATION,
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
-    DEPENDENCY_RATING_CONSTANT_DEGRADATION,
     DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE,
-    DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
     MOVE_PREDICTION_PROJECTION,
 )
@@ -518,6 +516,7 @@ def evaluate_checkpoint(
         inputs,
         positions,
         adjudication,
+        dependency,
         component,
         opening_frequency=frequency,
     )
@@ -606,6 +605,7 @@ def _estimate_dispersions(
     inputs: _EvaluationInputs,
     positions: Sequence[PositionPolicy],
     adjudication: AdjudicationReport | None,
+    dependency: DependencyTestResult | None,
     component: DataComponent,
     *,
     opening_frequency: OpeningFrequency | None,
@@ -623,6 +623,7 @@ def _estimate_dispersions(
         adjudication_totals = (
             () if adjudication is None else adjudication.per_game_totals()
         )
+        dependency_totals = () if dependency is None else dependency.per_game_totals
         return sampling_dispersions(
             merge_game_totals(
                 per_game_totals(
@@ -631,6 +632,7 @@ def _estimate_dispersions(
                     opening_frequency=opening_frequency,
                 ),
                 adjudication_totals,
+                dependency_totals,
             ),
             component=component,
             config=config.noise,
@@ -735,19 +737,12 @@ def _run_dependency_tests(
         raise CheckpointEvaluationError(str(error)) from error
 
 
-_DEGRADATION_METRICS = {
-    ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
-    ConditioningKind.CONSTANT: DEPENDENCY_RATING_CONSTANT_DEGRADATION,
-    ConditioningKind.ABSENT: DEPENDENCY_RATING_ABSENT_DEGRADATION,
-}
-
-
 def _dependency_measurements(
     dependency: DependencyTestResult,
     component: DataComponent,
 ) -> tuple[Measurement, ...]:
     values: list[Measurement] = []
-    for kind, definition in _DEGRADATION_METRICS.items():
+    for kind, definition in DEGRADATION_METRICS.items():
         result = dependency.corruption(kind)
         if result is None:
             continue
