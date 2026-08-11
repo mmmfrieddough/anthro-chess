@@ -153,6 +153,51 @@ def test_the_decoding_pool_stops_growing_where_one_reader_stops_feeding_it(
     assert _prepare_workers(31) == 31
 
 
+def test_archives_prepared_at_once_divide_the_machine_rather_than_each_take_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Otherwise the default forks a full pool per archive onto one machine."""
+
+    from anthro_chess.interfaces.cli import _MAXIMUM_PREPARE_WORKERS, _prepare_workers
+
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(32)), raising=False
+    )
+
+    assert _prepare_workers(None, 1) == _MAXIMUM_PREPARE_WORKERS
+    assert _prepare_workers(None, 8) == 3
+    assert _prepare_workers(None, 64) == 0
+    assert _prepare_workers(5, 8) == 5
+
+
+@pytest.mark.parametrize(
+    ("cores", "archives", "workers"),
+    [(8, 1, 7), (32, 4, 7), (64, 8, 7)],
+)
+def test_the_default_prepares_the_fewest_archives_that_fill_the_machine(
+    monkeypatch: pytest.MonkeyPatch,
+    cores: int,
+    archives: int,
+    workers: int,
+) -> None:
+    """One archive cannot fill a machine, and its reader caps the pool that can.
+
+    Whatever is chosen has to come to the machine's own process count, since
+    both fewer and more were measured slower than that.
+    """
+
+    from anthro_chess.interfaces.cli import _prepare_concurrency, _prepare_workers
+
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(cores)), raising=False
+    )
+
+    assert _prepare_concurrency(None) == archives
+    assert _prepare_workers(None, archives) == workers
+    assert archives * (workers + 1) == cores
+    assert _prepare_concurrency(3) == 3
+
+
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

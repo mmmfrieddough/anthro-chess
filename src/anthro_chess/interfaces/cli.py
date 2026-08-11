@@ -135,6 +135,45 @@ def _worker_count(value: str) -> int:
     return count
 
 
+def _available_cores() -> int:
+    # What this process may run on rather than what the machine holds: under a
+    # cpuset or a taskset the two disagree, and the machine's count would fork
+    # a decoder per core onto a handful of them.
+    affinity = getattr(os, "sched_getaffinity", None)
+    return len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
+
+
+def _prepare_concurrency(requested: int | None) -> int:
+    """Return how many archives to decode at once: the fewest that fill the machine.
+
+    One archive cannot fill it, because the reader framing its games holds a
+    single core and caps the pool that waits on it. Several can, and throughput
+    peaks where their processes come to the machine's own count. The fewest is
+    preferred among the arrangements that reach it, since each archive in
+    flight is one more that has to be on disk and one more marked-account
+    snapshot held.
+    """
+
+    if requested is not None:
+        return requested
+    cores = _available_cores()
+    best, most = 1, 0
+    for count in range(1, cores + 1):
+        processes = count * (_prepare_workers(None, count) + 1)
+        if processes <= cores and processes > most:
+            best, most = count, processes
+    return best
+
+
+def _archive_count(value: str) -> int:
+    """Read how many archives to prepare at once, which is at least one."""
+
+    count = int(value)
+    if count < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an archive count")
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level command parser."""
     parser = argparse.ArgumentParser(
@@ -218,9 +257,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=_worker_count,
         help=(
-            "Processes decoding games, 0 to decode in the reader's own. "
-            "Defaults to as many as one reader can keep fed. Nothing about it "
+            "Processes decoding games per archive, 0 to decode in the "
+            "reader's own. Defaults to as many as one reader can keep fed, "
+            "divided by the archives sharing the machine. Nothing about it "
             "reaches the artifact."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--concurrency",
+        type=_archive_count,
+        help=(
+            "Archives to prepare at once, writing one manifest for all of "
+            "them. Defaults to the fewest that fill this machine. Above one it "
+            "prepares every acquired archive this selection pins and takes no "
+            "input path."
         ),
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
@@ -1100,22 +1150,28 @@ def _run_data_acquire(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _prepare_workers(requested: int | None) -> int:
-    """Size preparation's decoding pool, leaving the reader a core of its own."""
+def _prepare_workers(requested: int | None, concurrency: int = 1) -> int:
+    """Size the decoding pool one archive gets, of however many share the machine.
+
+    Two bounds, whichever is smaller. A reader cannot feed more than
+    ``_MAXIMUM_PREPARE_WORKERS`` whatever else is running, and archives prepared
+    at once divide the machine between them rather than each taking all of it.
+    """
 
     if requested is not None:
         return requested
-    # What this process may run on rather than what the machine holds: under a
-    # cpuset or a taskset the two disagree, and the machine's count would fork
-    # a decoder per core onto a handful of them.
-    affinity = getattr(os, "sched_getaffinity", None)
-    cores = len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
-    return min(max(cores - 1, 0), _MAXIMUM_PREPARE_WORKERS)
+    share = max(_available_cores() // concurrency - 1, 0)
+    return min(share, _MAXIMUM_PREPARE_WORKERS)
 
 
 def _run_data_prepare(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.data import DataPreparationError, PrepareConfig, prepare_pgn
+    from anthro_chess.data import (
+        DataPreparationError,
+        PrepareConfig,
+        prepare_archives,
+        prepare_pgn,
+    )
 
     try:
         resolved = load_config(
@@ -1124,16 +1180,42 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         output = _data_output_path(arguments.output, resolved.value.artifact_name)
-        input_path = _configured_archive_path(
-            resolved, arguments.input, arguments.output
-        )
-        result = prepare_pgn(
-            input_path,
-            output,
-            resolved,
-            workers=_prepare_workers(arguments.workers),
-            counts_path=_archive_counts_path(resolved, input_path, arguments.output),
-        )
+        # A selection pinning many archives has no single default input, so
+        # naming none of them asks for all of them. Naming one still prepares
+        # exactly that one, whatever the machine could have run beside it.
+        if arguments.input is None and len(resolved.value.archives) > 1:
+            concurrency = _prepare_concurrency(arguments.concurrency)
+            acquired = _acquired_archive_inputs(resolved, arguments.output)
+            if not acquired:
+                raise ConfigError(
+                    "no archive this selection pins has been acquired yet"
+                )
+            result = prepare_archives(
+                [path for path, _ in acquired],
+                output,
+                resolved,
+                workers=_prepare_workers(arguments.workers, concurrency),
+                concurrency=concurrency,
+                counts_paths=[counts_path for _, counts_path in acquired],
+            )
+        else:
+            if arguments.concurrency is not None and arguments.concurrency > 1:
+                raise ConfigError(
+                    "--concurrency prepares the archives a selection pins, so "
+                    "it cannot be given an input path"
+                )
+            input_path = _configured_archive_path(
+                resolved, arguments.input, arguments.output
+            )
+            result = prepare_pgn(
+                input_path,
+                output,
+                resolved,
+                workers=_prepare_workers(arguments.workers),
+                counts_path=_archive_counts_path(
+                    resolved, input_path, arguments.output
+                ),
+            )
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
         return 2
@@ -3563,6 +3645,25 @@ def _counts_path(artifact_root: Path, file_name: str) -> Path:
     from anthro_chess.data.census import ACCOUNT_GAMES_SUFFIX, CENSUS_DIRECTORY
 
     return artifact_root / CENSUS_DIRECTORY / f"{file_name}{ACCOUNT_GAMES_SUFFIX}"
+
+
+def _acquired_archive_inputs(
+    resolved: ResolvedConfig[PrepareConfig],
+    artifact_root: Path | None,
+) -> list[tuple[Path, Path]]:
+    """Return each pinned archive that is on disk, and where its counts go.
+
+    A selection pins more archives than the machine holds at once, so the ones
+    absent are the ones already prepared and deleted rather than an error.
+    """
+
+    acquired = []
+    for archive in resolved.value.archives:
+        root = _archive_artifact_root(resolved, archive, artifact_root)
+        path = root / "raw" / archive.file_name
+        if path.is_file():
+            acquired.append((path, _counts_path(root, archive.file_name)))
+    return acquired
 
 
 def _archive_counts_path(

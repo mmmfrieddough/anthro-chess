@@ -24,6 +24,7 @@ from anthro_chess.data import (
     PrepareConfig,
     SourceConfig,
     acquire_configured_archive,
+    prepare_archives,
     prepare_pgn,
 )
 from anthro_chess.data.accounts import (
@@ -995,6 +996,77 @@ def test_appends_a_second_archive_to_the_corpus_the_first_built(
     assert manifest["games"]["scanned"] == 8
     assert sum(appended.split_counts.values()) == manifest["games"]["accepted"]
     assert appended.accepted_games == 4
+
+
+def _tree_digests(root: Path) -> dict[str, str]:
+    return {
+        str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_preparing_archives_at_once_writes_what_preparing_them_in_turn_writes(
+    tmp_path: Path,
+) -> None:
+    """How many archives a machine decodes at once cannot reach the artifact.
+
+    The manifest a concurrent run writes has to order its archives by the
+    inputs rather than by whichever finished first, and every shard has to
+    land where one run at a time would have put it.
+    """
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    in_turn = tmp_path / "in-turn"
+    at_once = tmp_path / "at-once"
+
+    prepare_pgn(first, in_turn, resolved)
+    prepare_pgn(second, in_turn, resolved)
+    appended = prepare_archives([first, second], at_once, resolved, concurrency=2)
+
+    assert appended.corpus_archives == 2
+    assert _tree_digests(in_turn) == _tree_digests(at_once)
+
+
+def test_preparing_archives_at_once_leaves_the_ones_already_recorded_alone(
+    tmp_path: Path,
+) -> None:
+    """Re-running an interrupted pass from its beginning still costs nothing."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+
+    prepare_archives([first, second], output, resolved, concurrency=2)
+    before = _tree_digests(output)
+    again = prepare_archives([first, second], output, resolved, concurrency=2)
+
+    assert again.disposition == "already_prepared"
+    assert again.corpus_archives == 2
+    assert _tree_digests(output) == before
+
+
+def test_a_bounded_selection_prepares_its_archives_in_turn(tmp_path: Path) -> None:
+    """What an archive may admit depends on what the ones before it took.
+
+    Deciding that for two archives at once would overshoot the bound by
+    whatever the second one contributed, so the bound outranks the request.
+    """
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(
+        PrepareConfig,
+        path=_selection_over(tmp_path, first, second),
+        overrides=[f"filters.maximum_games={_GAMES_PER_ARCHIVE + 1}"],
+    )
+    output = tmp_path / "artifacts"
+
+    result = prepare_archives([first, second], output, resolved, concurrency=4)
+
+    manifest = _read_json(result.manifest_path)
+    assert manifest["games"]["accepted"] == _GAMES_PER_ARCHIVE + 1
+    assert manifest["selection"]["limit_reached"] is True
 
 
 def test_the_corpus_blocks_report_every_field_the_archive_ones_do(

@@ -56,6 +56,7 @@ from anthro_chess.data.prepare import (
     DataPreparationError,
     PreparationResult,
     acquire_configured_archive,
+    prepare_archives,
     prepare_pgn,
 )
 from anthro_chess.data.streaming import (
@@ -135,6 +136,7 @@ __all__ = [
     "encode_game",
     "encoding_identity",
     "maximum_position_bound",
+    "prepare_archives",
     "prepare_pgn",
     "previous_action_token",
     "terminal_action_for",

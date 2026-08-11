@@ -119,13 +119,17 @@ outside Git, and ordinary tests continue to use local fixtures.
 
 ### Building One Corpus From Many Archives
 
-A selection may pin many archives, and preparation appends one of them per run:
-each run takes one input, writes that archive's shards beside whatever is
-already there, and rewrites the manifest to span every archive that has been
-prepared. This is what lets a selection larger than the machine's disk be built
-at all — fetch a month, prepare it, delete the archive, continue — and a run
-names its own `--input` rather than being handed a default, because a selection
-spanning archives has no single one.
+A selection may pin many archives, and preparation appends the acquired ones to
+whatever corpus is already there, writing their shards beside it and rewriting
+the manifest to span every archive that has been prepared. This is what lets a
+selection larger than the machine's disk be built at all — fetch some months,
+prepare them, delete the archives, continue.
+
+Which archives a run takes is the `input` argument, and a selection spanning
+many has no single default for it: naming one prepares exactly that one, and
+naming none prepares every archive of the selection that has been acquired. A
+selection pinning no archive at all, as the checked-in sample does, has nothing
+to default to and so always names its input.
 
 Three properties make that safe to interrupt and resume. Shard names carry the
 input's digest, so no two archives collide and a retried archive overwrites only
@@ -139,9 +143,13 @@ nothing and changes nothing — including an archive every filter rejected, whic
 is recorded as an empty append rather than failing the pass.
 
 One corpus directory still takes one writer at a time. An append reads the
-manifest and rewrites it, so two runs against the same directory can each write
-one that omits the other's archive, and the loser's shards are then swept as
-orphans.
+manifest and rewrites it, and deletes every shard that manifest does not claim,
+so two runs against the same directory can each write one that omits the
+other's archive and delete shards the other is still writing. Preparing several
+archives at once is therefore something one run does rather than something
+several runs do side by side: `--concurrency` decodes them together and records
+them in a single rewrite. See
+`docs/decisions/0054-archives-are-prepared-together-and-recorded-once.md`.
 
 Preparation therefore only ever adds to a corpus. A selection whose source,
 filters, split or termination choices differ from the ones the manifest recorded
@@ -178,7 +186,13 @@ may be built across machines that afford different numbers of them.
 Its default is bounded by the reader rather than by the machine, because one
 reader frames in one process and a pool larger than it can feed only waits. A
 machine with cores to spare past that point has room for another preparation
-rather than for a wider pool, which nothing here does yet.
+rather than for a wider pool, and that is what a run spends them on: naming no
+input against a selection that pins many prepares all of the acquired ones at
+once, as many as fill the machine, recorded in one rewrite of the manifest.
+`--concurrency` overrides how many, and naming one input still prepares exactly
+that one. Which archives a run decodes together does not
+reach the artifact any more than the worker count does — the same archives
+prepared one at a time write the same bytes.
 
 See `docs/decisions/0049-one-reader-frames-a-pool-decodes.md` for how the work
 is divided, and

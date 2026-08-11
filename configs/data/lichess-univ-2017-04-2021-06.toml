@@ -4,9 +4,9 @@ artifact_name = "lichess-univ-2017-04-2021-06"
 # `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why
 # this source, this precision, and this span, and what the span costs.
 #
-# Preparation appends one archive at a time, so each run names its own
-# `--input` and the corpus grows across these 51, decoding on as many processes
-# as `--workers` asks for. It is still not ready to prepare from: a corpus
+# Preparation names no input against this selection and appends every archive
+# of it that has been acquired, decoding as many at once as fill the machine.
+# It is still not ready to prepare from: a corpus
 # spanning speeds needs the rating namespace derived per game (#386) and the
 # speed axis derived from the time control rather than the event label (#387).
 #

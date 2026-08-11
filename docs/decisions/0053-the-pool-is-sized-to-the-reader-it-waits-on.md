@@ -6,7 +6,9 @@ Date: 2026-08-11
 
 Accepted. Refines `0049-one-reader-frames-a-pool-decodes.md`, whose account of
 what constrains a run no longer holds, and records what a second preparation
-running beside the first is worth.
+running beside the first is worth. The idle half of the machine it leaves is
+taken up by
+`0054-archives-are-prepared-together-and-recorded-once.md`.
 
 ## Context
 
