@@ -9,6 +9,7 @@ rules belong in one place so they cannot drift between consumers.
 from __future__ import annotations
 
 import bz2
+import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -41,12 +42,22 @@ def write_text_atomically(path: Path, text: str) -> None:
     A partial write of an artifact that is the only record of something — a
     corpus manifest, an account snapshot — loses whatever it recorded, and the
     data it describes is not recoverable without it.
+
+    The staging file carries the writer's process id, because two processes
+    otherwise share one and the atomicity is lost between them rather than
+    within either: each truncates what the other is part-way through writing,
+    and both then rename the result into place. Preparation and the account
+    census both write an archive's counts, and nothing stops them doing it at
+    the same moment.
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_suffix(path.suffix + ".writing")
-    partial.write_text(text, encoding="utf-8")
-    partial.replace(path)
+    partial = path.with_suffix(f"{path.suffix}.{os.getpid()}.writing")
+    try:
+        partial.write_text(text, encoding="utf-8")
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 @contextmanager
