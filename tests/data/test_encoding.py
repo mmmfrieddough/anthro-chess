@@ -59,9 +59,12 @@ def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
 @pytest.mark.parametrize(
     ("initial_position", "moves"),
     (
+        # A trailing move on each, because a ply carries the position before
+        # its own move: without one the last interesting position is encoded by
+        # nothing and compared against nothing.
         (
             chess.STARTING_FEN,
-            ("e2e4", "e7e6", "g1f3", "g8f6", "f1e2", "f8e7", "e1g1", "e8g8"),
+            ("e2e4", "e7e6", "g1f3", "g8f6", "f1e2", "f8e7", "e1g1", "e8g8", "d2d4"),
         ),
         (chess.STARTING_FEN, ("e2e4", "a7a6", "e4e5", "d7d5", "e5d6", "c7d6")),
         ("8/P6k/8/8/8/8/6K1/8 w - - 0 1", ("a7a8q", "h7h6")),
@@ -79,12 +82,7 @@ def test_every_encoded_board_says_what_asking_each_square_would_have_said(
     one over squares in turn could part.
     """
 
-    game = replace(
-        _game(moves),
-        initial_position=initial_position,
-        action_ids=_action_ids(moves),
-        clock_remaining_ms=tuple(None for _ in moves),
-    )
+    game = replace(_game(moves), initial_position=initial_position)
 
     board = chess.Board(initial_position)
     for ply in encode_game(game, legal_actions=False):

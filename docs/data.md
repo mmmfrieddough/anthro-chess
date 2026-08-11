@@ -754,11 +754,11 @@ batch comes back, which keeps every Parquet read sequential in one process.
 They travel in the columnar form they were gathered in, and the worker is what
 turns them into Python values: that conversion costs an object per field of
 every game in a batch, and the parent is the one process every batch passes
-through, so what the parent does to a batch stays a buffer copy. Worker count
-and prefetch depth change how fast the same batches arrive and never which
-examples share one, so they stay out of the identity a resumed run has to
-match. Preparation's shard and row-group sizing is the remaining bound, because
-a row group is the unit a batch's rows are read from.
+through, so it gathers the rows and leaves the per-value work to the pool.
+Worker count and prefetch depth change how fast the same batches arrive and
+never which examples share one, so they stay out of the identity a resumed run
+has to match. Preparation's shard and row-group sizing is the remaining bound,
+because a row group is the unit a batch's rows are read from.
 
 **The depth is a rate, not an order.** That is worth stating because the two
 dials were once coupled in a way that made it look otherwise. Jobs were

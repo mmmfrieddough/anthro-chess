@@ -204,7 +204,7 @@ def read_normalized_rows(
         raise DataLoadingError(
             f"cannot read normalized data {path}: {error}"
         ) from error
-    return cast(list[dict[str, Any]], table.to_pylist())
+    return materialize_rows(table)
 
 
 def open_normalized_shard(path: Path) -> Any:
@@ -259,14 +259,12 @@ def row_group_column(table: Any, column: str) -> list[Any]:
     return cast(list[Any], table.column(column).to_pylist())
 
 
-def rows_at_positions(table: Any, positions: Sequence[int]) -> Any:
+def take_rows(table: Any, positions: Sequence[int]) -> Any:
     """Return the named row positions of a row-group table, still columnar.
 
-    Columnar because of where the two halves of this are paid. Gathering the
-    rows is a buffer copy; turning them into dictionaries of Python values is
-    an object per field, and at a corpus-scale batch that second half is the
-    largest single thing the process holding the shard does. Handing back the
-    gathered columns lets whoever consumes the rows pay it instead.
+    Gathering the rows is a buffer copy; turning them into dictionaries of
+    Python values is an object per field, and this leaves that half to the
+    caller through :func:`materialize_rows`.
     """
 
     return table.take(list(positions))

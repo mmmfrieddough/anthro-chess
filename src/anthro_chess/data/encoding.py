@@ -784,8 +784,8 @@ def _piece_id_bytes(board: chess.Board) -> bytes:
 
     Read off the board's own piece bitboards rather than asked square by
     square. The two describe the same position, and this one costs a step per
-    piece present instead of a :class:`chess.Piece` per square whether or not
-    one is there. It is worth the bit arithmetic because this is the single
+    piece present instead of a call per square and a :class:`chess.Piece` per
+    occupied one. It is worth the bit arithmetic because this is the single
     largest cost of decoding a game, and a corpus-scale run decodes every
     selected game once an epoch.
     """
