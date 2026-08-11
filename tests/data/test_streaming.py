@@ -90,6 +90,33 @@ def _sequences(batch: SequenceBatch) -> list[tuple[int, tuple[int, ...]]]:
     return sequences
 
 
+def _decoded(batch: SequenceBatch) -> list[tuple[Any, ...]]:
+    """Return each row of a batch as enough of its decode to identify the row.
+
+    A game id alone is not: it comes from the index rather than from the row
+    it labels, so a batch built from the wrong row would still be named right.
+    """
+
+    inputs = batch.inputs
+    decoded: list[tuple[Any, ...]] = []
+    for row in range(batch.batch_size):
+        held = sum(1 for occupied in batch.attention_mask[row] if occupied)
+        decoded.append(
+            (
+                int(batch.game_ids[row][0]),
+                batch.chunk_start_plies[row],
+                batch.ply_indices[row][:held].tolist(),
+                inputs.piece_ids[row][:held].tolist(),
+                batch.action_targets[row][:held].tolist(),
+                inputs.player_clock_ms.values[row][:held].tolist(),
+                inputs.player_clock_ms.present[row][:held].tolist(),
+                inputs.target_rating.values[row][:held].tolist(),
+                inputs.target_rating.present[row][:held].tolist(),
+            )
+        )
+    return decoded
+
+
 def _drain(loader: StreamingSequenceDataLoader) -> list[tuple[int, tuple[int, ...]]]:
     """Return every sequence one epoch produced, in the order it produced them."""
 
@@ -104,34 +131,53 @@ def _rows(
     count: int = 24,
     *,
     split: str = "train",
+    vary_ratings: bool = False,
 ) -> list[dict[str, Any]]:
+    """Return a fixture corpus, optionally giving every game its own ratings.
+
+    The ratings are constant by default because the tests that filter on them
+    choose their own bounds against a known value.
+    """
+
     return [
         normalized_row(
             game_id,
             split=split,
             plies=_PLY_COUNTS[game_id % len(_PLY_COUNTS)],
+            ratings=(1200 + game_id, 2400 - game_id) if vary_ratings else None,
         )
         for game_id in range(1, count + 1)
     ]
 
 
-def test_streams_exactly_the_games_the_eager_loader_selects(
+def test_streams_exactly_the_games_the_eager_loader_decodes(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
-    rows = _rows(normalized_row)
+    """The same games, and the same values decoded out of them.
+
+    Ratings vary per game, so two games of one length are told apart by what
+    they decode to rather than only by how long they are.
+    """
+
+    rows = _rows(normalized_row, vary_ratings=True)
     corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=8, row_group_size=4)
     config = SequenceLoaderConfig(split="train", batch_size=3, length_bucket_width=4)
 
-    streamed = _drain(_loader(corpus, config))
+    loader = _loader(corpus, config, legal_actions=False)
+    try:
+        streamed = [sequence for batch in loader for sequence in _decoded(batch)]
+    finally:
+        loader.close()
     eager = SequenceDataLoader.from_parquet(
         [shard.path for shard in corpus[0]],
         config,
+        legal_actions=False,
     )
 
     assert sorted(streamed) == sorted(
-        sequence for batch in eager for sequence in _sequences(batch)
+        sequence for batch in eager for sequence in _decoded(batch)
     )
     assert len(streamed) == len(rows)
 

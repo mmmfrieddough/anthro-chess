@@ -751,6 +751,10 @@ order it did not record.
 Decoding is the expensive half and it parallelizes, so the shard-backed loader
 can build batches in worker processes. Rows travel to a worker and a packed
 batch comes back, which keeps every Parquet read sequential in one process.
+They travel in the columnar form they were gathered in, and the worker is what
+turns them into Python values: that conversion costs an object per field of
+every game in a batch, and the parent is the one process every batch passes
+through, so it gathers the rows and leaves the per-value work to the pool.
 Worker count and prefetch depth change how fast the same batches arrive and
 never which examples share one, so they stay out of the identity a resumed run
 has to match. Preparation's shard and row-group sizing is the remaining bound,

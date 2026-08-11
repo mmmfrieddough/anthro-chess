@@ -25,13 +25,14 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     game_ids_sha256,
+    materialize_rows,
     normalized_row_group_count,
     normalized_shard_paths,
     open_normalized_shard,
     read_normalized_row_group,
     read_normalized_rows,
     row_group_column,
-    rows_at_positions,
+    take_rows,
     validate_manifest_compatibility,
     write_normalized_rows,
 )
@@ -266,7 +267,7 @@ def _freeze_pool(
                 # A projection does not reorder a row group, so a position the
                 # scan found names the same game in the full read.
                 full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
-                selected.extend(rows_at_positions(full, positions))
+                selected.extend(materialize_rows(take_rows(full, positions)))
 
     if not selected:
         if split_games == 0:

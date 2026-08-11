@@ -759,7 +759,7 @@ def _context_for_position(
 
 
 def _encode_board(board: chess.Board) -> BoardEncoding:
-    piece_ids = bytes(_piece_id(board.piece_at(square)) for square in chess.SQUARES)
+    piece_ids = _piece_id_bytes(board)
     castling_rights = 0
     if board.has_kingside_castling_rights(chess.WHITE):
         castling_rights |= 1
@@ -779,10 +779,38 @@ def _encode_board(board: chess.Board) -> BoardEncoding:
     )
 
 
-def _piece_id(piece: chess.Piece | None) -> int:
-    if piece is None:
-        return 0
-    return piece.piece_type + (0 if piece.color == chess.WHITE else 6)
+def _piece_id_bytes(board: chess.Board) -> bytes:
+    """Return one byte per square, a1 to h8, in this encoding's piece ids.
+
+    Read off the board's own piece bitboards rather than asked square by
+    square. The two describe the same position, and this one costs a step per
+    piece present instead of a call per square and a :class:`chess.Piece` per
+    occupied one. It is worth the bit arithmetic because this is the single
+    largest cost of decoding a game, and a corpus-scale run decodes every
+    selected game once an epoch.
+    """
+
+    piece_ids = bytearray(BOARD_SQUARE_COUNT)
+    by_piece_type = (
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+    )
+    for offset, side in (
+        (0, board.occupied_co[chess.WHITE]),
+        (6, board.occupied_co[chess.BLACK]),
+    ):
+        for piece_type, bitboard in enumerate(by_piece_type, start=1):
+            bits = bitboard & side
+            piece_id = piece_type + offset
+            while bits:
+                square = bits.bit_length() - 1
+                piece_ids[square] = piece_id
+                bits ^= 1 << square
+    return bytes(piece_ids)
 
 
 def _rating_for_color(game: GameEncodingInput, color: chess.Color) -> int | None:

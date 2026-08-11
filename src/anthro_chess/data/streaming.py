@@ -40,12 +40,13 @@ from typing import Any
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     ShardIdentity,
+    materialize_rows,
     normalized_row_group_count,
     open_normalized_shard,
     read_normalized_row_group,
     row_group_column,
-    rows_at_positions,
     sorted_game_ids_sha256,
+    take_rows,
 )
 from anthro_chess.data.config import (
     SelectionConfig,
@@ -140,6 +141,12 @@ class _BatchJob:
     Parquet read sequential in one process instead of having every worker seek
     into the same shard.
 
+    They travel as the table they were gathered into, and the worker is what
+    turns them into rows of Python values. That conversion costs an object per
+    field of every game in the batch, so leaving it in the parent would make
+    the one process every batch passes through the slowest part of the loader
+    at a wide batch, however many workers were decoding behind it.
+
     The game ids travel with them because the index already derived them. A row
     does not carry its id, so a worker deriving it again is a SHA-256 per game
     per epoch for an answer the index has held since it was built.
@@ -147,7 +154,7 @@ class _BatchJob:
 
     shard: int
     path: str
-    rows: tuple[Mapping[str, Any], ...]
+    row_table: Any
     game_ids: tuple[int, ...]
     lengths: tuple[int, ...]
     entries: tuple[tuple[int, int, int], ...]
@@ -436,12 +443,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         group = self.index.groups[planned[0].group]
         table = self._row_group_table(planned[0].group)
         slots = sorted({example.slot for example in planned})
-        rows = rows_at_positions(table, [group.positions[slot] for slot in slots])
         row_index = {slot: index for index, slot in enumerate(slots)}
         return _BatchJob(
             shard=group.shard,
             path=str(self.index.shards[group.shard].path),
-            rows=tuple(rows),
+            row_table=take_rows(table, [group.positions[slot] for slot in slots]),
             game_ids=tuple(group.game_ids[slot] for slot in slots),
             lengths=tuple(group.lengths[slot] for slot in slots),
             entries=tuple(
@@ -480,13 +486,14 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
     """Decode one batch's games and pack them, in a worker or in place."""
 
     path = Path(job.path)
+    rows = materialize_rows(job.row_table)
     decoded: dict[int, tuple[PlyEncoding, ...]] = {}
     examples: list[SequenceExample] = []
     for row_index, start_ply, length in job.entries:
         plies = decoded.get(row_index)
         if plies is None:
             plies = encode_game(
-                _game_from_row(job.rows[row_index], path, job.game_ids[row_index]),
+                _game_from_row(rows[row_index], path, job.game_ids[row_index]),
                 legal_actions=job.legal_actions,
             )
             if len(plies) != job.lengths[row_index]:
