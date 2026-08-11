@@ -690,6 +690,10 @@ bound answers what a view cannot: what every benchmark process materializes
 before any view is applied, and what the `canonical` view scores, since that one
 declares no bound and is the whole pool.
 
+A recorded view name describes the selection that ran rather than the one its
+config asked for: a view a cap actually shortened records that cap, so a sweep
+override cannot leave a stored name claiming more than the reading behind it.
+
 Representativeness and frozenness belong to different things. The pool recipe is
 uniform and unstratified, so its composition tracks corpus composition
 automatically. Frozenness is a property of a benchmark version: when corpus
