@@ -194,10 +194,15 @@ It is a driver rather than a shell script because a sweep is long enough for
 four things to matter that a script cannot supply.
 
 **The whole plan resolves before any of it runs.** An unreadable selection, a
-pool that does not exist, a dependency on a benchmark the sweep does not
-include, or a step configured to discard output another step reads all fail in
-the first second. This is the same rule training cadences follow: a run that
-will fail should fail before it spends time, not after.
+dependency on a benchmark the sweep does not include, or a step configured to
+discard output another step reads all fail in the first second. This is the same
+rule training cadences follow: a run that will fail should fail before it spends
+time, not after.
+
+Resolution reads the selections, not the artifacts they name: a pool that is not
+on this host fails the step that reads it rather than the plan.
+`docs/decisions/0055-a-missing-artifact-fails-its-step-not-the-plan.md` owns why
+that is preferred to refusing the sweep.
 
 **Ordering is enforced rather than documented.** Decision decomposition reads
 the games the rollout generated, so the suite orders it after the rollout and
