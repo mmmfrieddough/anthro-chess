@@ -259,10 +259,23 @@ def row_group_column(table: Any, column: str) -> list[Any]:
     return cast(list[Any], table.column(column).to_pylist())
 
 
-def rows_at_positions(table: Any, positions: Sequence[int]) -> list[dict[str, Any]]:
-    """Materialize the named row positions of a row-group table."""
+def rows_at_positions(table: Any, positions: Sequence[int]) -> Any:
+    """Return the named row positions of a row-group table, still columnar.
 
-    return cast(list[dict[str, Any]], table.take(list(positions)).to_pylist())
+    Columnar because of where the two halves of this are paid. Gathering the
+    rows is a buffer copy; turning them into dictionaries of Python values is
+    an object per field, and at a corpus-scale batch that second half is the
+    largest single thing the process holding the shard does. Handing back the
+    gathered columns lets whoever consumes the rows pay it instead.
+    """
+
+    return table.take(list(positions))
+
+
+def materialize_rows(table: Any) -> list[dict[str, Any]]:
+    """Return one dictionary of Python values per row of a columnar table."""
+
+    return cast(list[dict[str, Any]], table.to_pylist())
 
 
 #: Columns whose values never repeat, so a dictionary of them is as large as

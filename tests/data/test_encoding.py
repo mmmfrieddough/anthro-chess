@@ -56,6 +56,44 @@ def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
     assert third.board.piece_ids[chess.E5] == chess.PAWN + 6
 
 
+@pytest.mark.parametrize(
+    ("initial_position", "moves"),
+    (
+        (
+            chess.STARTING_FEN,
+            ("e2e4", "e7e6", "g1f3", "g8f6", "f1e2", "f8e7", "e1g1", "e8g8"),
+        ),
+        (chess.STARTING_FEN, ("e2e4", "a7a6", "e4e5", "d7d5", "e5d6", "c7d6")),
+        ("8/P6k/8/8/8/8/6K1/8 w - - 0 1", ("a7a8q", "h7h6")),
+    ),
+)
+def test_every_encoded_board_says_what_asking_each_square_would_have_said(
+    initial_position: str,
+    moves: tuple[str, ...],
+) -> None:
+    """The board bytes are read off bitboards; this reads them the other way.
+
+    Castling moves two pieces, an en-passant capture removes a pawn from a
+    square the move never named, and a promotion puts a piece on the board that
+    was not on it before. Those are where a derivation over piece bitboards and
+    one over squares in turn could part.
+    """
+
+    game = replace(
+        _game(moves),
+        initial_position=initial_position,
+        action_ids=_action_ids(moves),
+        clock_remaining_ms=tuple(None for _ in moves),
+    )
+
+    board = chess.Board(initial_position)
+    for ply in encode_game(game, legal_actions=False):
+        assert ply.board.piece_ids == bytes(
+            _piece_id_by_square(board.piece_at(square)) for square in chess.SQUARES
+        )
+        board.push(chess.Move.from_uci(moves[ply.ply_index]))
+
+
 def test_aligns_decision_ratings_and_pre_move_clocks_without_fake_values() -> None:
     game = GameEncodingInput(
         game_id=42,
@@ -548,3 +586,9 @@ def _game(
 
 def _action_ids(moves: tuple[str, ...]) -> tuple[int, ...]:
     return tuple(encode_move(chess.Move.from_uci(move)) for move in moves)
+
+
+def _piece_id_by_square(piece: chess.Piece | None) -> int:
+    if piece is None:
+        return 0
+    return piece.piece_type + (0 if piece.color == chess.WHITE else 6)
