@@ -339,8 +339,6 @@ def prepare_pgn(
         raise DataPreparationError(f"input PGN does not exist: {source_path}")
 
     config = resolved_config.value
-    archives = config.archives
-    normalized_directory = output_path / "normalized"
     manifest_directory = output_path / "manifests"
     manifest_path = manifest_directory / "manifest.json"
     # Ahead of digesting the input, which reads a whole archive — tens of
@@ -351,12 +349,7 @@ def prepare_pgn(
         _selection_identity(_recorded_mapping(resolved_config.as_record()["config"])),
     )
 
-    input_sha256 = file_sha256(source_path)
-    if archives and input_sha256 not in {archive.sha256 for archive in archives}:
-        raise DataPreparationError(
-            f"input archive checksum {input_sha256} matches none of the "
-            f"{len(archives)} archive(s) this selection pins"
-        )
+    input_sha256 = _pinned_archive_digest(source_path, config)
     prepared_entry = corpus.entry_for(input_sha256)
     if prepared_entry is not None:
         logger.info("Archive %s is already in this corpus", source_path.name)
@@ -382,6 +375,232 @@ def prepare_pgn(
         )
         return _recorded_result(corpus, manifest_path, output_path, None)
     marked_accounts = _resolve_marked_accounts(resolved_config, input_sha256)
+    prepared = _prepare_archive(
+        source_path,
+        output_path,
+        resolved_config,
+        input_sha256=input_sha256,
+        marked_accounts=marked_accounts,
+        remaining_games=remaining_games,
+        workers=workers,
+        counts_path=counts_path,
+    )
+    return _append_to_corpus(
+        corpus,
+        (prepared,),
+        output_path=output_path,
+        manifest_path=manifest_path,
+        resolved_config=resolved_config,
+    )
+
+
+def prepare_archives(
+    input_paths: Sequence[str | Path],
+    output_directory: str | Path,
+    resolved_config: ResolvedConfig[PrepareConfig],
+    *,
+    workers: int = 0,
+    concurrency: int = 1,
+    counts_paths: Sequence[Path | None] | None = None,
+) -> PreparationResult:
+    """Append several archives to one corpus, decoding them at the same time.
+
+    One archive cannot use a whole machine. The reader that frames its games
+    runs in a single process and is what a pool of more than about a dozen
+    decoders waits on, so the way to spend the rest of the machine is another
+    archive rather than a wider pool. `0053` measures both.
+
+    The manifest is written once, for all of them, after every archive is done.
+    That is the part a run cannot share: the corpus totals, the split check and
+    the sweep of shards no manifest claims each read the whole corpus, and a
+    sweep running while another archive was still writing would delete that
+    archive's shards.
+
+    An archive already recorded is skipped rather than prepared twice, exactly
+    as one at a time does, so an interrupted pass is still re-run from its
+    beginning at no cost.
+    """
+
+    output_path = Path(output_directory)
+    sources = [Path(path) for path in input_paths]
+    counts = list(counts_paths) if counts_paths is not None else [None] * len(sources)
+    config = resolved_config.value
+    if config.filters.maximum_games is not None:
+        # What an archive may admit is the bound less what every archive before
+        # it contributed, so the archives are ordered by construction and a
+        # second one cannot start before the first has been counted.
+        return _prepare_in_turn(sources, output_path, resolved_config, workers, counts)
+
+    manifest_path = output_path / "manifests" / "manifest.json"
+    corpus = _read_existing_corpus(
+        manifest_path,
+        _selection_identity(_recorded_mapping(resolved_config.as_record()["config"])),
+    )
+    pending: list[tuple[Path, str, Path | None]] = []
+    for source_path, counts_path in zip(sources, counts, strict=True):
+        if not source_path.is_file():
+            raise DataPreparationError(f"input PGN does not exist: {source_path}")
+        input_sha256 = _pinned_archive_digest(source_path, config)
+        if corpus.entry_for(input_sha256) is not None:
+            logger.info("Archive %s is already in this corpus", source_path.name)
+            continue
+        pending.append((source_path, input_sha256, counts_path))
+    if not pending:
+        return PreparationResult(
+            normalized_paths=(),
+            manifest_path=manifest_path,
+            accepted_games=0,
+            rejected_games=0,
+            split_counts=_corpus_split_counts(corpus.inputs),
+            corpus_archives=len(corpus.inputs),
+            disposition="already_prepared",
+        )
+
+    jobs = [
+        (
+            source_path,
+            output_path,
+            resolved_config,
+            input_sha256,
+            workers,
+            counts_path,
+        )
+        for source_path, input_sha256, counts_path in pending
+    ]
+    if concurrency > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(max_workers=min(concurrency, len(jobs))) as pool:
+            # Ordered by the inputs rather than by which archive finished, so
+            # the manifest a concurrent run writes is the one a sequential run
+            # over the same inputs writes.
+            prepared = list(pool.map(_prepare_archive_from_job, jobs))
+    else:
+        prepared = [_prepare_archive_from_job(job) for job in jobs]
+    return _append_to_corpus(
+        corpus,
+        prepared,
+        output_path=output_path,
+        manifest_path=manifest_path,
+        resolved_config=resolved_config,
+    )
+
+
+def _prepare_in_turn(
+    sources: Sequence[Path],
+    output_path: Path,
+    resolved_config: ResolvedConfig[PrepareConfig],
+    workers: int,
+    counts: Sequence[Path | None],
+) -> PreparationResult:
+    """Append archives one at a time, each seeing what the last contributed."""
+
+    result: PreparationResult | None = None
+    accepted = 0
+    rejected = 0
+    paths: list[Path] = []
+    for source_path, counts_path in zip(sources, counts, strict=True):
+        result = prepare_pgn(
+            source_path,
+            output_path,
+            resolved_config,
+            workers=workers,
+            counts_path=counts_path,
+        )
+        if result.disposition == "prepared":
+            accepted += result.accepted_games
+            rejected += result.rejected_games
+            paths.extend(result.normalized_paths)
+    if result is None:
+        raise DataPreparationError("no input archives were given to prepare")
+    return PreparationResult(
+        normalized_paths=tuple(paths),
+        manifest_path=result.manifest_path,
+        accepted_games=accepted,
+        rejected_games=rejected,
+        split_counts=result.split_counts,
+        corpus_archives=result.corpus_archives,
+    )
+
+
+def _pinned_archive_digest(source_path: Path, config: PrepareConfig) -> str:
+    digest = file_sha256(source_path)
+    if config.archives and digest not in {
+        archive.sha256 for archive in config.archives
+    }:
+        raise DataPreparationError(
+            f"input archive checksum {digest} matches none of the "
+            f"{len(config.archives)} archive(s) this selection pins"
+        )
+    return digest
+
+
+def _prepare_archive_from_job(
+    job: tuple[
+        Path,
+        Path,
+        ResolvedConfig[PrepareConfig],
+        str,
+        int,
+        Path | None,
+    ],
+) -> _PreparedArchive:
+    """Prepare one archive from a job another process can be handed.
+
+    The marked-account snapshot is loaded here rather than sent, because it
+    dwarfs everything else in the job and every archive needs its own copy
+    regardless.
+    """
+
+    (
+        source_path,
+        output_path,
+        resolved_config,
+        input_sha256,
+        workers,
+        counts_path,
+    ) = job
+    return _prepare_archive(
+        source_path,
+        output_path,
+        resolved_config,
+        input_sha256=input_sha256,
+        marked_accounts=_resolve_marked_accounts(resolved_config, input_sha256),
+        remaining_games=None,
+        workers=workers,
+        counts_path=counts_path,
+    )
+
+
+@dataclass(frozen=True)
+class _PreparedArchive:
+    """One archive's shards and the manifest entry describing them.
+
+    Deliberately free of corpus state, so that preparing it says nothing about
+    the archives beside it and can therefore happen in another process while
+    those are still being read.
+    """
+
+    record: dict[str, Any]
+    shards: list[dict[str, object]]
+    normalized_paths: list[Path]
+    accepted_games: int
+    rejected_games: int
+
+
+def _prepare_archive(
+    source_path: Path,
+    output_path: Path,
+    resolved_config: ResolvedConfig[PrepareConfig],
+    *,
+    input_sha256: str,
+    marked_accounts: MarkedAccounts | None,
+    remaining_games: int | None,
+    workers: int,
+    counts_path: Path | None,
+) -> _PreparedArchive:
+    """Decode one archive and write its shards, touching no manifest."""
+
+    config = resolved_config.value
+    normalized_directory = output_path / "normalized"
     records: list[dict[str, object]] = []
     rejections: Counter[str] = Counter()
     seen_game_ids: set[int] = set()
@@ -511,16 +730,6 @@ def prepare_pgn(
             f"a decoding worker died while preparing {source_path}: {error}"
         ) from error
 
-    if accepted_games == 0 and not corpus.inputs:
-        # With no earlier archive there is no corpus for an empty append to
-        # extend, so an archive that accepts nothing is a misconfigured
-        # selection rather than a month with nothing eligible in it.
-        detail = ", ".join(
-            f"{reason}={count}" for reason, count in sorted(rejections.items())
-        )
-        raise DataPreparationError(
-            "no games passed preparation filters" + (f" ({detail})" if detail else "")
-        )
     if accepted_games == 0:
         logger.warning(
             "Archive %s contributed no games and is recorded as an empty append",
@@ -624,8 +833,57 @@ def prepare_pgn(
         },
     }
 
-    inputs = (*corpus.inputs, archive_record)
-    corpus_shards = [*corpus.shards, *output_shards]
+    return _PreparedArchive(
+        archive_record,
+        output_shards,
+        normalized_paths,
+        accepted_games,
+        sum(rejections.values()),
+    )
+
+
+def _append_to_corpus(
+    corpus: _ExistingCorpus,
+    prepared: Sequence[_PreparedArchive],
+    *,
+    output_path: Path,
+    manifest_path: Path,
+    resolved_config: ResolvedConfig[PrepareConfig],
+) -> PreparationResult:
+    """Record every prepared archive in one rewrite of the corpus manifest.
+
+    Taking them together rather than one at a time is what lets archives be
+    prepared at once: the totals, the split check and the sweep of shards no
+    manifest claims all read the whole corpus, and a sweep run while another
+    archive was still writing would delete that archive's shards.
+    """
+
+    config = resolved_config.value
+    normalized_directory = output_path / "normalized"
+    maximum_games = config.filters.maximum_games
+    inputs = (*corpus.inputs, *(archive.record for archive in prepared))
+    corpus_shards = [
+        *corpus.shards,
+        *(shard for archive in prepared for shard in archive.shards),
+    ]
+    normalized_paths = [
+        path for archive in prepared for path in archive.normalized_paths
+    ]
+    accepted_games = sum(archive.accepted_games for archive in prepared)
+    rejected_games = sum(archive.rejected_games for archive in prepared)
+    if accepted_games == 0 and not corpus.inputs:
+        # With no earlier archive there is no corpus for an empty append to
+        # extend, so archives that accept nothing between them are a
+        # misconfigured selection rather than months with nothing eligible in.
+        reasons: Counter[str] = Counter()
+        for archive in prepared:
+            reasons.update(archive.record["games"]["rejection_reasons"])
+        detail = ", ".join(
+            f"{reason}={count}" for reason, count in sorted(reasons.items())
+        )
+        raise DataPreparationError(
+            "no games passed preparation filters" + (f" ({detail})" if detail else "")
+        )
     corpus_games = _corpus_games(inputs)
     observed_split_counts = _corpus_split_counts(inputs)
     if config.split.require_nonempty:
@@ -691,7 +949,7 @@ def prepare_pgn(
         "Prepared %s game(s), rejected %s, and wrote %s shard(s); the corpus "
         "now spans %s archive(s)",
         accepted_games,
-        sum(rejections.values()),
+        rejected_games,
         len(normalized_paths),
         len(inputs),
     )
@@ -699,7 +957,7 @@ def prepare_pgn(
         normalized_paths=tuple(normalized_paths),
         manifest_path=manifest_path,
         accepted_games=accepted_games,
-        rejected_games=sum(rejections.values()),
+        rejected_games=rejected_games,
         split_counts=observed_split_counts,
         corpus_archives=len(inputs),
     )

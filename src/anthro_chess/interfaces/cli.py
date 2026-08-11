@@ -135,6 +135,15 @@ def _worker_count(value: str) -> int:
     return count
 
 
+def _archive_count(value: str) -> int:
+    """Read how many archives to prepare at once, which is at least one."""
+
+    count = int(value)
+    if count < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an archive count")
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level command parser."""
     parser = argparse.ArgumentParser(
@@ -221,6 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Processes decoding games, 0 to decode in the reader's own. "
             "Defaults to as many as one reader can keep fed. Nothing about it "
             "reaches the artifact."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--concurrency",
+        type=_archive_count,
+        default=1,
+        help=(
+            "Archives to prepare at once, writing one manifest for all of "
+            "them. Above one it prepares every acquired archive this selection "
+            "pins and takes no input path."
         ),
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
@@ -1115,7 +1134,12 @@ def _prepare_workers(requested: int | None) -> int:
 
 def _run_data_prepare(arguments: argparse.Namespace) -> int:
     from anthro_chess.config import ConfigError, load_config
-    from anthro_chess.data import DataPreparationError, PrepareConfig, prepare_pgn
+    from anthro_chess.data import (
+        DataPreparationError,
+        PrepareConfig,
+        prepare_archives,
+        prepare_pgn,
+    )
 
     try:
         resolved = load_config(
@@ -1124,16 +1148,38 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         output = _data_output_path(arguments.output, resolved.value.artifact_name)
-        input_path = _configured_archive_path(
-            resolved, arguments.input, arguments.output
-        )
-        result = prepare_pgn(
-            input_path,
-            output,
-            resolved,
-            workers=_prepare_workers(arguments.workers),
-            counts_path=_archive_counts_path(resolved, input_path, arguments.output),
-        )
+        if arguments.concurrency > 1:
+            acquired = _acquired_archive_inputs(resolved, arguments.output)
+            if arguments.input is not None:
+                raise ConfigError(
+                    "--concurrency prepares the archives this selection pins, "
+                    "so it takes no input path"
+                )
+            if not acquired:
+                raise ConfigError(
+                    "no archive this selection pins has been acquired yet"
+                )
+            result = prepare_archives(
+                [path for path, _ in acquired],
+                output,
+                resolved,
+                workers=_prepare_workers(arguments.workers),
+                concurrency=arguments.concurrency,
+                counts_paths=[counts_path for _, counts_path in acquired],
+            )
+        else:
+            input_path = _configured_archive_path(
+                resolved, arguments.input, arguments.output
+            )
+            result = prepare_pgn(
+                input_path,
+                output,
+                resolved,
+                workers=_prepare_workers(arguments.workers),
+                counts_path=_archive_counts_path(
+                    resolved, input_path, arguments.output
+                ),
+            )
     except (ConfigError, DataPreparationError) as error:
         print(f"anthro data prepare: {error}", file=sys.stderr)
         return 2
@@ -3563,6 +3609,25 @@ def _counts_path(artifact_root: Path, file_name: str) -> Path:
     from anthro_chess.data.census import ACCOUNT_GAMES_SUFFIX, CENSUS_DIRECTORY
 
     return artifact_root / CENSUS_DIRECTORY / f"{file_name}{ACCOUNT_GAMES_SUFFIX}"
+
+
+def _acquired_archive_inputs(
+    resolved: ResolvedConfig[PrepareConfig],
+    artifact_root: Path | None,
+) -> list[tuple[Path, Path]]:
+    """Return each pinned archive that is on disk, and where its counts go.
+
+    A selection pins more archives than the machine holds at once, so the ones
+    absent are the ones already prepared and deleted rather than an error.
+    """
+
+    acquired = []
+    for archive in resolved.value.archives:
+        root = _archive_artifact_root(resolved, archive, artifact_root)
+        path = root / "raw" / archive.file_name
+        if path.is_file():
+            acquired.append((path, _counts_path(root, archive.file_name)))
+    return acquired
 
 
 def _archive_counts_path(

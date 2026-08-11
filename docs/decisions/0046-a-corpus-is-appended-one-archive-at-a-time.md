@@ -5,7 +5,10 @@ Date: 2026-08-10
 ## Status
 
 Accepted as initial design direction. Defines how a corpus spanning many source
-archives is built, and what a run may assume when it is interrupted.
+archives is built, and what a run may assume when it is interrupted. Refined by
+`0054-archives-are-prepared-together-and-recorded-once.md`, under which one run
+decodes several archives at once and records them in a single rewrite; the
+manifest stays the part that takes one writer.
 
 ## Context
 
