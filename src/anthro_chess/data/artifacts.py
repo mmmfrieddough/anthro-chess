@@ -207,6 +207,19 @@ def read_normalized_rows(
     return cast(list[dict[str, Any]], table.to_pylist())
 
 
+@dataclass(frozen=True)
+class _OpenShard:
+    """An opened shard, carrying the path its read failures have to name.
+
+    A failed page read raises a bare thrift message, so the row-group index
+    this module supplies is the whole locator, and an index identifies no file
+    on a corpus of tens of thousands of shards.
+    """
+
+    path: Path
+    reader: Any
+
+
 def open_normalized_shard(path: Path) -> Any:
     """Open one shard for row-group reads, parsing its footer only.
 
@@ -220,31 +233,31 @@ def open_normalized_shard(path: Path) -> Any:
     except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
         raise DataLoadingError(_PARQUET_MISSING) from error
     try:
-        return pq.ParquetFile(path)
+        return _OpenShard(path=path, reader=pq.ParquetFile(path))
     except (OSError, ValueError) as error:
         raise DataLoadingError(
             f"cannot read normalized data {path}: {error}"
         ) from error
 
 
-def normalized_row_group_count(reader: Any) -> int:
+def normalized_row_group_count(shard: Any) -> int:
     """Return how many row groups one opened shard holds."""
 
-    return int(reader.metadata.num_row_groups)
+    return int(shard.reader.metadata.num_row_groups)
 
 
 def read_normalized_row_group(
-    reader: Any,
+    shard: Any,
     row_group: int,
     columns: Sequence[str],
 ) -> Any:
     """Read one row group's projected columns as an opaque columnar table."""
 
     try:
-        return reader.read_row_group(row_group, columns=list(columns))
+        return shard.reader.read_row_group(row_group, columns=list(columns))
     except (OSError, ValueError) as error:
         raise DataLoadingError(
-            f"cannot read normalized row group {row_group}: {error}"
+            f"cannot read normalized data {shard.path} row group {row_group}: {error}"
         ) from error
 
 
