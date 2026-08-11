@@ -8,7 +8,10 @@ Accepted. Defines how preparation divides work across processes, and what a
 run may assume about the artifact when it does. Refined by
 `0050-a-header-rejection-outranks-a-parse-error.md`, which stops a worker
 parsing a game the headers already reject, and gives up part of what this
-record says a run may assume about the artifact to do it.
+record says a run may assume about the artifact to do it. Superseded on what
+constrains a run by
+`0053-the-pool-is-sized-to-the-reader-it-waits-on.md`: the headroom measured
+below is gone, and the reader is now the ceiling.
 
 ## Context
 

@@ -95,6 +95,14 @@ _DETAIL_ROOT_FLAG.add_argument(
 #: because this machine's cores belong to training runs.
 _DEFAULT_CENSUS_WORKERS = 8
 
+#: Decoders one reader can keep fed. Preparation's reader frames every game in
+#: its own process and so cannot exceed one core, which makes the pool stop
+#: paying once it consumes games as fast as that core frames them. Beyond this
+#: a decoder adds the cost of dispatching to it and nothing else, so the
+#: default is a property of the pipeline rather than of the machine.
+#: `docs/decisions/0053-the-pool-is-sized-to-the-reader-it-waits-on.md`.
+_MAXIMUM_PREPARE_WORKERS = 12
+
 _FORMAT_FLAG = argparse.ArgumentParser(add_help=False)
 _FORMAT_FLAG.add_argument(
     "--format",
@@ -211,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=_worker_count,
         help=(
             "Processes decoding games, 0 to decode in the reader's own. "
-            "Defaults to one per core beyond the reader. Nothing about it "
+            "Defaults to as many as one reader can keep fed. Nothing about it "
             "reaches the artifact."
         ),
     )
@@ -1102,7 +1110,7 @@ def _prepare_workers(requested: int | None) -> int:
     # a decoder per core onto a handful of them.
     affinity = getattr(os, "sched_getaffinity", None)
     cores = len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
-    return max(cores - 1, 0)
+    return min(max(cores - 1, 0), _MAXIMUM_PREPARE_WORKERS)
 
 
 def _run_data_prepare(arguments: argparse.Namespace) -> int:
