@@ -1349,6 +1349,29 @@ def test_replaces_the_corpus_manifest_atomically(tmp_path: Path) -> None:
     assert written == [result.manifest_path]
 
 
+def test_two_writers_of_one_path_do_not_share_a_staging_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preparation and the census both write an archive's counts, unsynchronized."""
+
+    from anthro_chess.data import artifacts
+    from anthro_chess.data.artifacts import write_text_atomically
+
+    path = tmp_path / "counts.tsv"
+    monkeypatch.setattr(artifacts.os, "getpid", lambda: 111)
+    other = path.with_suffix(f"{path.suffix}.222.writing")
+    other.write_text("what the other writer is part-way through", encoding="utf-8")
+
+    write_text_atomically(path, "mine")
+
+    assert path.read_text(encoding="utf-8") == "mine"
+    assert other.read_text(encoding="utf-8") == (
+        "what the other writer is part-way through"
+    )
+    assert not list(tmp_path.glob("*.111.writing"))
+
+
 def test_refuses_a_corpus_prepared_before_a_manifest_could_span_archives(
     tmp_path: Path,
 ) -> None:
