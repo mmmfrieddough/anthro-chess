@@ -182,9 +182,11 @@ may be built across machines that afford different numbers of them.
 Its default is bounded by the reader rather than by the machine, because one
 reader frames in one process and a pool larger than it can feed only waits. A
 machine with cores to spare past that point has room for another preparation
-rather than for a wider pool, which is what `--concurrency` spends them on:
-archives are independent inputs, so several are decoded at once and recorded in
-one rewrite of the manifest. Which archives a run decodes together does not
+rather than for a wider pool, and that is what a run spends them on: naming no
+input against a selection that pins many prepares all of the acquired ones at
+once, as many as fill the machine, recorded in one rewrite of the manifest.
+`--concurrency` overrides how many, and naming one input still prepares exactly
+that one. Which archives a run decodes together does not
 reach the artifact any more than the worker count does — the same archives
 prepared one at a time write the same bytes.
 

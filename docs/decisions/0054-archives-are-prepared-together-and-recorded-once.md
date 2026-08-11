@@ -53,9 +53,15 @@ once would overshoot by whatever the second one took.
 
 **Archives prepared at once divide the machine rather than each taking it.**
 `0053`'s cap is what one reader can be fed, which is a bound per archive; the
-default is now the smaller of that and the machine's cores divided between the
-archives sharing it. Without the second bound the default forks a full pool per
-archive, and eight archives ask for 96 decoders on 32 threads.
+pool is the smaller of that and the machine's cores divided between the archives
+sharing it. Without the second bound the default forks a full pool per archive,
+and eight archives ask for 96 decoders on 32 threads.
+
+**How many archives is derived, not asked for.** A selection pinning many has no
+single default input, so naming none of them prepares all of them, at the fewest
+that fill the machine — the fewest because each archive in flight is one more
+that has to be on disk and one more marked-account snapshot held. Naming one
+input still prepares exactly that one.
 
 ## What it bought
 
@@ -74,15 +80,26 @@ The output was byte-identical between them, over every shard and the manifest.
 
 Two archives are enough to show that the gain is not a tail effect: alone they
 take 27.6s and 28.7s, so the slower one is 1.04x the faster and the wall clock
-of a concurrent pair is not being set by an imbalance between them. The default
-picks twelve here, which is the measured best of that column.
+of a concurrent pair is not being set by an imbalance between them.
 
-`0053` measured further than two archives will go, by preparing one archive
-under several names: eight at three workers each reach 18,417 scanned/s,
-**2.14x** one preparation with the machine to itself. It is a weaker reading
-than this table — one cached archive rather than eight distinct ones — but it
-is the shape the sizing rule is drawn from, and its optimum at eight archives is
-the three decoders that rule picks.
+How far it goes, over twelve distinct archives of 40,000 games so that every
+arrangement divides them evenly and none ends on a short last wave:
+
+| Archives at once | Decoders each | Processes | Rate | Against one |
+| --- | --- | --- | --- | --- |
+| 1 | 12 | 13 | 8,812 | 1.00x |
+| 2 | 12 | 26 | 14,976 | 1.70x |
+| 3 | 9 | 30 | 17,568 | 2.00x |
+| 4 | 7 | 32 | 18,538 | **2.11x** |
+| 6 | 4 | 30 | 18,481 | 2.10x |
+| 12 | 1 | 24 | 14,576 | 1.66x |
+
+Throughput peaks where the processes come to the machine's own count, and both
+sides of that are worse: two archives leave six threads unused, twelve give
+each reader a pool too small to keep it fed. Four is the fewest arrangement
+reaching the peak here, and is what the default picks. For the pinned
+51-archive selection this is roughly four and a half days of decoding against
+about two.
 
 `0053` measured the ceiling this approaches with more archives in flight: eight
 at three workers each reach 18,417 scanned/s, **2.14x** one preparation with the

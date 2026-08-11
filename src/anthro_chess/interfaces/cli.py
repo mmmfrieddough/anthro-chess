@@ -135,6 +135,36 @@ def _worker_count(value: str) -> int:
     return count
 
 
+def _available_cores() -> int:
+    # What this process may run on rather than what the machine holds: under a
+    # cpuset or a taskset the two disagree, and the machine's count would fork
+    # a decoder per core onto a handful of them.
+    affinity = getattr(os, "sched_getaffinity", None)
+    return len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
+
+
+def _prepare_concurrency(requested: int | None) -> int:
+    """Return how many archives to decode at once: the fewest that fill the machine.
+
+    One archive cannot fill it, because the reader framing its games holds a
+    single core and caps the pool that waits on it. Several can, and throughput
+    peaks where their processes come to the machine's own count. The fewest is
+    preferred among the arrangements that reach it, since each archive in
+    flight is one more that has to be on disk and one more marked-account
+    snapshot held.
+    """
+
+    if requested is not None:
+        return requested
+    cores = _available_cores()
+    best, most = 1, 0
+    for count in range(1, cores + 1):
+        processes = count * (_prepare_workers(None, count) + 1)
+        if processes <= cores and processes > most:
+            best, most = count, processes
+    return best
+
+
 def _archive_count(value: str) -> int:
     """Read how many archives to prepare at once, which is at least one."""
 
@@ -236,11 +266,11 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument(
         "--concurrency",
         type=_archive_count,
-        default=1,
         help=(
             "Archives to prepare at once, writing one manifest for all of "
-            "them. Above one it prepares every acquired archive this selection "
-            "pins and takes no input path."
+            "them. Defaults to the fewest that fill this machine. Above one it "
+            "prepares every acquired archive this selection pins and takes no "
+            "input path."
         ),
     )
     prepare_parser.set_defaults(handler=_run_data_prepare)
@@ -1130,12 +1160,7 @@ def _prepare_workers(requested: int | None, concurrency: int = 1) -> int:
 
     if requested is not None:
         return requested
-    # What this process may run on rather than what the machine holds: under a
-    # cpuset or a taskset the two disagree, and the machine's count would fork
-    # a decoder per core onto a handful of them.
-    affinity = getattr(os, "sched_getaffinity", None)
-    cores = len(affinity(0)) if affinity is not None else (os.cpu_count() or 1)
-    share = max(cores // concurrency - 1, 0)
+    share = max(_available_cores() // concurrency - 1, 0)
     return min(share, _MAXIMUM_PREPARE_WORKERS)
 
 
@@ -1155,13 +1180,12 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
             overrides=arguments.set,
         )
         output = _data_output_path(arguments.output, resolved.value.artifact_name)
-        if arguments.concurrency > 1:
+        # A selection pinning many archives has no single default input, so
+        # naming none of them asks for all of them. Naming one still prepares
+        # exactly that one, whatever the machine could have run beside it.
+        if arguments.input is None and len(resolved.value.archives) > 1:
+            concurrency = _prepare_concurrency(arguments.concurrency)
             acquired = _acquired_archive_inputs(resolved, arguments.output)
-            if arguments.input is not None:
-                raise ConfigError(
-                    "--concurrency prepares the archives this selection pins, "
-                    "so it takes no input path"
-                )
             if not acquired:
                 raise ConfigError(
                     "no archive this selection pins has been acquired yet"
@@ -1170,11 +1194,16 @@ def _run_data_prepare(arguments: argparse.Namespace) -> int:
                 [path for path, _ in acquired],
                 output,
                 resolved,
-                workers=_prepare_workers(arguments.workers, arguments.concurrency),
-                concurrency=arguments.concurrency,
+                workers=_prepare_workers(arguments.workers, concurrency),
+                concurrency=concurrency,
                 counts_paths=[counts_path for _, counts_path in acquired],
             )
         else:
+            if arguments.concurrency is not None and arguments.concurrency > 1:
+                raise ConfigError(
+                    "--concurrency prepares the archives a selection pins, so "
+                    "it cannot be given an input path"
+                )
             input_path = _configured_archive_path(
                 resolved, arguments.input, arguments.output
             )
