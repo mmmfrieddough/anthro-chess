@@ -169,14 +169,21 @@ the manifest names as a rejected game's reason is not, because a game the
 headers rule out is no longer given the chance to fail to parse first. See
 `docs/decisions/0050-a-header-rejection-outranks-a-parse-error.md`.
 
-Worker count is therefore a statement about the machine and not about the
-corpus. It is a `--workers` argument to `anthro data prepare` rather than a
-field of the selection, it is absent from the manifest, and a run on a full
-machine writes the same bytes a single-process run writes over the same input.
-A corpus may be built across machines that afford different numbers of them.
+Worker count is therefore a statement about the run and not about the corpus.
+It is a `--workers` argument to `anthro data prepare` rather than a field of
+the selection, it is absent from the manifest, and a run on a full machine
+writes the same bytes a single-process run writes over the same input. A corpus
+may be built across machines that afford different numbers of them.
 
-See `docs/decisions/0049-one-reader-frames-a-pool-decodes.md` for the measured
-rates and where the scaling stops.
+Its default is bounded by the reader rather than by the machine, because one
+reader frames in one process and a pool larger than it can feed only waits. A
+machine with cores to spare past that point has room for another preparation
+rather than for a wider pool, which nothing here does yet.
+
+See `docs/decisions/0049-one-reader-frames-a-pool-decodes.md` for how the work
+is divided, and
+`docs/decisions/0053-the-pool-is-sized-to-the-reader-it-waits-on.md` for the
+measured rates and where the scaling stops.
 
 ## Splits
 

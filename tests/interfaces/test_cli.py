@@ -133,6 +133,26 @@ def test_data_prepare_decodes_on_the_workers_it_is_given(
     assert _prepare_workers(0) == 0
 
 
+def test_the_decoding_pool_stops_growing_where_one_reader_stops_feeding_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bigger machine buys a bigger pool only up to what the reader frames.
+
+    The reader is a single process, so past the point where the pool consumes
+    games as fast as one core frames them, another decoder waits rather than
+    works.
+    """
+
+    from anthro_chess.interfaces.cli import _MAXIMUM_PREPARE_WORKERS, _prepare_workers
+
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(64)), raising=False
+    )
+
+    assert _prepare_workers(None) == _MAXIMUM_PREPARE_WORKERS
+    assert _prepare_workers(31) == 31
+
+
 def test_data_prepare_reports_an_archive_the_corpus_already_holds(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
