@@ -292,10 +292,11 @@ fraction a subset of a larger one, so a data-scaling curve is a series of
 nested selections rather than unrelated samples. A selection that matches no
 games fails rather than starting a run on nothing.
 
-Time control is filtered either by a speed class or by explicit clock bounds.
-The class is what keeping training narrow across a widened corpus needs, and
-the bounds cannot stand in for it: a class bands the initial clock plus forty
-increments, which no pair of bounds over those two fields draws.
+Time control is filtered by a speed class, by explicit clock bounds, or by
+both, which intersect. The class is what keeping training narrow across a
+widened corpus needs, and the bounds cannot stand in for it: a class bands the
+initial clock plus forty increments, which no pair of bounds over those two
+fields draws.
 
 Each run records the selection it resolved, not only the one it requested: the
 counts it kept, why it excluded the rest, and a digest of the selected game ids.

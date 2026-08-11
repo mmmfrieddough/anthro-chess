@@ -84,10 +84,12 @@ def speed_from_clock_ms(
 ) -> Speed | None:
     """Band a normalized time control, or ``None`` when it says nothing.
 
-    Correspondence is unreachable here. Preparation reads ``TimeControl "-"``
-    as an unavailable initial clock, so a game played without one and a game
-    whose control was never reported are the same pair of nulls in these
-    columns, and neither is claimed as a class.
+    Correspondence here is a clock long enough to reach that band, never a
+    game played without one: preparation records an unlimited control as an
+    unavailable initial clock, which these columns cannot tell apart from a
+    control the source never reported, so both band into nothing. The header
+    derivation reads ``"-"`` as correspondence, so the two disagree on exactly
+    those games.
     """
 
     if initial_ms is None or increment_ms is None:
