@@ -676,17 +676,11 @@ def test_the_seeds_re_measure_each_distance_independently(
         _compared(
             reference_pool,
             grid={"target_ratings": (1200, 1800), "seeds": (0, 1, 2)},
-            # Enough play for the seeds to reach different distances on some of
-            # the quantities. At one short game per cell every seed reads every
-            # distance identically, and the floor this test is named for is
-            # never derived at all.
-            generation={"games_per_position": 4, "maximum_generated_plies": 24},
         )
     )
 
     (reading,) = result.readings
     assert set(reading.seed_spread) == set(ComparedQuantity)
-    derived = 0
     for spread in reading.seed_spread.values():
         assert [seed for seed, _ in spread.distances] == [0, 1, 2]
         # A floor exactly where the seeds moved. Three that agreed observed that
@@ -694,11 +688,10 @@ def test_the_seeds_re_measure_each_distance_independently(
         # of zero for every later delta to clear.
         moved = len({value for _, value in spread.distances}) > 1
         assert (spread.floor is not None) == moved
-        derived += moved
     # A stub policy saturates several of these quantities whatever the seed, so
-    # the check above passes vacuously if the play ever shrinks back to where
-    # none of them move.
-    assert derived
+    # the check above passes vacuously if the play ever shrinks to where none of
+    # them move.
+    assert any(spread.floor is not None for spread in reading.seed_spread.values())
 
 
 def test_the_committed_floor_is_the_bootstrap_rather_than_the_seed_spread(

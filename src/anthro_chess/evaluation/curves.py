@@ -1394,22 +1394,26 @@ def _resample(
     method = CURVE_BOOTSTRAP_METHOD if model_varies else CURVE_DETERMINISTIC_METHOD
     source = f"{spec.name} v{spec.version} {method}"
 
+    # This family states a zero rather than bounding one, which the shared
+    # arithmetic refuses. ``method`` says which of the two claims it carries: a
+    # model side that replays exactly, or a resample that moved nothing.
+    stated_zero = MetricDispersion(
+        value=0.0,
+        bound=0.0,
+        source=source,
+        estimator=method,
+    )
+
     dispersions: CurveDispersions | None = None
     if not model_varies:
         # Exact rather than estimated, and the same for all three readings:
         # none of them can move when the games behind them cannot. Nothing
         # about it depends on resampling, so it stands where a bootstrap could
         # not — a model side too thin to resample is still replayed exactly.
-        exact = MetricDispersion(
-            value=0.0,
-            bound=0.0,
-            source=source,
-            estimator=method,
-        )
         dispersions = CurveDispersions(
-            conditional=exact,
-            pooled=exact,
-            model_variation=exact,
+            conditional=stated_zero,
+            pooled=stated_zero,
+            model_variation=stated_zero,
             resamples=0,
             method=method,
         )
@@ -1462,15 +1466,13 @@ def _resample(
             if observed.size < 2:
                 return None, None
             dispersion = float(np.std(observed, ddof=1))
-            # A zero is built here rather than bounded, which is what every
-            # other estimator's is refused for. Decision 0042 keeps this
-            # family's: the games generated for a curve are themselves the draw,
-            # so a distance no resample moved is a statement about the play this
-            # reading produced rather than a sample that came out flat, and the
-            # reading carries ``model_variation`` beside the distance so a
-            # reader sees as much.
+            # Decision 0042 keeps this family's estimated zero where every other
+            # estimator is refused one: the games generated for a curve are
+            # themselves the draw, so a distance no resample moved is a
+            # statement about the play this reading produced rather than a
+            # sample that came out flat.
             bootstrapped.append(
-                MetricDispersion(value=0.0, bound=0.0, source=source, estimator=method)
+                stated_zero
                 if dispersion == 0.0
                 else measured_dispersion(
                     dispersion,
