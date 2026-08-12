@@ -16,6 +16,8 @@ from anthro_chess.config import ConfigModel
 from anthro_chess.data import Speed
 from anthro_chess.evaluation.pool import PoolGame, game_ids_sha256, rank_key
 
+#: Version 2 records the class a view sliced to; a version 1 record has no
+#: speed field rather than a null one.
 VIEW_SPEC_VERSION = 2
 
 
@@ -69,7 +71,7 @@ class ViewSelection:
 
 
 def excluded_summary(counts: Mapping[str, int]) -> str:
-    """Return why a selection kept what it kept, for a caller that has to say.
+    """Return one phrase naming what a view left out, or ``nothing excluded``.
 
     A selection that kept nothing looks the same however it got there, and a
     speed class and a ply bound are not the same problem to fix.

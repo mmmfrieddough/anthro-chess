@@ -2696,7 +2696,7 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
 
 
 def _view_population(view: ViewSelection) -> str:
-    """Return how much of a pool a view took, and the one class it took from."""
+    """Return how much of a pool a view took, naming its class when it sliced."""
 
     sliced = "" if view.speed is None else f", {view.speed} alone"
     return f"{view.selected_games} of {view.eligible_games} eligible game(s){sliced}"
@@ -2783,7 +2783,7 @@ def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
 
 
 def _wrapped_reason(text: str) -> list[str]:
-    """Wrap one indented explanation printed beneath a ladder report line."""
+    """Wrap one indented explanation printed beneath the line it qualifies."""
 
     from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
 

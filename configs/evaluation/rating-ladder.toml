@@ -86,7 +86,7 @@ maximum_games = 16
 # One human population rather than whatever mixture the pool happens to hold.
 # Every pairing plays the same roots, so a mixed draw reaches every seat's
 # fitted rating. Declared while the pool is one class, so widening the corpus
-# cannot quietly mix them; the reading itself says what the class leaves open.
+# cannot quietly mix them.
 speed = "blitz"
 
 [generation]

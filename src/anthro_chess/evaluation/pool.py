@@ -141,6 +141,8 @@ class PoolGame:
     ply_count: int
     result: str
     has_ratings: bool
+    #: ``None`` when the source recorded no clock, which a view excludes under
+    #: its own reason rather than as a mismatch.
     speed: Speed | None
 
 

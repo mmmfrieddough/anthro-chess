@@ -206,7 +206,11 @@ def _freeze(
     *,
     pool_id: str,
 ) -> Path:
-    """Freeze fixture rows into a pool beneath ``directory``, and return it."""
+    """Freeze fixture rows into a pool of their own.
+
+    Several fixtures build one under the same ``tmp_path``, so the directory
+    and the pool id come from the caller.
+    """
 
     normalized, manifest = write_corpus(directory / "corpus", rows)
     output = directory / "pool"
@@ -284,8 +288,8 @@ def mixed_speed_reference_pool(
 ) -> Path:
     """Freeze a rated pool holding two speed classes rather than one.
 
-    Half its games are played at a minute and half at five, which is the shape a
-    widened corpus has and the one a reference must not average over.
+    Two classes in one pool is the shape a widened corpus has, and the one a
+    reference must not average over.
     """
 
     return _freeze(

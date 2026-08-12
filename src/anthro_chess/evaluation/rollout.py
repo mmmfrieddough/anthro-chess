@@ -1106,8 +1106,9 @@ def _load_reference(
         config.grid.target_ratings, max(DECLARED_NEIGHBOURS.values())
     )
     # The declared cap clears this floor by construction; what the cap cannot
-    # promise is how much of the view survives the rating-gap filter, which
-    # depends on the pool's rating composition rather than on configuration.
+    # promise is how much of the pool is of the declared class, or how much of
+    # that survives the rating-gap filter — both the pool's composition rather
+    # than configuration.
     if len(reference.games) < required:
         raise RolloutBenchmarkError(
             f"view {config.reference.view.name!r} left "

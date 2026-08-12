@@ -427,8 +427,8 @@ def test_the_openings_are_drawn_at_one_speed_class(
     assert result.view.speed is Speed.BLITZ
     assert result.view.selected_games == 4
 
-    # A class the pool holds none of leaves the seats nothing to play from, and
-    # which filter emptied the view is what a reader has to fix.
+    # Which filter emptied the view is what a reader has to fix, so the reason
+    # is matched rather than the error type.
     with pytest.raises(LadderBenchmarkError, match="8 speed_mismatch"):
         _run(
             _config(
