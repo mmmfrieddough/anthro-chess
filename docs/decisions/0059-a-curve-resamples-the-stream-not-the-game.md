@@ -144,9 +144,11 @@ above temperature zero now reports an unknown floor, no null level, and an
 unknown rating-response verdict — where it used to report a confident floor at
 about half the true width. That is the honest reading of twelve games from two
 draws, and the lever it points at is real: `generation.games_per_position` and
-`grid.seeds` both multiply streams, while the rating grid does not. `#454`
-carries whether the shipped reduced overrides should buy streams instead of
-ratings, and it is the issue this decision leans on hardest.
+`grid.seeds` both multiply streams, while the rating grid does not. What the
+reduced overrides should buy instead is a cost decision this record does not
+take: raising the stream count raises the sweep's longest step in proportion,
+and the answer wants `anthro eval noise plan` against a reading that measured
+its own spread rather than a guess.
 
 The temperature-zero row is unaffected and keeps both, which is the one place a
 reduced sweep still qualifies a generated-play distance.
@@ -226,8 +228,8 @@ inside a block move together; it reads it from fewer units, so the bound above i
 is wider rather than wrong. Where it would bite is the three-stream minimum:
 twelve genuinely independent games would carry eleven degrees of freedom and a
 usable floor, where two streams carry one and none. That is the figure to
-re-measure on a converged checkpoint, and `#454` is where the sample counts get
-decided either way.
+re-measure on a converged checkpoint, and it is the same figure the reduced
+sweep's sample counts have to be set against.
 
 ## References
 

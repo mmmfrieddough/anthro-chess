@@ -1623,7 +1623,8 @@ def _references(
 
     That permutation moves games rather than streams, so unlike the two above it
     still treats a grid point as independent of its neighbours. Whether that
-    matters is a measurement nobody has taken; #462 carries it.
+    matters is a measurement nobody has taken, and the verdict it decides —
+    ``AVERAGE_HUMAN`` — is the one that says a model ignores its rating input.
 
     Each side's deviation is scaled to the fresh draw its plug-in resample
     understates, since these read that understatement off the same replicates a

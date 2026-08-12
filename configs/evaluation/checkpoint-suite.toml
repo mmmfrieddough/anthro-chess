@@ -121,8 +121,8 @@ reduced = ["puzzles_per_rating=2"]
 # it was played at, so one stream plays every point of the grid. One seed at one
 # game per position is two streams once colours are swapped, which is below what
 # a spread can be read from — so every row above temperature zero reports its
-# distances unqualified. Decision 0059 owns why, and #454 decides what this step
-# should buy instead.
+# distances unqualified. Decision 0059 owns why; what this step should buy
+# instead is an open cost question rather than a setting anyone has priced.
 config = "configs/evaluation/generated-play-rollout.toml"
 reduced = [
   "grid.seeds=[0]",
