@@ -807,22 +807,27 @@ def test_a_model_side_of_one_stream_has_nothing_to_resample() -> None:
     assert comparison.response is RatingResponse.UNKNOWN
 
 
-def test_two_streams_state_no_spread_but_keep_their_null_levels() -> None:
+def test_a_varying_side_below_three_streams_estimates_nothing() -> None:
     """Two streams leave three resamples, and their agreeing is not a zero.
 
-    The two answer different questions of the model side. A spread needs it
-    redrawn often enough to read one off; a null level needs only that it can be
-    redrawn at all, which is what a replayed reading keeps under decision 0032.
+    The floor and the model half of a null level are read off the same
+    replicates, so a side too thin to carry one is too thin to carry the other.
+    A replayed side is the exception and keeps its levels, because its games do
+    not move and its own half of the null is zero rather than badly estimated.
     """
 
     games = _generated(_noisy_length, per_rating=6)
     two = _compare(_streamed(games, streams=2))
     three = _compare(_streamed(games, streams=3))
+    replayed = _compare(_streamed(games, streams=2), model_varies=False)
 
     assert two.dispersions is None
-    assert two.references is not None
+    assert two.references is None
     assert three.dispersions is not None
     assert three.dispersions.streams == 3
+    assert replayed.dispersions is not None
+    assert replayed.dispersions.conditional.value == 0.0
+    assert replayed.references is not None
 
 
 def test_the_floor_counts_streams_rather_than_the_games_they_played() -> None:

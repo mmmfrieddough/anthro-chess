@@ -105,38 +105,51 @@ suite did not buy.
 
 **The draw is rescaled.** Its spread is multiplied by `sqrt(m / (m - 1))` for
 `m` streams, which removes the plug-in understatement exactly for a mean and is
-what the third column above measures. Negligible at the counts a full sweep
-plays and worth 29% at the two a reduced sweep plays.
+what the third column above measures. The null levels take the same correction
+on each side's own deviation, since they read it off the same replicates.
+Negligible at the counts a full sweep plays and worth 22% at the three this
+family will not go below.
 
-**Below three streams no spread is stated at all.** Two streams leave three
+**A model side that varies and holds fewer than three streams estimates
+nothing** — no spread, and no null level either. Two streams leave three
 distinct resamples, and reading a spread off them fails in both directions at
 once: the table above has the estimate ranging over a factor of four there, and
-the shakedown reading below found several quantities where the two streams agreed
-and the estimate came out at exactly zero — a floor that clears every delta,
-which is the failure a floor exists to prevent. `SeedSpread` already withholds
-below three replicates, and this is the same rule about the same kind of number.
+the shakedown reading taken for this change found several quantities where the
+two streams agreed and the estimate came out at exactly zero, which is a floor
+that clears every delta. `SeedSpread` already withholds below three replicates,
+and this is the same rule about the same kind of number. The levels go with it
+because their model half is read off those same three outcomes; keeping them
+would move the failure from a number a reader distrusts to a verdict they do
+not.
 
-**The null levels keep the lower bar**, being two streams, because they ask
-something weaker of the model side: that it can be redrawn at all rather than
-redrawn often enough to read a spread off. That is also what keeps 0032's
-consequence true, since a greedy row's two colour assignments are its only
-streams and it is supposed to keep its levels while stating its zero.
+**A replayed side is the exception**, and needs only a model side a resample can
+move at all. Its floor is stated rather than estimated, and its own half of the
+null is zero by construction rather than badly estimated, so 0032's consequence
+holds as written: a greedy row states its zero and keeps its levels.
 
 Fixing the unit disposes of support churn as a side effect rather than as a
-second mechanism. Each stream contributes one game per rating, so a draw over
-streams holds the grid's allocation exactly where a re-run holds it, and a
-resample can no longer empty a rating the suite always plays.
+second mechanism, wherever a stream reached every rating: it then contributes one
+game per point, a draw over streams holds the grid's allocation exactly where a
+re-run holds it, and a resample can no longer empty a rating the suite always
+plays. The four quantities that drop games — a game that left the book on a
+waypoint chose no opening — keep unbalanced streams and can still lose a point.
+That residue is not the artifact this removes: a fresh seed's stream may fail to
+reach the book at that rating too, so it is variation a floor should carry.
 
 ## Consequences
 
-**The reduced sweep's curve readings carry no floor at all.** Its rollout step
-plays one seed at one game per position, which is two streams, so every sampled
-row now reports an unknown floor where it used to report a confident one at
+**The reduced sweep's sampled curve rows qualify nothing.** Its rollout step
+plays one seed at one game per position, which is two streams, so every row
+above temperature zero now reports an unknown floor, no null level, and an
+unknown rating-response verdict — where it used to report a confident floor at
 about half the true width. That is the honest reading of twelve games from two
 draws, and the lever it points at is real: `generation.games_per_position` and
 `grid.seeds` both multiply streams, while the rating grid does not. `#454`
 carries whether the shipped reduced overrides should buy streams instead of
-ratings.
+ratings, and it is the issue this decision leans on hardest.
+
+The temperature-zero row is unaffected and keeps both, which is the one place a
+reduced sweep still qualifies a generated-play distance.
 
 **Nothing committed moves.** The store holds no generated-play or termination
 result, and no distance changes value: the point reading is untouched and only

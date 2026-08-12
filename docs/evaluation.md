@@ -450,9 +450,11 @@ could be characterized once and looked up.
 
 Both resample the **stream** a game came out of rather than the game, because a
 stream is what re-running the reading redraws and one of them plays a game at
-every rating of the grid. What they ask of that side differs, so a comparison
-below three streams states no floor while keeping its levels, and one with a
-single stream states neither.
+every rating of the grid. A comparison whose model side varies and holds fewer
+than three of them estimates neither number: three resamples are not a spread,
+and the level's model half is read off the same three. A replayed side is the
+exception and states its zero floor and its levels at any stream count, since
+neither asks how far its games would move.
 
 The conditional and the pooled reading each have their own level and their own
 floor, so a report shows both per reading rather than sharing one across the
