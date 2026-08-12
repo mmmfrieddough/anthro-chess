@@ -1814,6 +1814,13 @@ Low-clock stress tests should start from realistic positions with little time
 remaining and check whether the model speeds up without collapsing into a fixed
 move time.
 
+Timing readings keep the corpus's full clock precision. Coarsening one to match
+an external model trained on second-resolution clocks would put timing metrics
+on two scales at once, and would give up the precision the corpus was chosen
+for. An external comparison instead gets a slice holding more than thirty
+seconds remaining, which is inside the operating range every published time
+model reports on, and where second-resolution labels cost that model least.
+
 Target timing values should come from human data where possible. The goal is not
 to minimize timeouts, but to match human timing behavior for the configured
 rating and clock context.
