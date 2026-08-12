@@ -575,7 +575,11 @@ def run_census(
     for index, batch in enumerate(batches, start=1):
         started = time.monotonic()
         try:
-            answers = _ask(batch, token)
+            # A refusal on a run's first request cannot be the burst tier,
+            # which nothing has spent against in the ten minutes before it. It
+            # is the daily window still closed, and waiting out a burst window
+            # does not reopen one that has hours left to run.
+            answers = _ask(batch, token, attempts=1 if index == 1 else None)
         except SourceExhausted:
             logger.info(
                 "The source's allowance is spent; %s account(s) asked about",
@@ -613,9 +617,13 @@ def snapshot_from_census(census: Census, *, queried_at: str) -> MarkedAccounts:
     )
 
 
-def _ask(batch: Sequence[str], token: str | None) -> dict[str, bool]:
+def _ask(
+    batch: Sequence[str],
+    token: str | None,
+    attempts: int | None = None,
+) -> dict[str, bool]:
     answers = dict.fromkeys(batch, False)
-    records = _post_usernames(list(batch), token)
+    records = _post_usernames(list(batch), token, attempts=attempts)
     if not records:
         # An account the source omits has no status to disclose and is recorded
         # unmarked, which is right for an erased account and wrong for a whole
@@ -633,7 +641,11 @@ def _ask(batch: Sequence[str], token: str | None) -> dict[str, bool]:
     return answers
 
 
-def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, object]]:
+def _post_usernames(
+    batch: list[str],
+    token: str | None,
+    attempts: int | None = None,
+) -> list[dict[str, object]]:
     headers = {"User-Agent": SOURCE_USER_AGENT}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
@@ -643,7 +655,8 @@ def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, objec
         method="POST",
         headers=headers,
     )
-    for attempt in range(1, _REFUSAL_ATTEMPTS + 1):
+    allowed = _REFUSAL_ATTEMPTS if attempts is None else attempts
+    for attempt in range(1, allowed + 1):
         try:
             with urlopen(request, timeout=60) as response:  # noqa: S310
                 payload = json.loads(response.read())
@@ -653,17 +666,17 @@ def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, objec
                     f"cannot query account status from {LICHESS_USERS_ENDPOINT}: "
                     f"{error}"
                 ) from error
-            if attempt == _REFUSAL_ATTEMPTS:
+            if attempt == allowed:
                 raise SourceExhausted(
-                    "the source is still refusing after a full burst window, so "
-                    "what is exhausted is the day's allowance"
+                    "the source is refusing an allowance no wait within this run "
+                    "reopens, so what is closed is the day's window"
                 ) from error
             logger.warning(
                 "Rate limited; waiting %ss for the allowance to refill "
                 "(attempt %s of %s)",
                 _BURST_WINDOW_SECONDS,
                 attempt,
-                _REFUSAL_ATTEMPTS,
+                allowed,
             )
             time.sleep(_BURST_WINDOW_SECONDS)
         except (URLError, OSError, json.JSONDecodeError) as error:

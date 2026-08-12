@@ -255,7 +255,9 @@ def test_records_every_account_asked_about_including_the_unanswered(
 ) -> None:
     answers = tmp_path / "answers.tsv"
 
-    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    def fake_post(
+        batch: list[str], token: str | None, attempts: int | None = None
+    ) -> list[dict[str, object]]:
         # The source omits accounts it has never heard of, and answers with its
         # own capitalization for the rest.
         return [
@@ -287,7 +289,9 @@ def test_a_spent_allowance_keeps_what_it_answered_and_is_not_a_failure(
     answers = tmp_path / "answers.tsv"
     asked: list[str] = []
 
-    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    def fake_post(
+        batch: list[str], token: str | None, attempts: int | None = None
+    ) -> list[dict[str, object]]:
         if "player04" in batch:
             raise census_module.SourceExhausted("spent")
         asked.extend(batch)
@@ -328,7 +332,9 @@ def test_paces_and_budgets_from_the_limiter_and_a_token_doubles_both(
     seen: list[str | None] = []
     slept: list[float] = []
 
-    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    def fake_post(
+        batch: list[str], token: str | None, attempts: int | None = None
+    ) -> list[dict[str, object]]:
         seen.append(token)
         return [{"id": name} for name in batch]
 
@@ -354,7 +360,9 @@ def test_refuses_to_record_a_batch_the_source_answered_for_nobody(
     """Nothing re-asks, so a thin answer would be a permanent clean verdict."""
 
     answers = tmp_path / "answers.tsv"
-    monkeypatch.setattr(census_module, "_post_usernames", lambda batch, token: [])
+    monkeypatch.setattr(
+        census_module, "_post_usernames", lambda batch, token, attempts=None: []
+    )
 
     with pytest.raises(CensusError, match="answered for none of"):
         run_census(["alpha"], answers, queried_at="2026-08-10", pause_seconds=0.0)
@@ -384,7 +392,7 @@ def test_the_pause_is_the_interval_rather_than_time_added_to_each_request(
     monkeypatch.setattr(
         census_module,
         "_post_usernames",
-        lambda batch, token: [{"id": name} for name in batch],
+        lambda batch, token, attempts=None: [{"id": name} for name in batch],
     )
 
     run_census(
@@ -398,6 +406,37 @@ def test_the_pause_is_the_interval_rather_than_time_added_to_each_request(
     # A four-second request leaves six of the ten, and a request slower than
     # the pause leaves none rather than a negative wait.
     assert slept == [6.0, 0.0]
+
+
+def test_a_refusal_on_the_first_request_waits_for_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The burst tier cannot be empty for a run that has spent nothing on it."""
+
+    slept: list[float] = []
+    attempts = 0
+
+    def always_refuses(request: Request, timeout: float | None = None) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise HTTPError(census_module.LICHESS_USERS_ENDPOINT, 429, "", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(census_module, "urlopen", always_refuses)
+    monkeypatch.setattr(census_module.time, "sleep", slept.append)
+
+    run = run_census(
+        ["alpha", "beta"],
+        tmp_path / "answers.tsv",
+        queried_at="2026-08-12",
+        batch_size=1,
+        pause_seconds=0.0,
+    )
+
+    assert run.refused
+    assert run.accounts_asked == 0
+    assert attempts == 1
+    assert slept == []
 
 
 def test_rides_out_one_refusal_and_calls_the_second_a_spent_allowance(
@@ -414,7 +453,7 @@ def test_rides_out_one_refusal_and_calls_the_second_a_spent_allowance(
     monkeypatch.setattr(census_module, "urlopen", always_refuses)
     monkeypatch.setattr(census_module.time, "sleep", slept.append)
 
-    with pytest.raises(census_module.SourceExhausted, match="the day's allowance"):
+    with pytest.raises(census_module.SourceExhausted, match="the day.s window"):
         census_module._post_usernames(["alpha"], None)
 
     assert attempts == 2
