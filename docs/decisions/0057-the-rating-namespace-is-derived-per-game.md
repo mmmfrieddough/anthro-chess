@@ -6,7 +6,10 @@ Date: 2026-08-11
 
 Accepted. Extends `0056-the-speed-axis-is-derived-from-the-time-control.md`,
 which settled that the source's own label is what answers the pool question and
-left the answer declared once per selection.
+left the answer declared once per selection. Relied on by
+`0058-the-corpus-starts-after-the-rapid-pool-split.md`, which removes the only
+months of the corpus where the label this record trusts is wrong, so that the
+rule here holds without exception.
 
 ## Context
 
@@ -80,5 +83,6 @@ re-derived rather than the pool that rated the game, and a 2017-04 row is
 stamped with a pool that did not exist to produce its number. Nothing about this
 rule caused that or would be repaired by reversing it — deriving from the time
 control is wrong on the same rows for the same reason, because the export
-carries no record of the pool at all. `#442` holds the evidence and the
-decision.
+carries no record of the pool at all. Those months leave the corpus rather than
+being corrected, which
+`0058-the-corpus-starts-after-the-rapid-pool-split.md` decides and measures.

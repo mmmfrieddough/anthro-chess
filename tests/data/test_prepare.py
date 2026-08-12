@@ -42,7 +42,7 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
 SAMPLE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
 BASELINE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-blitz-2017-04.toml"
-UNIV_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-univ-2017-04-2021-06.toml"
+UNIV_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-univ-2018-01-2021-06.toml"
 
 
 def test_baseline_selection_pins_one_bounded_verified_speed() -> None:
@@ -960,17 +960,18 @@ def _sha256(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 
 
-def test_centisecond_selection_pins_every_month_that_carries_clocks() -> None:
+def test_centisecond_selection_pins_every_month_after_the_pool_split() -> None:
     """The corpus selection is a checked-in fact rather than prose in an issue."""
 
     config = load_config(PrepareConfig, path=UNIV_CONFIG).value
 
-    assert len(config.archives) == 51
+    assert len(config.archives) == 42
     assert {archive.compression for archive in config.archives} == {"bzip2"}
     months = [archive.file_name.split("_")[-1][:7] for archive in config.archives]
-    # Centisecond clocks begin at 2017-04 and the export ends at 2021-06, so a
-    # month outside the span carries nothing this source was chosen for.
-    assert months[0] == "2017-04"
+    # Lichess split its rapid pool out of classical during 2017-12 and the
+    # export ends at 2021-06, so a month outside the span either names a pool
+    # that did not rate it or carries no centisecond clocks.
+    assert months[0] == "2018-01"
     assert months[-1] == "2021-06"
     assert months == sorted(months)
     assert len(set(months)) == len(months)

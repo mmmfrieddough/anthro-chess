@@ -154,8 +154,8 @@ them in a single rewrite. See
 Preparation therefore only ever adds to a corpus. A selection whose source,
 filters, split or termination choices differ from the ones the manifest recorded
 is refused rather than half-applied, and the accepted-game bound counts the
-corpus rather than each archive, so pinning 51 archives does not silently
-multiply it by 51. Rebuilding under a changed selection means removing the
+corpus rather than each archive, so pinning many archives does not silently
+multiply it by their number. Rebuilding under a changed selection means removing the
 artifact directory or preparing into another one.
 
 See `docs/decisions/0046-a-corpus-is-appended-one-archive-at-a-time.md`.
@@ -328,8 +328,11 @@ using `%clkc` in many timed games. The export spans 2013-01 through 2021-06 and
 has roughly 3.7B games total. The 2017-04 through 2021-06 portion has roughly
 3.35B games.
 
-The corpus the breadth pass builds is that universal export, 2017-04 through
-2021-06, chosen for its clock precision.
+The corpus the breadth pass builds is that universal export, 2018-01 through
+2021-06, chosen for its clock precision and starting after Lichess split its
+rapid rating pool out of classical, which
+`docs/decisions/0058-the-corpus-starts-after-the-rapid-pool-split.md` records.
+
 `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why,
 what the export holds before and after filtering, and what ending in mid-2021
 costs.
