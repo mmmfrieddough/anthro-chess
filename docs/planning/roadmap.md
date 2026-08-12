@@ -48,12 +48,13 @@ move-prediction loss, and checkpoint/resume support.
 `docs/training-and-runtime.md` owns the staged training-correctness protocol
 this established and the acceptance form the result was read against.
 
-Two sequencing decisions from this stage still hold. Timing data is preserved
-in the pipeline wherever a source carries it, but timing inputs and outputs stay
-out of the model and the objective until stage 6, after the move-only path is
-useful and measurable. And independent midgame chunks remain a scalability
-option that has to be compared against full-history training before becoming a
-default, rather than a default nobody compared.
+Two sequencing decisions from this stage still hold, one of them since refined.
+Timing data is preserved in the pipeline wherever a source carries it, and the
+model neither reads nor writes it here. Both halves were originally held to
+stage 6; reading time has since moved to stage 5, where it serves move
+prediction, leaving stage 6 the output half. And independent midgame chunks
+remain a scalability option that has to be compared against full-history
+training before becoming a default, rather than a default nobody compared.
 
 ### 2. Playable Proof
 
@@ -94,9 +95,9 @@ Human-likeness evaluation beyond distribution metrics — a compact
 human-vs-engine classifier — becomes useful once the model generates coherent
 games, but should not block the basic bot or turn into a separate anti-cheat
 project. Timing diagnostics arrive with timing itself, in the stage that adds
-it. And the per-ply multi-label form of opening classification stays in stage
-6; the game-level form landed here only because rollout distribution comparison
-needs family aggregation.
+it. And the per-ply multi-label form of opening classification stays with the
+preference controls in stage 8; the game-level form landed here only because
+rollout distribution comparison needs family aggregation.
 
 ### 4. Efficient Loop And Trusted Readings
 
@@ -214,8 +215,9 @@ that scale against a fixed external engine reference. It follows rather than
 leads because it needs an external binary and because an anchor is only useful
 once ordering already exists.
 
-Timing is not one piece of work, and its parts have different deadlines. They
-are split across this stage and the next rather than staged together.
+Timing is not one piece of work, and its parts have different deadlines. The
+model learns to read time in this stage and to write it in the next, and the
+data that makes either possible lands earlier still.
 
 **Timed-game breadth belongs to the stage-4 breadth pass and cannot slip.** Time
 control and timing-data presence are among the axes the corpus widens across,
@@ -224,42 +226,102 @@ games across speeds could never measure timing behavior, for the life of the
 project, so this half is irreversible and lands with the breadth pass rather
 than with the feature it serves. Benchmarks slice by speed from that point on.
 
-**Conditioning the policy on time control comes last in this stage**, after the
-move-only path is useful on its own. It is what releases training selection to
-widen across speeds, and staging it after the corpus, the pool, and benchmark
-slicing have already widened gives the change a before-and-after reading instead
-of bundling it with the timing feature. See `docs/data.md` and
-`docs/design-principles.md`, which uses this case as its worked example of the
-pattern.
+**The model learns to read time last in this stage**, after the move-only path
+is useful on its own. Two inputs arrive together: the game's time control, and
+the per-ply clock state `docs/architecture.md` (Decision, Static, And Dynamic
+Metadata) already reserves a place for — both sides' remaining time and previous
+move times. The second is stronger for move prediction, because a time control
+states the average pressure a game was played under while the clock states the
+actual pressure at the ply being predicted. A model blind to both attributes a
+hurried move to the position rather than to the clock, and is wrong in a way
+more data cannot fix.
 
-**The move-time head itself moves to stage 6.** It is a second output head, a
-second masked loss, its own diagnostics, and clock handling at the UCI boundary
-— a feature rather than a scaling step. `docs/data.md` also places useful timing
-conditioning at a corpus scale beyond where this stage's depth pass lands.
-Timing diagnostics arrive with it.
+Within that, training selection widens across speeds first and trains
+unconditioned; the inputs are added afterward and the two arms compared. The
+widened unconditioned arm is the control, and training it is not wasted work:
+`docs/decisions/0029-model-change-control-arm.md` requires a control identical
+in corpus, so a narrow blitz baseline cannot carry a claim about conditioning.
+That arm may read flat or worse than the narrow baseline despite training on
+more data, because widening adds variation the model cannot yet attribute; the
+gap is what conditioning closes rather than a regression to chase. Read the
+comparison per speed, since an unconditioned model regresses toward the dominant
+speed and an aggregate hides that in the blend. The class is derivable from a
+normalized row, so the slice costs nothing — see
+`docs/decisions/0056-the-speed-axis-is-derived-from-the-time-control.md`.
+
+Untimed play becomes the missing-value path once the move head reads clocks,
+rather than the default one.
+
+See `docs/data.md` and `docs/design-principles.md`, which uses this case as its
+worked example of the pattern.
+
+**Writing time belongs to stage 6.** The move-time head is a second output head,
+a second masked loss, its own diagnostics, and clock handling at the UCI
+boundary — a feature rather than a scaling step. `docs/data.md` also places
+useful timing conditioning at a corpus scale beyond where this stage's depth
+pass lands. Timing diagnostics arrive with it.
 
 Evaluation should guide this work. New data, model changes, and runtime changes
 should be judged by the same benchmark surfaces whenever possible, with deeper
 diagnostics available when a regression or surprising result appears.
 
-### 6. Late Controllability
+### 6. Timed Play
 
-Add the move-time head and learned preference controls after the model, runtime,
-and evaluation stack are clearly working.
+Give the model a move-time output, once it already reads time and the rest of
+the stack is clearly working.
 
-Move-time prediction arrives here rather than with the scaling work. By this
-point the corpus, the evaluation core, and benchmark slicing already cover
-timing, and the policy already conditions on time control, so what remains is
-the feature itself: an action-conditioned time head, a masked timing objective
-for the games that carry usable clocks, the timing diagnostics, and clock
+The corpus, the evaluation core, benchmark slicing, and the policy's clock
+inputs all arrive before this stage, so what remains is the output half: an
+action-conditioned time head, a masked timing objective for the games that carry
+usable clocks, the timing diagnostics deferred out of stage 3, and clock
 handling at the UCI boundary. See `docs/architecture.md` and
-`docs/decisions/0003-action-conditioned-timing.md`. It precedes timing-style
-preference controls, which have nothing to steer until it exists.
+`docs/decisions/0003-action-conditioned-timing.md`.
+
+This stage is why the corpus ends in mid-2021. Centisecond clocks exist only in
+a closed export, one-second quantization is coarse against blitz move times, and
+precision is fixed permanently at core designation while volume is not;
+`docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records what
+that bought and what it cost.
+
+### 7. Distribution And Release
+
+Put the bot in front of real opponents.
+
+Nothing before this stage gets Anthro past a local UCI process and one machine's
+GUI, while `docs/vision.md` describes a standalone opponent people actually
+play. A Lichess bot account is the smallest honest form of that: complete timed
+and untimed games against real players, and the only source of evidence about
+whether the result feels human rather than merely scores well. Bot accounts are
+platform-labeled, so the boundary in `docs/vision.md` against presenting
+bot-generated moves as unaided human play is satisfied by construction rather
+than by policy, and any later distribution form is judged against that same
+boundary.
+
+Releasing before preference controls is deliberate. Those are the most
+speculative work on this roadmap and `docs/vision.md` does not make them a
+condition of a usable opponent, so staging them after release keeps them from
+standing between a working bot and the people who would play it.
+
+The human-vs-engine classifier, deferred out of stage 3 and still unbuilt,
+belongs here. It is the instrument for the claim the product is actually making,
+and `docs/evaluation.md` (Human-Likeness) scopes it as a frozen evaluator
+reporting one signal among several rather than as an anti-cheat system. It
+depends on two things settled earlier: the external engine binary stage 5 needs
+for its rating anchor, and a pool whose human class is free of engine-assisted
+play, which is why the marked-account snapshot has to be in place before the
+core is designated. See
+`docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md`.
+
+### 8. Learned Preference Controls
+
+Add learned preference controls once there is a model whose behavior can be
+measured, played, and shipped.
 
 Preference controls for openings, style, timing style, player-inspired
 tendencies, and other human-play concepts are important to the end state, but
-they should not block the basic bot. This work should start once there is a
-model whose behavior can be measured and played.
+they should not block the basic bot. Timing-style controls in particular have
+nothing to steer until the move-time head exists, which is why they follow it
+rather than accompany it.
 
 Possible late-stage preference-control work includes:
 

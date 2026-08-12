@@ -42,12 +42,13 @@ This works when a benchmark stays measurable in the degraded state, which is
 usually true. A model that ignores an input still produces a curve; it is just a
 flat one, and a flat curve is a reading rather than a missing result.
 
-The clearest planned case is time control. The corpus and the evaluation pool
-widen across speeds first, benchmarks slice by speed from the start, training
-selection stays narrow, and the policy learns to condition on time control only
-afterward, so the conditioning has a before-and-after picture to be judged
-against. Timing behavior, preference controls, and corpus widening all admit the
-same staging.
+The clearest planned case is the model reading time. The corpus and the
+evaluation pool widen across speeds first and benchmarks slice by speed from the
+start; training selection then widens too and trains blind to the clock, and
+that blind arm is the picture the conditioned one is judged against. Training it
+is not a detour, because a control has to share the treatment's corpus for the
+delta to mean conditioning rather than conditioning plus a wider corpus. Timing
+behavior, preference controls, and corpus widening all admit the same staging.
 
 The cost is sequencing discipline and sometimes an extra step. That is usually
 cheaper than being unable to attribute an improvement.
