@@ -1082,13 +1082,9 @@ def _load_reference(
     pool = _load_pool(config)
     selection = apply_view(pool.games, config.reference.view)
     if not selection.game_ids:
-        excluded = ", ".join(
-            f"{count} {reason}"
-            for reason, count in sorted(selection.excluded_games.items())
-        )
         raise RolloutBenchmarkError(
             f"view {config.reference.view.name!r} selected no human games to "
-            f"compare against ({excluded or 'the pool is empty'})"
+            f"compare against ({selection.excluded_summary})"
         )
     rows = pool_rows(
         pool,

@@ -137,6 +137,20 @@ def test_a_view_takes_one_speed_class_and_reports_the_rest() -> None:
     assert selection.as_record()["speed"] == "blitz"
 
 
+def test_a_selection_summarizes_what_it_left_out() -> None:
+    """An empty selection looks the same however it got there."""
+
+    pool = (_game(1, plies=4), _game(2, speed=Speed.BULLET))
+
+    filtered = apply_view(
+        pool, ViewConfig(name="blitz", minimum_plies=10, speed=Speed.BLITZ)
+    )
+    whole = apply_view(pool, ViewConfig(name="all"))
+
+    assert filtered.excluded_summary == "1 below_minimum_plies, 1 speed_mismatch"
+    assert whole.excluded_summary == "nothing excluded"
+
+
 def test_the_class_filters_before_the_cap_takes_its_games() -> None:
     """A cap is the declared size, so it must take that many of the class."""
 

@@ -21,9 +21,11 @@
 #
 # The human-prefix arm is left out of this selection: repertoire and opening
 # readings are only statements about the model on the standard-start arm, since
-# a prefix decides the opening before the model moves. Add it with:
+# a prefix decides the opening before the model moves. Add it with the class the
+# reference below is read at, so the roots and the reference are one population:
 #
-#   --set arms='["standard-start", "human-prefix"]'
+#   --set arms='["standard-start", "human-prefix"]' \
+#     --set prefix.view.speed='"blitz"'
 arms = ["standard-start"]
 
 # The pool supplies both the human reference every curve is compared against and

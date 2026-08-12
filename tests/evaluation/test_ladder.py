@@ -416,6 +416,18 @@ def test_the_openings_are_drawn_at_one_speed_class(
     assert result.view.selected_games == 4
     assert result.view.excluded_games == {"speed_mismatch": 4}
 
+    # A class the pool holds none of leaves the seats nothing to play from, and
+    # which filter emptied the view is what a reader has to fix.
+    with pytest.raises(LadderBenchmarkError, match="8 speed_mismatch"):
+        _run(
+            _config(
+                openings={
+                    "pool": str(pool),
+                    "view": {"name": "ladder-openings", "speed": "rapid"},
+                }
+            )
+        )
+
 
 def test_openings_from_a_pool_this_ladder_is_not_defined_over_are_refused(
     tmp_path: Path,

@@ -1784,13 +1784,9 @@ def _position_source(
     )
     selection = apply_view(pool.games, view_config)
     if not selection.game_ids:
-        excluded = ", ".join(
-            f"{count} {reason}"
-            for reason, count in sorted(selection.excluded_games.items())
-        )
         raise LadderBenchmarkError(
             f"view {view_config.name!r} selected no opening games from the "
-            f"pool ({excluded or 'the pool is empty'})"
+            f"pool ({selection.excluded_summary})"
         )
     rows = [
         _prefix_row(row, config.openings.plies)

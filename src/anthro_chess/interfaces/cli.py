@@ -647,6 +647,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Widest rating gap a reference game may have (default: %(default)s).",
     )
     bandwidth_parser.add_argument(
+        "--speed",
+        help=(
+            "Select one speed class, as the benchmark's own reference does. A "
+            "bandwidth chosen over a mixture is not the smoothing a sliced "
+            "reference is read at."
+        ),
+    )
+    bandwidth_parser.add_argument(
         "--candidates",
         type=int,
         nargs="+",
@@ -2266,6 +2274,19 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
             f"({result.view.selected_games} of {result.view.eligible_games} "
             f"eligible game(s), prefix {record['prefix_plies']} plies)"
         )
+    if result.reference_view is not None:
+        reference_view = result.reference_view
+        lines.append(
+            f"Reference view: {reference_view.name} "
+            f"({reference_view.selected_games} of "
+            f"{reference_view.eligible_games} eligible game(s)"
+            + (
+                ""
+                if reference_view.speed is None
+                else f", {reference_view.speed} alone"
+            )
+            + ")"
+        )
     for cell in result.cells:
         distribution = cell.distribution
         unfinished = distribution.termination_counts.get(
@@ -2693,7 +2714,8 @@ def _render_ladder_openings(view: ViewSelection | None) -> list[str]:
     if view is None:
         return []
     lines = [
-        f"Openings: {view.selected_games} human game(s) from view {view.name!r}"
+        f"Openings: {view.selected_games} of {view.eligible_games} eligible "
+        f"human game(s) from view {view.name!r}"
         + ("" if view.speed is None else f", {view.speed} alone")
     ]
     if view.speed is not None:
@@ -2955,6 +2977,7 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
                 name="curve-bandwidth",
                 maximum_games=arguments.maximum_games,
                 require_ratings=True,
+                speed=arguments.speed,
             ),
         )
         rows = pool_rows(

@@ -53,6 +53,22 @@ class ViewSelection:
 
         return len(self.game_ids)
 
+    @property
+    def excluded_summary(self) -> str:
+        """Return why the view kept what it kept, for a caller that has to say.
+
+        A view that selected nothing looks the same however it got there, and a
+        speed class and a ply bound are not the same problem to fix.
+        """
+
+        return (
+            ", ".join(
+                f"{count} {reason}"
+                for reason, count in sorted(self.excluded_games.items())
+            )
+            or "nothing excluded"
+        )
+
     def as_record(self) -> dict[str, object]:
         """Return the stable spec record stored in benchmark artifacts."""
 
@@ -112,6 +128,6 @@ def _exclusion_reason(game: PoolGame, config: ViewConfig) -> str | None:
         return "shorter_than_prefix"
     if config.require_ratings and not game.has_ratings:
         return "missing_ratings"
-    if config.speed is not None and game.speed is not config.speed:
+    if config.speed is not None and game.speed != config.speed:
         return "missing_time_control" if game.speed is None else "speed_mismatch"
     return None

@@ -415,17 +415,6 @@ cannot share a series.
 `docs/decisions/0037-the-human-reference-is-bandwidth-not-sample-size.md` owns
 that rule and the measurements behind it.
 
-**A reference is one population rather than a mixture of them.** Game length,
-results, and how a game ends are strong functions of the clock, so a reference
-drawn from however the pool happens to be composed reports that composition as a
-distance. The generated side plays untimed, so a speed class slices the
-reference rather than the model, and it is the class derived from each game's
-own time control rather than bands restated per benchmark. A class the pool
-holds no game of is never a distance over nothing: a reading that compares
-several classes at once reports that one unavailable, and one defined over a
-single class fails in the pool pass, before the games it would have compared are
-played.
-
 Report the effective local sample size alongside the curve, so a difference
 where the human reference is thin is not read as the same strength of claim as
 one where it is dense. Report the **realized** bandwidth per evaluation point
@@ -1972,6 +1961,18 @@ Two useful rollout forms:
 Generated games should be classified afterward for distribution features,
 timing behavior when timing is enabled, game length, result patterns, repeated
 lines, and drift away from human-like play.
+
+**The human reference is one population rather than a mixture of them.** Game
+length and how a game ends are strong functions of the clock, so a reference
+drawn from however the pool happens to be composed reports that composition as a
+distance. The harness plays untimed, so a speed class slices the reference
+rather than the model, and it is the class `anthro_chess.data.speed` derives
+from the game's own time control rather than bands restated here. One class per
+reading, so a class the pool holds no game of is not a distance over nothing but
+a suite with nothing to compare: it fails in the pool pass, before the games it
+would have measured are played. The same class selects the human-prefix arm's
+roots, since a mixed set of openings compared against one class's reference
+would put that difference into every distance.
 
 ### Shared Generation Machinery
 
