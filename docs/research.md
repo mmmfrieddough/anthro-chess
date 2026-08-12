@@ -142,9 +142,11 @@ Applies to Anthro Chess:
 
 Different from Anthro Chess:
 
-- Maia uses separate models for different rating levels.
-- Anthro Chess aims for one configurable bot with runtime target rating,
-  optional timing, temperature, and optional preference controls.
+- Maia-1 uses separate models for different rating levels, but Maia-2 and
+  Maia-3 close that gap. A single rating-conditioned model is the field's
+  default rather than something this project does differently.
+- Maia-1 models move choice only: no clock input or output, and no terminal
+  actions.
 - Anthro Chess also treats deterministic board reconstruction and runtime legal
   masking as core engineering boundaries.
 
@@ -157,7 +159,11 @@ Key information:
 - Extends Maia-style human move modeling into a unified model across skill
   levels.
 - Uses skill-aware conditioning to capture how human move choice changes with
-  player strength.
+  player strength, conditioning on both players' ratings.
+- Carries a policy head, an auxiliary head over move components, and a value
+  head. None of them predicts time.
+- Trains on rapid games only, and uses the clock solely to drop positions where
+  either player has under thirty seconds remaining.
 
 Applies to Anthro Chess:
 
@@ -170,6 +176,8 @@ Different from Anthro Chess:
 - Maia-2 focuses on skill-conditioned human move prediction.
 - Anthro Chess also needs optional time-to-move output, runtime play, legal
   masking, and later preference controls.
+- Maia-2 treats time pressure as noise to filter out. Anthro Chess keeps those
+  plies, because they are part of what it intends to model.
 
 ### Chessformer / Maia-3
 
@@ -181,7 +189,14 @@ Key information:
   tokens.
 - Adds geometric attention bias and an attention-based source-destination move
   head.
-- Reports strong human move prediction results with Maia-3.
+- Reaches 57.1% move-matching accuracy at 79M parameters, above Allie at 355M.
+- Trains on Lichess blitz from 2023-01 to 2025-07, on eight A100s for about a
+  week at the largest size.
+- Models no timing at all, and drops every position after a player first falls
+  under thirty seconds.
+- Ships as an AGPL-3.0 Python package with PyTorch checkpoints and a UCI
+  wrapper. Released checkpoints are 5M, 23M, 79M, and a 3M ablation; none
+  predicts time.
 
 Applies to Anthro Chess:
 
@@ -197,6 +212,9 @@ Different from Anthro Chess:
   ply, exact board embeddings at each timestep, and optional timing output.
 - Chessformer's board encoder and move head may still be useful even if the
   overall sequence model differs.
+- Being a plain PyTorch package makes it the most practical external baseline to
+  score against this project's benchmarks. Its AGPL-3.0 license bears on
+  distribution, not on benchmarking.
 
 ### Allie: Human-Aligned Chess With A Bit Of Search
 
@@ -207,6 +225,12 @@ Key information:
 - Models human move choice and non-move behavior from real game logs.
 - Includes pondering time and resignation behavior.
 - Uses a time-adaptive search procedure at inference.
+- Trains on 2022 Lichess blitz, 91M games. The centisecond export ends at
+  2021-06, so its clock labels are one-second ones.
+- Predicts pondering time as a squared-error regression on a scalar, optimized
+  alongside move and value from the same argument:
+  `-log p(m_i | m_<i) + (t(m_<i) - t_i)^2 + (v(m_<i) - v)^2`.
+- Omits moves made with under thirty seconds remaining from evaluation.
 
 Applies to Anthro Chess:
 
@@ -224,9 +248,12 @@ Different from Anthro Chess:
   masking and sampled timing, not a search-assisted engine.
 - Anthro Chess treats resignation as another learned game action, not as a
   search-driven or engine-evaluation rule.
-- Allie's move, pondering-time, and value heads appear to be separate heads from
-  the shared model state. Anthro Chess should instead make timing conditional
-  on the chosen action so the sampled action and sampled delay remain coherent.
+- Allie's move, pondering-time, and value heads all read the same shared state
+  and take the same argument, so its move and time are conditionally
+  independent given history. Anthro Chess instead makes timing conditional on
+  the chosen action so the sampled action and sampled delay remain coherent.
+- Allie's time output is a point estimate. Anthro Chess predicts a sampleable
+  distribution, which is what multimodal human move times need.
 
 ### ChessMimic
 
@@ -237,13 +264,18 @@ Key information:
 - Trains small transformer models for human move, clock, and outcome prediction
   in online blitz chess.
 - Conditions on position, recent move history, player rating, and clock state.
-- Uses separate per-rating-band models.
+- Uses separate per-rating-band models, around 9M parameters each.
+- Releases code and per-band weights.
+- Reports a think-time correlation of r = 0.41 against Allie's 0.70, under
+  Allie-style filters that exclude time pressure.
 
 Applies to Anthro Chess:
 
 - Move prediction with rating and clock context.
 - Thinking-time evaluation.
 - Clock-aware modeling and benchmarks.
+- Released weights make it the cheapest external baseline that predicts think
+  time at all, and it reports its own figures against Allie's.
 
 Different from Anthro Chess:
 
@@ -264,7 +296,14 @@ Key information:
 - Builds a controllable human-aligned chess model from a frozen Lc0-style
   policy network.
 - Uses textual descriptions and a conditioning mechanism to steer behavior.
-- Reports controls for strength and opening preference.
+- Reports controls for strength and opening preference, and no non-opening style
+  concepts.
+- Derives opening labels from game-level Lichess opening annotations rather than
+  per-position matching, and notes this may partly reward memorization.
+- Does not measure whether playing strength holds still while opening control
+  varies.
+- Reports sensitivity to prompt phrasing, where small wording changes noticeably
+  alter the policy.
 
 Applies to Anthro Chess:
 
@@ -281,6 +320,9 @@ Different from Anthro Chess:
   human-game sequences, with optional timing output and runtime action sampling.
 - Anthro Chess preference controls are planned around activation-space steering
   from project-owned labels, with direct input conditioning only as a fallback.
+- Anthro Chess labels openings per ply from position matching, and treats
+  rating preservation under a preference setting as something to measure before
+  a control is exposed. UniMaia does neither.
 
 ### Learning To Imitate With Less
 
@@ -618,6 +660,39 @@ Different from Anthro Chess:
   training selection belongs with any reported result.
 
 ## Preference Steering Background
+
+### Policy Gradient Steering
+
+Link: <https://arxiv.org/abs/2607.27574>
+
+Key information:
+
+- Reports that existing contrastive activation-steering methods, CAA among
+  them, fail to steer even a simple two-route gridworld policy. The
+  decision-local contrast is zero there, so what those methods recover describes
+  the consequences of a choice rather than the choice itself.
+- Proposes fitting a removable task vector from accumulated policy gradients of
+  a temporary behavioral objective, assigning credit to the actions that
+  produced an outcome instead of contrasting representations reached after it.
+- Fits vectors on frozen Maia-1100, Maia-1500 and Maia-1900 from Lichess puzzle
+  motifs, and finds that compatible objectives compose constructively.
+
+Applies to Anthro Chess:
+
+- Preference-control method selection. It bears directly on the
+  activation-difference method `docs/preference-controls.md` lists first, and on
+  the choice of primary integration path.
+- Steering a frozen human-move policy without retraining it.
+- Composing several sliders at once.
+
+Different from Anthro Chess:
+
+- The chess objectives are tactical motifs, which push the policy toward
+  stronger play. Anthro Chess wants taste at a fixed strength.
+- The paper measures puzzle likelihood and states that this is tactical
+  preference rather than playing strength, so it does not show whether steering
+  preserves a configured rating.
+- Objectives come from puzzle motif tags rather than per-ply position labels.
 
 ### Scaling Monosemanticity
 
