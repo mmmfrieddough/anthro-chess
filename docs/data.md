@@ -498,6 +498,20 @@ decided before preparation and costs a full re-parse to revisit, and whether
 splitting on game id leaks a player between train and test cannot be asked at
 all. Both stay answerable while the evaluation core is still unfrozen.
 
+Each game is dated to the calendar day its source recorded it on, so a corpus
+spanning several populations can be read one era at a time. A day is what the
+column claims and all it claims: the time of day is not kept, and the day is the
+source's own in whatever timezone that source dates by. It is a coordinate for
+grouping games, not an instant they can be ordered by within a day. A source
+that dates a game partly, or not at all, records the absence rather than a
+plausible day, and the `Date` header is not read as a substitute for the UTC one
+because the two are different quantities.
+`docs/decisions/0059-the-normalized-row-carries-a-day-not-an-instant.md`
+measures what the finer reading would have cost and why declining it is
+permanent rather than deferred. An evaluation view bounds the date directly, so
+an era reading is a view over the frozen pool rather than a second pass over the
+corpus.
+
 ## Rating Scale
 
 The default rating scale should be Lichess-like because Lichess is expected to
