@@ -6,6 +6,8 @@ Date: 2026-08-04
 
 Accepted. Refines `0026-conservative-dispersion-bounds.md`.
 `0034-qualifying-a-rating-ladder-reading.md` composes with it.
+`0059-a-curve-resamples-the-stream-not-the-game.md` settles what this record
+left open, and answers it differently from the way the question was framed here.
 
 ## Context
 
@@ -135,3 +137,10 @@ measurement noise, and nothing beside the floor says which of the two a reader i
 looking at. This decision removes the case where the answer is knowable exactly;
 it does not decide what a floor should claim when the resample is unstable but
 the games are genuinely redrawn. Tracked separately.
+
+Since settled by 0059, which measured the general case and found the number
+wrong in the other direction: at nonzero temperature the bootstrap reported
+about half the movement a fresh seed actually produced, because the games one
+seed plays across a rating grid are one draw rather than several. Dropout is
+real and is a symptom of resampling the wrong unit rather than the thing the
+floor was reporting.

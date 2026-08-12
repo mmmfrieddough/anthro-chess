@@ -376,6 +376,10 @@ class GeneratedEnding:
     claimable_and_unfinished: bool
     #: Terminal actions this game's seats actually selected.
     selected_terminal_actions: frozenset[int]
+    #: The stream this game was drawn from, which the mix curve resamples
+    #: instead of the game: a seed is derived without the conditioning rating,
+    #: so one stream ends a game at every rating of the grid.
+    stream: int
 
     def as_record(self) -> dict[str, Any]:
         """Return the per-game record stored in the detail tier."""
@@ -837,6 +841,7 @@ def generated_ending(record: GameRecord) -> GeneratedEnding:
             for action_id in record.action_ids
             if is_terminal_action(action_id)
         ),
+        stream=record.seed,
     )
 
 
@@ -978,7 +983,11 @@ def _mix_readings(
             continue
         for reading in generated:
             model = tuple(
-                Observation(rating=float(ending.rating), value=ending.category)
+                Observation(
+                    rating=float(ending.rating),
+                    value=ending.category,
+                    stream=ending.stream,
+                )
                 for ending in reading.endings
             )
             try:
