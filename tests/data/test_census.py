@@ -314,12 +314,14 @@ def test_paces_and_budgets_from_the_limiter_and_a_token_doubles_both(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # A batch of 300 costs 50 credits authenticated and 100 anonymously, and
-    # the pace leaves one of them unspent per burst window: 600 * 50 / 1950 and
-    # 600 * 100 / 1900. Pacing for the whole 2000 spends it a request early and
-    # buys a 600-second refusal with the fifteen seconds it saved.
-    assert sustainable_pause(300, authenticated=False) == pytest.approx(31.58, abs=0.01)
-    assert sustainable_pause(300, authenticated=True) == pytest.approx(15.38, abs=0.01)
+    # A 300-name batch costs 50 credits authenticated and 100 anonymously, so
+    # the 2000-credit window affords 40 requests and 20. The pace is the window
+    # over two fewer than that, rounded up: at 16s a window holds at most 38
+    # requests and at 34s at most 18, each two requests short of a refusal.
+    assert sustainable_pause(300, authenticated=True) == 16.0
+    assert sustainable_pause(300, authenticated=False) == 34.0
+    for pace, cost in ((16.0, 50), (34.0, 100)):
+        assert (int(600 // pace) + 1) * cost <= 2_000 - 2 * cost
     assert daily_account_allowance(300, authenticated=False) == 90_000
     assert daily_account_allowance(300, authenticated=True) == 180_000
 
@@ -342,7 +344,7 @@ def test_paces_and_budgets_from_the_limiter_and_a_token_doubles_both(
     # tolerance is the real clock: the pause is an interval, so however long
     # the batch took comes off it.
     assert seen == ["secret", "secret", None, None]
-    assert slept == [pytest.approx(15.38, abs=0.5), pytest.approx(31.58, abs=0.5)]
+    assert slept == [pytest.approx(16.0, abs=0.5), pytest.approx(34.0, abs=0.5)]
 
 
 def test_refuses_to_record_a_batch_the_source_answered_for_nobody(

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -475,13 +476,18 @@ def append_answers(path: Path, answers: Mapping[str, bool], queried_at: str) -> 
 def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
     """Return the shortest pause between batches the burst allowance sustains.
 
-    One request of the allowance is left unspent, because the burst bucket
-    refills on a boundary rather than continuously: a pace that spends its
-    average rate exactly empties it just before the boundary, and the refusal
-    that follows costs a whole window to a request that was fifteen seconds
-    early. The first scheduled census measured that precisely — refused every
-    thirty-ninth batch, thirteen times, at intervals of 1186 seconds against
-    the 600 it was pacing for, spending half its running time asleep.
+    Two requests of the allowance are left unspent, and the pace is rounded up
+    to a whole second, because the count of requests that lands in a window is
+    a step function and a pace derived to the boundary sits on the step.
+
+    A window holds one more request than its length divided by the spacing,
+    since a request at each end falls inside it. Spending the allowance's
+    average rate therefore puts 41 requests into a 40-request window, which is
+    what the first scheduled census measured: refused on every fortieth batch,
+    thirteen times, at intervals of 1186 seconds against the 600 it paced for,
+    with half its running time spent asleep. Pacing one request back from that
+    yields exactly 39.0 requests per window — the value at which the step
+    changes, decided by rounding rather than by argument.
 
     Only the burst bucket is paced against. The daily one is spent as fast as
     the burst bucket allows, which is why a run ends either at the budget
@@ -489,8 +495,8 @@ def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
     prediction was optimistic.
     """
 
-    credits = _request_credits(batch_size, authenticated)
-    return _BURST_WINDOW_SECONDS * credits / (_BURST_CREDITS - credits)
+    affordable = _BURST_CREDITS // _request_credits(batch_size, authenticated)
+    return float(math.ceil(_BURST_WINDOW_SECONDS / (affordable - 2)))
 
 
 def daily_account_allowance(batch_size: int, *, authenticated: bool) -> int:
