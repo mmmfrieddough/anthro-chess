@@ -519,7 +519,9 @@ def test_data_census_keeps_asking_about_an_archive_that_was_reclaimed(
     config = _census_fixture(tmp_path, monkeypatch)
     asked: list[str] = []
 
-    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    def fake_post(
+        batch: list[str], token: str | None, attempts: int | None = None
+    ) -> list[dict[str, object]]:
         asked.extend(batch)
         return [{"id": name} for name in batch]
 
@@ -559,7 +561,9 @@ def test_data_census_spends_the_allowance_before_it_counts_a_new_archive(
     config = _census_fixture(tmp_path, monkeypatch)
     asked: list[str] = []
 
-    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    def fake_post(
+        batch: list[str], token: str | None, attempts: int | None = None
+    ) -> list[dict[str, object]]:
         asked.extend(batch)
         return [{"id": name} for name in batch]
 
@@ -598,7 +602,9 @@ def test_data_census_asks_the_busiest_accounts_first_and_stores_every_answer(
     config = _census_fixture(tmp_path, monkeypatch)
     asked: list[str] = []
 
-    def fake_post(batch: list[str], token: str | None) -> list[dict[str, object]]:
+    def fake_post(
+        batch: list[str], token: str | None, attempts: int | None = None
+    ) -> list[dict[str, object]]:
         asked.extend(batch)
         return [{"id": name, "tosViolation": name == "busy"} for name in batch]
 
@@ -651,7 +657,7 @@ def test_data_mark_accounts_cuts_a_snapshot_from_the_census_as_it_stands(
     config = _census_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "anthro_chess.data.census._post_usernames",
-        lambda batch, token: [
+        lambda batch, token, attempts=None: [
             {"id": name, "tosViolation": name == "busy"} for name in batch
         ],
     )

@@ -207,11 +207,17 @@ systemctl --user enable --now anthro-census.timer
 loginctl enable-linger "$USER"
 ```
 
-The linger is what makes it a daily job rather than a login-session one, and
-`Persistent=true` runs the missed day when a machine that was off comes back.
+The linger is what makes it a scheduled job rather than a login-session one, and
+`Persistent=true` runs a missed firing when a machine that was off comes back.
 `systemctl --user status anthro-census` and `journalctl --user -u anthro-census`
 say what the last run reached. A spent allowance is a successful run: the units
 have no failure to report on the day the census works as intended.
+
+The timer fires four times a day for an allowance that is daily, because the
+source anchors that allowance's window to whichever request opened it: it
+reopens 24 hours after a run began rather than at any hour a timer could name.
+Whichever firing lands after it spends the day; the others cost one refused
+request each, which charges nothing and does not push the window out.
 
 ## Quality Checks
 
