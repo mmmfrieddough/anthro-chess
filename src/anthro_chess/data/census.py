@@ -475,17 +475,22 @@ def append_answers(path: Path, answers: Mapping[str, bool], queried_at: str) -> 
 def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
     """Return the shortest pause between batches the burst allowance sustains.
 
+    One request of the allowance is left unspent, because the burst bucket
+    refills on a boundary rather than continuously: a pace that spends its
+    average rate exactly empties it just before the boundary, and the refusal
+    that follows costs a whole window to a request that was fifteen seconds
+    early. The first scheduled census measured that precisely — refused every
+    thirty-ninth batch, thirteen times, at intervals of 1186 seconds against
+    the 600 it was pacing for, spending half its running time asleep.
+
     Only the burst bucket is paced against. The daily one is spent as fast as
     the burst bucket allows, which is why a run ends either at the budget
     :func:`daily_account_allowance` predicts or at the refusal that proves the
     prediction was optimistic.
     """
 
-    return (
-        _BURST_WINDOW_SECONDS
-        * _request_credits(batch_size, authenticated)
-        / (_BURST_CREDITS)
-    )
+    credits = _request_credits(batch_size, authenticated)
+    return _BURST_WINDOW_SECONDS * credits / (_BURST_CREDITS - credits)
 
 
 def daily_account_allowance(batch_size: int, *, authenticated: bool) -> int:
