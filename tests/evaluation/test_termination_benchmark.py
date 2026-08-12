@@ -504,10 +504,10 @@ def test_a_lopsided_human_game_is_excluded_rather_than_averaged(
 def test_a_reference_ending_carries_the_class_both_clock_columns_derive(
     normalized_row: Callable[..., dict[str, Any]],
 ) -> None:
-    """What a class is read against, so `blitz` means what a selection means.
+    """A reference ending carries the class a training selection filters on.
 
-    One minute is bullet or blitz depending on the increment, which is the
-    separation no bound on the initial clock alone can make.
+    One minute is bullet or blitz depending on the increment, so the two rows
+    differ only in that column.
     """
 
     def speed_of(increment_ms: int) -> Speed | None:
@@ -516,10 +516,6 @@ def test_a_reference_ending_carries_the_class_both_clock_columns_derive(
             plies=4,
             time_initial_ms=60_000,
             time_increment_ms=increment_ms,
-            # The shared trace starts above a one-minute clock, and a game
-            # whose remaining time exceeds its own initial time derives as
-            # abandonment rather than as the ending this row means.
-            clocks=False,
         )
         ending, _ = human_ending(row, ReferenceConfig())
         assert ending is not None

@@ -2397,12 +2397,11 @@ category would move mass a checkpoint cannot move.
 The generated side is untimed, because the harness plays no clock. A
 time-control class therefore slices the *reference*, which is the useful
 direction anyway: the question is which human population a checkpoint's endings
-resemble. A class names one speed rather than clock bounds of its own, and
+resemble. A class names one speed, and
 `docs/decisions/0056-the-speed-axis-is-derived-from-the-time-control.md` owns
 the derivation it names, so a blitz mix and a blitz training selection read one
-population; one reserved name stands for the whole reference. A class no
-reference game belongs to reports as unavailable rather than as a distance over
-nothing.
+population. One class covers the reference undivided, and a class no reference
+game belongs to reports as unavailable rather than as a distance over nothing.
 
 The mix distance **saturates while the model produces none of the human
 categories**, and a reader tracking it early will otherwise mistake that for a

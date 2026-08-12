@@ -234,11 +234,11 @@ class ScoringModelRunner(Protocol):
 #: population the model's endings resemble, and a corpus of blitz games ends
 #: very differently from a corpus of classical ones.
 #:
-#: Naming the class rather than a clock range is what makes this reading and a
-#: selection trained at that speed one population. It also carries the seam
-#: ``0056`` records: a game played without a clock reaches these columns as no
-#: class at all, so nothing but ``all`` holds it, and ``correspondence`` here
-#: reads the games whose clock was long enough to reach that band.
+#: Reusing the data layer's vocabulary is what makes this reading and a
+#: selection trained at that speed one population. A reference game played
+#: without a clock bands into no speed at all, so only the undivided reading
+#: holds it, and a ``correspondence`` class reads only the games whose clock
+#: reached that band.
 TimeControlClass: TypeAlias = Speed | Literal["all"]
 
 
@@ -339,9 +339,8 @@ class TerminationBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     pool: Path
     reference: TerminationReferenceConfig = TerminationReferenceConfig()
     held_out: HeldOutResignationConfig = HeldOutResignationConfig()
-    #: One reading per class. The default single class compares against the
-    #: whole reference, which is the right default for a corpus prepared at one
-    #: speed.
+    #: One reading per class. Reading against the whole reference is the right
+    #: default for a corpus prepared at one speed.
     time_controls: tuple[TimeControlClass, ...] = ("all",)
     guardrails: GuardrailConfig = GuardrailConfig()
     detail: TerminationDetailConfig = TerminationDetailConfig()
