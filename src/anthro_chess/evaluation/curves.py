@@ -87,8 +87,8 @@ CURVE_COMPARISON_VERSION = 3
 #: How a curve comparison estimates its own spread. A distributional distance
 #: moves by an amount that is a function of its own configuration rather than of
 #: a series, so it is estimated here and carried with the measurement instead of
-#: being characterized separately and looked up. The unit is the stream rather
-#: than the game, for the reason decision 0059 measured.
+#: being characterized separately and looked up. Decision 0059 measured why the
+#: unit is the stream and not the game.
 CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-streams"
 
 #: How a curve comparison states the spread of a model side that cannot vary.
@@ -1153,6 +1153,9 @@ def _stream_labels(observations: Sequence[Observation]) -> np.ndarray:
     A side that names no stream anywhere — every human reference this shape
     compares against — takes the cheap path rather than a dictionary over
     thousands of games that would answer ``arange``.
+
+    Labels run densely from zero, which is what lets a count be a maximum plus
+    one and a draw be gathered by label.
     """
 
     if all(observation.stream is None for observation in observations):
@@ -1160,6 +1163,8 @@ def _stream_labels(observations: Sequence[Observation]) -> np.ndarray:
     labels = np.empty(len(observations), dtype=np.int64)
     index: dict[object, int] = {}
     for position, observation in enumerate(observations):
+        # Keyed apart from the stream ids so an unnamed game stays its own unit
+        # rather than joining whichever stream shares its position.
         key = ("own", position) if observation.stream is None else observation.stream
         labels[position] = index.setdefault(key, len(index))
     return labels
@@ -1435,10 +1440,9 @@ def _resample(
     noise. For a model side that varies the two coincide anyway, since a fresh
     draw of streams is exactly what another seed produces.
 
-    What a seed redraws is the stream, so that is the unit here rather than the
-    game. A generated side plays its whole rating grid from one set of streams,
-    and drawing its games as though each were independent reported about half
-    the movement a fresh seed actually produced.
+    Drawing its games as though each were independent, rather than the streams
+    they came from, reports about half the movement a fresh seed produces;
+    decision 0059 measured it.
 
     That coincidence is what ``model_varies`` denies, and ``compare_curves``
     documents what a caller passing it is claiming.
@@ -1450,10 +1454,10 @@ def _resample(
 
     ``None`` means nothing could be estimated, which is a reportable state
     rather than an error: a spread invented from too few replicates would
-    license every delta as a finding. The null levels ask less of the model side
-    than the spread does — that it can be redrawn at all, rather than redrawn
-    enough times to read a spread off — so a two-stream side keeps them and
-    states no floor.
+    license every delta as a finding. The two are refused together for a model
+    side that varies, since a null level's model half is read off the same
+    replicates; a replayed side is the exception, and keeps its levels down to
+    the two streams a resample needs to move it at all.
     """
 
     method = CURVE_BOOTSTRAP_METHOD if model_varies else CURVE_DETERMINISTIC_METHOD
@@ -1514,6 +1518,9 @@ def _resample(
         # which games the model produced — and the point pass already estimated
         # it at these radii.
         model_only = _reduce(spec, point.radii, point.human, model, model_weights)
+        # The resample count says only how finely each replicate was read, so it
+        # is how many streams the side holds that decides how far the bound sits
+        # above the spread.
         streams = model.stream_count
         freedom = streams - 1
         rescale = _plug_in_rescale(streams)
@@ -1528,7 +1535,7 @@ def _resample(
                 return None, None
             dispersion = float(np.std(observed, ddof=1)) * rescale
             # Decision 0042 keeps this family's estimated zero where every other
-            # estimator is refused one: the games generated for a curve are
+            # estimator is refused one: the streams generated for a curve are
             # themselves the draw, so a distance no resample moved is a
             # statement about the play this reading produced rather than a
             # sample that came out flat.
@@ -1572,8 +1579,9 @@ def _resample(
 def _plug_in_rescale(units: int) -> float:
     """Return what a draw from the units in hand understates a fresh draw by.
 
-    A plug-in bootstrap's spread is ``(units - 1) / units`` of the variance a
-    fresh sample of the same size has, before it has estimated anything.
+    A plug-in bootstrap's resampling variance is ``(units - 1) / units`` of the
+    variance a fresh sample of the same size has, before it has estimated
+    anything.
     Negligible at the counts a full sweep plays and worth 22% at the three this
     family will not go below; decision 0039 named the correction and decision
     0059 measured what it recovers here.
@@ -1628,7 +1636,7 @@ def _references(
 
     That permutation moves games rather than streams, so unlike the two above it
     still treats a grid point as independent of its neighbours. Whether that
-    matters is a measurement nobody has taken; `#462` carries it.
+    matters is a measurement nobody has taken; #462 carries it.
 
     Each side's deviation is scaled to the fresh draw its plug-in resample
     understates, since these read that understatement off the same replicates a
