@@ -61,7 +61,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -1150,8 +1150,8 @@ class _Side:
 def _stream_labels(observations: Sequence[Observation]) -> np.ndarray:
     """Return which observations a resample has to redraw together.
 
-    A side that names no stream anywhere is every human reference this shape
-    compares against, so it takes the cheap path rather than a dictionary over
+    A side that names no stream anywhere — every human reference this shape
+    compares against — takes the cheap path rather than a dictionary over
     thousands of games that would answer ``arange``.
     """
 
@@ -1494,9 +1494,8 @@ def _resample(
     # enough to read a spread off, and three outcomes are not that. A replayed
     # side asks only the first of those, since its floor is stated rather than
     # estimated.
-    if resamples < 2 or model.stream_count < 2:
-        return dispersions, None
-    if model_varies and model.stream_count < MINIMUM_BOOTSTRAP_STREAMS:
+    minimum = MINIMUM_BOOTSTRAP_STREAMS if model_varies else 2
+    if resamples < 2 or model.stream_count < minimum:
         return dispersions, None
     # The model side draws first, and the human side draws only when the null
     # levels that consume it were asked for. Both halves of that matter. Drawing
@@ -1515,9 +1514,6 @@ def _resample(
         # which games the model produced — and the point pass already estimated
         # it at these radii.
         model_only = _reduce(spec, point.radii, point.human, model, model_weights)
-        # The streams are the independent replicates behind these spreads, not
-        # the games: a grid multiplies games without multiplying the draws they
-        # came out of. The resample count only says how finely each was read.
         streams = model.stream_count
         freedom = streams - 1
         rescale = _plug_in_rescale(streams)
@@ -1581,13 +1577,9 @@ def _plug_in_rescale(units: int) -> float:
     Negligible at the counts a full sweep plays and worth 22% at the three this
     family will not go below; decision 0039 named the correction and decision
     0059 measured what it recovers here.
-
-    A single unit is left alone rather than corrected. Its resample cannot move
-    the quantity at all, so the deviation being scaled is exactly zero and there
-    is no understatement for a factor to recover.
     """
 
-    return math.sqrt(units / (units - 1)) if units > 1 else 1.0
+    return math.sqrt(units / (units - 1))
 
 
 def _redraw(
@@ -1605,12 +1597,14 @@ def _redraw(
     """
 
     count = side.stream_count
-    drawn = generator.multinomial(count, np.full(count, 1.0 / count), size=resamples)
+    drawn = generator.multinomial(
+        count, np.full(count, 1.0 / count), size=resamples
+    ).astype(np.float64)
     if count == side.size:
         # Every observation is its own stream, so the labels are already
         # ``arange`` and the gather below would copy the draw unchanged.
-        return drawn.astype(np.float64)
-    return drawn[:, side.streams].astype(np.float64)
+        return drawn
+    return drawn[:, side.streams]
 
 
 def _references(
@@ -1696,12 +1690,8 @@ def _flat_variation(
     point_radii = radii[:1]
     observed = np.empty(permutations, dtype=np.float64)
     for index in range(permutations):
-        shuffled = _Side(
-            ratings=model.ratings,
-            values=model.values[generator.permutation(model.size)],
-            order=model.order,
-            distances=model.distances,
-            streams=model.streams,
+        shuffled = replace(
+            model, values=model.values[generator.permutation(model.size)]
         )
         local = _local(shuffled, weights, point_radii)
         supported = local.games > 0
