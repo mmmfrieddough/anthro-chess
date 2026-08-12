@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,7 @@ _FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
 _POOL_GAME_COLUMNS = (
     NormalizedColumn.SOURCE_ID.value,
     NormalizedColumn.SOURCE_GAME_KEY.value,
+    NormalizedColumn.SOURCE_DATE.value,
     NormalizedColumn.PLY_COUNT.value,
     NormalizedColumn.RESULT.value,
     NormalizedColumn.WHITE_NORMALIZED_RATING.value,
@@ -144,6 +146,7 @@ class PoolGame:
     #: ``None`` when the source recorded no clock, which a view excludes under
     #: its own reason rather than as a mismatch.
     speed: Speed | None
+    source_date: date | None
 
 
 @dataclass(frozen=True)
@@ -400,10 +403,9 @@ def load_pool(
     artifact re-checksummed, and the recorded identity re-derived every time.
 
     Every check but one asks whether the pool is intact and readable by this
-    code, which any pool of any generation can be. ``expected_game_ids_sha256``
-    is what the caller's configuration expected to find here, and it is the
-    only check that can tell a superseded pool left on disk from the one the
-    reading is defined over.
+    code. ``expected_game_ids_sha256`` is what the caller's configuration
+    expected to find here, and it is the only check that can tell a superseded
+    pool left on disk from the one the reading is defined over.
     """
 
     try:
@@ -434,10 +436,11 @@ def _load_pool(
             f"{manifest_path} uses benchmark version "
             f"{manifest.get('benchmark_version')}; expected {BENCHMARK_VERSION}"
         )
-    if manifest.get("action_vocabulary") != action_vocabulary_identity():
-        raise EvaluationPoolError(
-            f"{manifest_path} uses an incompatible action vocabulary"
-        )
+    # A pool holds whole normalized rows, so one frozen under an earlier
+    # contract is missing columns this code projects, and the read that would
+    # otherwise fail names the absent column rather than the stale pool behind
+    # it.
+    validate_manifest_compatibility(manifest, manifest_path)
     if manifest.get("encoding") != encoding_identity():
         raise EvaluationPoolError(f"{manifest_path} uses an incompatible encoding")
 
@@ -525,6 +528,7 @@ def pool_game(row: Mapping[str, Any]) -> PoolGame:
             row[NormalizedColumn.TIME_INITIAL_MS],
             row[NormalizedColumn.TIME_INCREMENT_MS],
         ),
+        source_date=row[NormalizedColumn.SOURCE_DATE],
     )
 
 

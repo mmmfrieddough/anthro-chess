@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 if TYPE_CHECKING:
     from pyarrow import Schema  # type: ignore[import-untyped]
 
-SCHEMA_VERSION = 3
-PREPROCESSING_VERSION = 7
+SCHEMA_VERSION = 4
+PREPROCESSING_VERSION = 8
 
 FieldStatus = Literal["present", "unavailable", "rejected"]
 
@@ -42,6 +42,11 @@ class NormalizedColumn(StrEnum):
     difference because the two are indistinguishable by inspection, and reading
     one as the other yields plausible wrong move times rather than an error.
 
+    ``source_date`` is the calendar day the source recorded the game on, in
+    whatever timezone that source dates by, and carries no time of day.
+    ``docs/decisions/0059-the-normalized-row-carries-a-day-not-an-instant.md``
+    says why the finer reading was declined rather than deferred.
+
     ``white_player_digest`` and ``black_player_digest`` come from
     ``anthro_chess.data.accounts.account_row_digest``, which truncates the same
     salted hash a marked-account snapshot stores, so a corpus row and a snapshot
@@ -51,6 +56,8 @@ class NormalizedColumn(StrEnum):
     SCHEMA_VERSION = "schema_version"
     SOURCE_ID = "source_id"
     SOURCE_GAME_KEY = "source_game_key"
+    SOURCE_DATE = "source_date"
+    SOURCE_DATE_STATUS = "source_date_status"
     WHITE_PLAYER_DIGEST = "white_player_digest"
     BLACK_PLAYER_DIGEST = "black_player_digest"
     RULESET = "ruleset"
@@ -99,6 +106,8 @@ def normalized_parquet_schema() -> Schema:
                 pa.field(column.SCHEMA_VERSION, pa.int16(), nullable=False),
                 pa.field(column.SOURCE_ID, pa.string(), nullable=False),
                 pa.field(column.SOURCE_GAME_KEY, pa.string(), nullable=False),
+                pa.field(column.SOURCE_DATE, pa.date32()),
+                pa.field(column.SOURCE_DATE_STATUS, pa.string(), nullable=False),
                 pa.field(column.WHITE_PLAYER_DIGEST, pa.uint64()),
                 pa.field(column.BLACK_PLAYER_DIGEST, pa.uint64()),
                 pa.field(column.RULESET, pa.string(), nullable=False),

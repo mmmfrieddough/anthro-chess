@@ -3,6 +3,7 @@
 import json
 import tomllib
 from collections.abc import Callable, Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,13 @@ import pytest
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import Speed
+from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation import (
     BENCHMARK_VERSION,
     EvaluationPoolError,
     PoolConfig,
+    ViewConfig,
+    apply_view,
     freeze_pool,
     load_pool,
 )
@@ -425,6 +429,43 @@ def test_a_loaded_game_carries_the_class_its_own_clock_derives(
     assert by_id[fixture_game_id(3)].speed is None
 
 
+def test_a_dated_era_survives_the_pool_cut_and_slices_through_a_view(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """An era reading is a view over the pool, not a second pass over the corpus."""
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [
+            normalized_row(1, split="test", source_date=date(2019, 12, 31)),
+            normalized_row(2, split="test", source_date=date(2020, 6, 1)),
+            normalized_row(3, split="test", source_date=None),
+            normalized_row(4, split="train"),
+        ],
+    )
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+    pool = load_pool(tmp_path / "pool")
+    selection = apply_view(
+        pool.games,
+        ViewConfig(name="pandemic", minimum_date=date(2020, 1, 1)),
+    )
+
+    assert {game.game_id: game.source_date for game in pool.games} == {
+        fixture_game_id(1): date(2019, 12, 31),
+        fixture_game_id(2): date(2020, 6, 1),
+        fixture_game_id(3): None,
+    }
+    assert selection.game_ids == (fixture_game_id(2),)
+    assert selection.excluded_games == {
+        "before_minimum_date": 1,
+        "missing_date": 1,
+    }
+
+
 def test_a_second_load_reuses_the_parsed_games_without_reading_again(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
@@ -512,6 +553,23 @@ def test_load_pool_rejects_an_incompatible_benchmark_version(
     manifest_path.write_text(json.dumps(record))
 
     with pytest.raises(EvaluationPoolError, match="benchmark version"):
+        load_pool(tmp_path / "pool")
+
+
+def test_load_pool_names_the_stale_schema_rather_than_the_column_it_lacks(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """A pool holds whole rows, so an older generation is missing columns."""
+
+    normalized, manifest = corpus(tmp_path)
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+    manifest_path = tmp_path / "pool/manifest.json"
+    record = json.loads(manifest_path.read_text())
+    record["schema_version"] = SCHEMA_VERSION - 1
+    manifest_path.write_text(json.dumps(record))
+
+    with pytest.raises(EvaluationPoolError, match="normalized schema version"):
         load_pool(tmp_path / "pool")
 
 

@@ -1,5 +1,7 @@
 """Tests for deterministic per-benchmark views over an evaluation pool."""
 
+from datetime import date
+
 import pytest
 
 from anthro_chess.data import Speed
@@ -13,6 +15,7 @@ def _game(
     plies: int = 40,
     ratings: bool = True,
     speed: Speed | None = Speed.BLITZ,
+    source_date: date | None = date(2019, 6, 15),
 ) -> PoolGame:
     return PoolGame(
         game_id=game_id,
@@ -20,6 +23,7 @@ def _game(
         result="1-0",
         has_ratings=ratings,
         speed=speed,
+        source_date=source_date,
     )
 
 
@@ -215,3 +219,60 @@ def test_a_view_that_matches_nothing_reports_an_empty_selection() -> None:
     assert selection.selected_games == 0
     assert selection.eligible_games == 0
     assert selection.excluded_games == {"below_minimum_plies": 5}
+
+
+def test_a_date_range_takes_one_era_of_a_pool_that_spans_several() -> None:
+    """The bounds are inclusive, which is what names an era by its months."""
+
+    pool = (
+        _game(1, source_date=date(2019, 12, 31)),
+        _game(2, source_date=date(2020, 3, 1)),
+        _game(3, source_date=date(2020, 10, 31)),
+        _game(4, source_date=date(2020, 11, 1)),
+    )
+
+    selection = apply_view(
+        pool,
+        ViewConfig(
+            name="pandemic",
+            minimum_date=date(2020, 3, 1),
+            maximum_date=date(2020, 10, 31),
+        ),
+    )
+
+    assert selection.game_ids == (2, 3)
+    assert selection.excluded_games == {
+        "before_minimum_date": 1,
+        "after_maximum_date": 1,
+    }
+
+
+def test_a_game_with_no_date_is_excluded_by_a_date_bound() -> None:
+    """An era reading must not quietly count games of unknown era."""
+
+    pool = (_game(1, source_date=None), _game(2, source_date=date(2020, 3, 1)))
+
+    assert apply_view(
+        pool, ViewConfig(name="from", minimum_date=date(2020, 1, 1))
+    ).excluded_games == {"missing_date": 1}
+    assert apply_view(
+        pool, ViewConfig(name="until", maximum_date=date(2020, 12, 31))
+    ).excluded_games == {"missing_date": 1}
+
+
+def test_an_undated_game_survives_a_view_that_asks_for_no_era() -> None:
+    pool = (_game(1, source_date=None),)
+
+    assert apply_view(pool, ViewConfig(name="all")).game_ids == (1,)
+
+
+def test_contradictory_date_bounds_are_rejected() -> None:
+    with pytest.raises(ValueError, match="must not be before minimum_date"):
+        apply_view(
+            _pool(5),
+            ViewConfig(
+                name="bad",
+                minimum_date=date(2021, 1, 1),
+                maximum_date=date(2020, 1, 1),
+            ),
+        )

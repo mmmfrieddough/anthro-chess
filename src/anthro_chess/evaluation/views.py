@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from pydantic import Field, StrictBool
 
@@ -36,6 +37,11 @@ class ViewConfig(ConfigModel):
     #: which games a cap then takes: filtering a capped selection afterwards
     #: would shrink it below the size it was declared at.
     speed: Speed | None = None
+    #: Inclusive bounds on the day the source dated a game, for a reading taken
+    #: over one era of a corpus that spans several. A game the corpus records no
+    #: date for is excluded by either bound rather than assumed to be in range.
+    minimum_date: date | None = None
+    maximum_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,9 @@ def apply_view(games: Sequence[PoolGame], config: ViewConfig) -> ViewSelection:
     if config.maximum_plies is not None and config.minimum_plies is not None:
         if config.maximum_plies < config.minimum_plies:
             raise ValueError("view maximum_plies must not be below minimum_plies")
+    if config.maximum_date is not None and config.minimum_date is not None:
+        if config.maximum_date < config.minimum_date:
+            raise ValueError("view maximum_date must not be before minimum_date")
 
     excluded: dict[str, int] = {}
     eligible: list[PoolGame] = []
@@ -129,4 +138,11 @@ def _exclusion_reason(game: PoolGame, config: ViewConfig) -> str | None:
         return "missing_ratings"
     if config.speed is not None and game.speed != config.speed:
         return "missing_time_control" if game.speed is None else "speed_mismatch"
+    if config.minimum_date is not None or config.maximum_date is not None:
+        if game.source_date is None:
+            return "missing_date"
+        if config.minimum_date is not None and game.source_date < config.minimum_date:
+            return "before_minimum_date"
+        if config.maximum_date is not None and game.source_date > config.maximum_date:
+            return "after_maximum_date"
     return None

@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from hashlib import sha256
 from importlib import import_module
 from io import BytesIO, StringIO
@@ -74,6 +75,7 @@ def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
     row = rows[0]
     assert row["source_id"] == "lichess"
     assert row["source_game_key"] == "PpwPOZMq"
+    assert row["source_date"] == date(2017, 4, 1)
     assert row["result"] == "0-1"
     assert row["termination"] == "time_forfeit"
     assert row["ply_count"] == 26
@@ -174,6 +176,57 @@ def test_preserves_present_unavailable_and_rejected_optional_values(
     assert row["clock_precision_ms"] == 10
     assert row["termination"] is None
     assert row["termination_status"] == "unavailable"
+
+
+def test_a_game_carries_the_day_its_source_dated_it(tmp_path: Path) -> None:
+    """Only ``UTCDate`` populates the column, and only when it names a day.
+
+    Every game here also carries a ``Date`` header, which is a different
+    quantity in an unstated timezone, so the undated game is what shows that
+    the column does not quietly fall back to it.
+    """
+
+    input_path = tmp_path / "dates.pgn"
+    input_path.write_text(
+        _short_game(site="dated", extra_headers='[UTCDate "2020.03.01"]\n')
+        + _short_game(site="unknown-day", extra_headers='[UTCDate "????.??.??"]\n')
+        + _short_game(site="unknown-month", extra_headers='[UTCDate "2020.??.??"]\n')
+        + _short_game(site="impossible", extra_headers='[UTCDate "2020.02.30"]\n')
+        + _short_game(site="absent"),
+        encoding="utf-8",
+    )
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(
+            'source.id="test"',
+            'source.version="fixture"',
+            'source.url="https://example.test/"',
+            'source.license="CC0-1.0"',
+        ),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = pq.read_table(result.normalized_path).to_pylist()
+    assert {
+        row["source_game_key"]: (row["source_date"], row["source_date_status"])
+        for row in rows
+    } == {
+        "dated": (date(2020, 3, 1), "present"),
+        "unknown-day": (None, "unavailable"),
+        "unknown-month": (None, "rejected"),
+        "impossible": (None, "rejected"),
+        "absent": (None, "unavailable"),
+    }
+    # An archive nothing could date prepares successfully, so the manifest is
+    # where that has to be visible rather than a later era reading.
+    manifest = _read_json(result.manifest_path)
+    assert manifest["coverage"]["source_date"]["status_games"] == {
+        "present": 1,
+        "rejected": 2,
+        "unavailable": 2,
+    }
 
 
 def test_filters_games_and_records_rejection_reasons(tmp_path: Path) -> None:

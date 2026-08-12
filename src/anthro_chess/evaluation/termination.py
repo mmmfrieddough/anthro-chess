@@ -9,7 +9,7 @@ Four readings, deliberately kept apart because they answer different questions
 and cost wildly different amounts:
 
 - the **mix**, a human-reference curve comparison over derived termination
-  categories, sliced by rating and by the time control of the human population
+  categories, sliced by rating and by the speed of the human population
   it is read against;
 - **held-out resignation prediction**, the mass the policy puts on resigning at
   the plies where a human actually resigned and at the plies where one moved
@@ -40,10 +40,10 @@ import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Protocol
+from typing import Any, Literal, Protocol, TypeAlias
 
 import chess
-from pydantic import Field, StrictBool, StrictInt, model_validator
+from pydantic import StrictBool, StrictInt, model_validator
 from torch import Tensor
 
 from anthro_chess.chess import (
@@ -53,7 +53,7 @@ from anthro_chess.chess import (
     is_terminal_action,
 )
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import SequenceDataLoader
+from anthro_chess.data import SequenceDataLoader, Speed, speed_from_clock_ms
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.data.termination import TERMINATION_CATEGORIES, TerminationCategory
 from anthro_chess.evaluation.curves import (
@@ -226,63 +226,21 @@ class ScoringModelRunner(Protocol):
         """Return raw action logits for one aligned evaluation batch."""
 
 
-class TimeControlClass(ConfigModel):
-    """One human population the mix is read against, named by its clock.
-
-    The generated side has no clock — the harness plays untimed — so this
-    slices the *reference* rather than the model. That is the useful direction
-    anyway: the question is which human population the model's endings resemble,
-    and a corpus of blitz games ends very differently from a corpus of
-    classical ones.
-    """
-
-    name: Annotated[str, Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_-]*$")]
-    #: Inclusive lower and exclusive upper bounds on the game's initial clock,
-    #: in seconds. Both absent accepts every reference game, including those
-    #: whose initial time the source never reported.
-    minimum_initial_seconds: Annotated[StrictInt, Field(ge=0)] | None = None
-    maximum_initial_seconds: Annotated[StrictInt, Field(ge=1)] | None = None
-
-    @model_validator(mode="after")
-    def _validate_bounds(self) -> TimeControlClass:
-        low = self.minimum_initial_seconds
-        high = self.maximum_initial_seconds
-        if low is not None and high is not None and high <= low:
-            raise ValueError(
-                "a time-control class needs an increasing initial-time range"
-            )
-        return self
-
-    @property
-    def bounded(self) -> bool:
-        """Return whether this class filters the reference at all."""
-
-        return (
-            self.minimum_initial_seconds is not None
-            or self.maximum_initial_seconds is not None
-        )
-
-    def accepts(self, initial_seconds: float | None) -> bool:
-        """Return whether one reference game belongs to this class."""
-
-        if not self.bounded:
-            return True
-        if initial_seconds is None:
-            return False
-        low = self.minimum_initial_seconds
-        high = self.maximum_initial_seconds
-        if low is not None and initial_seconds < low:
-            return False
-        return not (high is not None and initial_seconds >= high)
-
-    def as_record(self) -> dict[str, Any]:
-        """Return the workload record identifying this slice."""
-
-        return {
-            "name": self.name,
-            "minimum_initial_seconds": self.minimum_initial_seconds,
-            "maximum_initial_seconds": self.maximum_initial_seconds,
-        }
+#: One human population the mix is read against, named by the speed
+#: :func:`~anthro_chess.data.speed_from_clock_ms` bands its games into, or
+#: ``overall`` for the undivided reference — the slice table's own word for it.
+#: The generated side has no clock — the harness plays untimed — so a class
+#: slices the *reference* rather than the model, which is the useful direction
+#: anyway: the question is which human population the model's endings resemble,
+#: and a corpus of blitz games ends very differently from a corpus of classical
+#: ones.
+#:
+#: Reusing the data layer's vocabulary is what makes this reading and a
+#: selection trained at that speed one population. A reference game played
+#: without a clock bands into no speed at all, so only the undivided reading
+#: holds it, and a ``correspondence`` class reads only the games whose clock
+#: reached that band.
+SpeedClass: TypeAlias = Speed | Literal["overall"]
 
 
 class TerminationGridConfig(ConfigModel):
@@ -382,22 +340,18 @@ class TerminationBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     pool: Path
     reference: TerminationReferenceConfig = TerminationReferenceConfig()
     held_out: HeldOutResignationConfig = HeldOutResignationConfig()
-    #: One reading per class. The default single unbounded class compares
-    #: against the whole reference, which is the right default for a corpus
-    #: prepared at one speed.
-    time_controls: tuple[TimeControlClass, ...] = (TimeControlClass(name="all"),)
+    #: One reading per class. Reading against the whole reference is the right
+    #: default for a corpus prepared at one speed.
+    speeds: tuple[SpeedClass, ...] = ("overall",)
     guardrails: GuardrailConfig = GuardrailConfig()
     detail: TerminationDetailConfig = TerminationDetailConfig()
 
     @model_validator(mode="after")
-    def _validate_time_controls(self) -> TerminationBenchmarkConfig:
-        if not self.time_controls:
-            raise ValueError(
-                "a termination suite needs at least one time-control class"
-            )
-        names = [entry.name for entry in self.time_controls]
-        if len(set(names)) != len(names):
-            raise ValueError("a termination suite must not repeat a time-control name")
+    def _validate_speeds(self) -> TerminationBenchmarkConfig:
+        if not self.speeds:
+            raise ValueError("a termination suite needs at least one speed class")
+        if len(set(self.speeds)) != len(self.speeds):
+            raise ValueError("a termination suite must not repeat a speed class")
         validate_reference_size(
             self.reference.view, self.grid.target_ratings, DECLARED_MIX_NEIGHBOURS
         )
@@ -447,7 +401,7 @@ class HumanEnding:
 
     rating: float
     category: str
-    initial_seconds: float | None
+    speed: Speed | None
     resignation_deficit: float | None
 
 
@@ -577,9 +531,9 @@ class Guardrails:
 
 @dataclass(frozen=True)
 class TerminationMix:
-    """One temperature's mix comparison against one human time-control class."""
+    """One temperature's mix comparison against one human speed class."""
 
-    time_control: TimeControlClass
+    speed: SpeedClass
     temperature: float
     ratings: tuple[int, ...]
     comparison: CurveComparison
@@ -591,13 +545,13 @@ class TerminationMix:
     def label(self) -> str:
         """Return a short human label for this reading."""
 
-        return f"{self.time_control.name} temperature={self.temperature:g}"
+        return f"{self.speed} temperature={self.temperature:g}"
 
     def as_record(self) -> dict[str, Any]:
         """Return the mix payload stored in the detail tier."""
 
         return {
-            "time_control": self.time_control.as_record(),
+            "speed": str(self.speed),
             "temperature": self.temperature,
             "ratings": list(self.ratings),
             "human_games": self.human_games,
@@ -718,17 +672,14 @@ class TerminationBenchmarkResult:
 
         return sum(reading.games for reading in self.generated)
 
-    def mix(self, time_control: str, temperature: float) -> TerminationMix:
-        """Return one time-control class's mix reading at one temperature."""
+    def mix(self, speed: str, temperature: float) -> TerminationMix:
+        """Return one speed class's mix reading at one temperature."""
 
         for candidate in self.mixes:
-            if (
-                candidate.time_control.name == time_control
-                and candidate.temperature == temperature
-            ):
+            if candidate.speed == speed and candidate.temperature == temperature:
                 return candidate
         raise TerminationBenchmarkError(
-            f"no termination mix was measured for {time_control!r} at "
+            f"no termination mix was measured for {speed!r} at "
             f"temperature {temperature:g}"
         )
 
@@ -908,7 +859,6 @@ def human_ending(
     if not category:
         return None, "missing_termination_category"
 
-    initial_ms = row.get(NormalizedColumn.TIME_INITIAL_MS.value)
     deficit: float | None = None
     if category == TerminationCategory.RESIGNATION.value:
         loser = _loser(str(row[NormalizedColumn.RESULT.value]))
@@ -919,8 +869,9 @@ def human_ending(
         HumanEnding(
             rating=(float(white) + float(black)) / 2.0,
             category=str(category),
-            initial_seconds=(
-                None if initial_ms is None else float(initial_ms) / 1000.0
+            speed=speed_from_clock_ms(
+                row.get(NormalizedColumn.TIME_INITIAL_MS.value),
+                row.get(NormalizedColumn.TIME_INCREMENT_MS.value),
             ),
             resignation_deficit=deficit,
         ),
@@ -1009,19 +960,19 @@ def _mix_readings(
     generated: Sequence[GeneratedReading],
     unavailable: dict[str, str],
 ) -> tuple[TerminationMix, ...]:
-    """Compare each temperature's endings against each human time-control class."""
+    """Compare each temperature's endings against each human speed class."""
 
     spec = mix_curve_spec(config.grid.target_ratings)
     mixes: list[TerminationMix] = []
-    for time_control in config.time_controls:
+    for speed in config.speeds:
         human = tuple(
             Observation(rating=ending.rating, value=ending.category)
             for ending in reference
-            if time_control.accepts(ending.initial_seconds)
+            if speed == "overall" or ending.speed == speed
         )
         if len(human) < spec.neighbours:
-            unavailable[f"mix:{time_control.name}"] = (
-                f"the {time_control.name} reference holds {len(human)} game(s) "
+            unavailable[f"mix:{speed}"] = (
+                f"the {speed} reference holds {len(human)} game(s) "
                 f"and the declared bandwidth smooths over {spec.neighbours}"
             )
             continue
@@ -1040,20 +991,18 @@ def _mix_readings(
                     model_varies=replicates_vary((reading.temperature,)),
                 )
             except CurveComparisonError as error:
-                unavailable[f"mix:{time_control.name}:t{reading.temperature:g}"] = str(
-                    error
-                )
+                unavailable[f"mix:{speed}:t{reading.temperature:g}"] = str(error)
                 continue
             mixes.append(
                 TerminationMix(
-                    time_control=time_control,
+                    speed=speed,
                     temperature=reading.temperature,
                     ratings=reading.ratings,
                     comparison=comparison,
                     execution=_mix_execution(
                         config,
                         runner,
-                        time_control,
+                        speed,
                         reading.temperature,
                         reference_view,
                     ),
@@ -1402,13 +1351,13 @@ def _generated_execution(
 def _mix_execution(
     config: TerminationBenchmarkConfig,
     runner: ActionModelRunner,
-    time_control: TimeControlClass,
+    speed: SpeedClass,
     temperature: float,
     reference_view: ViewSelection,
 ) -> ExecutionRecord:
     """Declare what one mix comparison measured.
 
-    The time-control class joins the workload because it decides which human
+    The speed class joins the workload because it decides which human
     population the distance is to. Two classes are two different questions
     rather than two samples of one, so they must not share a series.
 
@@ -1429,7 +1378,7 @@ def _mix_execution(
             "claim_draws": config.generation.claim_draws,
             "resignation_enabled": config.runtime.resignation_enabled,
             "draw_claim_enabled": config.runtime.draw_claim_enabled,
-            "time_control": time_control.as_record(),
+            "speed": str(speed),
             "curve_spec_version": MIX_CURVE_SPEC_VERSION,
             "neighbours": DECLARED_MIX_NEIGHBOURS,
             "reference": reference_workload(config.reference, reference_view),
@@ -1472,7 +1421,7 @@ def _record(
             _mix_measurements(mix),
             payload=mix.as_record,
             description=f"Termination mix: {mix.label}",
-            slug=f"mix-{mix.time_control.name}-t{_slug(mix.temperature)}",
+            slug=f"mix-{mix.speed}-t{_slug(mix.temperature)}",
             data=result.dataset,
             execution=mix.execution,
         )
@@ -1777,7 +1726,7 @@ __all__ = [
     "TerminationGridConfig",
     "TerminationMix",
     "TerminationReferenceConfig",
-    "TimeControlClass",
+    "SpeedClass",
     "benchmark_termination",
     "generated_ending",
     "human_ending",
