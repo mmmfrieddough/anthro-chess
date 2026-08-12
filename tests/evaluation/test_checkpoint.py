@@ -504,6 +504,51 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert "dependency.rating_anchor_policy_divergence" in measurements
 
 
+def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The quantities that count something other than games carry none.
+
+    The cross-conditioning match rate and the within-game response declare why
+    in the registry, so a report renders them ``unqualifiable`` rather than
+    sending a reader after a spread nothing can estimate.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+
+    result = _evaluate(_config(pool, checkpoint))
+
+    reported = {
+        item.metric: item
+        for envelope in result.envelopes
+        if envelope.kind == DEPENDENCY_KIND
+        for item in envelope.measurements
+    }
+    dispersed = {
+        metric for metric, item in reported.items() if item.dispersion is not None
+    }
+    assert dispersed == {
+        "dependency.rating_shuffled_degradation",
+        "dependency.rating_constant_degradation",
+        "dependency.rating_absent_degradation",
+        "dependency.rating_anchor_policy_divergence",
+    }
+    # The two anchor conditionings agree on every fixture position, so no
+    # redraw of these games moves the agreement rate and it carries no spread
+    # rather than a zero that would clear every later delta.
+    assert reported["dependency.rating_anchor_top1_agreement"].dispersion is None
+    divergence = reported["dependency.rating_anchor_policy_divergence"].dispersion
+    assert divergence is not None
+    assert result.dependency is not None
+    assert divergence.units == len(result.dependency.per_game_totals)
+
+
 def test_the_dependency_tests_score_each_conditioning_once(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
