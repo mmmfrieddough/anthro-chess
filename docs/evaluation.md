@@ -2340,7 +2340,7 @@ that never resigns and one that resigns while winning can post the same move
 cross-entropy.
 
 The headline reading is a human-reference curve comparison over derived
-termination categories, sliced by rating and by time control. It shares the
+termination categories, sliced by rating and by speed. It shares the
 shape described under human-reference curve comparisons rather than defining a
 new one. Categories the model cannot produce, such as abandonment, stay visible
 as their own bucket instead of being folded into a neighbor, because hiding them
@@ -2382,7 +2382,7 @@ so claim availability and claim handling are exact rather than sampled.
 termination` is its reading surface. It produces three kinds of record, because
 it measures three kinds of thing. A **generated reading** spans one
 temperature's whole rating grid and carries the deficit and the guardrails. A
-**mix** additionally names the human time-control class it was compared
+**mix** additionally names the human speed class it was compared
 against, since two classes are two questions rather than two samples of one. The
 **held-out resignation** reading generated nothing, so it is scoped by the human
 content it scored rather than by a generation recipe, which is also what makes
@@ -2394,11 +2394,14 @@ that mirrors abandonment, kept visible for the same reason: a generated game the
 harness stopped has no human counterpart, and folding it into a comparable
 category would move mass a checkpoint cannot move.
 
-The generated side is untimed, because the harness plays no clock. A
-time-control class therefore slices the *reference*, which is the useful
-direction anyway: the question is which human population a checkpoint's endings
-resemble. A class no reference game belongs to reports as unavailable rather
-than as a distance over nothing.
+The generated side is untimed, because the harness plays no clock. A speed class
+therefore slices the *reference*, which is the useful direction anyway: the
+question is which human population a checkpoint's endings resemble. A class
+names one speed, and
+`docs/decisions/0056-the-speed-axis-is-derived-from-the-time-control.md` owns
+the derivation it names, so a blitz mix and a blitz training selection read one
+population. One class covers the reference undivided, and a class no reference
+game belongs to reports as unavailable rather than as a distance over nothing.
 
 The mix distance **saturates while the model produces none of the human
 categories**, and a reader tracking it early will otherwise mistake that for a

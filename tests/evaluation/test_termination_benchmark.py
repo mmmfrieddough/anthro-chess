@@ -31,7 +31,7 @@ from anthro_chess.chess import (
     encode_move,
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import DecisionContext, Speed
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
@@ -78,7 +78,6 @@ from anthro_chess.evaluation.termination import (
     TerminationBenchmarkConfig,
     TerminationBenchmarkError,
     TerminationBenchmarkResult,
-    TimeControlClass,
     generated_ending,
     human_ending,
 )
@@ -502,6 +501,30 @@ def test_a_lopsided_human_game_is_excluded_rather_than_averaged(
     assert reason == "rating_gap"
 
 
+def test_a_reference_ending_carries_the_class_both_clock_columns_derive(
+    normalized_row: Callable[..., dict[str, Any]],
+) -> None:
+    """A reference ending carries the class a training selection filters on.
+
+    One minute is bullet or blitz depending on the increment, so the two rows
+    differ only in that column.
+    """
+
+    def speed_of(increment_ms: int) -> Speed | None:
+        row = normalized_row(
+            1,
+            plies=4,
+            time_initial_ms=60_000,
+            time_increment_ms=increment_ms,
+        )
+        ending, _ = human_ending(row, ReferenceConfig())
+        assert ending is not None
+        return ending.speed
+
+    assert speed_of(0) is Speed.BULLET
+    assert speed_of(3_000) is Speed.BLITZ
+
+
 # --- Guardrails -----------------------------------------------------------
 
 
@@ -727,7 +750,7 @@ def test_the_mix_compares_both_sides_over_one_rating_axis(
     """The headline reading is the shared curve shape, not a new one."""
 
     result = _run(_config(pool))
-    mix = result.mix("all", 1.0)
+    mix = result.mix("overall", 1.0)
     assert mix.human_games > 0
     assert mix.model_games > 0
     assert mix.comparison.spec.grid == (1200.0, 1800.0)
@@ -750,7 +773,7 @@ def test_the_mix_reports_how_far_its_smoother_actually_reached(
 
     result = _run(_config(pool))
 
-    comparison = result.mix("all", 1.0).comparison
+    comparison = result.mix("overall", 1.0).comparison
     spans = " ".join(f"±{point.bandwidth:.0f}" for point in comparison.points)
     assert f"  bandwidth   reaches {spans} rating points" in _render_termination(result)
 
@@ -789,7 +812,7 @@ def test_a_reference_too_thin_for_the_mix_says_so_in_the_pool_pass(
 
     assert "below the" in caplog.text
     assert result.mixes == ()
-    assert "mix:all" in result.unavailable
+    assert "mix:overall" in result.unavailable
 
 
 def test_the_human_reference_scopes_the_mix_series(
@@ -817,7 +840,7 @@ def test_the_human_reference_scopes_the_mix_series(
                 },
             )
         )
-        workloads.append(result.mix("all", 1.0).execution.workload_sha256)
+        workloads.append(result.mix("overall", 1.0).execution.workload_sha256)
 
     assert workloads[0] != workloads[1]
 
@@ -839,7 +862,7 @@ def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
     result = _run(_config(pool))
 
     rendered = _render_termination(result)
-    comparison = result.mix("all", 1.0).comparison
+    comparison = result.mix("overall", 1.0).comparison
     assert comparison.references is not None
     assert comparison.dispersions is not None
     assert (
@@ -862,11 +885,11 @@ def test_a_reference_too_small_for_the_bandwidth_reports_unavailable(
 
     result = _run(_config(pool))
     assert result.mixes == ()
-    assert "mix:all" in result.unavailable
-    assert "bandwidth" in result.unavailable["mix:all"]
+    assert "mix:overall" in result.unavailable
+    assert "bandwidth" in result.unavailable["mix:overall"]
 
 
-def test_two_time_control_classes_land_on_different_series(
+def test_two_speed_classes_land_on_different_series(
     pool: Path,
     small_bandwidth: None,
 ) -> None:
@@ -875,13 +898,10 @@ def test_two_time_control_classes_land_on_different_series(
     result = _run(
         _config(
             pool,
-            time_controls=(
-                TimeControlClass(name="all"),
-                TimeControlClass(name="blitz", maximum_initial_seconds=600),
-            ),
+            speeds=("overall", Speed.BLITZ),
         )
     )
-    everything = result.mix("all", 1.0)
+    everything = result.mix("overall", 1.0)
     blitz = result.mix("blitz", 1.0)
     assert everything.execution.workload_sha256 != blitz.execution.workload_sha256
     conditional = TERMINATION_MIX_CONDITIONAL_DISTANCE.identifier
@@ -890,20 +910,13 @@ def test_two_time_control_classes_land_on_different_series(
     assert len(fingerprints) == 2
 
 
-def test_an_unpopulated_time_control_class_reports_unavailable(
+def test_an_unpopulated_speed_class_reports_unavailable(
     pool: Path,
     small_bandwidth: None,
 ) -> None:
     """A class no reference game belongs to has nothing to compare against."""
 
-    result = _run(
-        _config(
-            pool,
-            time_controls=(
-                TimeControlClass(name="classical", minimum_initial_seconds=3600),
-            ),
-        )
-    )
+    result = _run(_config(pool, speeds=(Speed.CLASSICAL,)))
     assert result.mixes == ()
     assert "mix:classical" in result.unavailable
 
