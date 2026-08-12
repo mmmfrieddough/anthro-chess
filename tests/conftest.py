@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import fields, is_dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -133,14 +133,15 @@ def _normalized_row(
     result: str = "1-0",
     moves: tuple[str, ...] | None = None,
     initial_position: str = chess.STARTING_FEN,
+    source_date: date | None = date(2019, 6, 15),
 ) -> dict[str, Any]:
     """Return one canonical normalized game row.
 
     Explicit ``moves`` and ``initial_position`` let a fixture reach positions
     the shared opening line never visits, such as an available promotion.
-    ``ratings`` overrides ``rating`` per player, and the time-control fields
-    vary independently, so a fixture corpus can span the axes a load-time
-    selection filters on.
+    ``ratings`` overrides ``rating`` per player, and the time-control and
+    ``source_date`` fields vary independently, so a fixture corpus can span the
+    axes a load-time selection or a view filters on.
     """
 
     moves = OPENING_MOVES[:plies] if moves is None else moves
@@ -180,6 +181,8 @@ def _normalized_row(
         "schema_version": SCHEMA_VERSION,
         "source_id": "fixture",
         "source_game_key": f"game{game_id}",
+        "source_date": source_date,
+        "source_date_status": status if source_date is not None else "unavailable",
         "white_player_digest": account_row_digest(f"white{game_id}"),
         "black_player_digest": account_row_digest(f"black{game_id}"),
         "ruleset": "standard",

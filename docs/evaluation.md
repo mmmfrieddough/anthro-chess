@@ -685,7 +685,8 @@ intends to read. Without it the pool is the whole split, which is what the
 pre-designation generation is.
 
 **Views** are per-benchmark deterministic selections over the pool: filtering by
-ply count or rating presence; projecting to prefixes; subsampling by hash rank.
+ply count, rating presence, or the day the source dated a game; projecting to
+prefixes; subsampling by hash rank.
 Each benchmark records its resolved view spec,
 including the digest of the selected game ids, in its own artifact. Views are
 derivations, never new stored data. A benchmark needing something the view layer

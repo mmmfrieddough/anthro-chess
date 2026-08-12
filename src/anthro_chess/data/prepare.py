@@ -18,6 +18,7 @@ from concurrent.futures import BrokenExecutor, Future, ProcessPoolExecutor
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import date, datetime
 from functools import partial
 from hashlib import sha256
 from io import StringIO
@@ -610,6 +611,7 @@ def _prepare_archive(
     time_increment_values: list[int] = []
     rating_values: list[int] = []
     rating_namespace_counts: Counter[str] = Counter()
+    source_date_status_counts: Counter[str] = Counter()
     termination_category_counts: Counter[str] = Counter()
     termination_attribution_counts: Counter[str] = Counter()
     terminal_action_status_counts: Counter[str] = Counter()
@@ -706,6 +708,9 @@ def _prepare_archive(
                         _STATUS_UNAVAILABLE
                         if rating_namespace is None
                         else str(rating_namespace)
+                    ] += 1
+                    source_date_status_counts[
+                        str(parsed.record[NormalizedColumn.SOURCE_DATE_STATUS])
                     ] += 1
 
                     games_per_shard = config.output.games_per_shard
@@ -818,6 +823,12 @@ def _prepare_archive(
                 # Keeps an archive whose labels named no pool visible here
                 # rather than in whatever first reads the column.
                 "namespace_games": dict(sorted(rating_namespace_counts.items())),
+            },
+            # An archive whose games carry no readable date prepares
+            # successfully and reads as an era nothing can name, and the only
+            # repair is parsing it again.
+            "source_date": {
+                "status_games": dict(sorted(source_date_status_counts.items())),
             },
             "termination": {
                 "category_games": {
@@ -1527,11 +1538,14 @@ def _parse_game(
         if config.source.ratings_are_normalized
         else _STATUS_UNAVAILABLE
     )
+    source_date, source_date_status = _parse_utc_date(headers.get("UTCDate"))
     return _ParsedGame(
         {
             NormalizedColumn.SCHEMA_VERSION: SCHEMA_VERSION,
             NormalizedColumn.SOURCE_ID: config.source.id,
             NormalizedColumn.SOURCE_GAME_KEY: source_game_key,
+            NormalizedColumn.SOURCE_DATE: source_date,
+            NormalizedColumn.SOURCE_DATE_STATUS: source_date_status,
             NormalizedColumn.WHITE_PLAYER_DIGEST: _player_digest(headers.get("White")),
             NormalizedColumn.BLACK_PLAYER_DIGEST: _player_digest(headers.get("Black")),
             NormalizedColumn.RULESET: "standard",
@@ -1679,6 +1693,24 @@ def _clock_precision_ms(value: str) -> int:
     seconds = value.rsplit(":", 1)[-1]
     decimal_places = len(seconds.partition(".")[2])
     return (1000, 100, 10, 1)[min(decimal_places, 3)]
+
+
+def _parse_utc_date(value: str | None) -> tuple[date | None, FieldStatus]:
+    if value is None or not value.strip():
+        return None, _STATUS_UNAVAILABLE
+    text = value.strip()
+    if "?" in text and set(text) <= {"?", "."}:
+        # PGN spells a date it does not know with question marks, so the
+        # placeholder is the source reporting an absence rather than a value
+        # that failed to parse. The question mark is required: a header of bare
+        # dots is malformed rather than deliberately unknown, and falls through
+        # to be rejected. A partly known date is rejected there too, since no
+        # day is a day this column can carry.
+        return None, _STATUS_UNAVAILABLE
+    try:
+        return datetime.strptime(text, "%Y.%m.%d").date(), _STATUS_PRESENT
+    except ValueError:
+        return None, _STATUS_REJECTED
 
 
 def _parse_text(value: str | None) -> tuple[str | None, FieldStatus]:
@@ -1848,6 +1880,11 @@ def _corpus_coverage(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "maximum": _extreme(ratings, "maximum", max),
             "namespace_games": _summed_counts(
                 rating["namespace_games"] for rating in ratings
+            ),
+        },
+        "source_date": {
+            "status_games": _summed_counts(
+                block["source_date"]["status_games"] for block in blocks
             ),
         },
         "termination": {

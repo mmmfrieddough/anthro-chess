@@ -12,7 +12,9 @@ speed axis off the source's own label because this span is one the label does
 not hold still across. Narrowed by
 `0058-the-corpus-starts-after-the-rapid-pool-split.md`, which drops the nine
 months this span opens with: the export names a rating pool for them that did
-not exist when they were played.
+not exist when they were played. The gap the Consequences below name is closed
+by `0059-the-normalized-row-carries-a-day-not-an-instant.md`, which puts the
+date on the row and says why the time of day stays off it.
 
 ## Context
 
