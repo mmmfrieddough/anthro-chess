@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from anthro_chess.data import Speed
 from anthro_chess.data.artifacts import normalized_shard_paths
 from anthro_chess.evaluation.aggregation import (
     OPENING_FAMILY_DIMENSION,
@@ -189,6 +190,7 @@ def _slice_table(move_losses: dict[str, float]) -> SliceTable:
                 legal_move_count=20,
                 legal_move_count_bucket="11_to_25",
                 rating_band="1200_to_1599",
+                speed=Speed.BLITZ,
             ),
             (),
             opening_family=family,

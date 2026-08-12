@@ -30,6 +30,7 @@ scalar trajectory signals that the scoring session already computed.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -38,7 +39,15 @@ from statistics import fmean, median
 from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
+from anthro_chess.evaluation.noise import GameTotals, MetricTotal
 from anthro_chess.evaluation.policy import PositionPolicy
+from anthro_chess.evaluation.results.metrics import (
+    DEPENDENCY_RATING_ABSENT_DEGRADATION,
+    DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
+    DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
+    DEPENDENCY_RATING_CONSTANT_DEGRADATION,
+    DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
+)
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
     RatingBand,
@@ -70,6 +79,14 @@ class ConditioningKind(StrEnum):
     SHUFFLED = "shuffled"
     CONSTANT = "constant"
     ABSENT = "absent"
+
+
+#: ``TRUE`` has no entry: it is the baseline the others degrade from.
+DEGRADATION_METRICS = {
+    ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
+    ConditioningKind.CONSTANT: DEPENDENCY_RATING_CONSTANT_DEGRADATION,
+    ConditioningKind.ABSENT: DEPENDENCY_RATING_ABSENT_DEGRADATION,
+}
 
 
 @dataclass(frozen=True)
@@ -309,6 +326,9 @@ class DependencyTestResult:
     anchor_divergence: float
     anchor_agreement_rate: float
     maturity: MaturityContext
+    #: Per-game shares of the quantities this reading can resample, which is
+    #: what its own dispersion is estimated from.
+    per_game_totals: tuple[GameTotals, ...]
 
     def corruption(self, kind: ConditioningKind) -> CorruptionResult | None:
         """Return one corruption result by treatment kind."""
@@ -408,6 +428,89 @@ def build_dependency_result(
             float(signal.anchor_agreement) for signal in signals
         ),
         maturity=maturity,
+        per_game_totals=_per_game_totals(
+            rated,
+            rated_keys,
+            corrupted_positions,
+            trajectory,
+        ),
+    )
+
+
+def _per_game_totals(
+    rated: Sequence[PositionPolicy],
+    rated_keys: set[PositionKey],
+    corrupted_positions: Mapping[str, tuple[Conditioning, Sequence[PositionPolicy]]],
+    trajectory: Mapping[PositionKey, TrajectorySignal],
+) -> tuple[GameTotals, ...]:
+    """Return each game's share of the position-mean dependency results.
+
+    The game is the resampling unit, for the reason
+    ``anthro_chess.evaluation.noise`` gives. The anchors count the positions a
+    trajectory signal was computed for while the degradations count every rated
+    one, which is why each total carries its own.
+
+    Two of the family's seven quantities are absent because no resampling of
+    games could recompute them; each declares why in its
+    ``no_sampling_floor_reason``.
+    """
+
+    positions: dict[int, int] = defaultdict(int)
+    true_totals: dict[int, float] = defaultdict(float)
+    anchor_positions: dict[int, int] = defaultdict(int)
+    divergence: dict[int, float] = defaultdict(float)
+    agreement: dict[int, float] = defaultdict(float)
+    for position in rated:
+        positions[position.game_id] += 1
+        true_totals[position.game_id] += position.move_nll
+        signal = trajectory.get((position.game_id, position.ply_index))
+        if signal is None:
+            continue
+        anchor_positions[position.game_id] += 1
+        divergence[position.game_id] += signal.anchor_divergence
+        agreement[position.game_id] += float(signal.anchor_agreement)
+
+    # Name-sorted and first-wins, matching how a corruption result is selected
+    # by kind, so a share is drawn from the pass whose value it qualifies.
+    degradations: dict[ConditioningKind, dict[int, float]] = {}
+    for name in sorted(corrupted_positions):
+        conditioning, scored = corrupted_positions[name]
+        if conditioning.kind in degradations:
+            continue
+        totals: dict[int, float] = defaultdict(float)
+        for position in scored:
+            if (position.game_id, position.ply_index) in rated_keys:
+                totals[position.game_id] += position.move_nll
+        degradations[conditioning.kind] = {
+            game_id: total - true_totals[game_id] for game_id, total in totals.items()
+        }
+
+    # A game's rated count is also the count behind its degradation share:
+    # ``_corruption_result`` refuses a pass that does not cover every rated
+    # position, so no treatment can be missing one of these games.
+    return tuple(
+        GameTotals(
+            game_id=game_id,
+            metrics={
+                **{
+                    DEGRADATION_METRICS[kind].identifier: MetricTotal(
+                        total=totals[game_id],
+                        positions=count,
+                    )
+                    for kind, totals in degradations.items()
+                    if kind in DEGRADATION_METRICS
+                },
+                DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE.identifier: MetricTotal(
+                    total=divergence[game_id],
+                    positions=anchor_positions[game_id],
+                ),
+                DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT.identifier: MetricTotal(
+                    total=agreement[game_id],
+                    positions=anchor_positions[game_id],
+                ),
+            },
+        )
+        for game_id, count in sorted(positions.items())
     )
 
 

@@ -15,9 +15,15 @@ from enum import StrEnum
 import chess
 
 from anthro_chess.chess import is_terminal_action
-from anthro_chess.data import BOARD_SQUARE_COUNT, BoardEncoding, PlyEncoding
+from anthro_chess.data import (
+    BOARD_SQUARE_COUNT,
+    BoardEncoding,
+    PlyEncoding,
+    Speed,
+    speed_from_clock_ms,
+)
 
-SLICE_SCHEME_VERSION = 1
+SLICE_SCHEME_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -200,6 +206,7 @@ class PositionSlices:
     legal_move_count: int
     legal_move_count_bucket: str
     rating_band: str | None
+    speed: Speed | None
 
     def as_record(self) -> dict[str, object]:
         """Return a stable JSON-serializable slice record."""
@@ -210,6 +217,7 @@ class PositionSlices:
             "legal_move_count": self.legal_move_count,
             "legal_move_count_bucket": self.legal_move_count_bucket,
             "rating_band": self.rating_band,
+            "speed": None if self.speed is None else str(self.speed),
         }
 
 
@@ -699,6 +707,9 @@ def position_slices(
     The move count is the position's branching factor, so the terminal actions
     an encoding also enables are left out: they are available in every position
     and would shift every bucket by a constant.
+
+    Speed comes from the game's control rather than the clock left at the ply,
+    so every decision in a blitz game counts toward blitz, endgame included.
     """
 
     legal_moves = sum(
@@ -710,6 +721,7 @@ def position_slices(
         legal_move_count=legal_moves,
         legal_move_count_bucket=legal_move_count_bucket(legal_moves),
         rating_band=rating_band_name(ply.target_rating, rating_bands),
+        speed=speed_from_clock_ms(ply.time_initial_ms, ply.time_increment_ms),
     )
 
 

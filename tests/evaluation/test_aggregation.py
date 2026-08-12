@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from anthro_chess.data import Speed
 from anthro_chess.evaluation.aggregation import (
     COLOR_DIMENSION,
     LEGAL_MOVE_COUNT_DIMENSION,
@@ -15,7 +16,9 @@ from anthro_chess.evaluation.aggregation import (
     RATING_DIMENSION,
     REPORTED_CHARACTERISTICS,
     RULE_CASE_DIMENSION,
+    SPEED_DIMENSION,
     UNRATED_SLICE,
+    UNTIMED_SLICE,
     SliceAggregator,
     summarize,
 )
@@ -117,6 +120,21 @@ def test_a_position_joins_every_rule_case_it_realizes() -> None:
     }
 
 
+def test_speed_keeps_the_populations_a_pooled_average_would_mix_apart() -> None:
+    aggregator = SliceAggregator()
+    aggregator.add(_policy(), _slices(speed=Speed.BLITZ), ())
+    aggregator.add(_policy(ply_index=1), _slices(speed=Speed.CLASSICAL), ())
+    aggregator.add(_policy(ply_index=2), _slices(speed=None), ())
+
+    table = aggregator.compute()
+
+    assert set(table.dimensions[SPEED_DIMENSION]) == {
+        str(Speed.BLITZ),
+        str(Speed.CLASSICAL),
+        UNTIMED_SLICE,
+    }
+
+
 def test_an_empty_evaluation_is_rejected_rather_than_reported_as_zero() -> None:
     assert summarize([]) is None
     with pytest.raises(ValueError, match="at least one scored position"):
@@ -198,6 +216,7 @@ def _slices(
     rating_band: str | None = "1200_to_1599",
     legal_move_count: int = 20,
     bucket: str = "11_to_25",
+    speed: Speed | None = Speed.BLITZ,
 ) -> PositionSlices:
     return PositionSlices(
         phase=phase,
@@ -205,4 +224,5 @@ def _slices(
         legal_move_count=legal_move_count,
         legal_move_count_bucket=bucket,
         rating_band=rating_band,
+        speed=speed,
     )

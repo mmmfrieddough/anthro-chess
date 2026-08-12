@@ -6,7 +6,7 @@ import chess
 import pytest
 
 from anthro_chess.chess import decode_move
-from anthro_chess.data import GameEncodingInput, encode_game
+from anthro_chess.data import GameEncodingInput, Speed, encode_game
 from anthro_chess.evaluation import (
     PREDICATE_REGISTRY,
     GamePhase,
@@ -120,6 +120,27 @@ def test_position_slices_label_every_ply_of_an_encoded_game(
     assert slices[0].legal_move_count == 20
     assert slices[0].legal_move_count_bucket == "11_to_25"
     assert slices[0].as_record()["legal_move_count"] == 20
+
+
+def test_every_position_of_a_game_carries_that_game_s_speed(
+    action_ids: Callable[[tuple[str, ...]], tuple[int, ...]],
+) -> None:
+    game = GameEncodingInput(
+        game_id=3,
+        ruleset="standard",
+        initial_position=chess.STARTING_FEN,
+        action_ids=action_ids(("e2e4", "e7e5")),
+        white_normalized_rating=1500,
+        black_normalized_rating=1500,
+        time_initial_ms=300_000,
+        time_increment_ms=0,
+        clock_remaining_ms=(None, None),
+    )
+
+    slices = [position_slices(ply) for ply in encode_game(game)]
+
+    assert [item.speed for item in slices] == [Speed.BLITZ, Speed.BLITZ]
+    assert slices[0].as_record()["speed"] == "blitz"
 
 
 def test_slices_report_absent_ratings_without_inventing_a_band(
