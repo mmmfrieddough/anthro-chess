@@ -215,6 +215,17 @@ that scale against a fixed external engine reference. It follows rather than
 leads because it needs an external binary and because an anchor is only useful
 once ordering already exists.
 
+Two references are wanted, and they answer different questions. A conventional
+engine at fixed strength settings anchors the scale itself. A rating-conditioned
+human-like model says whether this project's rating dial tracks another one, and
+can be scored on the held-out and human-likeness benchmarks besides, where a
+conventional engine reads as an outlier by construction. Maia-3 is the practical
+choice for the second, being a plain PyTorch package rather than a weights
+format needing someone else's runtime. Both of its uses cost more than a
+conventional anchor does: a foreign checkpoint needs an action-vocabulary
+mapping and a provenance path, and a model that conditions on its opponent's
+rating needs a declared convention for what it is told.
+
 Timing is not one piece of work, and its parts have different deadlines. The
 model learns to read time in this stage and to write it in the next, and the
 data that makes either possible lands earlier still.
