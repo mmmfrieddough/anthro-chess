@@ -8,7 +8,8 @@ schema.
 
 `data/` contains the offline sample selection and the pinned, bounded Lichess
 baseline-corpus selection. The latter owns the archive identity, published
-checksum, rating namespace, deterministic maximum, and normalized shard size.
+checksum, rating namespace prefix, deterministic maximum, and normalized shard
+size.
 It can also name a marked-account snapshot, though it does not yet;
 `data/marked-accounts/` explains why that one input is checked in rather than
 regenerated on demand, since account status is a live judgement and a corpus

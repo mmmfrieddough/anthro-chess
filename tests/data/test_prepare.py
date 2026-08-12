@@ -42,13 +42,13 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
 SAMPLE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
 BASELINE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-blitz-2017-04.toml"
-UNIV_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-univ-2017-04-2021-06.toml"
+UNIV_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-univ-2018-01-2021-06.toml"
 
 
-def test_baseline_selection_pins_one_bounded_verified_rating_namespace() -> None:
+def test_baseline_selection_pins_one_bounded_verified_speed() -> None:
     config = load_config(PrepareConfig, path=BASELINE_CONFIG).value
 
-    assert config.source.rating_namespace == "lichess_blitz"
+    assert config.source.rating_namespace_prefix == "lichess"
     assert config.filters.speed is Speed.BLITZ
     assert config.filters.maximum_games is not None
     assert config.output.games_per_shard is not None
@@ -80,6 +80,7 @@ def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
     assert decode_move(row["action_ids"][0]) == chess.Move.from_uci("e2e4")
     assert row["white_source_rating"] == 2100
     assert row["white_normalized_rating"] == 2100
+    assert row["source_rating_namespace"] == "lichess_bullet"
     assert decode_clock_remaining_deltas(row["clock_remaining_delta_ms"])[:3] == [
         30000,
         30000,
@@ -238,6 +239,83 @@ def test_a_speed_filter_rejects_a_game_whose_time_control_says_nothing(
     assert result.accepted_games == 1
     manifest = _read_json(result.manifest_path)
     assert manifest["games"]["rejection_reasons"] == {"speed_mismatch": 1}
+
+
+def test_a_corpus_spanning_pools_stamps_each_game_with_the_one_that_rated_it(
+    tmp_path: Path,
+) -> None:
+    """One selection spans four rating ladders, and they are four scales."""
+
+    input_path = tmp_path / "speeds.pgn"
+    input_path.write_text(
+        _short_game(site="bullet", event="Rated Bullet game", time_control="60+0")
+        + _short_game(site="blitz", event="Rated Blitz game")
+        + _short_game(site="rapid", event="Rated Rapid game", time_control="600+0")
+        + _short_game(site="unlabelled", event="Rated game"),
+        encoding="utf-8",
+    )
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(
+            'source.id="test"',
+            'source.version="fixture"',
+            'source.url="https://example.test/"',
+            'source.license="CC0-1.0"',
+            'source.rating_namespace_prefix="test"',
+        ),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    rows = pq.read_table(result.normalized_path).to_pylist()
+    assert {row["source_game_key"]: row["source_rating_namespace"] for row in rows} == {
+        "bullet": "test_bullet",
+        "blitz": "test_blitz",
+        "rapid": "test_rapid",
+        # No pool named, so none recorded: a guessed one would be undetectable.
+        "unlabelled": None,
+    }
+    manifest = _read_json(result.manifest_path)
+    assert manifest["coverage"]["source_rating"]["namespace_games"] == {
+        "test_blitz": 1,
+        "test_bullet": 1,
+        "test_rapid": 1,
+        "unavailable": 1,
+    }
+
+
+def test_a_speed_filter_does_not_decide_which_pool_rated_the_game(
+    tmp_path: Path,
+) -> None:
+    """2017-04 rated a rapid-shaped game in the classical pool, having no other."""
+
+    input_path = tmp_path / "before-rapid-existed.pgn"
+    input_path.write_text(
+        _short_game(
+            site="ten-minute",
+            event="Rated Classical game",
+            time_control="600+0",
+        ),
+        encoding="utf-8",
+    )
+    resolved = load_config(
+        PrepareConfig,
+        path=SAMPLE_CONFIG,
+        overrides=(
+            'source.id="test"',
+            'source.version="fixture"',
+            'source.url="https://example.test/"',
+            'source.license="CC0-1.0"',
+            'source.rating_namespace_prefix="test"',
+            'filters.speed="rapid"',
+        ),
+    )
+
+    result = prepare_pgn(input_path, tmp_path / "artifacts", resolved)
+
+    row = pq.read_table(result.normalized_path).to_pylist()[0]
+    assert row["source_rating_namespace"] == "test_classical"
 
 
 def test_keeps_a_game_whose_clock_precision_varies_at_its_finest_tick(
@@ -457,7 +535,7 @@ def test_streams_zstandard_input_into_bounded_shards_and_one_speed(
             'source.version="fixture"',
             'source.url="https://example.test/"',
             'source.license="CC0-1.0"',
-            'source.rating_namespace="test_blitz"',
+            'source.rating_namespace_prefix="test"',
             'filters.speed="blitz"',
             "filters.require_ratings=true",
             "filters.maximum_games=5",
@@ -499,6 +577,7 @@ def test_streams_zstandard_input_into_bounded_shards_and_one_speed(
         "maximum": 1200,
         "minimum": 1200,
         "values_present": 10,
+        "namespace_games": {"test_blitz": 5},
     }
 
 
@@ -881,23 +960,37 @@ def _sha256(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 
 
-def test_centisecond_selection_pins_every_month_that_carries_clocks() -> None:
+def test_centisecond_selection_pins_every_month_after_the_pool_split() -> None:
     """The corpus selection is a checked-in fact rather than prose in an issue."""
 
     config = load_config(PrepareConfig, path=UNIV_CONFIG).value
 
-    assert len(config.archives) == 51
+    assert len(config.archives) == 42
     assert {archive.compression for archive in config.archives} == {"bzip2"}
     months = [archive.file_name.split("_")[-1][:7] for archive in config.archives]
-    # Centisecond clocks begin at 2017-04 and the export ends at 2021-06, so a
-    # month outside the span carries nothing this source was chosen for.
-    assert months[0] == "2017-04"
+    # Lichess split its rapid pool out of classical during 2017-12 and the
+    # export ends at 2021-06, so a month outside the span either names a pool
+    # that did not rate it or carries no centisecond clocks.
+    assert months[0] == "2018-01"
     assert months[-1] == "2021-06"
     assert months == sorted(months)
     assert len(set(months)) == len(months)
-    # Left unset until the namespace is derived per game, because a corpus
-    # spanning speeds cannot be described by one namespace.
-    assert config.source.rating_namespace is None
+    assert config.source.rating_namespace_prefix == "lichess"
+    assert config.filters.speed is None
+
+
+@pytest.mark.parametrize("prefix", ["lichess_blitz", "lichess-ultrabullet"])
+def test_a_selection_refuses_a_prefix_that_already_names_a_pool(prefix: str) -> None:
+    """A whole namespace moved under the prefix key would be stamped twice."""
+
+    with pytest.raises(ValueError, match="already names a pool"):
+        SourceConfig(
+            id="test",
+            version="v",
+            url="https://example.test/",
+            license="CC0-1.0",
+            rating_namespace_prefix=prefix,
+        )
 
 
 def test_a_selection_refuses_two_archives_that_would_overwrite_each_other() -> None:

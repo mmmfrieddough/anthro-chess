@@ -199,7 +199,7 @@ mkdir -p ~/.config/anthro-chess ~/.config/systemd/user
 cp scripts/systemd/anthro-census.* ~/.config/systemd/user/
 cat > ~/.config/anthro-chess/census.env <<'ENV'
 ANTHRO_CHESS_CHECKOUT=/absolute/path/to/anthro-chess
-ANTHRO_CHESS_CENSUS_CONFIG=configs/data/lichess-univ-2017-04-2021-06.toml
+ANTHRO_CHESS_CENSUS_CONFIG=configs/data/lichess-univ-2018-01-2021-06.toml
 ANTHRO_CHESS_DATA_ROOT=/absolute/path/to/datasets
 LICHESS_TOKEN=...
 ENV

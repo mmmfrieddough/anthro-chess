@@ -55,6 +55,7 @@ from anthro_chess.data.census import (
     write_account_games,
 )
 from anthro_chess.data.config import ArchiveConfig, PrepareConfig, SplitConfig
+from anthro_chess.data.rating_namespace import rating_namespace_from_event
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
@@ -608,6 +609,7 @@ def _prepare_archive(
     time_initial_values: list[int] = []
     time_increment_values: list[int] = []
     rating_values: list[int] = []
+    rating_namespace_counts: Counter[str] = Counter()
     termination_category_counts: Counter[str] = Counter()
     termination_attribution_counts: Counter[str] = Counter()
     terminal_action_status_counts: Counter[str] = Counter()
@@ -697,6 +699,14 @@ def _prepare_archive(
                         rating = parsed.record[rating_column]
                         if isinstance(rating, int):
                             rating_values.append(rating)
+                    rating_namespace = parsed.record[
+                        NormalizedColumn.SOURCE_RATING_NAMESPACE
+                    ]
+                    rating_namespace_counts[
+                        _STATUS_UNAVAILABLE
+                        if rating_namespace is None
+                        else str(rating_namespace)
+                    ] += 1
 
                     games_per_shard = config.output.games_per_shard
                     if games_per_shard is not None and len(records) >= games_per_shard:
@@ -805,6 +815,9 @@ def _prepare_archive(
                 "values_present": len(rating_values),
                 "minimum": min(rating_values) if rating_values else None,
                 "maximum": max(rating_values) if rating_values else None,
+                # Keeps an archive whose labels named no pool visible here
+                # rather than in whatever first reads the column.
+                "namespace_games": dict(sorted(rating_namespace_counts.items())),
             },
             "termination": {
                 "category_games": {
@@ -1537,7 +1550,10 @@ def _parse_game(
             NormalizedColumn.WHITE_SOURCE_RATING_STATUS: white_rating.status,
             NormalizedColumn.BLACK_SOURCE_RATING: black_rating.value,
             NormalizedColumn.BLACK_SOURCE_RATING_STATUS: black_rating.status,
-            NormalizedColumn.SOURCE_RATING_NAMESPACE: config.source.rating_namespace,
+            NormalizedColumn.SOURCE_RATING_NAMESPACE: rating_namespace_from_event(
+                headers.get("Event"),
+                prefix=config.source.rating_namespace_prefix,
+            ),
             NormalizedColumn.SOURCE_RATING_SYSTEM: config.source.rating_system,
             NormalizedColumn.WHITE_NORMALIZED_RATING: normalized_white,
             NormalizedColumn.WHITE_NORMALIZED_RATING_STATUS: (normalized_white_status),
@@ -1830,6 +1846,9 @@ def _corpus_coverage(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "values_present": sum(rating["values_present"] for rating in ratings),
             "minimum": _extreme(ratings, "minimum", min),
             "maximum": _extreme(ratings, "maximum", max),
+            "namespace_games": _summed_counts(
+                rating["namespace_games"] for rating in ratings
+            ),
         },
         "termination": {
             "category_games": _summed_counts(

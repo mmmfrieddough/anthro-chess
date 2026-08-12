@@ -9,7 +9,10 @@ corpus in `#89` is built from, and the limitations that choice accepts
 permanently. Extended by
 `0056-the-speed-axis-is-derived-from-the-time-control.md`, which takes the
 speed axis off the source's own label because this span is one the label does
-not hold still across.
+not hold still across. Narrowed by
+`0058-the-corpus-starts-after-the-rapid-pool-split.md`, which drops the nine
+months this span opens with: the export names a rating pool for them that did
+not exist when they were played.
 
 ## Context
 

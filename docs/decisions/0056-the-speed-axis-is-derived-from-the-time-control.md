@@ -5,7 +5,10 @@ Date: 2026-08-11
 ## Status
 
 Accepted. Extends `0045-centisecond-clocks-from-a-closed-export.md`, whose span
-is what makes the source's own speed label ambiguous.
+is what makes the source's own speed label ambiguous. Extended by
+`0057-the-rating-namespace-is-derived-per-game.md`, which takes the namespace
+this record leaves on that label and derives it per game rather than declaring
+it per selection.
 
 ## Context
 

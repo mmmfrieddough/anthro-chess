@@ -1,26 +1,28 @@
-artifact_name = "lichess-univ-2017-04-2021-06"
+artifact_name = "lichess-univ-2018-01-2021-06"
 
-# The Lichess universal export, every month that carries centisecond clocks.
+# The Lichess universal export, every month that carries centisecond clocks and
+# postdates the rapid pool split.
 # `docs/decisions/0045-centisecond-clocks-from-a-closed-export.md` records why
-# this source, this precision, and this span, and what the span costs.
+# this source, this precision, and this span, and what the span costs, and
+# `docs/decisions/0058-the-corpus-starts-after-the-rapid-pool-split.md` why it
+# begins nine months after the clocks do.
 #
 # Preparation names no input against this selection and appends every archive
 # of it that has been acquired, decoding as many at once as fill the machine.
-# It is still not ready to prepare from: a corpus
-# spanning speeds needs the rating namespace derived per game (#386).
 #
-# No `[filters]` section is written yet, so preparation applies the schema's
-# defaults. This selection keeps every speed rather than isolating one, so the
-# section the sibling selection writes is not the one this needs, and what it
-# should say waits on the same issue. `rating_namespace` is unset so
-# that a corpus spanning speeds writes no namespace rather than a wrong one —
-# an absent value is detectable downstream where a wrong one is not.
+# It is still not ready to prepare from. No `[filters]` section is written yet,
+# so preparation applies the schema's defaults; this selection keeps every speed
+# rather than isolating one, so the section the sibling selection writes is not
+# the one this needs, and what it should say is decided with the rest of the
+# corpus's axes in `#89`. Filters are part of the selection identity, so a run
+# started before that is settled is discarded rather than appended to.
 
 [source]
 id = "lichess"
-version = "universal-2017-04-2021-06"
+version = "universal-2018-01-2021-06"
 url = "https://database.lichess.org/db-univ/"
 license = "CC0-1.0"
+rating_namespace_prefix = "lichess"
 rating_system = "glicko2"
 ratings_are_normalized = true
 
@@ -39,63 +41,9 @@ require_nonempty = true
 [output]
 games_per_shard = 50000
 
-# 51 monthly archives, 3,351,735,159 games as the source publishes them.
+# 42 monthly archives, 3,136,069,223 games as the source publishes them.
 # Digests are Lichess's own, from https://database.lichess.org/db-univ/sha256sums.txt
 
-[[archives]]
-artifact_name = "lichess-univ-2017-04"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-04.pgn.bz2"
-file_name = "lichess_db_univ_2017-04.pgn.bz2"
-sha256 = "90abd4810ff8b95bf0b96bbb30b1242668b0d35822404f1b215e589e93ec10d5"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-05"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-05.pgn.bz2"
-file_name = "lichess_db_univ_2017-05.pgn.bz2"
-sha256 = "a7112c010f28aedbddbfef4a6549838c0801dd4ebe4a9a71b3aed526e54661fd"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-06"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-06.pgn.bz2"
-file_name = "lichess_db_univ_2017-06.pgn.bz2"
-sha256 = "462c4a84b76147985960d6e56203c4ad30bed9c8a73cf30866644182803be110"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-07"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-07.pgn.bz2"
-file_name = "lichess_db_univ_2017-07.pgn.bz2"
-sha256 = "72b1b83900f06e6ac9893c84d34990ed8fd641f1f9171a71f229cb77942e0892"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-08"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-08.pgn.bz2"
-file_name = "lichess_db_univ_2017-08.pgn.bz2"
-sha256 = "a122039d1da101ecedc7919f4b101ae129af75facde0176617441146608aa191"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-09"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-09.pgn.bz2"
-file_name = "lichess_db_univ_2017-09.pgn.bz2"
-sha256 = "7c715cb7c8b4999761788f0925968a17853c6f4cc8ebec50af5c3a9e8c9bc723"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-10"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-10.pgn.bz2"
-file_name = "lichess_db_univ_2017-10.pgn.bz2"
-sha256 = "2defb4ad177f2ff915e745b4b811950d4e9c05c0f5e6fc5a4d04947da0a0b7b8"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-11"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-11.pgn.bz2"
-file_name = "lichess_db_univ_2017-11.pgn.bz2"
-sha256 = "8864d3b13f26fe7fcf3b8b5942f19e26c55938ea6261e66f7056fe74d2ac8fc1"
-compression = "bzip2"
-[[archives]]
-artifact_name = "lichess-univ-2017-12"
-url = "https://database.lichess.org/db-univ/lichess_db_univ_2017-12.pgn.bz2"
-file_name = "lichess_db_univ_2017-12.pgn.bz2"
-sha256 = "81eab25187a1671ad410f519d3ba7273212bcac5a770e2b9fbf71af5e3494fd2"
-compression = "bzip2"
 [[archives]]
 artifact_name = "lichess-univ-2018-01"
 url = "https://database.lichess.org/db-univ/lichess_db_univ_2018-01.pgn.bz2"
