@@ -21,11 +21,9 @@
 #
 # The human-prefix arm is left out of this selection: repertoire and opening
 # readings are only statements about the model on the standard-start arm, since
-# a prefix decides the opening before the model moves. Add it with the class the
-# reference below is read at, so the roots and the reference are one population:
+# a prefix decides the opening before the model moves. Add it with:
 #
-#   --set arms='["standard-start", "human-prefix"]' \
-#     --set prefix.view.speed='"blitz"'
+#   --set arms='["standard-start", "human-prefix"]'
 arms = ["standard-start"]
 
 # The pool supplies both the human reference every curve is compared against and
@@ -80,6 +78,15 @@ maximum_rating_gap = 200
 # so raising it narrows the floors without ending a series.
 resamples = 200
 
+[prefix.view]
+# Declared even though the arm above is not fielded: the roots it would continue
+# have to be the population the reference below is read at, or a distance would
+# be measured between two different classes. A dotted override cannot add a
+# class to a table this file never declared, so the table is here.
+name = "rollout-prefix"
+maximum_games = 32
+speed = "blitz"
+
 [reference.view]
 # Sized from the bandwidth rather than from what can be afforded. The declared
 # smoothing is a neighbour count, so this number *is* the smoothing radius: at
@@ -97,11 +104,10 @@ name = "rollout-reference"
 maximum_games = 12000
 require_ratings = true
 # One human population rather than whatever mixture the pool happens to hold.
-# The harness plays untimed, so the class slices the reference, and both game
-# length and how a game ends are strong functions of the clock: a mixed
-# reference would report the pool's composition as a distance. Declared while
-# the pool is one class, so widening the corpus cannot quietly mix them; the
-# cap above then takes that many games of this class rather than of the mixture.
+# The cap above then takes that many games of this class rather than of the
+# mixture, which is what keeps the declared bandwidth the declared bandwidth.
+# Declared while the pool is one class, so widening the corpus cannot quietly
+# mix them.
 speed = "blitz"
 
 [detail]

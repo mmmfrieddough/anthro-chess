@@ -4,6 +4,7 @@ import pytest
 
 from anthro_chess.data import Speed
 from anthro_chess.evaluation import PoolGame, ViewConfig, apply_view
+from anthro_chess.evaluation.views import excluded_summary
 
 
 def _game(
@@ -147,8 +148,11 @@ def test_a_selection_summarizes_what_it_left_out() -> None:
     )
     whole = apply_view(pool, ViewConfig(name="all"))
 
-    assert filtered.excluded_summary == "1 below_minimum_plies, 1 speed_mismatch"
-    assert whole.excluded_summary == "nothing excluded"
+    assert (
+        excluded_summary(filtered.excluded_games)
+        == "1 below_minimum_plies, 1 speed_mismatch"
+    )
+    assert excluded_summary(whole.excluded_games) == "nothing excluded"
 
 
 def test_the_class_filters_before_the_cap_takes_its_games() -> None:

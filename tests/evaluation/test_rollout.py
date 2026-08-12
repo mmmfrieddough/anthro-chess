@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -199,28 +199,22 @@ def _sample(envelope: ResultEnvelope, metric: MetricDefinition) -> int | None:
     return found.sample_size
 
 
-@pytest.fixture
-def pool(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
+def _freeze(
     write_corpus: Callable[..., tuple[Path, Path]],
+    directory: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    pool_id: str,
 ) -> Path:
-    """Freeze a tiny pool whose test games are long enough to prefix."""
+    """Freeze fixture rows into a pool beneath ``directory``, and return it."""
 
-    normalized, manifest = write_corpus(
-        tmp_path / "corpus",
-        [
-            normalized_row(1, split="train"),
-            normalized_row(2, split="test", plies=8),
-            normalized_row(3, split="test", plies=10, result="0-1"),
-        ],
-    )
-    output = tmp_path / "pool"
+    normalized, manifest = write_corpus(directory / "corpus", rows)
+    output = directory / "pool"
     freeze_pool(
         ResolvedConfig(
             value=PoolConfig.model_validate(
                 {
-                    "pool_id": "fixture-test",
+                    "pool_id": pool_id,
                     "normalized": str(normalized),
                     "manifest": str(manifest),
                 }
@@ -230,6 +224,26 @@ def pool(
         output,
     )
     return output
+
+
+@pytest.fixture
+def pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a tiny pool whose test games are long enough to prefix."""
+
+    return _freeze(
+        write_corpus,
+        tmp_path / "prefix",
+        [
+            normalized_row(1, split="train"),
+            normalized_row(2, split="test", plies=8),
+            normalized_row(3, split="test", plies=10, result="0-1"),
+        ],
+        pool_id="fixture-test",
+    )
 
 
 @pytest.fixture
@@ -245,32 +259,21 @@ def reference_pool(
     is the whole point of the conditional reading.
     """
 
-    rows = [
-        normalized_row(
-            index,
-            split="test",
-            plies=4 + (index % 5) * 2,
-            rating=1100 + (index % 12) * 100,
-            result=("1-0", "0-1", "1/2-1/2")[index % 3],
-        )
-        for index in range(1, 61)
-    ]
-    normalized, manifest = write_corpus(tmp_path / "reference-corpus", rows)
-    output = tmp_path / "reference-pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "fixture-reference",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        output,
+    return _freeze(
+        write_corpus,
+        tmp_path / "reference",
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=4 + (index % 5) * 2,
+                rating=1100 + (index % 12) * 100,
+                result=("1-0", "0-1", "1/2-1/2")[index % 3],
+            )
+            for index in range(1, 61)
+        ],
+        pool_id="fixture-reference",
     )
-    return output
 
 
 @pytest.fixture
@@ -285,33 +288,22 @@ def mixed_speed_reference_pool(
     widened corpus has and the one a reference must not average over.
     """
 
-    rows = [
-        normalized_row(
-            index,
-            split="test",
-            plies=4 + (index % 5) * 2,
-            rating=1100 + (index % 12) * 100,
-            result=("1-0", "0-1", "1/2-1/2")[index % 3],
-            time_initial_ms=60_000 if index % 2 else 300_000,
-        )
-        for index in range(1, 61)
-    ]
-    normalized, manifest = write_corpus(tmp_path / "mixed-speed-corpus", rows)
-    output = tmp_path / "mixed-speed-pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "fixture-mixed-speed",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        output,
+    return _freeze(
+        write_corpus,
+        tmp_path / "mixed-speed",
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=4 + (index % 5) * 2,
+                rating=1100 + (index % 12) * 100,
+                result=("1-0", "0-1", "1/2-1/2")[index % 3],
+                time_initial_ms=60_000 if index % 2 else 300_000,
+            )
+            for index in range(1, 61)
+        ],
+        pool_id="fixture-mixed-speed",
     )
-    return output
 
 
 @pytest.fixture
@@ -328,34 +320,25 @@ def mismatched_reference_pool(
     configuration, and a reference of a handful is not empty either.
     """
 
-    rows = [
-        normalized_row(
-            index,
-            split="test",
-            plies=4 + (index % 5) * 2,
-            ratings=(
-                (1200 + index * 100, 1200 + index * 100) if index <= 6 else (1100, 2100)
-            ),
-            result=("1-0", "0-1", "1/2-1/2")[index % 3],
-        )
-        for index in range(1, 61)
-    ]
-    normalized, manifest = write_corpus(tmp_path / "mismatched-corpus", rows)
-    output = tmp_path / "mismatched-pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "fixture-mismatched",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        output,
+    return _freeze(
+        write_corpus,
+        tmp_path / "mismatched",
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=4 + (index % 5) * 2,
+                ratings=(
+                    (1200 + index * 100, 1200 + index * 100)
+                    if index <= 6
+                    else (1100, 2100)
+                ),
+                result=("1-0", "0-1", "1/2-1/2")[index % 3],
+            )
+            for index in range(1, 61)
+        ],
+        pool_id="fixture-mismatched",
     )
-    return output
 
 
 @pytest.fixture

@@ -83,12 +83,10 @@ name = "ladder-openings"
 # Sixteen openings, played from both sides by every pairing. More openings buy
 # precision; they are a sample size rather than a measurement setting.
 maximum_games = 16
-# One human population rather than whatever mixture the pool happens to hold:
-# which openings people play is a strong function of the clock, and every
-# pairing plays the same roots, so a mixed draw would put that mixture into
-# every seat's fitted rating. It slices the openings and nothing else — what a
-# configured rating means is the rating pool the source named, which is a
-# different derivation this cannot reconcile.
+# One human population rather than whatever mixture the pool happens to hold.
+# Every pairing plays the same roots, so a mixed draw reaches every seat's
+# fitted rating. Declared while the pool is one class, so widening the corpus
+# cannot quietly mix them; the reading itself says what the class leaves open.
 speed = "blitz"
 
 [generation]

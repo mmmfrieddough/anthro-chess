@@ -7,7 +7,7 @@ which games it measured.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from pydantic import Field, StrictBool
@@ -53,22 +53,6 @@ class ViewSelection:
 
         return len(self.game_ids)
 
-    @property
-    def excluded_summary(self) -> str:
-        """Return why the view kept what it kept, for a caller that has to say.
-
-        A view that selected nothing looks the same however it got there, and a
-        speed class and a ply bound are not the same problem to fix.
-        """
-
-        return (
-            ", ".join(
-                f"{count} {reason}"
-                for reason, count in sorted(self.excluded_games.items())
-            )
-            or "nothing excluded"
-        )
-
     def as_record(self) -> dict[str, object]:
         """Return the stable spec record stored in benchmark artifacts."""
 
@@ -82,6 +66,19 @@ class ViewSelection:
             "speed": None if self.speed is None else str(self.speed),
             "game_ids_sha256": game_ids_sha256(self.game_ids),
         }
+
+
+def excluded_summary(counts: Mapping[str, int]) -> str:
+    """Return why a selection kept what it kept, for a caller that has to say.
+
+    A selection that kept nothing looks the same however it got there, and a
+    speed class and a ply bound are not the same problem to fix.
+    """
+
+    return (
+        ", ".join(f"{count} {reason}" for reason, count in sorted(counts.items()))
+        or "nothing excluded"
+    )
 
 
 def apply_view(games: Sequence[PoolGame], config: ViewConfig) -> ViewSelection:

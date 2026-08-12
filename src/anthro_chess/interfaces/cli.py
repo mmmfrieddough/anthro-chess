@@ -20,6 +20,7 @@ from anthro_chess.application_logging import (
     configure_application_logging,
 )
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.data.speed import Speed
 from anthro_chess.machine import (
     DATA_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
@@ -648,6 +649,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bandwidth_parser.add_argument(
         "--speed",
+        choices=tuple(speed.value for speed in Speed),
         help=(
             "Select one speed class, as the benchmark's own reference does. A "
             "bandwidth chosen over a mixture is not the smoothing a sliced "
@@ -2270,22 +2272,13 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
     if result.view is not None:
         record = result.view.as_record()
         lines.append(
-            f"Prefix view: {result.view.name} "
-            f"({result.view.selected_games} of {result.view.eligible_games} "
-            f"eligible game(s), prefix {record['prefix_plies']} plies)"
+            f"Prefix view: {result.view.name} ({_view_population(result.view)}, "
+            f"prefix {record['prefix_plies']} plies)"
         )
     if result.reference_view is not None:
-        reference_view = result.reference_view
         lines.append(
-            f"Reference view: {reference_view.name} "
-            f"({reference_view.selected_games} of "
-            f"{reference_view.eligible_games} eligible game(s)"
-            + (
-                ""
-                if reference_view.speed is None
-                else f", {reference_view.speed} alone"
-            )
-            + ")"
+            f"Reference view: {result.reference_view.name} "
+            f"({_view_population(result.reference_view)})"
         )
     for cell in result.cells:
         distribution = cell.distribution
@@ -2702,22 +2695,24 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _view_population(view: ViewSelection) -> str:
+    """Return how much of a pool a view took, and the one class it took from."""
+
+    sliced = "" if view.speed is None else f", {view.speed} alone"
+    return f"{view.selected_games} of {view.eligible_games} eligible game(s){sliced}"
+
+
 def _render_ladder_openings(view: ViewSelection | None) -> list[str]:
     """Name the human population the seats played from, and its one class.
 
-    The slice is over the openings, so a reader who sees a speed named here
-    could take the whole ladder to be that speed's reading. The seats' own
-    ratings come from the corpus the model trained on, whose rating pool is a
-    different derivation, so the caveat travels beside the slice.
+    A reader who sees a speed named here could take the whole ladder to be that
+    speed's reading, so the caveat travels beside the slice rather than in a
+    document.
     """
 
     if view is None:
         return []
-    lines = [
-        f"Openings: {view.selected_games} of {view.eligible_games} eligible "
-        f"human game(s) from view {view.name!r}"
-        + ("" if view.speed is None else f", {view.speed} alone")
-    ]
+    lines = [f"Openings: {view.name} ({_view_population(view)})"]
     if view.speed is not None:
         lines.extend(
             _wrapped_reason(
@@ -2967,7 +2962,7 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
         human_reference,
         select_bandwidths,
     )
-    from anthro_chess.evaluation.views import apply_view
+    from anthro_chess.evaluation.views import apply_view, excluded_summary
 
     try:
         pool = load_pool(arguments.pool)
@@ -2983,7 +2978,7 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
         if not selection.game_ids:
             raise ValueError(
                 "the pool holds no game to select a bandwidth from "
-                f"({selection.excluded_summary})"
+                f"({excluded_summary(selection.excluded_games)})"
             )
         rows = pool_rows(
             pool,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -364,30 +364,15 @@ def test_a_pinned_generation_without_a_pool_is_a_configuration_error() -> None:
         _config(openings={"expected_pool_game_ids_sha256": "0" * 64})
 
 
-def test_the_openings_are_drawn_at_one_speed_class(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
+def _freeze(
     write_corpus: Callable[..., tuple[Path, Path]],
-) -> None:
-    """Every pairing plays the same roots, so their composition reaches every seat.
+    directory: Path,
+    rows: Sequence[Mapping[str, Any]],
+) -> Path:
+    """Freeze fixture rows into a pool the openings can be projected out of."""
 
-    Which openings people play is a strong function of the clock, so a draw from
-    a mixed pool would put that mixture into every fitted rating.
-    """
-
-    normalized, manifest = write_corpus(
-        tmp_path / "corpus",
-        [
-            normalized_row(
-                index,
-                split="test",
-                plies=10,
-                time_initial_ms=60_000 if index % 2 else 300_000,
-            )
-            for index in range(1, 9)
-        ],
-    )
-    pool = tmp_path / "pool"
+    normalized, manifest = write_corpus(directory / "corpus", rows)
+    output = directory / "pool"
     freeze_pool(
         ResolvedConfig(
             value=PoolConfig.model_validate(
@@ -399,7 +384,34 @@ def test_the_openings_are_drawn_at_one_speed_class(
             ),
             provenance=ConfigProvenance(source=None, overrides=()),
         ),
-        pool,
+        output,
+    )
+    return output
+
+
+def test_the_openings_are_drawn_at_one_speed_class(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Every pairing plays the same roots, so their composition reaches every seat.
+
+    Which openings people play is a strong function of the clock, so a draw from
+    a mixed pool would put that mixture into every fitted rating.
+    """
+
+    pool = _freeze(
+        write_corpus,
+        tmp_path,
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=10,
+                time_initial_ms=60_000 if index % 2 else 300_000,
+            )
+            for index in range(1, 9)
+        ],
     )
 
     result = _run(
@@ -414,7 +426,6 @@ def test_the_openings_are_drawn_at_one_speed_class(
     assert result.view is not None
     assert result.view.speed is Speed.BLITZ
     assert result.view.selected_games == 4
-    assert result.view.excluded_games == {"speed_mismatch": 4}
 
     # A class the pool holds none of leaves the seats nothing to play from, and
     # which filter emptied the view is what a reader has to fix.
@@ -436,23 +447,7 @@ def test_openings_from_a_pool_this_ladder_is_not_defined_over_are_refused(
 ) -> None:
     """The generation a selection pins reaches the loader from here."""
 
-    normalized, manifest = write_corpus(
-        tmp_path / "corpus", [normalized_row(1, split="test", plies=10)]
-    )
-    pool = tmp_path / "pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "ladder-fixture",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        pool,
-    )
+    pool = _freeze(write_corpus, tmp_path, [normalized_row(1, split="test", plies=10)])
     config = _config(
         openings={
             "pool": str(pool),

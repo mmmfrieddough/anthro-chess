@@ -1819,13 +1819,10 @@ def test_a_ladder_reading_says_what_its_speed_class_leaves_open() -> None:
     whole = "\n".join(_render_ladder_openings(view(None)))
 
     assert sliced.startswith(
-        "Openings: 2 of 2 eligible human game(s) from view 'ladder-openings', "
-        "blitz alone"
+        "Openings: ladder-openings (2 of 2 eligible game(s), blitz alone)"
     )
     assert "not what a configured rating means" in sliced
-    assert whole == (
-        "Openings: 2 of 2 eligible human game(s) from view 'ladder-openings'"
-    )
+    assert whole == "Openings: ladder-openings (2 of 2 eligible game(s))"
 
 
 def test_eval_decisions_reports_an_unreadable_payload(

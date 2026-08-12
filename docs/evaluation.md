@@ -1583,16 +1583,16 @@ are exactly those groups.
 
 **The openings are drawn at one speed class**, derived from each game's own time
 control by `anthro_chess.data.speed` rather than by bands restated here, so the
-ladder's roots and a slice table's `blitz` name one set of games. Every pairing
-plays the same roots, so how that draw is composed reaches every fitted rating,
-and which openings people play is a strong function of the clock.
+ladder's roots and the slice tables name one set of games. Every pairing plays
+the same roots, so how that draw is composed reaches every fitted rating, and
+which openings people play is a strong function of the clock.
 
 **What the class does not fix is the rating scale**, and the reading says so
-beside it. Which rating pool a source number came from is the rating namespace,
-derived per game from the source's own label — deliberately a different
-derivation from the speed class, and one that disagrees with it. Slicing the
-openings puts one speed in the reading; it does not put one rating pool in it,
-so a sliced ladder is not a ladder on one rating scale.
+beside it. Which rating pool a source number came from is the rating namespace
+of `docs/decisions/0057-the-rating-namespace-is-derived-per-game.md`, a
+different derivation that disagrees with the speed class. Slicing the openings
+puts one speed in the reading; it does not put one rating pool in it, so a
+sliced ladder is not a ladder on one rating scale.
 
 **A full ladder is a scheduled reading rather than a routine one.** The declared
 grid plays thousands of games per checkpoint, so it is taken when a checkpoint is
