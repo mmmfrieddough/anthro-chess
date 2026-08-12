@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -475,17 +476,27 @@ def append_answers(path: Path, answers: Mapping[str, bool], queried_at: str) -> 
 def sustainable_pause(batch_size: int, *, authenticated: bool) -> float:
     """Return the shortest pause between batches the burst allowance sustains.
 
+    Two requests of the allowance are left unspent, and the pace is rounded up
+    to a whole second, because the count of requests that lands in a window is
+    a step function and a pace derived to the boundary sits on the step.
+
+    A window holds one more request than its length divided by the spacing,
+    since a request at each end falls inside it. Spending the allowance's
+    average rate therefore puts 41 requests into a 40-request window, which is
+    what the first scheduled census measured: refused on every fortieth batch,
+    thirteen times, at intervals of 1186 seconds against the 600 it paced for,
+    with half its running time spent asleep. Pacing one request back from that
+    yields exactly 39.0 requests per window — the value at which the step
+    changes, decided by rounding rather than by argument.
+
     Only the burst bucket is paced against. The daily one is spent as fast as
     the burst bucket allows, which is why a run ends either at the budget
     :func:`daily_account_allowance` predicts or at the refusal that proves the
     prediction was optimistic.
     """
 
-    return (
-        _BURST_WINDOW_SECONDS
-        * _request_credits(batch_size, authenticated)
-        / (_BURST_CREDITS)
-    )
+    affordable = _BURST_CREDITS // _request_credits(batch_size, authenticated)
+    return float(math.ceil(_BURST_WINDOW_SECONDS / (affordable - 2)))
 
 
 def daily_account_allowance(batch_size: int, *, authenticated: bool) -> int:
@@ -564,7 +575,11 @@ def run_census(
     for index, batch in enumerate(batches, start=1):
         started = time.monotonic()
         try:
-            answers = _ask(batch, token)
+            # A refusal on a run's first request cannot be the burst tier,
+            # which nothing has spent against in the ten minutes before it. It
+            # is the daily window still closed, and waiting out a burst window
+            # does not reopen one that has hours left to run.
+            answers = _ask(batch, token, attempts=1 if index == 1 else None)
         except SourceExhausted:
             logger.info(
                 "The source's allowance is spent; %s account(s) asked about",
@@ -602,9 +617,13 @@ def snapshot_from_census(census: Census, *, queried_at: str) -> MarkedAccounts:
     )
 
 
-def _ask(batch: Sequence[str], token: str | None) -> dict[str, bool]:
+def _ask(
+    batch: Sequence[str],
+    token: str | None,
+    attempts: int | None = None,
+) -> dict[str, bool]:
     answers = dict.fromkeys(batch, False)
-    records = _post_usernames(list(batch), token)
+    records = _post_usernames(list(batch), token, attempts=attempts)
     if not records:
         # An account the source omits has no status to disclose and is recorded
         # unmarked, which is right for an erased account and wrong for a whole
@@ -622,7 +641,11 @@ def _ask(batch: Sequence[str], token: str | None) -> dict[str, bool]:
     return answers
 
 
-def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, object]]:
+def _post_usernames(
+    batch: list[str],
+    token: str | None,
+    attempts: int | None = None,
+) -> list[dict[str, object]]:
     headers = {"User-Agent": SOURCE_USER_AGENT}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
@@ -632,7 +655,8 @@ def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, objec
         method="POST",
         headers=headers,
     )
-    for attempt in range(1, _REFUSAL_ATTEMPTS + 1):
+    allowed = _REFUSAL_ATTEMPTS if attempts is None else attempts
+    for attempt in range(1, allowed + 1):
         try:
             with urlopen(request, timeout=60) as response:  # noqa: S310
                 payload = json.loads(response.read())
@@ -642,17 +666,17 @@ def _post_usernames(batch: list[str], token: str | None) -> list[dict[str, objec
                     f"cannot query account status from {LICHESS_USERS_ENDPOINT}: "
                     f"{error}"
                 ) from error
-            if attempt == _REFUSAL_ATTEMPTS:
+            if attempt == allowed:
                 raise SourceExhausted(
-                    "the source is still refusing after a full burst window, so "
-                    "what is exhausted is the day's allowance"
+                    "the source is refusing an allowance no wait within this run "
+                    "reopens, so what is closed is the day's window"
                 ) from error
             logger.warning(
                 "Rate limited; waiting %ss for the allowance to refill "
                 "(attempt %s of %s)",
                 _BURST_WINDOW_SECONDS,
                 attempt,
-                _REFUSAL_ATTEMPTS,
+                allowed,
             )
             time.sleep(_BURST_WINDOW_SECONDS)
         except (URLError, OSError, json.JSONDecodeError) as error:

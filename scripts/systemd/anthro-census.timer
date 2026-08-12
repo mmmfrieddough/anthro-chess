@@ -1,12 +1,16 @@
 [Unit]
-Description=Ask the source about more accounts once a day
+Description=Ask the source about more accounts when its daily window reopens
 
 [Timer]
-OnCalendar=daily
+# The source's daily allowance is a fixed window anchored to the first request
+# that opens it, so it reopens 24 hours after a run began rather than at any
+# hour this could name. Firing four times a day means whichever firing lands
+# after that moment spends the allowance, and the rest cost one refused request
+# each: a refusal charges nothing and does not push the window out.
+OnCalendar=*-*-* 00,06,12,18:00:00
 # The census accrues rather than finishing, so a machine that was off overnight
-# runs the missed day when it comes back rather than skipping it silently.
+# runs the missed firing when it comes back rather than skipping it silently.
 Persistent=true
-RandomizedDelaySec=30m
 
 [Install]
 WantedBy=timers.target
