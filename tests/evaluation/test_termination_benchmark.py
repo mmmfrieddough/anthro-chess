@@ -750,7 +750,7 @@ def test_the_mix_compares_both_sides_over_one_rating_axis(
     """The headline reading is the shared curve shape, not a new one."""
 
     result = _run(_config(pool))
-    mix = result.mix("all", 1.0)
+    mix = result.mix("overall", 1.0)
     assert mix.human_games > 0
     assert mix.model_games > 0
     assert mix.comparison.spec.grid == (1200.0, 1800.0)
@@ -773,7 +773,7 @@ def test_the_mix_reports_how_far_its_smoother_actually_reached(
 
     result = _run(_config(pool))
 
-    comparison = result.mix("all", 1.0).comparison
+    comparison = result.mix("overall", 1.0).comparison
     spans = " ".join(f"±{point.bandwidth:.0f}" for point in comparison.points)
     assert f"  bandwidth   reaches {spans} rating points" in _render_termination(result)
 
@@ -812,7 +812,7 @@ def test_a_reference_too_thin_for_the_mix_says_so_in_the_pool_pass(
 
     assert "below the" in caplog.text
     assert result.mixes == ()
-    assert "mix:all" in result.unavailable
+    assert "mix:overall" in result.unavailable
 
 
 def test_the_human_reference_scopes_the_mix_series(
@@ -840,7 +840,7 @@ def test_the_human_reference_scopes_the_mix_series(
                 },
             )
         )
-        workloads.append(result.mix("all", 1.0).execution.workload_sha256)
+        workloads.append(result.mix("overall", 1.0).execution.workload_sha256)
 
     assert workloads[0] != workloads[1]
 
@@ -862,7 +862,7 @@ def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
     result = _run(_config(pool))
 
     rendered = _render_termination(result)
-    comparison = result.mix("all", 1.0).comparison
+    comparison = result.mix("overall", 1.0).comparison
     assert comparison.references is not None
     assert comparison.dispersions is not None
     assert (
@@ -885,11 +885,11 @@ def test_a_reference_too_small_for_the_bandwidth_reports_unavailable(
 
     result = _run(_config(pool))
     assert result.mixes == ()
-    assert "mix:all" in result.unavailable
-    assert "bandwidth" in result.unavailable["mix:all"]
+    assert "mix:overall" in result.unavailable
+    assert "bandwidth" in result.unavailable["mix:overall"]
 
 
-def test_two_time_control_classes_land_on_different_series(
+def test_two_speed_classes_land_on_different_series(
     pool: Path,
     small_bandwidth: None,
 ) -> None:
@@ -898,10 +898,10 @@ def test_two_time_control_classes_land_on_different_series(
     result = _run(
         _config(
             pool,
-            time_controls=("all", Speed.BLITZ),
+            speeds=("overall", Speed.BLITZ),
         )
     )
-    everything = result.mix("all", 1.0)
+    everything = result.mix("overall", 1.0)
     blitz = result.mix("blitz", 1.0)
     assert everything.execution.workload_sha256 != blitz.execution.workload_sha256
     conditional = TERMINATION_MIX_CONDITIONAL_DISTANCE.identifier
@@ -910,13 +910,13 @@ def test_two_time_control_classes_land_on_different_series(
     assert len(fingerprints) == 2
 
 
-def test_an_unpopulated_time_control_class_reports_unavailable(
+def test_an_unpopulated_speed_class_reports_unavailable(
     pool: Path,
     small_bandwidth: None,
 ) -> None:
     """A class no reference game belongs to has nothing to compare against."""
 
-    result = _run(_config(pool, time_controls=(Speed.CLASSICAL,)))
+    result = _run(_config(pool, speeds=(Speed.CLASSICAL,)))
     assert result.mixes == ()
     assert "mix:classical" in result.unavailable
 
