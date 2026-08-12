@@ -1525,6 +1525,15 @@ def _resample(
         streams = model.stream_count
         freedom = streams - 1
         rescale = plug_in_rescale(streams)
+        # Asked of the curve rather than of the spread it reduces to. A draw
+        # that could not move the model side leaves float noise rather than a
+        # zero, which takes neither the stated zero below nor the shared
+        # arithmetic's refusal of one — and a bound on 1e-16 is a floor that
+        # clears every delta while reading as an ordinary estimate.
+        curves = model_only.model.values
+        unmoved = bool(
+            np.all((curves == curves[:1]) | (np.isnan(curves) & np.isnan(curves[:1])))
+        )
         bootstrapped: list[MetricDispersion] = []
         for values in (
             model_only.conditional,
@@ -1539,10 +1548,11 @@ def _resample(
             # estimator is refused one: the streams generated for a curve are
             # themselves the draw, so a distance no resample moved is a
             # statement about the play this reading produced rather than a
-            # sample that came out flat.
+            # sample that came out flat. A curve the draw never moved states the
+            # same zero, whatever the last bits of the reduction came out at.
             bootstrapped.append(
                 stated_zero
-                if dispersion == 0.0
+                if unmoved or dispersion == 0.0
                 else measured_dispersion(
                     dispersion,
                     degrees_of_freedom=freedom,
@@ -1621,10 +1631,14 @@ def _references(
     which destroys any rating response while leaving the sample, the grid, and
     the bandwidth exactly as they were.
 
-    That permutation moves games rather than streams, so unlike the two above it
-    still treats a grid point as independent of its neighbours. Whether that
-    matters is a measurement nobody has taken, and the verdict it decides —
-    ``AVERAGE_HUMAN`` — is the one that says a model ignores its rating input.
+    That permutation is the one thing here still drawn over games, and no
+    permutation is the right shape for it. A model whose policy ignored the
+    rating input would meet the same stream at every grid point and replay one
+    game across the whole grid, so its curve would be exactly flat and the level
+    this estimates is analytically zero. Permuting anything reports a level
+    above that, and ``AVERAGE_HUMAN`` — the verdict it decides — fires too
+    readily as a result. Decision 0059 records the argument and what replacing
+    it would take.
 
     Each side's deviation is scaled to the fresh draw its plug-in resample
     understates, since these read that understatement off the same replicates a

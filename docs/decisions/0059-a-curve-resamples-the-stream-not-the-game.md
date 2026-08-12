@@ -144,11 +144,26 @@ above temperature zero now reports an unknown floor, no null level, and an
 unknown rating-response verdict — where it used to report a confident floor at
 about half the true width. That is the honest reading of twelve games from two
 draws, and the lever it points at is real: `generation.games_per_position` and
-`grid.seeds` both multiply streams, while the rating grid does not. What the
-reduced overrides should buy instead is a cost decision this record does not
-take: raising the stream count raises the sweep's longest step in proportion,
-and the answer wants `anthro eval noise plan` against a reading that measured
-its own spread rather than a guess.
+`grid.seeds` both multiply streams, while the rating grid does not.
+
+So the reduced overrides now play four games per position rather than one, which
+is eight streams and the count the table above measures as calibrated. It
+triples the games the step generates and costs about a fourteenth of its wall
+clock — 149 seconds against 157, one Linux CUDA host, `issue-203-treatment`
+step 8000 — because the step is dominated by replaying and classifying the
+12,000-game human reference rather than by generating anything. The count is
+close to free against this step's fixed cost, which is the fact a budgeting
+argument should start from.
+
+**Eight streams qualify a reading; they do not rank two checkpoints with it.**
+Read across steps 1000 and 8000 of one run, one of twenty comparisons cleared its
+combined floor — which is what twenty comparisons give by chance at the declared
+coverage, so it is not a finding. Game length's delta was 22 plies against a
+floor of 77. Scaling the same figures, a delta that size wants something near the
+full sweep's forty streams. The reduced sweep's curve reading is therefore a
+smoke test that now says so, and ranking two checkpoints belongs at full scale.
+Where the count should sit is a budgeting question, and this is the reading it
+should be argued from.
 
 The temperature-zero row is unaffected and keeps both, which is the one place a
 reduced sweep still qualifies a generated-play distance.
@@ -168,6 +183,44 @@ reading.
 **The temperature-zero row is unaffected.** It states a zero under 0032 and goes
 on stating it, and a greedy row's two colour assignments are two streams, so its
 null levels survive as 0032 said they should.
+
+## What This Leaves, And Why It Is Not A Measurement
+
+Two things sit next to this decision and are settled by argument rather than by
+another reading.
+
+**A zero is read off the curve, not off the reduction.** Decision 0042 keeps this
+family's estimated zero where the shared arithmetic refuses one. A draw that
+cannot move the model side does not reduce to exactly zero, though — it reduces
+to the last bits of the curve arithmetic, and the shakedown below found
+`6.34e-16` where the resample had moved nothing at all. That value takes neither
+0042's exemption nor the refusal, and bounds into a floor that clears every delta
+while reading as an ordinary estimate. So the question is asked of the model
+curve — did any replicate differ from the point reading — which needs no
+tolerance to answer, and the answer routes to the zero 0042 already prescribes.
+
+**The flatness null is the wrong shape, and no permutation fixes it.** The two
+distance levels now draw streams; `_flat_variation` still permutes games, and
+switching it to permute streams would not be right either. A model whose policy
+ignored the rating input meets the *same stream* at every grid point, so it plays
+one game across the whole grid and its curve is exactly flat — at any sample
+size, because every point is then estimated from the same games. The level a
+no-response model reads at is therefore zero, and anything a permutation reports
+above that makes `AVERAGE_HUMAN` fire more readily than it should.
+
+That is derived from the seed derivation rather than measured, and the mechanism
+is observable: at temperature zero on this checkpoint one stream played six
+*different* games at the six ratings, so the rating input does reach the policy
+and the degenerate case is the hypothetical rather than the observation. The
+caveat is batching, which is not bit-for-bit identical across batch
+compositions — measured elsewhere as not changing any move.
+
+What it implies is larger than a permutation swap: the verdict as written — "as
+flat as one with no rating response at all" — is answerable exactly and needs no
+null. Whether that is the useful question, against "is the response large enough
+to matter", is a design question about the verdict. The comparison already
+computes `human_variation` over the same grid, which is the yardstick that
+question would want.
 
 ## Alternatives Considered
 

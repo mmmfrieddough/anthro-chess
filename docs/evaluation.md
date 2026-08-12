@@ -648,7 +648,10 @@ same games, and a reading records that it stated rather than estimated. The
 arithmetic that bounds a dispersion refuses a zero outright, so an estimator
 that reaches it has already decided which of the two it holds. Generated-play
 curves are the one family that keeps a zero its own resample produced, for the
-reason decision 0042 gives.
+reason decision 0042 gives — and they read it off whether the draw moved the
+curve rather than off what the reduction summed to, because a draw that moved
+nothing leaves the last bits of the arithmetic behind rather than a zero, and
+those bound into a floor that clears every delta.
 
 **A floor needs both operands.** A dispersion one reading measured and the other
 did not describes that operand rather than the difference, and nothing licenses

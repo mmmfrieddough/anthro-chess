@@ -712,6 +712,34 @@ def test_a_redraw_that_moves_nothing_states_its_zero_rather_than_refusing() -> N
     assert comparison.dispersions.conditional_floor == 0.0
 
 
+def test_a_curve_the_draw_never_moved_states_zero_rather_than_bounding_noise() -> None:
+    """The zero is read off the curve, not off what the reduction summed to.
+
+    A resample that cannot move the model side still reduces to a spread of the
+    last bits of the arithmetic rather than to one of exactly zero. That value
+    takes neither the stated zero nor the shared arithmetic's refusal of one, so
+    it would be bounded into a floor that clears every delta while reading as an
+    ordinary estimate.
+    """
+
+    # A distance whose scale makes the reduction's float error visible, over
+    # streams that carry the same curve so no draw over them can move it.
+    identical = _streamed(
+        _generated(lambda rating, _: _length(rating) * 1e6, per_rating=6),
+        streams=6,
+    )
+    comparison = _compare(identical, human=_human_reference(games=200))
+
+    assert comparison.dispersions is not None
+    for spread in (
+        comparison.dispersions.conditional,
+        comparison.dispersions.pooled,
+        comparison.dispersions.model_variation,
+    ):
+        assert spread.value == 0.0
+        assert spread.bound == 0.0
+
+
 def test_declaring_the_model_side_fixed_leaves_the_reading_itself_alone() -> None:
     """Only the floor's claim changes, which is the point of the distinction.
 
