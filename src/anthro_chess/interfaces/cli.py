@@ -2980,6 +2980,11 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
                 speed=arguments.speed,
             ),
         )
+        if not selection.game_ids:
+            raise ValueError(
+                "the pool holds no game to select a bandwidth from "
+                f"({selection.excluded_summary})"
+            )
         rows = pool_rows(
             pool,
             selection.game_ids,
