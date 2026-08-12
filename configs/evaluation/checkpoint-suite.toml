@@ -120,13 +120,13 @@ reduced = ["puzzles_per_rating=2"]
 # plays, and the stream is what a curve comparison resamples: a game's seed is
 # derived without the rating it was played at, so one stream plays every point
 # of the grid and the six ratings buy no replicates at all. Four is eight
-# streams once colours are swapped, which is where decision 0059 measured the
+# streams once colours are swapped, which is where decision 0060 measured the
 # estimator landing on the spread a re-run shows; below three no spread can be
 # read at all, and the row reports its distances unqualified.
 #
 # Eight is enough to qualify a reading and not enough to rank two checkpoints
 # with it, and it is close to free against what the human reference costs this
-# step either way. Decision 0059 has both figures; where the count should sit is
+# step either way. Decision 0060 has both figures; where the count should sit is
 # a budgeting question rather than a settled one.
 config = "configs/evaluation/generated-play-rollout.toml"
 reduced = [

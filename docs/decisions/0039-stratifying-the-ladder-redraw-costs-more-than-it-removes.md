@@ -9,7 +9,7 @@ Accepted. Settles the between-opening consequence
 question for the generated-play curve family. Its rescaled draw is taken by
 `0042-the-puzzle-response-is-qualified-within-its-reading.md`, which applies it
 to the puzzle family and to the paired estimator, and by
-`0059-a-curve-resamples-the-stream-not-the-game.md`, which decides the
+`0060-a-curve-resamples-the-stream-not-the-game.md`, which decides the
 generated-play family's resampling unit along the other axis.
 
 ## Context
@@ -133,7 +133,7 @@ is not there.
 
 `#302` left open whether the generated-play family needed its own record for the
 question decided here. It does not. It needed one for a different question, and
-`0059-a-curve-resamples-the-stream-not-the-game.md` is it: the stratum this
+`0060-a-curve-resamples-the-stream-not-the-game.md` is it: the stratum this
 record prices is the opening, and what turned out to matter for that family is
 the rating axis, along which a game's seed is not derived and one stream
 therefore plays every point of the grid.

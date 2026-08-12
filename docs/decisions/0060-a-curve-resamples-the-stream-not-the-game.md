@@ -1,4 +1,4 @@
-# 0059: A Curve Comparison Resamples The Stream, Not The Game
+# 0060: A Curve Comparison Resamples The Stream, Not The Game
 
 Date: 2026-08-12
 

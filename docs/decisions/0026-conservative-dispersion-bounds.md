@@ -10,7 +10,7 @@ Accepted. Refines `0025-machine-scoped-execution-noise-floors.md`. Refined by
 `0034-qualifying-a-rating-ladder-reading.md` and
 `0042-the-puzzle-response-is-qualified-within-its-reading.md`. Retained
 unchanged by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which keeps the bound and replaces
-what is bounded. `0059-a-curve-resamples-the-stream-not-the-game.md` reads the
+what is bounded. `0060-a-curve-resamples-the-stream-not-the-game.md` reads the
 replicate rule below onto the generated-play curves, where the replicate is the
 stream a game came out of rather than the game.
 

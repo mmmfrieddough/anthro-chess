@@ -88,7 +88,7 @@ CURVE_COMPARISON_VERSION = 3
 #: How a curve comparison estimates its own spread. A distributional distance
 #: moves by an amount that is a function of its own configuration rather than of
 #: a series, so it is estimated here and carried with the measurement instead of
-#: being characterized separately and looked up. Decision 0059 measured why the
+#: being characterized separately and looked up. Decision 0060 measured why the
 #: unit is the stream and not the game.
 CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-streams"
 
@@ -104,7 +104,7 @@ CURVE_DETERMINISTIC_METHOD = "deterministic-model-side"
 DEFAULT_RESAMPLES = 200
 
 #: Streams a bootstrapped spread needs before it is an estimate at all. Two
-#: leave three distinct resamples, where decision 0059 measured the estimator
+#: leave three distinct resamples, where decision 0060 measured the estimator
 #: ranging over a factor of four and landing on an exact zero whenever the two
 #: agreed — and a zero floor clears every delta. ``SeedSpread`` withholds below
 #: three replicates for the same reason.
@@ -1443,7 +1443,7 @@ def _resample(
 
     Drawing its games as though each were independent, rather than the streams
     they came from, reports about half the movement a fresh seed produces;
-    decision 0059 measured it.
+    decision 0060 measured it.
 
     That coincidence is what ``model_varies`` denies, and ``compare_curves``
     documents what a caller passing it is claiming.
@@ -1637,7 +1637,7 @@ def _references(
     game across the whole grid, so its curve would be exactly flat and the level
     this estimates is analytically zero. Permuting anything reports a level
     above that, and ``AVERAGE_HUMAN`` — the verdict it decides — fires too
-    readily as a result. Decision 0059 records the argument and what replacing
+    readily as a result. Decision 0060 records the argument and what replacing
     it would take.
 
     Each side's deviation is scaled to the fresh draw its plug-in resample

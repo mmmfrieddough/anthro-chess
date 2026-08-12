@@ -556,7 +556,7 @@ conditioned on, so one **stream** plays a game at every point of the grid and a
 grid multiplies games without multiplying the draws behind them. The curve
 comparisons resample the stream for that reason, and count streams rather than
 games as the replicates behind their bound;
-`docs/decisions/0059-a-curve-resamples-the-stream-not-the-game.md` owns the rule
+`docs/decisions/0060-a-curve-resamples-the-stream-not-the-game.md` owns the rule
 and the measurement that fixed it, including what drawing games instead reported
 instead. Raising `games_per_position` or the seed count buys streams; widening
 the rating grid does not.
@@ -2282,7 +2282,7 @@ Read like for like — each seed's own reading against the spread of that readin
 across thirty-two seeds — the draw over streams reproduces the true spread from
 four streams upward, while a draw over games reports about two thirds of it at
 any size and about half at the size a reduced sweep reads.
-`docs/decisions/0059-a-curve-resamples-the-stream-not-the-game.md` owns that
+`docs/decisions/0060-a-curve-resamples-the-stream-not-the-game.md` owns that
 measurement, and the floor a reading below three streams states instead: none,
 because two streams leave three resamples and their agreeing is not a zero.
 
