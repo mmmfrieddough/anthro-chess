@@ -66,6 +66,16 @@ swap_colors = true
 claim_draws = false
 concurrency = 8
 
+[prefix.view]
+# Declared even though `arms` leaves the human-prefix arm out: the roots it
+# would continue have to be the population the reference is read at, or every
+# distance would be measured between two speed classes. Its size and name are
+# the defaults, restated because a dotted override cannot add one key to a
+# table this file never declared.
+name = "rollout-prefix"
+maximum_games = 32
+speed = "blitz"
+
 [reference]
 # Compare generated play against matched human play. This is what turns the
 # rollout scalars into a statement about human-likeness: a smaller distance to
@@ -77,15 +87,6 @@ maximum_rating_gap = 200
 # Resamples behind every distance's floor and reference level. A sample count,
 # so raising it narrows the floors without ending a series.
 resamples = 200
-
-[prefix.view]
-# Declared even though the arm above is not fielded: the roots it would continue
-# have to be the population the reference below is read at, or a distance would
-# be measured between two different classes. A dotted override cannot add a
-# class to a table this file never declared, so the table is here.
-name = "rollout-prefix"
-maximum_games = 32
-speed = "blitz"
 
 [reference.view]
 # Sized from the bandwidth rather than from what can be afforded. The declared
