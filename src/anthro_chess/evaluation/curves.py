@@ -79,6 +79,7 @@ from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
     measured_dispersion,
+    plug_in_rescale,
     self_combined_floor,
 )
 
@@ -1523,7 +1524,7 @@ def _resample(
         # above the spread.
         streams = model.stream_count
         freedom = streams - 1
-        rescale = _plug_in_rescale(streams)
+        rescale = plug_in_rescale(streams)
         bootstrapped: list[MetricDispersion] = []
         for values in (
             model_only.conditional,
@@ -1574,20 +1575,6 @@ def _resample(
         )
     )
     return dispersions, levels
-
-
-def _plug_in_rescale(units: int) -> float:
-    """Return what a draw from the units in hand understates a fresh draw by.
-
-    A plug-in bootstrap's resampling variance is ``(units - 1) / units`` of the
-    variance a fresh sample of the same size has, before it has estimated
-    anything.
-    Negligible at the counts a full sweep plays and worth 22% at the three this
-    family will not go below; decision 0039 named the correction and decision
-    0059 measured what it recovers here.
-    """
-
-    return math.sqrt(units / (units - 1))
 
 
 def _redraw(
@@ -1646,8 +1633,8 @@ def _references(
 
     pairing = generator.permutation(resamples)
     supported = np.broadcast_to(point.supported, resampled.distances.shape)
-    human_rescale = _plug_in_rescale(human.stream_count)
-    model_rescale = _plug_in_rescale(model.stream_count)
+    human_rescale = plug_in_rescale(human.stream_count)
+    model_rescale = plug_in_rescale(model.stream_count)
     conditional = _masked_mean(
         _distance(
             spec.quantity,

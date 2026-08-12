@@ -205,10 +205,29 @@ the model, so any suite with three or more seeds can check it: the per-seed
 distances the reading already records are the truth, and the floor beside them is
 the estimate.
 
-The correlation between two ratings within one stream is the quantity that makes
-the unit necessary, and it is a property of the policy. A converged model whose
-opening choice is sharper would raise it, not lower it, so the direction of the
-risk is toward the unit mattering more.
+The correlation between two ratings within one stream is what makes the unit
+necessary, and it is a property of the policy rather than of the harness — so the
+checkpoint it was measured on matters, and this one barely responds to its rating
+input. Across the whole 1100-to-2100 grid each quantity's mean moves by 0.15 to
+0.88 of what one rating point moves between seeds, and over half the streams
+played a single opening at every rating they reached.
+
+Two ratings whose policies are nearly identical are exactly the case where one
+stream produces nearly the same game at both, so the correlation measured here is
+plausibly an upper bound. A model that genuinely responds to rating would hold
+different policies at 1100 and 2100, and the same draws would produce more
+different games. Sharpness pushes the other way — a concentrated policy sends the
+same draw to the same move more often — so the net direction on a converged model
+is not predictable from here and is worth re-reading rather than assuming.
+
+What that would cost if the correlation goes away is bounded, and in the safe
+direction. A draw over blocks estimates the same spread whether or not the games
+inside a block move together; it reads it from fewer units, so the bound above it
+is wider rather than wrong. Where it would bite is the three-stream minimum:
+twelve genuinely independent games would carry eleven degrees of freedom and a
+usable floor, where two streams carry one and none. That is the figure to
+re-measure on a converged checkpoint, and `#454` is where the sample counts get
+decided either way.
 
 ## References
 
