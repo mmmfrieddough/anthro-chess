@@ -1099,7 +1099,10 @@ def curve_overlays(
     return tuple(overlays)
 
 
-@dataclass(frozen=True)
+# Every dataclass below that holds an array compares by identity: a generated
+# ``__eq__`` asks an elementwise comparison for a truth value it has none of.
+# Compare the arrays a caller means, with ``numpy.array_equal``.
+@dataclass(frozen=True, eq=False)
 class _Side:
     """One side's observations, ordered for repeated local estimation."""
 
@@ -1171,7 +1174,7 @@ def _stream_labels(observations: Sequence[Observation]) -> np.ndarray:
     return labels
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _Local:
     """Local estimates of one side across every replicate and grid point."""
 
@@ -1180,7 +1183,7 @@ class _Local:
     games: np.ndarray
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _Reading:
     """Everything one pass over a set of resampling weights produces."""
 

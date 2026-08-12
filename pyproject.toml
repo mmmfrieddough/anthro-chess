@@ -7,7 +7,7 @@ name = "anthro-chess"
 dynamic = ["version"]
 description = "A controllable chess model intended to mimic human play."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 license = { file = "LICENSE" }
 authors = [
   { name = "Anthro Chess contributors" },
@@ -20,8 +20,6 @@ classifiers = [
   "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Games/Entertainment :: Board Games",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -73,7 +71,6 @@ packages = ["src/anthro_chess"]
 path = "src/anthro_chess/__init__.py"
 
 [tool.mypy]
-python_version = "3.11"
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_incomplete_defs = true
@@ -104,10 +101,13 @@ skip_covered = true
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
+# PEP 695 aliases and type parameters, which the 3.13 floor makes available.
+# Each changes how a generic behaves at runtime as well as how it reads, so
+# adopting them is #456 rather than an autofix.
+ignore = ["UP040", "UP046", "UP047"]
 
 [tool.ruff.lint.isort]
 # Modules the suite imports from its own directory. Without this they sort in

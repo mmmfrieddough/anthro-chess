@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Any
 
 import pytest
 import torch
+from torch import Tensor
 
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, MOVE_ACTION_COUNT
 from anthro_chess.data import SequenceBatch
 from anthro_chess.evaluation.policy import (
     TOP_ILLEGAL_ACTIONS,
+    ActiveBatch,
     active_batch,
     legal_policy_log_probabilities,
     policy_divergence,
@@ -184,8 +186,8 @@ def test_rescoring_matches_aligning_the_second_pass_from_scratch(
     carried copy would report the first treatment's rating under the second
     one's name.
 
-    The comparison is against the whole rebuilt value rather than field by
-    field, so a field added to ``ActiveBatch`` later is held to the same
+    The comparison walks the fields the class declares rather than naming
+    them, so a field added to ``ActiveBatch`` later is held to the same
     standard without anyone remembering to add an assertion. The second pass
     runs under the read trap because carrying the alignment must not cost the
     per-position reads it exists to remove.
@@ -214,13 +216,32 @@ def test_rescoring_matches_aligning_the_second_pass_from_scratch(
 
     rebuilt = active_batch(second, conditioned)
     assert rescored.ratings == (2100, None)
-    assert torch.equal(rescored.logits, rebuilt.logits)
-    assert torch.equal(rescored.legal_mask, rebuilt.legal_mask)
-    assert rescored == replace(
-        rebuilt,
-        logits=rescored.logits,
-        legal_mask=rescored.legal_mask,
+    for field in fields(ActiveBatch):
+        carried = getattr(rescored, field.name)
+        expected = getattr(rebuilt, field.name)
+        if isinstance(carried, Tensor):
+            assert torch.equal(carried, expected), field.name
+        else:
+            assert carried == expected, field.name
+
+
+def test_comparing_two_active_batches_answers_rather_than_asking_the_tensors(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Whole-value comparison is identity, so it is total and costs nothing.
+
+    ``False`` for a copy holding the same tensors is the point: a caller that
+    means the tensors spends ``torch.equal`` per field, and the device read
+    that costs.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch((("e2e4", "e7e5"), 1500, None))
     )
+    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
+    active = active_batch(logits, batch)
+
+    assert (active == replace(active)) is False
 
 
 def test_legal_policy_normalizes_over_legal_actions_only(

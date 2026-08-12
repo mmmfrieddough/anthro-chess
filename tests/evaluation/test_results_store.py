@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import sys
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -248,11 +247,13 @@ def test_a_detail_payload_the_serializer_refuses_is_the_store_s_own_error(
     # freeform: a rate over zero samples reaches the serializer unchecked.
     detail = DetailStore(tmp_path / "detail")
 
-    # Indenting forces the pure-Python encoder, which recurses once per level,
-    # so past the interpreter's limit the payload exhausts the stack instead.
+    # The encoder recurses once per level and gives up at a depth set by the
+    # interpreter's own stack, which `sys.getrecursionlimit` neither reports nor
+    # bounds — it gives up just under 10,000 here. Twice that is margin without
+    # paying to build depth the encoder never reaches.
     nested: dict[str, object] = {}
     cursor = nested
-    for _ in range(2 * sys.getrecursionlimit()):
+    for _ in range(20_000):
         deeper: dict[str, object] = {}
         cursor["next"] = deeper
         cursor = deeper

@@ -124,7 +124,9 @@ jobs:
         run: uv build
 
       - name: Create clean smoke environment
-        run: uv venv --python 3.11 .venv-smoke
+        # No `--python` here: naming a version twice lets the wheel check
+        # drift onto an interpreter nothing else in the job runs.
+        run: uv venv .venv-smoke
 
       - name: Install built wheel
         run: uv pip install --python .venv-smoke/bin/python dist/*.whl
