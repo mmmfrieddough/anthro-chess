@@ -1,6 +1,6 @@
 import pytest
 
-from anthro_chess.data import Speed, speed_from_time_control
+from anthro_chess.data import Speed, speed_from_clock_ms, speed_from_time_control
 
 
 @pytest.mark.parametrize(
@@ -54,3 +54,38 @@ def test_a_time_control_naming_no_clock_bands_into_nothing(
     """An unreadable control yields no class rather than a plausible one."""
 
     assert speed_from_time_control(time_control) is None
+
+
+@pytest.mark.parametrize(
+    ("time_control", "initial_ms", "increment_ms"),
+    [
+        ("29+0", 29_000, 0),
+        ("30+0", 30_000, 0),
+        ("0+2", 0, 2_000),
+        ("300+8", 300_000, 8_000),
+        ("21600+0", 21_600_000, 0),
+    ],
+)
+def test_the_normalized_columns_band_the_same_as_the_header_they_came_from(
+    time_control: str,
+    initial_ms: int,
+    increment_ms: int,
+) -> None:
+    """One band table, so a selection and a benchmark slice cannot disagree."""
+
+    assert speed_from_clock_ms(initial_ms, increment_ms) is speed_from_time_control(
+        time_control
+    )
+
+
+@pytest.mark.parametrize(
+    ("initial_ms", "increment_ms"),
+    [(None, None), (None, 0), (300_000, None)],
+)
+def test_an_absent_normalized_clock_bands_into_nothing(
+    initial_ms: int | None,
+    increment_ms: int | None,
+) -> None:
+    """A clockless game reaches these columns as absent, not as correspondence."""
+
+    assert speed_from_clock_ms(initial_ms, increment_ms) is None

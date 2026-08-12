@@ -175,8 +175,16 @@ class SelectionConfig(ConfigModel):
     band. Subsampling ranks by a digest of the game id, so a fraction selects
     the same games on any machine and a smaller fraction is a subset of a
     larger one.
+
+    ``speed`` matches the class
+    :func:`~anthro_chess.data.speed.speed_from_clock_ms` derives, the same
+    derivation the benchmark slices report, so an arm and its slice name one
+    set of games rather than two. Preparation's filter of the same name reads
+    the PGN header instead, and the two part over correspondence: a clockless
+    game reaches these columns as no class at all.
     """
 
+    speed: Speed | None = None
     minimum_time_initial_ms: int | None = Field(default=None, ge=0)
     maximum_time_initial_ms: int | None = Field(default=None, ge=0)
     minimum_time_increment_ms: int | None = Field(default=None, ge=0)

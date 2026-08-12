@@ -73,8 +73,30 @@ def speed_from_time_control(value: str | None) -> Speed | None:
     if parsed is None:
         return None
     initial_seconds, increment_seconds = parsed
-    estimate = initial_seconds + _ESTIMATED_MOVES * increment_seconds
+    return _band(initial_seconds + _ESTIMATED_MOVES * increment_seconds)
+
+
+def speed_from_clock_ms(
+    initial_ms: int | None,
+    increment_ms: int | None,
+) -> Speed | None:
+    """Band a normalized time control, or ``None`` when it says nothing.
+
+    Correspondence here is a clock long enough to reach that band, never a
+    game played without one: preparation records an unlimited control as an
+    unavailable initial clock, which these columns cannot tell apart from a
+    control the source never reported, so both band into nothing. The header
+    derivation reads ``"-"`` as correspondence, so the two disagree on exactly
+    those games.
+    """
+
+    if initial_ms is None or increment_ms is None:
+        return None
+    return _band((initial_ms + _ESTIMATED_MOVES * increment_ms) / 1000)
+
+
+def _band(estimated_seconds: float) -> Speed:
     for upper_bound, speed in _UPPER_BOUND_SECONDS:
-        if estimate <= upper_bound:
+        if estimated_seconds <= upper_bound:
             return speed
     return Speed.CORRESPONDENCE
