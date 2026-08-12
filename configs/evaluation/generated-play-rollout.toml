@@ -94,6 +94,13 @@ resamples = 200
 name = "rollout-reference"
 maximum_games = 12000
 require_ratings = true
+# One human population rather than whatever mixture the pool happens to hold.
+# The harness plays untimed, so the class slices the reference, and both game
+# length and how a game ends are strong functions of the clock: a mixed
+# reference would report the pool's composition as a distance. Declared while
+# the pool is one class, so widening the corpus cannot quietly mix them; the
+# cap above then takes that many games of this class rather than of the mixture.
+speed = "blitz"
 
 [detail]
 # Whole games, machine-local. Every later distribution feature is recomputed

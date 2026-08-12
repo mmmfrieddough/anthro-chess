@@ -2,6 +2,7 @@
 
 import pytest
 
+from anthro_chess.data import Speed
 from anthro_chess.evaluation import PoolGame, ViewConfig, apply_view
 
 
@@ -10,12 +11,14 @@ def _game(
     *,
     plies: int = 40,
     ratings: bool = True,
+    speed: Speed | None = Speed.BLITZ,
 ) -> PoolGame:
     return PoolGame(
         game_id=game_id,
         ply_count=plies,
         result="1-0",
         has_ratings=ratings,
+        speed=speed,
     )
 
 
@@ -114,6 +117,41 @@ def test_a_prefix_view_excludes_games_shorter_than_the_prefix() -> None:
     assert selection.game_ids == (2,)
     assert selection.prefix_plies == 16
     assert selection.excluded_games == {"shorter_than_prefix": 1}
+
+
+def test_a_view_takes_one_speed_class_and_reports_the_rest() -> None:
+    pool = (
+        _game(1, speed=Speed.BULLET),
+        _game(2, speed=Speed.BLITZ),
+        _game(3, speed=Speed.RAPID),
+        _game(4, speed=None),
+    )
+
+    selection = apply_view(pool, ViewConfig(name="blitz", speed=Speed.BLITZ))
+
+    assert selection.game_ids == (2,)
+    assert selection.excluded_games == {
+        "speed_mismatch": 2,
+        "missing_time_control": 1,
+    }
+    assert selection.as_record()["speed"] == "blitz"
+
+
+def test_the_class_filters_before_the_cap_takes_its_games() -> None:
+    """A cap is the declared size, so it must take that many of the class."""
+
+    pool = tuple(
+        _game(game_id, speed=Speed.BLITZ if game_id % 2 else Speed.BULLET)
+        for game_id in range(1, 41)
+    )
+
+    selection = apply_view(
+        pool,
+        ViewConfig(name="blitz", maximum_games=10, speed=Speed.BLITZ),
+    )
+
+    assert selection.selected_games == 10
+    assert all(game_id % 2 for game_id in selection.game_ids)
 
 
 def test_the_spec_record_identifies_exactly_which_games_were_measured() -> None:

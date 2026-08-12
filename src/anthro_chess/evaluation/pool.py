@@ -20,7 +20,7 @@ from pydantic import Field
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import encoding_identity
+from anthro_chess.data import Speed, encoding_identity, speed_from_clock_ms
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
@@ -78,6 +78,8 @@ _POOL_GAME_COLUMNS = (
     NormalizedColumn.RESULT.value,
     NormalizedColumn.WHITE_NORMALIZED_RATING.value,
     NormalizedColumn.BLACK_NORMALIZED_RATING.value,
+    NormalizedColumn.TIME_INITIAL_MS.value,
+    NormalizedColumn.TIME_INCREMENT_MS.value,
 )
 
 #: Games parsed by an earlier load in this process, keyed on the artifact
@@ -139,6 +141,7 @@ class PoolGame:
     ply_count: int
     result: str
     has_ratings: bool
+    speed: Speed | None
 
 
 @dataclass(frozen=True)
@@ -515,6 +518,10 @@ def pool_game(row: Mapping[str, Any]) -> PoolGame:
         has_ratings=(
             row[NormalizedColumn.WHITE_NORMALIZED_RATING] is not None
             and row[NormalizedColumn.BLACK_NORMALIZED_RATING] is not None
+        ),
+        speed=speed_from_clock_ms(
+            row[NormalizedColumn.TIME_INITIAL_MS],
+            row[NormalizedColumn.TIME_INCREMENT_MS],
         ),
     )
 

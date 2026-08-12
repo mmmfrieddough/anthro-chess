@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation.rollout import RolloutReading
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
     from anthro_chess.evaluation.termination import Guardrails
+    from anthro_chess.evaluation.views import ViewSelection
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -2620,6 +2621,7 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             + ", ".join(seat.label for seat in fit.unscored)
             + " (no scored game)"
         )
+    lines.extend(_render_ladder_openings(result.view))
     lines.extend(_render_ladder_resolution(result))
     for reading in result.readings:
         # Each row's per-seat floor is printed once, in the Seats table below,
@@ -2677,6 +2679,32 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
+
+
+def _render_ladder_openings(view: ViewSelection | None) -> list[str]:
+    """Name the human population the seats played from, and its one class.
+
+    The slice is over the openings, so a reader who sees a speed named here
+    could take the whole ladder to be that speed's reading. The seats' own
+    ratings come from the corpus the model trained on, whose rating pool is a
+    different derivation, so the caveat travels beside the slice.
+    """
+
+    if view is None:
+        return []
+    lines = [
+        f"Openings: {view.selected_games} human game(s) from view {view.name!r}"
+        + ("" if view.speed is None else f", {view.speed} alone")
+    ]
+    if view.speed is not None:
+        lines.extend(
+            _wrapped_reason(
+                "scale: the class slices which games the seats start from, not "
+                "what a configured rating means; a rating belongs to the pool "
+                "its own source named, which this does not select"
+            )
+        )
+    return lines
 
 
 def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
@@ -2738,7 +2766,7 @@ def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
 
 
 def _wrapped_reason(text: str) -> list[str]:
-    """Wrap one indented explanation of why a metric carries no floor."""
+    """Wrap one indented explanation printed beneath a ladder report line."""
 
     from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
 

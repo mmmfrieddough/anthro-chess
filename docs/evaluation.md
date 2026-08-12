@@ -415,6 +415,17 @@ cannot share a series.
 `docs/decisions/0037-the-human-reference-is-bandwidth-not-sample-size.md` owns
 that rule and the measurements behind it.
 
+**A reference is one population rather than a mixture of them.** Game length,
+results, and how a game ends are strong functions of the clock, so a reference
+drawn from however the pool happens to be composed reports that composition as a
+distance. The generated side plays untimed, so a speed class slices the
+reference rather than the model, and it is the class derived from each game's
+own time control rather than bands restated per benchmark. A class the pool
+holds no game of is never a distance over nothing: a reading that compares
+several classes at once reports that one unavailable, and one defined over a
+single class fails in the pool pass, before the games it would have compared are
+played.
+
 Report the effective local sample size alongside the curve, so a difference
 where the human reference is thin is not read as the same strength of claim as
 one where it is dense. Report the **realized** bandwidth per evaluation point
@@ -1580,6 +1591,19 @@ Each seat's own error profile is recorded beside its strength, computed through
 the shared decision decomposition rather than a private one, since that layer
 already groups decisions by the dials they were made under and a ladder's seats
 are exactly those groups.
+
+**The openings are drawn at one speed class**, derived from each game's own time
+control by `anthro_chess.data.speed` rather than by bands restated here, so the
+ladder's roots and a slice table's `blitz` name one set of games. Every pairing
+plays the same roots, so how that draw is composed reaches every fitted rating,
+and which openings people play is a strong function of the clock.
+
+**What the class does not fix is the rating scale**, and the reading says so
+beside it. Which rating pool a source number came from is the rating namespace,
+derived per game from the source's own label — deliberately a different
+derivation from the speed class, and one that disagrees with it. Slicing the
+openings puts one speed in the reading; it does not put one rating pool in it,
+so a sliced ladder is not a ladder on one rating scale.
 
 **A full ladder is a scheduled reading rather than a routine one.** The declared
 grid plays thousands of games per checkpoint, so it is taken when a checkpoint is

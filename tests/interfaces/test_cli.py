@@ -1798,6 +1798,31 @@ def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
     assert max(len(line) for line in rendered.splitlines()) <= 120
 
 
+def test_a_ladder_reading_says_what_its_speed_class_leaves_open() -> None:
+    """A sliced ladder is not a ladder on one rating scale, and says so."""
+
+    from anthro_chess.data import Speed
+    from anthro_chess.evaluation.views import ViewSelection
+    from anthro_chess.interfaces.cli import _render_ladder_openings
+
+    def view(speed: Speed | None) -> ViewSelection:
+        return ViewSelection(
+            name="ladder-openings",
+            game_ids=(1, 2),
+            prefix_plies=8,
+            speed=speed,
+            eligible_games=2,
+            excluded_games={},
+        )
+
+    sliced = "\n".join(_render_ladder_openings(view(Speed.BLITZ)))
+    whole = "\n".join(_render_ladder_openings(view(None)))
+
+    assert "2 human game(s) from view 'ladder-openings', blitz alone" in sliced
+    assert "not what a configured rating means" in sliced
+    assert whole == "Openings: 2 human game(s) from view 'ladder-openings'"
+
+
 def test_eval_decisions_reports_an_unreadable_payload(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

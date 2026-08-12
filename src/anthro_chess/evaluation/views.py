@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from pydantic import Field, StrictBool
 
 from anthro_chess.config import ConfigModel
+from anthro_chess.data import Speed
 from anthro_chess.evaluation.pool import PoolGame, game_ids_sha256, rank_key
 
-VIEW_SPEC_VERSION = 1
+VIEW_SPEC_VERSION = 2
 
 
 class ViewConfig(ConfigModel):
@@ -28,6 +29,11 @@ class ViewConfig(ConfigModel):
     maximum_plies: int | None = Field(default=None, ge=1)
     require_ratings: StrictBool = False
     prefix_plies: int | None = Field(default=None, ge=1)
+    #: One speed class, the same one the slice tables report, absent to take
+    #: every class. A filter here rather than downstream because it decides
+    #: which games a cap then takes: filtering a capped selection afterwards
+    #: would shrink it below the size it was declared at.
+    speed: Speed | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,7 @@ class ViewSelection:
     name: str
     game_ids: tuple[int, ...]
     prefix_plies: int | None
+    speed: Speed | None
     eligible_games: int
     excluded_games: dict[str, int]
 
@@ -56,6 +63,7 @@ class ViewSelection:
             "eligible_games": self.eligible_games,
             "excluded_games": dict(sorted(self.excluded_games.items())),
             "prefix_plies": self.prefix_plies,
+            "speed": None if self.speed is None else str(self.speed),
             "game_ids_sha256": game_ids_sha256(self.game_ids),
         }
 
@@ -89,6 +97,7 @@ def apply_view(games: Sequence[PoolGame], config: ViewConfig) -> ViewSelection:
         name=f"{config.name}-{len(ordered)}" if truncated else config.name,
         game_ids=tuple(sorted(game.game_id for game in ordered)),
         prefix_plies=config.prefix_plies,
+        speed=config.speed,
         eligible_games=len(eligible),
         excluded_games=excluded,
     )
@@ -103,4 +112,6 @@ def _exclusion_reason(game: PoolGame, config: ViewConfig) -> str | None:
         return "shorter_than_prefix"
     if config.require_ratings and not game.has_ratings:
         return "missing_ratings"
+    if config.speed is not None and game.speed is not config.speed:
+        return "missing_time_control" if game.speed is None else "speed_mismatch"
     return None
