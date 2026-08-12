@@ -31,7 +31,7 @@ from anthro_chess.chess import (
     encode_move,
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import DecisionContext, Speed
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
@@ -78,7 +78,6 @@ from anthro_chess.evaluation.termination import (
     TerminationBenchmarkConfig,
     TerminationBenchmarkError,
     TerminationBenchmarkResult,
-    TimeControlClass,
     generated_ending,
     human_ending,
 )
@@ -502,6 +501,34 @@ def test_a_lopsided_human_game_is_excluded_rather_than_averaged(
     assert reason == "rating_gap"
 
 
+def test_a_reference_ending_carries_the_class_both_clock_columns_derive(
+    normalized_row: Callable[..., dict[str, Any]],
+) -> None:
+    """What a class is read against, so `blitz` means what a selection means.
+
+    One minute is bullet or blitz depending on the increment, which is the
+    separation no bound on the initial clock alone can make.
+    """
+
+    def speed_of(increment_ms: int) -> Speed | None:
+        row = normalized_row(
+            1,
+            plies=4,
+            time_initial_ms=60_000,
+            time_increment_ms=increment_ms,
+            # The shared trace starts above a one-minute clock, and a game
+            # whose remaining time exceeds its own initial time derives as
+            # abandonment rather than as the ending this row means.
+            clocks=False,
+        )
+        ending, _ = human_ending(row, ReferenceConfig())
+        assert ending is not None
+        return ending.speed
+
+    assert speed_of(0) is Speed.BULLET
+    assert speed_of(3_000) is Speed.BLITZ
+
+
 # --- Guardrails -----------------------------------------------------------
 
 
@@ -875,10 +902,7 @@ def test_two_time_control_classes_land_on_different_series(
     result = _run(
         _config(
             pool,
-            time_controls=(
-                TimeControlClass(name="all"),
-                TimeControlClass(name="blitz", maximum_initial_seconds=600),
-            ),
+            time_controls=("all", Speed.BLITZ),
         )
     )
     everything = result.mix("all", 1.0)
@@ -896,14 +920,7 @@ def test_an_unpopulated_time_control_class_reports_unavailable(
 ) -> None:
     """A class no reference game belongs to has nothing to compare against."""
 
-    result = _run(
-        _config(
-            pool,
-            time_controls=(
-                TimeControlClass(name="classical", minimum_initial_seconds=3600),
-            ),
-        )
-    )
+    result = _run(_config(pool, time_controls=(Speed.CLASSICAL,)))
     assert result.mixes == ()
     assert "mix:classical" in result.unavailable
 
