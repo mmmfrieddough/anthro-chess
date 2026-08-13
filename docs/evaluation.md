@@ -448,6 +448,14 @@ a curve is never exactly flat. Both come from the comparison's own resampling,
 and both travel with the result, since neither is a property of a series that
 could be characterized once and looked up.
 
+Both resample the **stream** a game came out of rather than the game, because a
+stream is what re-running the reading redraws and one of them plays a game at
+every rating of the grid. A comparison whose model side varies and holds fewer
+than three of them estimates neither number: three resamples are not a spread,
+and the level's model half is read off the same three. A replayed side is the
+exception and states its zero floor and its levels at any stream count, since
+neither asks how far its games would move.
+
 The conditional and the pooled reading each have their own level and their own
 floor, so a report shows both per reading rather than sharing one across the
 pair. A level or a floor rendered beside the other reading's distance is read as
@@ -542,6 +550,17 @@ inside one process share a warm allocator and a compiled kernel, so the
 `docs/decisions/0026-conservative-dispersion-bounds.md` owns this rule and what
 counting either of the cheap numbers would buy.
 
+Which games are independent of each other is its own question, and a generated
+rating grid is where it bites. A game's seed is derived without the rating it was
+conditioned on, so one **stream** plays a game at every point of the grid and a
+grid multiplies games without multiplying the draws behind them. The curve
+comparisons resample the stream for that reason, and count streams rather than
+games as the replicates behind their bound;
+`docs/decisions/0060-a-curve-resamples-the-stream-not-the-game.md` owns the rule
+and the measurement that fixed it, including what drawing games instead reported
+instead. Raising `games_per_position` or the seed count buys streams; widening
+the rating grid does not.
+
 Which games those are is a per-metric question. A sliced metric — a rule case,
 an opening tier, a rating band — is realized in a fraction of the games a pass
 scored, and only those carry evidence about how far it moves. Each metric's
@@ -629,7 +648,10 @@ same games, and a reading records that it stated rather than estimated. The
 arithmetic that bounds a dispersion refuses a zero outright, so an estimator
 that reaches it has already decided which of the two it holds. Generated-play
 curves are the one family that keeps a zero its own resample produced, for the
-reason decision 0042 gives.
+reason decision 0042 gives — and they read it off whether the draw moved the
+curve rather than off what the reduction summed to, because a draw that moved
+nothing leaves the last bits of the arithmetic behind rather than a zero, and
+those bound into a floor that clears every delta.
 
 **A floor needs both operands.** A dispersion one reading measured and the other
 did not describes that operand rather than the difference, and nothing licenses
@@ -2245,16 +2267,24 @@ whose players are far apart is excluded rather than averaged into the middle: it
 is a mismatch rather than a game at the average of its two ratings, and its
 length and result belong to neither player's level.
 
-The floor is the comparison's own bootstrap over the games it generated. The
-per-seed distances are recorded beside it as a diagnostic and are deliberately
-*not* used as a floor: each seed plays only its share of the suite's games, so a
-per-seed reading is a smaller-sample one — noisier, and biased away from the
-reference, since a distributional distance estimated from few games per rating
-point reads high. Comparing that spread against the pooled reading's floor
+The floor is the comparison's own bootstrap over the **streams** it generated
+rather than over the games, because a game's seed is derived without the rating
+it was conditioned on and one stream therefore plays a game at every point of
+the grid. The per-seed distances are recorded beside it as a diagnostic and are
+deliberately *not* used as a floor: each seed plays only its share of the suite's
+games, so a per-seed reading is a smaller-sample one — noisier, and biased away
+from the reference, since a distributional distance estimated from few games per
+rating point reads high. Comparing that spread against the pooled reading's floor
 compares two sample sizes and makes the bootstrap look roughly the square root
-of the seed count too narrow. Checked against forty independent draws at a fixed
-size, the bootstrap reproduces the true spread to within a few percent, which is
-what a floor has to do.
+of the seed count too narrow.
+
+Read like for like — each seed's own reading against the spread of that reading
+across thirty-two seeds — the draw over streams reproduces the true spread from
+four streams upward, while a draw over games reports about two thirds of it at
+any size and about half at the size a reduced sweep reads.
+`docs/decisions/0060-a-curve-resamples-the-stream-not-the-game.md` owns that
+measurement, and the floor a reading below three streams states instead: none,
+because two streams leave three resamples and their agreeing is not a zero.
 
 The temperature-zero row is the exception, and it states its floor rather than
 bootstrapping one. Its seats are greedy, so another run of it replays the same

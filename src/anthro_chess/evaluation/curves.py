@@ -44,6 +44,12 @@ human side's own sampling error belongs in it and it keeps the paired
 resampling. Two finite samples of one population never agree exactly, and a
 sampled curve is never exactly flat.
 
+The floor and the distance levels both resample the **stream** rather than the
+game, because a stream is what a fresh seed redraws. A generated side plays one
+game per rating from each of its streams, so a grid multiplies games without
+multiplying the draws behind them, and an estimator that treated the games as
+independent would answer a question about a sample nobody is going to take.
+
 Curve points are data, not pictures. They go to the machine-local detail tier,
 so overlaying several checkpoints against the human reference is a query rather
 than another run, and only the scalar distances reach the committed summary
@@ -55,7 +61,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -73,16 +79,18 @@ from anthro_chess.evaluation.results.noise import (
     DEFAULT_CONFIDENCE,
     DEFAULT_COVERAGE,
     measured_dispersion,
+    plug_in_rescale,
     self_combined_floor,
 )
 
-CURVE_COMPARISON_VERSION = 2
+CURVE_COMPARISON_VERSION = 3
 
 #: How a curve comparison estimates its own spread. A distributional distance
 #: moves by an amount that is a function of its own configuration rather than of
 #: a series, so it is estimated here and carried with the measurement instead of
-#: being characterized separately and looked up.
-CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-games"
+#: being characterized separately and looked up. Decision 0060 measured why the
+#: unit is the stream and not the game.
+CURVE_BOOTSTRAP_METHOD = "bootstrap-over-generated-streams"
 
 #: How a curve comparison states the spread of a model side that cannot vary.
 #: Re-measuring such a side replays the same games, so its evaluation noise is
@@ -94,6 +102,13 @@ CURVE_DETERMINISTIC_METHOD = "deterministic-model-side"
 #: bootstrap because one resample here re-estimates whole curves rather than
 #: recomputing a mean, and the floor is read to a couple of significant figures.
 DEFAULT_RESAMPLES = 200
+
+#: Streams a bootstrapped spread needs before it is an estimate at all. Two
+#: leave three distinct resamples, where decision 0060 measured the estimator
+#: ranging over a factor of four and landing on an exact zero whenever the two
+#: agreed — and a zero floor clears every delta. ``SeedSpread`` withholds below
+#: three replicates for the same reason.
+MINIMUM_BOOTSTRAP_STREAMS = 3
 
 #: Neighbour counts a bandwidth selection considers by default. Spread wide
 #: because the right span depends on how densely the corpus covers the rating
@@ -150,13 +165,19 @@ class RatingResponse(StrEnum):
 class Observation:
     """One game's contribution: the rating it was played at, and its value.
 
-    Games are the unit throughout, including for resampling, because positions
-    within one game are far from independent and a curve is a statement about
-    games anyway.
+    Games rather than positions, because positions within one game are far from
+    independent and a curve is a statement about games anyway.
+
+    ``stream`` names the random draw the game came out of, and is what a
+    resample redraws. A generated side plays its whole rating grid from one set
+    of streams, so the games one stream produced move together and are not
+    independent of each other; a side whose games each came from their own draw
+    leaves this unset and every game is its own unit.
     """
 
     rating: float
     value: float | str
+    stream: int | None = None
 
 
 @dataclass(frozen=True)
@@ -434,8 +455,12 @@ class CurveDispersions:
 
     ``method`` says how these were arrived at, because not every model side is
     resampled to reach one. A side that cannot vary is stated at zero and
-    carries no resamples, and the two cases are not distinguishable from the
-    values alone: a bootstrap over plentiful games also lands near zero.
+    carries neither resamples nor streams, and the two cases are not
+    distinguishable from the values alone: a bootstrap over plentiful games also
+    lands near zero.
+
+    ``streams`` is what the bound rests on, and is not recoverable from the game
+    count: a grid multiplies games without multiplying the draws behind them.
     """
 
     conditional: MetricDispersion
@@ -443,6 +468,7 @@ class CurveDispersions:
     model_variation: MetricDispersion
     resamples: int
     method: str
+    streams: int
 
     @property
     def conditional_floor(self) -> float:
@@ -462,6 +488,7 @@ class CurveDispersions:
         return {
             "method": self.method,
             "resamples": self.resamples,
+            "streams": self.streams,
             "conditional": self.conditional.model_dump(mode="json"),
             "pooled": self.pooled.model_dump(mode="json"),
             "model_variation": self.model_variation.model_dump(mode="json"),
@@ -819,6 +846,11 @@ def compare_curves(
     The null levels cost a permutation pass per replicate on top of the
     resampling, which a sweep recomputing this comparison at every book ply
     pays once per ply for a reading it does not use.
+
+    A caller whose model side plays several ratings from one random stream says
+    so on each ``Observation``, because that is what the resampling unit is. A
+    side that leaves it unset is drawn game by game, which is right where each
+    game came out of its own draw and understates the spread where it did not.
     """
 
     if len(human) < spec.neighbours:
@@ -1075,12 +1107,19 @@ class _Side:
     values: np.ndarray
     order: np.ndarray
     distances: np.ndarray
+    streams: np.ndarray
 
     @property
     def size(self) -> int:
         """Return how many observations this side holds."""
 
         return int(self.ratings.shape[0])
+
+    @property
+    def stream_count(self) -> int:
+        """Return how many independent draws this side's observations came from."""
+
+        return int(self.streams.max()) + 1 if self.streams.size else 0
 
     @classmethod
     def prepare(
@@ -1105,7 +1144,31 @@ class _Side:
             values=values,
             order=order,
             distances=np.take_along_axis(distances, order, axis=1),
+            streams=_stream_labels(observations),
         )
+
+
+def _stream_labels(observations: Sequence[Observation]) -> np.ndarray:
+    """Return which observations a resample has to redraw together.
+
+    A side that names no stream anywhere — every human reference this shape
+    compares against — takes the cheap path rather than a dictionary over
+    thousands of games that would answer ``arange``.
+
+    Labels run densely from zero, which is what lets a count be a maximum plus
+    one and a draw be gathered by label.
+    """
+
+    if all(observation.stream is None for observation in observations):
+        return np.arange(len(observations), dtype=np.int64)
+    labels = np.empty(len(observations), dtype=np.int64)
+    index: dict[object, int] = {}
+    for position, observation in enumerate(observations):
+        # Keyed apart from the stream ids so an unnamed game stays its own unit
+        # rather than joining whichever stream shares its position.
+        key = ("own", position) if observation.stream is None else observation.stream
+        labels[position] = index.setdefault(key, len(index))
+    return labels
 
 
 @dataclass(frozen=True)
@@ -1376,7 +1439,11 @@ def _resample(
     inflate every floor and hide real movement. Only the model side is
     resampled, which is why this is evaluation noise rather than data-sampling
     noise. For a model side that varies the two coincide anyway, since a fresh
-    draw of games is exactly what another seed produces.
+    draw of streams is exactly what another seed produces.
+
+    Drawing its games as though each were independent, rather than the streams
+    they came from, reports about half the movement a fresh seed produces;
+    decision 0060 measured it.
 
     That coincidence is what ``model_varies`` denies, and ``compare_curves``
     documents what a caller passing it is claiming.
@@ -1388,7 +1455,10 @@ def _resample(
 
     ``None`` means nothing could be estimated, which is a reportable state
     rather than an error: a spread invented from too few replicates would
-    license every delta as a finding.
+    license every delta as a finding. The two are refused together for a model
+    side that varies, since a null level's model half is read off the same
+    replicates; a replayed side is the exception, and keeps its levels down to
+    the two streams a resample needs to move it at all.
     """
 
     method = CURVE_BOOTSTRAP_METHOD if model_varies else CURVE_DETERMINISTIC_METHOD
@@ -1415,6 +1485,7 @@ def _resample(
             pooled=stated_zero,
             model_variation=stated_zero,
             resamples=0,
+            streams=0,
             method=method,
         )
 
@@ -1423,7 +1494,13 @@ def _resample(
     # draw.
     if not model_varies and not references:
         return dispersions, None
-    if resamples < 2 or model.size < 2:
+    # A null level pairs each side's own sampling error, so it needs a model
+    # side a resample can move at all; a spread needs one it can move often
+    # enough to read a spread off, and three outcomes are not that. A replayed
+    # side asks only the first of those, since its floor is stated rather than
+    # estimated.
+    minimum = MINIMUM_BOOTSTRAP_STREAMS if model_varies else 2
+    if resamples < 2 or model.stream_count < minimum:
         return dispersions, None
     # The model side draws first, and the human side draws only when the null
     # levels that consume it were asked for. Both halves of that matter. Drawing
@@ -1431,19 +1508,9 @@ def _resample(
     # is the largest cost left in that call; and taking the model's draw before
     # it is what keeps ``references`` a cost decision rather than a measurement
     # one, since the floor is then read off the same resamples either way.
-    model_weights = generator.multinomial(
-        model.size, np.full(model.size, 1.0 / model.size), size=resamples
-    ).astype(np.float64)
+    model_weights = _redraw(model, resamples, generator)
     paired = (
-        _read(
-            spec,
-            human,
-            model,
-            generator.multinomial(
-                human.size, np.full(human.size, 1.0 / human.size), size=resamples
-            ).astype(np.float64),
-            model_weights,
-        )
+        _read(spec, human, model, _redraw(human, resamples, generator), model_weights)
         if references
         else None
     )
@@ -1452,10 +1519,21 @@ def _resample(
         # which games the model produced — and the point pass already estimated
         # it at these radii.
         model_only = _reduce(spec, point.radii, point.human, model, model_weights)
-        # The generated games are the independent replicates behind these
-        # spreads. The resample count only says how finely each was read, so it
-        # is the model side's size that decides how far the bound sits above it.
-        freedom = int(model.size) - 1
+        # The resample count says only how finely each replicate was read, so it
+        # is how many streams the side holds that decides how far the bound sits
+        # above the spread.
+        streams = model.stream_count
+        freedom = streams - 1
+        rescale = plug_in_rescale(streams)
+        # Asked of the curve rather than of the spread it reduces to. A draw
+        # that could not move the model side leaves float noise rather than a
+        # zero, which takes neither the stated zero below nor the shared
+        # arithmetic's refusal of one — and a bound on 1e-16 is a floor that
+        # clears every delta while reading as an ordinary estimate.
+        curves = model_only.model.values
+        unmoved = bool(
+            np.all((curves == curves[:1]) | (np.isnan(curves) & np.isnan(curves[:1])))
+        )
         bootstrapped: list[MetricDispersion] = []
         for values in (
             model_only.conditional,
@@ -1465,15 +1543,16 @@ def _resample(
             observed = values[np.isfinite(values)]
             if observed.size < 2:
                 return None, None
-            dispersion = float(np.std(observed, ddof=1))
+            dispersion = float(np.std(observed, ddof=1)) * rescale
             # Decision 0042 keeps this family's estimated zero where every other
-            # estimator is refused one: the games generated for a curve are
+            # estimator is refused one: the streams generated for a curve are
             # themselves the draw, so a distance no resample moved is a
             # statement about the play this reading produced rather than a
-            # sample that came out flat.
+            # sample that came out flat. A curve the draw never moved states the
+            # same zero, whatever the last bits of the reduction came out at.
             bootstrapped.append(
                 stated_zero
-                if dispersion == 0.0
+                if unmoved or dispersion == 0.0
                 else measured_dispersion(
                     dispersion,
                     degrees_of_freedom=freedom,
@@ -1488,6 +1567,7 @@ def _resample(
             model_variation=bootstrapped[2],
             resamples=resamples,
             method=method,
+            streams=streams,
         )
 
     levels = (
@@ -1497,6 +1577,7 @@ def _resample(
             spec,
             point,
             paired,
+            human,
             model,
             resamples=resamples,
             generator=generator,
@@ -1506,10 +1587,36 @@ def _resample(
     return dispersions, levels
 
 
+def _redraw(
+    side: _Side,
+    resamples: int,
+    generator: np.random.Generator,
+) -> np.ndarray:
+    """Draw this side's streams with replacement, one weight per observation.
+
+    Drawing whole streams is also what stops a resample from moving how many
+    games each grid point holds, wherever a stream reached every rating. Where a
+    quantity drops games — a game that left the book on a waypoint chose no
+    opening — a stream is missing from some points and a resample can still lose
+    one; that variation is a re-run's too rather than an artifact of the draw.
+    """
+
+    count = side.stream_count
+    drawn = generator.multinomial(
+        count, np.full(count, 1.0 / count), size=resamples
+    ).astype(np.float64)
+    if count == side.size:
+        # Every observation is its own stream, so the labels are already
+        # ``arange`` and the gather below would copy the draw unchanged.
+        return drawn
+    return drawn[:, side.streams]
+
+
 def _references(
     spec: CurveSpec,
     point: _Reading,
     resampled: _Reading,
+    human: _Side,
     model: _Side,
     *,
     resamples: int,
@@ -1523,22 +1630,38 @@ def _references(
     flatness null permutes which generated game was played at which rating,
     which destroys any rating response while leaving the sample, the grid, and
     the bandwidth exactly as they were.
+
+    That permutation is the one thing here still drawn over games, and no
+    permutation is the right shape for it. A model whose policy ignored the
+    rating input would meet the same stream at every grid point and replay one
+    game across the whole grid, so its curve would be exactly flat and the level
+    this estimates is analytically zero. Permuting anything reports a level
+    above that, and ``AVERAGE_HUMAN`` — the verdict it decides — fires too
+    readily as a result. Decision 0060 records the argument and what replacing
+    it would take.
+
+    Each side's deviation is scaled to the fresh draw its plug-in resample
+    understates, since these read that understatement off the same replicates a
+    floor does. A distance is homogeneous in the deviations it is taken between,
+    so the two scale before the distance rather than after it.
     """
 
     pairing = generator.permutation(resamples)
     supported = np.broadcast_to(point.supported, resampled.distances.shape)
+    human_rescale = plug_in_rescale(human.stream_count)
+    model_rescale = plug_in_rescale(model.stream_count)
     conditional = _masked_mean(
         _distance(
             spec.quantity,
-            resampled.human.values - point.human.values,
-            (resampled.model.values - point.model.values)[pairing],
+            (resampled.human.values - point.human.values) * human_rescale,
+            ((resampled.model.values - point.model.values) * model_rescale)[pairing],
         ),
         supported,
     )
     pooled = _distance(
         spec.quantity,
-        resampled.human_pooled - point.human_pooled,
-        (resampled.model_pooled - point.model_pooled)[pairing],
+        (resampled.human_pooled - point.human_pooled) * human_rescale,
+        ((resampled.model_pooled - point.model_pooled) * model_rescale)[pairing],
     )
     flat = _flat_variation(
         spec,
@@ -1577,11 +1700,8 @@ def _flat_variation(
     point_radii = radii[:1]
     observed = np.empty(permutations, dtype=np.float64)
     for index in range(permutations):
-        shuffled = _Side(
-            ratings=model.ratings,
-            values=model.values[generator.permutation(model.size)],
-            order=model.order,
-            distances=model.distances,
+        shuffled = replace(
+            model, values=model.values[generator.permutation(model.size)]
         )
         local = _local(shuffled, weights, point_radii)
         supported = local.games > 0

@@ -144,6 +144,11 @@ class GameFeatures:
     result: GameResult
     termination: GameTermination
     adjudicated: bool
+    #: The stream this game was drawn from. Derived without the conditioning
+    #: rating, so a suite playing a rating grid plays every point of it from the
+    #: same streams, and games sharing a seed are one draw rather than several.
+    #: That is the unit an evaluation-noise estimate resamples.
+    seed: int
 
     @property
     def trajectory_sha256(self) -> str:
@@ -321,6 +326,7 @@ def analyze_game(
         result=record.outcome.result,
         termination=record.outcome.termination,
         adjudicated=record.outcome.adjudicated,
+        seed=record.seed,
     )
 
 

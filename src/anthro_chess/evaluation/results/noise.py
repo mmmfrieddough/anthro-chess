@@ -116,6 +116,28 @@ def dispersion_bound(
     return dispersion * math.sqrt(degrees_of_freedom / quantile)
 
 
+def plug_in_rescale(units: int) -> float:
+    """Return what a draw from the units in hand understates a fresh draw by.
+
+    A plug-in bootstrap resamples the units it holds, so its variance is
+    ``(units - 1) / units`` of the variance a fresh sample of that size has,
+    before it has estimated anything. Negligible wherever the unit count is
+    large and worth 22% at three; decision 0039 named the correction and
+    requires it of any draw small enough to notice.
+
+    Exact for a mean, and first-order for the smooth reductions the estimators
+    here take. It is the scalar form of the same correction a rescaled
+    ``m``-out-of-``n`` draw applies to the counts.
+    """
+
+    if units < 2:
+        raise NoiseCharacterizationError(
+            "a plug-in correction needs at least two units; one unit has no "
+            "spread for a factor to recover"
+        )
+    return math.sqrt(units / (units - 1))
+
+
 def bounded_floor(
     dispersion: float,
     *,
@@ -397,6 +419,7 @@ __all__ = [
     "dispersion_bound",
     "games_to_resolve",
     "measured_dispersion",
+    "plug_in_rescale",
     "process_dispersion",
     "replicate_dispersion",
     "self_combined_floor",

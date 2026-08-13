@@ -1357,7 +1357,11 @@ def _depth_observations(
     """Return one depth's raw opening labels, one observation per game."""
 
     return tuple(
-        Observation(rating=game.rating, value=progression[ply - 1].label(level))
+        Observation(
+            rating=game.rating,
+            value=progression[ply - 1].label(level),
+            stream=game.stream,
+        )
         for game, progression in zip(games, progressions, strict=True)
     )
 

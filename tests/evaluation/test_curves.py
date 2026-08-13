@@ -25,6 +25,7 @@ from anthro_chess.evaluation.curves import (
     RatingResponse,
     _categories,
     _read,
+    _redraw,
     _reduce,
     _Side,
     compare_curves,
@@ -119,6 +120,31 @@ def _generated(
         Observation(rating, value(rating, generator))
         for rating in grid
         for _ in range(per_rating)
+    )
+
+
+def _noisy_length(rating: float, generator: random.Random) -> float:
+    """Return one generated game's length at a rating, around the human curve."""
+
+    return _length(rating) + generator.gauss(0.0, 3.0)
+
+
+def _streamed(
+    observations: Sequence[Observation],
+    *,
+    streams: int,
+) -> tuple[Observation, ...]:
+    """Return the same games dealt into streams the way a suite plays them.
+
+    A stream plays one game at every rating of the grid, because a game's seed
+    is derived without the rating it is conditioned on. Dealing round robin
+    reproduces that: the same stream reappears at each rating, and the games
+    beside it there came out of different draws.
+    """
+
+    return tuple(
+        Observation(observation.rating, observation.value, stream=index % streams)
+        for index, observation in enumerate(observations)
     )
 
 
@@ -686,6 +712,34 @@ def test_a_redraw_that_moves_nothing_states_its_zero_rather_than_refusing() -> N
     assert comparison.dispersions.conditional_floor == 0.0
 
 
+def test_a_curve_the_draw_never_moved_states_zero_rather_than_bounding_noise() -> None:
+    """The zero is read off the curve, not off what the reduction summed to.
+
+    A resample that cannot move the model side still reduces to a spread of the
+    last bits of the arithmetic rather than to one of exactly zero. That value
+    takes neither the stated zero nor the shared arithmetic's refusal of one, so
+    it would be bounded into a floor that clears every delta while reading as an
+    ordinary estimate.
+    """
+
+    # A distance whose scale makes the reduction's float error visible, over
+    # streams that carry the same curve so no draw over them can move it.
+    identical = _streamed(
+        _generated(lambda rating, _: _length(rating) * 1e6, per_rating=6),
+        streams=6,
+    )
+    comparison = _compare(identical, human=_human_reference(games=200))
+
+    assert comparison.dispersions is not None
+    for spread in (
+        comparison.dispersions.conditional,
+        comparison.dispersions.pooled,
+        comparison.dispersions.model_variation,
+    ):
+        assert spread.value == 0.0
+        assert spread.bound == 0.0
+
+
 def test_declaring_the_model_side_fixed_leaves_the_reading_itself_alone() -> None:
     """Only the floor's claim changes, which is the point of the distinction.
 
@@ -765,6 +819,102 @@ def test_a_floor_shrinks_as_the_games_behind_it_grow() -> None:
     assert small.dispersions is not None
     assert large.dispersions is not None
     assert large.dispersions.pooled.value < small.dispersions.pooled.value
+
+
+def test_a_model_side_of_one_stream_has_nothing_to_resample() -> None:
+    """A rating grid multiplies games without multiplying the draws behind them.
+
+    One stream played at every point of the grid is one replicate, and a spread
+    read off it would be the spread of a draw the suite never took.
+    """
+
+    comparison = _compare(_streamed(_generated(_noisy_length, per_rating=6), streams=1))
+
+    assert comparison.dispersions is None
+    assert comparison.references is None
+    assert comparison.response is RatingResponse.UNKNOWN
+
+
+def test_a_varying_side_below_three_streams_estimates_nothing() -> None:
+    """Two streams leave three resamples, and their agreeing is not a zero.
+
+    The floor and the model half of a null level are read off the same
+    replicates, so a side too thin to carry one is too thin to carry the other.
+    A replayed side is the exception and keeps its levels, because its games do
+    not move and its own half of the null is zero rather than badly estimated.
+    """
+
+    games = _generated(_noisy_length, per_rating=6)
+    two = _compare(_streamed(games, streams=2))
+    three = _compare(_streamed(games, streams=3))
+    replayed = _compare(_streamed(games, streams=2), model_varies=False)
+
+    assert two.dispersions is None
+    assert two.references is None
+    assert three.dispersions is not None
+    assert three.dispersions.streams == 3
+    assert replayed.dispersions is not None
+    assert replayed.dispersions.conditional.value == 0.0
+    assert replayed.references is not None
+
+
+def test_the_floor_counts_streams_rather_than_the_games_they_played() -> None:
+    """Forty games from eight streams are eight replicates, not forty."""
+
+    games = _generated(_noisy_length, per_rating=8)
+    ungrouped = _compare(games)
+    grouped = _compare(_streamed(games, streams=8))
+
+    assert ungrouped.dispersions is not None
+    assert grouped.dispersions is not None
+    assert ungrouped.dispersions.streams == len(games)
+    assert grouped.dispersions.streams == 8
+    # Same games, five times fewer replicates behind the estimate, so the
+    # conservative limit the floor is built from sits much further above it.
+    assert (
+        grouped.dispersions.conditional.bound > ungrouped.dispersions.conditional.bound
+    )
+
+
+def test_a_game_that_names_no_stream_is_its_own_draw() -> None:
+    """Where each game came out of its own draw, nothing about this moves."""
+
+    games = _generated(_noisy_length, per_rating=6)
+    declared = tuple(
+        Observation(game.rating, game.value, stream=index)
+        for index, game in enumerate(games)
+    )
+
+    undeclared = _compare(games)
+    named = _compare(declared)
+
+    assert undeclared.dispersions is not None
+    assert named.dispersions is not None
+    assert (
+        named.dispersions.conditional.value == undeclared.dispersions.conditional.value
+    )
+    assert named.dispersions.pooled.value == undeclared.dispersions.pooled.value
+
+
+def test_a_stream_draw_leaves_the_grid_its_own_allocation() -> None:
+    """A suite plays a fixed number of games at each rating, and a re-run repeats
+    that; only which games they are is redrawn.
+
+    Drawing games instead lets a resample empty a rating outright, and the
+    conditional mean is then taken over a different set of points each time.
+    """
+
+    games = _generated(_noisy_length, per_rating=3)
+    streamed = _Side.prepare(_streamed(games, streams=3), SCALAR_SPEC, ())
+    pooled = _Side.prepare(games, SCALAR_SPEC, ())
+
+    generator = np.random.default_rng(0)
+    by_stream = _redraw(streamed, 64, generator)
+    by_game = _redraw(pooled, 64, generator)
+
+    at_first_rating = streamed.ratings == GRID[0]
+    assert np.all(by_stream[:, at_first_rating].sum(axis=1) == 3.0)
+    assert not np.all(by_game[:, at_first_rating].sum(axis=1) == 3.0)
 
 
 def test_without_replicates_no_floor_is_invented() -> None:

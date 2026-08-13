@@ -114,11 +114,24 @@ reduced = ["puzzles_per_rating=2"]
 # until the whole rating grid is estimated from one set of games, and the
 # reading would be a differently smoothed quantity rather than the same one
 # less precisely. It costs about seventy seconds of trajectory replay, which is
-# the price of a reduced curve reading that says anything.
+# what a reduced curve reading pays to be smoothed the way a full one is.
+#
+# Games per position is the count that decides how many *streams* this step
+# plays, and the stream is what a curve comparison resamples: a game's seed is
+# derived without the rating it was played at, so one stream plays every point
+# of the grid and the six ratings buy no replicates at all. Four is eight
+# streams once colours are swapped, which is where decision 0060 measured the
+# estimator landing on the spread a re-run shows; below three no spread can be
+# read at all, and the row reports its distances unqualified.
+#
+# Eight is enough to qualify a reading and not enough to rank two checkpoints
+# with it, and it is close to free against what the human reference costs this
+# step either way. Decision 0060 has both figures; where the count should sit is
+# a budgeting question rather than a settled one.
 config = "configs/evaluation/generated-play-rollout.toml"
 reduced = [
   "grid.seeds=[0]",
-  "generation.games_per_position=1",
+  "generation.games_per_position=4",
   "reference.resamples=50",
 ]
 
