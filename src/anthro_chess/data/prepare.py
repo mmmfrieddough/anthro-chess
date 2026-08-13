@@ -68,7 +68,11 @@ from anthro_chess.data.schema import (
     encode_clock_remaining_deltas,
     row_game_id,
 )
-from anthro_chess.data.speed import parse_time_control, speed_from_time_control
+from anthro_chess.data.speed import (
+    parse_time_control,
+    speed_from_clock_ms,
+    speed_from_time_control,
+)
 from anthro_chess.data.termination import (
     TERMINAL_ACTION_STATUSES,
     TERMINATION_CATEGORIES,
@@ -139,6 +143,15 @@ _ATTRIBUTION_LABELS: dict[bool | None, str] = {
     False: "opponent_to_move",
     None: "not_applicable",
 }
+
+#: Width of the rating buckets the axis coverage counts player-slots into.
+#: Deliberately finer than any band a benchmark slices on, so a reader can
+#: re-add buckets into whatever banding it uses instead of the manifest
+#: pinning one benchmark's current choice into every corpus ever prepared.
+_RATING_BUCKET_POINTS = 200
+
+_AXIS_UNCLASSIFIED = "unclassified"
+
 logger = logging.getLogger(__name__)
 
 
@@ -612,6 +625,9 @@ def _prepare_archive(
     rating_values: list[int] = []
     rating_namespace_counts: Counter[str] = Counter()
     source_date_status_counts: Counter[str] = Counter()
+    speed_split_counts: Counter[tuple[str, str]] = Counter()
+    clock_split_counts: Counter[tuple[str, str]] = Counter()
+    rating_slot_split_counts: Counter[tuple[str, str]] = Counter()
     termination_category_counts: Counter[str] = Counter()
     termination_attribution_counts: Counter[str] = Counter()
     terminal_action_status_counts: Counter[str] = Counter()
@@ -644,7 +660,8 @@ def _prepare_archive(
                     seen_game_ids.add(game_id)
                     records.append(parsed.record)
                     accepted_games += 1
-                    split_counts[str(parsed.record[NormalizedColumn.SPLIT])] += 1
+                    split_name = str(parsed.record[NormalizedColumn.SPLIT])
+                    split_counts[split_name] += 1
                     ply_count_value = parsed.record[NormalizedColumn.PLY_COUNT]
                     if not isinstance(ply_count_value, int):
                         raise TypeError("normalized ply count must be an integer")
@@ -712,6 +729,39 @@ def _prepare_archive(
                     source_date_status_counts[
                         str(parsed.record[NormalizedColumn.SOURCE_DATE_STATUS])
                     ] += 1
+                    # Banded off the normalized clock, which is how a pool and a
+                    # training selection read this axis.
+                    speed = speed_from_clock_ms(
+                        time_initial if isinstance(time_initial, int) else None,
+                        time_increment if isinstance(time_increment, int) else None,
+                    )
+                    speed_split_counts[
+                        (
+                            _AXIS_UNCLASSIFIED if speed is None else str(speed),
+                            split_name,
+                        )
+                    ] += 1
+                    clock_split_counts[
+                        (
+                            "present" if isinstance(clock_precision, int) else "absent",
+                            split_name,
+                        )
+                    ] += 1
+                    # Bucketed on the normalized rating rather than the source
+                    # one, because that is the column a pool admits on and a
+                    # selection bands by. A source left on an unconverted scale
+                    # would otherwise report a fully covered rating axis for a
+                    # corpus no rating-banded reading can draw a game from.
+                    for normalized_column in (
+                        NormalizedColumn.WHITE_NORMALIZED_RATING,
+                        NormalizedColumn.BLACK_NORMALIZED_RATING,
+                    ):
+                        rating_slot_split_counts[
+                            (
+                                _rating_bucket(parsed.record[normalized_column]),
+                                split_name,
+                            )
+                        ] += 1
 
                     games_per_shard = config.output.games_per_shard
                     if games_per_shard is not None and len(records) >= games_per_shard:
@@ -829,6 +879,14 @@ def _prepare_archive(
             # repair is parsing it again.
             "source_date": {
                 "status_games": dict(sorted(source_date_status_counts.items())),
+            },
+            # Split-wise so that what a held-out reading can resolve on an axis
+            # is readable before a pool is cut from it, rather than after the
+            # generation that fixes it permanently.
+            "axes": {
+                "speed_games": _counts_by_split(speed_split_counts),
+                "clock_games": _counts_by_split(clock_split_counts),
+                "rating_slots": _counts_by_split(rating_slot_split_counts),
             },
             "termination": {
                 "category_games": {
@@ -1887,6 +1945,15 @@ def _corpus_coverage(inputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 block["source_date"]["status_games"] for block in blocks
             ),
         },
+        # Over the axes the archives recorded rather than a list repeated here,
+        # so an axis added to the per-archive block cannot go missing from the
+        # corpus-wide one. The cost is that archives disagreeing about which
+        # axes they carry raise here, after decoding, rather than in the
+        # guarded roll-up, which only ever sees the recorded ones.
+        "axes": {
+            axis: _summed_counts_by_split(block["axes"][axis] for block in blocks)
+            for axis in sorted({name for block in blocks for name in block["axes"]})
+        },
         "termination": {
             "category_games": _summed_counts(
                 termination["category_games"] for termination in terminations
@@ -1925,6 +1992,43 @@ def _summed_counts(blocks: Iterable[Mapping[str, int]]) -> dict[str, int]:
     for block in blocks:
         total.update(block)
     return dict(sorted(total.items()))
+
+
+def _rating_bucket(rating: object) -> str:
+    """Name the bucket a player-slot's normalized rating falls in."""
+
+    if not isinstance(rating, int):
+        return _AXIS_UNCLASSIFIED
+    floor = rating // _RATING_BUCKET_POINTS * _RATING_BUCKET_POINTS
+    # Zero-padded so the manifest's sorted keys read in rating order; without
+    # it a three-digit bucket lands between the two- and four-digit ones.
+    return f"{floor:04d}_to_{floor + _RATING_BUCKET_POINTS - 1:04d}"
+
+
+def _counts_by_split(
+    counts: Mapping[tuple[str, str], int],
+) -> dict[str, dict[str, int]]:
+    """Turn ``(axis value, split)`` tallies into one split row per value.
+
+    Every split is written for every observed value, so a zero is a measured
+    absence rather than a key the reader has to notice is missing.
+    """
+
+    return {
+        value: {split: counts.get((value, split), 0) for split in SPLIT_NAMES}
+        for value in sorted({value for value, _ in counts})
+    }
+
+
+def _summed_counts_by_split(
+    blocks: Iterable[Mapping[str, Mapping[str, int]]],
+) -> dict[str, dict[str, int]]:
+    total: Counter[tuple[str, str]] = Counter()
+    for block in blocks:
+        for value, splits in block.items():
+            for split, count in splits.items():
+                total[(value, split)] += count
+    return _counts_by_split(total)
 
 
 def _extreme(

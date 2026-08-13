@@ -227,8 +227,10 @@ Corpus growth is the main expected source of change to evaluation inputs, so how
 it is sequenced matters to more than data volume.
 
 Expansion happens in two passes, breadth before depth. The **breadth** pass
-widens the corpus across the axes the project intends to keep measuring, such as
-time control, rating range, timing-data presence, and temporal or source spread.
+widens the corpus across the axes the project intends to keep measuring — speed,
+timing-data presence, rating, and temporal spread, which
+`docs/decisions/0062-the-breadth-corpus-filters-for-validity-alone.md` names and
+keeps whole by filtering preparation for validity alone.
 The **depth** pass scales volume within those axes. Breadth comes first because
 it is the irreversible one: a frozen evaluation reference can never measure an
 axis it contains no games for, while adding volume to an axis already present

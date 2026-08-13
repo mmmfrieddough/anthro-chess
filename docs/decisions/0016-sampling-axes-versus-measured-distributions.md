@@ -6,6 +6,9 @@ Date: 2026-07-26
 
 Accepted. `0041-games-of-marked-accounts-leave-the-corpus.md` records the one
 exception taken to the preparation-filter rule below, and says what that costs.
+`0062-the-breadth-corpus-filters-for-validity-alone.md` applies that rule to the
+corpus the evaluation core is designated from, and names the axes it keeps
+whole.
 
 ## Context
 

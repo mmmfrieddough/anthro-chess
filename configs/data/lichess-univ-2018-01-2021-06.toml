@@ -9,13 +9,6 @@ artifact_name = "lichess-univ-2018-01-2021-06"
 #
 # Preparation names no input against this selection and appends every archive
 # of it that has been acquired, decoding as many at once as fill the machine.
-#
-# It is still not ready to prepare from. No `[filters]` section is written yet,
-# so preparation applies the schema's defaults; this selection keeps every speed
-# rather than isolating one, so the section the sibling selection writes is not
-# the one this needs, and what it should say is decided with the rest of the
-# corpus's axes in `#89`. Filters are part of the selection identity, so a run
-# started before that is settled is discarded rather than appended to.
 
 [source]
 id = "lichess"
@@ -37,6 +30,21 @@ seed = "anthro-lichess-blitz-baseline-v1"
 validation_fraction = 0.05
 test_fraction = 0.05
 require_nonempty = true
+
+[filters]
+# Validity only, so every axis this corpus exists to keep measurable is left
+# whole here and narrowed downstream.
+# `docs/decisions/0062-the-breadth-corpus-filters-for-validity-alone.md` names
+# those axes and says why an editorial filter here could never be detected.
+#
+# `speed`, `maximum_games` and `marked_accounts` are therefore absent by
+# decision rather than by omission, and 0062 gives the reason for each. The
+# last is the one to read before setting: it would pin today's census recall
+# into a corpus that cannot be refiltered without re-parsing 42 archives.
+minimum_plies = 1
+require_rated = true
+require_ratings = true
+exclude_bots = true
 
 [output]
 games_per_shard = 50000
