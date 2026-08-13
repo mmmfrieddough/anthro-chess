@@ -54,10 +54,8 @@ def test_round_trips_a_snapshot_without_storing_usernames(tmp_path: Path) -> Non
 def test_a_snapshot_and_a_normalized_row_agree_on_who_an_account_is() -> None:
     """The two truncations of one salted hash have to meet in the middle.
 
-    Preparation stores a player as the leading half of the digest a snapshot
-    stores whole, so a filter reading rows matches by truncating the snapshot
-    the same way. Truncating either side differently matches nobody, and a
-    filter that matches nobody rejects nothing while reporting success.
+    Truncating either side differently matches nobody, and a filter that
+    matches nobody rejects nothing while reporting success.
     """
 
     row_digests = _snapshot("Cheater").row_digests()

@@ -142,10 +142,9 @@ class PoolConfig(ConfigModel):
     #: A snapshot of the accounts the source has marked for breaking its rules.
     #: Every game either player appears in is left out of the pool, and the
     #: recall the snapshot reached is recorded with the generation. A relative
-    #: path resolves against the selection naming it, as it does for a corpus
-    #: selection, so a pool selection reaches a checked-in snapshot by walking
-    #: out of its own directory. ``configs/data/marked-accounts/`` says why the
-    #: snapshot is pinned at all, and
+    #: path resolves against the selection naming it.
+    #: ``configs/data/marked-accounts/`` says why the snapshot is pinned at all,
+    #: and
     #: ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md`` why
     #: the rejection acts on accounts.
     marked_accounts: Path | None = None
@@ -316,12 +315,12 @@ def _freeze_pool(
                 # scan found names the same game in the full read.
                 full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
                 for row in materialize_rows(take_rows(full, positions)):
-                    # Read off the full row rather than decided in the scan
-                    # above, which every freeze pays for whether or not it
-                    # filters: the digest columns come free with the rows a
-                    # freeze was going to materialize anyway. Rejecting after
-                    # admission also makes the count the share this generation
-                    # lost rather than a share of the corpus.
+                    # Rejecting here rather than in the scan above keeps the
+                    # digest columns out of the projection every freeze reads,
+                    # filtered or not; they come free with the rows a freeze was
+                    # going to materialize anyway. Rejecting after admission
+                    # also makes the count the share this generation lost rather
+                    # than a share of the corpus.
                     if (
                         row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
                         or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
@@ -395,11 +394,10 @@ def _freeze_pool(
             "fraction": config.sample_fraction,
             "split_games": split_games,
         },
-        # What the generation claims about the rejection it applied: which
-        # snapshot cut it, the recall the census had reached by then — which
-        # `0047` says is read at designation — and how many games it took. The
-        # digest is here because two snapshots can carry the same header counts
-        # and different accounts, and the cut is permanent.
+        # The snapshot's own digest, not just its header counts: two snapshots
+        # can carry the same counts over different accounts, and containment
+        # makes the cut permanent, so what a generation claims about its
+        # rejection has to stay readable off the generation.
         "marked_accounts": (
             None
             if snapshot is None

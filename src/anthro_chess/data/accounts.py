@@ -130,12 +130,7 @@ class MarkedAccounts:
         return account_digest(username) in self.digests
 
     def row_digests(self) -> frozenset[int]:
-        """Return the marks as the identifier a normalized row stores.
-
-        A row carries a player as the truncation :func:`account_row_digest`
-        produces, so matching one against a snapshot means truncating the
-        snapshot the same way rather than hashing anything again.
-        """
+        """Return the marks as the identifier a normalized row stores."""
 
         return frozenset(
             int(digest[:_ROW_DIGEST_LENGTH], 16) for digest in self.digests

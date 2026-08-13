@@ -365,12 +365,7 @@ def test_a_marked_account_of_either_colour_takes_its_games_out_of_the_pool(
     marked_corpus: Callable[[Path], tuple[Path, Path]],
     fixture_game_id: Callable[[int], int],
 ) -> None:
-    """The rejection acts on the account, so the colour it played is immaterial.
-
-    A row carries each player as a truncation of the digest a snapshot stores,
-    and a match on the wrong half of that truncation would silently keep every
-    game — which is the failure this asserts against rather than the count.
-    """
+    """The rejection acts on the account, so the colour it played is immaterial."""
 
     normalized, manifest = marked_corpus(tmp_path)
     snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4", "black5")
@@ -485,7 +480,7 @@ def test_a_pool_the_snapshot_emptied_blames_the_snapshot(
     tmp_path: Path,
     marked_corpus: Callable[[Path], tuple[Path, Path]],
 ) -> None:
-    """Sent the fraction's message instead, a reader searches the wrong setting."""
+    """The fraction's message would send a reader to the wrong setting."""
 
     normalized, manifest = marked_corpus(tmp_path)
     snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4", "black5", "white6")
