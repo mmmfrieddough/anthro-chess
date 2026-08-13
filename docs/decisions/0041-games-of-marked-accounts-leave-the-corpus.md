@@ -13,6 +13,10 @@ It is the recorded exception to
 `0016-sampling-axes-versus-measured-distributions.md`, which otherwise keeps
 preparation filters to validity and sends editorial choices to training
 selection.
+`0062-the-breadth-corpus-filters-for-validity-alone.md` moves *when* this
+rejection is applied — off the PGN read, onto the account digests the
+normalized row now carries — without changing that it binds before the
+evaluation core is designated.
 
 ## Context
 

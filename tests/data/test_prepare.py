@@ -36,6 +36,7 @@ from anthro_chess.data.accounts import (
 )
 from anthro_chess.data.schema import (
     NORMALIZED_COLUMNS,
+    SPLIT_NAMES,
     decode_clock_remaining_deltas,
 )
 
@@ -1029,7 +1030,16 @@ def test_centisecond_selection_pins_every_month_after_the_pool_split() -> None:
     assert months == sorted(months)
     assert len(set(months)) == len(months)
     assert config.source.rating_namespace_prefix == "lichess"
+    # The one filter set against the schema's own default, so also the only one
+    # whose absence would report that the section went missing entirely.
+    assert config.filters.require_ratings is True
+    # The rest are what `0062-the-breadth-corpus-filters-for-validity-alone.md`
+    # declines. Each agrees with its default, so these catch a filter being
+    # added rather than removed — the direction that does the damage.
     assert config.filters.speed is None
+    assert config.filters.maximum_games is None
+    assert config.filters.marked_accounts is None
+    assert config.filters.minimum_plies == 1
 
 
 @pytest.mark.parametrize("prefix", ["lichess_blitz", "lichess-ultrabullet"])
@@ -1914,3 +1924,115 @@ def test_a_header_the_parser_itself_chokes_on_is_still_a_header_rejection() -> N
 
     assert parsed.record is None
     assert parsed.rejection == "nonstandard_initial_position"
+
+
+def _mixed_axis_archive(tmp_path: Path) -> Path:
+    """One archive spanning every axis value the coverage block can report."""
+
+    clocked = "1. e4 { [%clkc 30000] } e5 { [%clkc 29500] } 2. Bc4 Nc6 1-0"
+    unrated_slots = '[WhiteElo "?"]\n[BlackElo "?"]\n'
+    games = "".join(
+        (
+            _short_game(site="blitz-clocked", time_control="300+0", moves=clocked),
+            _short_game(site="blitz-bare", time_control="300+0"),
+            _short_game(site="bullet", time_control="60+0"),
+            _short_game(
+                site="rated-high",
+                time_control="60+0",
+                extra_headers='[WhiteElo "2050"]\n[BlackElo "2050"]\n',
+            ),
+            _short_game(site="no-control", time_control=None),
+            # An unlimited control, which the source writes for correspondence.
+            _short_game(site="unlimited", time_control="-"),
+            _short_game(site="unrated-slots", extra_headers=unrated_slots),
+        )
+    )
+    path = tmp_path / "mixed.pgn.zst"
+    path.write_bytes(zstandard.ZstdCompressor().compress(games.encode()))
+    return path
+
+
+def test_axis_coverage_splits_every_accepted_game_by_speed_and_clock(
+    tmp_path: Path,
+) -> None:
+    """Sizing a pool per axis reads held-out counts, so the axes carry splits."""
+
+    archive = _mixed_axis_archive(tmp_path)
+    resolved = load_config(
+        PrepareConfig,
+        path=_selection_over(tmp_path, archive),
+        overrides=("source.ratings_are_normalized=true",),
+    )
+
+    result = prepare_pgn(archive, tmp_path / "artifacts", resolved)
+
+    axes = _read_json(result.manifest_path)["coverage"]["axes"]
+    # The unlimited control lands in `unclassified` beside the game that names
+    # no control at all, which is why the bucket is not called correspondence.
+    assert {value: sum(row.values()) for value, row in axes["speed_games"].items()} == {
+        "blitz": 3,
+        "bullet": 2,
+        "unclassified": 2,
+    }
+    assert {value: sum(row.values()) for value, row in axes["clock_games"].items()} == {
+        "present": 1,
+        "absent": 6,
+    }
+    # Two slots per game, and a slot the source rated as unknown counted under
+    # neither bucket.
+    assert {
+        value: sum(row.values()) for value, row in axes["rating_slots"].items()
+    } == {"1200_to_1399": 10, "2000_to_2199": 2, "unclassified": 2}
+    # Over whatever axes were recorded rather than the three named above, so a
+    # fourth cannot be added and go unchecked.
+    for rows in axes.values():
+        for row in rows.values():
+            assert set(row) == set(SPLIT_NAMES)
+    # The clock axis and the precision histogram count the same population off
+    # the same column, differing only in what they break it down by. Nothing in
+    # the manifest binds them, so this does.
+    coverage = _read_json(result.manifest_path)["coverage"]
+    assert sum(axes["clock_games"]["present"].values()) == sum(
+        coverage["clock"]["precision_ms_games"].values()
+    )
+
+
+def test_rating_coverage_is_empty_where_no_reading_could_band_a_game(
+    tmp_path: Path,
+) -> None:
+    """A source on an unconverted scale has no rating axis, and says so.
+
+    Ratings the source gave are still recorded; what is absent is the column a
+    pool admits on and a selection bands by.
+    """
+
+    archive = _mixed_axis_archive(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, archive))
+
+    result = prepare_pgn(archive, tmp_path / "artifacts", resolved)
+
+    coverage = _read_json(result.manifest_path)["coverage"]
+    assert set(coverage["axes"]["rating_slots"]) == {"unclassified"}
+    assert coverage["source_rating"]["maximum"] == 2050
+
+
+def test_axis_coverage_sums_across_every_archive_of_a_corpus(tmp_path: Path) -> None:
+    """The corpus-wide statement is derived from the parts, like every other."""
+
+    first, second = _monthly_archives(tmp_path)
+    resolved = load_config(PrepareConfig, path=_selection_over(tmp_path, first, second))
+    output = tmp_path / "artifacts"
+
+    prepare_pgn(first, output, resolved)
+    appended = prepare_pgn(second, output, resolved)
+
+    manifest = _read_json(appended.manifest_path)
+    corpus = manifest["coverage"]["axes"]["speed_games"]
+    per_archive = [
+        entry["coverage"]["axes"]["speed_games"] for entry in manifest["inputs"]
+    ]
+    assert sum(sum(row.values()) for row in corpus.values()) == 2 * _GAMES_PER_ARCHIVE
+    for split in SPLIT_NAMES:
+        assert corpus["blitz"][split] == sum(
+            archive["blitz"][split] for archive in per_archive
+        )
