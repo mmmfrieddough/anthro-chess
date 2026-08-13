@@ -360,10 +360,19 @@ def small_bandwidth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _compared(pool: Path, **overrides: Any) -> ResolvedConfig[RolloutBenchmarkConfig]:
-    """Return a suite that compares its generated play against human play."""
+    """Return a suite that compares its generated play against human play.
+
+    Four games per position rather than the one the matrix tests play. A cell's
+    games are one stream each and a stream is the unit a comparison resamples,
+    so a suite below ``MINIMUM_BOOTSTRAP_STREAMS`` states no spread — however
+    many ratings it played those streams at.
+    """
 
     reference = {"enabled": True, "resamples": 8, **overrides.pop("reference", {})}
-    return _config(pool=str(pool), reference=reference, **overrides)
+    generation = {"games_per_position": 4, **overrides.pop("generation", {})}
+    return _config(
+        pool=str(pool), reference=reference, generation=generation, **overrides
+    )
 
 
 def test_the_declared_bandwidth_is_one_frozen_value() -> None:
@@ -592,7 +601,7 @@ def test_a_curve_reading_spans_the_rating_grid_rather_than_one_cell(
     assert len(result.readings) == 2
     for reading in result.readings:
         assert reading.ratings == (1200, 1600, 2000)
-        assert reading.model_games == 3
+        assert reading.model_games == 12
     assert {reading.temperature for reading in result.readings} == {0.7, 1.0}
 
 
@@ -715,12 +724,17 @@ def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
     landed instead, and issue #257 measured what that costs: identical
     distances carried floors fourteen orders of magnitude apart depending only
     on how many copies of each forced game the suite had played.
+
+    Colours are swapped here because a greedy row plays one game per position by
+    construction, so the two colour assignments are the only streams it has and
+    a row with one stream has nothing to resample for its null levels either.
     """
 
     result = _run(
         _compared(
             reference_pool,
             grid={"target_ratings": (1200, 1800), "temperatures": (0.0, 1.0)},
+            generation={"swap_colors": True},
         )
     )
 

@@ -140,11 +140,16 @@ class ComparableGame:
     Both sides produce this, which is what keeps a quantity one quantity. The
     generated side fills ``rating`` from the configured conditioning rating and
     the human side from the players' own.
+
+    ``stream`` is the draw the game came out of, which a generated side shares
+    across its whole rating grid and a human game does not have at all: a pool
+    game was played once by two people, so it is its own unit.
     """
 
     rating: float
     result: str
     trajectory: TrajectoryFeatures
+    stream: int | None = None
 
     def value(
         self,
@@ -192,7 +197,9 @@ class ComparableGame:
         """Return this game as one observation of a curve, when it has one."""
 
         value = self.value(quantity, level=level)
-        return None if value is None else Observation(rating=self.rating, value=value)
+        if value is None:
+            return None
+        return Observation(rating=self.rating, value=value, stream=self.stream)
 
 
 class ReferenceConfig(ConfigModel):
@@ -315,6 +322,10 @@ def generated_games(
 
     The model side's rating is the rating it was *told* to play at, which is
     what makes the comparison a test of the dial rather than of an estimate.
+
+    The rating is also what a game's seed is *not* derived from, so the same
+    streams play every point of a grid and a game carries its own as the unit a
+    noise estimate has to redraw.
     """
 
     return tuple(
@@ -322,6 +333,7 @@ def generated_games(
             rating=float(rating),
             result=str(feature.result),
             trajectory=feature.trajectory,
+            stream=feature.seed,
         )
         for feature in features
     )

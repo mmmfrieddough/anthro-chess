@@ -855,11 +855,15 @@ def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
     distance immediately after it, and the null level the verdict is actually
     computed against was not printed at all. The same defect as the rollout
     table, recorded together in #172.
+
+    Four games per position because a mix curve resamples the stream a game came
+    out of, and a handful of streams played across the rating grid is too few
+    replicates to read a spread from, whatever the game count.
     """
 
     from anthro_chess.interfaces.cli import _render_termination
 
-    result = _run(_config(pool))
+    result = _run(_config(pool, generation={"games_per_position": 4}))
 
     rendered = _render_termination(result)
     comparison = result.mix("overall", 1.0).comparison
