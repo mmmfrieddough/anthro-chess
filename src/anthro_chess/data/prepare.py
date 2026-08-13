@@ -1223,7 +1223,7 @@ def _decoded_games(
     marked_accounts: MarkedAccounts | None,
     workers: int,
     counter: ArchiveAccountCounter,
-) -> Generator[_ParsedGame, None, None]:
+) -> Generator[_ParsedGame]:
     """Yield every game's decode in source order, across ``workers`` processes.
 
     Order is what keeps the worker count out of the artifact. Acceptance,

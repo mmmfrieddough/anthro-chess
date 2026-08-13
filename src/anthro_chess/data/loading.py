@@ -88,7 +88,10 @@ class SequenceExample:
             raise ValueError("sequence start_ply must match its first encoded ply")
 
 
-@dataclass(frozen=True)
+# Every dataclass below that holds an array compares by identity: a generated
+# ``__eq__`` asks an elementwise comparison for a truth value it has none of.
+# Compare the arrays a caller means, with ``numpy.array_equal``.
+@dataclass(frozen=True, eq=False)
 class OptionalIntBatch:
     """Packed nullable integers with an explicit presence mask."""
 
@@ -96,7 +99,7 @@ class OptionalIntBatch:
     present: np.ndarray
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SequenceInputs:
     """Framework-neutral numeric model inputs shaped batch by sequence.
 
@@ -119,7 +122,7 @@ class SequenceInputs:
     opponent_clock_ms: OptionalIntBatch
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SequenceBatch:
     """Padded causal batch with aligned targets, masks, and slice metadata.
 

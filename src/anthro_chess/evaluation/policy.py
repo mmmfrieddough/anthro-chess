@@ -154,7 +154,7 @@ class TerminalActionPolicy:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ActiveBatch:
     """The enabled rows of one batch, aligned and validated once.
 
@@ -162,6 +162,10 @@ class ActiveBatch:
     validation of every enabled row, and a legal mask the width of the action
     vocabulary. It is a value rather than a step inside each scorer so that a
     caller reading several quantities off one forward pass pays for it once.
+
+    Equality is identity: a generated one would ask the logits and the mask for
+    a truth value they have none of. Comparing two of these means ``torch.equal``
+    per tensor, and the device read that costs.
     """
 
     logits: Tensor

@@ -28,7 +28,10 @@ from anthro_chess.data.loading import LegalActionTensor
 _Batch: TypeAlias = "SequenceBatch | MoveModelBatch"
 
 
-@dataclass(frozen=True)
+# Every dataclass below that holds a tensor compares by identity: a generated
+# ``__eq__`` asks an elementwise comparison for a truth value it has none of.
+# Compare the tensors a caller means, with ``torch.equal``.
+@dataclass(frozen=True, eq=False)
 class OptionalTensor:
     """Nullable integer values with an explicit presence mask."""
 
@@ -36,7 +39,7 @@ class OptionalTensor:
     present: Tensor
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class MoveModelInputs:
     """Tensorized exact state and context shaped batch by sequence."""
 
@@ -50,7 +53,7 @@ class MoveModelInputs:
     target_rating: OptionalTensor
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class MoveModelBatch:
     """Tensor model boundary plus alignment metadata for inspection.
 
