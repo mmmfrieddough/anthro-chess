@@ -76,14 +76,6 @@ _FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
     *GAME_IDENTITY_COLUMNS,
 )
 
-#: Added to the scan only when a selection names a snapshot, for the reason
-#: above: a freeze that rejects nobody would otherwise decode both columns and
-#: build a Python integer per player over the whole corpus to prove it.
-_MARKED_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
-    NormalizedColumn.WHITE_PLAYER_DIGEST,
-    NormalizedColumn.BLACK_PLAYER_DIGEST,
-)
-
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
 #: remaining columns only to discard them is most of what a load costs.
 _POOL_GAME_COLUMNS = (
@@ -151,9 +143,8 @@ class PoolConfig(ConfigModel):
     #: Every game either player appears in is left out of the pool, and the
     #: recall the snapshot reached is recorded with the generation. A relative
     #: path resolves against the selection naming it, as it does for a corpus
-    #: selection — so a pool selection reaches the checked-in snapshots as
-    #: ``../data/marked-accounts/<name>``, the two kinds of selection sitting in
-    #: sibling directories. ``configs/data/marked-accounts/`` says why the
+    #: selection, so a pool selection reaches a checked-in snapshot by walking
+    #: out of its own directory. ``configs/data/marked-accounts/`` says why the
     #: snapshot is pinned at all, and
     #: ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md`` why
     #: the rejection acts on accounts.
@@ -285,9 +276,6 @@ def _freeze_pool(
     marked_digests = (
         frozenset[int]() if snapshot is None else snapshot.accounts.row_digests()
     )
-    scan_columns = _FREEZE_SCAN_COLUMNS + (
-        _MARKED_SCAN_COLUMNS if marked_digests else ()
-    )
 
     logger.info(
         "Freezing the %s split of %s shard(s) into an evaluation pool",
@@ -306,26 +294,19 @@ def _freeze_pool(
     for path in source_paths:
         shard = open_normalized_shard(path)
         for row_group in range(normalized_row_group_count(shard)):
-            scan = read_normalized_row_group(shard, row_group, scan_columns)
+            scan = read_normalized_row_group(shard, row_group, _FREEZE_SCAN_COLUMNS)
             identities = zip(
                 row_group_column(scan, NormalizedColumn.SPLIT),
                 row_group_column(scan, NormalizedColumn.SOURCE_ID),
                 row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
                 strict=True,
             )
-            marked = _marked_positions(scan, marked_digests)
             positions: list[int] = []
             for position, (split, source_id, game_key) in enumerate(identities):
                 if split == config.split:
                     split_games += 1
                     if admits(derive_game_id(source_id, game_key)):
-                        # Counted among the games that would otherwise have been
-                        # admitted, so the recorded number is the share this
-                        # generation lost rather than a share of the corpus.
-                        if position in marked:
-                            marked_games += 1
-                        else:
-                            positions.append(position)
+                        positions.append(position)
                 elif split == "train":
                     train_game_id = derive_game_id(source_id, game_key)
                     if admits(train_game_id):
@@ -334,7 +315,20 @@ def _freeze_pool(
                 # A projection does not reorder a row group, so a position the
                 # scan found names the same game in the full read.
                 full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
-                selected.extend(materialize_rows(take_rows(full, positions)))
+                for row in materialize_rows(take_rows(full, positions)):
+                    # Read off the full row rather than decided in the scan
+                    # above, which every freeze pays for whether or not it
+                    # filters: the digest columns come free with the rows a
+                    # freeze was going to materialize anyway. Rejecting after
+                    # admission also makes the count the share this generation
+                    # lost rather than a share of the corpus.
+                    if (
+                        row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
+                        or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
+                    ):
+                        marked_games += 1
+                    else:
+                        selected.append(row)
 
     if not selected:
         if split_games == 0:
@@ -410,14 +404,8 @@ def _freeze_pool(
             None
             if snapshot is None
             else {
+                **snapshot.accounts.as_record(),
                 "snapshot_sha256": snapshot.sha256,
-                "queried_at": snapshot.accounts.queried_at,
-                "accounts_total": snapshot.accounts.accounts_total,
-                "accounts_queried": snapshot.accounts.accounts_queried,
-                "accounts_marked": snapshot.accounts.accounts_marked,
-                "slots_total": snapshot.accounts.slots_total,
-                "slots_queried": snapshot.accounts.slots_queried,
-                "slot_coverage": snapshot.accounts.slot_coverage,
                 "rejected_games": marked_games,
             }
         ),
@@ -513,24 +501,6 @@ def _covering_snapshot(
     except MarkedAccountError as error:
         raise EvaluationPoolError(str(error)) from error
     return _MarkedSnapshot(accounts=accounts, sha256=file_sha256(snapshot_path))
-
-
-def _marked_positions(scan: Any, marked_digests: frozenset[int]) -> frozenset[int]:
-    """Return the row-group positions either of whose players is marked."""
-
-    if not marked_digests:
-        return frozenset()
-    return frozenset(
-        position
-        for position, (white, black) in enumerate(
-            zip(
-                row_group_column(scan, NormalizedColumn.WHITE_PLAYER_DIGEST),
-                row_group_column(scan, NormalizedColumn.BLACK_PLAYER_DIGEST),
-                strict=True,
-            )
-        )
-        if white in marked_digests or black in marked_digests
-    )
 
 
 def load_pool(

@@ -407,6 +407,7 @@ def test_the_recall_the_snapshot_claimed_is_recorded_with_the_generation(
 
     assert json.loads(result.manifest_path.read_text())["marked_accounts"] == {
         "snapshot_sha256": file_sha256(snapshot),
+        "covers_archives": ["0" * 64],
         "queried_at": "2026-08-13",
         "accounts_total": 40,
         "accounts_queried": 30,

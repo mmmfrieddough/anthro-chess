@@ -824,17 +824,7 @@ def _prepare_archive(
         "sha256": input_sha256,
         "limit_reached": stopped_at_limit,
         "marked_accounts": (
-            None
-            if marked_accounts is None
-            else {
-                "covers_archives": list(marked_accounts.covers_archives),
-                "queried_at": marked_accounts.queried_at,
-                "accounts_total": marked_accounts.accounts_total,
-                "accounts_queried": marked_accounts.accounts_queried,
-                "slots_total": marked_accounts.slots_total,
-                "slots_queried": marked_accounts.slots_queried,
-                "accounts_marked": marked_accounts.accounts_marked,
-            }
+            None if marked_accounts is None else marked_accounts.as_record()
         ),
         "split_counts": {
             split_name: split_counts[split_name] for split_name in SPLIT_NAMES

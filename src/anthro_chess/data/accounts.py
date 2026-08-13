@@ -141,6 +141,24 @@ class MarkedAccounts:
             int(digest[:_ROW_DIGEST_LENGTH], 16) for digest in self.digests
         )
 
+    def as_record(self) -> dict[str, object]:
+        """Return what an artifact records about the snapshot it was cut under.
+
+        A corpus and a pool both carry this, and they describe one snapshot, so
+        a field added here reaches both rather than whichever writer was edited.
+        """
+
+        return {
+            "covers_archives": list(self.covers_archives),
+            "queried_at": self.queried_at,
+            "accounts_total": self.accounts_total,
+            "accounts_queried": self.accounts_queried,
+            "accounts_marked": self.accounts_marked,
+            "slots_total": self.slots_total,
+            "slots_queried": self.slots_queried,
+            "slot_coverage": self.slot_coverage,
+        }
+
     def require_archive(self, archive_sha256: str) -> None:
         """Reject an archive this snapshot never counted."""
 

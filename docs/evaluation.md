@@ -896,6 +896,15 @@ uniform hash assignments over the same corpus, a validation-split reading is an
 unbiased estimate of the same population quantity the test pool measures, so the
 early peek costs nothing in leakage.
 
+That rests on split assignment being the only thing separating the two, which a
+marked-account snapshot named on the pool selection rather than on the corpus
+breaks: the cut drops those games from the pool and the validation split keeps
+them, so a preview of such a generation estimates a different population — most
+visibly on the human-likeness family, since what the pool drops is engine-
+assisted play. A corpus prepared with the snapshot loses the games from both
+splits and leaves the estimate unbiased, which is the reason to prefer that
+where a snapshot exists before the corpus does.
+
 The one caveat worth stating when reading them together: validation numbers
 drift optimistic over a long run precisely because checkpoint selection presses
 on them. Previews are most trustworthy early and increasingly flattering late,
