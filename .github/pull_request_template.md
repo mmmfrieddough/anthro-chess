@@ -27,6 +27,17 @@ Fill this in from the actual diff, not from memory:
 
 <!-- Link documentation changes, or explain why none were needed. -->
 
+## Findings not filed
+
+<!--
+Real things this change turned up and neither fixed nor filed — one line each:
+what, where, why it was left. Or "none".
+
+Not a transcript of the review passes. A finding with no symptom is not recorded
+anywhere, and one that clears the filing bar becomes an issue instead. Silence
+from the reviewer declines the line.
+-->
+
 ## Linked issues
 
 <!-- Use "Closes #123" for implementation issues completed by this PR. -->
