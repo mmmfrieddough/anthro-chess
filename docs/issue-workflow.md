@@ -414,12 +414,19 @@ Include `Closes #<issue-number>` so merging into the default branch closes the
 implementation issue automatically. Do not close the implementation issue
 manually because the pull request is ready; the merge should close it.
 
-Scope the change knows it is leaving behind is filed as its own issue before the
-merge, with the dependency attached, rather than described in a closing comment.
-A comment on a closed issue is invisible to later sessions, so remaining work
-recorded there is indistinguishable from work nobody found. When a pull request
-can name what it did not do, open that issue or leave the parent open; deferring
-the question to review leaves it filed nowhere.
+A task is expected to leave nothing behind, and one that does has a scope result
+to explain rather than a queue to fill: the pull request says what was left and
+why the issue still closes. What this change made wrong or newly reachable is
+never that — it is the change's own defect and is fixed here, whatever the issue
+asked for.
+
+Remaining work that is genuinely separable and clears the filing bar becomes its
+own issue before the merge, with the dependency attached. Never a comment on the
+issue this pull request closes: no later session reads a closed issue, so work
+recorded there is indistinguishable from work nobody found. Everything real but
+below the bar goes in the pull request body under `## Findings not filed`, where
+the maintainer sees it while reviewing and decides; the global maintenance burden
+rule owns which is which.
 
 For an issue labeled `verification: gpu-required`, a session without the
 specified GPU may still open a ready-for-review pull request after the
@@ -482,5 +489,5 @@ Before substantive changes:
     training run learns.
 11. Account for the diff's size and new surface before marking the pull request
     ready.
-12. File the scope the change knows it is leaving behind before the merge closes
-    the issue.
+12. Account for anything the task left behind before the merge closes the issue:
+    fixed here, filed as its own issue, or explained in the pull request.
