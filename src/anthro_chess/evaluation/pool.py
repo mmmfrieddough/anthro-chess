@@ -25,7 +25,7 @@ from anthro_chess.data import Speed, encoding_identity, speed_from_clock_ms
 from anthro_chess.data.accounts import (
     MarkedAccountError,
     MarkedAccounts,
-    load_marked_accounts,
+    load_snapshot_covering,
     resolve_snapshot_path,
 )
 from anthro_chess.data.artifacts import (
@@ -74,6 +74,12 @@ logger = logging.getLogger(__name__)
 _FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
     NormalizedColumn.SPLIT,
     *GAME_IDENTITY_COLUMNS,
+)
+
+#: Added to the scan only when a selection names a snapshot, for the reason
+#: above: a freeze that rejects nobody would otherwise decode both columns and
+#: build a Python integer per player over the whole corpus to prove it.
+_MARKED_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
     NormalizedColumn.WHITE_PLAYER_DIGEST,
     NormalizedColumn.BLACK_PLAYER_DIGEST,
 )
@@ -144,13 +150,23 @@ class PoolConfig(ConfigModel):
     #: A snapshot of the accounts the source has marked for breaking its rules.
     #: Every game either player appears in is left out of the pool, and the
     #: recall the snapshot reached is recorded with the generation. A relative
-    #: path resolves against the selection naming it, because the snapshot is
-    #: checked in beside it rather than produced by a run;
-    #: ``configs/data/marked-accounts/`` says why it is pinned at all, and
+    #: path resolves against the selection naming it, as it does for a corpus
+    #: selection — so a pool selection reaches the checked-in snapshots as
+    #: ``../data/marked-accounts/<name>``, the two kinds of selection sitting in
+    #: sibling directories. ``configs/data/marked-accounts/`` says why the
+    #: snapshot is pinned at all, and
     #: ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md`` why
     #: the rejection acts on accounts.
     marked_accounts: Path | None = None
     expected_game_ids_sha256: Sha256Hex | None = None
+
+
+@dataclass(frozen=True)
+class _MarkedSnapshot:
+    """The snapshot a cut rejected against, and the file it was read from."""
+
+    accounts: MarkedAccounts
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -265,9 +281,12 @@ def _freeze_pool(
     source_inputs = source_manifest.get("inputs")
     if source_inputs is None and "input" in source_manifest:
         source_inputs = [source_manifest["input"]]
-    marked_accounts = _covering_snapshot(resolved_config, source_inputs, manifest_path)
+    snapshot = _covering_snapshot(resolved_config, source_inputs, manifest_path)
     marked_digests = (
-        frozenset[int]() if marked_accounts is None else marked_accounts.row_digests()
+        frozenset[int]() if snapshot is None else snapshot.accounts.row_digests()
+    )
+    scan_columns = _FREEZE_SCAN_COLUMNS + (
+        _MARKED_SCAN_COLUMNS if marked_digests else ()
     )
 
     logger.info(
@@ -287,26 +306,23 @@ def _freeze_pool(
     for path in source_paths:
         shard = open_normalized_shard(path)
         for row_group in range(normalized_row_group_count(shard)):
-            scan = read_normalized_row_group(shard, row_group, _FREEZE_SCAN_COLUMNS)
+            scan = read_normalized_row_group(shard, row_group, scan_columns)
             identities = zip(
                 row_group_column(scan, NormalizedColumn.SPLIT),
                 row_group_column(scan, NormalizedColumn.SOURCE_ID),
                 row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
-                row_group_column(scan, NormalizedColumn.WHITE_PLAYER_DIGEST),
-                row_group_column(scan, NormalizedColumn.BLACK_PLAYER_DIGEST),
                 strict=True,
             )
+            marked = _marked_positions(scan, marked_digests)
             positions: list[int] = []
-            for position, (split, source_id, game_key, white, black) in enumerate(
-                identities
-            ):
+            for position, (split, source_id, game_key) in enumerate(identities):
                 if split == config.split:
                     split_games += 1
                     if admits(derive_game_id(source_id, game_key)):
                         # Counted among the games that would otherwise have been
                         # admitted, so the recorded number is the share this
                         # generation lost rather than a share of the corpus.
-                        if white in marked_digests or black in marked_digests:
+                        if position in marked:
                             marked_games += 1
                         else:
                             positions.append(position)
@@ -385,20 +401,23 @@ def _freeze_pool(
             "fraction": config.sample_fraction,
             "split_games": split_games,
         },
-        # What the generation claims about the rejection it applied: the recall
-        # the census had reached when the snapshot was cut, which `0047` says is
-        # read at designation, and how many games it took.
+        # What the generation claims about the rejection it applied: which
+        # snapshot cut it, the recall the census had reached by then — which
+        # `0047` says is read at designation — and how many games it took. The
+        # digest is here because two snapshots can carry the same header counts
+        # and different accounts, and the cut is permanent.
         "marked_accounts": (
             None
-            if marked_accounts is None
+            if snapshot is None
             else {
-                "queried_at": marked_accounts.queried_at,
-                "accounts_total": marked_accounts.accounts_total,
-                "accounts_queried": marked_accounts.accounts_queried,
-                "accounts_marked": marked_accounts.accounts_marked,
-                "slots_total": marked_accounts.slots_total,
-                "slots_queried": marked_accounts.slots_queried,
-                "slot_coverage": marked_accounts.slot_coverage,
+                "snapshot_sha256": snapshot.sha256,
+                "queried_at": snapshot.accounts.queried_at,
+                "accounts_total": snapshot.accounts.accounts_total,
+                "accounts_queried": snapshot.accounts.accounts_queried,
+                "accounts_marked": snapshot.accounts.accounts_marked,
+                "slots_total": snapshot.accounts.slots_total,
+                "slots_queried": snapshot.accounts.slots_queried,
+                "slot_coverage": snapshot.accounts.slot_coverage,
                 "rejected_games": marked_games,
             }
         ),
@@ -435,7 +454,7 @@ def _freeze_pool(
         encoding="utf-8",
     )
     total_plies = int(coverage["plies"]["total"])
-    if marked_accounts is not None:
+    if snapshot is not None:
         logger.info(
             "Left %s game(s) of marked accounts out of the pool, %.2f%% of what "
             "the %s split admitted",
@@ -462,14 +481,13 @@ def _covering_snapshot(
     resolved_config: ResolvedConfig[PoolConfig],
     source_inputs: Any,
     manifest_path: Path,
-) -> MarkedAccounts | None:
-    """Load the configured marked-account snapshot, if the corpus is one it covers.
+) -> _MarkedSnapshot | None:
+    """Load the configured marked-account snapshot, if it covers this corpus.
 
-    A snapshot speaks only for the archives its census counted, so one that
-    never counted an archive this corpus holds would keep every account nobody
-    asked about while the generation read as a filtered one. Preparation refuses
-    that archive for the same reason; here the archives are read off the corpus
-    manifest rather than off the file being parsed.
+    Preparation checks that against the archive it is reading; a cut has no
+    archive in hand, so the corpus manifest's own record of what it was
+    prepared from is what the snapshot is held to. A manifest that does not say
+    fails here rather than leaving the check silently unmade.
     """
 
     configured = resolved_config.value.marked_accounts
@@ -488,21 +506,31 @@ def _covering_snapshot(
             "checked for covering them"
         )
     try:
-        snapshot = load_marked_accounts(
-            resolve_snapshot_path(configured, resolved_config.provenance.source)
+        snapshot_path = resolve_snapshot_path(
+            configured, resolved_config.provenance.source
         )
-        for digest in digests:
-            snapshot.require_archive(digest)
+        accounts = load_snapshot_covering(snapshot_path, digests)
     except MarkedAccountError as error:
         raise EvaluationPoolError(str(error)) from error
-    logger.info(
-        "Rejecting the games of %s marked account(s), from a census cut %s that "
-        "had answered for %.1f%% of these archives' player-slots",
-        snapshot.accounts_marked,
-        snapshot.queried_at,
-        100 * snapshot.slot_coverage,
+    return _MarkedSnapshot(accounts=accounts, sha256=file_sha256(snapshot_path))
+
+
+def _marked_positions(scan: Any, marked_digests: frozenset[int]) -> frozenset[int]:
+    """Return the row-group positions either of whose players is marked."""
+
+    if not marked_digests:
+        return frozenset()
+    return frozenset(
+        position
+        for position, (white, black) in enumerate(
+            zip(
+                row_group_column(scan, NormalizedColumn.WHITE_PLAYER_DIGEST),
+                row_group_column(scan, NormalizedColumn.BLACK_PLAYER_DIGEST),
+                strict=True,
+            )
+        )
+        if white in marked_digests or black in marked_digests
     )
-    return snapshot
 
 
 def load_pool(

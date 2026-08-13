@@ -921,17 +921,18 @@ into a corpus that cannot be refiltered without re-parsing every archive.
 [`0062-the-breadth-corpus-filters-for-validity-alone.md`](decisions/0062-the-breadth-corpus-filters-for-validity-alone.md)
 records that choice, and `docs/evaluation.md` owns the pool cut that carries it.
 What it costs is that a corpus filtered only at the pool still holds these games
-in its train split, where narrowing what a run reads belongs to training
-selection.
+in its train split. Nothing narrows them there today: training selection has no
+marked-account dial, and adding one is what applying `0041` to the training half
+of such a corpus would take.
 
 Building a snapshot is a continuous census rather than a task with an
 end, so a snapshot states the coverage it reached instead of implying totality;
 [`0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md`](decisions/0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md)
-records why, and what that coverage does and does not claim. A selection
-carries the setting
-commented out rather than pointing at a file that is not there, because both
-readers refuse a missing or non-covering snapshot rather than quietly proceeding
-without one.
+records why, and what that coverage does and does not claim. Neither the corpus
+nor the pool falls back to preparing unfiltered when a snapshot is named and
+missing, or named and non-covering: both refuse. That is why the baseline
+selection carries its setting commented out rather than pointing at a file that
+is not there.
 
 The filter acts on accounts rather than on moves because no method separates
 assisted moves from honest ones within a game at any useful confidence, while

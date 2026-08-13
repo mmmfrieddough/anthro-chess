@@ -38,7 +38,7 @@ from anthro_chess.data.accounts import (
     MarkedAccountError,
     MarkedAccounts,
     account_row_digest,
-    load_marked_accounts,
+    load_snapshot_covering,
     resolve_snapshot_path,
 )
 from anthro_chess.data.artifacts import (
@@ -1325,21 +1325,12 @@ def _resolve_marked_accounts(
     if configured is None:
         return None
     try:
-        snapshot_path = resolve_snapshot_path(
-            configured, resolved_config.provenance.source
+        return load_snapshot_covering(
+            resolve_snapshot_path(configured, resolved_config.provenance.source),
+            (input_sha256,),
         )
-        snapshot = load_marked_accounts(snapshot_path)
-        snapshot.require_archive(input_sha256)
     except MarkedAccountError as error:
         raise DataPreparationError(str(error)) from error
-    logger.info(
-        "Rejecting games of %s marked account(s), from a census cut %s that had "
-        "answered for %.1f%% of these archives' player-slots",
-        snapshot.accounts_marked,
-        snapshot.queried_at,
-        100 * snapshot.slot_coverage,
-    )
-    return snapshot
 
 
 class _RecordBuilder(chess.pgn.BaseVisitor[_ParsedGame]):

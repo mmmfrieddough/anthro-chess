@@ -9,7 +9,9 @@ split = "test"
 # here rejects the games of the accounts it lists and pins the recall its census
 # had reached, which `0047` puts at core designation rather than earlier — and
 # `0041` records that once a generation is designated, containment forbids
-# removing a game from any generation after it.
+# removing a game from any generation after it. A relative path resolves against
+# this file, so a checked-in snapshot is named
+# `../data/marked-accounts/<snapshot>`.
 
 # Recorded from the first successful build so a rebuild on another machine is
 # verified rather than merely plausible. A mismatch means the corpus, filters,

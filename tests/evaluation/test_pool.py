@@ -12,6 +12,7 @@ import pytest
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import Speed
 from anthro_chess.data.accounts import MarkedAccounts, account_digest
+from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation import (
     BENCHMARK_VERSION,
@@ -405,6 +406,7 @@ def test_the_recall_the_snapshot_claimed_is_recorded_with_the_generation(
     )
 
     assert json.loads(result.manifest_path.read_text())["marked_accounts"] == {
+        "snapshot_sha256": file_sha256(snapshot),
         "queried_at": "2026-08-13",
         "accounts_total": 40,
         "accounts_queried": 30,
@@ -416,16 +418,62 @@ def test_the_recall_the_snapshot_claimed_is_recorded_with_the_generation(
     }
 
 
-def test_a_snapshot_that_never_counted_an_archive_refuses_to_cut_from_it(
+def _spanning_archives(manifest: Path, *archive_sha256s: str) -> None:
+    """Rewrite the fixture manifest as a corpus prepared from several archives."""
+
+    record = json.loads(manifest.read_text())
+    del record["input"]
+    record["inputs"] = [
+        {"file_name": f"fixture-{index}.pgn", "sha256": archive_sha256}
+        for index, archive_sha256 in enumerate(archive_sha256s)
+    ]
+    manifest.write_text(json.dumps(record))
+
+
+def test_a_snapshot_has_to_cover_every_archive_the_corpus_holds(
     tmp_path: Path,
     marked_corpus: Callable[[Path], tuple[Path, Path]],
 ) -> None:
-    """Otherwise a widened corpus keeps every account nobody was asked about."""
+    """A corpus spans archives, and a snapshot short of the span is refused.
+
+    An archive the census never counted is one whose accounts nobody was asked
+    about, so filtering the months a snapshot knows and keeping the rest whole
+    would cut a generation that reads as filtered and is not.
+    """
 
     normalized, manifest = marked_corpus(tmp_path)
-    snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4", covers=("f" * 64,))
+    _spanning_archives(manifest, "0" * 64, "1" * 64)
+    partial = _snapshot(tmp_path / "partial.txt", "white4", covers=("0" * 64,))
+    whole = _snapshot(tmp_path / "whole.txt", "white4", covers=("0" * 64, "1" * 64))
 
-    with pytest.raises(EvaluationPoolError, match="does not cover archive"):
+    with pytest.raises(EvaluationPoolError, match=f"does not cover archive {'1' * 64}"):
+        freeze_pool(
+            _resolved(normalized, manifest, marked_accounts=str(partial)),
+            tmp_path / "refused",
+        )
+
+    assert (
+        freeze_pool(
+            _resolved(normalized, manifest, marked_accounts=str(whole)),
+            tmp_path / "pool",
+        ).games
+        == 2
+    )
+
+
+def test_a_manifest_that_names_no_archive_refuses_the_snapshot_it_cannot_check(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """A coverage check that silently did not happen is the failure to be loud about."""
+
+    normalized, manifest = marked_corpus(tmp_path)
+    record = json.loads(manifest.read_text())
+    del record["input"]
+    manifest.write_text(json.dumps(record))
+    snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4")
+
+    with pytest.raises(EvaluationPoolError, match="digest of every archive"):
         freeze_pool(
             _resolved(normalized, manifest, marked_accounts=str(snapshot)),
             tmp_path / "pool",

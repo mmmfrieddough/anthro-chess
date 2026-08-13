@@ -31,11 +31,15 @@ publish the list.
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
 from anthro_chess.data.artifacts import write_text_atomically
+
+logger = logging.getLogger(__name__)
 
 SNAPSHOT_FORMAT_VERSION = 2
 #: Fixed, checked-in, and part of the artifact's identity. Changing it
@@ -169,6 +173,30 @@ class MarkedAccounts:
         return output_path
 
 
+def load_snapshot_covering(
+    path: str | Path,
+    archive_sha256s: Iterable[str],
+) -> MarkedAccounts:
+    """Load a snapshot, refusing one that never counted an archive named here.
+
+    A corpus applies this rejection while it is prepared and a pool applies it
+    when its generation is cut, so what a snapshot has to be before either of
+    them may use it, and what it claims once they do, is stated once.
+    """
+
+    snapshot = load_marked_accounts(path)
+    for archive_sha256 in archive_sha256s:
+        snapshot.require_archive(archive_sha256)
+    logger.info(
+        "Rejecting the games of %s marked account(s), from a census cut %s that "
+        "had answered for %.1f%% of the player-slots it counted",
+        snapshot.accounts_marked,
+        snapshot.queried_at,
+        100 * snapshot.slot_coverage,
+    )
+    return snapshot
+
+
 def load_marked_accounts(path: str | Path) -> MarkedAccounts:
     """Read a checked-in marked-account snapshot."""
 
@@ -261,7 +289,8 @@ def resolve_snapshot_path(configured: Path, config_source: str | None) -> Path:
         return configured
     if config_source is None:
         raise MarkedAccountError(
-            "filters.marked_accounts is relative but the configuration was not "
-            "loaded from a file, so there is nothing to resolve it against"
+            f"the marked-account snapshot path {configured} is relative but the "
+            "configuration was not loaded from a file, so there is nothing to "
+            "resolve it against"
         )
     return Path(config_source).parent / configured
