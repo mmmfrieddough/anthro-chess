@@ -5,7 +5,7 @@ the current implementation stage are easiest to review.
 
 ## Development Setup
 
-The project requires Python 3.11 or newer and uses
+The project requires Python 3.13 or newer and uses
 [uv](https://docs.astral.sh/uv/) for its locked environment. From a fresh clone:
 
 ```console

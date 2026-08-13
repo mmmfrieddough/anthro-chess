@@ -1,4 +1,6 @@
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ from anthro_chess.config import load_config
 from anthro_chess.data import (
     DataLoadingError,
     PrepareConfig,
+    SequenceBatch,
     SequenceDataLoader,
     SequenceDataset,
     SequenceLoaderConfig,
@@ -358,6 +361,21 @@ def test_dataset_identity_covers_content_and_canonical_shard_order(
         ordered.identity_sha256
         != SequenceDataset.from_parquet(changed, split="train").identity_sha256
     )
+
+
+def test_comparing_two_batches_answers_instead_of_asking_an_array_for_a_bool(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Comparison is total and returns a bool, whatever the arrays hold.
+
+    ``False`` for a copy holding the same arrays is the point: no caller may
+    read ``==`` as "same contents". That is ``numpy.array_equal`` per field.
+    """
+
+    batch = sequence_batch((("e2e4", "e7e5"), 1500, 1600))
+
+    for value in (batch, batch.inputs, batch.inputs.target_rating):
+        assert (value == replace(value)) is False
 
 
 def _encoded_dataset() -> SequenceDataset:

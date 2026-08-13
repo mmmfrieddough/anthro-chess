@@ -155,6 +155,21 @@ def test_the_tensor_boundary_widens_the_columns_the_model_indexes_with(
     assert batch.game_ids.tolist() == source.game_ids.tolist()
 
 
+def test_comparing_two_batches_answers_instead_of_asking_a_tensor_for_a_bool(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Comparison is total and returns a bool, whatever the tensors hold.
+
+    ``False`` for a copy holding the same tensors is the point: no caller may
+    read ``==`` as "same contents". That is ``torch.equal`` per field.
+    """
+
+    batch = _batch(sequence_batch)
+
+    for value in (batch, batch.inputs, batch.inputs.target_rating):
+        assert (value == replace(value)) is False
+
+
 def test_the_tensor_boundary_rejects_a_corrupted_source_column(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
