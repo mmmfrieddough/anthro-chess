@@ -16,6 +16,7 @@ from anthro_chess.evaluation.results import (
     Comparability,
     ExecutionRecord,
     Movement,
+    NoiseVerdict,
     ReportError,
     ResultEnvelope,
     ResultRecordError,
@@ -471,6 +472,18 @@ def test_every_training_efficiency_metric_is_execution_sensitive() -> None:
         assert definition.projection is None
 
 
+def test_every_training_efficiency_metric_says_why_it_carries_no_floor() -> None:
+    """The obligation decision 0043 leaves on a reading that measures no spread.
+
+    A training reading cannot measure one: the only replicate of it is a second
+    training run. Saying so is what makes a report read ``unqualifiable``
+    instead of sending a reader after a spread nothing can produce.
+    """
+
+    for definition in registered_metrics("training-efficiency"):
+        assert definition.no_sampling_floor_reason is not None
+
+
 def test_measurements_carry_the_workload_fingerprint() -> None:
     execution = _execution()
 
@@ -741,6 +754,25 @@ def test_an_unchanged_setup_still_reads_as_a_verdict() -> None:
     assert row.attribution.environment is AxisChange.UNCHANGED
     assert row.movement is Movement.BETTER
     assert row.conditions == ()
+
+
+def test_a_training_delta_is_unqualifiable_rather_than_left_unknown() -> None:
+    """``unknown`` would send a reader after work nobody can do here.
+
+    A floor for these would cost replicate training runs, so the verdict has to
+    say the reading cannot produce one rather than that none has been produced.
+    """
+
+    before = _recorded("before", datetime(2026, 7, 1, tzinfo=UTC))
+    after = _recorded("after", datetime(2026, 7, 8, tzinfo=UTC))
+
+    report = build_delta_report([before, after], BridgeIndex())
+    rows = [row for family in report.families for row in family.metrics]
+
+    assert len(rows) == len(registered_metrics("training-efficiency"))
+    for row in rows:
+        assert row.noise is NoiseVerdict.UNQUALIFIABLE, row.metric
+        assert row.noise_floor is None, row.metric
 
 
 def test_the_environment_pivot_pins_conditions_rather_than_weights() -> None:

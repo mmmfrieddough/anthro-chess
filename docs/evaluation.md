@@ -2551,6 +2551,15 @@ two different sets of weights, so pinning parameters would make "did the new
 machine help" unaskable rather than rigorous; the architecture and corpus are
 what has to hold still.
 
+**None of these readings carries a floor, and every metric says why.** The only
+replicate of a training reading is a second training run, so each metric
+declares its reason in the registry and a report reads `unqualifiable` rather
+than `unknown`, which stops a reader waiting on a spread nothing can produce.
+Attributing a cost change to a training change is therefore a control-arm
+reading, as it is for any other causal claim.
+`docs/decisions/0061-a-training-cost-reading-has-no-replicate-to-resample.md`
+owns why, including what a within-run interval spread was measured to cost.
+
 `anthro_chess.training.efficiency` owns the exact metrics, defaults, and
 workload fields. `docs/training-and-runtime.md` owns the deferred read-back the
 measurement depends on, including why the measurement's unit is a logging
