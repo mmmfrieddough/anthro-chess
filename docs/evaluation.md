@@ -706,6 +706,17 @@ lowered, so it is chosen as the smallest size that resolves what the project
 intends to read. Without it the pool is the whole split, which is what the
 pre-designation generation is.
 
+The cut is also where the marked-account rejection is applied when preparation
+did not apply it. A pool selection may name the snapshot `docs/data.md`
+describes, and every admitted game either player's digest appears in is left out
+of the generation. The manifest records the recall that snapshot claimed and how
+many games it took: containment makes the cut permanent, so what a generation
+claims has to be readable off the generation itself, and a rejection nobody can
+audit is indistinguishable from one that never ran. A snapshot that never
+counted an archive the corpus holds is refused rather than applied to it. Which
+recall a pool carries is therefore settled when it is cut, which for the core
+means at designation, by whoever designates it.
+
 **Views** are per-benchmark deterministic selections over the pool: filtering by
 ply count, rating presence, or the day the source dated a game; projecting to
 prefixes; subsampling by hash rank.

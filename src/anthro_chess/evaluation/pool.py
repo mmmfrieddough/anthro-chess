@@ -22,6 +22,12 @@ from pydantic import Field
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import Speed, encoding_identity, speed_from_clock_ms
+from anthro_chess.data.accounts import (
+    MarkedAccountError,
+    MarkedAccounts,
+    load_marked_accounts,
+    resolve_snapshot_path,
+)
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
@@ -68,6 +74,8 @@ logger = logging.getLogger(__name__)
 _FREEZE_SCAN_COLUMNS: tuple[NormalizedColumn, ...] = (
     NormalizedColumn.SPLIT,
     *GAME_IDENTITY_COLUMNS,
+    NormalizedColumn.WHITE_PLAYER_DIGEST,
+    NormalizedColumn.BLACK_PLAYER_DIGEST,
 )
 
 #: The columns a :class:`PoolGame` is derived from. Reading the schema's
@@ -133,6 +141,15 @@ class PoolConfig(ConfigModel):
     #: ``docs/decisions/0052-a-bounded-pool-is-a-fixed-admission-fraction.md``
     #: owns why the bound is a fraction rather than a game count.
     sample_fraction: float | None = Field(default=None, gt=0.0, lt=1.0)
+    #: A snapshot of the accounts the source has marked for breaking its rules.
+    #: Every game either player appears in is left out of the pool, and the
+    #: recall the snapshot reached is recorded with the generation. A relative
+    #: path resolves against the selection naming it, because the snapshot is
+    #: checked in beside it rather than produced by a run;
+    #: ``configs/data/marked-accounts/`` says why it is pinned at all, and
+    #: ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md`` why
+    #: the rejection acts on accounts.
+    marked_accounts: Path | None = None
     expected_game_ids_sha256: Sha256Hex | None = None
 
 
@@ -242,6 +259,16 @@ def _freeze_pool(
     if not isinstance(source_manifest, dict):
         raise EvaluationPoolError("source manifest must contain a JSON object")
     validate_manifest_compatibility(source_manifest, manifest_path)
+    # A corpus prepared before manifests spanned archives records one `input`,
+    # and freezing from one is legitimate where appending to it is not, so its
+    # provenance is carried rather than dropped.
+    source_inputs = source_manifest.get("inputs")
+    if source_inputs is None and "input" in source_manifest:
+        source_inputs = [source_manifest["input"]]
+    marked_accounts = _covering_snapshot(resolved_config, source_inputs, manifest_path)
+    marked_digests = (
+        frozenset[int]() if marked_accounts is None else marked_accounts.row_digests()
+    )
 
     logger.info(
         "Freezing the %s split of %s shard(s) into an evaluation pool",
@@ -251,6 +278,7 @@ def _freeze_pool(
     admits = _admission(config.sample_fraction)
     selected: list[dict[str, Any]] = []
     split_games = 0
+    marked_games = 0
     # Only an admitted game can reach the pool, so a train id that is not
     # admitted cannot collide with one and holding it would grow this set with
     # the corpus for nothing. The narrowing is the pool's to accept: what a
@@ -264,14 +292,24 @@ def _freeze_pool(
                 row_group_column(scan, NormalizedColumn.SPLIT),
                 row_group_column(scan, NormalizedColumn.SOURCE_ID),
                 row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
+                row_group_column(scan, NormalizedColumn.WHITE_PLAYER_DIGEST),
+                row_group_column(scan, NormalizedColumn.BLACK_PLAYER_DIGEST),
                 strict=True,
             )
             positions: list[int] = []
-            for position, (split, source_id, game_key) in enumerate(identities):
+            for position, (split, source_id, game_key, white, black) in enumerate(
+                identities
+            ):
                 if split == config.split:
                     split_games += 1
                     if admits(derive_game_id(source_id, game_key)):
-                        positions.append(position)
+                        # Counted among the games that would otherwise have been
+                        # admitted, so the recorded number is the share this
+                        # generation lost rather than a share of the corpus.
+                        if white in marked_digests or black in marked_digests:
+                            marked_games += 1
+                        else:
+                            positions.append(position)
                 elif split == "train":
                     train_game_id = derive_game_id(source_id, game_key)
                     if admits(train_game_id):
@@ -285,6 +323,11 @@ def _freeze_pool(
     if not selected:
         if split_games == 0:
             message = f"no normalized games are assigned to the {config.split} split"
+        elif marked_games:
+            message = (
+                f"every game admitted from the {config.split} split was rejected "
+                f"as a marked account's, {marked_games} in all"
+            )
         else:
             message = (
                 f"a sample fraction of {config.sample_fraction} admitted none of "
@@ -317,12 +360,6 @@ def _freeze_pool(
     write_normalized_rows(selected, games_path)
 
     coverage = pool_coverage(selected)
-    # A corpus prepared before manifests spanned archives records one `input`,
-    # and freezing from one is legitimate where appending to it is not, so its
-    # provenance is carried rather than dropped.
-    source_inputs = source_manifest.get("inputs")
-    if source_inputs is None and "input" in source_manifest:
-        source_inputs = [source_manifest["input"]]
     pool_manifest = {
         "benchmark_version": BENCHMARK_VERSION,
         "pool": {
@@ -348,6 +385,23 @@ def _freeze_pool(
             "fraction": config.sample_fraction,
             "split_games": split_games,
         },
+        # What the generation claims about the rejection it applied: the recall
+        # the census had reached when the snapshot was cut, which `0047` says is
+        # read at designation, and how many games it took.
+        "marked_accounts": (
+            None
+            if marked_accounts is None
+            else {
+                "queried_at": marked_accounts.queried_at,
+                "accounts_total": marked_accounts.accounts_total,
+                "accounts_queried": marked_accounts.accounts_queried,
+                "accounts_marked": marked_accounts.accounts_marked,
+                "slots_total": marked_accounts.slots_total,
+                "slots_queried": marked_accounts.slots_queried,
+                "slot_coverage": marked_accounts.slot_coverage,
+                "rejected_games": marked_games,
+            }
+        ),
         "output": {
             "format": "parquet",
             "compression": "zstd",
@@ -381,6 +435,14 @@ def _freeze_pool(
         encoding="utf-8",
     )
     total_plies = int(coverage["plies"]["total"])
+    if marked_accounts is not None:
+        logger.info(
+            "Left %s game(s) of marked accounts out of the pool, %.2f%% of what "
+            "the %s split admitted",
+            marked_games,
+            100 * marked_games / (len(games) + marked_games),
+            config.split,
+        )
     logger.info(
         "Froze %s game(s) and %s ply/plies into %s",
         len(games),
@@ -394,6 +456,53 @@ def _freeze_pool(
         plies=total_plies,
         game_ids_sha256=identity,
     )
+
+
+def _covering_snapshot(
+    resolved_config: ResolvedConfig[PoolConfig],
+    source_inputs: Any,
+    manifest_path: Path,
+) -> MarkedAccounts | None:
+    """Load the configured marked-account snapshot, if the corpus is one it covers.
+
+    A snapshot speaks only for the archives its census counted, so one that
+    never counted an archive this corpus holds would keep every account nobody
+    asked about while the generation read as a filtered one. Preparation refuses
+    that archive for the same reason; here the archives are read off the corpus
+    manifest rather than off the file being parsed.
+    """
+
+    configured = resolved_config.value.marked_accounts
+    if configured is None:
+        return None
+    archives = source_inputs if isinstance(source_inputs, list) else []
+    digests = [
+        archive["sha256"]
+        for archive in archives
+        if isinstance(archive, Mapping) and isinstance(archive.get("sha256"), str)
+    ]
+    if not digests or len(digests) != len(archives):
+        raise EvaluationPoolError(
+            f"{manifest_path} does not record the digest of every archive this "
+            "corpus was prepared from, so a marked-account snapshot cannot be "
+            "checked for covering them"
+        )
+    try:
+        snapshot = load_marked_accounts(
+            resolve_snapshot_path(configured, resolved_config.provenance.source)
+        )
+        for digest in digests:
+            snapshot.require_archive(digest)
+    except MarkedAccountError as error:
+        raise EvaluationPoolError(str(error)) from error
+    logger.info(
+        "Rejecting the games of %s marked account(s), from a census cut %s that "
+        "had answered for %.1f%% of these archives' player-slots",
+        snapshot.accounts_marked,
+        snapshot.queried_at,
+        100 * snapshot.slot_coverage,
+    )
+    return snapshot
 
 
 def load_pool(

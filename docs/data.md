@@ -902,8 +902,9 @@ for every later benchmark, and it should be recorded as one.
 
 Engine assistance is the case that most tests that rule, and it is the
 deliberate exception. Every game played by an account the source has marked is
-rejected during preparation, so those games leave every split rather than only
-the training one. The reason is that a reference containing engine-assisted
+rejected. Preparation applies that when a selection names a snapshot, and those
+games then leave every split rather than only the training one. The reason is
+that a reference containing engine-assisted
 play measures the wrong target for a project whose whole subject is human-like
 play, and the human-versus-engine classifier would otherwise draw its human
 class from it. That is a definitional statement about what counts as human
@@ -911,15 +912,26 @@ play, it removes roughly a tenth of the games a month offers, and it is
 recorded as one in
 [`0041-games-of-marked-accounts-leave-the-corpus.md`](decisions/0041-games-of-marked-accounts-leave-the-corpus.md).
 
-The baseline selection does not name a snapshot yet, so it prepares unfiltered
-until one exists. Building one is a continuous census rather than a task with an
+No shipped selection names a snapshot, so every one of them prepares
+unfiltered. For the breadth corpus that is deliberate rather than pending: the
+normalized row carries both players' account digests, so the same rejection can
+be applied when the evaluation pool's generation is cut, and applying it during
+preparation would instead pin whatever recall the census had reached that day
+into a corpus that cannot be refiltered without re-parsing every archive.
+[`0062-the-breadth-corpus-filters-for-validity-alone.md`](decisions/0062-the-breadth-corpus-filters-for-validity-alone.md)
+records that choice, and `docs/evaluation.md` owns the pool cut that carries it.
+What it costs is that a corpus filtered only at the pool still holds these games
+in its train split, where narrowing what a run reads belongs to training
+selection.
+
+Building a snapshot is a continuous census rather than a task with an
 end, so a snapshot states the coverage it reached instead of implying totality;
 [`0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md`](decisions/0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md)
-records why, and what that coverage does and does not claim. The selection
+records why, and what that coverage does and does not claim. A selection
 carries the setting
-commented out rather than pointing at a file that is not there, because
-preparation refuses a missing or non-covering snapshot rather than quietly
-preparing without it.
+commented out rather than pointing at a file that is not there, because both
+readers refuse a missing or non-covering snapshot rather than quietly proceeding
+without one.
 
 The filter acts on accounts rather than on moves because no method separates
 assisted moves from honest ones within a game at any useful confidence, while

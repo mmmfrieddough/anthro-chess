@@ -87,8 +87,8 @@ class MarkedAccounts:
 
     Within them it speaks partially, and the counts say how partially. An
     account that is listed is marked; an account that is not was either
-    answered for and clean, or never asked about, and preparation cannot tell
-    the two apart, so it keeps the games either way. ``slots_queried`` against
+    answered for and clean, or never asked about, and nothing here can tell
+    the two apart, so its games are kept either way. ``slots_queried`` against
     ``slots_total`` is what that costs, in the player-slots the corpus is
     actually made of rather than in accounts, because marked accounts play more
     games than average.
@@ -125,6 +125,18 @@ class MarkedAccounts:
 
         return account_digest(username) in self.digests
 
+    def row_digests(self) -> frozenset[int]:
+        """Return the marks as the identifier a normalized row stores.
+
+        A row carries a player as the truncation :func:`account_row_digest`
+        produces, so matching one against a snapshot means truncating the
+        snapshot the same way rather than hashing anything again.
+        """
+
+        return frozenset(
+            int(digest[:_ROW_DIGEST_LENGTH], 16) for digest in self.digests
+        )
+
     def require_archive(self, archive_sha256: str) -> None:
         """Reject an archive this snapshot never counted."""
 
@@ -133,7 +145,7 @@ class MarkedAccounts:
                 f"marked-account snapshot does not cover archive {archive_sha256} "
                 f"(it covers {len(self.covers_archives)} other archive(s)); count "
                 "that archive into the census with `uv run anthro data census "
-                "--config <selection>` and cut a new snapshot before preparing it"
+                "--config <selection>` and cut a new snapshot that covers it"
             )
 
     def write(self, path: str | Path) -> Path:

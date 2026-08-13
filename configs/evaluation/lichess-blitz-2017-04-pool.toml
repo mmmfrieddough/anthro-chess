@@ -5,6 +5,12 @@ manifest = "artifacts/lichess-blitz-2017-04/manifests/manifest.json"
 # Never consumed by training. See the split section of the source data config.
 split = "test"
 
+# `marked_accounts` is absent, so this generation is unfiltered. A snapshot set
+# here rejects the games of the accounts it lists and pins the recall its census
+# had reached, which `0047` puts at core designation rather than earlier — and
+# `0041` records that once a generation is designated, containment forbids
+# removing a game from any generation after it.
+
 # Recorded from the first successful build so a rebuild on another machine is
 # verified rather than merely plausible. A mismatch means the corpus, filters,
 # or split seed moved and the benchmark needs a new pool version.
