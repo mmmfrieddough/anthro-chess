@@ -1582,18 +1582,20 @@ the shared decision decomposition rather than a private one, since that layer
 already groups decisions by the dials they were made under and a ladder's seats
 are exactly those groups.
 
-**The openings are drawn at one speed class**, derived from each game's own time
-control by `anthro_chess.data.speed` rather than by bands restated here, so the
-ladder's roots and the slice tables name one set of games. Every pairing plays
-the same roots, so how that draw is composed reaches every fitted rating, and
-which openings people play is a strong function of the clock.
+**The openings are drawn at one speed class and one rating pool.** The class
+comes from each game's own time control and the pool from the source's own
+label, which are different derivations that can disagree, so a reading names
+both rather than inferring one from the other. Every pairing plays the same
+roots, so how that draw is composed reaches every fitted rating: which openings
+people play is a strong function of the clock, and a rating is a number in a
+pool rather than a point on one scale.
 
-**What the class does not fix is the rating scale**, and the reading says so
-beside it. Which rating pool a source number came from is the rating namespace
-of `docs/decisions/0057-the-rating-namespace-is-derived-per-game.md`, a
-different derivation that disagrees with the speed class. Slicing the openings
-puts one speed in the reading; it does not put one rating pool in it, so a
-sliced ladder is not a ladder on one rating scale.
+**What naming them does not settle is the scale the fitted ratings sit on**, and
+the reading says so beside them. The openings decide what the seats play; what a
+*configured* rating meant was decided by the corpus the model trained on, and
+nothing in this benchmark can check that the two name one pool. A ladder read
+over one population is therefore still a ladder about the dial rather than about
+that population's rating scale.
 
 **A full ladder is a scheduled reading rather than a routine one.** The declared
 grid plays thousands of games per checkpoint, so it is taken when a checkpoint is
@@ -1969,10 +1971,13 @@ drawn from however the pool happens to be composed reports that composition as a
 distance. The harness plays untimed, so a speed class slices the reference
 rather than the model, and it is the class `anthro_chess.data.speed` derives
 from the game's own time control, the same one the termination mix is read
-against. **One class per reading here**, where that one compares several, so a
-class the pool holds no game of is not a distance over nothing but a suite with
-nothing to compare: it fails in the pool pass, before the games it would have
-measured are played. The same class selects the human-prefix arm's
+against. The reference names a **rating pool** as well, because rating is this
+comparison's own axis: every reference game is placed at the mean of its two
+players' ratings, and numbers drawn from two pools are two scales plotted as
+one. **One class per reading here**, where the termination mix compares several,
+so a population the pool holds no game of is not a distance over nothing but a
+suite with nothing to compare: it fails in the pool pass, before the games it
+would have measured are played. The same class selects the human-prefix arm's
 roots, since a mixed set of openings compared against one class's reference
 would put that difference into every distance.
 

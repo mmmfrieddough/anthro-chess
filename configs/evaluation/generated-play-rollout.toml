@@ -75,6 +75,7 @@ concurrency = 8
 name = "rollout-prefix"
 maximum_games = 32
 speed = "blitz"
+rating_namespace = "lichess_blitz"
 
 [reference]
 # Compare generated play against matched human play. This is what turns the
@@ -107,9 +108,12 @@ require_ratings = true
 # One human population rather than whatever mixture the pool happens to hold.
 # The cap above then takes that many games of this class rather than of the
 # mixture, which is what keeps the declared bandwidth the declared bandwidth.
-# Declared while the pool is one class, so widening the corpus cannot quietly
-# mix them.
+# Blitz is the plurality class of the corpus by games and by plies.
 speed = "blitz"
+# And one rating pool, because rating is this comparison's own axis: every
+# reference game is placed at the mean of its two players' ratings, and numbers
+# from two pools on one axis are two scales drawn as one.
+rating_namespace = "lichess_blitz"
 
 [detail]
 # Whole games, machine-local. Every later distribution feature is recomputed

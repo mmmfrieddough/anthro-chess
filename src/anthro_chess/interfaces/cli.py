@@ -2696,29 +2696,39 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
 
 
 def _view_population(view: ViewSelection) -> str:
-    """Return how much of a pool a view took, naming its class when it sliced."""
+    """Return how much of a pool a view took, and which population it took.
 
-    sliced = "" if view.speed is None else f", {view.speed} alone"
-    return f"{view.selected_games} of {view.eligible_games} eligible game(s){sliced}"
+    Both axes are named where both are declared: they read different fields and
+    can disagree, so a reader of a rating reading needs the pool rather than
+    having to infer it from the class.
+    """
+
+    named = f"{view.selected_games} of {view.eligible_games} eligible game(s)"
+    if view.speed is not None:
+        named += f", {view.speed} alone"
+    if view.rating_namespace is not None:
+        named += f", {view.rating_namespace} ratings"
+    return named
 
 
 def _render_ladder_openings(view: ViewSelection | None) -> list[str]:
-    """Name the human population the seats played from, and its one class.
+    """Name the human population the seats played from, and what it settles.
 
-    A reader who sees a speed named here could take the whole ladder to be that
-    speed's reading, so the caveat travels beside the slice rather than in a
-    document.
+    A reader who sees a class and a pool named here could take the fitted
+    ratings to be on that pool's scale. They are not: the openings decide what
+    the seats play, and the corpus behind the dial decides what their configured
+    rating meant. The caveat travels beside the slice rather than in a document.
     """
 
     if view is None:
         return []
     lines = [f"Openings: {view.name} ({_view_population(view)})"]
-    if view.speed is not None:
+    if view.speed is not None or view.rating_namespace is not None:
         lines.extend(
             _wrapped_reason(
-                "scale: the class slices which games the seats start from, not "
-                "what a configured rating means; a rating belongs to the pool "
-                "its own source named, which this does not select"
+                "scale: this names the games the seats start from, not what a "
+                "configured rating means — that came from the corpus the model "
+                "trained on, and nothing here checks the two name one pool"
             )
         )
     return lines

@@ -15,6 +15,7 @@ def _game(
     plies: int = 40,
     ratings: bool = True,
     speed: Speed | None = Speed.BLITZ,
+    rating_namespace: str | None = "lichess_blitz",
     source_date: date | None = date(2019, 6, 15),
 ) -> PoolGame:
     return PoolGame(
@@ -23,6 +24,7 @@ def _game(
         result="1-0",
         has_ratings=ratings,
         speed=speed,
+        rating_namespace=rating_namespace,
         source_date=source_date,
     )
 
@@ -140,6 +142,33 @@ def test_a_view_takes_one_speed_class_and_reports_the_rest() -> None:
         "missing_time_control": 1,
     }
     assert selection.as_record()["speed"] == "blitz"
+
+
+def test_a_view_takes_one_rating_pool_and_is_not_the_class_beside_it() -> None:
+    """The two derivations read different fields, so one cannot stand in.
+
+    A source that renamed a pool stamps games whose clock says one class with a
+    label that says another, which is the case a reading about rating has to
+    exclude and a reading about behavior does not.
+    """
+
+    pool = (
+        _game(1, speed=Speed.BLITZ, rating_namespace="lichess_blitz"),
+        _game(2, speed=Speed.BLITZ, rating_namespace="lichess_rapid"),
+        _game(3, speed=Speed.BLITZ, rating_namespace=None),
+    )
+
+    selection = apply_view(
+        pool,
+        ViewConfig(name="rated", speed=Speed.BLITZ, rating_namespace="lichess_blitz"),
+    )
+
+    assert selection.game_ids == (1,)
+    assert selection.excluded_games == {
+        "rating_namespace_mismatch": 1,
+        "missing_rating_namespace": 1,
+    }
+    assert selection.as_record()["rating_namespace"] == "lichess_blitz"
 
 
 def test_a_selection_summarizes_what_it_left_out() -> None:

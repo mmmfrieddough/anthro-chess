@@ -17,8 +17,8 @@ from anthro_chess.config import ConfigModel
 from anthro_chess.data import Speed
 from anthro_chess.evaluation.pool import PoolGame, game_ids_sha256, rank_key
 
-#: Version 2 records the class a view sliced to; a version 1 record has no
-#: speed field rather than a null one.
+#: Version 2 records the class and the rating pool a view sliced to; a version 1
+#: record has neither field rather than null ones.
 VIEW_SPEC_VERSION = 2
 
 
@@ -37,6 +37,11 @@ class ViewConfig(ConfigModel):
     #: which games a cap then takes: filtering a capped selection afterwards
     #: would shrink it below the size it was declared at.
     speed: Speed | None = None
+    #: One rating pool, as ``<source>_<pool>``. A rating is a number in a pool
+    #: rather than on one scale, so a reading whose subject is rating names the
+    #: pool it is defined over. Not implied by the class above: the two are
+    #: derived from different fields and disagree.
+    rating_namespace: str | None = Field(default=None, min_length=1)
     #: Inclusive bounds on the day the source dated a game, for a reading taken
     #: over one era of a corpus that spans several. A game the corpus records no
     #: date for is excluded by either bound rather than assumed to be in range.
@@ -52,6 +57,7 @@ class ViewSelection:
     game_ids: tuple[int, ...]
     prefix_plies: int | None
     speed: Speed | None
+    rating_namespace: str | None
     eligible_games: int
     excluded_games: dict[str, int]
 
@@ -72,6 +78,7 @@ class ViewSelection:
             "excluded_games": dict(sorted(self.excluded_games.items())),
             "prefix_plies": self.prefix_plies,
             "speed": None if self.speed is None else str(self.speed),
+            "rating_namespace": self.rating_namespace,
             "game_ids_sha256": game_ids_sha256(self.game_ids),
         }
 
@@ -122,6 +129,7 @@ def apply_view(games: Sequence[PoolGame], config: ViewConfig) -> ViewSelection:
         game_ids=tuple(sorted(game.game_id for game in ordered)),
         prefix_plies=config.prefix_plies,
         speed=config.speed,
+        rating_namespace=config.rating_namespace,
         eligible_games=len(eligible),
         excluded_games=excluded,
     )
@@ -138,6 +146,15 @@ def _exclusion_reason(game: PoolGame, config: ViewConfig) -> str | None:
         return "missing_ratings"
     if config.speed is not None and game.speed != config.speed:
         return "missing_time_control" if game.speed is None else "speed_mismatch"
+    if (
+        config.rating_namespace is not None
+        and game.rating_namespace != config.rating_namespace
+    ):
+        return (
+            "missing_rating_namespace"
+            if game.rating_namespace is None
+            else "rating_namespace_mismatch"
+        )
     if config.minimum_date is not None or config.maximum_date is not None:
         if game.source_date is None:
             return "missing_date"
