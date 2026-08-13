@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
+from anthro_chess.data import Speed
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation import (
     BENCHMARK_VERSION,
@@ -393,6 +394,39 @@ def test_load_pool_round_trips_and_exposes_game_level_facts(
     assert by_id[fixture_game_id(4)].result == "0-1"
     assert by_id[fixture_game_id(5)].ply_count == 8
     assert by_id[fixture_game_id(5)].has_ratings is True
+
+
+def test_a_loaded_game_carries_the_class_its_own_clock_derives(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """A view slices on this, and the increment is why bounds cannot stand in.
+
+    One minute plus three seconds is blitz where one minute alone is bullet, so
+    a class runs diagonally across the two columns rather than along one.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [
+            normalized_row(1, split="test", time_initial_ms=60_000),
+            normalized_row(
+                2, split="test", time_initial_ms=60_000, time_increment_ms=3_000
+            ),
+            normalized_row(
+                3, split="test", time_initial_ms=None, time_increment_ms=None
+            ),
+        ],
+    )
+    freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+    by_id = {game.game_id: game for game in load_pool(tmp_path / "pool").games}
+
+    assert by_id[fixture_game_id(1)].speed is Speed.BULLET
+    assert by_id[fixture_game_id(2)].speed is Speed.BLITZ
+    assert by_id[fixture_game_id(3)].speed is None
 
 
 def test_a_dated_era_survives_the_pool_cut_and_slices_through_a_view(

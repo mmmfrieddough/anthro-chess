@@ -20,6 +20,7 @@ from anthro_chess.application_logging import (
     configure_application_logging,
 )
 from anthro_chess.config import ResolvedConfig
+from anthro_chess.data.speed import Speed
 from anthro_chess.machine import (
     DATA_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation.rollout import RolloutReading
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
     from anthro_chess.evaluation.termination import Guardrails
+    from anthro_chess.evaluation.views import ViewSelection
     from anthro_chess.training import TrainingConfig
 
 CommandHandler = Callable[[argparse.Namespace], int]
@@ -644,6 +646,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=200,
         help="Widest rating gap a reference game may have (default: %(default)s).",
+    )
+    bandwidth_parser.add_argument(
+        "--speed",
+        choices=tuple(speed.value for speed in Speed),
+        help=(
+            "Select one speed class, as the benchmark's own reference does. A "
+            "bandwidth chosen over a mixture is not the smoothing a sliced "
+            "reference is read at."
+        ),
     )
     bandwidth_parser.add_argument(
         "--candidates",
@@ -2261,9 +2272,13 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
     if result.view is not None:
         record = result.view.as_record()
         lines.append(
-            f"Prefix view: {result.view.name} "
-            f"({result.view.selected_games} of {result.view.eligible_games} "
-            f"eligible game(s), prefix {record['prefix_plies']} plies)"
+            f"Prefix view: {result.view.name} ({_view_population(result.view)}, "
+            f"prefix {record['prefix_plies']} plies)"
+        )
+    if result.reference_view is not None:
+        lines.append(
+            f"Reference view: {result.reference_view.name} "
+            f"({_view_population(result.reference_view)})"
         )
     for cell in result.cells:
         distribution = cell.distribution
@@ -2620,6 +2635,7 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
             + ", ".join(seat.label for seat in fit.unscored)
             + " (no scored game)"
         )
+    lines.extend(_render_ladder_openings(result.view))
     lines.extend(_render_ladder_resolution(result))
     for reading in result.readings:
         # Each row's per-seat floor is printed once, in the Seats table below,
@@ -2677,6 +2693,45 @@ def _render_ladder(result: LadderBenchmarkResult) -> str:
     else:
         lines.extend(["", "Recorded: nothing; this run did not write to the store"])
     return "\n".join(lines) + "\n"
+
+
+def _view_population(view: ViewSelection) -> str:
+    """Return how much of a pool a view took, and which population it took.
+
+    Both axes are named where both are declared: they read different fields and
+    can disagree, so a reader of a rating reading needs the pool rather than
+    having to infer it from the class.
+    """
+
+    named = f"{view.selected_games} of {view.eligible_games} eligible game(s)"
+    if view.speed is not None:
+        named += f", {view.speed} alone"
+    if view.rating_namespace is not None:
+        named += f", {view.rating_namespace} ratings"
+    return named
+
+
+def _render_ladder_openings(view: ViewSelection | None) -> list[str]:
+    """Name the human population the seats played from, and what it settles.
+
+    A reader who sees a class and a pool named here could take the fitted
+    ratings to be on that pool's scale. They are not: the openings decide what
+    the seats play, and the corpus behind the dial decides what their configured
+    rating meant. The caveat travels beside the slice rather than in a document.
+    """
+
+    if view is None:
+        return []
+    lines = [f"Openings: {view.name} ({_view_population(view)})"]
+    if view.speed is not None or view.rating_namespace is not None:
+        lines.extend(
+            _wrapped_reason(
+                "scale: this names the games the seats start from, not what a "
+                "configured rating means — that came from the corpus the model "
+                "trained on, and nothing here checks the two name one pool"
+            )
+        )
+    return lines
 
 
 def _render_ladder_resolution(result: LadderBenchmarkResult) -> list[str]:
@@ -2738,7 +2793,7 @@ def _render_ladder_unqualifiable(result: LadderBenchmarkResult) -> list[str]:
 
 
 def _wrapped_reason(text: str) -> list[str]:
-    """Wrap one indented explanation of why a metric carries no floor."""
+    """Wrap one indented explanation printed beneath the line it qualifies."""
 
     from anthro_chess.evaluation.results.reporting import MAXIMUM_LINE_WIDTH
 
@@ -2917,7 +2972,7 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
         human_reference,
         select_bandwidths,
     )
-    from anthro_chess.evaluation.views import apply_view
+    from anthro_chess.evaluation.views import apply_view, excluded_summary
 
     try:
         pool = load_pool(arguments.pool)
@@ -2927,8 +2982,14 @@ def _run_eval_curve_bandwidth(arguments: argparse.Namespace) -> int:
                 name="curve-bandwidth",
                 maximum_games=arguments.maximum_games,
                 require_ratings=True,
+                speed=arguments.speed,
             ),
         )
+        if not selection.game_ids:
+            raise ValueError(
+                "the pool holds no game to select a bandwidth from "
+                f"({excluded_summary(selection.excluded_games)})"
+            )
         rows = pool_rows(
             pool,
             selection.game_ids,

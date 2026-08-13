@@ -83,6 +83,17 @@ name = "ladder-openings"
 # Sixteen openings, played from both sides by every pairing. More openings buy
 # precision; they are a sample size rather than a measurement setting.
 maximum_games = 16
+# One human population rather than whatever mixture the pool happens to hold.
+# Every pairing plays the same roots, so a mixed draw reaches every seat's
+# fitted rating. Blitz is the plurality class of the corpus by games and by
+# plies, and the class with enough rated volume to fill every rating band.
+speed = "blitz"
+# And one rating pool. A rating is a number in a pool rather than a point on
+# one scale, so a reading whose subject is the rating dial names the pool it is
+# defined over. Not implied by the class above: the two read different fields,
+# and only this one says what a number meant. `0058` starts the corpus after
+# the rapid split, which is what makes the source's label evidence at all.
+rating_namespace = "lichess_blitz"
 
 [generation]
 # A round number that sits just past the end of the trained ply range: with the

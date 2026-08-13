@@ -195,7 +195,12 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.results.noise import bounded_floor
 from anthro_chess.evaluation.selection import CheckpointSelection
-from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
+from anthro_chess.evaluation.views import (
+    ViewConfig,
+    ViewSelection,
+    apply_view,
+    excluded_summary,
+)
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 from anthro_chess.runtime.session import (
     BatchedActionModelRunner,
@@ -1032,7 +1037,8 @@ def _load_prefix_positions(
     selection = apply_view(pool.games, view_config)
     if not selection.game_ids:
         raise RolloutBenchmarkError(
-            f"view {view_config.name!r} selected no games from the pool"
+            f"view {view_config.name!r} selected no games from the pool "
+            f"({excluded_summary(selection.excluded_games)})"
         )
 
     rows = [
@@ -1084,7 +1090,7 @@ def _load_reference(
     if not selection.game_ids:
         raise RolloutBenchmarkError(
             f"view {config.reference.view.name!r} selected no human games to "
-            "compare against"
+            f"compare against ({excluded_summary(selection.excluded_games)})"
         )
     rows = pool_rows(
         pool,
@@ -1100,16 +1106,15 @@ def _load_reference(
         config.grid.target_ratings, max(DECLARED_NEIGHBOURS.values())
     )
     # The declared cap clears this floor by construction; what the cap cannot
-    # promise is how much of the view survives the rating-gap filter, which
-    # depends on the pool's rating composition rather than on configuration.
+    # promise is how much of the pool is of the declared class, or how much of
+    # that survives the rating-gap filter — both the pool's composition rather
+    # than configuration.
     if len(reference.games) < required:
-        excluded = ", ".join(
-            f"{count} {reason}" for reason, count in sorted(reference.excluded.items())
-        )
         raise RolloutBenchmarkError(
             f"view {config.reference.view.name!r} left "
             f"{len(reference.games)} usable human game(s) of "
-            f"{selection.selected_games} selected ({excluded or 'none excluded'}), "
+            f"{selection.selected_games} selected "
+            f"({excluded_summary(reference.excluded)}), "
             f"below the {required} a curve over this rating grid needs at the "
             "declared bandwidth; widen the view or the rating gap"
         )

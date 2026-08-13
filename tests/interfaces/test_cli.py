@@ -1798,6 +1798,35 @@ def test_eval_ladder_renders_the_transfer_function_and_its_error_profile(
     assert max(len(line) for line in rendered.splitlines()) <= 120
 
 
+def test_a_ladder_reading_says_what_its_population_leaves_open() -> None:
+    """Naming a pool does not put the fitted ratings on it, and the reading says so."""
+
+    from anthro_chess.data import Speed
+    from anthro_chess.evaluation.views import ViewSelection
+    from anthro_chess.interfaces.cli import _render_ladder_openings
+
+    def view(speed: Speed | None, namespace: str | None) -> ViewSelection:
+        return ViewSelection(
+            name="ladder-openings",
+            game_ids=(1, 2),
+            prefix_plies=8,
+            speed=speed,
+            rating_namespace=namespace,
+            eligible_games=2,
+            excluded_games={},
+        )
+
+    sliced = "\n".join(_render_ladder_openings(view(Speed.BLITZ, "lichess_blitz")))
+    whole = "\n".join(_render_ladder_openings(view(None, None)))
+
+    assert sliced.startswith(
+        "Openings: ladder-openings "
+        "(2 of 2 eligible game(s), blitz alone, lichess_blitz ratings)"
+    )
+    assert "not what a configured rating means" in sliced
+    assert whole == "Openings: ladder-openings (2 of 2 eligible game(s))"
+
+
 def test_eval_decisions_reports_an_unreadable_payload(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

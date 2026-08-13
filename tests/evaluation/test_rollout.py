@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -199,28 +199,26 @@ def _sample(envelope: ResultEnvelope, metric: MetricDefinition) -> int | None:
     return found.sample_size
 
 
-@pytest.fixture
-def pool(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
+def _freeze(
     write_corpus: Callable[..., tuple[Path, Path]],
+    directory: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    pool_id: str,
 ) -> Path:
-    """Freeze a tiny pool whose test games are long enough to prefix."""
+    """Freeze fixture rows into a pool of their own.
 
-    normalized, manifest = write_corpus(
-        tmp_path / "corpus",
-        [
-            normalized_row(1, split="train"),
-            normalized_row(2, split="test", plies=8),
-            normalized_row(3, split="test", plies=10, result="0-1"),
-        ],
-    )
-    output = tmp_path / "pool"
+    Several fixtures build one under the same ``tmp_path``, so the directory
+    and the pool id come from the caller.
+    """
+
+    normalized, manifest = write_corpus(directory / "corpus", rows)
+    output = directory / "pool"
     freeze_pool(
         ResolvedConfig(
             value=PoolConfig.model_validate(
                 {
-                    "pool_id": "fixture-test",
+                    "pool_id": pool_id,
                     "normalized": str(normalized),
                     "manifest": str(manifest),
                 }
@@ -230,6 +228,26 @@ def pool(
         output,
     )
     return output
+
+
+@pytest.fixture
+def pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a tiny pool whose test games are long enough to prefix."""
+
+    return _freeze(
+        write_corpus,
+        tmp_path / "prefix",
+        [
+            normalized_row(1, split="train"),
+            normalized_row(2, split="test", plies=8),
+            normalized_row(3, split="test", plies=10, result="0-1"),
+        ],
+        pool_id="fixture-test",
+    )
 
 
 @pytest.fixture
@@ -245,32 +263,51 @@ def reference_pool(
     is the whole point of the conditional reading.
     """
 
-    rows = [
-        normalized_row(
-            index,
-            split="test",
-            plies=4 + (index % 5) * 2,
-            rating=1100 + (index % 12) * 100,
-            result=("1-0", "0-1", "1/2-1/2")[index % 3],
-        )
-        for index in range(1, 61)
-    ]
-    normalized, manifest = write_corpus(tmp_path / "reference-corpus", rows)
-    output = tmp_path / "reference-pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "fixture-reference",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        output,
+    return _freeze(
+        write_corpus,
+        tmp_path / "reference",
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=4 + (index % 5) * 2,
+                rating=1100 + (index % 12) * 100,
+                result=("1-0", "0-1", "1/2-1/2")[index % 3],
+            )
+            for index in range(1, 61)
+        ],
+        pool_id="fixture-reference",
     )
-    return output
+
+
+@pytest.fixture
+def mixed_speed_reference_pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a rated pool holding two speed classes rather than one.
+
+    Two classes in one pool is the shape a widened corpus has, and the one a
+    reference must not average over.
+    """
+
+    return _freeze(
+        write_corpus,
+        tmp_path / "mixed-speed",
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=4 + (index % 5) * 2,
+                rating=1100 + (index % 12) * 100,
+                result=("1-0", "0-1", "1/2-1/2")[index % 3],
+                time_initial_ms=60_000 if index % 2 else 300_000,
+            )
+            for index in range(1, 61)
+        ],
+        pool_id="fixture-mixed-speed",
+    )
 
 
 @pytest.fixture
@@ -287,34 +324,25 @@ def mismatched_reference_pool(
     configuration, and a reference of a handful is not empty either.
     """
 
-    rows = [
-        normalized_row(
-            index,
-            split="test",
-            plies=4 + (index % 5) * 2,
-            ratings=(
-                (1200 + index * 100, 1200 + index * 100) if index <= 6 else (1100, 2100)
-            ),
-            result=("1-0", "0-1", "1/2-1/2")[index % 3],
-        )
-        for index in range(1, 61)
-    ]
-    normalized, manifest = write_corpus(tmp_path / "mismatched-corpus", rows)
-    output = tmp_path / "mismatched-pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "fixture-mismatched",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        output,
+    return _freeze(
+        write_corpus,
+        tmp_path / "mismatched",
+        [
+            normalized_row(
+                index,
+                split="test",
+                plies=4 + (index % 5) * 2,
+                ratings=(
+                    (1200 + index * 100, 1200 + index * 100)
+                    if index <= 6
+                    else (1100, 2100)
+                ),
+                result=("1-0", "0-1", "1/2-1/2")[index % 3],
+            )
+            for index in range(1, 61)
+        ],
+        pool_id="fixture-mismatched",
     )
-    return output
 
 
 @pytest.fixture
@@ -416,6 +444,67 @@ def test_a_reference_the_rating_gap_guts_fails_before_a_game_is_played(
             _compared(
                 mismatched_reference_pool,
                 grid={"target_ratings": (1200, 1800)},
+            ),
+            runner=runner,
+        )
+
+    assert runner.calls == 0
+
+
+def test_the_reference_is_read_at_one_speed_class(
+    mixed_speed_reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """The harness plays untimed, so the class slices the reference.
+
+    Length and result are strong functions of the clock, so a reference drawn
+    from a mixed pool would report its composition as a distance.
+    """
+
+    result = _run(
+        _compared(
+            mixed_speed_reference_pool,
+            grid={"target_ratings": (1200, 1800)},
+            reference={
+                "view": {
+                    "name": "rollout-reference",
+                    "require_ratings": True,
+                    "speed": "blitz",
+                }
+            },
+        )
+    )
+
+    assert result.reference_view is not None
+    assert result.reference_view.selected_games == 30
+    assert result.reference_view.excluded_games == {"speed_mismatch": 30}
+    assert result.readings[0].human_games == 30
+
+
+def test_a_reference_class_the_pool_holds_none_of_fails_in_the_pool_pass(
+    reference_pool: Path,
+    small_bandwidth: None,
+) -> None:
+    """A class with no reference game has nothing for a distance to be over.
+
+    Read before the matrix is played, so the class is answered by a pool pass
+    rather than by an hour of generation with nothing to compare it against.
+    """
+
+    runner = TrajectoryRunner()
+
+    with pytest.raises(RolloutBenchmarkError, match="speed_mismatch"):
+        _run(
+            _compared(
+                reference_pool,
+                grid={"target_ratings": (1200, 1800)},
+                reference={
+                    "view": {
+                        "name": "rollout-reference",
+                        "require_ratings": True,
+                        "speed": "bullet",
+                    }
+                },
             ),
             runner=runner,
         )

@@ -4,7 +4,9 @@ from datetime import date
 
 import pytest
 
+from anthro_chess.data import Speed
 from anthro_chess.evaluation import PoolGame, ViewConfig, apply_view
+from anthro_chess.evaluation.views import excluded_summary
 
 
 def _game(
@@ -12,6 +14,8 @@ def _game(
     *,
     plies: int = 40,
     ratings: bool = True,
+    speed: Speed | None = Speed.BLITZ,
+    rating_namespace: str | None = "lichess_blitz",
     source_date: date | None = date(2019, 6, 15),
 ) -> PoolGame:
     return PoolGame(
@@ -19,6 +23,8 @@ def _game(
         ply_count=plies,
         result="1-0",
         has_ratings=ratings,
+        speed=speed,
+        rating_namespace=rating_namespace,
         source_date=source_date,
     )
 
@@ -118,6 +124,85 @@ def test_a_prefix_view_excludes_games_shorter_than_the_prefix() -> None:
     assert selection.game_ids == (2,)
     assert selection.prefix_plies == 16
     assert selection.excluded_games == {"shorter_than_prefix": 1}
+
+
+def test_a_view_takes_one_speed_class_and_reports_the_rest() -> None:
+    pool = (
+        _game(1, speed=Speed.BULLET),
+        _game(2, speed=Speed.BLITZ),
+        _game(3, speed=Speed.RAPID),
+        _game(4, speed=None),
+    )
+
+    selection = apply_view(pool, ViewConfig(name="blitz", speed=Speed.BLITZ))
+
+    assert selection.game_ids == (2,)
+    assert selection.excluded_games == {
+        "speed_mismatch": 2,
+        "missing_time_control": 1,
+    }
+    assert selection.as_record()["speed"] == "blitz"
+
+
+def test_a_view_takes_one_rating_pool_and_is_not_the_class_beside_it() -> None:
+    """The two derivations read different fields, so one cannot stand in.
+
+    A source that renamed a pool stamps games whose clock says one class with a
+    label that says another, which is the case a reading about rating has to
+    exclude and a reading about behavior does not.
+    """
+
+    pool = (
+        _game(1, speed=Speed.BLITZ, rating_namespace="lichess_blitz"),
+        _game(2, speed=Speed.BLITZ, rating_namespace="lichess_rapid"),
+        _game(3, speed=Speed.BLITZ, rating_namespace=None),
+    )
+
+    selection = apply_view(
+        pool,
+        ViewConfig(name="rated", speed=Speed.BLITZ, rating_namespace="lichess_blitz"),
+    )
+
+    assert selection.game_ids == (1,)
+    assert selection.excluded_games == {
+        "rating_namespace_mismatch": 1,
+        "missing_rating_namespace": 1,
+    }
+    assert selection.as_record()["rating_namespace"] == "lichess_blitz"
+
+
+def test_a_selection_summarizes_what_it_left_out() -> None:
+    """An empty selection looks the same however it got there."""
+
+    pool = (_game(1, plies=4), _game(2, speed=Speed.BULLET))
+
+    filtered = apply_view(
+        pool, ViewConfig(name="blitz", minimum_plies=10, speed=Speed.BLITZ)
+    )
+    whole = apply_view(pool, ViewConfig(name="all"))
+
+    assert (
+        excluded_summary(filtered.excluded_games)
+        == "1 below_minimum_plies, 1 speed_mismatch"
+    )
+    assert excluded_summary(whole.excluded_games) == "nothing excluded"
+
+
+def test_the_class_filters_before_the_cap_takes_its_games() -> None:
+    """A cap is the declared size, so it must take that many of the class."""
+
+    pool = tuple(
+        _game(game_id, speed=Speed.BLITZ if game_id % 2 else Speed.BULLET)
+        for game_id in range(1, 41)
+    )
+
+    selection = apply_view(
+        pool,
+        ViewConfig(name="blitz", maximum_games=10, speed=Speed.BLITZ),
+    )
+
+    assert selection.selected_games == 10
+    assert all(game_id % 2 for game_id in selection.game_ids)
 
 
 def test_the_spec_record_identifies_exactly_which_games_were_measured() -> None:

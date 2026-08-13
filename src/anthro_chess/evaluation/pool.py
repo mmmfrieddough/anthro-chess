@@ -21,7 +21,7 @@ from pydantic import Field
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import encoding_identity
+from anthro_chess.data import Speed, encoding_identity, speed_from_clock_ms
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
@@ -80,6 +80,9 @@ _POOL_GAME_COLUMNS = (
     NormalizedColumn.RESULT.value,
     NormalizedColumn.WHITE_NORMALIZED_RATING.value,
     NormalizedColumn.BLACK_NORMALIZED_RATING.value,
+    NormalizedColumn.TIME_INITIAL_MS.value,
+    NormalizedColumn.TIME_INCREMENT_MS.value,
+    NormalizedColumn.SOURCE_RATING_NAMESPACE.value,
 )
 
 #: Games parsed by an earlier load in this process, keyed on the artifact
@@ -141,6 +144,13 @@ class PoolGame:
     ply_count: int
     result: str
     has_ratings: bool
+    #: ``None`` when the source recorded no clock, which a view excludes under
+    #: its own reason rather than as a mismatch.
+    speed: Speed | None
+    #: Which rating pool the source's numbers came from, ``None`` where its
+    #: label named none. Not derivable from the class beside it: the two come
+    #: from different fields and disagree, per `0056` and `0057`.
+    rating_namespace: str | None
     source_date: date | None
 
 
@@ -519,6 +529,11 @@ def pool_game(row: Mapping[str, Any]) -> PoolGame:
             row[NormalizedColumn.WHITE_NORMALIZED_RATING] is not None
             and row[NormalizedColumn.BLACK_NORMALIZED_RATING] is not None
         ),
+        speed=speed_from_clock_ms(
+            row[NormalizedColumn.TIME_INITIAL_MS],
+            row[NormalizedColumn.TIME_INCREMENT_MS],
+        ),
+        rating_namespace=row[NormalizedColumn.SOURCE_RATING_NAMESPACE],
         source_date=row[NormalizedColumn.SOURCE_DATE],
     )
 

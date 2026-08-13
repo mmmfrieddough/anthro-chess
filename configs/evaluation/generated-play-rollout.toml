@@ -66,6 +66,17 @@ swap_colors = true
 claim_draws = false
 concurrency = 8
 
+[prefix.view]
+# Declared even though `arms` leaves the human-prefix arm out: the roots it
+# would continue have to be the population the reference is read at, or every
+# distance would be measured between two speed classes. Its size and name are
+# the defaults, restated because a dotted override cannot add one key to a
+# table this file never declared.
+name = "rollout-prefix"
+maximum_games = 32
+speed = "blitz"
+rating_namespace = "lichess_blitz"
+
 [reference]
 # Compare generated play against matched human play. This is what turns the
 # rollout scalars into a statement about human-likeness: a smaller distance to
@@ -94,6 +105,15 @@ resamples = 200
 name = "rollout-reference"
 maximum_games = 12000
 require_ratings = true
+# One human population rather than whatever mixture the pool happens to hold.
+# The cap above then takes that many games of this class rather than of the
+# mixture, which is what keeps the declared bandwidth the declared bandwidth.
+# Blitz is the plurality class of the corpus by games and by plies.
+speed = "blitz"
+# And one rating pool, because rating is this comparison's own axis: every
+# reference game is placed at the mean of its two players' ratings, and numbers
+# from two pools on one axis are two scales drawn as one.
+rating_namespace = "lichess_blitz"
 
 [detail]
 # Whole games, machine-local. Every later distribution feature is recomputed

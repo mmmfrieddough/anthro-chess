@@ -150,7 +150,12 @@ from anthro_chess.evaluation.results.metrics import (
     MOVE_PREDICTION_PROJECTION,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
-from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
+from anthro_chess.evaluation.views import (
+    ViewConfig,
+    ViewSelection,
+    apply_view,
+    excluded_summary,
+)
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
 #: Version 2 stores each quantity's own dispersion where version 1 stored the
@@ -1785,7 +1790,8 @@ def _position_source(
     selection = apply_view(pool.games, view_config)
     if not selection.game_ids:
         raise LadderBenchmarkError(
-            f"view {view_config.name!r} selected no opening games from the pool"
+            f"view {view_config.name!r} selected no opening games from the "
+            f"pool ({excluded_summary(selection.excluded_games)})"
         )
     rows = [
         _prefix_row(row, config.openings.plies)
