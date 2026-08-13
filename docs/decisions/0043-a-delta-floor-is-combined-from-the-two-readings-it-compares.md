@@ -14,6 +14,9 @@ left to scope once no floor is stored. Supersedes the estimator half of
 `0028-qualifying-the-rating-dependency-family.md`, whose ruling on which of that
 family's quantities can be resampled at all is retained. Rests
 on `0026-conservative-dispersion-bounds.md`, which is retained unchanged.
+Extended by `0061-a-training-cost-reading-has-no-replicate-to-resample.md`,
+which answers the obligation below — a dispersion or a stated reason — for the
+training-efficiency family.
 
 ## Context
 

@@ -2109,16 +2109,31 @@ TERMINATION_UNTIMED_NON_TERMINATION_RATE = _termination_generated_metric(
 )
 
 
+_INTERVAL_MEAN_NO_FLOOR_REASON = (
+    "a replicate of this reading is a second training run, and the intervals "
+    "inside one share a process, an allocator and a warm device, so resampling "
+    "them measures within-run jitter rather than the run-to-run variation a "
+    "delta faces"
+)
+
+
 def _training_efficiency_metric(
     identifier: str,
     direction: MetricDirection,
     summary: str,
+    no_sampling_floor_reason: str,
 ) -> MetricDefinition:
     """Register one training-efficiency metric.
 
     These share the inference family's cost and sensitivity: their value is the
     execution rather than a property of the data, so they carry no projection
     and their declared workload joins series identity.
+
+    They part company over the spread, which is why the reason is required here
+    rather than optional. An inference reading replicates itself by running the
+    benchmark again in another process; the only replicate of a training
+    reading is a second training run. See
+    ``docs/decisions/0061-a-training-cost-reading-has-no-replicate-to-resample.md``.
     """
 
     return register_metric(
@@ -2130,6 +2145,7 @@ def _training_efficiency_metric(
             summary=summary,
             cost=MetricCost.MEASURED_EXECUTION,
             execution_sensitive=True,
+            no_sampling_floor_reason=no_sampling_floor_reason,
         )
     )
 
@@ -2143,6 +2159,7 @@ TRAINING_ACTIVE_POSITIONS_PER_SECOND = _training_efficiency_metric(
         "left out of the numerator because a configuration that pads more is "
         "not learning faster."
     ),
+    _INTERVAL_MEAN_NO_FLOOR_REASON,
 )
 
 TRAINING_STEP_SECONDS = _training_efficiency_metric(
@@ -2153,6 +2170,7 @@ TRAINING_STEP_SECONDS = _training_efficiency_metric(
         "throughput because the two move apart whenever the effective batch "
         "or the padding fraction changes."
     ),
+    _INTERVAL_MEAN_NO_FLOOR_REASON,
 )
 
 TRAINING_PROCESSED_POSITIONS = _training_efficiency_metric(
@@ -2162,6 +2180,11 @@ TRAINING_PROCESSED_POSITIONS = _training_efficiency_metric(
         "Active positions the run trained on in total. This is how large the "
         "run was rather than how well it did, and it is the budget axis a "
         "quality-versus-time report reads."
+    ),
+    (
+        "the count is how large the run was rather than a sample of anything, "
+        "so the reading holds no units to resample and a replicate of it is a "
+        "second training run"
     ),
 )
 
@@ -2173,6 +2196,11 @@ TRAINING_SECONDS = _training_efficiency_metric(
         "removed. Informational because a longer run is not a worse one; it is "
         "the other budget axis rather than a quantity to minimize."
     ),
+    (
+        "this is one run's total wall clock rather than a mean over units, so "
+        "the reading holds no units to resample and a replicate of it is a "
+        "second training run"
+    ),
 )
 
 TRAINING_ACTIVE_POSITION_FRACTION = _training_efficiency_metric(
@@ -2182,6 +2210,12 @@ TRAINING_ACTIVE_POSITION_FRACTION = _training_efficiency_metric(
         "Share of the padded batch extent that carried a position to learn "
         "from. Explains a throughput change that came from batch composition "
         "rather than from execution speed."
+    ),
+    (
+        "the loader's draw is pinned by a configuration the reading records as "
+        "a coordinate, so resampling this reading's units redraws nothing; what "
+        "else moves the fraction is which of those batches the window spanned, "
+        "which is not a redraw either"
     ),
 )
 
@@ -2194,6 +2228,11 @@ TRAINING_OVERHEAD_FRACTION = _training_efficiency_metric(
         "instrumentation. Informational because evaluating more often is a "
         "deliberate choice rather than a regression."
     ),
+    (
+        "this divides whole-run totals, several of which the run paid exactly "
+        "once, so the reading holds no units to resample and a replicate of it "
+        "is a second training run"
+    ),
 )
 
 TRAINING_PEAK_DEVICE_MEMORY_BYTES = _training_efficiency_metric(
@@ -2203,6 +2242,10 @@ TRAINING_PEAK_DEVICE_MEMORY_BYTES = _training_efficiency_metric(
         "Peak bytes reserved from the device driver during the run. Reserved "
         "rather than allocated, because cached free blocks still decide "
         "whether a larger configuration fits."
+    ),
+    (
+        "a run reaches its high-water mark once, so the reading holds no units "
+        "to resample and a replicate of it is a second training run"
     ),
 )
 
@@ -2231,6 +2274,11 @@ TRAINING_STEP_SYNC_COST_SECONDS = _training_efficiency_metric(
         "Added seconds per optimizer step when per-micro-batch device "
         "synchronization is not deferred to the logging interval, measured by "
         "interleaving both arms through the same window."
+    ),
+    (
+        "interleaving the arms cancels within-run drift from the difference "
+        "rather than measuring it, so the intervals are the two arms rather "
+        "than replicates of the difference, of which a run produces one"
     ),
 )
 

@@ -7,6 +7,9 @@ Date: 2026-08-02
 Accepted as initial design direction. Refined by
 `0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,
 which gives a stored training floor the scope this record withheld one for.
+Extended by `0061-a-training-cost-reading-has-no-replicate-to-resample.md`,
+which reads a change for what it cost the same way, since the
+training-efficiency family carries no floor to qualify such a delta otherwise.
 
 ## Context
 
