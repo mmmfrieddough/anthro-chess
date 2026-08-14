@@ -198,11 +198,8 @@ def marks_a_player(
 ) -> bool:
     """Return whether either player of one normalized row is a marked account.
 
-    Every reader that applies this rejection asks the same question of the same
-    two columns, and one of them asks it negated, which is where a hand-written
-    copy goes wrong. ``None`` and an empty set both answer ``False`` without
-    reading either column, because a reader rejecting nobody does not project
-    them; the two are distinguished by the caller, not here.
+    ``None`` and an empty set both answer ``False`` without reading either
+    column, because a reader rejecting nobody does not project them.
     """
 
     if not marked_digests:
@@ -239,11 +236,9 @@ def snapshot_for_corpus(
 ) -> CorpusSnapshot | None:
     """Load the snapshot a selection names, if it covers the corpus it filters.
 
-    Every reader of a prepared corpus that can apply this rejection reaches it
-    the same way — a path beside the selection naming it, held to the archives
-    the corpus manifest says it was prepared from — because a reader resolving
-    either differently would reject a different set of games from the same
-    corpus and the same snapshot.
+    Preparation checks a snapshot against the archive it is reading; a reader
+    of a prepared corpus has no archive in hand, so the manifest's own record
+    of what the corpus was prepared from is what the snapshot is held to.
     """
 
     if configured is None:

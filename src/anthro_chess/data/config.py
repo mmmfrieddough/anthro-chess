@@ -205,8 +205,8 @@ class SelectionConfig(ConfigModel):
     the PGN header instead, and the two part over correspondence: a clockless
     game reaches these columns as no class at all.
 
-    ``marked_accounts`` is an exception to the paragraph above rather than
-    another axis of it. It names the snapshot
+    ``marked_accounts`` is not one of those comparison axes. It names the
+    snapshot
     ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md``
     rejects on, matched against the account digests the row carries, and it
     belongs here because a corpus prepared without one keeps those games in
@@ -215,7 +215,7 @@ class SelectionConfig(ConfigModel):
     says why the breadth corpus is prepared that way. A relative path resolves
     against the selection naming it.
 
-    Excluding runs before subsampling, so ``maximum_games`` still delivers the
+    The exclusion runs before subsampling, so ``maximum_games`` still delivers the
     count it names to a run that sets this and to one that does not — which is
     what lets two such runs differ in which games they read rather than in how
     many. ``fraction`` does not: it takes a share of whatever survived, so the

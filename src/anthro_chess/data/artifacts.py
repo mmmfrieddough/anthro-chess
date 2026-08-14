@@ -347,9 +347,7 @@ def manifest_archive_records(manifest: Mapping[str, Any]) -> Any:
 
     A manifest predating corpora that span archives records a single ``input``
     rather than a list. Reading from one is legitimate where appending to it is
-    not, so the older shape is carried rather than dropped. Whatever is found
-    is returned unexamined, because a caller recording provenance wants what
-    the manifest said rather than what this code can make sense of.
+    not, so the older shape is carried rather than dropped.
     """
 
     inputs = manifest.get("inputs")

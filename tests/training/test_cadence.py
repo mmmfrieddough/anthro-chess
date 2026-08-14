@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 import torch
 
-from anthro_chess.data import SequenceDataConfig, SequenceLoaderConfig
+from anthro_chess.data import (
+    SelectionConfig,
+    SequenceDataConfig,
+    SequenceLoaderConfig,
+)
 from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.schema import SplitName
 from anthro_chess.evaluation.results import (
@@ -38,11 +42,18 @@ def _selection(
     normalized: Path,
     manifest: Path,
     split: SplitName,
+    *,
+    marked_accounts: Path | None = None,
 ) -> SequenceDataConfig:
     return SequenceDataConfig(
         normalized=normalized,
         manifest=manifest,
-        loader=SequenceLoaderConfig(split=split, batch_size=2, shuffle=False),
+        loader=SequenceLoaderConfig(
+            split=split,
+            batch_size=2,
+            shuffle=False,
+            selection=SelectionConfig(marked_accounts=marked_accounts),
+        ),
     )
 
 
@@ -52,6 +63,7 @@ def _corpus(
     write_corpus: CorpusFactory,
     *,
     validation_games: int = 6,
+    marked_accounts: Path | None = None,
 ) -> SequenceDataConfig:
     rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 4)]
     rows.extend(
@@ -59,7 +71,9 @@ def _corpus(
         for game_id in range(100, 100 + validation_games)
     )
     normalized, manifest = write_corpus(tmp_path / "corpus", rows)
-    return _selection(normalized, manifest, "validation")
+    return _selection(
+        normalized, manifest, "validation", marked_accounts=marked_accounts
+    )
 
 
 def _model() -> CausalMoveModel:
@@ -119,8 +133,7 @@ def test_a_preview_view_subsamples_the_validation_split_deterministically(
     assert first.selection.selected_games == 2
     assert first.selection.eligible_games == 6
     # A preview view subsamples and never filters, so its own record excludes
-    # nothing. What the corpus rejected before the view read it is a property
-    # of the population rather than of the view, which the test below covers.
+    # nothing.
     assert first.selection.excluded_games == {}
     assert second.selection is not None
     assert second.selection.game_ids == first.selection.game_ids
@@ -138,14 +151,17 @@ def test_a_preview_reads_the_population_a_filtered_pool_would_hold(
 ) -> None:
     """A preview estimates the canonical reading, so it drops what the pool drops.
 
-    `0041`'s rejection is a statement about which games count as human play
-    rather than a narrowing of what a run trains on. Left out here, a preview
-    would estimate a population the pool it previews does not hold, and the
-    difference concentrates in exactly the human-likeness metrics a preview
-    reports.
+    Left out here, a preview would estimate a population the pool it previews
+    does not hold, and the difference concentrates in exactly the
+    human-likeness metrics a preview reports.
     """
 
-    validation = _corpus(tmp_path, normalized_row, write_corpus)
+    validation = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        marked_accounts=Path("marked-accounts.txt"),
+    )
     marked = frozenset({account_row_digest("white100"), account_row_digest("black101")})
 
     entry = prepare_schedule(

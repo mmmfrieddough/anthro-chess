@@ -1292,14 +1292,17 @@ def _load_data_selection(
     # refuse the run, and this one reads two integers, so it is the cheaper of
     # the two to fail on.
     _reject_uncoverable_corpus(manifest, config, maximum_context_plies)
-    shards = validate_manifest_outputs(manifest, manifest_path, paths)
-    manifest_sha256 = sha256(manifest_bytes).hexdigest()
+    # Ahead of the output check for the same reason as the corpus bound above:
+    # both refuse the run, and this one reads one small file where that one
+    # hashes every shard end to end.
     snapshot = snapshot_for_corpus(
         config.loader.selection.marked_accounts,
         config_source,
         manifest,
         manifest_path,
     )
+    shards = validate_manifest_outputs(manifest, manifest_path, paths)
+    manifest_sha256 = sha256(manifest_bytes).hexdigest()
     marked_digests = None if snapshot is None else snapshot.accounts.row_digests()
     loader = _open_loader(
         config,
@@ -1314,9 +1317,6 @@ def _load_data_selection(
         provenance={
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": manifest_sha256,
-            # Which snapshot this run rejected against, beside the resolved
-            # selection below that counts what it removed. A run reading a
-            # corpus nothing filtered records nothing here.
             "marked_accounts": None if snapshot is None else snapshot.as_record(),
             "manifest": manifest,
             "normalized_paths": [str(path.resolve()) for path in paths],

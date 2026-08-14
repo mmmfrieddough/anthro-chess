@@ -22,7 +22,11 @@ from pydantic import Field
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import Speed, encoding_identity, speed_from_clock_ms
-from anthro_chess.data.accounts import MarkedAccountError, snapshot_for_corpus
+from anthro_chess.data.accounts import (
+    MarkedAccountError,
+    marks_a_player,
+    snapshot_for_corpus,
+)
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
@@ -312,10 +316,7 @@ def _freeze_pool(
                     # going to materialize anyway. Rejecting after admission
                     # also makes the count the share this generation lost rather
                     # than a share of the corpus.
-                    if (
-                        row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
-                        or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
-                    ):
+                    if marks_a_player(row, marked_digests):
                         marked_games += 1
                     else:
                         selected.append(row)

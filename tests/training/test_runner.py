@@ -1942,7 +1942,7 @@ def _snapshot(
     covers: tuple[str, ...] | None = None,
     name: str = "marked-accounts.txt",
 ) -> Path:
-    """Write a snapshot covering the archives one prepared corpus records."""
+    """Write a snapshot over one prepared corpus's archives, or over ``covers``."""
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return MarkedAccounts(

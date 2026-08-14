@@ -487,8 +487,7 @@ def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(
 
     Rejecting after the subsample would hand the filtered run fewer games than
     the unfiltered one, so a comparison between them would confound the filter
-    with how much data each saw. `fraction` cannot do the same job, and the
-    second half pins that it does not, so nothing reads it as an equivalent.
+    with how much data each saw. `fraction` cannot do the same job.
     """
 
     games = _corpus(
@@ -545,12 +544,7 @@ def _naming_a_snapshot(
     fraction: float | None = None,
     maximum_games: int | None = None,
 ) -> SelectionConfig:
-    """Return a selection declaring a snapshot, for a caller resolving one itself.
-
-    The path is never opened here — resolving it needs the corpus manifest and
-    the file the selection came from — but declaring it is what the loader
-    checks against the accounts it was handed.
-    """
+    """Return a selection declaring a snapshot no caller here opens."""
 
     return SelectionConfig(
         marked_accounts=Path("marked-accounts.txt"),

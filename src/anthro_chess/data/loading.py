@@ -209,7 +209,7 @@ class SelectionResolution:
         }
 
     def as_identity_record(self) -> dict[str, object]:
-        """Return the same record with what only this machine could reproduce out.
+        """Return the record a resumed run's identity is compared against.
 
         A resumed run has to match this, and ``docs/training-and-runtime.md``
         holds that such an identity may carry only values another machine could
@@ -854,25 +854,17 @@ def _exclusion_reason(
             return "above_maximum_rating"
 
     # Last, so the count is a share of what this run would otherwise have read
-    # rather than of the split, which is the number preparation and the pool
-    # cut both report against.
+    # rather than of the whole split.
     if marks_a_player(row, marked_digests):
         return "marked_account"
     return None
 
 
-#: Left out of every identity a resumed run is compared against, and out of
-#: those alone: the recorded spec keeps it, because a path is exactly what a
-#: reader asking what a run was configured with wants.
-_MACHINE_LOCAL_SELECTION_FIELDS = ("marked_accounts",)
-
-
 def _identity_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in sorted(spec.items())
-        if key not in _MACHINE_LOCAL_SELECTION_FIELDS
-    }
+    # The snapshot path is left out of every identity a resumed run is compared
+    # against, and out of those alone: the recorded spec keeps it, because a
+    # path is what a reader asking how a run was configured wants.
+    return {key: value for key, value in spec.items() if key != "marked_accounts"}
 
 
 def require_resolved_snapshot(
@@ -881,12 +873,9 @@ def require_resolved_snapshot(
 ) -> None:
     """Refuse a selection naming a snapshot nobody resolved, and the reverse.
 
-    The path a selection declares and the digests a caller resolved from it
-    arrive separately, because resolving needs the corpus manifest and the file
-    the selection came from, neither of which reaches this layer. Nothing else
-    would notice them disagreeing: a run would record a spec naming the
-    snapshot, count no rejections, and be indistinguishable from one whose
-    snapshot matched nobody.
+    Nothing else would notice them disagreeing: a run would record a spec
+    naming the snapshot, count no rejections, and be indistinguishable from one
+    whose snapshot matched nobody.
     """
 
     if (selection.marked_accounts is None) != (marked_digests is None):

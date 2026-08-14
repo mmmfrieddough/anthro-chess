@@ -50,6 +50,7 @@ from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     read_normalized_rows,
 )
+from anthro_chess.data.loading import require_resolved_snapshot
 from anthro_chess.data.schema import (
     NormalizedColumn,
     SplitName,
@@ -530,6 +531,7 @@ def _prepare_view(
             "in-training previews must never read the held-out test split"
         )
 
+    require_resolved_snapshot(validation.loader.selection, marked_digests)
     rows = _validation_rows(validation, split, marked_digests)
     selection = apply_view(
         [pool_game(row) for row in rows],
@@ -575,15 +577,7 @@ def _validation_rows(
     split: SplitName,
     marked_digests: frozenset[int] | None,
 ) -> list[dict[str, Any]]:
-    """Read the split a preview scores, less the accounts its corpus rejects.
-
-    A preview otherwise applies no selection filter, which is what keeps it an
-    unbiased estimate of the canonical reading rather than a different
-    measurement. The marked-account rejection is the exception because it is a
-    statement about which games count as human play rather than a narrowing of
-    what this run trains on: leaving it out here would have a preview estimate
-    a population the pool it previews does not hold.
-    """
+    """Read the split a preview scores, less the accounts its corpus rejects."""
 
     try:
         paths = normalized_shard_paths(validation.normalized)
