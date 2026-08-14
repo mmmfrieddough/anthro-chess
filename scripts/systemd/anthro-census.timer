@@ -3,11 +3,13 @@ Description=Ask the source about more accounts when its daily window reopens
 
 [Timer]
 # The source's daily allowance is a fixed window anchored to the first request
-# that opens it, so it reopens 24 hours after a run began rather than at any
-# hour this could name. Firing four times a day means whichever firing lands
-# after that moment spends the allowance, and the rest cost one refused request
-# each: a refusal charges nothing and does not push the window out.
-OnCalendar=*-*-* 00,06,12,18:00:00
+# that opens it, which this unit reaches about a minute after it starts. So the
+# firing that spent the allowance yesterday is always slightly too early to
+# spend it today, and the run walks forward by one firing interval a day. That
+# drift is what the interval buys down, and it is why this fires far more often
+# than the allowance refills: the firings landing inside the window cost one
+# refused request each, which charges nothing and does not push the window out.
+OnCalendar=hourly
 # The census accrues rather than finishing, so a machine that was off overnight
 # runs the missed firing when it comes back rather than skipping it silently.
 Persistent=true

@@ -213,11 +213,16 @@ The linger is what makes it a scheduled job rather than a login-session one, and
 say what the last run reached. A spent allowance is a successful run: the units
 have no failure to report on the day the census works as intended.
 
-The timer fires four times a day for an allowance that is daily, because the
-source anchors that allowance's window to whichever request opened it: it
-reopens 24 hours after a run began rather than at any hour a timer could name.
-Whichever firing lands after it spends the day; the others cost one refused
-request each, which charges nothing and does not push the window out.
+The timer fires hourly for an allowance that is daily, because the source
+anchors that allowance's window to whichever request opened it: it reopens 24
+hours after a run began rather than at any hour a timer could name, and this
+unit reaches its first request about a minute after it starts. The firing that
+spent yesterday's allowance is therefore always slightly too early to spend
+today's, so the run walks forward by one firing interval a day and the interval
+decides what that drift costs. The firings landing inside the window cost one
+refused request each, which charges nothing and does not push the window out,
+and a firing that lands while a run is still going is merged into it rather
+than starting a second.
 
 ## Quality Checks
 
