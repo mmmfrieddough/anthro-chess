@@ -6,6 +6,7 @@ from anthro_chess.data.accounts import (
     MarkedAccountError,
     MarkedAccounts,
     account_digest,
+    account_row_digest,
     load_marked_accounts,
     resolve_snapshot_path,
 )
@@ -48,6 +49,19 @@ def test_round_trips_a_snapshot_without_storing_usernames(tmp_path: Path) -> Non
     assert reloaded.accounts_marked == 2
     assert reloaded.contains("cheater")
     assert not reloaded.contains("someone-honest")
+
+
+def test_a_snapshot_and_a_normalized_row_agree_on_who_an_account_is() -> None:
+    """The two truncations of one salted hash have to meet in the middle.
+
+    Truncating either side differently matches nobody, and a filter that
+    matches nobody rejects nothing while reporting success.
+    """
+
+    row_digests = _snapshot("Cheater").row_digests()
+
+    assert account_row_digest("cheater") in row_digests
+    assert account_row_digest("someone-honest") not in row_digests
 
 
 def test_carries_the_coverage_the_census_had_reached(tmp_path: Path) -> None:

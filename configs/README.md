@@ -43,6 +43,12 @@ successful build so a rebuild elsewhere is verified rather than assumed. A
 mismatch afterwards means the corpus, its filters, or its split seed moved, and
 the benchmark needs a new pool version rather than a quietly different pool.
 
+A pool selection may also name one of the `data/marked-accounts/` snapshots,
+relative to the selection naming it as a corpus selection does. The cut then
+leaves out every game a listed account played and records the recall that
+snapshot had reached, which is where a corpus prepared without one applies the
+rejection.
+
 A selection that *reads* a pool records that digest too, because the checks a
 materialized pool answers on its own ask whether it is intact and readable by
 this code, and every generation of it is. Without the digest a superseded pool

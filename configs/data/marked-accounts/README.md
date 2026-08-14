@@ -1,7 +1,10 @@
 # Marked-Account Snapshots
 
 Each file here records which accounts a source had marked for breaking its
-rules at one moment. Preparation rejects every game those accounts played.
+rules at one moment. Every game those accounts played is rejected: by
+preparation when a source selection names the snapshot, and otherwise when the
+evaluation pool's generation is cut, which is where a corpus prepared without
+one applies it.
 `uv run anthro data mark-accounts` cuts one from the census;
 `docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md` owns why the
 games go rather than the moves, and why the label is pinned rather than queried.
@@ -18,7 +21,7 @@ accounts nobody asked about.
 
 Within those archives it speaks partially, and its header says how partially. A
 listed account is marked; an unlisted one was either answered for and clean or
-never asked about, and preparation keeps its games either way. The census behind
+never asked about, and its games are kept either way. The census behind
 a snapshot asks in descending order of games played and has no finish line, so
 the header carries the share of accounts and of player-slots it had reached, and
 `docs/decisions/0047-account-status-is-censused-continuously-and-claims-a-partial-recall.md`

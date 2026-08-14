@@ -31,11 +31,15 @@ publish the list.
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
 from anthro_chess.data.artifacts import write_text_atomically
+
+logger = logging.getLogger(__name__)
 
 SNAPSHOT_FORMAT_VERSION = 2
 #: Fixed, checked-in, and part of the artifact's identity. Changing it
@@ -87,8 +91,8 @@ class MarkedAccounts:
 
     Within them it speaks partially, and the counts say how partially. An
     account that is listed is marked; an account that is not was either
-    answered for and clean, or never asked about, and preparation cannot tell
-    the two apart, so it keeps the games either way. ``slots_queried`` against
+    answered for and clean, or never asked about, and nothing here can tell
+    the two apart, so its games are kept either way. ``slots_queried`` against
     ``slots_total`` is what that costs, in the player-slots the corpus is
     actually made of rather than in accounts, because marked accounts play more
     games than average.
@@ -125,6 +129,31 @@ class MarkedAccounts:
 
         return account_digest(username) in self.digests
 
+    def row_digests(self) -> frozenset[int]:
+        """Return the marks as the identifier a normalized row stores."""
+
+        return frozenset(
+            int(digest[:_ROW_DIGEST_LENGTH], 16) for digest in self.digests
+        )
+
+    def as_record(self) -> dict[str, object]:
+        """Return what an artifact records about the snapshot it was cut under.
+
+        A corpus and a pool both carry this, and they describe one snapshot, so
+        a field added here reaches both rather than whichever writer was edited.
+        """
+
+        return {
+            "covers_archives": list(self.covers_archives),
+            "queried_at": self.queried_at,
+            "accounts_total": self.accounts_total,
+            "accounts_queried": self.accounts_queried,
+            "accounts_marked": self.accounts_marked,
+            "slots_total": self.slots_total,
+            "slots_queried": self.slots_queried,
+            "slot_coverage": self.slot_coverage,
+        }
+
     def require_archive(self, archive_sha256: str) -> None:
         """Reject an archive this snapshot never counted."""
 
@@ -133,7 +162,7 @@ class MarkedAccounts:
                 f"marked-account snapshot does not cover archive {archive_sha256} "
                 f"(it covers {len(self.covers_archives)} other archive(s)); count "
                 "that archive into the census with `uv run anthro data census "
-                "--config <selection>` and cut a new snapshot before preparing it"
+                "--config <selection>` and cut a new snapshot that covers it"
             )
 
     def write(self, path: str | Path) -> Path:
@@ -155,6 +184,30 @@ class MarkedAccounts:
         lines.extend(sorted(self.digests))
         write_text_atomically(output_path, "\n".join(lines) + "\n")
         return output_path
+
+
+def load_snapshot_covering(
+    path: str | Path,
+    archive_sha256s: Iterable[str],
+) -> MarkedAccounts:
+    """Load a snapshot, refusing one that never counted an archive named here.
+
+    A corpus applies this rejection while it is prepared and a pool applies it
+    when its generation is cut, so what a snapshot has to be before either of
+    them may use it, and what it claims once they do, is stated once.
+    """
+
+    snapshot = load_marked_accounts(path)
+    for archive_sha256 in archive_sha256s:
+        snapshot.require_archive(archive_sha256)
+    logger.info(
+        "Rejecting the games of %s marked account(s), from a census cut %s that "
+        "had answered for %.1f%% of the player-slots it counted",
+        snapshot.accounts_marked,
+        snapshot.queried_at,
+        100 * snapshot.slot_coverage,
+    )
+    return snapshot
 
 
 def load_marked_accounts(path: str | Path) -> MarkedAccounts:
@@ -249,7 +302,8 @@ def resolve_snapshot_path(configured: Path, config_source: str | None) -> Path:
         return configured
     if config_source is None:
         raise MarkedAccountError(
-            "filters.marked_accounts is relative but the configuration was not "
-            "loaded from a file, so there is nothing to resolve it against"
+            f"the marked-account snapshot path {configured} is relative but the "
+            "configuration was not loaded from a file, so there is nothing to "
+            "resolve it against"
         )
     return Path(config_source).parent / configured

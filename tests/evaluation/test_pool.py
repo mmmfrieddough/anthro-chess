@@ -11,6 +11,8 @@ import pytest
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import Speed
+from anthro_chess.data.accounts import MarkedAccounts, account_digest
+from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation import (
     BENCHMARK_VERSION,
@@ -85,11 +87,15 @@ def test_freeze_selects_only_the_test_split_and_records_provenance(
         "encoding",
         "identity",
         "leakage",
+        "marked_accounts",
         "preprocessing_version",
         "resolved_config",
         "sampling",
         "schema_version",
     }
+    # Absent rather than zero, so a generation nothing filtered cannot read as
+    # one a snapshot found nothing in.
+    assert record["marked_accounts"] is None
 
 
 def test_freeze_takes_the_admitted_rows_of_each_row_group(
@@ -312,6 +318,177 @@ def test_an_empty_pool_blames_the_fraction_or_the_split_but_not_both(
         freeze_pool(
             _resolved(empty, empty_manifest, sample_fraction=0.5),
             tmp_path / "empty-split",
+        )
+
+
+def _snapshot(
+    path: Path,
+    *usernames: str,
+    covers: tuple[str, ...] = ("0" * 64,),
+) -> Path:
+    """Write a snapshot marking those accounts across the fixture's archive."""
+
+    return MarkedAccounts(
+        covers_archives=covers,
+        queried_at="2026-08-13",
+        accounts_total=40,
+        accounts_queried=30,
+        slots_total=200,
+        slots_queried=180,
+        digests=frozenset(account_digest(username) for username in usernames),
+    ).write(path)
+
+
+@pytest.fixture
+def marked_corpus(
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Callable[[Path], tuple[Path, Path]]:
+    """Return a factory writing three held-out games by six named players."""
+
+    def build(tmp_path: Path) -> tuple[Path, Path]:
+        return write_corpus(
+            tmp_path / "corpus",
+            [
+                normalized_row(1, split="train"),
+                normalized_row(4, split="test"),
+                normalized_row(5, split="test"),
+                normalized_row(6, split="test"),
+            ],
+        )
+
+    return build
+
+
+def test_a_marked_account_of_either_colour_takes_its_games_out_of_the_pool(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """The rejection acts on the account, so the colour it played is immaterial."""
+
+    normalized, manifest = marked_corpus(tmp_path)
+    snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4", "black5")
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, marked_accounts=str(snapshot)),
+        tmp_path / "pool",
+    )
+
+    assert load_pool(tmp_path / "pool").game_ids == (fixture_game_id(6),)
+    assert result.games == 1
+
+
+def test_the_recall_the_snapshot_claimed_is_recorded_with_the_generation(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """`0047` puts this reading at designation, so the generation carries it.
+
+    A snapshot rejects the marks the census had reached rather than every mark
+    there is, and containment makes the cut permanent, so what the pool claims
+    has to be readable off the pool rather than off whichever snapshot file is
+    still on disk later. The count goes with it because a rejection nobody can
+    audit is indistinguishable from one that never ran.
+    """
+
+    normalized, manifest = marked_corpus(tmp_path)
+    snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4", "black5")
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, marked_accounts=str(snapshot)),
+        tmp_path / "pool",
+    )
+
+    assert json.loads(result.manifest_path.read_text())["marked_accounts"] == {
+        "snapshot_sha256": file_sha256(snapshot),
+        "covers_archives": ["0" * 64],
+        "queried_at": "2026-08-13",
+        "accounts_total": 40,
+        "accounts_queried": 30,
+        "accounts_marked": 2,
+        "slots_total": 200,
+        "slots_queried": 180,
+        "slot_coverage": 0.9,
+        "rejected_games": 2,
+    }
+
+
+def _spanning_archives(manifest: Path, *archive_sha256s: str) -> None:
+    """Rewrite the fixture manifest as a corpus prepared from several archives."""
+
+    record = json.loads(manifest.read_text())
+    del record["input"]
+    record["inputs"] = [
+        {"file_name": f"fixture-{index}.pgn", "sha256": archive_sha256}
+        for index, archive_sha256 in enumerate(archive_sha256s)
+    ]
+    manifest.write_text(json.dumps(record))
+
+
+def test_a_snapshot_has_to_cover_every_archive_the_corpus_holds(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """A corpus spans archives, and a snapshot short of the span is refused.
+
+    An archive the census never counted is one whose accounts nobody was asked
+    about, so filtering the months a snapshot knows and keeping the rest whole
+    would cut a generation that reads as filtered and is not.
+    """
+
+    normalized, manifest = marked_corpus(tmp_path)
+    _spanning_archives(manifest, "0" * 64, "1" * 64)
+    partial = _snapshot(tmp_path / "partial.txt", "white4", covers=("0" * 64,))
+    whole = _snapshot(tmp_path / "whole.txt", "white4", covers=("0" * 64, "1" * 64))
+
+    with pytest.raises(EvaluationPoolError, match=f"does not cover archive {'1' * 64}"):
+        freeze_pool(
+            _resolved(normalized, manifest, marked_accounts=str(partial)),
+            tmp_path / "refused",
+        )
+
+    assert (
+        freeze_pool(
+            _resolved(normalized, manifest, marked_accounts=str(whole)),
+            tmp_path / "pool",
+        ).games
+        == 2
+    )
+
+
+def test_a_manifest_that_names_no_archive_refuses_the_snapshot_it_cannot_check(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """A coverage check that silently did not happen is the failure to be loud about."""
+
+    normalized, manifest = marked_corpus(tmp_path)
+    record = json.loads(manifest.read_text())
+    del record["input"]
+    manifest.write_text(json.dumps(record))
+    snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4")
+
+    with pytest.raises(EvaluationPoolError, match="digest of every archive"):
+        freeze_pool(
+            _resolved(normalized, manifest, marked_accounts=str(snapshot)),
+            tmp_path / "pool",
+        )
+
+
+def test_a_pool_the_snapshot_emptied_blames_the_snapshot(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """The fraction's message would send a reader to the wrong setting."""
+
+    normalized, manifest = marked_corpus(tmp_path)
+    snapshot = _snapshot(tmp_path / "marked-accounts.txt", "white4", "black5", "white6")
+
+    with pytest.raises(EvaluationPoolError, match="rejected as a marked account"):
+        freeze_pool(
+            _resolved(normalized, manifest, marked_accounts=str(snapshot)),
+            tmp_path / "pool",
         )
 
 
