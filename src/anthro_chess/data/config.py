@@ -204,9 +204,22 @@ class SelectionConfig(ConfigModel):
     set of games rather than two. Preparation's filter of the same name reads
     the PGN header instead, and the two part over correspondence: a clockless
     game reaches these columns as no class at all.
+
+    ``marked_accounts`` is an exception to the paragraph above rather than
+    another axis of it. It names the snapshot
+    ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md``
+    rejects on, matched against the account digests the row carries, and it
+    belongs here because a corpus prepared without one keeps those games in
+    every split;
+    ``docs/decisions/0062-the-breadth-corpus-filters-for-validity-alone.md``
+    says why the breadth corpus is prepared that way. A relative path resolves
+    against the selection naming it. Excluding runs before subsampling, so two
+    runs differing only in this dial are still held to one game count by
+    ``fraction`` or ``maximum_games``.
     """
 
     speed: Speed | None = None
+    marked_accounts: Path | None = None
     minimum_time_initial_ms: int | None = Field(default=None, ge=0)
     maximum_time_initial_ms: int | None = Field(default=None, ge=0)
     minimum_time_increment_ms: int | None = Field(default=None, ge=0)

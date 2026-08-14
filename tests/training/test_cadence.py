@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from anthro_chess.data import SequenceDataConfig, SequenceLoaderConfig
+from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.schema import SplitName
 from anthro_chess.evaluation.results import (
     CheckpointReference,
@@ -117,13 +118,44 @@ def test_a_preview_view_subsamples_the_validation_split_deterministically(
     assert first.selection is not None
     assert first.selection.selected_games == 2
     assert first.selection.eligible_games == 6
-    # A preview subsamples and never filters, so nothing is excluded.
+    # A preview view subsamples and never filters, so its own record excludes
+    # nothing. What the corpus rejected before the view read it is a property
+    # of the population rather than of the view, which the test below covers.
     assert first.selection.excluded_games == {}
     assert second.selection is not None
     assert second.selection.game_ids == first.selection.game_ids
     # Every selected game belongs to the validation split.
     assert set(first.selection.game_ids) <= {
         fixture_game_id(index) for index in range(100, 106)
+    }
+
+
+def test_a_preview_reads_the_population_a_filtered_pool_would_hold(
+    tmp_path: Path,
+    normalized_row: RowFactory,
+    write_corpus: CorpusFactory,
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """A preview estimates the canonical reading, so it drops what the pool drops.
+
+    `0041`'s rejection is a statement about which games count as human play
+    rather than a narrowing of what a run trains on. Left out here, a preview
+    would estimate a population the pool it previews does not hold, and the
+    difference concentrates in exactly the human-likeness metrics a preview
+    reports.
+    """
+
+    validation = _corpus(tmp_path, normalized_row, write_corpus)
+    marked = frozenset({account_row_digest("white100"), account_row_digest("black101")})
+
+    entry = prepare_schedule(
+        _evaluation(maximum_games=6), validation, marked_digests=marked
+    ).entries[0]
+
+    assert entry.selection is not None
+    assert entry.selection.eligible_games == 4
+    assert set(entry.selection.game_ids) == {
+        fixture_game_id(index) for index in range(102, 106)
     }
 
 

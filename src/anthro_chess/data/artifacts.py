@@ -342,6 +342,45 @@ def write_normalized_rows(rows: Sequence[Mapping[str, Any]], path: Path) -> None
     )
 
 
+def manifest_archive_records(manifest: Mapping[str, Any]) -> list[Any] | None:
+    """Return what a corpus manifest says it was prepared from, or ``None``.
+
+    A manifest predating corpora that span archives records a single ``input``
+    rather than a list. Reading from one is legitimate where appending to it is
+    not, so the older shape is carried rather than dropped.
+    """
+
+    inputs = manifest.get("inputs")
+    if inputs is None and "input" in manifest:
+        return [manifest["input"]]
+    return inputs if isinstance(inputs, list) else None
+
+
+def manifest_archive_digests(
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> tuple[str, ...]:
+    """Return the digest of every archive a corpus was prepared from.
+
+    A caller holding a marked-account snapshot needs these to check that the
+    snapshot covers this corpus, and a manifest that cannot answer has to fail
+    rather than leave that check silently unmade.
+    """
+
+    archives = manifest_archive_records(manifest) or []
+    digests = tuple(
+        archive["sha256"]
+        for archive in archives
+        if isinstance(archive, Mapping) and isinstance(archive.get("sha256"), str)
+    )
+    if not digests or len(digests) != len(archives):
+        raise DataLoadingError(
+            f"{manifest_path} does not record the digest of every archive this "
+            "corpus was prepared from"
+        )
+    return digests
+
+
 def validate_manifest_compatibility(
     manifest: Mapping[str, Any],
     manifest_path: Path,

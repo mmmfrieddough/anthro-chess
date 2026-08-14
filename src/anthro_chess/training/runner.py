@@ -29,6 +29,7 @@ from anthro_chess.data import (
     encoding_identity,
     maximum_position_bound,
 )
+from anthro_chess.data.accounts import snapshot_for_corpus
 from anthro_chess.data.artifacts import (
     ShardIdentity,
     normalized_shard_paths,
@@ -122,6 +123,10 @@ class TrainingResult:
 class _DataSelection:
     loader: SequenceBatchSource
     provenance: dict[str, object]
+    #: Carried so an in-training preview over this same split rejects the same
+    #: accounts the loader did, rather than resolving the snapshot a second
+    #: time and being able to disagree with it.
+    marked_digests: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -291,12 +296,14 @@ def run_training(
             config.train,
             legal_actions=False,
             maximum_context_plies=config.model.maximum_context_plies,
+            config_source=resolved_config.provenance.source,
         )
         validation = (
             _load_data_selection(
                 config.validation,
                 legal_actions=True,
                 maximum_context_plies=config.model.maximum_context_plies,
+                config_source=resolved_config.provenance.source,
             )
             if config.validation is not None
             else None
@@ -424,6 +431,9 @@ def run_training(
             config.validation,
             configuration=configuration,
             store=store if config.evaluation.record else None,
+            marked_digests=(
+                frozenset() if validation is None else validation.marked_digests
+            ),
         )
         efficiency_recorder = _EfficiencyRecorder(
             monitor=efficiency_monitor,
@@ -1261,7 +1271,34 @@ def _validate_checkpoint_compatibility(
         if saved[key] != value:
             raise CheckpointError(
                 f"checkpoint {label} is incompatible with the current run"
+                f"{_differing_identities(saved[key], value)}"
             )
+
+
+def _differing_identities(saved: object, current: object) -> str:
+    """Name which identities under one group moved, where the group holds many.
+
+    Each side of ``data`` holds three, and which one moved is the difference
+    between a corpus that was rebuilt, a selection that was edited, and a
+    loader schema that grew a field — the last of which every checkpoint
+    written before such a field existed will hit, whatever else is unchanged.
+    """
+
+    differing = sorted(_differing_paths(saved, current))
+    return f" ({', '.join(differing)})" if differing else ""
+
+
+def _differing_paths(saved: object, current: object, prefix: str = "") -> list[str]:
+    if not isinstance(saved, Mapping) or not isinstance(current, Mapping):
+        return [prefix.rstrip(".")] if prefix else []
+    paths: list[str] = []
+    for key in saved.keys() | current.keys():
+        if saved.get(key) != current.get(key):
+            paths.extend(
+                _differing_paths(saved.get(key), current.get(key), f"{prefix}{key}.")
+                or [f"{prefix}{key}"]
+            )
+    return paths
 
 
 def _load_data_selection(
@@ -1269,6 +1306,7 @@ def _load_data_selection(
     *,
     legal_actions: bool,
     maximum_context_plies: int,
+    config_source: str | None = None,
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1285,17 +1323,32 @@ def _load_data_selection(
     _reject_uncoverable_corpus(manifest, config, maximum_context_plies)
     shards = validate_manifest_outputs(manifest, manifest_path, paths)
     manifest_sha256 = sha256(manifest_bytes).hexdigest()
+    snapshot = snapshot_for_corpus(
+        config.loader.selection.marked_accounts,
+        config_source,
+        manifest,
+        manifest_path,
+    )
+    marked_digests = (
+        frozenset[int]() if snapshot is None else snapshot.accounts.row_digests()
+    )
     loader = _open_loader(
         config,
         shards,
         manifest_sha256=manifest_sha256,
         legal_actions=legal_actions,
+        marked_digests=marked_digests,
     )
     return _DataSelection(
         loader=loader,
+        marked_digests=marked_digests,
         provenance={
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": manifest_sha256,
+            # Which snapshot this run rejected against, beside the resolved
+            # selection below that counts what it removed. A run reading a
+            # corpus nothing filtered records nothing here.
+            "marked_accounts": None if snapshot is None else snapshot.as_record(),
             "manifest": manifest,
             "normalized_paths": [str(path.resolve()) for path in paths],
             # Which loader read the corpus, because the two order an epoch
@@ -1320,6 +1373,7 @@ def _open_loader(
     *,
     manifest_sha256: str,
     legal_actions: bool,
+    marked_digests: frozenset[int] = frozenset(),
 ) -> SequenceBatchSource:
     """Open the loader this selection declared, eager or shard-backed."""
 
@@ -1328,6 +1382,7 @@ def _open_loader(
             [shard.path for shard in shards],
             config.loader,
             legal_actions=legal_actions,
+            marked_digests=marked_digests,
         )
     index = build_sharded_index(
         shards,
@@ -1335,6 +1390,7 @@ def _open_loader(
         selection=config.loader.selection,
         chunk_length=config.loader.chunk_length,
         manifest_sha256=manifest_sha256,
+        marked_digests=marked_digests,
     )
     return StreamingSequenceDataLoader(
         index,

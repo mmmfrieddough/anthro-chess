@@ -15,6 +15,8 @@ from tensorboard.backend.event_processing.event_accumulator import (  # type: ig
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import load_config
 from anthro_chess.data import PrepareConfig, SequenceDataLoader, prepare_pgn
+from anthro_chess.data.accounts import MarkedAccounts, account_digest
+from anthro_chess.data.artifacts import file_sha256, manifest_archive_records
 from anthro_chess.data.schema import SCHEMA_VERSION
 from anthro_chess.evaluation.results import ResultsStore
 from anthro_chess.evaluation.results.budget import build_budget_report
@@ -375,7 +377,14 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         shuffle=True,
         resume_from=initial.checkpoint_path,
     )
-    with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
+    # Named down to the identity that moved: the three under `data` separate a
+    # corpus that was rebuilt from a selection that was edited from a loader
+    # configuration that changed, and a resume failure that says which is the
+    # difference between a real incompatibility and an editable one.
+    with pytest.raises(
+        TrainingError,
+        match=r"checkpoint data is incompatible .*train\.loader_configuration_sha256",
+    ):
         run_training(
             load_config(TrainingConfig, path=incompatible_data_config),
             output_directory=tmp_path / "incompatible-data",
@@ -1853,6 +1862,103 @@ def _train_at_declared_context(
         load_config(TrainingConfig, path=config_path),
         output_directory=tmp_path / f"run-{maximum_context_plies}",
     )
+
+
+def test_a_run_records_the_snapshot_it_rejected_against(tmp_path: Path) -> None:
+    """`0047`'s recall is read where the rejection was applied, so a run carries it.
+
+    The snapshot marks nobody this corpus holds, which is the case worth
+    pinning: the run has to record that it filtered and found nothing, because
+    a record silent about the snapshot is indistinguishable from a run that
+    never had one.
+    """
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    snapshot = _snapshot(tmp_path, prepared.manifest_path, "someone-else")
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="marked",
+        validation=False,
+        train_selection=(
+            "\n[train.loader.selection]\n"
+            f"marked_accounts = {json.dumps(str(snapshot))}\n"
+        ),
+    )
+
+    result = run_training(
+        load_config(TrainingConfig, path=config_path),
+        output_directory=tmp_path / "run",
+    )
+
+    recorded = json.loads(result.run_path.read_text(encoding="utf-8"))
+    marked = recorded["data"]["train"]["marked_accounts"]
+    assert marked["accounts_marked"] == 1
+    assert marked["slot_coverage"] == 0.75
+    assert marked["snapshot_sha256"] == file_sha256(snapshot)
+    selection = recorded["data"]["train"]["selection"]
+    assert selection["excluded_games"] == {}
+    assert selection["spec"]["marked_accounts"] == str(snapshot)
+
+
+def test_a_run_refuses_a_snapshot_that_never_counted_its_corpus(
+    tmp_path: Path,
+) -> None:
+    """Otherwise a widened corpus trains on every account nobody was asked about."""
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    snapshot = MarkedAccounts(
+        covers_archives=("f" * 64,),
+        queried_at="2026-08-14",
+        accounts_total=8,
+        accounts_queried=6,
+        slots_total=100,
+        slots_queried=75,
+        digests=frozenset({account_digest("someone-else")}),
+    ).write(tmp_path / "elsewhere.txt")
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="uncovered",
+        validation=False,
+        train_selection=(
+            "\n[train.loader.selection]\n"
+            f"marked_accounts = {json.dumps(str(snapshot))}\n"
+        ),
+    )
+
+    with pytest.raises(TrainingError, match="does not cover archive"):
+        run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
+
+
+def _snapshot(tmp_path: Path, manifest_path: Path, *usernames: str) -> Path:
+    """Write a snapshot covering the archives one prepared corpus records."""
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return MarkedAccounts(
+        covers_archives=tuple(
+            archive["sha256"] for archive in manifest_archive_records(manifest) or ()
+        ),
+        queried_at="2026-08-14",
+        accounts_total=8,
+        accounts_queried=6,
+        slots_total=100,
+        slots_queried=75,
+        digests=frozenset(account_digest(username) for username in usernames),
+    ).write(tmp_path / "marked-accounts.txt")
 
 
 def _write_training_config(

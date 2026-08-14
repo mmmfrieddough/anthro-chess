@@ -52,6 +52,13 @@ _SELECTION_COLUMNS = (
     NormalizedColumn.TIME_INCREMENT_MS,
     NormalizedColumn.SPLIT,
 )
+#: Joined to that projection only when a selection names a snapshot. A run
+#: rejecting nobody would otherwise decode a player identifier per corpus row
+#: to prove it.
+_MARKED_COLUMNS = (
+    NormalizedColumn.WHITE_PLAYER_DIGEST,
+    NormalizedColumn.BLACK_PLAYER_DIGEST,
+)
 _LOADER_COLUMNS = (
     NormalizedColumn.SCHEMA_VERSION,
     NormalizedColumn.SOURCE_ID,
@@ -334,11 +341,16 @@ class SequenceDataset(Sequence[SequenceExample]):
         chunk_length: int | None = None,
         selection: SelectionConfig | None = None,
         legal_actions: bool = True,
+        marked_digests: frozenset[int] = frozenset(),
     ) -> SequenceDataset:
         """Load, validate, encode, and optionally chunk normalized games.
 
         Resolving the selection first means only the selected games are
         encoded, which is where nearly all of the load cost is.
+
+        ``marked_digests`` is passed rather than read from ``selection``
+        because resolving the snapshot it names needs the corpus manifest and
+        the file the selection came from, neither of which reaches this layer.
         """
 
         selection = SelectionConfig() if selection is None else selection
@@ -352,6 +364,7 @@ class SequenceDataset(Sequence[SequenceExample]):
             normalized_paths,
             split=split,
             selection=selection,
+            marked_digests=marked_digests,
         )
         examples: list[SequenceExample] = []
         identity_records: list[dict[str, object]] = []
@@ -504,6 +517,7 @@ class SequenceDataLoader(SequenceBatchSource):
         config: SequenceLoaderConfig,
         *,
         legal_actions: bool = True,
+        marked_digests: frozenset[int] = frozenset(),
     ) -> SequenceDataLoader:
         """Build a configured loader directly from normalized Parquet shards.
 
@@ -520,6 +534,7 @@ class SequenceDataLoader(SequenceBatchSource):
                 chunk_length=config.chunk_length,
                 selection=config.selection,
                 legal_actions=legal_actions,
+                marked_digests=marked_digests,
             ),
             config,
         )
@@ -700,16 +715,18 @@ def _resolve_selection(
     *,
     split: str,
     selection: SelectionConfig,
+    marked_digests: frozenset[int] = frozenset(),
 ) -> tuple[SelectionResolution, frozenset[int]]:
     """Decide which games in one split the configured selection keeps."""
 
     eligible: list[int] = []
     excluded: dict[str, int] = {}
+    columns = _SELECTION_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
     for path in paths:
-        for row in read_normalized_rows(path, _SELECTION_COLUMNS):
+        for row in read_normalized_rows(path, columns):
             if row[NormalizedColumn.SPLIT] != split:
                 continue
-            reason = _exclusion_reason(row, selection)
+            reason = _exclusion_reason(row, selection, marked_digests)
             if reason is None:
                 eligible.append(row_game_id(row))
             else:
@@ -757,7 +774,11 @@ def _resolution_for_examples(
     )
 
 
-def _exclusion_reason(row: Mapping[str, Any], selection: SelectionConfig) -> str | None:
+def _exclusion_reason(
+    row: Mapping[str, Any],
+    selection: SelectionConfig,
+    marked_digests: frozenset[int] = frozenset(),
+) -> str | None:
     time_initial = row[NormalizedColumn.TIME_INITIAL_MS]
     time_increment = row[NormalizedColumn.TIME_INCREMENT_MS]
     ratings = (
@@ -821,6 +842,16 @@ def _exclusion_reason(row: Mapping[str, Any], selection: SelectionConfig) -> str
             return "below_minimum_rating"
         if selection.maximum_rating is not None and rating > selection.maximum_rating:
             return "above_maximum_rating"
+
+    # Last, so the count is a share of what this run would otherwise have read
+    # rather than of the split, which is the number preparation and the pool
+    # cut both report against. Guarded rather than merely falling through on an
+    # empty set, because a caller filtering nobody does not project the columns.
+    if marked_digests and (
+        row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
+        or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
+    ):
+        return "marked_account"
     return None
 
 

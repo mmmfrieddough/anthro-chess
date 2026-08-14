@@ -379,6 +379,7 @@ def prepare_schedule(
     *,
     configuration: ConfigurationReference | None = None,
     store: ResultsStore | None = None,
+    marked_digests: frozenset[int] = frozenset(),
 ) -> CadenceSchedule:
     """Resolve every declared cadence before the first optimizer step.
 
@@ -409,7 +410,9 @@ def prepare_schedule(
                 )
             key = (entry.view.name, entry.view.maximum_games, entry.view.seed)
             if key not in cache:
-                cache[key] = _prepare_view(config, entry.view, validation)
+                cache[key] = _prepare_view(
+                    config, entry.view, validation, marked_digests
+                )
             prepared_view = cache[key]
 
         positions = 0 if prepared_view is None else prepared_view.inputs.position_count
@@ -508,6 +511,7 @@ def _prepare_view(
     config: TrainingEvaluationConfig,
     view: PreviewViewConfig,
     validation: SequenceDataConfig | None,
+    marked_digests: frozenset[int],
 ) -> _PreparedView:
     if validation is None:
         raise CadenceError(
@@ -520,7 +524,7 @@ def _prepare_view(
             "in-training previews must never read the held-out test split"
         )
 
-    rows = _validation_rows(validation, split)
+    rows = _validation_rows(validation, split, marked_digests)
     selection = apply_view(
         [pool_game(row) for row in rows],
         ViewConfig(
@@ -563,7 +567,18 @@ def _prepare_view(
 def _validation_rows(
     validation: SequenceDataConfig,
     split: SplitName,
+    marked_digests: frozenset[int],
 ) -> list[dict[str, Any]]:
+    """Read the split a preview scores, less the accounts its corpus rejects.
+
+    A preview otherwise applies no selection filter, which is what keeps it an
+    unbiased estimate of the canonical reading rather than a different
+    measurement. The marked-account rejection is the exception because it is a
+    statement about which games count as human play rather than a narrowing of
+    what this run trains on: leaving it out here would have a preview estimate
+    a population the pool it previews does not hold.
+    """
+
     try:
         paths = normalized_shard_paths(validation.normalized)
         rows = [
@@ -571,6 +586,8 @@ def _validation_rows(
             for path in paths
             for row in read_normalized_rows(path)
             if row[NormalizedColumn.SPLIT] == split
+            and row[NormalizedColumn.WHITE_PLAYER_DIGEST] not in marked_digests
+            and row[NormalizedColumn.BLACK_PLAYER_DIGEST] not in marked_digests
         ]
     except (DataLoadingError, OSError, json.JSONDecodeError) as error:
         raise CadenceError(str(error)) from error

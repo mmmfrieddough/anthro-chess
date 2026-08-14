@@ -32,12 +32,17 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
-from anthro_chess.data.artifacts import write_text_atomically
+from anthro_chess.data.artifacts import (
+    file_sha256,
+    manifest_archive_digests,
+    write_text_atomically,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -186,15 +191,59 @@ class MarkedAccounts:
         return output_path
 
 
+@dataclass(frozen=True)
+class CorpusSnapshot:
+    """A snapshot one reader of a prepared corpus resolved, and its file."""
+
+    accounts: MarkedAccounts
+    path: Path
+    sha256: str
+
+    def as_record(self) -> dict[str, object]:
+        """Return what an artifact records about the rejection it applied.
+
+        The file's own digest and not only the header counts: two snapshots
+        can carry the same counts over different accounts, and an artifact
+        naming a path alone cannot be checked once that path is overwritten.
+        """
+
+        return {**self.accounts.as_record(), "snapshot_sha256": self.sha256}
+
+
+def snapshot_for_corpus(
+    configured: Path | None,
+    config_source: str | None,
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+) -> CorpusSnapshot | None:
+    """Load the snapshot a selection names, if it covers the corpus it filters.
+
+    Every reader of a prepared corpus that can apply this rejection reaches it
+    the same way — a path beside the selection naming it, held to the archives
+    the corpus manifest says it was prepared from — because a reader resolving
+    either differently would reject a different set of games from the same
+    corpus and the same snapshot.
+    """
+
+    if configured is None:
+        return None
+    path = resolve_snapshot_path(configured, config_source)
+    accounts = load_snapshot_covering(
+        path, manifest_archive_digests(manifest, manifest_path)
+    )
+    return CorpusSnapshot(accounts=accounts, path=path, sha256=file_sha256(path))
+
+
 def load_snapshot_covering(
     path: str | Path,
     archive_sha256s: Iterable[str],
 ) -> MarkedAccounts:
     """Load a snapshot, refusing one that never counted an archive named here.
 
-    A corpus applies this rejection while it is prepared and a pool applies it
-    when its generation is cut, so what a snapshot has to be before either of
-    them may use it, and what it claims once they do, is stated once.
+    A corpus applies this rejection while it is prepared, a pool applies it
+    when its generation is cut, and a training selection applies it when it
+    loads, so what a snapshot has to be before any of them may use it, and what
+    it claims once they do, is stated once.
     """
 
     snapshot = load_marked_accounts(path)

@@ -26,6 +26,7 @@ from anthro_chess.data import (
     Speed,
     build_sharded_index,
 )
+from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.artifacts import (
     _DIGEST_CHUNK_GAMES,
     game_ids_sha256,
@@ -406,6 +407,107 @@ def test_a_folded_identity_is_the_digest_of_the_string_it_never_builds(
 def test_selection_bounds_must_be_ordered() -> None:
     with pytest.raises(ValueError, match="maximum_rating must not be below"):
         SelectionConfig(minimum_rating=1800, maximum_rating=1200)
+
+
+def test_a_marked_account_of_either_colour_leaves_what_a_run_reads(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """`0041` rejects on the account, so which colour it played is immaterial."""
+
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(1, BLITZ_MS, 1500), (2, BLITZ_MS, 1500), (3, BLITZ_MS, 1500)],
+    )
+    marked = frozenset({account_row_digest("white1"), account_row_digest("black2")})
+
+    dataset = SequenceDataset.from_parquet(
+        games, split="train", selection=SelectionConfig(), marked_digests=marked
+    )
+
+    assert _loaded(dataset) == (fixture_game_id(3),)
+    assert dataset.resolution.excluded_games == {"marked_account": 2}
+
+
+def test_both_loaders_reject_the_same_accounts(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A run picks one loader by configuration, so they must hold one corpus.
+
+    The shard-backed loader reads its own projected columns per row group and
+    the eager one reads whole rows, which is where a filter reaching only one
+    of them would go unnoticed.
+    """
+
+    rows = [
+        normalized_row(game_id, split="train", time_initial_ms=BLITZ_MS, rating=1500)
+        for game_id in range(1, 17)
+    ]
+    normalized, manifest_path = write_corpus(tmp_path, rows)
+    manifest_bytes = manifest_path.read_bytes()
+    shards = validate_manifest_outputs(
+        json.loads(manifest_bytes), manifest_path, normalized_shard_paths(normalized)
+    )
+    marked = frozenset(
+        {account_row_digest(f"white{game_id}") for game_id in (2, 5, 11)}
+    )
+
+    eager = SequenceDataset.from_parquet(
+        [shard.path for shard in shards],
+        split="train",
+        selection=SelectionConfig(),
+        marked_digests=marked,
+    )
+    index = build_sharded_index(
+        shards,
+        split="train",
+        selection=SelectionConfig(),
+        manifest_sha256=sha256(manifest_bytes).hexdigest(),
+        marked_digests=marked,
+    )
+
+    assert eager.resolution.selected_games == 13
+    assert index.resolution.game_ids_sha256 == eager.resolution.game_ids_sha256
+    assert eager.resolution.excluded_games == {"marked_account": 3}
+    assert index.resolution.excluded_games == eager.resolution.excluded_games
+
+
+def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Two runs differing only in this dial still read the same game count.
+
+    Rejecting after the subsample would hand the filtered run fewer games than
+    the unfiltered one, so a comparison between them would confound the filter
+    with how much data each saw.
+    """
+
+    games = _corpus(
+        tmp_path,
+        normalized_row,
+        write_corpus,
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 21)],
+    )
+    marked = frozenset(
+        {account_row_digest(f"white{game_id}") for game_id in range(1, 8)}
+    )
+    selection = SelectionConfig(maximum_games=10)
+
+    unfiltered = SequenceDataset.from_parquet(games, split="train", selection=selection)
+    filtered = SequenceDataset.from_parquet(
+        games, split="train", selection=selection, marked_digests=marked
+    )
+
+    assert len(_loaded(unfiltered)) == len(_loaded(filtered)) == 10
+    assert set(_loaded(filtered)) != set(_loaded(unfiltered))
 
 
 def _corpus(

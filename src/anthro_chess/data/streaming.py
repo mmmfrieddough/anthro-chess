@@ -56,6 +56,7 @@ from anthro_chess.data.config import (
 from anthro_chess.data.encoding import PlyEncoding, encode_game
 from anthro_chess.data.loading import (
     _LOADER_COLUMNS,
+    _MARKED_COLUMNS,
     LOADER_STATE_VERSION,
     SelectionResolution,
     SequenceBatch,
@@ -193,6 +194,7 @@ def build_sharded_index(
     selection: SelectionConfig,
     chunk_length: int | None = None,
     manifest_sha256: str,
+    marked_digests: frozenset[int] = frozenset(),
 ) -> ShardedSequenceIndex:
     """Index one split of a prepared corpus without decoding any game."""
 
@@ -200,6 +202,7 @@ def build_sharded_index(
         raise DataLoadingError("at least one normalized shard is required")
     logger.info("Indexing %s shard(s) for the %s split", len(shards), split)
 
+    columns = _INDEX_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
     scanned: list[_RowGroupIndex] = []
     excluded: dict[str, int] = {}
     for shard_index, shard in enumerate(shards):
@@ -211,6 +214,8 @@ def build_sharded_index(
                 row_group=row_group,
                 split=split,
                 selection=selection,
+                marked_digests=marked_digests,
+                columns=columns,
                 excluded=excluded,
             )
             if len(group):
@@ -522,25 +527,27 @@ def _scan_row_group(
     row_group: int,
     split: str,
     selection: SelectionConfig,
+    marked_digests: frozenset[int],
+    columns: Sequence[NormalizedColumn],
     excluded: dict[str, int],
 ) -> _RowGroupIndex:
     """Read one row group's index columns and apply the selection filters."""
 
-    table = read_normalized_row_group(reader, row_group, _INDEX_COLUMNS)
-    columns = {
-        column.value: row_group_column(table, column.value) for column in _INDEX_COLUMNS
-    }
+    table = read_normalized_row_group(reader, row_group, columns)
+    values = {column.value: row_group_column(table, column.value) for column in columns}
     positions: array[int] = array("I")
     game_ids: array[int] = array("Q")
     lengths: array[int] = array("i")
-    splits = columns[NormalizedColumn.SPLIT]
-    ply_counts = columns[NormalizedColumn.PLY_COUNT]
-    terminal = columns[NormalizedColumn.TERMINAL_ACTION_STATUS]
+    splits = values[NormalizedColumn.SPLIT]
+    ply_counts = values[NormalizedColumn.PLY_COUNT]
+    terminal = values[NormalizedColumn.TERMINAL_ACTION_STATUS]
     for position in range(len(splits)):
         if splits[position] != split:
             continue
-        row = {column: values[position] for column, values in columns.items()}
-        reason = _exclusion_reason(row, selection)
+        row = {
+            column: column_values[position] for column, column_values in values.items()
+        }
+        reason = _exclusion_reason(row, selection, marked_digests)
         if reason is not None:
             excluded[reason] = excluded.get(reason, 0) + 1
             continue
