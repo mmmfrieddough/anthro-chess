@@ -21,6 +21,11 @@ A preview view may subsample and may not filter. That is enforced structurally
 here: a preview view has no filter fields to set. Subsampling keeps a preview
 an estimate of the canonical quantity with wider error bars; filtering would
 make it a different measurement needing a documented conversion.
+
+The corpus a preview reads is narrowed by one thing, before any view sees it:
+the marked-account snapshot its validation selection names. That one says which
+games count as human play rather than which of them this run trains on, so
+applying it is what keeps a preview an estimate of the pool it previews.
 """
 
 from __future__ import annotations
@@ -40,10 +45,12 @@ from torch import nn
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import DataLoadingError, SequenceDataConfig, SequenceDataLoader
+from anthro_chess.data.accounts import marks_a_player
 from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     read_normalized_rows,
 )
+from anthro_chess.data.loading import require_resolved_snapshot
 from anthro_chess.data.schema import (
     NormalizedColumn,
     SplitName,
@@ -379,6 +386,7 @@ def prepare_schedule(
     *,
     configuration: ConfigurationReference | None = None,
     store: ResultsStore | None = None,
+    marked_digests: frozenset[int] | None = None,
 ) -> CadenceSchedule:
     """Resolve every declared cadence before the first optimizer step.
 
@@ -409,7 +417,9 @@ def prepare_schedule(
                 )
             key = (entry.view.name, entry.view.maximum_games, entry.view.seed)
             if key not in cache:
-                cache[key] = _prepare_view(config, entry.view, validation)
+                cache[key] = _prepare_view(
+                    config, entry.view, validation, marked_digests
+                )
             prepared_view = cache[key]
 
         positions = 0 if prepared_view is None else prepared_view.inputs.position_count
@@ -508,6 +518,7 @@ def _prepare_view(
     config: TrainingEvaluationConfig,
     view: PreviewViewConfig,
     validation: SequenceDataConfig | None,
+    marked_digests: frozenset[int] | None,
 ) -> _PreparedView:
     if validation is None:
         raise CadenceError(
@@ -520,7 +531,8 @@ def _prepare_view(
             "in-training previews must never read the held-out test split"
         )
 
-    rows = _validation_rows(validation, split)
+    require_resolved_snapshot(validation.loader.selection, marked_digests)
+    rows = _validation_rows(validation, split, marked_digests)
     selection = apply_view(
         [pool_game(row) for row in rows],
         ViewConfig(
@@ -563,7 +575,10 @@ def _prepare_view(
 def _validation_rows(
     validation: SequenceDataConfig,
     split: SplitName,
+    marked_digests: frozenset[int] | None,
 ) -> list[dict[str, Any]]:
+    """Read the split a preview scores, less the accounts its corpus rejects."""
+
     try:
         paths = normalized_shard_paths(validation.normalized)
         rows = [
@@ -571,12 +586,14 @@ def _validation_rows(
             for path in paths
             for row in read_normalized_rows(path)
             if row[NormalizedColumn.SPLIT] == split
+            and not marks_a_player(row, marked_digests)
         ]
     except (DataLoadingError, OSError, json.JSONDecodeError) as error:
         raise CadenceError(str(error)) from error
     if not rows:
         raise CadenceError(
             f"the validation selection contains no games in the {split} split"
+            + (" that its marked-account snapshot leaves" if marked_digests else "")
         )
     return rows
 

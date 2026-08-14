@@ -29,6 +29,7 @@ from anthro_chess.data import (
     encoding_identity,
     maximum_position_bound,
 )
+from anthro_chess.data.accounts import snapshot_for_corpus
 from anthro_chess.data.artifacts import (
     ShardIdentity,
     normalized_shard_paths,
@@ -122,6 +123,10 @@ class TrainingResult:
 class _DataSelection:
     loader: SequenceBatchSource
     provenance: dict[str, object]
+    #: Carried so an in-training preview over this same split rejects the same
+    #: accounts the loader did, rather than resolving the snapshot a second
+    #: time and being able to disagree with it.
+    marked_digests: frozenset[int] | None
 
 
 @dataclass(frozen=True)
@@ -291,12 +296,14 @@ def run_training(
             config.train,
             legal_actions=False,
             maximum_context_plies=config.model.maximum_context_plies,
+            config_source=resolved_config.provenance.source,
         )
         validation = (
             _load_data_selection(
                 config.validation,
                 legal_actions=True,
                 maximum_context_plies=config.model.maximum_context_plies,
+                config_source=resolved_config.provenance.source,
             )
             if config.validation is not None
             else None
@@ -424,6 +431,7 @@ def run_training(
             config.validation,
             configuration=configuration,
             store=store if config.evaluation.record else None,
+            marked_digests=None if validation is None else validation.marked_digests,
         )
         efficiency_recorder = _EfficiencyRecorder(
             monitor=efficiency_monitor,
@@ -1269,6 +1277,7 @@ def _load_data_selection(
     *,
     legal_actions: bool,
     maximum_context_plies: int,
+    config_source: str | None,
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1283,19 +1292,32 @@ def _load_data_selection(
     # refuse the run, and this one reads two integers, so it is the cheaper of
     # the two to fail on.
     _reject_uncoverable_corpus(manifest, config, maximum_context_plies)
+    # Ahead of the output check for the same reason as the corpus bound above:
+    # both refuse the run, and this one reads one small file where that one
+    # hashes every shard end to end.
+    snapshot = snapshot_for_corpus(
+        config.loader.selection.marked_accounts,
+        config_source,
+        manifest,
+        manifest_path,
+    )
     shards = validate_manifest_outputs(manifest, manifest_path, paths)
     manifest_sha256 = sha256(manifest_bytes).hexdigest()
+    marked_digests = None if snapshot is None else snapshot.accounts.row_digests()
     loader = _open_loader(
         config,
         shards,
         manifest_sha256=manifest_sha256,
         legal_actions=legal_actions,
+        marked_digests=marked_digests,
     )
     return _DataSelection(
         loader=loader,
+        marked_digests=marked_digests,
         provenance={
             "manifest_path": str(manifest_path.resolve()),
             "manifest_sha256": manifest_sha256,
+            "marked_accounts": None if snapshot is None else snapshot.as_record(),
             "manifest": manifest,
             "normalized_paths": [str(path.resolve()) for path in paths],
             # Which loader read the corpus, because the two order an epoch
@@ -1320,6 +1342,7 @@ def _open_loader(
     *,
     manifest_sha256: str,
     legal_actions: bool,
+    marked_digests: frozenset[int] | None,
 ) -> SequenceBatchSource:
     """Open the loader this selection declared, eager or shard-backed."""
 
@@ -1328,6 +1351,7 @@ def _open_loader(
             [shard.path for shard in shards],
             config.loader,
             legal_actions=legal_actions,
+            marked_digests=marked_digests,
         )
     index = build_sharded_index(
         shards,
@@ -1335,6 +1359,7 @@ def _open_loader(
         selection=config.loader.selection,
         chunk_length=config.loader.chunk_length,
         manifest_sha256=manifest_sha256,
+        marked_digests=marked_digests,
     )
     return StreamingSequenceDataLoader(
         index,

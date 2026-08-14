@@ -24,14 +24,14 @@ from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import Speed, encoding_identity, speed_from_clock_ms
 from anthro_chess.data.accounts import (
     MarkedAccountError,
-    MarkedAccounts,
-    load_snapshot_covering,
-    resolve_snapshot_path,
+    marks_a_player,
+    snapshot_for_corpus,
 )
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     game_ids_sha256,
+    manifest_archive_records,
     materialize_rows,
     normalized_row_group_count,
     normalized_shard_paths,
@@ -152,14 +152,6 @@ class PoolConfig(ConfigModel):
 
 
 @dataclass(frozen=True)
-class _MarkedSnapshot:
-    """The snapshot a cut rejected against, and the file it was read from."""
-
-    accounts: MarkedAccounts
-    sha256: str
-
-
-@dataclass(frozen=True)
 class PoolGame:
     """Game-level facts a view needs, without loading full encodings."""
 
@@ -265,13 +257,16 @@ def _freeze_pool(
     if not isinstance(source_manifest, dict):
         raise EvaluationPoolError("source manifest must contain a JSON object")
     validate_manifest_compatibility(source_manifest, manifest_path)
-    # A corpus prepared before manifests spanned archives records one `input`,
-    # and freezing from one is legitimate where appending to it is not, so its
-    # provenance is carried rather than dropped.
-    source_inputs = source_manifest.get("inputs")
-    if source_inputs is None and "input" in source_manifest:
-        source_inputs = [source_manifest["input"]]
-    snapshot = _covering_snapshot(resolved_config, source_inputs, manifest_path)
+    source_inputs = manifest_archive_records(source_manifest)
+    try:
+        snapshot = snapshot_for_corpus(
+            config.marked_accounts,
+            resolved_config.provenance.source,
+            source_manifest,
+            manifest_path,
+        )
+    except MarkedAccountError as error:
+        raise EvaluationPoolError(str(error)) from error
     marked_digests = (
         frozenset[int]() if snapshot is None else snapshot.accounts.row_digests()
     )
@@ -321,10 +316,7 @@ def _freeze_pool(
                     # going to materialize anyway. Rejecting after admission
                     # also makes the count the share this generation lost rather
                     # than a share of the corpus.
-                    if (
-                        row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
-                        or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
-                    ):
+                    if marks_a_player(row, marked_digests):
                         marked_games += 1
                     else:
                         selected.append(row)
@@ -394,18 +386,12 @@ def _freeze_pool(
             "fraction": config.sample_fraction,
             "split_games": split_games,
         },
-        # The snapshot's own digest, not just its header counts: two snapshots
-        # can carry the same counts over different accounts, and containment
-        # makes the cut permanent, so what a generation claims about its
-        # rejection has to stay readable off the generation.
+        # Containment makes the cut permanent, so what a generation claims
+        # about its rejection has to stay readable off the generation.
         "marked_accounts": (
             None
             if snapshot is None
-            else {
-                **snapshot.accounts.as_record(),
-                "snapshot_sha256": snapshot.sha256,
-                "rejected_games": marked_games,
-            }
+            else {**snapshot.as_record(), "rejected_games": marked_games}
         ),
         "output": {
             "format": "parquet",
@@ -461,44 +447,6 @@ def _freeze_pool(
         plies=total_plies,
         game_ids_sha256=identity,
     )
-
-
-def _covering_snapshot(
-    resolved_config: ResolvedConfig[PoolConfig],
-    source_inputs: Any,
-    manifest_path: Path,
-) -> _MarkedSnapshot | None:
-    """Load the configured marked-account snapshot, if it covers this corpus.
-
-    Preparation checks that against the archive it is reading; a cut has no
-    archive in hand, so the corpus manifest's own record of what it was
-    prepared from is what the snapshot is held to. A manifest that does not say
-    fails here rather than leaving the check silently unmade.
-    """
-
-    configured = resolved_config.value.marked_accounts
-    if configured is None:
-        return None
-    archives = source_inputs if isinstance(source_inputs, list) else []
-    digests = [
-        archive["sha256"]
-        for archive in archives
-        if isinstance(archive, Mapping) and isinstance(archive.get("sha256"), str)
-    ]
-    if not digests or len(digests) != len(archives):
-        raise EvaluationPoolError(
-            f"{manifest_path} does not record the digest of every archive this "
-            "corpus was prepared from, so a marked-account snapshot cannot be "
-            "checked for covering them"
-        )
-    try:
-        snapshot_path = resolve_snapshot_path(
-            configured, resolved_config.provenance.source
-        )
-        accounts = load_snapshot_covering(snapshot_path, digests)
-    except MarkedAccountError as error:
-        raise EvaluationPoolError(str(error)) from error
-    return _MarkedSnapshot(accounts=accounts, sha256=file_sha256(snapshot_path))
 
 
 def load_pool(
