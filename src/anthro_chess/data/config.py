@@ -213,9 +213,13 @@ class SelectionConfig(ConfigModel):
     every split;
     ``docs/decisions/0062-the-breadth-corpus-filters-for-validity-alone.md``
     says why the breadth corpus is prepared that way. A relative path resolves
-    against the selection naming it. Excluding runs before subsampling, so two
-    runs differing only in this dial are still held to one game count by
-    ``fraction`` or ``maximum_games``.
+    against the selection naming it.
+
+    Excluding runs before subsampling, so ``maximum_games`` still delivers the
+    count it names to a run that sets this and to one that does not — which is
+    what lets two such runs differ in which games they read rather than in how
+    many. ``fraction`` does not: it takes a share of whatever survived, so the
+    filtered run reads fewer games and confounds the two.
     """
 
     speed: Speed | None = None

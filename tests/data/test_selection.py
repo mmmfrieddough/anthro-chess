@@ -426,7 +426,7 @@ def test_a_marked_account_of_either_colour_leaves_what_a_run_reads(
     marked = frozenset({account_row_digest("white1"), account_row_digest("black2")})
 
     dataset = SequenceDataset.from_parquet(
-        games, split="train", selection=SelectionConfig(), marked_digests=marked
+        games, split="train", selection=_naming_a_snapshot(), marked_digests=marked
     )
 
     assert _loaded(dataset) == (fixture_game_id(3),)
@@ -461,13 +461,13 @@ def test_both_loaders_reject_the_same_accounts(
     eager = SequenceDataset.from_parquet(
         [shard.path for shard in shards],
         split="train",
-        selection=SelectionConfig(),
+        selection=_naming_a_snapshot(),
         marked_digests=marked,
     )
     index = build_sharded_index(
         shards,
         split="train",
-        selection=SelectionConfig(),
+        selection=_naming_a_snapshot(),
         manifest_sha256=sha256(manifest_bytes).hexdigest(),
         marked_digests=marked,
     )
@@ -483,11 +483,12 @@ def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
-    """Two runs differing only in this dial still read the same game count.
+    """`maximum_games` holds two runs differing only in this dial to one count.
 
     Rejecting after the subsample would hand the filtered run fewer games than
     the unfiltered one, so a comparison between them would confound the filter
-    with how much data each saw.
+    with how much data each saw. `fraction` cannot do the same job, and the
+    second half pins that it does not, so nothing reads it as an equivalent.
     """
 
     games = _corpus(
@@ -499,15 +500,63 @@ def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(
     marked = frozenset(
         {account_row_digest(f"white{game_id}") for game_id in range(1, 8)}
     )
-    selection = SelectionConfig(maximum_games=10)
-
-    unfiltered = SequenceDataset.from_parquet(games, split="train", selection=selection)
+    unfiltered = SequenceDataset.from_parquet(
+        games, split="train", selection=SelectionConfig(maximum_games=10)
+    )
     filtered = SequenceDataset.from_parquet(
-        games, split="train", selection=selection, marked_digests=marked
+        games,
+        split="train",
+        selection=_naming_a_snapshot(maximum_games=10),
+        marked_digests=marked,
     )
 
     assert len(_loaded(unfiltered)) == len(_loaded(filtered)) == 10
     assert set(_loaded(filtered)) != set(_loaded(unfiltered))
+
+    # A fraction takes its share of whatever survived, so the two arms differ in
+    # how much data each saw as well as in which games.
+    assert (
+        len(
+            _loaded(
+                SequenceDataset.from_parquet(
+                    games, split="train", selection=SelectionConfig(fraction=0.5)
+                )
+            )
+        )
+        == 10
+    )
+    assert (
+        len(
+            _loaded(
+                SequenceDataset.from_parquet(
+                    games,
+                    split="train",
+                    selection=_naming_a_snapshot(fraction=0.5),
+                    marked_digests=marked,
+                )
+            )
+        )
+        == 6
+    )
+
+
+def _naming_a_snapshot(
+    *,
+    fraction: float | None = None,
+    maximum_games: int | None = None,
+) -> SelectionConfig:
+    """Return a selection declaring a snapshot, for a caller resolving one itself.
+
+    The path is never opened here — resolving it needs the corpus manifest and
+    the file the selection came from — but declaring it is what the loader
+    checks against the accounts it was handed.
+    """
+
+    return SelectionConfig(
+        marked_accounts=Path("marked-accounts.txt"),
+        fraction=fraction,
+        maximum_games=maximum_games,
+    )
 
 
 def _corpus(

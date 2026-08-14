@@ -377,14 +377,7 @@ def test_explicit_resume_rejects_incompatible_state_identities(
         shuffle=True,
         resume_from=initial.checkpoint_path,
     )
-    # Named down to the identity that moved: the three under `data` separate a
-    # corpus that was rebuilt from a selection that was edited from a loader
-    # configuration that changed, and a resume failure that says which is the
-    # difference between a real incompatibility and an editable one.
-    with pytest.raises(
-        TrainingError,
-        match=r"checkpoint data is incompatible .*train\.loader_configuration_sha256",
-    ):
+    with pytest.raises(TrainingError, match="checkpoint data is incompatible"):
         run_training(
             load_config(TrainingConfig, path=incompatible_data_config),
             output_directory=tmp_path / "incompatible-data",
@@ -1916,15 +1909,13 @@ def test_a_run_refuses_a_snapshot_that_never_counted_its_corpus(
         tmp_path / "data",
         load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
     )
-    snapshot = MarkedAccounts(
-        covers_archives=("f" * 64,),
-        queried_at="2026-08-14",
-        accounts_total=8,
-        accounts_queried=6,
-        slots_total=100,
-        slots_queried=75,
-        digests=frozenset({account_digest("someone-else")}),
-    ).write(tmp_path / "elsewhere.txt")
+    snapshot = _snapshot(
+        tmp_path,
+        prepared.manifest_path,
+        "someone-else",
+        covers=("f" * 64,),
+        name="elsewhere.txt",
+    )
     config_path = _write_training_config(
         tmp_path,
         normalized=prepared.normalized_path,
@@ -1944,12 +1935,19 @@ def test_a_run_refuses_a_snapshot_that_never_counted_its_corpus(
         )
 
 
-def _snapshot(tmp_path: Path, manifest_path: Path, *usernames: str) -> Path:
+def _snapshot(
+    tmp_path: Path,
+    manifest_path: Path,
+    *usernames: str,
+    covers: tuple[str, ...] | None = None,
+    name: str = "marked-accounts.txt",
+) -> Path:
     """Write a snapshot covering the archives one prepared corpus records."""
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return MarkedAccounts(
-        covers_archives=tuple(
+        covers_archives=covers
+        or tuple(
             archive["sha256"] for archive in manifest_archive_records(manifest) or ()
         ),
         queried_at="2026-08-14",
@@ -1958,7 +1956,7 @@ def _snapshot(tmp_path: Path, manifest_path: Path, *usernames: str) -> Path:
         slots_total=100,
         slots_queried=75,
         digests=frozenset(account_digest(username) for username in usernames),
-    ).write(tmp_path / "marked-accounts.txt")
+    ).write(tmp_path / name)
 
 
 def _write_training_config(

@@ -43,6 +43,7 @@ from anthro_chess.data.artifacts import (
     manifest_archive_digests,
     write_text_atomically,
 )
+from anthro_chess.data.schema import NormalizedColumn
 
 logger = logging.getLogger(__name__)
 
@@ -191,12 +192,32 @@ class MarkedAccounts:
         return output_path
 
 
+def marks_a_player(
+    row: Mapping[str, Any],
+    marked_digests: frozenset[int] | None,
+) -> bool:
+    """Return whether either player of one normalized row is a marked account.
+
+    Every reader that applies this rejection asks the same question of the same
+    two columns, and one of them asks it negated, which is where a hand-written
+    copy goes wrong. ``None`` and an empty set both answer ``False`` without
+    reading either column, because a reader rejecting nobody does not project
+    them; the two are distinguished by the caller, not here.
+    """
+
+    if not marked_digests:
+        return False
+    return (
+        row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
+        or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
+    )
+
+
 @dataclass(frozen=True)
 class CorpusSnapshot:
-    """A snapshot one reader of a prepared corpus resolved, and its file."""
+    """A snapshot one reader of a prepared corpus resolved, and its digest."""
 
     accounts: MarkedAccounts
-    path: Path
     sha256: str
 
     def as_record(self) -> dict[str, object]:
@@ -231,7 +252,7 @@ def snapshot_for_corpus(
     accounts = load_snapshot_covering(
         path, manifest_archive_digests(manifest, manifest_path)
     )
-    return CorpusSnapshot(accounts=accounts, path=path, sha256=file_sha256(path))
+    return CorpusSnapshot(accounts=accounts, sha256=file_sha256(path))
 
 
 def load_snapshot_covering(

@@ -13,6 +13,7 @@ from heapq import nsmallest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, overload
 
+from anthro_chess.data.accounts import marks_a_player
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     read_normalized_rows,
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 LOADER_STATE_VERSION = 4
-SELECTION_SPEC_VERSION = 2
+SELECTION_SPEC_VERSION = 3
 logger = logging.getLogger(__name__)
 #: The columns a selection filters on. Reading only these keeps the pass that
 #: resolves which games to keep far cheaper than the pass that encodes them.
@@ -207,6 +208,20 @@ class SelectionResolution:
             "game_ids_sha256": self.game_ids_sha256,
         }
 
+    def as_identity_record(self) -> dict[str, object]:
+        """Return the same record with what only this machine could reproduce out.
+
+        A resumed run has to match this, and ``docs/training-and-runtime.md``
+        holds that such an identity may carry only values another machine could
+        reproduce. The snapshot path is not one: the same file sits at different
+        paths on two machines, and what its contents did to this selection is
+        already carried by ``game_ids_sha256``.
+        """
+
+        record = self.as_record()
+        record["spec"] = _identity_spec(self.spec)
+        return record
+
 
 @dataclass(frozen=True)
 class SequenceLoaderState:
@@ -341,7 +356,7 @@ class SequenceDataset(Sequence[SequenceExample]):
         chunk_length: int | None = None,
         selection: SelectionConfig | None = None,
         legal_actions: bool = True,
-        marked_digests: frozenset[int] = frozenset(),
+        marked_digests: frozenset[int] | None = None,
     ) -> SequenceDataset:
         """Load, validate, encode, and optionally chunk normalized games.
 
@@ -443,13 +458,7 @@ class SequenceDataLoader(SequenceBatchSource):
             )
         self.dataset = dataset
         self.config = config
-        self.configuration_sha256 = sha256(
-            json.dumps(
-                config.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
+        self.configuration_sha256 = loader_configuration_sha256(config)
         self._epoch = 0
         self._position = 0
         self._batches = self._batches_for_epoch(self._epoch)
@@ -517,7 +526,7 @@ class SequenceDataLoader(SequenceBatchSource):
         config: SequenceLoaderConfig,
         *,
         legal_actions: bool = True,
-        marked_digests: frozenset[int] = frozenset(),
+        marked_digests: frozenset[int] | None = None,
     ) -> SequenceDataLoader:
         """Build a configured loader directly from normalized Parquet shards.
 
@@ -715,10 +724,11 @@ def _resolve_selection(
     *,
     split: str,
     selection: SelectionConfig,
-    marked_digests: frozenset[int] = frozenset(),
+    marked_digests: frozenset[int] | None,
 ) -> tuple[SelectionResolution, frozenset[int]]:
     """Decide which games in one split the configured selection keeps."""
 
+    require_resolved_snapshot(selection, marked_digests)
     eligible: list[int] = []
     excluded: dict[str, int] = {}
     columns = _SELECTION_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
@@ -777,7 +787,7 @@ def _resolution_for_examples(
 def _exclusion_reason(
     row: Mapping[str, Any],
     selection: SelectionConfig,
-    marked_digests: frozenset[int] = frozenset(),
+    marked_digests: frozenset[int] | None,
 ) -> str | None:
     time_initial = row[NormalizedColumn.TIME_INITIAL_MS]
     time_increment = row[NormalizedColumn.TIME_INCREMENT_MS]
@@ -845,14 +855,55 @@ def _exclusion_reason(
 
     # Last, so the count is a share of what this run would otherwise have read
     # rather than of the split, which is the number preparation and the pool
-    # cut both report against. Guarded rather than merely falling through on an
-    # empty set, because a caller filtering nobody does not project the columns.
-    if marked_digests and (
-        row[NormalizedColumn.WHITE_PLAYER_DIGEST] in marked_digests
-        or row[NormalizedColumn.BLACK_PLAYER_DIGEST] in marked_digests
-    ):
+    # cut both report against.
+    if marks_a_player(row, marked_digests):
         return "marked_account"
     return None
+
+
+#: Left out of every identity a resumed run is compared against, and out of
+#: those alone: the recorded spec keeps it, because a path is exactly what a
+#: reader asking what a run was configured with wants.
+_MACHINE_LOCAL_SELECTION_FIELDS = ("marked_accounts",)
+
+
+def _identity_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in sorted(spec.items())
+        if key not in _MACHINE_LOCAL_SELECTION_FIELDS
+    }
+
+
+def require_resolved_snapshot(
+    selection: SelectionConfig,
+    marked_digests: frozenset[int] | None,
+) -> None:
+    """Refuse a selection naming a snapshot nobody resolved, and the reverse.
+
+    The path a selection declares and the digests a caller resolved from it
+    arrive separately, because resolving needs the corpus manifest and the file
+    the selection came from, neither of which reaches this layer. Nothing else
+    would notice them disagreeing: a run would record a spec naming the
+    snapshot, count no rejections, and be indistinguishable from one whose
+    snapshot matched nobody.
+    """
+
+    if (selection.marked_accounts is None) != (marked_digests is None):
+        raise DataLoadingError(
+            "a selection naming a marked-account snapshot has to be loaded with "
+            "the accounts resolved from it, and one naming none with no accounts"
+        )
+
+
+def loader_configuration_sha256(config: SequenceLoaderConfig) -> str:
+    """Return the digest a resumed run's loader configuration has to match."""
+
+    declared = config.model_dump(mode="json")
+    declared["selection"] = _identity_spec(declared["selection"])
+    return sha256(
+        json.dumps(declared, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _rank_key(seed: str, game_id: int) -> bytes:

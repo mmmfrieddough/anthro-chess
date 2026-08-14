@@ -69,6 +69,8 @@ from anthro_chess.data.loading import (
     _rank_key,
     _state_from_record,
     collate_sequences,
+    loader_configuration_sha256,
+    require_resolved_snapshot,
     subsample_size,
 )
 from anthro_chess.data.schema import (
@@ -194,15 +196,15 @@ def build_sharded_index(
     selection: SelectionConfig,
     chunk_length: int | None = None,
     manifest_sha256: str,
-    marked_digests: frozenset[int] = frozenset(),
+    marked_digests: frozenset[int] | None = None,
 ) -> ShardedSequenceIndex:
     """Index one split of a prepared corpus without decoding any game."""
 
+    require_resolved_snapshot(selection, marked_digests)
     if not shards:
         raise DataLoadingError("at least one normalized shard is required")
     logger.info("Indexing %s shard(s) for the %s split", len(shards), split)
 
-    columns = _INDEX_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
     scanned: list[_RowGroupIndex] = []
     excluded: dict[str, int] = {}
     for shard_index, shard in enumerate(shards):
@@ -215,7 +217,6 @@ def build_sharded_index(
                 split=split,
                 selection=selection,
                 marked_digests=marked_digests,
-                columns=columns,
                 excluded=excluded,
             )
             if len(group):
@@ -247,7 +248,7 @@ def build_sharded_index(
         "shards": [
             {"name": shard.path.name, "sha256": shard.sha256} for shard in shards
         ],
-        "selection": resolution.as_record(),
+        "selection": resolution.as_identity_record(),
     }
     logger.info(
         "Indexed %s of %s eligible %s game(s) across %s row group(s)",
@@ -309,7 +310,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self.configuration_sha256 = sha256(
             json.dumps(
                 {
-                    "loader": config.model_dump(mode="json"),
+                    "loader": loader_configuration_sha256(config),
                     # Only the window, because only the window decides which
                     # examples share a batch. Worker count and prefetch depth
                     # are what the machine can afford, and a run resumed on
@@ -527,12 +528,12 @@ def _scan_row_group(
     row_group: int,
     split: str,
     selection: SelectionConfig,
-    marked_digests: frozenset[int],
-    columns: Sequence[NormalizedColumn],
+    marked_digests: frozenset[int] | None,
     excluded: dict[str, int],
 ) -> _RowGroupIndex:
     """Read one row group's index columns and apply the selection filters."""
 
+    columns = _INDEX_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
     table = read_normalized_row_group(reader, row_group, columns)
     values = {column.value: row_group_column(table, column.value) for column in columns}
     positions: array[int] = array("I")

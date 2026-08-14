@@ -21,6 +21,11 @@ A preview view may subsample and may not filter. That is enforced structurally
 here: a preview view has no filter fields to set. Subsampling keeps a preview
 an estimate of the canonical quantity with wider error bars; filtering would
 make it a different measurement needing a documented conversion.
+
+The corpus a preview reads is narrowed by one thing, before any view sees it:
+the marked-account snapshot its validation selection names. That one says which
+games count as human play rather than which of them this run trains on, so
+applying it is what keeps a preview an estimate of the pool it previews.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from torch import nn
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import DataLoadingError, SequenceDataConfig, SequenceDataLoader
+from anthro_chess.data.accounts import marks_a_player
 from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     read_normalized_rows,
@@ -379,7 +385,7 @@ def prepare_schedule(
     *,
     configuration: ConfigurationReference | None = None,
     store: ResultsStore | None = None,
-    marked_digests: frozenset[int] = frozenset(),
+    marked_digests: frozenset[int] | None = None,
 ) -> CadenceSchedule:
     """Resolve every declared cadence before the first optimizer step.
 
@@ -511,7 +517,7 @@ def _prepare_view(
     config: TrainingEvaluationConfig,
     view: PreviewViewConfig,
     validation: SequenceDataConfig | None,
-    marked_digests: frozenset[int],
+    marked_digests: frozenset[int] | None,
 ) -> _PreparedView:
     if validation is None:
         raise CadenceError(
@@ -567,7 +573,7 @@ def _prepare_view(
 def _validation_rows(
     validation: SequenceDataConfig,
     split: SplitName,
-    marked_digests: frozenset[int],
+    marked_digests: frozenset[int] | None,
 ) -> list[dict[str, Any]]:
     """Read the split a preview scores, less the accounts its corpus rejects.
 
@@ -586,14 +592,14 @@ def _validation_rows(
             for path in paths
             for row in read_normalized_rows(path)
             if row[NormalizedColumn.SPLIT] == split
-            and row[NormalizedColumn.WHITE_PLAYER_DIGEST] not in marked_digests
-            and row[NormalizedColumn.BLACK_PLAYER_DIGEST] not in marked_digests
+            and not marks_a_player(row, marked_digests)
         ]
     except (DataLoadingError, OSError, json.JSONDecodeError) as error:
         raise CadenceError(str(error)) from error
     if not rows:
         raise CadenceError(
             f"the validation selection contains no games in the {split} split"
+            + (" that its marked-account snapshot leaves" if marked_digests else "")
         )
     return rows
 

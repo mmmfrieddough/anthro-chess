@@ -925,9 +925,13 @@ names the same snapshot to keep them out of a run. That is the third place this
 rejection can be applied and the only one that is a dial rather than a property
 of an artifact: two runs over one corpus can differ in it alone, which is the
 comparison `0016` says an editorial filter belongs in training selection to
-preserve. Excluding runs before subsampling, so `fraction` and `maximum_games`
-still hold two such runs to one game count, and a run records the snapshot it
-rejected against beside the resolved selection counting what it removed.
+preserve. Excluding runs before subsampling, so `maximum_games` delivers the
+count it names whether or not the dial is set, and two such runs then differ in
+which games they read rather than in how many. `fraction` does not hold them
+together — it takes a share of whatever survived the filter — so a comparison
+resting on it confounds the rejection with how much data each run saw. A run
+records the snapshot it rejected against beside the resolved selection counting
+what it removed.
 
 In-training previews read that snapshot too, and no other selection filter. A
 preview is an estimate of the canonical reading rather than a different

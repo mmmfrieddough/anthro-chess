@@ -126,7 +126,7 @@ class _DataSelection:
     #: Carried so an in-training preview over this same split rejects the same
     #: accounts the loader did, rather than resolving the snapshot a second
     #: time and being able to disagree with it.
-    marked_digests: frozenset[int] = frozenset()
+    marked_digests: frozenset[int] | None
 
 
 @dataclass(frozen=True)
@@ -431,9 +431,7 @@ def run_training(
             config.validation,
             configuration=configuration,
             store=store if config.evaluation.record else None,
-            marked_digests=(
-                frozenset() if validation is None else validation.marked_digests
-            ),
+            marked_digests=None if validation is None else validation.marked_digests,
         )
         efficiency_recorder = _EfficiencyRecorder(
             monitor=efficiency_monitor,
@@ -1271,34 +1269,7 @@ def _validate_checkpoint_compatibility(
         if saved[key] != value:
             raise CheckpointError(
                 f"checkpoint {label} is incompatible with the current run"
-                f"{_differing_identities(saved[key], value)}"
             )
-
-
-def _differing_identities(saved: object, current: object) -> str:
-    """Name which identities under one group moved, where the group holds many.
-
-    Each side of ``data`` holds three, and which one moved is the difference
-    between a corpus that was rebuilt, a selection that was edited, and a
-    loader schema that grew a field — the last of which every checkpoint
-    written before such a field existed will hit, whatever else is unchanged.
-    """
-
-    differing = sorted(_differing_paths(saved, current))
-    return f" ({', '.join(differing)})" if differing else ""
-
-
-def _differing_paths(saved: object, current: object, prefix: str = "") -> list[str]:
-    if not isinstance(saved, Mapping) or not isinstance(current, Mapping):
-        return [prefix.rstrip(".")] if prefix else []
-    paths: list[str] = []
-    for key in saved.keys() | current.keys():
-        if saved.get(key) != current.get(key):
-            paths.extend(
-                _differing_paths(saved.get(key), current.get(key), f"{prefix}{key}.")
-                or [f"{prefix}{key}"]
-            )
-    return paths
 
 
 def _load_data_selection(
@@ -1306,7 +1277,7 @@ def _load_data_selection(
     *,
     legal_actions: bool,
     maximum_context_plies: int,
-    config_source: str | None = None,
+    config_source: str | None,
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1329,9 +1300,7 @@ def _load_data_selection(
         manifest,
         manifest_path,
     )
-    marked_digests = (
-        frozenset[int]() if snapshot is None else snapshot.accounts.row_digests()
-    )
+    marked_digests = None if snapshot is None else snapshot.accounts.row_digests()
     loader = _open_loader(
         config,
         shards,
@@ -1373,7 +1342,7 @@ def _open_loader(
     *,
     manifest_sha256: str,
     legal_actions: bool,
-    marked_digests: frozenset[int] = frozenset(),
+    marked_digests: frozenset[int] | None,
 ) -> SequenceBatchSource:
     """Open the loader this selection declared, eager or shard-backed."""
 

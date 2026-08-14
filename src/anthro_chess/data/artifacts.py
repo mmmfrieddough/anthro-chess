@@ -342,18 +342,20 @@ def write_normalized_rows(rows: Sequence[Mapping[str, Any]], path: Path) -> None
     )
 
 
-def manifest_archive_records(manifest: Mapping[str, Any]) -> list[Any] | None:
-    """Return what a corpus manifest says it was prepared from, or ``None``.
+def manifest_archive_records(manifest: Mapping[str, Any]) -> Any:
+    """Return what a corpus manifest says it was prepared from, verbatim.
 
     A manifest predating corpora that span archives records a single ``input``
     rather than a list. Reading from one is legitimate where appending to it is
-    not, so the older shape is carried rather than dropped.
+    not, so the older shape is carried rather than dropped. Whatever is found
+    is returned unexamined, because a caller recording provenance wants what
+    the manifest said rather than what this code can make sense of.
     """
 
     inputs = manifest.get("inputs")
     if inputs is None and "input" in manifest:
         return [manifest["input"]]
-    return inputs if isinstance(inputs, list) else None
+    return inputs
 
 
 def manifest_archive_digests(
@@ -367,7 +369,8 @@ def manifest_archive_digests(
     rather than leave that check silently unmade.
     """
 
-    archives = manifest_archive_records(manifest) or []
+    recorded = manifest_archive_records(manifest)
+    archives = recorded if isinstance(recorded, list) else []
     digests = tuple(
         archive["sha256"]
         for archive in archives
