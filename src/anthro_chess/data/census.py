@@ -33,7 +33,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -379,14 +379,15 @@ def _count_archive(archive: PinnedArchive) -> None:
 class Census:
     """Every account the covered archives hold, and what the source said so far.
 
-    ``answers`` is restricted to accounts the covered archives hold, so every
-    quantity below is a share of this corpus rather than of everything the
-    census has ever asked about.
+    ``answers`` and ``prioritized`` are restricted to accounts the covered
+    archives hold, so every quantity below is a share of this corpus rather
+    than of everything the census has ever asked about.
     """
 
     archives: tuple[str, ...]
     games_by_account: dict[str, int]
     answers: dict[str, bool]
+    prioritized: frozenset[str] = frozenset()
 
     @property
     def accounts_total(self) -> int:
@@ -405,20 +406,56 @@ class Census:
         return sum(self.games_by_account[name] for name in self.answers)
 
     @property
+    def prioritized_total(self) -> int:
+        return len(self.prioritized)
+
+    @property
+    def prioritized_queried(self) -> int:
+        return len(self.prioritized & self.answers.keys())
+
+    @property
+    def prioritized_slots_total(self) -> int:
+        return sum(self.games_by_account[name] for name in self.prioritized)
+
+    @property
+    def prioritized_slots_queried(self) -> int:
+        return sum(
+            self.games_by_account[name]
+            for name in self.prioritized & self.answers.keys()
+        )
+
+    @property
     def marked(self) -> frozenset[str]:
         return frozenset(name for name, marked in self.answers.items() if marked)
 
     def queue(self, limit: int) -> list[str]:
-        """Return the busiest accounts nobody has asked about yet."""
+        """Return the busiest accounts nobody has asked about yet.
+
+        A prioritized account is asked about before any other, because the
+        allowance is daily and the recall that matters for a frozen artifact
+        is recall over the games it holds rather than over the corpus. Within
+        each group the busiest still goes first, so restricting the set
+        reorders the queue without changing what ordering means.
+        """
 
         unanswered = [
             name for name in self.games_by_account if name not in self.answers
         ]
-        unanswered.sort(key=lambda name: (-self.games_by_account[name], name))
+        unanswered.sort(
+            key=lambda name: (
+                name not in self.prioritized,
+                -self.games_by_account[name],
+                name,
+            )
+        )
         return unanswered[:limit]
 
 
-def read_census(archives_pinned: Sequence[PinnedArchive], answers_path: Path) -> Census:
+def read_census(
+    archives_pinned: Sequence[PinnedArchive],
+    answers_path: Path,
+    prioritized: Iterable[str] = (),
+) -> Census:
     """Assemble the queue's inputs from the counted archives and the answers."""
 
     archives: list[str] = []
@@ -436,7 +473,31 @@ def read_census(archives_pinned: Sequence[PinnedArchive], answers_path: Path) ->
             for name, marked in read_answers(answers_path).items()
             if name in games_by_account
         },
+        prioritized=frozenset(name for name in prioritized if name in games_by_account),
     )
+
+
+def read_prioritized_accounts(path: Path) -> list[str]:
+    """Read the accounts a run asks about first, one name per line.
+
+    Kept a plain list of names rather than a pool selection so the census does
+    not have to know what a pool is; whoever enumerates one writes this.
+    """
+
+    if not path.is_file():
+        raise CensusError(f"no prioritized-account list at {path}")
+    names = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    unusable = [name for name in names if not is_account_name(name)]
+    if unusable:
+        raise CensusError(
+            f"{path} names {len(unusable)} entr(y/ies) the source cannot be "
+            f"asked about, the first being {unusable[0]!r}"
+        )
+    return names
 
 
 def read_answers(path: Path) -> dict[str, bool]:
