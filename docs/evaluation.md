@@ -735,6 +735,18 @@ A recorded view name describes the selection that ran rather than the one its
 config asked for: a view a cap actually shortened records that cap, so a sweep
 override cannot leave a stored name claiming more than the reading behind it.
 
+**A view size is chosen once rather than tuned.** The scored games are a data
+component, so raising a cap starts a new series instead of continuing the old
+one more precisely, and decision 0013 forbids bridging that seam as explicitly
+as the fingerprint breaks it. A series meant to last therefore takes the
+unbounded view, which has no cap to regret; the only seam it then meets is a
+generation cut, which is the one that carries anchor checkpoints re-scored
+across it. This is what separates a pool-reading count, chosen per generation,
+from a generating count such as seeds or games per position, which stays
+provenance under
+`docs/decisions/0020-declared-settings-scope-generated-series.md` and can be
+raised whenever cost or precision argues for it.
+
 Representativeness and frozenness belong to different things. The pool recipe is
 uniform and unstratified, so its composition tracks corpus composition
 automatically. Frozenness is a property of a benchmark version: when corpus
@@ -2779,25 +2791,31 @@ The comparison above watches the project's own lineage. This one attributes a
 change: a change that decides what a training run learns is read as a delta
 between two **arms**, a control trained without the change and a treatment
 trained with it, identical in everything else. The control is what makes the
-delta attributable. The most recent recorded reading is not one.
-`docs/decisions/0029-model-change-control-arm.md` owns why it is not, why the
-control is required rather than recommended, what it costs, and what it still
-does not buy.
+delta attributable.
 
-Both arms are read the same way — the default reduced sweep at the same
-checkpoint step, on one machine — and the claim is written down before either
-arm runs: which metric moves, in which direction. Stating it first is what makes
-the reading falsifiable, for the same reason a shakedown states its expectation
-first.
+A control is a **training identity**, not a simultaneous run. A prior checkpoint
+is a control when its compatibility identity matches the candidate's in
+everything but the change under test, and an arbitrary recorded reading is not
+one, because a baseline that drifted in corpus, step budget, or machine carries
+those differences into the delta. Which of the two a comparison holds is decided
+by the recorded identity rather than by recollection.
+`docs/decisions/0029-model-change-control-arm.md` owns why the control is
+required rather than recommended, what it costs, and what it still does not buy;
+`docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
+owns the qualification and why a second training run buys nothing the identity
+check does not.
 
-The reduced sweep is the default because a reduction is confined to sample
-counts, so it estimates the same quantities with wider floors: reading two arms
-at less precision cannot let a weak claim through, it raises the bar the delta
-has to clear. What it cannot do is read a benchmark that has no reduced form.
-A claim naming such a family — strength, whose only reading is the ladder,
-whose cost is a grid rather than a sample — is not testable by a reduced sweep
-at all, so that benchmark is read at its declared size on both arms and the
-comparison says which scale each family was read at.
+Both arms are read the same way — the full sweep at the same checkpoint step, on
+one machine — and the claim is written down before either arm runs: which metric
+moves, in which direction. Stating it first is what makes the reading
+falsifiable, for the same reason a shakedown states its expectation first.
+
+The full sweep is what a claim is read at, because this comparison decides
+whether a change is adopted. A reduction only widens floors, which protects
+against admitting a weak claim and does nothing about discarding a real
+improvement the reading was too coarse to resolve — and under a comparison that
+decides adopt-or-drop, those cost the same. The reduced sweep is a coarse view
+during iteration rather than evidence for a claim.
 
 The scale is therefore part of the claim rather than a response to it. It is
 chosen before the arms run, and a delta inside its floor at the chosen scale is
@@ -2814,6 +2832,14 @@ the same series, and `uv run anthro eval report` reads the delta between them
 from their checkpoint labels. Arms are recorded into a machine-local store
 rather than the committed one: a candidate arm is not project history, and an
 arm nobody adopted would otherwise become some later report's baseline.
+
+A reading reaches the committed store when its change is accepted, so the
+committed line is the sequence of accepted checkpoints rather than a log of
+everything attempted. **Nothing is run for that line.** It accumulates from the
+comparisons already being made, which is what keeps a durable history from
+carrying a cost of its own. A series that has to last is read at the unbounded
+view, for the reason "Benchmark Data Layers" gives above, so its precision never
+needs raising later.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
 because of what a floor is built from. **No floor here sees training-seed
