@@ -325,6 +325,12 @@ class DeltaReport:
     families: tuple[FamilyReport, ...]
     provenance: tuple[ProvenanceDifference, ...]
     pivot: ReportPivot = ReportPivot.CHECKPOINT
+    #: Whether the two compared checkpoints share a training configuration,
+    #: which is what decides whether the reader is holding a control-arm
+    #: comparison at all. Reduced over every result on each side rather than
+    #: carried per row: a row's own verdict never keys on it, and this is what
+    #: automation reads.
+    training: AxisChange = AxisChange.UNKNOWN
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable report."""
@@ -335,6 +341,7 @@ class DeltaReport:
             "current": self.current.as_record(),
             "families": [family.as_record() for family in self.families],
             "provenance": _difference_records(self.provenance),
+            "training": self.training.value,
         }
 
 
@@ -461,6 +468,7 @@ def build_delta_report(
         families=tuple(sections),
         provenance=_report_provenance(baseline_results, current_results),
         pivot=pivot,
+        training=_report_training_identity(baseline_results, current_results),
     )
 
 
@@ -550,6 +558,7 @@ def build_environment_report(
         families=tuple(sections),
         provenance=_report_provenance(baseline_results, current_results),
         pivot=pivot,
+        training=_report_training_identity(baseline_results, current_results),
     )
 
 
@@ -649,6 +658,7 @@ def render_report(report: DeltaReport) -> str:
         )
     if report.pivot is ReportPivot.ENVIRONMENT:
         lines.append("Model held fixed; the environment is what varies.")
+    lines.extend(_training_identity_line(report))
     width = metric_column_width(
         metric.metric for family in report.families for metric in family.metrics
     )
@@ -719,6 +729,42 @@ def _render_group_header(group: SeriesGroup) -> list[str]:
         )
         or [entry]
     ]
+
+
+def _training_identity_line(report: DeltaReport) -> list[str]:
+    """State what this report can verify about the two checkpoints' training.
+
+    Stated in all three cases rather than only on a mismatch. A reader deciding
+    whether they hold a control-arm comparison needs "verified the same" and
+    "nobody recorded it" to look different, and nothing below the header
+    distinguishes them: the rows carry no training verdict, because the
+    identity moves on every comparison that tests a change and a per-row label
+    would therefore never discriminate.
+
+    Only the checkpoint pivot has the question. The environment pivot holds one
+    checkpoint and varies the machine, and the arithmetic a machine does is
+    inside the identity, so an answer there would name the upgrade under
+    measurement as though it were a caveat on it.
+    """
+
+    if report.pivot is not ReportPivot.CHECKPOINT or report.baseline is None:
+        return []
+    if report.training is AxisChange.CHANGED:
+        line = (
+            "Training identity: changed; these were trained under different "
+            "configurations, so no delta below isolates one change."
+        )
+    elif report.training is AxisChange.UNCHANGED:
+        line = (
+            "Training identity: unchanged; the two checkpoints share one "
+            "training configuration."
+        )
+    else:
+        line = (
+            "Training identity: not recorded on both sides, so whether the "
+            "training configuration moved is unverified."
+        )
+    return textwrap.wrap(line, width=MAXIMUM_LINE_WIDTH, subsequent_indent="  ")
 
 
 def _confounded_legend(report: DeltaReport) -> list[str]:
@@ -1356,6 +1402,12 @@ def _pivoted_movement(
     a comparison moves the number without answering either question, and it is
     the confounder most likely to pass unnoticed, because nothing about the
     machine or the checkpoint label changed.
+
+    The training identity is deliberately not among these. It moves whenever a
+    change decides what the model learns, which is every comparison this report
+    is built to serve, so a verdict keyed on it would read ``confound`` on every
+    row of every report and discriminate nothing. It is reported once in the
+    header instead.
     """
 
     if attribution is None:
@@ -1469,6 +1521,33 @@ def _selection(
 ) -> CheckpointSelection:
     recorded = max(envelope.recorded_at for envelope in results)
     return CheckpointSelection(label=label, recorded_at=recorded, results=len(results))
+
+
+def _report_training_identity(
+    baseline_results: Sequence[ResultEnvelope],
+    current_results: Sequence[ResultEnvelope],
+) -> AxisChange:
+    """Return whether the two compared checkpoints were trained the same way.
+
+    Reduced from the checkpoints' own results rather than from the rows a
+    report happens to show, so slicing by family or metric cannot change the
+    answer. Whether the reader is holding a control-arm comparison is a fact
+    about the pair, and one a ``--family`` flag must not be able to flip.
+
+    A side is unverified unless its results agree on one recorded identity. A
+    reading that recorded none says nothing about the checkpoint, and a label
+    covering two says the readings under it are not one checkpoint's.
+    """
+
+    before = {envelope.checkpoint.training_sha256 for envelope in baseline_results} - {
+        None
+    }
+    after = {envelope.checkpoint.training_sha256 for envelope in current_results} - {
+        None
+    }
+    if len(before) != 1 or len(after) != 1:
+        return AxisChange.UNKNOWN
+    return AxisChange.UNCHANGED if before == after else AxisChange.CHANGED
 
 
 def _report_provenance(
