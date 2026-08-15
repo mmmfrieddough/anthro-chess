@@ -34,7 +34,6 @@ from anthro_chess.evaluation.results.comparability import (
     measurements_by_workload,
     provenance_differences,
     recorded_series,
-    training_axis,
 )
 from anthro_chess.evaluation.results.metrics import (
     MetricDefinition,
@@ -135,11 +134,6 @@ class Movement(StrEnum):
     #: moved as well, so it is not a verdict on the model. Distinct from
     #: ``UNKNOWN``, which means there was nothing to compare against.
     #:
-    #: A moved training identity lands here too, where what moved is the
-    #: configuration that produced the model rather than a coordinate beside
-    #: it. The digest cannot say the two differ by only the change under test,
-    #: so the delta is not a verdict on that change either.
-    #:
     #: This is the field automation keys on, which is why the honesty lives
     #: here rather than in a withheld ``delta``: a reader holding both operands
     #: can always subtract them, so hiding the arithmetic protects nobody.
@@ -199,9 +193,6 @@ class MetricDelta:
     #: Which coordinates moved. ``None`` for a metric with no execution
     #: context, where the model is the only thing that can have moved.
     attribution: Attribution | None = None
-    #: Whether the training configuration behind the two checkpoints moved,
-    #: as the two envelopes behind this row recorded it.
-    training: AxisChange = AxisChange.UNKNOWN
     #: The execution coordinates that differ, when the environment moved.
     environment: tuple[ProvenanceDifference, ...] = ()
     #: The benchmark-declared coordinates that differ, such as the model
@@ -233,7 +224,6 @@ class MetricDelta:
             "attribution": (
                 None if self.attribution is None else self.attribution.as_record()
             ),
-            "training": self.training.value,
             "environment_differences": _difference_records(self.environment),
             "condition_differences": _difference_records(self.conditions),
         }
@@ -335,11 +325,11 @@ class DeltaReport:
     families: tuple[FamilyReport, ...]
     provenance: tuple[ProvenanceDifference, ...]
     pivot: ReportPivot = ReportPivot.CHECKPOINT
-    #: Whether the two compared checkpoints share a training configuration.
-    #: A property of the pair rather than of any row, which is what decides
-    #: whether the reader is holding a control-arm comparison at all: it is
-    #: reduced over every result on each side, so it reads ``unchanged`` where
-    #: a row whose own two envelopes recorded nothing reads ``unknown``.
+    #: Whether the two compared checkpoints share a training configuration,
+    #: which is what decides whether the reader is holding a control-arm
+    #: comparison at all. Reduced over every result on each side rather than
+    #: carried per row: a row's own verdict never keys on it, and this is what
+    #: automation reads.
     training: AxisChange = AxisChange.UNKNOWN
 
     def as_record(self) -> dict[str, object]:
@@ -744,21 +734,25 @@ def _render_group_header(group: SeriesGroup) -> list[str]:
 def _training_identity_line(report: DeltaReport) -> list[str]:
     """State what this report can verify about the two checkpoints' training.
 
-    Stated in all three cases rather than only on a mismatch, because a reader
-    deciding whether they hold a control-arm comparison needs "verified the
-    same" and "nobody recorded it" to look different, and only the mismatch
-    reaches the change column on its own.
+    Stated in all three cases rather than only on a mismatch. A reader deciding
+    whether they hold a control-arm comparison needs "verified the same" and
+    "nobody recorded it" to look different, and nothing below the header
+    distinguishes them: the rows carry no training verdict, because the
+    identity moves on every comparison that tests a change and a per-row label
+    would therefore never discriminate.
 
-    Only the checkpoint pivot has the question; :func:`_pivoted_movement` says
-    why the environment pivot does not.
+    Only the checkpoint pivot has the question. The environment pivot holds one
+    checkpoint and varies the machine, and the arithmetic a machine does is
+    inside the identity, so an answer there would name the upgrade under
+    measurement as though it were a caveat on it.
     """
 
     if report.pivot is not ReportPivot.CHECKPOINT or report.baseline is None:
         return []
     if report.training is AxisChange.CHANGED:
         line = (
-            "Training identity: changed; the two checkpoints were trained "
-            "under different configurations."
+            "Training identity: changed; these were trained under different "
+            "configurations, so no delta below isolates one change."
         )
     elif report.training is AxisChange.UNCHANGED:
         line = (
@@ -785,8 +779,6 @@ def _confounded_legend(report: DeltaReport) -> list[str]:
     if not confounded:
         return []
     moved: list[str] = []
-    if any(metric.training is AxisChange.CHANGED for metric in confounded):
-        moved.append("the training identity")
     if any(metric.conditions for metric in confounded):
         moved.append("the declared conditions")
     if any(metric.environment for metric in confounded):
@@ -1271,7 +1263,6 @@ def _metric_delta(
         if definition.execution_sensitive
         else None
     )
-    training = training_axis(baseline_envelope, current_envelope)
     if not comparison.is_comparable:
         # For an efficiency metric this can only be a workload change, since
         # the environment is not in the fingerprint. That is the case where
@@ -1289,7 +1280,6 @@ def _metric_delta(
                 _hidden_note(hidden_series),
             ),
             attribution=attribution,
-            training=training,
             series=bridges.series(current_measurement.fingerprint),
         )
 
@@ -1316,15 +1306,12 @@ def _metric_delta(
         current=current_measurement.value,
         delta=delta,
         comparability=comparison.comparability,
-        movement=_pivoted_movement(
-            definition, delta, attribution, pivot, noise, training
-        ),
+        movement=_pivoted_movement(definition, delta, attribution, pivot, noise),
         noise=noise,
         noise_floor=floor,
         noise_floor_source=floor_source,
         bridges=tuple(bridge.bridge_id for bridge in comparison.bridges),
         attribution=attribution,
-        training=training,
         environment=environment,
         conditions=conditions,
         series=bridges.series(current_measurement.fingerprint),
@@ -1369,7 +1356,6 @@ def _incomparable_delta(
     note: str | None,
     series: str | None = None,
     attribution: Attribution | None = None,
-    training: AxisChange = AxisChange.UNKNOWN,
 ) -> MetricDelta:
     """Return a row with no delta, and therefore nothing to judge against noise.
 
@@ -1394,7 +1380,6 @@ def _incomparable_delta(
         bridges=(),
         note=note,
         attribution=attribution,
-        training=training,
         series=series,
     )
 
@@ -1405,7 +1390,6 @@ def _pivoted_movement(
     attribution: Attribution | None,
     pivot: ReportPivot,
     noise: NoiseVerdict,
-    training: AxisChange,
 ) -> Movement:
     """Return the verdict, given what the report holds fixed.
 
@@ -1419,22 +1403,13 @@ def _pivoted_movement(
     the confounder most likely to pass unnoticed, because nothing about the
     machine or the checkpoint label changed.
 
-    A moved training identity confounds the checkpoint pivot, and it is the
-    only coordinate here that reaches a metric with no execution context at
-    all. Its digest cannot say the two configurations differ by exactly the
-    change under test, so no delta spanning it is a verdict on that change. An
-    unrecorded identity is not treated as a move: most of the store predates
-    the field, and confounding on absence would say nothing about any of it.
-
-    It says nothing about the environment pivot, which asks the opposite
-    question. The arithmetic a machine does is inside the training identity, so
-    the same configuration trained at two precisions lands on two identities —
-    and that difference is the upgrade being measured rather than a confounder
-    of it.
+    The training identity is deliberately not among these. It moves whenever a
+    change decides what the model learns, which is every comparison this report
+    is built to serve, so a verdict keyed on it would read ``confound`` on every
+    row of every report and discriminate nothing. It is reported once in the
+    header instead.
     """
 
-    if pivot is ReportPivot.CHECKPOINT and training is AxisChange.CHANGED:
-        return Movement.CONFOUNDED
     if attribution is None:
         return _movement(definition.direction, delta, noise)
     if pivot is ReportPivot.CHECKPOINT:

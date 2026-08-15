@@ -320,14 +320,15 @@ def test_bridging_is_symmetric_and_transitive() -> None:
     assert index.compare("a" * 64, "c" * 64).bridges == (first, second)
 
 
-def test_a_delta_spanning_a_training_change_is_not_a_verdict_on_one_change(
+def test_a_delta_spanning_a_training_change_is_stated_without_being_withdrawn(
     recorded_result: ResultFactory,
 ) -> None:
-    """Two checkpoints trained differently still subtract; the claim is what goes.
+    """The caveat is the header's, and the rows keep saying which way they moved.
 
-    The identity says only that something on the training side moved, never
-    that it moved by exactly the change under test, so no delta across it
-    attributes anything.
+    The identity moves on every comparison that tests a change — an
+    architecture, a learning rate, a corpus filter all reach the digest — so a
+    per-row verdict keyed on it would read the same on every row of every
+    report and tell a reader nothing.
     """
 
     baseline = recorded_result(
@@ -345,15 +346,14 @@ def test_a_delta_spanning_a_training_change_is_not_a_verdict_on_one_change(
 
     report = build_delta_report([baseline, current], BridgeIndex())
 
-    row = _row(report, "held_out.move_loss")
-    assert row.training is AxisChange.CHANGED
-    assert row.delta == pytest.approx(-0.3)
-    assert row.movement is Movement.CONFOUNDED
-    assert row.as_record()["training"] == "changed"
+    assert report.training is AxisChange.CHANGED
+    assert report.as_record()["training"] == "changed"
 
-    rendered = render_report(report)
-    assert "Training identity: changed" in rendered
-    assert "the training identity moved as well" in rendered
+    row = _row(report, "held_out.move_loss")
+    assert row.delta == pytest.approx(-0.3)
+    assert row.movement is Movement.BETTER
+
+    assert "Training identity: changed" in render_report(report)
 
 
 def test_a_missing_training_identity_reads_as_unknown_rather_than_a_match(
@@ -379,12 +379,9 @@ def test_a_missing_training_identity_reads_as_unknown_rather_than_a_match(
 
     report = build_delta_report([baseline, current], BridgeIndex())
 
-    row = _row(report, "held_out.move_loss")
-    assert row.training is AxisChange.UNKNOWN
-    assert row.movement is Movement.BETTER
-
-    rendered = render_report(report)
-    assert "Training identity: not recorded on both sides" in rendered
+    assert report.training is AxisChange.UNKNOWN
+    assert _row(report, "held_out.move_loss").movement is Movement.BETTER
+    assert "Training identity: not recorded on both sides" in render_report(report)
 
 
 def test_a_matching_training_identity_is_stated_rather_than_left_to_assume(
@@ -395,7 +392,6 @@ def test_a_matching_training_identity_is_stated_rather_than_left_to_assume(
     report = build_delta_report(list(two_checkpoints), BridgeIndex())
 
     assert report.training is AxisChange.UNCHANGED
-    assert _row(report, "held_out.move_loss").training is AxisChange.UNCHANGED
     assert "Training identity: unchanged" in render_report(report)
 
 
@@ -445,9 +441,6 @@ def test_a_slice_cannot_change_what_the_report_claims_about_the_training(
     assert sliced.training is whole.training
     assert "Training identity: unchanged" in render_report(whole)
     assert "Training identity: unchanged" in render_report(sliced)
-    # The row still carries what its own two envelopes recorded, which is what
-    # the verdict on that row rests on.
-    assert _row(whole, "legality.mask_penalty").training is AxisChange.UNKNOWN
 
 
 def test_a_delta_is_annotated_against_its_noise_floor(

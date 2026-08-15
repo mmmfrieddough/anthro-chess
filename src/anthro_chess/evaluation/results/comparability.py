@@ -262,25 +262,6 @@ def attribute(baseline: ResultEnvelope, current: ResultEnvelope) -> Attribution:
     )
 
 
-def training_axis(baseline: ResultEnvelope, current: ResultEnvelope) -> AxisChange:
-    """Return whether the training configuration behind the two models moved.
-
-    Asked of every comparison rather than only of an efficiency one, unlike the
-    axes :func:`attribute` reports. A corpus or a hyperparameter that moved
-    between two checkpoints confounds a quality delta exactly as it confounds a
-    timing one, and the fingerprint that breaks a series covers the measurement
-    side alone.
-
-    The digest says only that something moved, never how much, so a match is
-    the verifiable half: it says nothing on the training side moved at all.
-    """
-
-    return _axis(
-        baseline.checkpoint.training_sha256,
-        current.checkpoint.training_sha256,
-    )
-
-
 def condition_differences(
     baseline: ResultEnvelope,
     current: ResultEnvelope,

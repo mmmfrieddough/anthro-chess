@@ -819,12 +819,12 @@ def test_the_environment_pivot_pins_conditions_rather_than_weights() -> None:
     assert row.movement is Movement.BETTER
 
 
-def test_a_training_identity_the_upgrade_moved_is_not_a_confound_here() -> None:
+def test_the_environment_pivot_is_told_nothing_by_the_training_identity() -> None:
     """The arithmetic a machine works at is inside the training identity.
 
     So the two arms of an upgrade question land on two identities by
-    construction, and reading that as a caveat would refuse the only comparison
-    this pivot exists to make.
+    construction, and answering here would name the upgrade under measurement
+    as though it were a caveat on it.
     """
 
     laptop = _recorded(
@@ -853,10 +853,8 @@ def test_a_training_identity_the_upgrade_moved_is_not_a_confound_here() -> None:
         BridgeIndex(),
         metrics=["training.active_positions_per_second"],
     )
-    row = report.families[0].metrics[0]
-
-    assert row.training is AxisChange.CHANGED
-    assert row.movement is Movement.BETTER
+    assert report.training is AxisChange.CHANGED
+    assert report.families[0].metrics[0].movement is Movement.BETTER
     assert "Training identity" not in render_report(report)
 
 
