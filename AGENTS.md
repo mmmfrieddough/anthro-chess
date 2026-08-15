@@ -101,12 +101,6 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   labeled `execution: gpu-required` needs the GPU environment its body
   specifies. One labeled `verification: gpu-required` can be implemented without
   that environment and uses the documented handoff when the GPU check remains.
-- A request to work on an issue is authorization to carry it through to a
-  ready-for-review pull request that closes the issue on merge. The pull request
-  is the maintainer's review boundary and is not merged by the agent. Several
-  sessions often run against this repository at once, so the issue is claimed in
-  GitHub while it is being worked on. When working from an issue, keep it
-  updated with relevant findings, follow-ups, and completion status.
 - When a change alters what a chess GUI observes, offer a real GUI check without
   being asked: point the maintainer's GUI at the working checkout with
   `scripts/anthro-gui-target .` and say the engine is ready to test, what to
@@ -129,5 +123,3 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
 - Document a major architectural choice in `docs/decisions/` when the rationale
   has lasting value. Roadmaps and staged build plans belong under
   `docs/planning/`.
-- If implementation work changes the project direction, update the affected docs
-  in the same change.

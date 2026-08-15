@@ -399,11 +399,11 @@ GUI check finds a defect, add the regression test that would have caught it.
 ## Publishing
 
 Before marking a pull request ready, account for its size against the request
-that produced it. Read the diff statistics, fill in the pull request template's
-size and surface section from what the diff actually contains rather than from
-memory, and answer its questions honestly — including which part would go if the
-change had to be a third smaller. An addition with no answer is a candidate for
-removal, not for a better explanation.
+that produced it. Read the diff statistics with `git diff --stat main...HEAD` and
+answer in the pull request body from what the diff contains rather than from
+memory: the new surface it adds, and which part would go if the change had to be
+a third smaller. An addition with no answer is a candidate for removal, not for a
+better explanation.
 
 This is a required answer rather than a size limit on purpose. A threshold only
 teaches everyone to sit just under it, and the diffs worth questioning here are
