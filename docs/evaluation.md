@@ -2886,6 +2886,27 @@ rather than the committed one, which needs no arranging because it is where a
 benchmark writes by default: a candidate arm is not project history, and an arm
 nobody adopted would otherwise become some later report's baseline.
 
+So the reading resolves once, runs per arm, and compares once:
+
+```console
+uv run anthro eval suite --config <suite> --full --plan
+uv run anthro eval suite --config <suite> --full
+uv run anthro eval report --current <treatment> --baseline <control>
+```
+
+`--plan` first for the reason "The Benchmark Suite" gives: a sweep that will
+fail should fail in its first second rather than after it has spent. Neither
+sweep names a store, because the default is already the machine-local one.
+
+More than one treatment arm reads against one control where what is being
+chosen is a dial — a loss weight, a capacity, a budget — rather than a set of
+independent candidates. State the response expected across the dial before the
+arms run: which metric moves with it, and where a guard metric is expected to
+turn. Asking a separate adopt-or-drop question of each arm asks one question
+several times and adopts whichever arm seed luck favoured, while a predicted
+response across the dial is a single claim that an uncorrelated per-arm
+perturbation cannot fake. The novelty benchmark reads a dose the same way.
+
 A reading reaches the committed store when its change is accepted — by
 `anthro eval promote` copying it there in that change's pull request — so the
 committed line is the sequence of accepted checkpoints rather than a log of
@@ -2906,10 +2927,9 @@ and never that the change caused it. The exception claims less rather than more:
 a replayed reading states a spread of zero, which says its games cannot be
 redrawn at all and therefore says nothing about a draw that could be. Two arms
 differ by their initialization seeds as well as by the change, so clearing a
-floor establishes that two models differ, not that the change is why. That is
-not a theoretical gap. Measured at proof scale, two arms differing only by their
-initialization seed cleared 14 of 54 floored metrics and read better on every
-held-out and legality metric; decision 0029 holds the reading.
+floor establishes that two models differ, not that the change is why. How much
+seed variance costs at a scale that matters is unmeasured, and is read off the
+comparisons this section describes rather than derived in advance.
 
 A claim therefore rests on a delta far enough outside seed variance that nothing
 else explains it, or on arms read at several seeds — a deliberate, occasional
@@ -2917,6 +2937,22 @@ act for a result worth its cost, rather than machinery riding on every
 comparison. Anything narrower is reported as what it is, a delta not
 distinguished from seed variance, rather than as an improvement. A family with
 no floor at all can show that nothing else moved; it cannot carry the claim.
+
+Two numbers make that a bar stated in advance rather than a judgement made after
+the reading: a delta carries a claim at **twice the printed floor**, and
+**several seeds is three**. Both are starting points rather than a ratified
+standard, set where no measurement yet says otherwise so that a bar exists at
+all. A comparison says which it used, and a reading that argues for a better
+number says so.
+
+Seed replicates belong to the control rather than to the change under test. A
+base that a run of changes will be tested against is trained at several seeds
+once, and each comparison against that base reads against the spread those arms
+showed; only a new base pays again. What decision 0043 removed was the stored,
+scoped, indexed form of such a characterization rather than the act of taking
+one — the spread is read beside the comparison it qualifies, the way every other
+dispersion here is. Nothing sizes a sample count against seed variance until one
+such measurement exists, because benchmark noise below it buys no attribution.
 
 A null reading is a reading. Arms are not re-run until a number improves, and a
 delta inside its floor is a null result rather than a small win.
