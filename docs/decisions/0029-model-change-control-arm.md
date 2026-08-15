@@ -15,7 +15,9 @@ Refined by
 which qualifies this record's prohibition on a prior reading: a checkpoint whose
 training identity matches the candidate's in everything but the change is a
 control, so a sequential comparison does not train a second run to re-derive
-one.
+one. That record also reverses the scale "Both Arms Are Read The Same Way"
+argues for below — the full sweep decides a change and the reduced sweep
+iterates — so read the reasoning here and the rule there.
 
 ## Context
 
