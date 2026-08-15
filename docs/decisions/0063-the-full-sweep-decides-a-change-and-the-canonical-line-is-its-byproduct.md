@@ -5,10 +5,11 @@ Date: 2026-08-15
 ## Status
 
 Accepted. Refines `0029-model-change-control-arm.md`, which required a freshly
-trained control and ruled out every prior reading as a baseline. Reads
-`0013-benchmark-result-comparability.md`, `0014-evaluation-result-storage.md`,
-and `0020-declared-settings-scope-generated-series.md` rather than changing
-them, and records why the first of those is not relaxed.
+trained control and ruled out every prior reading as a baseline.
+
+The comparability, storage, and generated-workload records are read here rather
+than changed. Nothing below relaxes one of them; the fingerprint rule in
+particular is re-examined and kept, and the section that does so says why.
 
 ## Context
 
