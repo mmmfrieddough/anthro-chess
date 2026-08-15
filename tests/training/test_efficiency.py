@@ -654,13 +654,20 @@ def test_a_store_rejection_surfaces_as_an_efficiency_error(tmp_path: object) -> 
         )
 
 
-def _recorded(label: str, at: datetime, **coordinates: object) -> ResultEnvelope:
+def _recorded(
+    label: str,
+    at: datetime,
+    *,
+    training_sha256: str | None = None,
+    **coordinates: object,
+) -> ResultEnvelope:
     return build_efficiency_result(
         _summary(),
         checkpoint=CheckpointReference(
             label=label,
             step=100,
             parameter_sha256=sha256(label.encode()).hexdigest(),
+            training_sha256=training_sha256,
         ),
         execution=_execution(**coordinates),
         recorded_at=at,
@@ -810,6 +817,47 @@ def test_the_environment_pivot_pins_conditions_rather_than_weights() -> None:
     # The conditions held, so this is a verdict on the machine despite the
     # weights differing.
     assert row.movement is Movement.BETTER
+
+
+def test_a_training_identity_the_upgrade_moved_is_not_a_confound_here() -> None:
+    """The arithmetic a machine works at is inside the training identity.
+
+    So the two arms of an upgrade question land on two identities by
+    construction, and reading that as a caveat would refuse the only comparison
+    this pivot exists to make.
+    """
+
+    laptop = _recorded(
+        "run-step-00000100",
+        datetime(2026, 7, 1, tzinfo=UTC),
+        training_sha256="4d" * 32,
+    )
+    workstation = build_efficiency_result(
+        _summary(window_active_positions=3200),
+        checkpoint=CheckpointReference(
+            label="run-step-00000100",
+            step=100,
+            parameter_sha256=sha256(b"workstation-weights").hexdigest(),
+            training_sha256="5e" * 32,
+        ),
+        execution=execution_record(
+            _coordinates(),
+            device=CPU,
+            precision="bfloat16",
+        ).model_copy(update={"device_name": "workstation"}),
+        recorded_at=datetime(2026, 7, 8, tzinfo=UTC),
+    )
+
+    report = build_environment_report(
+        [laptop, workstation],
+        BridgeIndex(),
+        metrics=["training.active_positions_per_second"],
+    )
+    row = report.families[0].metrics[0]
+
+    assert row.training is AxisChange.CHANGED
+    assert row.movement is Movement.BETTER
+    assert "Training identity" not in render_report(report)
 
 
 def test_the_environment_pivot_refuses_a_changed_configuration() -> None:

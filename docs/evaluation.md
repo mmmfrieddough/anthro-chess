@@ -2805,6 +2805,24 @@ required rather than recommended, what it costs, and what it still does not buy;
 owns the qualification and why a second training run buys nothing the identity
 check does not.
 
+`anthro eval report` states that identity above its rows and reports a delta
+spanning two of them as `confounded`, in every family rather than only the
+efficiency ones. The digest says the training side moved; it never says the move
+was only the change under test, so nothing spanning it is a verdict on that
+change. An identity missing from either reading — recorded before the field
+existed, or taken through a runner supplied rather than loaded — is reported as
+unverified rather than as a match, and leaves the verdict alone, because most of
+the committed store predates it.
+
+A match is one training configuration rather than one run, and the difference is
+what the digest leaves out: the seed by construction, and the step budget and
+the device with it. So it settles the corpus and the hyperparameters, and two
+arms still have to be read at the same checkpoint step for the same reason they
+are read on one machine. The environment pivot asks the opposite question and is
+told nothing here: the arithmetic a machine does is inside the identity, so an
+upgrade moves it, and naming that as a caveat would refuse the comparison the
+pivot exists for.
+
 Both arms are read the same way — the full sweep at the same checkpoint step, on
 one machine — and the claim is written down before either arm runs: which metric
 moves, in which direction. Stating it first is what makes the reading

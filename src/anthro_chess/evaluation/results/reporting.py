@@ -34,6 +34,7 @@ from anthro_chess.evaluation.results.comparability import (
     measurements_by_workload,
     provenance_differences,
     recorded_series,
+    training_axis,
 )
 from anthro_chess.evaluation.results.metrics import (
     MetricDefinition,
@@ -134,6 +135,11 @@ class Movement(StrEnum):
     #: moved as well, so it is not a verdict on the model. Distinct from
     #: ``UNKNOWN``, which means there was nothing to compare against.
     #:
+    #: A moved training identity lands here too, where what moved is the
+    #: configuration that produced the model rather than a coordinate beside
+    #: it. The digest cannot say the two differ by only the change under test,
+    #: so the delta is not a verdict on that change either.
+    #:
     #: This is the field automation keys on, which is why the honesty lives
     #: here rather than in a withheld ``delta``: a reader holding both operands
     #: can always subtract them, so hiding the arithmetic protects nobody.
@@ -193,6 +199,9 @@ class MetricDelta:
     #: Which coordinates moved. ``None`` for a metric with no execution
     #: context, where the model is the only thing that can have moved.
     attribution: Attribution | None = None
+    #: Whether the training configuration behind the two checkpoints moved,
+    #: as the two envelopes behind this row recorded it.
+    training: AxisChange = AxisChange.UNKNOWN
     #: The execution coordinates that differ, when the environment moved.
     environment: tuple[ProvenanceDifference, ...] = ()
     #: The benchmark-declared coordinates that differ, such as the model
@@ -224,6 +233,7 @@ class MetricDelta:
             "attribution": (
                 None if self.attribution is None else self.attribution.as_record()
             ),
+            "training": self.training.value,
             "environment_differences": _difference_records(self.environment),
             "condition_differences": _difference_records(self.conditions),
         }
@@ -325,6 +335,12 @@ class DeltaReport:
     families: tuple[FamilyReport, ...]
     provenance: tuple[ProvenanceDifference, ...]
     pivot: ReportPivot = ReportPivot.CHECKPOINT
+    #: Whether the two compared checkpoints share a training configuration.
+    #: A property of the pair rather than of any row, which is what decides
+    #: whether the reader is holding a control-arm comparison at all: it is
+    #: reduced over every result on each side, so it reads ``unchanged`` where
+    #: a row whose own two envelopes recorded nothing reads ``unknown``.
+    training: AxisChange = AxisChange.UNKNOWN
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable report."""
@@ -335,6 +351,7 @@ class DeltaReport:
             "current": self.current.as_record(),
             "families": [family.as_record() for family in self.families],
             "provenance": _difference_records(self.provenance),
+            "training": self.training.value,
         }
 
 
@@ -461,6 +478,7 @@ def build_delta_report(
         families=tuple(sections),
         provenance=_report_provenance(baseline_results, current_results),
         pivot=pivot,
+        training=_report_training_identity(baseline_results, current_results),
     )
 
 
@@ -550,6 +568,7 @@ def build_environment_report(
         families=tuple(sections),
         provenance=_report_provenance(baseline_results, current_results),
         pivot=pivot,
+        training=_report_training_identity(baseline_results, current_results),
     )
 
 
@@ -649,6 +668,7 @@ def render_report(report: DeltaReport) -> str:
         )
     if report.pivot is ReportPivot.ENVIRONMENT:
         lines.append("Model held fixed; the environment is what varies.")
+    lines.extend(_training_identity_line(report))
     width = metric_column_width(
         metric.metric for family in report.families for metric in family.metrics
     )
@@ -721,6 +741,38 @@ def _render_group_header(group: SeriesGroup) -> list[str]:
     ]
 
 
+def _training_identity_line(report: DeltaReport) -> list[str]:
+    """State what this report can verify about the two checkpoints' training.
+
+    Stated in all three cases rather than only on a mismatch, because a reader
+    deciding whether they hold a control-arm comparison needs "verified the
+    same" and "nobody recorded it" to look different, and only the mismatch
+    reaches the change column on its own.
+
+    Only the checkpoint pivot has the question; :func:`_pivoted_movement` says
+    why the environment pivot does not.
+    """
+
+    if report.pivot is not ReportPivot.CHECKPOINT or report.baseline is None:
+        return []
+    if report.training is AxisChange.CHANGED:
+        line = (
+            "Training identity: changed; the two checkpoints were trained "
+            "under different configurations."
+        )
+    elif report.training is AxisChange.UNCHANGED:
+        line = (
+            "Training identity: unchanged; the two checkpoints share one "
+            "training configuration."
+        )
+    else:
+        line = (
+            "Training identity: not recorded on both sides, so whether the "
+            "training configuration moved is unverified."
+        )
+    return textwrap.wrap(line, width=MAXIMUM_LINE_WIDTH, subsequent_indent="  ")
+
+
 def _confounded_legend(report: DeltaReport) -> list[str]:
     """Explain the confounded verdict, naming what actually moved."""
 
@@ -733,6 +785,8 @@ def _confounded_legend(report: DeltaReport) -> list[str]:
     if not confounded:
         return []
     moved: list[str] = []
+    if any(metric.training is AxisChange.CHANGED for metric in confounded):
+        moved.append("the training identity")
     if any(metric.conditions for metric in confounded):
         moved.append("the declared conditions")
     if any(metric.environment for metric in confounded):
@@ -1217,6 +1271,7 @@ def _metric_delta(
         if definition.execution_sensitive
         else None
     )
+    training = training_axis(baseline_envelope, current_envelope)
     if not comparison.is_comparable:
         # For an efficiency metric this can only be a workload change, since
         # the environment is not in the fingerprint. That is the case where
@@ -1234,6 +1289,7 @@ def _metric_delta(
                 _hidden_note(hidden_series),
             ),
             attribution=attribution,
+            training=training,
             series=bridges.series(current_measurement.fingerprint),
         )
 
@@ -1260,12 +1316,15 @@ def _metric_delta(
         current=current_measurement.value,
         delta=delta,
         comparability=comparison.comparability,
-        movement=_pivoted_movement(definition, delta, attribution, pivot, noise),
+        movement=_pivoted_movement(
+            definition, delta, attribution, pivot, noise, training
+        ),
         noise=noise,
         noise_floor=floor,
         noise_floor_source=floor_source,
         bridges=tuple(bridge.bridge_id for bridge in comparison.bridges),
         attribution=attribution,
+        training=training,
         environment=environment,
         conditions=conditions,
         series=bridges.series(current_measurement.fingerprint),
@@ -1310,6 +1369,7 @@ def _incomparable_delta(
     note: str | None,
     series: str | None = None,
     attribution: Attribution | None = None,
+    training: AxisChange = AxisChange.UNKNOWN,
 ) -> MetricDelta:
     """Return a row with no delta, and therefore nothing to judge against noise.
 
@@ -1334,6 +1394,7 @@ def _incomparable_delta(
         bridges=(),
         note=note,
         attribution=attribution,
+        training=training,
         series=series,
     )
 
@@ -1344,6 +1405,7 @@ def _pivoted_movement(
     attribution: Attribution | None,
     pivot: ReportPivot,
     noise: NoiseVerdict,
+    training: AxisChange,
 ) -> Movement:
     """Return the verdict, given what the report holds fixed.
 
@@ -1356,8 +1418,23 @@ def _pivoted_movement(
     a comparison moves the number without answering either question, and it is
     the confounder most likely to pass unnoticed, because nothing about the
     machine or the checkpoint label changed.
+
+    A moved training identity confounds the checkpoint pivot, and it is the
+    only coordinate here that reaches a metric with no execution context at
+    all. Its digest cannot say the two configurations differ by exactly the
+    change under test, so no delta spanning it is a verdict on that change. An
+    unrecorded identity is not treated as a move: most of the store predates
+    the field, and confounding on absence would say nothing about any of it.
+
+    It says nothing about the environment pivot, which asks the opposite
+    question. The arithmetic a machine does is inside the training identity, so
+    the same configuration trained at two precisions lands on two identities —
+    and that difference is the upgrade being measured rather than a confounder
+    of it.
     """
 
+    if pivot is ReportPivot.CHECKPOINT and training is AxisChange.CHANGED:
+        return Movement.CONFOUNDED
     if attribution is None:
         return _movement(definition.direction, delta, noise)
     if pivot is ReportPivot.CHECKPOINT:
@@ -1469,6 +1546,33 @@ def _selection(
 ) -> CheckpointSelection:
     recorded = max(envelope.recorded_at for envelope in results)
     return CheckpointSelection(label=label, recorded_at=recorded, results=len(results))
+
+
+def _report_training_identity(
+    baseline_results: Sequence[ResultEnvelope],
+    current_results: Sequence[ResultEnvelope],
+) -> AxisChange:
+    """Return whether the two compared checkpoints were trained the same way.
+
+    Reduced from the checkpoints' own results rather than from the rows a
+    report happens to show, so slicing by family or metric cannot change the
+    answer. Whether the reader is holding a control-arm comparison is a fact
+    about the pair, and one a ``--family`` flag must not be able to flip.
+
+    A side is unverified unless its results agree on one recorded identity. A
+    reading that recorded none says nothing about the checkpoint, and a label
+    covering two says the readings under it are not one checkpoint's.
+    """
+
+    before = {envelope.checkpoint.training_sha256 for envelope in baseline_results} - {
+        None
+    }
+    after = {envelope.checkpoint.training_sha256 for envelope in current_results} - {
+        None
+    }
+    if len(before) != 1 or len(after) != 1:
+        return AxisChange.UNKNOWN
+    return AxisChange.UNCHANGED if before == after else AxisChange.CHANGED
 
 
 def _report_provenance(
