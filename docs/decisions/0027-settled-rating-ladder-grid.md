@@ -10,6 +10,11 @@ Accepted. Extends `0022-one-joint-rating-ladder-fit.md`. Extended by
 `0051-every-suite-step-declares-both-scales.md` withdraws the
 affordability consequence below: the reduced sweep's ladder was later measured
 in minutes rather than the hours argued from here, and the sweep now runs one.
+`0064-the-complete-round-robin-is-the-optimal-ladder-design.md` answers the
+cost question this record left to the pairing structure, measures the precision
+lever the section below points at, and narrows it: openings are a sample size as
+that section says, but they reach the workload fingerprint through their game-id
+digest, so raising them does end a series where raising seeds does not.
 
 ## Context
 

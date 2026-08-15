@@ -4,7 +4,11 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted. Extended by `0027-settled-rating-ladder-grid.md`.
+Accepted. Extended by `0027-settled-rating-ladder-grid.md`, and by
+`0064-the-complete-round-robin-is-the-optimal-ladder-design.md`, which replaces
+the reason the consequences below give for not adopting a scheduled subset: the
+round robin is the optimal design at a fixed game budget rather than the
+cheapest way to guarantee connectivity.
 
 ## Context
 
