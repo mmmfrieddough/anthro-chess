@@ -1143,10 +1143,14 @@ def _anchor_seats(config: LadderBenchmarkConfig) -> tuple[SeatKey, ...]:
 def _pairings(seats: Sequence[SeatKey]) -> tuple[tuple[SeatKey, SeatKey], ...]:
     """Return every unordered pair of seats, in a fixed order.
 
-    A full round robin rather than a scheduled subset. It keeps the comparison
-    graph connected without a connectivity check, which is what a fit needs to
-    place every seat on one scale, and the cost is the caller's to size through
-    the grid and the games per pairing.
+    A full round robin rather than a scheduled subset: at a fixed game budget
+    the complete graph resolves the fit better than any subset of it, so cost is
+    the caller's to size through the grid and the games per pairing rather than
+    by dropping pairings here. It also keeps the comparison graph connected
+    without a connectivity check, which is what a fit needs to place every seat
+    on one scale.
+    `docs/decisions/0064-the-complete-round-robin-is-the-optimal-ladder-design.md`
+    owns why, and what the alternatives measured.
     """
 
     return tuple(
@@ -1901,6 +1905,7 @@ def _base_workload(
             if config.ablation.enabled
             else "none"
         ),
+        # A name for the only design, not a guard: a subset would record this too.
         "pairing": "round-robin",
         "fit_model": FIT_MODEL,
         "fit_scale": RATING_SCALE,

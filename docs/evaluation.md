@@ -1652,17 +1652,23 @@ nothing in this benchmark can check that the two name one pool. A ladder read
 over one population is therefore still a ladder about the dial rather than about
 that population's rating scale.
 
-**A full ladder is a scheduled reading rather than a routine one.** The declared
-grid plays thousands of games per checkpoint, so it is taken when a checkpoint is
-worth the time rather than on every one; a reduced sweep reads the same ladder at
-a fraction of the seeds and openings, and is the majority of what that sweep
-costs. Seats and their sample are the two things not to confuse when that cost is
-under discussion.
+**A full ladder is the routine cost of deciding a change.** The declared grid
+plays thousands of games per checkpoint, and a full sweep is what an
+adopt-or-drop comparison is read at, so that cost is paid per accepted change
+rather than per milestone; a reduced sweep reads the same ladder at a fraction of
+the seeds and openings, and is the majority of what that sweep costs. Seats and
+their sample are the two things not to confuse when that cost is under
+discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
 linearly, because a round robin gives each seat one pairing per opponent — so a
 cheaper ladder is also a noisier one, on the axis the benchmark exists to
-measure. Raising seeds, openings, or games per position is the lever that buys
-precision instead, at linear cost and without ending a series.
+measure. Raising seeds or games per position is the lever that buys precision
+instead, at linear cost and without ending a series. Raising openings buys it
+too, but not freely: decision 0020 puts the opening selection in the declared
+workload, so a wider set of openings continues no series a narrower one started.
+Cutting *pairings* while keeping the seats is not a third option at all: at a
+fixed game budget the complete round robin is the design that resolves the fit
+best, so a subset spends the same games for a worse reading.
 
 That lever is inert on the pairings whose seats are both greedy, and a ladder
 does not pull it there: those pairings play one replicate and record the seeds
@@ -1679,6 +1685,9 @@ limit against the corpus's longest game and owns why the unfinished half is a
 reading rather than a dial to move.
 `docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns how a reading
 is qualified and what the two degenerate fits are qualified as.
+`docs/decisions/0064-the-complete-round-robin-is-the-optimal-ladder-design.md`
+owns why the pairing structure is complete and what an incomplete design was
+measured to cost.
 
 Fixed engine-anchor matches are useful secondary rating diagnostics. Run a grid
 of Anthro target ratings against one or more fixed external engine

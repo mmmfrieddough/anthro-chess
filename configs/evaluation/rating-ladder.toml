@@ -28,7 +28,10 @@
 #
 # Cost scales with the square of the seat count. Four ratings at three
 # temperatures plus three ablated seats is fifteen seats and one hundred and
-# five pairings, so raise the grid deliberately rather than by habit.
+# five pairings, so raise the grid deliberately rather than by habit. Playing
+# only some of them is not the saving it looks like:
+# `docs/decisions/0064-the-complete-round-robin-is-the-optimal-ladder-design.md`
+# measures what a subset costs.
 #
 # This grid is settled rather than provisional: see
 # `docs/decisions/0027-settled-rating-ladder-grid.md`. Cutting it would buy time

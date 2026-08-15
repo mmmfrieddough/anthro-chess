@@ -11,6 +11,11 @@ The comparability, storage, and generated-workload records are read here rather
 than changed. Nothing below relaxes one of them; the fingerprint rule in
 particular is re-examined and kept, and the section that does so says why.
 
+`0064-the-complete-round-robin-is-the-optimal-ladder-design.md` answers the
+pressure the consequences below put on the rating ladder: its structure is not
+where that cost comes off, so the seeds lever named there is the whole of what
+is available rather than an interim measure.
+
 ## Context
 
 Decision 0029 answered a real gap: nothing said how a change showed it improved
@@ -175,6 +180,9 @@ The full sweep becomes the routine cost of deciding a change rather than an
 occasional reading. That puts sustained pressure on whichever step dominates it,
 which today is the rating ladder — `#473` is where that pressure is answered,
 and the seeds lever above is what is available in the meantime.
+`0064-the-complete-round-robin-is-the-optimal-ladder-design.md` has since taken
+it: the ladder's pairing structure is optimal at any budget, so that lever is
+not an interim measure but the only one there is.
 
 The reduced sweep's role narrows to iteration, and with `#475` it stops being
 able to write history at all. Its readings remain useful and remain machine-local.
