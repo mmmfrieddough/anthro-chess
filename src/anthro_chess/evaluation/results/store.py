@@ -1,17 +1,22 @@
 """The durable results store benchmarks append to and reports read from.
 
-The store is layered. The committed summary tier holds one small JSON file per
-result, so history is versioned with the code, metric movement appears as a
-reviewable diff, and an agent reads results with ordinary file tools rather
+The store is layered. The summary tier holds one small JSON file per result, so
+the committed copy of it versions history with the code, metric movement appears
+as a reviewable diff, and an agent reads results with ordinary file tools rather
 than through a service. The machine-local detail tier holds per-position
 diagnostics, slice tables, and generated games, and is referenced from the
 summary rather than copied into it.
 
-One file per result is what makes the committed tier safe to append to: two
-sessions recording different results write different files, so a shared
-history file cannot be corrupted or fought over. Writing the same result twice
-is idempotent, and writing a different result to the same identity fails
-loudly.
+A summary record is not project history by being written. A benchmark writes to
+whichever root this machine resolves, and :meth:`ResultsStore.promote` copies
+one checkpoint's records into the committed store, which is where the same
+layout is versioned with the code. Nothing resolves there on its own, so a
+reading joins the line of accepted checkpoints because someone said it should.
+
+One file per result is what makes either store safe to append to: two sessions
+recording different results write different files, so a shared history file
+cannot be corrupted or fought over. Writing the same result twice is
+idempotent, and writing a different result to the same identity fails loudly.
 """
 
 from __future__ import annotations
@@ -38,12 +43,17 @@ from anthro_chess.machine import (
     RESULT_DETAIL_ROOT_VARIABLE,
     RESULTS_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
+    WORKING_ARTIFACTS_DIRECTORY,
 )
 
 RecordT = TypeVar("RecordT", bound=BaseModel)
 
 #: Directory name of the committed summary tier, relative to the repository.
-DEFAULT_STORE_DIRECTORY = "results"
+COMMITTED_STORE_DIRECTORY = "results"
+#: Where a machine keeps the readings it has not promoted, beneath the run root
+#: for the reason the detail tier is there: they belong to this machine's work
+#: rather than to the project's history.
+SCRATCH_STORE_DIRECTORY = "benchmark-results"
 STORE_ROOT_VARIABLE = RESULTS_ROOT_VARIABLE
 DETAIL_ROOT_VARIABLE = RESULT_DETAIL_ROOT_VARIABLE
 
@@ -66,7 +76,7 @@ class ResultsStoreError(ValueError):
 
 
 class ResultsStore:
-    """Read and append the committed summary tier."""
+    """Read and append the summary tier under one root."""
 
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root)
@@ -79,13 +89,13 @@ class ResultsStore:
 
     @property
     def records_directory(self) -> Path:
-        """Return the directory holding committed result records."""
+        """Return the directory holding result records."""
 
         return self._root / RECORDS_DIRECTORY
 
     @property
     def bridges_directory(self) -> Path:
-        """Return the directory holding committed bridges."""
+        """Return the directory holding recorded bridges."""
 
         return self._root / BRIDGES_DIRECTORY
 
@@ -98,20 +108,38 @@ class ResultsStore:
             raise ResultsStoreError(str(error)) from error
         self._reject_committed_detail(result.detail)
 
-        path = self.records_directory / _record_file_name(result)
-        payload = canonical_readable_json(result.as_record())
-        with self._write_lock():
-            _ensure_directory(self.records_directory)
-            if path.exists():
-                if _read_bytes(path) == payload:
-                    logger.info("Result %s is already recorded", result.result_id)
-                    return path
-                raise ResultsStoreError(
-                    f"a different result is already recorded at {path}"
-                )
-            _write_atomically(path, payload)
-        logger.info("Recorded result %s in %s", result.result_id, path)
-        return path
+        written = self._write_records(
+            ((_record_file_name(result), canonical_readable_json(result.as_record())),)
+        )
+        return written[0]
+
+    def promote(self, checkpoint: str, *, into: ResultsStore) -> tuple[Path, ...]:
+        """Copy one checkpoint's records into another store.
+
+        A copy rather than a move, so this store keeps every reading it has
+        taken: the next comparison reads the current canonical checkpoint
+        against a candidate, and both have to be in one store for that.
+
+        The bytes are copied rather than the envelopes re-serialized. A record
+        is self-contained and was verified when it was written, and a metric
+        that has since left the registry leaves a record the committed tier is
+        meant to keep readable rather than one promotion should refuse.
+        """
+
+        results = self.results()
+        selected = results_for_checkpoint(results, checkpoint)
+        if not selected:
+            held = ", ".join(checkpoint_labels(results)) or "no results at all"
+            raise ResultsStoreError(
+                f"no result in {self._root} was recorded against {checkpoint}; "
+                f"this store holds {held}"
+            )
+        records: list[tuple[str, bytes]] = []
+        for envelope in selected:
+            into._reject_committed_detail(envelope.detail)
+            name = _record_file_name(envelope)
+            records.append((name, _read_bytes(self.records_directory / name)))
+        return into._write_records(records)
 
     def append_bridge(self, bridge: Bridge) -> Path:
         """Record a bridge beside the results it applies to."""
@@ -174,6 +202,36 @@ class ResultsStore:
             sorted(bridges, key=lambda bridge: (bridge.recorded_at, bridge.bridge_id))
         )
 
+    def _write_records(self, records: Sequence[tuple[str, bytes]]) -> tuple[Path, ...]:
+        """Write the record files that are not here already, refusing on conflict.
+
+        Writing the same bytes twice is idempotent and different bytes under
+        one identity fails, which is what lets both an interrupted sweep and a
+        repeated promotion be run again without inspecting the store first.
+        Every conflict is found before anything is written, so a refusal does
+        not leave a checkpoint's reading here without what it cost.
+        """
+
+        paths: list[Path] = []
+        pending: list[tuple[Path, bytes]] = []
+        with self._write_lock():
+            _ensure_directory(self.records_directory)
+            for name, payload in records:
+                path = self.records_directory / name
+                paths.append(path)
+                if not path.exists():
+                    pending.append((path, payload))
+                elif _read_bytes(path) == payload:
+                    logger.info("Record %s is already in %s", name, self._root)
+                else:
+                    raise ResultsStoreError(
+                        f"a different result is already recorded at {path}"
+                    )
+            for path, payload in pending:
+                _write_atomically(path, payload)
+                logger.info("Wrote %s", path)
+        return tuple(paths)
+
     def _reject_committed_detail(self, detail: DetailReference | None) -> None:
         if detail is None:
             return
@@ -184,7 +242,7 @@ class ResultsStore:
         if root == candidate.resolve() or root in candidate.resolve().parents:
             raise ResultsStoreError(
                 "bulk diagnostics must stay in the machine-local detail tier; "
-                f"{detail.path} is inside the committed store"
+                f"{detail.path} is inside the summary store"
             )
 
     @contextmanager
@@ -280,14 +338,24 @@ class DetailStore:
 
 
 def resolve_store_root(explicit: str | Path | None = None) -> Path:
-    """Resolve the committed store root from an argument or the environment."""
+    """Resolve the store root a command reads and writes.
+
+    Machine-local at every step, like the detail tier beside it: a reading
+    belongs to this machine until someone promotes it, so the committed store
+    is reached by naming it rather than by default. The rootless answer is the
+    directory ``anthro train`` places a run in, so readings land beside the
+    runs they measured.
+    """
 
     if explicit is not None:
         return Path(explicit)
     configured = os.environ.get(STORE_ROOT_VARIABLE, "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path(DEFAULT_STORE_DIRECTORY)
+    run_root = os.environ.get(RUN_ROOT_VARIABLE, "").strip()
+    if run_root:
+        return Path(run_root).expanduser() / SCRATCH_STORE_DIRECTORY
+    return Path(WORKING_ARTIFACTS_DIRECTORY) / SCRATCH_STORE_DIRECTORY
 
 
 def resolve_detail_root(explicit: str | Path | None = None) -> Path:

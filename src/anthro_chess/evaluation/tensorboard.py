@@ -1,4 +1,4 @@
-"""Disposable TensorBoard projection of the committed results store.
+"""Disposable TensorBoard projection of a results store's checkpoint history.
 
 TensorBoard does not understand Anthro Chess series fingerprints.  This
 projection preserves that boundary structurally: every raw fingerprint gets
@@ -60,8 +60,8 @@ def project_results(
     """
 
     destination = output.expanduser().resolve()
-    committed_store = store_root.expanduser().resolve()
-    _require_outside_store(destination, committed_store)
+    projected_store = store_root.expanduser().resolve()
+    _require_outside_store(destination, projected_store)
     _require_owned_or_empty(destination)
 
     labels = checkpoint_labels(results)
@@ -158,7 +158,7 @@ def _write_projection(
 def _require_outside_store(output: Path, store: Path) -> None:
     if output == store or output in store.parents or store in output.parents:
         raise TensorBoardProjectionError(
-            "TensorBoard output must be outside the committed results store"
+            "TensorBoard output must be outside the results store it projects"
         )
 
 

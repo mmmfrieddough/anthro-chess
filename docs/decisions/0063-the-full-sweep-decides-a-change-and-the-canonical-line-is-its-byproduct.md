@@ -119,6 +119,17 @@ everything attempted.
 This is a convention, not machinery. `ANTHRO_CHESS_RESULTS_ROOT` already points
 the store wherever it is told, and nothing needs building to use two roots.
 
+That is true of *which* readings are promoted, and was too broad about the
+default the convention ran against: with the store resolving as `results/` when
+nothing said otherwise, history acquired a reading by a command being run rather
+than by anyone deciding it should, and the convention had to be remembered every
+time. `#475` narrows it. The default resolves beneath `ANTHRO_CHESS_RUN_ROOT`,
+the way the detail tier already does, and `anthro eval promote` copies one
+checkpoint's records into the committed store — a copy, so the machine keeps the
+arms a later comparison reads against. Which readings are worth that stays the
+maintainer's call, unchecked on purpose: a reduced reading names its own view in
+the record, so the pull request being reviewed already shows what it is.
+
 ### View Size Stays In The Fingerprint
 
 Removing it was considered, for the subset of metrics that are means over
@@ -184,8 +195,11 @@ and the seeds lever above is what is available in the meantime.
 it: the ladder's pairing structure is optimal at any budget, so that lever is
 not an interim measure but the only one there is.
 
-The reduced sweep's role narrows to iteration, and with `#475` it stops being
-able to write history at all. Its readings remain useful and remain machine-local.
+The reduced sweep's role narrows to iteration, and its readings remain useful and
+remain machine-local. `#475` did that by moving where every sweep writes rather
+than by refusing the reduced one: a runtime refusal would have made the shipped
+reduced sweep unrunnable, since its steps default to recording, and promotion is
+the deliberate act either scale passes through.
 
 Nothing here settles two quantities that no design decision can. The magnitude of
 seed variance at a scale that matters is unmeasured — 0029's figures are

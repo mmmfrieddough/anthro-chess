@@ -24,6 +24,7 @@ from anthro_chess.data.speed import Speed
 from anthro_chess.machine import (
     DATA_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
+    WORKING_ARTIFACTS_DIRECTORY,
     MachineReport,
     RetainedRun,
     inspect_machine,
@@ -76,8 +77,9 @@ _STORE_FLAG.add_argument(
     "--store",
     type=Path,
     help=(
-        "Committed results store directory. Defaults to "
-        "ANTHRO_CHESS_RESULTS_ROOT or ./results."
+        "Results store directory. Defaults to ANTHRO_CHESS_RESULTS_ROOT, or a "
+        "machine-local directory beneath ANTHRO_CHESS_RUN_ROOT. Name the "
+        "committed store to read or write it."
     ),
 )
 
@@ -761,6 +763,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_parser.set_defaults(handler=_run_eval_report)
 
+    promote_parser = eval_commands.add_parser(
+        "promote",
+        help="Copy one checkpoint's records into the committed results store.",
+    )
+    promote_parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Checkpoint label whose records are promoted, as a record names it.",
+    )
+    # Its own rather than the shared flag: here --store is the source end of a
+    # copy, and the shared wording points at the committed store, which is the
+    # other end.
+    promote_parser.add_argument(
+        "--store",
+        type=Path,
+        help="Store the records are copied from, defaulting as every --store does.",
+    )
+    promote_parser.add_argument(
+        "--into",
+        type=Path,
+        help=(
+            "Where the records are copied to, defaulting to the committed "
+            "store in the repository. Committing the copy in a pull request is "
+            "what makes the promotion, so merging is the acceptance and an "
+            "unmerged one costs nothing to unwind."
+        ),
+    )
+    promote_parser.set_defaults(handler=_run_eval_promote)
+
     tensorboard_parser = eval_commands.add_parser(
         "tensorboard",
         help="Project checkpoint history from the results store into TensorBoard.",
@@ -770,8 +801,8 @@ def build_parser() -> argparse.ArgumentParser:
         "output",
         type=Path,
         help=(
-            "Disposable TensorBoard log directory. Must be outside the committed "
-            "results store."
+            "Disposable TensorBoard log directory. Must be outside the results "
+            "store it projects."
         ),
     )
     tensorboard_parser.set_defaults(handler=_run_eval_tensorboard)
@@ -1702,9 +1733,9 @@ def _render_sweep(run: SuiteRun) -> str:
 def _result_stores(
     arguments: argparse.Namespace,
 ) -> tuple[ResultsStore | None, DetailStore | None]:
-    """Return the committed and detail stores a benchmark records through.
+    """Return the summary and detail stores a benchmark records through.
 
-    A committed summary references its detail payloads by path and digest, so a
+    A summary record references its detail payloads by path and digest, so a
     benchmark that records needs both tiers. `anthro train`, whose breakdown is
     best-effort, resolves an optional detail root instead and is not a caller.
     """
@@ -3252,6 +3283,31 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _run_eval_promote(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        COMMITTED_STORE_DIRECTORY,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    try:
+        source = ResultsStore(resolve_store_root(arguments.store))
+        destination = ResultsStore(arguments.into or Path(COMMITTED_STORE_DIRECTORY))
+        promoted = source.promote(arguments.checkpoint, into=destination)
+    except ResultsStoreError as error:
+        print(f"anthro eval promote: {error}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Promoted {len(promoted)} record(s) for {arguments.checkpoint} from "
+        f"{source.root} into {destination.root}"
+    )
+    for path in promoted:
+        print(f"  {path}")
+    return 0
+
+
 def _run_eval_tensorboard(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.results import (
         ResultsStore,
@@ -3590,7 +3646,7 @@ def _run_train(arguments: argparse.Namespace) -> int:
         detail = None if detail_root is None else DetailStore(detail_root)
         # The run root places a named run; without one a fresh clone resolves
         # inside the working directory, which several commands depend on.
-        placement = _run_root() or Path("artifacts")
+        placement = _run_root() or Path(WORKING_ARTIFACTS_DIRECTORY)
         result = run_training(
             resolved,
             output_directory=(

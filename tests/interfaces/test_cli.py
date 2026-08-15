@@ -1299,6 +1299,62 @@ def test_eval_report_reports_an_unknown_selection_without_a_traceback(
     assert "anthro eval report:" in capsys.readouterr().err
 
 
+def test_eval_promote_copies_one_checkpoint_into_the_committed_store(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source store defaults, so a promotion names only what and where to."""
+
+    monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "scratch"))
+    _record_fixture_results(tmp_path / "scratch")
+    committed = tmp_path / "results"
+
+    assert (
+        main(
+            [
+                "eval",
+                "promote",
+                "--checkpoint",
+                "checkpoint-b",
+                "--into",
+                str(committed),
+            ]
+        )
+        == 0
+    )
+
+    promoted = sorted((committed / "records").glob("*.json"))
+    assert len(promoted) == 1
+    assert json.loads(promoted[0].read_text())["checkpoint"]["label"] == "checkpoint-b"
+    assert "Promoted 1 record(s) for checkpoint-b" in capsys.readouterr().out
+
+
+def test_eval_promote_reports_an_unrecorded_checkpoint(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _record_fixture_results(tmp_path / "scratch")
+
+    assert (
+        main(
+            [
+                "eval",
+                "promote",
+                "--checkpoint",
+                "checkpoint-z",
+                "--store",
+                str(tmp_path / "scratch"),
+                "--into",
+                str(tmp_path / "results"),
+            ]
+        )
+        == 2
+    )
+    assert "anthro eval promote:" in capsys.readouterr().err
+    assert not (tmp_path / "results" / "records").exists()
+
+
 def test_eval_tensorboard_projects_the_store(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

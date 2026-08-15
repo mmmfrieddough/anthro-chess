@@ -119,14 +119,31 @@ between identity and coordinates.
 `anthro_chess.evaluation.results` implements this layer and owns the exact
 record schema, metric registry, fingerprint algorithm, and size budget.
 
-The committed summary tier is one small JSON file per result under the store
-root, beside the bridges that rejoin a broken series. Each measurement carries
+The summary tier is one small JSON file per result under the store root, beside
+the bridges that rejoin a broken series. Each measurement carries
 the spread its own reading measured, so nothing separate has to be stored to
 qualify a delta. One file per record is what keeps concurrent
 appends and Git merges additive; a concurrent write into the same store fails
-on an exclusive lock rather than producing a partial record. The store root
-defaults to `results/` in the repository and can be pointed elsewhere with
-`ANTHRO_CHESS_RESULTS_ROOT`.
+on an exclusive lock rather than producing a partial record.
+
+**A benchmark writes machine-local, and a record reaches the committed store by
+being promoted into it.** The store root resolves from
+`ANTHRO_CHESS_RESULTS_ROOT`, or beneath `ANTHRO_CHESS_RUN_ROOT` the way the
+detail tier does, or in the working directory the way every other unset root
+does — so a reading lands where candidate work belongs, and nothing resolves
+into `results/`, which is reached by naming it. `anthro eval promote` is what
+names it, copying one checkpoint's records — every benchmark's and every cost
+record's — into the committed store, where committing them in a pull request is
+the promotion. It copies rather than moves, so a machine keeps every reading it
+has taken and a comparison finds both of its arms in one store.
+`docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
+owns what the committed line is; `docs/issue-workflow.md` owns when a session
+does the copying.
+
+A bridge reaches the committed store the same way, by being recorded there:
+`anthro eval bridge add --store results` asserts one about the committed
+history, and one recorded into a machine-local store applies to that store's
+reports alone.
 
 The detail tier is machine-local and holds per-position diagnostics, slice
 tables, and generated game records. A summary record references a detail
@@ -177,7 +194,7 @@ This view is deliberately less expressive than `anthro eval report`. It has no
 checkpoint labels on the x-axis, no noise-floor error bars, no explicit absent
 families, and no bridge semantics; even bridged fingerprints stay on separate
 lines. Deleting the output loses nothing, and the output must live outside the
-committed results store. Decision 0023 owns this constrained projection and
+results store it projects. Decision 0023 owns this constrained projection and
 refines decision 0014's earlier prohibition on cross-version TensorBoard
 history.
 
@@ -210,7 +227,7 @@ refuses a sweep where it could find nothing to read. The games are handed over
 as a payload in the sweep directory rather than in memory, which is what lets a
 resumed sweep retry the decomposition without replaying the rollout.
 
-**Recording is decided per benchmark within one sweep.** A sweep that commits
+**Recording is decided per benchmark within one sweep.** A sweep that records
 one baseline reading and leaves the rest as evidence about the instrument is
 the normal case, not an exception, so the decision belongs to each step rather
 than to the sweep.
@@ -2865,10 +2882,12 @@ The comparison itself needs nothing new. A training run is a coordinate rather
 than a component of series identity, so two arms of one configuration land in
 the same series, and `uv run anthro eval report` reads the delta between them
 from their checkpoint labels. Arms are recorded into a machine-local store
-rather than the committed one: a candidate arm is not project history, and an
-arm nobody adopted would otherwise become some later report's baseline.
+rather than the committed one, which needs no arranging because it is where a
+benchmark writes by default: a candidate arm is not project history, and an arm
+nobody adopted would otherwise become some later report's baseline.
 
-A reading reaches the committed store when its change is accepted, so the
+A reading reaches the committed store when its change is accepted — by
+`anthro eval promote` copying it there in that change's pull request — so the
 committed line is the sequence of accepted checkpoints rather than a log of
 everything attempted. **Nothing is run for that line.** It accumulates from the
 comparisons already being made, which is what keeps a durable history from

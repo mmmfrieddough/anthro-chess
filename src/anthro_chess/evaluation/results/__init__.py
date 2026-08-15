@@ -118,7 +118,7 @@ from anthro_chess.evaluation.results.reporting import (
     render_report,
 )
 from anthro_chess.evaluation.results.store import (
-    DEFAULT_STORE_DIRECTORY,
+    COMMITTED_STORE_DIRECTORY,
     DetailStore,
     ResultsStore,
     ResultsStoreError,
@@ -131,10 +131,10 @@ from anthro_chess.evaluation.results.store import (
 
 __all__ = [
     "BOOTSTRAP_METHOD",
+    "COMMITTED_STORE_DIRECTORY",
     "CONTENT_DIGEST_ALGORITHM",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_COVERAGE",
-    "DEFAULT_STORE_DIRECTORY",
     "ENVIRONMENT_FIELDS",
     "ENVELOPE_VERSION",
     "FINGERPRINT_ALGORITHM",

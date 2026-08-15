@@ -6,11 +6,11 @@ environment, and benchmark provenance, so a new benchmark kind is a new
 recompute its own fingerprints, which is what lets a reader verify a series
 without the environment that produced it.
 
-The envelope is the summary tier and is committed to the repository. It holds
-scalar headline measurements only; bulk diagnostics live in the machine-local
-detail tier behind a reference. That boundary is enforced here rather than
-left to convention, because the natural pressure is always to commit one more
-useful diagnostic.
+The envelope is the summary tier, and a promoted copy of it is what the
+repository commits. It holds scalar headline measurements only; bulk
+diagnostics live in the machine-local detail tier behind a reference. That
+boundary is enforced here rather than left to convention, because the natural
+pressure is always to commit one more useful diagnostic.
 """
 
 from __future__ import annotations
@@ -463,9 +463,9 @@ class ResultEnvelope(ResultModel):
         size = len(canonical_json(self.as_record()))
         if size > MAXIMUM_SUMMARY_BYTES:
             raise ResultRecordError(
-                f"result {self.result_id} is {size} bytes; the committed "
-                f"summary tier caps a record at {MAXIMUM_SUMMARY_BYTES}. Move "
-                "bulk diagnostics to the machine-local detail tier."
+                f"result {self.result_id} is {size} bytes; the summary tier "
+                f"caps a record at {MAXIMUM_SUMMARY_BYTES} so a promoted one "
+                "stays small. Move bulk diagnostics to the detail tier."
             )
 
     def expected_fingerprint(self, metric: str) -> str:

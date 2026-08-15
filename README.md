@@ -247,8 +247,10 @@ selection follows the run's latest pointer.
 ## Benchmark Results
 
 Benchmarks append to a results store rather than writing standalone artifacts,
-so comparing a checkpoint against one recorded a year ago is a query. The
-summary tier is committed under [`results/`](results/README.md), which keeps
+so comparing a checkpoint against one recorded a year ago is a query. A reading
+lands in a machine-local store beneath `ANTHRO_CHESS_RUN_ROOT`, and
+`anthro eval promote --checkpoint <label>` copies one checkpoint's records into
+the summary tier committed under [`results/`](results/README.md), which keeps
 metric movement visible as a diff and readable with ordinary file tools; bulk
 diagnostics stay machine-local.
 
