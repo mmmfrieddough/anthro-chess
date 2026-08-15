@@ -77,13 +77,12 @@ for humans to use the project correctly.
 
 ## Retiring Docs During Implementation
 
-A statement this change made false is a defect this change introduced. Correct
-it in the same commit, in whatever document carries it — not only in the ones
-this change was already touching. Nothing checks documentation against the code,
-so a false sentence reports green for as long as it takes someone to read it:
-`README.md` described the evaluation harness as unimplemented while eight
-benchmarks sat in the registry, and `docs/training-and-runtime.md` said training
-could not select CUDA while `training/devices.py` accepted it.
+Correct a statement this change made false in whatever document carries it, not
+only in the ones this change was already touching. Nothing checks documentation
+against the code, so a false sentence reports green for as long as it takes
+someone to read it: `README.md` described the evaluation harness as unimplemented
+while eight benchmarks sat in the registry, and `docs/training-and-runtime.md`
+said training could not select CUDA while `training/devices.py` accepted it.
 
 A measurement that supersedes an earlier one **replaces** it. Do not annotate
 the old reading and leave it standing. A retraction marker looks like the

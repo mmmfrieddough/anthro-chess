@@ -6,19 +6,6 @@
 
 <!-- Summarize what changed and why. -->
 
-## Size and surface
-
-<!--
-Fill this in from the actual diff, not from memory:
-  git diff --stat main...HEAD
--->
-
-- Diff: <!-- N files changed, N insertions, N deletions -->
-- New surface: <!-- new files, config options, dependencies, abstractions — or "none" -->
-- Removed or consolidated: <!-- what this change deletes or collapses — or "none" -->
-- Simpler alternative considered: <!-- what it was and why it was rejected -->
-- If this had to be a third smaller: <!-- what would go, and what it would cost -->
-
 ## Verification
 
 <!-- The commands run and their results, not an assertion that they passed. -->
@@ -26,17 +13,6 @@ Fill this in from the actual diff, not from memory:
 ## Documentation
 
 <!-- Link documentation changes, or explain why none were needed. -->
-
-## Findings not filed
-
-<!--
-Real things this change turned up and neither fixed nor filed — one line each:
-what, where, why it was left. Or "none".
-
-Not a transcript of the review passes. A finding with no symptom is not recorded
-anywhere, and one that clears the filing bar becomes an issue instead. Silence
-from the reviewer declines the line.
--->
 
 ## Linked issues
 
