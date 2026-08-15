@@ -10,6 +10,12 @@ which gives a stored training floor the scope this record withheld one for.
 Extended by `0061-a-training-cost-reading-has-no-replicate-to-resample.md`,
 which reads a change for what it cost the same way, since the
 training-efficiency family carries no floor to qualify such a delta otherwise.
+Refined by
+`0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`,
+which qualifies this record's prohibition on a prior reading: a checkpoint whose
+training identity matches the candidate's in everything but the change is a
+control, so a sequential comparison does not train a second run to re-derive
+one.
 
 ## Context
 
