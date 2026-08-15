@@ -2814,6 +2814,32 @@ required rather than recommended, what it costs, and what it still does not buy;
 owns the qualification and why a second training run buys nothing the identity
 check does not.
 
+`anthro eval report` states that identity once, above its rows, and the rows go
+on saying which way they moved. The caveat is a header rather than a verdict
+because the identity moves on every comparison that tests a change — an
+architecture, a learning rate, a corpus filter all reach the digest — so a
+per-row label keyed on it would read the same on every row of every report and
+discriminate nothing. An identity missing from either reading, recorded before
+the field existed or taken through a runner supplied rather than loaded, is
+reported as unverified rather than as a match; most of the committed store
+predates it.
+
+What the header buys is therefore the negative check. A match says nothing on
+the training side moved, which is what a comparison between two checkpoints of
+one run, or between seed replicates, is claiming. A mismatch says only that
+something moved, never that it moved by the change under test, so it confirms
+what the reader already knew in the ordinary case and catches the one that
+matters: a baseline believed to differ by one change that also drifted.
+
+A match is one training configuration rather than one run, and the difference is
+what the digest leaves out: the seed by construction, and the step budget and
+the device with it. So it settles the corpus and the hyperparameters, and two
+arms still have to be read at the same checkpoint step for the same reason they
+are read on one machine. The environment pivot asks the opposite question and is
+told nothing here: the arithmetic a machine does is inside the identity, so an
+upgrade moves it, and naming that as a caveat would refuse the comparison the
+pivot exists for.
+
 Both arms are read the same way — the full sweep at the same checkpoint step, on
 one machine — and the claim is written down before either arm runs: which metric
 moves, in which direction. Stating it first is what makes the reading

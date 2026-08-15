@@ -11,6 +11,7 @@ import pytest
 
 from anthro_chess.evaluation.results import (
     DEFAULT_COVERAGE,
+    AxisChange,
     BenchmarkReference,
     BridgeIndex,
     CheckpointReference,
@@ -317,6 +318,129 @@ def test_bridging_is_symmetric_and_transitive() -> None:
         Comparability.INCOMPARABLE
     )
     assert index.compare("a" * 64, "c" * 64).bridges == (first, second)
+
+
+def test_a_delta_spanning_a_training_change_is_stated_without_being_withdrawn(
+    recorded_result: ResultFactory,
+) -> None:
+    """The caveat is the header's, and the rows keep saying which way they moved.
+
+    The identity moves on every comparison that tests a change — an
+    architecture, a learning rate, a corpus filter all reach the digest — so a
+    per-row verdict keyed on it would read the same on every row of every
+    report and tell a reader nothing.
+    """
+
+    baseline = recorded_result(
+        label="checkpoint-a",
+        move_loss=3.5,
+        recorded_at=BASELINE_AT,
+        training_sha256="4d" * 32,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        move_loss=3.2,
+        recorded_at=CURRENT_AT,
+        training_sha256="5e" * 32,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex())
+
+    assert report.training is AxisChange.CHANGED
+    assert report.as_record()["training"] == "changed"
+
+    row = _row(report, "held_out.move_loss")
+    assert row.delta == pytest.approx(-0.3)
+    assert row.movement is Movement.BETTER
+
+    assert "Training identity: changed" in render_report(report)
+
+
+def test_a_missing_training_identity_reads_as_unknown_rather_than_a_match(
+    recorded_result: ResultFactory,
+) -> None:
+    """A reading recorded before the identity existed has not been checked.
+
+    Most of the committed store predates the field, so an absence cannot
+    confound a delta; what it must not do is pass as a verified match.
+    """
+
+    baseline = recorded_result(
+        label="checkpoint-a",
+        move_loss=3.5,
+        recorded_at=BASELINE_AT,
+        training_sha256=None,
+    )
+    current = recorded_result(
+        label="checkpoint-b",
+        move_loss=3.2,
+        recorded_at=CURRENT_AT,
+    )
+
+    report = build_delta_report([baseline, current], BridgeIndex())
+
+    assert report.training is AxisChange.UNKNOWN
+    assert _row(report, "held_out.move_loss").movement is Movement.BETTER
+    assert "Training identity: not recorded on both sides" in render_report(report)
+
+
+def test_a_matching_training_identity_is_stated_rather_than_left_to_assume(
+    two_checkpoints: tuple[ResultEnvelope, ResultEnvelope],
+) -> None:
+    """The verifiable half of the check, and the only one a control rests on."""
+
+    report = build_delta_report(list(two_checkpoints), BridgeIndex())
+
+    assert report.training is AxisChange.UNCHANGED
+    assert "Training identity: unchanged" in render_report(report)
+
+
+def test_a_slice_cannot_change_what_the_report_claims_about_the_training(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Whether this is a control-arm comparison is a fact about the pair.
+
+    Read off the two checkpoints' own results rather than off the rows on
+    screen, so narrowing to one metric cannot change what the report claims.
+    A reading that recorded no identity does not erase one another reading of
+    the same checkpoint did record, which is why both views read `unchanged`
+    rather than both reading `unknown`.
+    """
+
+    component = move_prediction_component()
+    identified = [
+        recorded_result(
+            label=label,
+            measurements=[measurement("held_out.move_loss", value, data=component)],
+            recorded_at=at,
+        )
+        for label, value, at in (
+            ("checkpoint-a", 3.5, BASELINE_AT),
+            ("checkpoint-b", 3.2, CURRENT_AT),
+        )
+    ]
+    unidentified = [
+        recorded_result(
+            label=label,
+            measurements=[measurement("legality.mask_penalty", value, data=component)],
+            recorded_at=at,
+            training_sha256=None,
+        )
+        for label, value, at in (
+            ("checkpoint-a", 0.75, BASELINE_AT),
+            ("checkpoint-b", 0.80, CURRENT_AT),
+        )
+    ]
+    results = [*identified, *unidentified]
+
+    whole = build_delta_report(results, BridgeIndex())
+    sliced = build_delta_report(results, BridgeIndex(), metrics=["held_out.move_loss"])
+
+    assert whole.training is AxisChange.UNCHANGED
+    assert sliced.training is whole.training
+    assert "Training identity: unchanged" in render_report(whole)
+    assert "Training identity: unchanged" in render_report(sliced)
 
 
 def test_a_delta_is_annotated_against_its_noise_floor(
@@ -1016,8 +1140,9 @@ def test_the_default_text_view_stays_readable(
     # rating family, generated play, game termination, novelty, and training
     # efficiency, which have metrics but no result in this fixture; a family
     # gets its own actionable absence section as soon as it has a metric to be
-    # absent.
-    assert len(rendered.splitlines()) <= 35
+    # absent. One further line states the training identity, which is a header
+    # rather than a per-row annotation for exactly this reason.
+    assert len(rendered.splitlines()) <= 36
 
 
 def _width_report(*identifiers: str) -> DeltaReport:
