@@ -383,17 +383,12 @@ nothing to unwind. The control arm is not promoted: it is the checkpoint the
 comparison was read against, and either it is already in the store or it is a
 reading of something nobody adopted.
 
-Promotion copies rather than moves, and the machine-local store keeps every
-reading including the promoted ones, which is what lets the next comparison read
-a candidate against the current canonical checkpoint out of one store.
-
 Promote the reading the comparison was decided on, which is the full sweep
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
 requires for that decision. Where the pull request carries something else — a
-reduced reading, a change adopted for a reason no benchmark measured — the copy
-is proposed rather than assumed, and the record says which it is: a capped view
-names its realized size, so the diff shows what is being added to the line.
-Nothing is promoted from a pull request the maintainer does not merge.
+reduced reading, a change adopted for a reason no benchmark measured — say so
+beside the copy and leave it to review; a capped view names its realized size in
+the record, so the diff already shows which it is.
 
 ## Offering A Real GUI Check
 

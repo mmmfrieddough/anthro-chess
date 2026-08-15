@@ -24,6 +24,7 @@ from anthro_chess.data.speed import Speed
 from anthro_chess.machine import (
     DATA_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
+    WORKING_ARTIFACTS_DIRECTORY,
     MachineReport,
     RetainedRun,
     inspect_machine,
@@ -771,17 +772,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Checkpoint label whose records are promoted, as a record names it.",
     )
-    # Its own rather than the shared flag, because here the store is one end of
-    # a copy and naming it the way every other command does would read as the
-    # end this command is famous for.
+    # Its own rather than the shared flag: here --store is the source end of a
+    # copy, and the shared wording points at the committed store, which is the
+    # other end.
     promote_parser.add_argument(
         "--store",
         type=Path,
-        help=(
-            "Store the records are copied from, defaulting the way every "
-            "reading command's store does: ANTHRO_CHESS_RESULTS_ROOT, or a "
-            "machine-local directory beneath ANTHRO_CHESS_RUN_ROOT."
-        ),
+        help="Store the records are copied from, defaulting as every --store does.",
     )
     promote_parser.add_argument(
         "--into",
@@ -3649,7 +3646,7 @@ def _run_train(arguments: argparse.Namespace) -> int:
         detail = None if detail_root is None else DetailStore(detail_root)
         # The run root places a named run; without one a fresh clone resolves
         # inside the working directory, which several commands depend on.
-        placement = _run_root() or Path("artifacts")
+        placement = _run_root() or Path(WORKING_ARTIFACTS_DIRECTORY)
         result = run_training(
             resolved,
             output_directory=(

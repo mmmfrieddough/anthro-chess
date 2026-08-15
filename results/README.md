@@ -3,12 +3,12 @@
 This directory is the committed **summary tier** of the benchmark results
 store, and reports and comparisons are views over it.
 
-Nothing writes here by running. A benchmark appends to the machine-local store
-that `ANTHRO_CHESS_RESULTS_ROOT`, or `ANTHRO_CHESS_RUN_ROOT`, resolves; a record
-arrives here through `anthro eval promote --checkpoint <label>`, whose copy is
-committed in the pull request adopting the change that produced the reading. So
-this directory is the line of accepted checkpoints rather than a log of
-everything measured. `docs/issue-workflow.md` says when a session does that.
+Nothing writes here by running. A benchmark appends to a machine-local store,
+and a record arrives here through `anthro eval promote --checkpoint <label>`,
+whose copy is committed in the pull request adopting the change that produced
+the reading. So this directory is the line of accepted checkpoints rather than a
+log of everything measured. `docs/issue-workflow.md` says when a session does
+that.
 
 - `records/` holds one JSON file per benchmark result: headline metric values,
   their series fingerprints, the dispersion each value's own units moved it by,

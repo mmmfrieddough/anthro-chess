@@ -1304,7 +1304,7 @@ def test_eval_promote_copies_one_checkpoint_into_the_committed_store(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The one step between a machine-local reading and project history."""
+    """The source store defaults, so a promotion names only what and where to."""
 
     monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "scratch"))
     _record_fixture_results(tmp_path / "scratch")

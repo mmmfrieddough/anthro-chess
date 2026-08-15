@@ -43,13 +43,12 @@ from anthro_chess.machine import (
     RESULT_DETAIL_ROOT_VARIABLE,
     RESULTS_ROOT_VARIABLE,
     RUN_ROOT_VARIABLE,
+    WORKING_ARTIFACTS_DIRECTORY,
 )
 
 RecordT = TypeVar("RecordT", bound=BaseModel)
 
 #: Directory name of the committed summary tier, relative to the repository.
-#: Nothing resolves here on its own: a record reaches the committed tier by
-#: being promoted into it, which is why this is not the default store root.
 COMMITTED_STORE_DIRECTORY = "results"
 #: Where a machine keeps the readings it has not promoted, beneath the run root
 #: for the reason the detail tier is there: they belong to this machine's work
@@ -130,14 +129,10 @@ class ResultsStore:
         results = self.results()
         selected = results_for_checkpoint(results, checkpoint)
         if not selected:
-            recorded = checkpoint_labels(results)
+            held = ", ".join(checkpoint_labels(results)) or "no results at all"
             raise ResultsStoreError(
                 f"no result in {self._root} was recorded against {checkpoint}; "
-                + (
-                    f"this store holds {', '.join(recorded)}"
-                    if recorded
-                    else "this store holds no results at all"
-                )
+                f"this store holds {held}"
             )
         records: list[tuple[str, bytes]] = []
         for envelope in selected:
@@ -208,21 +203,22 @@ class ResultsStore:
         )
 
     def _write_records(self, records: Sequence[tuple[str, bytes]]) -> tuple[Path, ...]:
-        """Write record files that are not here already, all of them or none.
+        """Write the record files that are not here already, refusing on conflict.
 
         Writing the same bytes twice is idempotent and different bytes under
         one identity fails, which is what lets both an interrupted sweep and a
         repeated promotion be run again without inspecting the store first.
-        Every conflict is found before anything is written, because a
-        half-written set is a checkpoint whose committed reading is missing
-        what it cost.
+        Every conflict is found before anything is written, so a refusal does
+        not leave a checkpoint's reading here without what it cost.
         """
 
-        paths = tuple(self.records_directory / name for name, _ in records)
+        paths: list[Path] = []
+        pending: list[tuple[Path, bytes]] = []
         with self._write_lock():
             _ensure_directory(self.records_directory)
-            pending: list[tuple[Path, bytes]] = []
-            for path, (name, payload) in zip(paths, records, strict=True):
+            for name, payload in records:
+                path = self.records_directory / name
+                paths.append(path)
                 if not path.exists():
                     pending.append((path, payload))
                 elif _read_bytes(path) == payload:
@@ -234,7 +230,7 @@ class ResultsStore:
             for path, payload in pending:
                 _write_atomically(path, payload)
                 logger.info("Wrote %s", path)
-        return paths
+        return tuple(paths)
 
     def _reject_committed_detail(self, detail: DetailReference | None) -> None:
         if detail is None:
@@ -344,13 +340,11 @@ class DetailStore:
 def resolve_store_root(explicit: str | Path | None = None) -> Path:
     """Resolve the store root a command reads and writes.
 
-    Machine-local at every step, the way the detail tier resolves and then the
-    way an unset root resolves everywhere else: beside the runs when there is a
-    run root, and inside the working directory when there is not, which is
-    where a machine with no roots keeps the runs a reading would be measuring.
-    The committed store is never one of the answers, because it was, and a
-    reading joined project history by a command being run rather than by anyone
-    deciding it should.
+    Machine-local at every step, like the detail tier beside it: a reading
+    belongs to this machine until someone promotes it, so the committed store
+    is reached by naming it rather than by default. The rootless answer is the
+    directory ``anthro train`` places a run in, so readings land beside the
+    runs they measured.
     """
 
     if explicit is not None:
@@ -361,7 +355,7 @@ def resolve_store_root(explicit: str | Path | None = None) -> Path:
     run_root = os.environ.get(RUN_ROOT_VARIABLE, "").strip()
     if run_root:
         return Path(run_root).expanduser() / SCRATCH_STORE_DIRECTORY
-    return Path("artifacts") / SCRATCH_STORE_DIRECTORY
+    return Path(WORKING_ARTIFACTS_DIRECTORY) / SCRATCH_STORE_DIRECTORY
 
 
 def resolve_detail_root(explicit: str | Path | None = None) -> Path:

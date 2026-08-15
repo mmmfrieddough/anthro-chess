@@ -31,6 +31,12 @@ RUN_ROOT_VARIABLE = "ANTHRO_CHESS_RUN_ROOT"
 RESULTS_ROOT_VARIABLE = "ANTHRO_CHESS_RESULTS_ROOT"
 RESULT_DETAIL_ROOT_VARIABLE = "ANTHRO_CHESS_RESULT_DETAIL_ROOT"
 
+#: Where a machine with no roots configured writes what it produces, inside the
+#: working directory. Named here because a run lands beneath it and so does the
+#: reading that measured the run, and the two are only beside each other for as
+#: long as they agree on the name.
+WORKING_ARTIFACTS_DIRECTORY = "artifacts"
+
 #: What each root holds, phrased to complete "must be set to the directory
 #: holding ...". A failure that names a variable without saying what belongs in
 #: it leaves the reader knowing they are misconfigured and not how to fix it.
@@ -47,7 +53,8 @@ ROOT_FALLBACKS: Mapping[str, str] = {
     DATA_ROOT_VARIABLE: "configured relative paths resolve in the working directory",
     RUN_ROOT_VARIABLE: "configured relative paths resolve in the working directory",
     RESULTS_ROOT_VARIABLE: (
-        f"results resolve beneath {RUN_ROOT_VARIABLE}, or in the working directory"
+        f"results resolve beneath {RUN_ROOT_VARIABLE}, or as "
+        "./artifacts/benchmark-results"
     ),
     RESULT_DETAIL_ROOT_VARIABLE: (
         f"detail resolves beneath {RUN_ROOT_VARIABLE}, when that is set"

@@ -1,4 +1,4 @@
-"""The committed summary tier, its detail-tier boundary, and its write safety."""
+"""The summary tier, promotion, the detail-tier boundary, and write safety."""
 
 from __future__ import annotations
 
@@ -183,6 +183,26 @@ def test_promoting_the_same_checkpoint_twice_lands_nothing_new(
 
     assert first == second
     assert len(committed.results()) == 1
+
+
+def test_a_conflicting_promotion_lands_none_of_the_checkpoint(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    """Half a promotion is a committed reading missing what it cost."""
+
+    scratch = ResultsStore(tmp_path / "scratch")
+    committed = ResultsStore(tmp_path / "results")
+    reading = recorded_result(label="checkpoint-a")
+    cost = recorded_result(label="checkpoint-a", kind="benchmark-cost")
+    scratch.append(reading)
+    scratch.append(cost)
+    committed.append(cost.model_copy(update={"measurements": cost.measurements[:1]}))
+
+    with pytest.raises(ResultsStoreError, match="already recorded"):
+        scratch.promote("checkpoint-a", into=committed)
+
+    assert [item.kind for item in committed.results()] == ["benchmark-cost"]
 
 
 def test_promoting_an_unrecorded_checkpoint_says_what_the_store_holds(
@@ -553,16 +573,14 @@ def test_store_roots_resolve_from_the_environment(
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
     assert resolve_detail_root() == tmp_path / "runs" / "benchmark-detail"
     assert resolve_optional_detail_root() == tmp_path / "runs" / "benchmark-detail"
-    # Machine-local like the detail tier beside it: nothing resolves into the
-    # committed store, which is reached by naming it.
     assert resolve_store_root() == tmp_path / "runs" / "benchmark-results"
 
     monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT")
     with pytest.raises(ResultsStoreError, match="must be set"):
         resolve_detail_root()
     assert resolve_optional_detail_root() is None
-    # A machine with no roots keeps its runs in the working directory, and its
-    # readings land beside them rather than in the committed store.
+    # ``artifacts`` is where a rootless machine places a run, so a reading
+    # lands beside what it measured.
     assert resolve_store_root() == Path("artifacts") / "benchmark-results"
 
 

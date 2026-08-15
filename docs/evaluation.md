@@ -134,11 +134,8 @@ does — so a reading lands where candidate work belongs, and nothing resolves
 into `results/`, which is reached by naming it. `anthro eval promote` is what
 names it, copying one checkpoint's records — every benchmark's and every cost
 record's — into the committed store, where committing them in a pull request is
-the promotion and merging is the acceptance. It copies rather than moves, so the
-machine keeps every reading it has taken and the next comparison reads a
-candidate against the current canonical checkpoint out of one store, on the
-machine that took both. Which reading is worth promoting is a judgement rather
-than a rule, and
+the promotion. It copies rather than moves, so a machine keeps every reading it
+has taken and a comparison finds both of its arms in one store.
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
 owns what the committed line is; `docs/issue-workflow.md` owns when a session
 does the copying.

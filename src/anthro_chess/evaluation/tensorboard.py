@@ -60,8 +60,8 @@ def project_results(
     """
 
     destination = output.expanduser().resolve()
-    committed_store = store_root.expanduser().resolve()
-    _require_outside_store(destination, committed_store)
+    projected_store = store_root.expanduser().resolve()
+    _require_outside_store(destination, projected_store)
     _require_owned_or_empty(destination)
 
     labels = checkpoint_labels(results)
