@@ -316,6 +316,14 @@ def build_parser() -> argparse.ArgumentParser:
             f"yet. Defaults to {_DEFAULT_CENSUS_WORKERS}."
         ),
     )
+    census_parser.add_argument(
+        "--priority",
+        type=Path,
+        help=(
+            "Accounts to ask about before any other, one name per line. "
+            "Coverage is then reported over this set as well as the corpus."
+        ),
+    )
     census_parser.set_defaults(handler=_run_data_census)
 
     mark_accounts_parser = data_commands.add_parser(
@@ -1272,6 +1280,7 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         counted_archives,
         daily_account_allowance,
         read_census,
+        read_prioritized_accounts,
         refresh_archive_counts,
         run_census,
         source_token,
@@ -1311,7 +1320,17 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
                     archive.path.name,
                 )
         answers_path = _census_answers_path(resolved)
-        census = read_census(counted, answers_path)
+        prioritized = (
+            read_prioritized_accounts(arguments.priority)
+            if arguments.priority is not None
+            else ()
+        )
+        census = read_census(counted, answers_path, prioritized)
+        if arguments.priority is not None and not census.prioritized_total:
+            raise ConfigError(
+                f"{arguments.priority} names no account these archives hold, so "
+                "prioritizing it would silently ask about the corpus at large"
+            )
         budget = arguments.accounts
         if budget is None:
             budget = daily_account_allowance(
@@ -1353,6 +1372,19 @@ def _run_data_census(arguments: argparse.Namespace) -> int:
         f"{_share(slots_queried, census.slots_total)} of player-slots, over "
         f"{len(census.archives)} of {len(pinned)} pinned archive(s)."
     )
+    if census.prioritized_total:
+        asked = census.prioritized & set(run.asked)
+        prioritized_queried = census.prioritized_queried + len(asked)
+        prioritized_slots = census.prioritized_slots_queried + sum(
+            census.games_by_account[name] for name in asked
+        )
+        print(
+            f"Prioritized: {prioritized_queried} of {census.prioritized_total} "
+            f"account(s) "
+            f"({_share(prioritized_queried, census.prioritized_total)}), "
+            f"{_share(prioritized_slots, census.prioritized_slots_total)} of "
+            "their player-slots."
+        )
 
     # Counting last. The day's allowance does not roll over and a count of a
     # newly acquired archive is hours, so a run that counted first would spend

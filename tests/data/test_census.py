@@ -18,6 +18,7 @@ from anthro_chess.data.census import (
     read_account_games,
     read_answers,
     read_census,
+    read_prioritized_accounts,
     refresh_archive_counts,
     run_census,
     snapshot_from_census,
@@ -229,6 +230,59 @@ def test_queues_the_busiest_unanswered_accounts_across_every_counted_archive(
     assert census.archives == (ARCHIVE_A, ARCHIVE_B)
     assert census.accounts_total == 4
     assert census.slots_total == 96
+
+
+def test_a_prioritized_account_is_asked_about_before_a_busier_one(
+    tmp_path: Path,
+) -> None:
+    counted = _counted(tmp_path, "counts", ARCHIVE_A, alpha=40, beta=30, gamma=1)
+    answers = tmp_path / "answers.tsv"
+
+    census = read_census([counted], answers, ["gamma"])
+
+    # gamma is the least busy account and still goes first; the rest keep the
+    # ordering they would have had without a priority set.
+    assert census.queue(10) == ["gamma", "alpha", "beta"]
+    assert census.prioritized_total == 1
+    assert census.prioritized_slots_total == 1
+
+
+def test_prioritizing_reports_coverage_over_the_set_as_well_as_the_corpus(
+    tmp_path: Path,
+) -> None:
+    counted = _counted(tmp_path, "counts", ARCHIVE_A, alpha=40, beta=30, gamma=10)
+    answers = tmp_path / "answers.tsv"
+    append_answers(answers, {"gamma": False}, "2026-08-10")
+
+    census = read_census([counted], answers, ["gamma", "beta", "elsewhere"])
+
+    # An account no counted archive holds is outside the set, exactly as it is
+    # outside the corpus figures.
+    assert census.prioritized_total == 2
+    assert census.prioritized_queried == 1
+    assert census.prioritized_slots_total == 40
+    assert census.prioritized_slots_queried == 10
+    assert census.accounts_queried == 1
+    assert census.slots_queried == 10
+
+
+def test_reading_a_prioritized_list_refuses_a_name_the_source_cannot_take(
+    tmp_path: Path,
+) -> None:
+    listing = tmp_path / "priority.txt"
+    listing.write_text("# from the pool\nalpha\nAI level 3\n", encoding="utf-8")
+
+    with pytest.raises(CensusError, match="AI level 3"):
+        read_prioritized_accounts(listing)
+
+
+def test_reading_a_prioritized_list_keeps_names_and_drops_comments(
+    tmp_path: Path,
+) -> None:
+    listing = tmp_path / "priority.txt"
+    listing.write_text("# from the pool\nalpha\n\n  beta  \n", encoding="utf-8")
+
+    assert read_prioritized_accounts(listing) == ["alpha", "beta"]
 
 
 def test_coverage_is_a_share_of_the_archives_the_snapshot_will_cover(
