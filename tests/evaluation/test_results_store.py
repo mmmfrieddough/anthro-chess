@@ -560,9 +560,10 @@ def test_store_roots_resolve_from_the_environment(
     monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT")
     with pytest.raises(ResultsStoreError, match="must be set"):
         resolve_detail_root()
-    with pytest.raises(ResultsStoreError, match="must be set"):
-        resolve_store_root()
     assert resolve_optional_detail_root() is None
+    # A machine with no roots keeps its runs in the working directory, and its
+    # readings land beside them rather than in the committed store.
+    assert resolve_store_root() == Path("artifacts") / "benchmark-results"
 
 
 def test_a_new_benchmark_kind_needs_no_schema_change(

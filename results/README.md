@@ -16,7 +16,9 @@ everything measured. `docs/issue-workflow.md` says when a session does that.
 - `bridges/` holds explicit assertions that two fingerprints name the same
   series. A bridge is legitimate only when the fingerprint moved for a reason
   provably independent of the measured quantity, and revoking one is a
-  reviewable diff.
+  reviewable diff. A bridge about this history is recorded here by naming the
+  store — `anthro eval bridge add --store results` — since the commands default
+  to the machine's own store like everything else.
 
 `anthro eval run` is what produces the records here: it scores one checkpoint
 over a deterministic view of the frozen pool, records the held-out prediction,

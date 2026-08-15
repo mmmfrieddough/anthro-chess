@@ -119,8 +119,8 @@ between identity and coordinates.
 `anthro_chess.evaluation.results` implements this layer and owns the exact
 record schema, metric registry, fingerprint algorithm, and size budget.
 
-The committed summary tier is one small JSON file per result under the store
-root, beside the bridges that rejoin a broken series. Each measurement carries
+The summary tier is one small JSON file per result under the store root, beside
+the bridges that rejoin a broken series. Each measurement carries
 the spread its own reading measured, so nothing separate has to be stored to
 qualify a delta. One file per record is what keeps concurrent
 appends and Git merges additive; a concurrent write into the same store fails
@@ -129,17 +129,24 @@ on an exclusive lock rather than producing a partial record.
 **A benchmark writes machine-local, and a record reaches the committed store by
 being promoted into it.** The store root resolves from
 `ANTHRO_CHESS_RESULTS_ROOT`, or beneath `ANTHRO_CHESS_RUN_ROOT` the way the
-detail tier does, so a reading lands where candidate work belongs; nothing
-resolves into `results/`, which is reached by naming it. `anthro eval promote`
-is what names it, copying one checkpoint's records — every benchmark's and
-every cost record's — into the committed store, where committing them in a pull
-request is the promotion and merging is the acceptance. It copies rather than
-moves, so the machine keeps every reading it has taken and the next comparison
-reads a candidate against the current canonical checkpoint out of one store.
-Which reading is worth promoting is a judgement rather than a rule, and
+detail tier does, or in the working directory the way every other unset root
+does — so a reading lands where candidate work belongs, and nothing resolves
+into `results/`, which is reached by naming it. `anthro eval promote` is what
+names it, copying one checkpoint's records — every benchmark's and every cost
+record's — into the committed store, where committing them in a pull request is
+the promotion and merging is the acceptance. It copies rather than moves, so the
+machine keeps every reading it has taken and the next comparison reads a
+candidate against the current canonical checkpoint out of one store, on the
+machine that took both. Which reading is worth promoting is a judgement rather
+than a rule, and
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
 owns what the committed line is; `docs/issue-workflow.md` owns when a session
 does the copying.
+
+A bridge reaches the committed store the same way, by being recorded there:
+`anthro eval bridge add --store results` asserts one about the committed
+history, and one recorded into a machine-local store applies to that store's
+reports alone.
 
 The detail tier is machine-local and holds per-position diagnostics, slice
 tables, and generated game records. A summary record references a detail

@@ -1050,36 +1050,7 @@ split = "train"
 
     monkeypatch.setattr("anthro_chess.training.run_training", fake_run)
 
-    assert main(["train", "--config", str(config), "--no-record"]) == 0
-
-
-def test_train_without_a_root_will_not_pick_a_store_for_itself(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Recording wherever a command happened to run is what this change ends."""
-
-    config = tmp_path / "training.toml"
-    config.write_text(
-        """
-run_name = "example-run"
-
-[train]
-normalized = "artifacts/example-data/normalized"
-manifest = "artifacts/example-data/manifests/manifest.json"
-
-[train.loader]
-split = "train"
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT", raising=False)
-    monkeypatch.delenv("ANTHRO_CHESS_DATA_ROOT", raising=False)
-    monkeypatch.chdir(tmp_path)
-
-    assert main(["train", "--config", str(config)]) == 2
-    assert "ANTHRO_CHESS_RUN_ROOT must be set" in capsys.readouterr().err
+    assert main(["train", "--config", str(config)]) == 0
 
 
 @pytest.mark.parametrize("run_name", ["../escape", "nested/run", "..", "/absolute"])

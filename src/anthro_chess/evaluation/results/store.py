@@ -1,11 +1,11 @@
 """The durable results store benchmarks append to and reports read from.
 
 The store is layered. The summary tier holds one small JSON file per result, so
-history is versioned with the code, metric movement appears as a reviewable
-diff, and an agent reads results with ordinary file tools rather than through a
-service. The machine-local detail tier holds per-position diagnostics, slice
-tables, and generated games, and is referenced from the summary rather than
-copied into it.
+the committed copy of it versions history with the code, metric movement appears
+as a reviewable diff, and an agent reads results with ordinary file tools rather
+than through a service. The machine-local detail tier holds per-position
+diagnostics, slice tables, and generated games, and is referenced from the
+summary rather than copied into it.
 
 A summary record is not project history by being written. A benchmark writes to
 whichever root this machine resolves, and :meth:`ResultsStore.promote` copies
@@ -109,10 +109,10 @@ class ResultsStore:
             raise ResultsStoreError(str(error)) from error
         self._reject_committed_detail(result.detail)
 
-        return self._write_record(
-            _record_file_name(result),
-            canonical_readable_json(result.as_record()),
+        written = self._write_records(
+            ((_record_file_name(result), canonical_readable_json(result.as_record())),)
         )
+        return written[0]
 
     def promote(self, checkpoint: str, *, into: ResultsStore) -> tuple[Path, ...]:
         """Copy one checkpoint's records into another store.
@@ -139,13 +139,12 @@ class ResultsStore:
                     else "this store holds no results at all"
                 )
             )
-        promoted: list[Path] = []
+        records: list[tuple[str, bytes]] = []
         for envelope in selected:
+            into._reject_committed_detail(envelope.detail)
             name = _record_file_name(envelope)
-            promoted.append(
-                into._write_record(name, _read_bytes(self.records_directory / name))
-            )
-        return tuple(promoted)
+            records.append((name, _read_bytes(self.records_directory / name)))
+        return into._write_records(records)
 
     def append_bridge(self, bridge: Bridge) -> Path:
         """Record a bridge beside the results it applies to."""
@@ -208,27 +207,34 @@ class ResultsStore:
             sorted(bridges, key=lambda bridge: (bridge.recorded_at, bridge.bridge_id))
         )
 
-    def _write_record(self, name: str, payload: bytes) -> Path:
-        """Write one record file, whether it was measured here or promoted here.
+    def _write_records(self, records: Sequence[tuple[str, bytes]]) -> tuple[Path, ...]:
+        """Write record files that are not here already, all of them or none.
 
         Writing the same bytes twice is idempotent and different bytes under
         one identity fails, which is what lets both an interrupted sweep and a
         repeated promotion be run again without inspecting the store first.
+        Every conflict is found before anything is written, because a
+        half-written set is a checkpoint whose committed reading is missing
+        what it cost.
         """
 
-        path = self.records_directory / name
+        paths = tuple(self.records_directory / name for name, _ in records)
         with self._write_lock():
             _ensure_directory(self.records_directory)
-            if path.exists():
-                if _read_bytes(path) == payload:
+            pending: list[tuple[Path, bytes]] = []
+            for path, (name, payload) in zip(paths, records, strict=True):
+                if not path.exists():
+                    pending.append((path, payload))
+                elif _read_bytes(path) == payload:
                     logger.info("Record %s is already in %s", name, self._root)
-                    return path
-                raise ResultsStoreError(
-                    f"a different result is already recorded at {path}"
-                )
-            _write_atomically(path, payload)
-        logger.info("Wrote record %s in %s", name, self._root)
-        return path
+                else:
+                    raise ResultsStoreError(
+                        f"a different result is already recorded at {path}"
+                    )
+            for path, payload in pending:
+                _write_atomically(path, payload)
+                logger.info("Wrote %s", path)
+        return paths
 
     def _reject_committed_detail(self, detail: DetailReference | None) -> None:
         if detail is None:
@@ -338,10 +344,13 @@ class DetailStore:
 def resolve_store_root(explicit: str | Path | None = None) -> Path:
     """Resolve the store root a command reads and writes.
 
-    The default is machine-local, resolved the way the detail tier is: a sweep
-    writes where candidate work belongs, and the committed store is reached by
-    naming it. It was the other way round, and a reading landed in project
-    history by running a command rather than by anyone deciding it should.
+    Machine-local at every step, the way the detail tier resolves and then the
+    way an unset root resolves everywhere else: beside the runs when there is a
+    run root, and inside the working directory when there is not, which is
+    where a machine with no roots keeps the runs a reading would be measuring.
+    The committed store is never one of the answers, because it was, and a
+    reading joined project history by a command being run rather than by anyone
+    deciding it should.
     """
 
     if explicit is not None:
@@ -352,12 +361,7 @@ def resolve_store_root(explicit: str | Path | None = None) -> Path:
     run_root = os.environ.get(RUN_ROOT_VARIABLE, "").strip()
     if run_root:
         return Path(run_root).expanduser() / SCRATCH_STORE_DIRECTORY
-    raise ResultsStoreError(
-        "a results store directory must be provided explicitly, or "
-        f"{STORE_ROOT_VARIABLE} or {RUN_ROOT_VARIABLE} must be set. The "
-        f"committed store is ./{COMMITTED_STORE_DIRECTORY} and is read by "
-        "naming it."
-    )
+    return Path("artifacts") / SCRATCH_STORE_DIRECTORY
 
 
 def resolve_detail_root(explicit: str | Path | None = None) -> Path:

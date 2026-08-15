@@ -1,4 +1,4 @@
-"""Disposable TensorBoard projection of the committed results store.
+"""Disposable TensorBoard projection of a results store's checkpoint history.
 
 TensorBoard does not understand Anthro Chess series fingerprints.  This
 projection preserves that boundary structurally: every raw fingerprint gets

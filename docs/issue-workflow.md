@@ -385,10 +385,15 @@ reading of something nobody adopted.
 
 Promotion copies rather than moves, and the machine-local store keeps every
 reading including the promoted ones, which is what lets the next comparison read
-a candidate against the current canonical checkpoint out of one store. Which
-reading is worth promoting is the maintainer's call and is usually a full sweep;
-a reduced reading names its own view in the record, so a pull request promoting
-one shows that in the diff.
+a candidate against the current canonical checkpoint out of one store.
+
+Promote the reading the comparison was decided on, which is the full sweep
+`docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
+requires for that decision. Where the pull request carries something else — a
+reduced reading, a change adopted for a reason no benchmark measured — the copy
+is proposed rather than assumed, and the record says which it is: a capped view
+names its realized size, so the diff shows what is being added to the line.
+Nothing is promoted from a pull request the maintainer does not merge.
 
 ## Offering A Real GUI Check
 
@@ -509,8 +514,8 @@ Before substantive changes:
 9. Take a shakedown reading when the change adds or alters a benchmark.
 10. Read a model change against a control arm when the change decides what a
     training run learns.
-11. Promote the treatment arm's records into the committed store, in the pull
-    request adopting the change that produced them.
+11. Promote the treatment arm's records in the pull request adopting the model
+    change that produced them, when a control-arm reading decided it.
 12. Account for the diff's size and new surface before marking the pull request
     ready.
 13. Account for anything the task left behind before the merge closes the issue:

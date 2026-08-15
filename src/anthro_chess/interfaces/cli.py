@@ -76,9 +76,9 @@ _STORE_FLAG.add_argument(
     "--store",
     type=Path,
     help=(
-        "Results store directory. Defaults to ANTHRO_CHESS_RESULTS_ROOT or a "
-        "directory beneath ANTHRO_CHESS_RUN_ROOT. The committed store is "
-        "./results, and `anthro eval promote` is how a reading reaches it."
+        "Results store directory. Defaults to ANTHRO_CHESS_RESULTS_ROOT, or a "
+        "machine-local directory beneath ANTHRO_CHESS_RUN_ROOT. Name the "
+        "committed store to read or write it."
     ),
 )
 
@@ -765,12 +765,23 @@ def build_parser() -> argparse.ArgumentParser:
     promote_parser = eval_commands.add_parser(
         "promote",
         help="Copy one checkpoint's records into the committed results store.",
-        parents=[_STORE_FLAG],
     )
     promote_parser.add_argument(
         "--checkpoint",
         required=True,
         help="Checkpoint label whose records are promoted, as a record names it.",
+    )
+    # Its own rather than the shared flag, because here the store is one end of
+    # a copy and naming it the way every other command does would read as the
+    # end this command is famous for.
+    promote_parser.add_argument(
+        "--store",
+        type=Path,
+        help=(
+            "Store the records are copied from, defaulting the way every "
+            "reading command's store does: ANTHRO_CHESS_RESULTS_ROOT, or a "
+            "machine-local directory beneath ANTHRO_CHESS_RUN_ROOT."
+        ),
     )
     promote_parser.add_argument(
         "--into",
@@ -1725,9 +1736,9 @@ def _render_sweep(run: SuiteRun) -> str:
 def _result_stores(
     arguments: argparse.Namespace,
 ) -> tuple[ResultsStore | None, DetailStore | None]:
-    """Return the committed and detail stores a benchmark records through.
+    """Return the summary and detail stores a benchmark records through.
 
-    A committed summary references its detail payloads by path and digest, so a
+    A summary record references its detail payloads by path and digest, so a
     benchmark that records needs both tiers. `anthro train`, whose breakdown is
     best-effort, resolves an optional detail root instead and is not a caller.
     """

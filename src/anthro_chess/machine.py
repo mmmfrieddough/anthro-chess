@@ -47,7 +47,7 @@ ROOT_FALLBACKS: Mapping[str, str] = {
     DATA_ROOT_VARIABLE: "configured relative paths resolve in the working directory",
     RUN_ROOT_VARIABLE: "configured relative paths resolve in the working directory",
     RESULTS_ROOT_VARIABLE: (
-        f"results resolve beneath {RUN_ROOT_VARIABLE}, when that is set"
+        f"results resolve beneath {RUN_ROOT_VARIABLE}, or in the working directory"
     ),
     RESULT_DETAIL_ROOT_VARIABLE: (
         f"detail resolves beneath {RUN_ROOT_VARIABLE}, when that is set"
