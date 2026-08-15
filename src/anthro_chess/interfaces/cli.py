@@ -76,8 +76,9 @@ _STORE_FLAG.add_argument(
     "--store",
     type=Path,
     help=(
-        "Committed results store directory. Defaults to "
-        "ANTHRO_CHESS_RESULTS_ROOT or ./results."
+        "Results store directory. Defaults to ANTHRO_CHESS_RESULTS_ROOT or a "
+        "directory beneath ANTHRO_CHESS_RUN_ROOT. The committed store is "
+        "./results, and `anthro eval promote` is how a reading reaches it."
     ),
 )
 
@@ -761,6 +762,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_parser.set_defaults(handler=_run_eval_report)
 
+    promote_parser = eval_commands.add_parser(
+        "promote",
+        help="Copy one checkpoint's records into the committed results store.",
+        parents=[_STORE_FLAG],
+    )
+    promote_parser.add_argument(
+        "--checkpoint",
+        required=True,
+        help="Checkpoint label whose records are promoted, as a record names it.",
+    )
+    promote_parser.add_argument(
+        "--into",
+        type=Path,
+        help=(
+            "Where the records are copied to, defaulting to the committed "
+            "store in the repository. Committing the copy in a pull request is "
+            "what makes the promotion, so merging is the acceptance and an "
+            "unmerged one costs nothing to unwind."
+        ),
+    )
+    promote_parser.set_defaults(handler=_run_eval_promote)
+
     tensorboard_parser = eval_commands.add_parser(
         "tensorboard",
         help="Project checkpoint history from the results store into TensorBoard.",
@@ -770,8 +793,8 @@ def build_parser() -> argparse.ArgumentParser:
         "output",
         type=Path,
         help=(
-            "Disposable TensorBoard log directory. Must be outside the committed "
-            "results store."
+            "Disposable TensorBoard log directory. Must be outside the results "
+            "store it projects."
         ),
     )
     tensorboard_parser.set_defaults(handler=_run_eval_tensorboard)
@@ -3249,6 +3272,31 @@ def _run_eval_report(arguments: argparse.Namespace) -> int:
     if arguments.provenance:
         print()
         print(render_provenance(report), end="")
+    return 0
+
+
+def _run_eval_promote(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        COMMITTED_STORE_DIRECTORY,
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+
+    try:
+        source = ResultsStore(resolve_store_root(arguments.store))
+        destination = ResultsStore(arguments.into or Path(COMMITTED_STORE_DIRECTORY))
+        promoted = source.promote(arguments.checkpoint, into=destination)
+    except ResultsStoreError as error:
+        print(f"anthro eval promote: {error}", file=sys.stderr)
+        return 2
+
+    print(
+        f"Promoted {len(promoted)} record(s) for {arguments.checkpoint} from "
+        f"{source.root} into {destination.root}"
+    )
+    for path in promoted:
+        print(f"  {path}")
     return 0
 
 

@@ -144,6 +144,60 @@ def test_results_are_returned_in_recording_order(
     ]
 
 
+def test_promotion_copies_one_checkpoint_and_leaves_the_rest_behind(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    """A copy, so the next comparison reads both arms out of one store."""
+
+    scratch = ResultsStore(tmp_path / "scratch")
+    committed = ResultsStore(tmp_path / "results")
+    for label in ("checkpoint-a", "checkpoint-b"):
+        scratch.append(recorded_result(label=label))
+        scratch.append(recorded_result(label=label, kind="benchmark-cost"))
+
+    promoted = scratch.promote("checkpoint-b", into=committed)
+
+    assert len(promoted) == 2
+    assert all(path.parent == committed.records_directory for path in promoted)
+    assert {item.checkpoint.label for item in committed.results()} == {"checkpoint-b"}
+    assert {item.kind for item in committed.results()} == {
+        "held-out-prediction",
+        "benchmark-cost",
+    }
+    assert len(scratch.results()) == 4
+
+
+def test_promoting_the_same_checkpoint_twice_lands_nothing_new(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    """Promotion is repeatable, so a half-finished one is finished by rerunning."""
+
+    scratch = ResultsStore(tmp_path / "scratch")
+    committed = ResultsStore(tmp_path / "results")
+    scratch.append(recorded_result(label="checkpoint-a"))
+
+    first = scratch.promote("checkpoint-a", into=committed)
+    second = scratch.promote("checkpoint-a", into=committed)
+
+    assert first == second
+    assert len(committed.results()) == 1
+
+
+def test_promoting_an_unrecorded_checkpoint_says_what_the_store_holds(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    """A label is read off a record, so a typo should not need a directory listing."""
+
+    scratch = ResultsStore(tmp_path / "scratch")
+    scratch.append(recorded_result(label="checkpoint-a"))
+
+    with pytest.raises(ResultsStoreError, match="holds checkpoint-a"):
+        scratch.promote("checkpoint-typo", into=ResultsStore(tmp_path / "results"))
+
+
 def test_a_result_that_cannot_reproduce_its_fingerprint_is_rejected(
     tmp_path: Path,
     recorded_result: ResultFactory,
@@ -495,13 +549,19 @@ def test_store_roots_resolve_from_the_environment(
     assert resolve_store_root(tmp_path / "explicit") == tmp_path / "explicit"
 
     monkeypatch.delenv(DETAIL_ROOT_VARIABLE)
+    monkeypatch.delenv(STORE_ROOT_VARIABLE)
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "runs"))
     assert resolve_detail_root() == tmp_path / "runs" / "benchmark-detail"
     assert resolve_optional_detail_root() == tmp_path / "runs" / "benchmark-detail"
+    # Machine-local like the detail tier beside it: nothing resolves into the
+    # committed store, which is reached by naming it.
+    assert resolve_store_root() == tmp_path / "runs" / "benchmark-results"
 
     monkeypatch.delenv("ANTHRO_CHESS_RUN_ROOT")
     with pytest.raises(ResultsStoreError, match="must be set"):
         resolve_detail_root()
+    with pytest.raises(ResultsStoreError, match="must be set"):
+        resolve_store_root()
     assert resolve_optional_detail_root() is None
 
 

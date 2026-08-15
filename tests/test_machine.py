@@ -169,7 +169,7 @@ def test_a_root_pointing_nowhere_is_reported_rather_than_read_as_empty(
 def test_the_results_and_detail_roots_report_their_own_defaults() -> None:
     roots = {root.variable: root for root in inspect_machine().roots}
 
-    assert "./results" in roots[RESULTS_ROOT_VARIABLE].fallback
+    assert RUN_ROOT_VARIABLE in roots[RESULTS_ROOT_VARIABLE].fallback
     assert RUN_ROOT_VARIABLE in roots[RESULT_DETAIL_ROOT_VARIABLE].fallback
     # Both default without the pair, so leaving either unset is an ordinary
     # setup rather than something to warn about.

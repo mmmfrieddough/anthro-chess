@@ -368,6 +368,28 @@ readings are reported. Where a change was worth having only if it improved the
 model, a null reading removes it rather than merging it disabled, and the
 recorded finding is what stops the next session from trying it again blindly.
 
+**A change being adopted carries its treatment arm's records into the committed
+store, in its own pull request.** Benchmarks write machine-local, so nothing
+reaches `results/` on its own; the copy is one command against the label the
+records name:
+
+```console
+uv run anthro eval promote --checkpoint <treatment-arm-label>
+```
+
+Commit what it wrote alongside the change. Merging is the acceptance, so an
+unmerged pull request promotes nothing and a candidate that is dropped costs
+nothing to unwind. The control arm is not promoted: it is the checkpoint the
+comparison was read against, and either it is already in the store or it is a
+reading of something nobody adopted.
+
+Promotion copies rather than moves, and the machine-local store keeps every
+reading including the promoted ones, which is what lets the next comparison read
+a candidate against the current canonical checkpoint out of one store. Which
+reading is worth promoting is the maintainer's call and is usually a full sweep;
+a reduced reading names its own view in the record, so a pull request promoting
+one shows that in the diff.
+
 ## Offering A Real GUI Check
 
 Some changes are only convincing in a real chess GUI. Automated coverage proves
@@ -487,7 +509,9 @@ Before substantive changes:
 9. Take a shakedown reading when the change adds or alters a benchmark.
 10. Read a model change against a control arm when the change decides what a
     training run learns.
-11. Account for the diff's size and new surface before marking the pull request
+11. Promote the treatment arm's records into the committed store, in the pull
+    request adopting the change that produced them.
+12. Account for the diff's size and new surface before marking the pull request
     ready.
-12. Account for anything the task left behind before the merge closes the issue:
+13. Account for anything the task left behind before the merge closes the issue:
     fixed here, filed as its own issue, or explained in the pull request.

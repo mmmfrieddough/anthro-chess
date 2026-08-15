@@ -37,7 +37,7 @@ RESULT_DETAIL_ROOT_VARIABLE = "ANTHRO_CHESS_RESULT_DETAIL_ROOT"
 ROOT_CONTENTS: Mapping[str, str] = {
     DATA_ROOT_VARIABLE: "corpora, frozen evaluation pools, and puzzle records",
     RUN_ROOT_VARIABLE: "retained training runs and the default model selection",
-    RESULTS_ROOT_VARIABLE: "the committed benchmark results store",
+    RESULTS_ROOT_VARIABLE: "the benchmark results store commands read and write",
     RESULT_DETAIL_ROOT_VARIABLE: "machine-local benchmark detail payloads",
 }
 
@@ -46,7 +46,9 @@ ROOT_CONTENTS: Mapping[str, str] = {
 ROOT_FALLBACKS: Mapping[str, str] = {
     DATA_ROOT_VARIABLE: "configured relative paths resolve in the working directory",
     RUN_ROOT_VARIABLE: "configured relative paths resolve in the working directory",
-    RESULTS_ROOT_VARIABLE: "the committed store resolves as ./results",
+    RESULTS_ROOT_VARIABLE: (
+        f"results resolve beneath {RUN_ROOT_VARIABLE}, when that is set"
+    ),
     RESULT_DETAIL_ROOT_VARIABLE: (
         f"detail resolves beneath {RUN_ROOT_VARIABLE}, when that is set"
     ),

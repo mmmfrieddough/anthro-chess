@@ -158,7 +158,7 @@ def _write_projection(
 def _require_outside_store(output: Path, store: Path) -> None:
     if output == store or output in store.parents or store in output.parents:
         raise TensorBoardProjectionError(
-            "TensorBoard output must be outside the committed results store"
+            "TensorBoard output must be outside the results store it projects"
         )
 
 
