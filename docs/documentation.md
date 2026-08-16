@@ -158,7 +158,12 @@ earlier one names it in its own `## Status` section, and adds the matching line
 to the `## Status` of the record it names. Invalidating a decision means editing
 the decision that was invalidated: a reader arriving at the older record has no
 other way to learn that a later one changed it, and would apply a stale rule
-confidently. CI fails when an edge points only one way.
+confidently.
+
+Write the backward edge as part of writing the record, not as a correction
+afterwards. A record whose relationships are declared in one direction is
+finished only from its own side, and the side that still needs them is the one
+nobody is reading yet.
 
 ## Research Notes
 
