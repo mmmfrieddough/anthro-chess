@@ -12,22 +12,25 @@ For each ply `t`:
 
 ```text
 exact board before move_t = ChessRules(moves_0 ... moves_t-1)
-board_embedding_t         = BoardEncoder(exact board before move_t)
-previous_move_embedding   = MoveEmbedding(move_t-1)
-dynamic_embedding_t       = Phase features, plus clock features when available
+position_features_t       = Previous move, rule state, phase features, plus
+                            clock features when available
 trajectory_settings       = Preferences and clock settings when enabled
 
-x_t = combine(
-  board_embedding_t,
-  previous_move_embedding,
-  dynamic_embedding_t,
+squares_t = SquareTokens(
+  exact board before move_t,
+  position_features_t,
+  target_rating_t,
   trajectory_settings
-)
+)                                             -> 64 tokens
+
+SpatialEncoder(squares_t) -> encoded_t        -> 64 tokens
+x_t = pool(encoded_t)
 
 CausalTransformer(x_0 ... x_t) -> h_t
-decision_conditioner(h_t, target_rating_t) -> d_t
-action_head(d_t) -> action_t
-time_head(d_t, action_embedding_t) -> optional move_time_t
+SpatialDecoder(encoded_t, h_t) -> decision_t  -> 64 tokens
+
+action_head(decision_t, h_t) -> action_t
+time_head(h_t, action_embedding_t) -> optional move_time_t
 ```
 
 The board state is not learned from the move sequence. It is computed exactly
@@ -90,28 +93,39 @@ including:
 - draw-rule counters if used;
 - any other state required for complete move generation.
 
-A simple board encoder may use square and piece embeddings followed by pooling,
-an MLP, or another small learned encoder. Larger encoders can be considered if
-simple encodings are insufficient.
+The board is presented to the model as one token per square rather than as a
+single pooled vector, so board geometry survives into the network instead of
+being flattened away before the first layer. Attention between those tokens
+carries a learned geometric bias generated from the position itself, which is
+what lets the relations that matter in a given position be attended along.
+`docs/decisions/0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`
+records why.
 
 ## Sequence Model
 
-The preferred sequence model is a causal transformer with one timestep per ply.
+The preferred sequence model is a causal transformer with one timestep per ply,
+reading the pooled output of the spatial encoder for each position.
 
 The transformer sees:
 
-- compact board embeddings;
+- each position's encoded squares, pooled to one feature per ply;
 - previous move embeddings;
+- the target rating, which is already part of the representation it reads;
 - current clock and phase features when timing is enabled;
 - trajectory metadata that genuinely helps interpret the history;
 - historical context through causal attention.
 
-The current action model deliberately keeps target rating outside that causal
-history encoder. After the transformer has produced a rating-neutral feature
-for each position, a small nonlinear feature-modulation network combines that
-feature with the rating of the player choosing that move. The action head still
-has learned computation after rating enters; rating is not merely added to the
-final probabilities.
+Target rating is embedded into the square tokens before any layer runs, so
+every stage of the network computes with it and the rating can change which
+historical detail the trunk attends to. It is placed by interpolating between a
+learned weak anchor and a learned strong anchor, which makes the representation
+monotone in the rating by construction rather than leaving the ordering to be
+discovered.
+
+The rating supplied is the one belonging to the player choosing that move, and
+only that player. Ratings are not attached to past moves, no opponent rating is
+an input, and no controlled-color input is needed because the exact board
+already identifies the side to move.
 
 The current checkpoint-backed model runner implements that correctness
 baseline. It converts one typed target-free decision trajectory into the shared
@@ -175,11 +189,11 @@ Training should make full use of causal attention. A complete game, or
 a chunk of a game, can be fed to the transformer at once so all ply predictions
 are trained in parallel while each timestep only attends to prior timesteps.
 
-The current initial implementation follows this shape with a learned compact
-board encoder, a per-ply context combiner, an action-only causal transformer,
-and a head over the shared action vocabulary. Its tensor boundary,
-hyperparameter schema, compatibility identity, and model definition live in
-`anthro_chess.models`.
+The current implementation follows this shape with a square-token encoder, an
+action-only causal transformer over plies, a spatial decoder that returns the
+history feature to the squares, and a source-destination head over the shared
+action vocabulary. Its tensor boundary, hyperparameter schema, compatibility
+identity, and model definition live in `anthro_chess.models`.
 
 ## Decision, Static, And Dynamic Metadata
 
@@ -196,17 +210,17 @@ Static game settings may include:
 - increment when timing is enabled;
 - optional preference settings.
 
-The current implementation applies the optional target rating only at the
-decision layer for the corresponding supervised ply. It does not place either
-player's rating in historical timestep features and does not need a controlled
-color input: the exact board already identifies whose turn it is. Training can
-therefore encode each game once and learn from every valid ply, selecting the
-mover's rating for that ply when it is available. At runtime the caller supplies
-only Anthro's chosen target rating when Anthro is making a decision; no opponent
+The current implementation supplies the optional target rating for the
+supervised ply's own mover, and reads it from the first layer onward. Training
+encodes each game once and learns from every valid ply, selecting the mover's
+rating for that ply when it is available. At runtime the caller supplies only
+Anthro's chosen target rating when Anthro is making a decision; no opponent
 rating is required.
 
 The rationale and accepted tradeoffs are recorded in
-`docs/decisions/0009-decision-only-rating-conditioning.md`.
+`docs/decisions/0009-decision-only-rating-conditioning.md`, and where the rating
+enters is settled by
+`docs/decisions/0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`.
 
 This placement is intentionally specific to rating. Other sequence-wide values
 should not be moved mechanically. Clock settings can change how every observed
@@ -225,27 +239,20 @@ Dynamic features include:
 Dynamic metadata must be represented per ply because it changes throughout the
 game.
 
-### Possible Rating-Aware History Reader
-
-Late decision conditioning means the causal transformer analyzes the position
-and history without knowing the requested strength. That is the simplest
-contract and preserves a single rating-neutral history pass, but it may prove
-too shallow if rating needs to change which historical patterns receive
-attention rather than only how the completed representation is used.
-
-If evaluation shows that limitation, test a small rating-conditioned query or
-cross-attention reader over the rating-neutral causal states before the action
-head. This would add rating-aware learned processing without putting ratings on
-past moves, exposing an opponent rating, or duplicating the transformer pass.
-It is an experiment to measure during performance tuning, not part of the
-current architecture.
-
 ## Action Output
 
 The action head should output logits over a fixed action vocabulary. Most
 actions are UCI-style chess moves. The vocabulary also includes two terminal
 actions, resignation and a draw claim, which end a game instead of changing the
 position.
+
+A move's logit is produced as an attention from its source square against its
+destination square, with a per-destination bias selecting the promotion piece,
+so the head is expressed in the same board geometry the encoder produced. The
+terminal actions carry no move and are scored from the history feature instead.
+That is the head's internal structure; the fixed vocabulary above remains the
+contract every caller sees, and a gather built from the vocabulary itself joins
+the two.
 
 Before sampling, the runtime must mask all illegal moves using exact chess
 logic. If the sampled action is a move, it must always be legal in the current

@@ -4,7 +4,14 @@ Date: 2026-07-22
 
 ## Status
 
-Accepted as initial design direction.
+Accepted as initial design direction. Superseded on placement by
+`0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`: the rating is
+now embedded into the input representation, so the transformer is no longer
+rating-neutral. The experiment this record's Consequences section named as the
+one to run if evaluation showed late conditioning limiting is what `#177`
+triggered and `0066` settles. Every other constraint below still holds — one
+encoding per game, the mover's rating only, no rating on past moves, and no
+opponent-rating input.
 
 ## Context
 
