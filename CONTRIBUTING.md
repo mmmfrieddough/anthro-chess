@@ -207,6 +207,11 @@ systemctl --user enable --now anthro-census.timer
 loginctl enable-linger "$USER"
 ```
 
+Add `ANTHRO_CHESS_CENSUS_PRIORITY_ARGS=--priority /absolute/path/to/list` to
+that file to spend each allowance on a named set of accounts first, which is
+what a pool generation wants before it is cut. Leave it out and the census asks
+in its own order.
+
 The linger is what makes it a scheduled job rather than a login-session one, and
 `Persistent=true` runs a missed firing when a machine that was off comes back.
 `systemctl --user status anthro-census` and `journalctl --user -u anthro-census`
