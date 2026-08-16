@@ -272,6 +272,127 @@ def test_a_sampled_pool_still_contains_the_one_a_smaller_corpus_produced(
     assert len(second) > len(first)
 
 
+def test_a_generation_records_what_it_was_verified_to_contain(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:120])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+
+    first = freeze_pool(
+        _resolved(smaller, smaller_manifest, sample_fraction=0.25),
+        tmp_path / "first",
+    )
+    second = freeze_pool(
+        _resolved(
+            grown,
+            grown_manifest,
+            sample_fraction=0.25,
+            predecessor=str(tmp_path / "first"),
+            predecessor_game_ids_sha256=first.game_ids_sha256,
+        ),
+        tmp_path / "second",
+    )
+
+    record = json.loads(second.manifest_path.read_text())["containment"]
+    assert record["predecessor_game_ids_sha256"] == first.game_ids_sha256
+    assert record["predecessor_games"] == first.games
+    assert record["added_games"] == second.games - first.games
+
+
+def test_the_first_generation_records_no_predecessor(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """Being first is a fact about the chain, not the absence of a check."""
+
+    normalized, manifest = corpus(tmp_path)
+
+    result = freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+    assert json.loads(result.manifest_path.read_text())["containment"] is None
+
+
+def test_a_lowered_fraction_is_caught_as_a_missing_game(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The one direction the fraction may never move, seen where it does damage.
+
+    Nothing compares the configured fractions. A generation that admits less
+    fails because a game is gone, which is also what a moved sample seed and a
+    newly rejecting filter look like from here.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="test") for index in range(240)],
+    )
+    first = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.5),
+        tmp_path / "first",
+    )
+
+    with pytest.raises(EvaluationPoolError, match="drops .* game"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                sample_fraction=0.25,
+                predecessor=str(tmp_path / "first"),
+                predecessor_game_ids_sha256=first.game_ids_sha256,
+            ),
+            tmp_path / "second",
+        )
+
+
+def test_containment_is_checked_against_the_named_generation_only(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A check against the wrong predecessor passes while proving nothing."""
+
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.25),
+        tmp_path / "first",
+    )
+
+    with pytest.raises(EvaluationPoolError, match="not the one this configuration"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                sample_fraction=0.5,
+                predecessor=str(tmp_path / "first"),
+                predecessor_game_ids_sha256="0" * 64,
+            ),
+            tmp_path / "second",
+        )
+
+
+def test_a_pinned_predecessor_with_no_pool_to_read_is_refused(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path)
+
+    with pytest.raises(EvaluationPoolError, match="no predecessor pool is configured"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                predecessor_game_ids_sha256="0" * 64,
+            ),
+            tmp_path / "pool",
+        )
+
+
 def test_an_admitted_game_in_both_splits_still_fails_the_build(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -377,6 +498,35 @@ def test_a_marked_account_of_either_colour_takes_its_games_out_of_the_pool(
 
     assert load_pool(tmp_path / "pool").game_ids == (fixture_game_id(6),)
     assert result.games == 1
+
+
+def test_a_widened_snapshot_is_caught_as_a_missing_game(
+    tmp_path: Path,
+    marked_corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """Rejection is the door a comparison of settings would not have watched.
+
+    The fraction and the sample seed are untouched here; a later census simply
+    knows more. That is why the check is stated in games: nothing about the
+    configuration changed, and a generation still lost one.
+    """
+
+    normalized, manifest = marked_corpus(tmp_path)
+    later = _snapshot(tmp_path / "later.txt", "white4")
+
+    first = freeze_pool(_resolved(normalized, manifest), tmp_path / "first")
+
+    with pytest.raises(EvaluationPoolError, match="drops 1 game"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                marked_accounts=str(later),
+                predecessor=str(tmp_path / "first"),
+                predecessor_game_ids_sha256=first.game_ids_sha256,
+            ),
+            tmp_path / "second",
+        )
 
 
 def test_the_recall_the_snapshot_claimed_is_recorded_with_the_generation(
@@ -553,6 +703,65 @@ def test_freezing_is_reproducible(
 
     assert first.game_ids_sha256 == second.game_ids_sha256
     assert first.games_path.read_bytes() == second.games_path.read_bytes()
+
+
+def test_scanning_on_several_workers_freezes_the_same_pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """How the scan was divided must not reach the artifact.
+
+    Shards complete in whatever order the workers finish them, so the pool's
+    identity would follow the machine rather than the corpus if anything
+    downstream of the merge depended on arrival order.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="test") for index in range(60)],
+        games_per_shard=7,
+    )
+
+    serial = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.5),
+        tmp_path / "serial",
+    )
+    parallel = freeze_pool(
+        _resolved(normalized, manifest, sample_fraction=0.5),
+        tmp_path / "parallel",
+        workers=4,
+    )
+
+    assert parallel.games == serial.games
+    assert parallel.game_ids_sha256 == serial.game_ids_sha256
+    assert parallel.games_path.read_bytes() == serial.games_path.read_bytes()
+
+
+def test_the_overlap_check_sees_a_duplicate_split_across_shards(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The leakage check is the one thing a shard cannot answer alone.
+
+    Its two halves are found by different workers, so a merge that dropped
+    either would turn a failing build into a silently leaking pool.
+    """
+
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus",
+        [normalized_row(index, split="train") for index in range(40)]
+        + [normalized_row(index, split="test") for index in range(40)],
+        games_per_shard=40,
+    )
+
+    with pytest.raises(EvaluationPoolError, match="also appear in the train split"):
+        freeze_pool(
+            _resolved(normalized, manifest, sample_fraction=0.5),
+            tmp_path / "pool",
+            workers=4,
+        )
 
 
 def test_load_pool_round_trips_and_exposes_game_level_facts(
@@ -860,3 +1069,171 @@ def test_incompatible_source_preprocessing_is_rejected(
 
     with pytest.raises(EvaluationPoolError, match="preprocessing version"):
         freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+
+def test_designating_a_generation_records_the_core_it_becomes(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """Being the core is a recorded fact, not an inference from being first."""
+
+    normalized, manifest = corpus(tmp_path)
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, pool_id="core-one", designates_core=True),
+        tmp_path / "pool",
+    )
+
+    record = json.loads(result.manifest_path.read_text())["core"]
+    assert record["core_id"] == "core-one"
+    assert record["game_ids_sha256"] == result.game_ids_sha256
+    assert record["games"] == result.games
+    # The designating generation lists no ids, because its own are the core's.
+    assert "game_ids" not in record
+    assert result.designated_core is True
+
+
+def test_an_undesignated_generation_carries_no_core(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path)
+
+    result = freeze_pool(_resolved(normalized, manifest), tmp_path / "pool")
+
+    assert json.loads(result.manifest_path.read_text())["core"] is None
+    assert load_pool(tmp_path / "pool").core is None
+    assert result.designated_core is False
+
+
+def test_a_designated_core_loads_as_the_pool_it_designated(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path)
+    result = freeze_pool(
+        _resolved(normalized, manifest, pool_id="core-one", designates_core=True),
+        tmp_path / "pool",
+    )
+
+    pool = load_pool(tmp_path / "pool")
+
+    assert pool.core is not None
+    assert pool.core.core_id == "core-one"
+    assert pool.core.game_ids == frozenset(pool.game_ids)
+    assert pool.core.game_ids_sha256 == result.game_ids_sha256
+
+
+def test_a_later_generation_carries_the_core_forward_unchanged(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The continuous line: one set of games, in every generation after it."""
+
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:120])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+
+    designated = freeze_pool(
+        _resolved(
+            smaller,
+            smaller_manifest,
+            pool_id="core-one",
+            sample_fraction=0.25,
+            designates_core=True,
+        ),
+        tmp_path / "first",
+    )
+    freeze_pool(
+        _resolved(
+            grown,
+            grown_manifest,
+            pool_id="generation-two",
+            sample_fraction=0.25,
+            predecessor=str(tmp_path / "first"),
+            predecessor_game_ids_sha256=designated.game_ids_sha256,
+        ),
+        tmp_path / "second",
+    )
+
+    first = load_pool(tmp_path / "first")
+    second = load_pool(tmp_path / "second")
+
+    assert second.core is not None and first.core is not None
+    assert second.core.core_id == "core-one"
+    assert second.core.game_ids == first.core.game_ids
+    assert second.core.game_ids < frozenset(second.game_ids)
+
+
+def test_a_second_designation_over_an_existing_core_is_refused(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Designating twice would end every series the first designation holds."""
+
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    first = freeze_pool(
+        _resolved(
+            normalized,
+            manifest,
+            pool_id="core-one",
+            sample_fraction=0.25,
+            designates_core=True,
+        ),
+        tmp_path / "first",
+    )
+
+    with pytest.raises(EvaluationPoolError, match="already carries the core"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                pool_id="core-two",
+                sample_fraction=0.5,
+                designates_core=True,
+                predecessor=str(tmp_path / "first"),
+                predecessor_game_ids_sha256=first.game_ids_sha256,
+            ),
+            tmp_path / "second",
+        )
+
+
+def test_a_core_whose_games_do_not_match_its_digest_is_refused(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path)
+    result = freeze_pool(
+        _resolved(normalized, manifest, pool_id="core-one", designates_core=True),
+        tmp_path / "pool",
+    )
+    record = json.loads(result.manifest_path.read_text())
+    record["core"]["game_ids_sha256"] = "0" * 64
+    result.manifest_path.write_text(json.dumps(record))
+
+    with pytest.raises(EvaluationPoolError, match="core whose games do not match"):
+        load_pool(tmp_path / "pool")
+
+
+def test_designation_reports_the_axes_it_fixes_permanently(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """Speed is the axis the breadth corpus exists for, so it must be readable."""
+
+    normalized, manifest = corpus(tmp_path)
+
+    result = freeze_pool(
+        _resolved(normalized, manifest, pool_id="core-one", designates_core=True),
+        tmp_path / "pool",
+    )
+
+    assert set(result.coverage_axes) == {
+        "speed_games",
+        "clock_presence_games",
+        "results",
+    }
+    assert sum(result.coverage_axes["speed_games"].values()) == result.games

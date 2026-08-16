@@ -713,10 +713,12 @@ statistics. It carries no
 per-benchmark tailoring, and it is a regenerable pipeline output rather than
 committed data. Its manifest records source, split recipe, schema,
 preprocessing, action, encoding, and benchmark versions, the selected game ids
-and their content hashes, and a build-time overlap check against the train
-split. Coverage statistics report ply counts, results, clock presence, and
-position counts by phase, color, legal-move-count bucket, and rating band, so a
-thin slice is visible before a benchmark reports a number computed from it.
+and their content hashes, a build-time overlap check against the train split,
+the generation it was verified to contain, and the core it carries. Coverage
+statistics report ply counts, results, games by speed class and by clock
+presence, the span of source dates, and position counts by phase, color,
+legal-move-count bucket, and rating band, so a thin slice is visible before a
+benchmark reports a number computed from it.
 
 The bound is an admission fraction, applied by ranking a game id under a fixed
 seed, so a game is admitted on its id alone and corpus growth only ever adds.

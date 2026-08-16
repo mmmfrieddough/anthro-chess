@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         LadderBenchmarkResult,
         NoveltyBenchmarkResult,
         PoolConfig,
+        PoolResult,
         PuzzleBenchmarkResult,
         RolloutBenchmarkResult,
         TerminationBenchmarkResult,
@@ -107,6 +108,15 @@ _DEFAULT_CENSUS_WORKERS = 8
 #: `docs/decisions/0053-the-pool-is-sized-to-the-reader-it-waits-on.md`.
 _MAXIMUM_PREPARE_WORKERS = 12
 
+#: Shards a freeze scans at once. Scanning divides perfectly, but one parent
+#: unpickles every shard's result and merges it into a single list and a single
+#: set, and that half does not divide at all — so the same reasoning 0053 gives
+#: for preparation applies here, against a different consumer. Measured over
+#: disjoint cold shards of the widened corpus and projected to all 41,763:
+#: 139 min serially, 24.0 at eight, 19.7 at sixteen, 21.7 at twenty, 26.4 at
+#: thirty-two.
+_MAXIMUM_FREEZE_WORKERS = 16
+
 _FORMAT_FLAG = argparse.ArgumentParser(add_help=False)
 _FORMAT_FLAG.add_argument(
     "--format",
@@ -167,6 +177,19 @@ def _prepare_concurrency(requested: int | None) -> int:
         if processes <= cores and processes > most:
             best, most = count, processes
     return best
+
+
+def _freeze_concurrency(requested: int | None) -> int:
+    """Return how many shards to scan at once, stopping where the merge does.
+
+    An explicit count is obeyed exactly, past the cap included, for the reason
+    0053 gives: a caller running this beside other work is sizing it against
+    that rather than against the machine.
+    """
+
+    if requested is not None:
+        return requested
+    return min(_available_cores(), _MAXIMUM_FREEZE_WORKERS)
 
 
 def _archive_count(value: str) -> int:
@@ -375,6 +398,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Explicit TOML evaluation-pool selection.",
+    )
+    freeze_parser.add_argument(
+        "--workers",
+        type=_worker_count,
+        help=(
+            "How many shards to scan at once. Defaults to the cores this "
+            f"process may run on, at most {_MAXIMUM_FREEZE_WORKERS}."
+        ),
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
 
@@ -1515,7 +1546,9 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
         )
         resolved = _resolve_pool_roots(resolved, arguments.set)
         output = _data_output_path(arguments.output, resolved.value.pool_id)
-        result = freeze_pool(resolved, output)
+        result = freeze_pool(
+            resolved, output, workers=_freeze_concurrency(arguments.workers)
+        )
     except (ConfigError, EvaluationPoolError) as error:
         print(f"anthro eval freeze: {error}", file=sys.stderr)
         return 2
@@ -1524,7 +1557,27 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     print(f"Pool: {result.games_path}")
     print(f"Manifest: {result.manifest_path}")
     print(f"Identity: {result.game_ids_sha256}")
+    if result.designated_core:
+        _print_designation(result)
     return 0
+
+
+def _print_designation(result: PoolResult) -> None:
+    """Print what designating this generation fixed permanently.
+
+    Every one of these numbers is in the manifest already. They are printed
+    because designation is the moment a per-axis power is set for as long as
+    the core is the reference, and a number nobody read at that moment is one
+    nobody can act on afterwards.
+    """
+
+    print(f"\nDesignated as the evaluation core: {result.game_ids_sha256}")
+    print("Per-axis coverage, fixed permanently from here:")
+    for axis, counts in sorted(result.coverage_axes.items()):
+        readings = ", ".join(
+            f"{name} {count}" for name, count in sorted(counts.items())
+        )
+        print(f"  {axis}: {readings}")
 
 
 def _run_eval_prepare_puzzles(arguments: argparse.Namespace) -> int:
