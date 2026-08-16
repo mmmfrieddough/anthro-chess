@@ -964,8 +964,16 @@ def _config(
     )
 
 
-def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
-    output = tmp_path / "pool"
+def _freeze(
+    tmp_path: Path,
+    normalized: Path,
+    manifest: Path,
+    *,
+    name: str = "pool",
+    designates_core: bool = False,
+    predecessor: Path | None = None,
+) -> Path:
+    output = tmp_path / name
     freeze_pool(
         ResolvedConfig(
             value=PoolConfig.model_validate(
@@ -973,6 +981,10 @@ def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
                     "pool_id": "fixture-test",
                     "normalized": str(normalized),
                     "manifest": str(manifest),
+                    "designates_core": designates_core,
+                    **(
+                        {} if predecessor is None else {"predecessor": str(predecessor)}
+                    ),
                 }
             ),
             provenance=ConfigProvenance(source=None, overrides=()),
@@ -980,3 +992,143 @@ def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
         output,
     )
     return output
+
+
+def test_without_a_core_a_reading_reports_one_view(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    _evaluate(_config(pool, checkpoint), store=store)
+
+    held_out = [item for item in store.results() if item.kind == HELD_OUT_KIND]
+    assert len(held_out) == 1
+    assert held_out[0].data is not None
+    assert not held_out[0].data.view.endswith("-core")
+
+
+def test_a_designated_core_is_reported_beside_the_current_pool(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """Both views reach the store, and each says which one it is."""
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest, designates_core=True)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    _evaluate(_config(pool, checkpoint), store=store)
+
+    recorded = store.results()
+    for kind in (HELD_OUT_KIND, ADJUDICATION_KIND, DEPENDENCY_KIND):
+        views = [
+            item.data.view
+            for item in recorded
+            if item.kind == kind and item.data is not None
+        ]
+        assert len(views) == 2, kind
+        assert sum(view.endswith("-core") for view in views) == 1, kind
+
+
+def test_at_designation_the_two_views_are_one_series(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The core is the pool here, so the two readings measured the same thing.
+
+    A fingerprint is built from what was scored, not from what a view is
+    called, so it says these coincide — which is the honest answer while the
+    two sets are identical, and the reason the seam only appears when the pool
+    first grows past the core.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest, designates_core=True)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    _evaluate(_config(pool, checkpoint), store=store)
+
+    held_out = [item for item in store.results() if item.kind == HELD_OUT_KIND]
+    fingerprints = {
+        measurement.fingerprint
+        for envelope in held_out
+        for measurement in envelope.measurements
+        if measurement.metric == "held_out.move_loss"
+    }
+    assert len(fingerprints) == 1
+
+
+def test_the_core_holds_its_games_while_the_current_view_grows(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The seam the whole core exists for, taken across one generation cut.
+
+    The core keeps scoring the games it was designated over while the current
+    view takes in everything the corpus gained, so the two stop measuring the
+    same content and become separate series — which is what lets one line run
+    unbroken while the other gains power.
+    """
+
+    rows = [
+        normalized_row(
+            index,
+            split="train" if index < 3 else "test",
+            plies=10,
+            rating=1000 + index * 100,
+        )
+        for index in range(1, 13)
+    ]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:6])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+    designated = _freeze(
+        tmp_path, smaller, smaller_manifest, name="first", designates_core=True
+    )
+    grown_pool = _freeze(
+        tmp_path,
+        grown,
+        grown_manifest,
+        name="second",
+        predecessor=designated,
+    )
+    checkpoint = training_run(
+        tmp_path / "run", normalized=smaller, manifest=smaller_manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    _evaluate(_config(grown_pool, checkpoint), store=store)
+
+    held_out = [item for item in store.results() if item.kind == HELD_OUT_KIND]
+    by_view = {item.data.view: item for item in held_out if item.data is not None}
+    current = next(name for name in by_view if not name.endswith("-core"))
+    core = next(name for name in by_view if name.endswith("-core"))
+
+    core_data, current_data = by_view[core].data, by_view[current].data
+    assert core_data is not None and current_data is not None
+    assert core_data.selected_games < current_data.selected_games
+    fingerprints = {
+        name: next(
+            item.fingerprint
+            for item in envelope.measurements
+            if item.metric == "held_out.move_loss"
+        )
+        for name, envelope in by_view.items()
+    }
+    assert fingerprints[core] != fingerprints[current]

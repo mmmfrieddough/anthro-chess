@@ -168,6 +168,11 @@ class ProjectionDigest(ResultModel):
         )
 
 
+#: What :attr:`DatasetReference.view` ends in for a reading taken against the
+#: designated core rather than the current pool.
+CORE_VIEW_SUFFIX = "core"
+
+
 class DatasetReference(ResultModel):
     """Which evaluation inputs a result was computed over."""
 

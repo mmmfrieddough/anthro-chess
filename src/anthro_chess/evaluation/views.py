@@ -8,14 +8,20 @@ which games it measured.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from pydantic import Field, StrictBool
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import Speed
-from anthro_chess.evaluation.pool import PoolGame, game_ids_sha256, rank_key
+from anthro_chess.evaluation.pool import (
+    DesignatedCore,
+    PoolGame,
+    game_ids_sha256,
+    rank_key,
+)
+from anthro_chess.evaluation.results.records import CORE_VIEW_SUFFIX
 
 #: Version 2 records the class and the rating pool a view sliced to; a version 1
 #: record has neither field rather than null ones.
@@ -81,6 +87,60 @@ class ViewSelection:
             "rating_namespace": self.rating_namespace,
             "game_ids_sha256": game_ids_sha256(self.game_ids),
         }
+
+
+@dataclass(frozen=True)
+class DualSelection:
+    """What one reading scores, and the two views it reports it under."""
+
+    current: ViewSelection
+    #: Absent until a generation is designated, since a core view has no
+    #: reference to be taken against before then.
+    core: ViewSelection | None
+
+    @property
+    def reported(self) -> tuple[ViewSelection, ...]:
+        """Return the views this reading reports, current first.
+
+        Current leads because it is the number that answers how good a
+        checkpoint is; core follows and answers whether it improved.
+        """
+
+        if self.core is None:
+            return (self.current,)
+        return (self.current, self.core)
+
+    @property
+    def scored_game_ids(self) -> tuple[int, ...]:
+        """Return every game either view reports, each exactly once."""
+
+        if self.core is None:
+            return self.current.game_ids
+        return tuple(sorted({*self.current.game_ids, *self.core.game_ids}))
+
+
+def apply_dual_view(
+    games: Sequence[PoolGame],
+    config: ViewConfig,
+    core: DesignatedCore | None,
+) -> DualSelection:
+    """Select what a benchmark scores, under the current pool and under the core.
+
+    The core view filters to the core's games *before* the cap rather than
+    after: a cap ranked over the growing pool draws games outside the core, so
+    intersecting afterwards would shrink the core reading at the rate the pool
+    grows instead of holding it at one set forever.
+    """
+
+    current = apply_view(games, config)
+    if core is None:
+        return DualSelection(current=current, core=None)
+    within = [game for game in games if game.game_id in core.game_ids]
+    selected = apply_view(within, config)
+    return DualSelection(
+        current=current,
+        core=replace(selected, name=f"{selected.name}-{CORE_VIEW_SUFFIX}"),
+    )
 
 
 def excluded_summary(counts: Mapping[str, int]) -> str:

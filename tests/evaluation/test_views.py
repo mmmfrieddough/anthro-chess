@@ -6,7 +6,8 @@ import pytest
 
 from anthro_chess.data import Speed
 from anthro_chess.evaluation import PoolGame, ViewConfig, apply_view
-from anthro_chess.evaluation.views import excluded_summary
+from anthro_chess.evaluation.pool import DesignatedCore, game_ids_sha256
+from anthro_chess.evaluation.views import apply_dual_view, excluded_summary
 
 
 def _game(
@@ -305,3 +306,81 @@ def test_contradictory_date_bounds_are_rejected() -> None:
                 maximum_date=date(2020, 1, 1),
             ),
         )
+
+
+def _core(*game_ids: int, core_id: str = "generation-one") -> DesignatedCore:
+    ids = frozenset(game_ids)
+    return DesignatedCore(
+        core_id=core_id,
+        game_ids_sha256=game_ids_sha256(sorted(ids)),
+        game_ids=ids,
+    )
+
+
+def test_without_a_designated_core_a_reading_has_one_view() -> None:
+    dual = apply_dual_view(_pool(20), ViewConfig(name="all"), None)
+
+    assert dual.core is None
+    assert dual.scored_game_ids == dual.current.game_ids
+
+
+def test_at_designation_the_two_views_are_the_same_games() -> None:
+    """The step this costs a duplicate number for, and is built anyway."""
+
+    pool = _pool(20)
+    core = _core(*range(1, 21))
+
+    dual = apply_dual_view(pool, ViewConfig(name="all"), core)
+
+    assert dual.core is not None
+    assert dual.core.game_ids == dual.current.game_ids
+    assert dual.scored_game_ids == dual.current.game_ids
+    assert dual.core.name == "all-core"
+
+
+def test_the_core_view_holds_the_same_games_as_the_pool_grows() -> None:
+    """The property the whole core exists for, and the one a cap would break.
+
+    A capped view ranked over the grown pool draws games from outside the core,
+    so taking the core's share of *that* would shrink with every generation.
+    Applying the view to the core's games instead pins it.
+    """
+
+    core = _core(*range(1, 101))
+    config = ViewConfig(name="held-out", maximum_games=20)
+
+    at_designation = apply_dual_view(_pool(100), config, core)
+    later = apply_dual_view(_pool(400), config, core)
+
+    assert later.core is not None and at_designation.core is not None
+    assert later.core.game_ids == at_designation.core.game_ids
+    assert later.current.game_ids != at_designation.current.game_ids
+
+
+def test_a_grown_pool_scores_the_union_of_the_two_views_once() -> None:
+    core = _core(*range(1, 101))
+    config = ViewConfig(name="held-out", maximum_games=20)
+
+    dual = apply_dual_view(_pool(400), config, core)
+
+    assert dual.core is not None
+    scored = dual.scored_game_ids
+    assert len(scored) == len(set(scored))
+    assert set(scored) == {*dual.current.game_ids, *dual.core.game_ids}
+    assert len(scored) < len(dual.current.game_ids) + len(dual.core.game_ids)
+
+
+def test_the_core_view_still_obeys_the_view_it_belongs_to() -> None:
+    """A core reading measures the benchmark's quantity, not a different one."""
+
+    pool = (
+        *(_game(index) for index in range(1, 11)),
+        *(_game(index, plies=4) for index in range(11, 21)),
+    )
+    core = _core(*range(1, 21))
+
+    dual = apply_dual_view(pool, ViewConfig(name="long", minimum_plies=10), core)
+
+    assert dual.core is not None
+    assert set(dual.core.game_ids) == set(range(1, 11))
+    assert dual.core.excluded_games == {"below_minimum_plies": 10}

@@ -46,6 +46,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.results.noise import combined_floor
 from anthro_chess.evaluation.results.records import (
+    CORE_VIEW_SUFFIX,
     Measurement,
     ResultEnvelope,
 )
@@ -361,6 +362,8 @@ class HistoryPoint:
     #: long-run trend and the annotation is what keeps it honest.
     environment: str | None = None
     environment_changed: bool = False
+    #: Which view of the pool produced this point, once a core is designated.
+    view: str | None = None
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable point."""
@@ -375,6 +378,37 @@ class HistoryPoint:
             "bridged_from_previous": self.bridged_from_previous,
             "environment": self.environment,
             "environment_changed": self.environment_changed,
+            "view": self.view,
+        }
+
+
+@dataclass(frozen=True)
+class CoreDivergence:
+    """How far one checkpoint's current reading sits from its core reading.
+
+    Sustained divergence in one direction is the observable symptom of the core
+    having been overfit, which is the cost the growing current view is kept
+    alongside it to expose.
+    """
+
+    checkpoint: str
+    core: float
+    current: float
+
+    @property
+    def divergence(self) -> float:
+        """Return how far current sits from core, signed toward current."""
+
+        return self.current - self.core
+
+    def as_record(self) -> dict[str, object]:
+        """Return the machine-readable divergence."""
+
+        return {
+            "checkpoint": self.checkpoint,
+            "core": self.core,
+            "current": self.current,
+            "divergence": self.divergence,
         }
 
 
@@ -386,6 +420,31 @@ class MetricHistory:
     direction: MetricDirection
     points: tuple[HistoryPoint, ...]
 
+    @property
+    def divergences(self) -> tuple[CoreDivergence, ...]:
+        """Return the core-versus-current gap wherever one checkpoint has both.
+
+        Both readings come from one pass over one pool, so a checkpoint with
+        only one of them was measured before a core existed rather than
+        measured badly.
+        """
+
+        by_checkpoint: dict[str, dict[bool, float]] = {}
+        for point in self.points:
+            if point.view is None:
+                continue
+            views = by_checkpoint.setdefault(point.checkpoint, {})
+            views[point.view.endswith(f"-{CORE_VIEW_SUFFIX}")] = point.value
+        return tuple(
+            CoreDivergence(
+                checkpoint=checkpoint,
+                core=views[True],
+                current=views[False],
+            )
+            for checkpoint, views in by_checkpoint.items()
+            if len(views) == 2
+        )
+
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable history."""
 
@@ -393,6 +452,7 @@ class MetricHistory:
             "metric": self.metric,
             "direction": self.direction.value,
             "points": [point.as_record() for point in self.points],
+            "divergences": [item.as_record() for item in self.divergences],
         }
 
 
@@ -614,6 +674,7 @@ def build_history(
                     and previous_environment is not None
                     and environment != previous_environment
                 ),
+                view=None if envelope.data is None else envelope.data.view,
             )
         )
         previous_fingerprint = found.fingerprint
@@ -834,6 +895,24 @@ def _noise_legend(report: DeltaReport) -> list[str]:
     )
 
 
+def _render_divergences(history: MetricHistory) -> list[str]:
+    """Render how far each checkpoint's current reading sits from its core.
+
+    One sample says little; the column is here so a run of them in one
+    direction is visible without anybody assembling it by hand.
+    """
+
+    divergences = history.divergences
+    if not divergences:
+        return []
+    lines = ["", "  current less core, per checkpoint:"]
+    lines.extend(
+        f"    {item.checkpoint:<24} {_format(item.divergence, signed=True):>12}"
+        for item in divergences
+    )
+    return lines
+
+
 def render_history(history: MetricHistory) -> str:
     """Render one metric's history as text, marking series seams."""
 
@@ -853,10 +932,13 @@ def render_history(history: MetricHistory) -> str:
             f"{point.checkpoint:<24} {_format(point.value):>12}  "
             f"series {point.series[:12]}"
         )
+        if point.view is not None:
+            row = f"{row}  {point.view}"
         if point.environment_changed:
             annotated = True
             row = f"{row}  * now on {point.environment}"
         lines.append(row)
+    lines.extend(_render_divergences(history))
     lines.append("")
     legend = "  | series break    ~ bridged seam"
     if annotated:

@@ -1244,3 +1244,130 @@ def test_short_identifiers_keep_the_column_at_its_minimum() -> None:
     assert _header(rendered).index("better") == (
         indent + MINIMUM_METRIC_COLUMN_WIDTH + separator
     )
+
+
+def test_divergence_pairs_the_two_views_of_one_checkpoint(
+    recorded_result: ResultFactory,
+    scored_row: RowFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """Sustained divergence is the symptom the current view exists to expose."""
+
+    history = build_history(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                view="canonical",
+                move_loss=3.2,
+                component=move_prediction_component([scored_row(1), scored_row(2)]),
+            ),
+            recorded_result(
+                label="checkpoint-a",
+                view="canonical-core",
+                move_loss=3.5,
+                component=move_prediction_component([scored_row(1)]),
+            ),
+        ],
+        BridgeIndex(),
+        "held_out.move_loss",
+    )
+
+    divergences = history.divergences
+    assert len(divergences) == 1
+    assert divergences[0].checkpoint == "checkpoint-a"
+    assert divergences[0].core == pytest.approx(3.5)
+    assert divergences[0].current == pytest.approx(3.2)
+    assert divergences[0].divergence == pytest.approx(-0.3)
+
+
+def test_a_reading_taken_before_a_core_existed_reports_no_divergence(
+    recorded_result: ResultFactory,
+) -> None:
+    """One view is what every reading before designation has, not a fault."""
+
+    history = build_history(
+        [recorded_result(label="checkpoint-a", view="canonical")],
+        BridgeIndex(),
+        "held_out.move_loss",
+    )
+
+    assert history.divergences == ()
+
+
+def test_the_core_view_crosses_a_generation_that_the_current_view_cannot(
+    recorded_result: ResultFactory,
+    scored_row: RowFactory,
+    move_prediction_component: Digest,
+) -> None:
+    """The whole point of the core: one line survives a cut and the other does not.
+
+    Both readings are taken over the same pool on each side of the cut. The
+    current view scores everything the generation holds, so its content moves
+    when the corpus grows; the core view scores the designated games, so its
+    content is the same on both sides and the comparison stays open.
+    """
+
+    core = move_prediction_component([scored_row(1)])
+    bridges = BridgeIndex()
+
+    before_core = recorded_result(view="canonical-core", component=core)
+    after_core = recorded_result(view="canonical-core", component=core)
+    before_current = recorded_result(
+        view="canonical",
+        component=move_prediction_component([scored_row(1), scored_row(2)]),
+    )
+    after_current = recorded_result(
+        view="canonical",
+        component=move_prediction_component(
+            [scored_row(1), scored_row(2), scored_row(3)]
+        ),
+    )
+
+    def _fingerprint(envelope: ResultEnvelope) -> str:
+        found = envelope.measurement("held_out.move_loss")
+        assert found is not None
+        return found.fingerprint
+
+    assert (
+        bridges.compare(
+            _fingerprint(before_core), _fingerprint(after_core)
+        ).comparability
+        is Comparability.SAME_SERIES
+    )
+    assert (
+        bridges.compare(
+            _fingerprint(before_current), _fingerprint(after_current)
+        ).comparability
+        is Comparability.INCOMPARABLE
+    )
+
+
+def test_the_rendered_history_shows_the_gap_between_the_two_views(
+    recorded_result: ResultFactory,
+    scored_row: RowFactory,
+    move_prediction_component: Digest,
+) -> None:
+    history = build_history(
+        [
+            recorded_result(
+                label="checkpoint-a",
+                view="canonical",
+                move_loss=3.2,
+                component=move_prediction_component([scored_row(1), scored_row(2)]),
+            ),
+            recorded_result(
+                label="checkpoint-a",
+                view="canonical-core",
+                move_loss=3.5,
+                component=move_prediction_component([scored_row(1)]),
+            ),
+        ],
+        BridgeIndex(),
+        "held_out.move_loss",
+    )
+
+    rendered = render_history(history)
+
+    assert "current less core, per checkpoint:" in rendered
+    assert "canonical-core" in rendered
+    assert "-0.3" in rendered

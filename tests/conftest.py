@@ -562,6 +562,7 @@ def recorded_result(
         *,
         label: str = "checkpoint-a",
         step: int = 8000,
+        view: str = "canonical",
         move_loss: float = 3.5,
         mask_penalty: float = 0.75,
         component: DataComponent | None = None,
@@ -590,7 +591,7 @@ def recorded_result(
             data=dataset_reference(
                 pool_id="fixture-pool",
                 pool_version=1,
-                view="canonical",
+                view=view,
                 selected_games=data.games,
                 game_ids_sha256="a" * 64,
                 components=[data],

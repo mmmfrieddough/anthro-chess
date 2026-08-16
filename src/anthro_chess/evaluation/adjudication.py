@@ -193,12 +193,20 @@ class AdjudicationReport:
 def build_adjudication_report(
     scored: Sequence[ActionSetPolicy],
     inputs: ScoringInputs,
+    game_ids: Collection[int] | None = None,
 ) -> AdjudicationReport | None:
-    """Join action-set policy readings to exact predicates and human targets."""
+    """Join action-set policy readings to exact predicates and human targets.
+
+    ``game_ids`` narrows the report to one view's games. The inputs span every
+    game a pass scored, which is more than one view holds once a reading
+    reports against both the current pool and the core.
+    """
 
     by_key = {(item.game_id, item.ply_index, item.name): item for item in scored}
     positions: list[AdjudicatedPosition] = []
     for key in inputs.plies:
+        if game_ids is not None and key[0] not in game_ids:
+            continue
         matches = inputs.labels(key).predicates
         ply = inputs.plies[key]
         rating_band = inputs.slices[key].rating_band or UNRATED_SLICE

@@ -37,6 +37,7 @@ from anthro_chess.data.schema import (
     SPLIT_NAMES,
     NormalizedColumn,
     SplitName,
+    row_game_id,
 )
 from anthro_chess.evaluation.adjudication import (
     AdjudicationReport,
@@ -85,6 +86,7 @@ from anthro_chess.evaluation.pool import (
     pool_rows,
 )
 from anthro_chess.evaluation.recording import (
+    ResultRecorder,
     ResultRecording,
     checkpoint_reference,
     pool_dataset_reference,
@@ -120,7 +122,12 @@ from anthro_chess.evaluation.scoring import (
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION
-from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
+from anthro_chess.evaluation.views import (
+    DualSelection,
+    ViewConfig,
+    ViewSelection,
+    apply_dual_view,
+)
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch, OptionalTensor
@@ -261,8 +268,14 @@ class _EvaluationInputs:
     """The frozen games one evaluation scores, and everything derived once."""
 
     pool: FrozenPool
-    selection: ViewSelection
+    dual: DualSelection
     scoring: ScoringInputs
+
+    @property
+    def selection(self) -> ViewSelection:
+        """Return the view a scored game count and a log line describe."""
+
+        return self.dual.current
 
 
 class _ScoringSession:
@@ -485,89 +498,34 @@ def evaluate_checkpoint(
         inputs.selection.name,
     )
     positions, action_set_scores = session.score_primary()
-    slices = aggregate_positions(positions, inputs.scoring, opening_frequency=frequency)
-    opening_tail = None if frequency is None else read_opening_tail(slices, frequency)
-    adjudication = build_adjudication_report(action_set_scores, inputs.scoring)
-    dependency = (
-        _run_dependency_tests(config, session, inputs, positions, runner)
+    passes = (
+        _score_conditionings(config, session, runner)
         if config.dependency.enabled
         else None
     )
 
-    component = projection_content_digest(
-        inputs.scoring.rows,
-        MOVE_PREDICTION_PROJECTION,
-    )
     checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
-    data = pool_dataset_reference(
-        inputs.pool,
-        inputs.selection,
-        component,
-        error=CheckpointEvaluationError,
-    )
-
     recorder = recording.measuring(
         checkpoint,
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
     )
-    dispersions = _estimate_dispersions(
-        config,
-        inputs,
-        positions,
-        adjudication,
-        dependency,
-        component,
-        opening_frequency=frequency,
-    )
-    recorder.disperse(dispersions)
-    result = CheckpointEvaluationResult(
-        checkpoint=checkpoint,
-        dataset=data,
-        view=inputs.selection,
-        leakage=leakage,
-        slices=slices,
-        adjudication=adjudication,
-        dependency=dependency,
-        dispersions=dispersions,
-        opening_frequency=frequency,
-        opening_tail=opening_tail,
-    )
-    recorder.add(
-        slice_measurements(slices, component),
-        payload=lambda: {
-            **result.as_record(),
-            "positions": (
-                [position.as_record() for position in positions]
-                if config.detail.per_position
-                else None
-            ),
-        },
-        description="Slice tables and view provenance for one evaluation.",
-        data=data,
-    )
-    if adjudication is not None:
-        recorder.add(
-            adjudication.measurements(component),
-            kind=ADJUDICATION_KIND,
-            benchmark=ADJUDICATION_BENCHMARK,
-            payload=adjudication.as_record,
-            description=(
-                "Per-predicate human and model rates with rating-band "
-                "drill-down and opportunity counts."
-            ),
-            data=data,
+    reported = [
+        _report_view(
+            selection,
+            config=config,
+            inputs=inputs,
+            checkpoint=checkpoint,
+            leakage=leakage,
+            positions=positions,
+            action_set_scores=action_set_scores,
+            passes=passes,
+            frequency=frequency,
+            recorder=recorder,
         )
-    if dependency is not None:
-        recorder.add(
-            _dependency_measurements(dependency, component),
-            kind=DEPENDENCY_KIND,
-            benchmark=DEPENDENCY_BENCHMARK,
-            payload=dependency.as_record,
-            description="Cross-conditioning and within-game dependency tables.",
-            data=data,
-        )
-    return result
+        for selection in inputs.dual.reported
+    ]
+    return reported[0]
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
@@ -575,17 +533,20 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
         config.pool,
         expected_game_ids_sha256=config.expected_pool_game_ids_sha256,
     )
-    selection = apply_view(pool.games, config.view)
-    if not selection.game_ids:
+    dual = apply_dual_view(pool.games, config.view, pool.core)
+    if not dual.current.game_ids:
         raise CheckpointEvaluationError(
             f"view {config.view.name!r} selected no games from the pool"
         )
 
+    # The union of both views, scored once. Where a core is designated the two
+    # views overlap heavily and diverge only as the pool grows past the core.
+    scored = dual.scored_game_ids
     rows = [
-        _truncate(row, selection.prefix_plies)
+        _truncate(row, dual.current.prefix_plies)
         for row in pool_rows(
             pool,
-            selection.game_ids,
+            scored,
             SCORED_COLUMNS,
             error=CheckpointEvaluationError,
         )
@@ -595,9 +556,9 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
         split=_pool_split(pool),
         batch_size=config.loader.batch_size,
         length_bucket_width=config.loader.length_bucket_width,
-        identity_sha256=rows_identity_sha256(rows, context=selection.as_record()),
+        identity_sha256=rows_identity_sha256(rows, context=dual.current.as_record()),
     )
-    return _EvaluationInputs(pool=pool, selection=selection, scoring=scoring)
+    return _EvaluationInputs(pool=pool, dual=dual, scoring=scoring)
 
 
 def _estimate_dispersions(
@@ -686,13 +647,130 @@ def _count_training_frequency(
         raise CheckpointEvaluationError(str(error)) from error
 
 
-def _run_dependency_tests(
+def _report_view(
+    selection: ViewSelection,
+    *,
+    config: CheckpointEvaluationConfig,
+    inputs: _EvaluationInputs,
+    checkpoint: CheckpointReference,
+    leakage: LeakageCheck,
+    positions: Sequence[PositionPolicy],
+    action_set_scores: Sequence[ActionSetPolicy],
+    passes: _ConditioningPasses | None,
+    frequency: OpeningFrequency | None,
+    recorder: ResultRecorder,
+) -> CheckpointEvaluationResult:
+    """Aggregate one scoring pass under one view, and record what it measured.
+
+    Every quantity here is derived from games already scored, so the second
+    view costs aggregation rather than another pass over the pool.
+    """
+
+    game_ids = frozenset(selection.game_ids)
+    scored = _within(positions, game_ids)
+    slices = aggregate_positions(scored, inputs.scoring, opening_frequency=frequency)
+    opening_tail = None if frequency is None else read_opening_tail(slices, frequency)
+    adjudication = build_adjudication_report(
+        [item for item in action_set_scores if item.game_id in game_ids],
+        inputs.scoring,
+        game_ids=game_ids,
+    )
+    dependency = (
+        None
+        if passes is None
+        else _dependency_for(config, inputs, passes, positions, game_ids)
+    )
+    component = projection_content_digest(
+        [row for row in inputs.scoring.rows if row_game_id(row) in game_ids],
+        MOVE_PREDICTION_PROJECTION,
+    )
+    data = pool_dataset_reference(
+        inputs.pool,
+        selection,
+        component,
+        error=CheckpointEvaluationError,
+    )
+    dispersions = _estimate_dispersions(
+        config,
+        inputs,
+        scored,
+        adjudication,
+        dependency,
+        component,
+        opening_frequency=frequency,
+    )
+    recorder.disperse(dispersions)
+    result = CheckpointEvaluationResult(
+        checkpoint=checkpoint,
+        dataset=data,
+        view=selection,
+        leakage=leakage,
+        slices=slices,
+        adjudication=adjudication,
+        dependency=dependency,
+        dispersions=dispersions,
+        opening_frequency=frequency,
+        opening_tail=opening_tail,
+    )
+    recorder.add(
+        slice_measurements(slices, component),
+        payload=lambda: {
+            **result.as_record(),
+            "positions": (
+                [position.as_record() for position in scored]
+                if config.detail.per_position
+                else None
+            ),
+        },
+        description="Slice tables and view provenance for one evaluation.",
+        slug=selection.name,
+        data=data,
+    )
+    if adjudication is not None:
+        recorder.add(
+            adjudication.measurements(component),
+            kind=ADJUDICATION_KIND,
+            benchmark=ADJUDICATION_BENCHMARK,
+            payload=adjudication.as_record,
+            description=(
+                "Per-predicate human and model rates with rating-band "
+                "drill-down and opportunity counts."
+            ),
+            slug=selection.name,
+            data=data,
+        )
+    if dependency is not None:
+        recorder.add(
+            _dependency_measurements(dependency, component),
+            kind=DEPENDENCY_KIND,
+            benchmark=DEPENDENCY_BENCHMARK,
+            payload=dependency.as_record,
+            description="Cross-conditioning and within-game dependency tables.",
+            slug=selection.name,
+            data=data,
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class _ConditioningPasses:
+    """Every conditioning pass one dependency reading is assembled from.
+
+    Scored once over the union of the reported views and aggregated per view,
+    because a second pass here is nine more passes over the pool.
+    """
+
+    corrupted: Mapping[str, tuple[Conditioning, Sequence[PositionPolicy]]]
+    conditioned: Mapping[int, Sequence[PositionPolicy]]
+    trajectory: Mapping[PositionKey, TrajectorySignal]
+    maturity: MaturityContext
+
+
+def _score_conditionings(
     config: CheckpointEvaluationConfig,
     session: _ScoringSession,
-    inputs: _EvaluationInputs,
-    positions: Sequence[PositionPolicy],
     runner: CheckpointModelRunner,
-) -> DependencyTestResult:
+) -> _ConditioningPasses:
     settings = config.dependency
     values = settings.conditioning_values()
     corrupted: dict[str, tuple[Conditioning, Sequence[PositionPolicy]]] = {}
@@ -720,21 +798,51 @@ def _run_dependency_tests(
             continue
         logger.info("Scoring under a fixed conditioning rating of %s", value)
         conditioned[value] = session.score(_constant_conditioning(value))
+    return _ConditioningPasses(
+        corrupted=corrupted,
+        conditioned=conditioned,
+        trajectory=trajectory,
+        maturity=MaturityContext(
+            step=runner.global_step,
+            processed_positions=runner.processed_positions,
+        ),
+    )
+
+
+def _dependency_for(
+    config: CheckpointEvaluationConfig,
+    inputs: _EvaluationInputs,
+    passes: _ConditioningPasses,
+    positions: Sequence[PositionPolicy],
+    game_ids: frozenset[int],
+) -> DependencyTestResult:
+    """Assemble the dependency reading over one view's share of the passes."""
+
     try:
         return build_dependency_result(
-            config=settings,
+            config=config.dependency,
             contexts=inputs.scoring.contexts,
-            true_positions=positions,
-            corrupted_positions=corrupted,
-            conditioned_positions=conditioned,
-            trajectory=trajectory,
-            maturity=MaturityContext(
-                step=runner.global_step,
-                processed_positions=runner.processed_positions,
-            ),
+            true_positions=_within(positions, game_ids),
+            corrupted_positions={
+                name: (conditioning, _within(scored, game_ids))
+                for name, (conditioning, scored) in passes.corrupted.items()
+            },
+            conditioned_positions={
+                rating: _within(scored, game_ids)
+                for rating, scored in passes.conditioned.items()
+            },
+            trajectory=passes.trajectory,
+            maturity=passes.maturity,
         )
     except DependencyError as error:
         raise CheckpointEvaluationError(str(error)) from error
+
+
+def _within(
+    positions: Sequence[PositionPolicy],
+    game_ids: frozenset[int],
+) -> tuple[PositionPolicy, ...]:
+    return tuple(position for position in positions if position.game_id in game_ids)
 
 
 def _dependency_measurements(
