@@ -6,6 +6,7 @@ Nothing this project installs is on `PATH`. Every command takes the `uv run`
 prefix, including `anthro` and `anthro-uci`.
 
 ```console agent-commands
+./scripts/check-docs
 uv sync --locked
 uv lock --check
 uv run ruff format --check .

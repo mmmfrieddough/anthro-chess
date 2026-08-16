@@ -28,76 +28,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Agent guide names commands that exist
-        run: |
-          test -f AGENTS.md || exit 0
-          for h in '## Commands' '## Where to look' '## Traps' '## Working here'; do
-            grep -qxF -- "$h" AGENTS.md \
-              || { echo "::error file=AGENTS.md::missing heading $h"; exit 1; }
-          done
-          sed 's/^[[:space:]]*//; s/^run:[[:space:]]*//; s/[[:space:]]*$//' \
-            .github/workflows/ci.yml > "$RUNNER_TEMP/ci-cmds"
-          sed -n '/^```console agent-commands$/,/^```$/{//!p}' AGENTS.md \
-            | sed 's/[[:space:]]*#.*//; s/[[:space:]]*$//' | grep . \
-            > "$RUNNER_TEMP/ag-cmds" \
-            || { echo "::error file=AGENTS.md::no non-empty 'console agent-commands' block"; exit 1; }
-          while read -r c; do
-            grep -qxF -- "$c" "$RUNNER_TEMP/ci-cmds" \
-              || { echo "::error file=AGENTS.md::names a command CI does not run: $c"; exit 1; }
-          done < "$RUNNER_TEMP/ag-cmds"
-          printf '%s\n' \
-            'uv lock --check' \
-            'uv run ruff format --check .' \
-            'uv run ruff check .' \
-            'uv run mypy src tests' \
-            'uv run pytest' > "$RUNNER_TEMP/req-cmds"
-          while read -r c; do
-            grep -qxF -- "$c" "$RUNNER_TEMP/ag-cmds" \
-              || { echo "::error file=AGENTS.md::no longer names a command CI requires: $c"; exit 1; }
-          done < "$RUNNER_TEMP/req-cmds"
-          if grep -nE '`(anthro-uci|anthro) [^`]*`' AGENTS.md; then
-            echo "::error file=AGENTS.md::bare console script above needs the 'uv run' prefix"; exit 1
-          fi
-
-      - name: Decision record numbers are unique
-        run: |
-          dupes="$(ls docs/decisions | sed -n 's/^\([0-9]\{4\}\)-.*/\1/p' | sort | uniq -d)"
-          if [ -n "$dupes" ]; then
-            for n in $dupes; do
-              echo "::error file=docs/decisions::number $n is used by:" \
-                "$(ls docs/decisions/"$n"-* | tr '\n' ' ')"
-            done
-            exit 1
-          fi
-
-      - name: Decision record cross-references are two-way
-        run: |
-          fail=0
-          for f in docs/decisions/*.md; do
-            src=$(basename "$f" .md)
-            for tgt in $(sed -n '/^## Status$/,/^## /p' "$f" \
-                         | grep -oE '0[0-9]{3}-[a-z0-9-]+' | sort -u); do
-              [ "$tgt" = "$src" ] && continue
-              if [ ! -f "docs/decisions/$tgt.md" ]; then
-                echo "::error file=$f::Status names $tgt, which is not a decision record"
-                fail=1; continue
-              fi
-              if ! sed -n '/^## Status$/,/^## /p' "docs/decisions/$tgt.md" \
-                   | grep -qF "$src"; then
-                echo "::error file=docs/decisions/$tgt.md::$src names this record in its Status; add the matching line here"
-                fail=1
-              fi
-            done
-            for n in $(awk '/^## /{inst = ($0=="## Status")} !inst' "$f" \
-                       | grep -oiE '(refine|supersede|extend)[sd]? (decision )?`?0[0-9]{3}' \
-                       | grep -oE '0[0-9]{3}' | sort -u); do
-              if ! sed -n '/^## Status$/,/^## /p' "$f" | grep -q "$n-"; then
-                echo "::error file=$f::body declares a relationship to $n; declare it in Status, which is where the two-way check reads"
-                fail=1
-              fi
-            done
-          done
-          exit $fail
+      - name: Check repository docs invariants
+        run: ./scripts/check-docs
 
       - name: Verify lockfile
         run: uv lock --check
