@@ -43,6 +43,8 @@ the project specification.
 - `docs/data.md`: data philosophy, source handling, schema direction, and
   training-data constraints.
 - `docs/training-and-runtime.md`: model training and runtime behavior.
+- `docs/scaling.md`: how model size is chosen, the order the scaling decisions
+  are taken in, and which of them a later change forces back open.
 - `docs/interfaces.md`: UCI and other external or native interfaces.
 - `docs/evaluation.md`: evaluation philosophy, metrics, and benchmark shape.
 - `docs/preference-controls.md`: preference-control subsystem design.

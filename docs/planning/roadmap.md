@@ -158,12 +158,43 @@ says how to tell an improvement from run-to-run noise, so every model-affecting
 change otherwise sets its own evidence standard. That definition should compose
 the machinery this stage and stage 3 already built rather than add tooling.
 
-This stage ends by freezing the evaluation reference, because that is the event
-the disposability window closes at rather than a stage boundary. Deciding
-engine-assisted filtering, widening the corpus across the measurement axes,
-cutting the second pool generation, and designating the core all land here, in
-that order: each breaks containment or ends a benchmark series, and all of them
-are free until the designation and permanent after it.
+**What separates this stage from the next is a single question: does changing
+this invalidate readings already taken?** Everything answering yes belongs here,
+because the cost of being wrong is not redoing the item but redoing everything
+measured against it. Everything answering no is a reading, and readings do not
+spoil one another. `docs/scaling.md` states that rule and the program it orders.
+
+So this stage ends by fixing the whole reference frame rather than only the
+evaluation half of it. Deciding engine-assisted filtering, widening the corpus
+across the measurement axes, cutting the first pool generation, and designating
+the core land in that order, each breaking containment or ending a series and all
+free until the designation and permanent after it. Three further items close the
+frame, and none of them is an experiment:
+
+- **The target model scale**, which follows from the compute budget and the
+  deployment envelope rather than from any measurement, and which sizes
+  everything below it.
+- **The learning-rate schedule family**, which decides for the life of the
+  project whether extending a run is a branch or a restart, and which is part of
+  the vehicle's configuration and so cannot follow it.
+- **The ablation vehicle**: one frozen training configuration that every later
+  candidate change is read against, its identity pinned by a test, and its
+  seed dispersion characterized against that pin.
+  `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
+  owns why it exists and what it gives up.
+
+The vehicle follows the designation rather than preceding it, because it needs a
+pool to read against. That ordering costs something worth naming: the core's
+per-axis coverage is sized without a checkpoint that plays like the eventual
+model, so it is provisioned generously rather than tightly, since held-out games
+are cheap and the designation is permanent.
+
+The vehicle is what makes the rest affordable. Decision 0029 measured seed
+variance and concluded such a characterization "belongs to a configuration rather
+than to a change, so a base worth several changes pays for it once"; decision
+0043 then removed the machinery because no configuration in this project ever
+stood still long enough to be that base. Creating one deliberately is the whole
+of what is new here.
 
 Buying capacity is what belongs to stage 5 and is blocked on this one.
 
@@ -171,23 +202,56 @@ Buying capacity is what belongs to stage 5 and is blocked on this one.
 
 Use the working loop and evaluation harness to improve the bot.
 
-The first work in this stage is the move-only model itself: expand data scale,
-tune sampling and weighting, improve model capacity, strengthen checkpointing
-and reproducible runs, and improve runtime reliability. Iterating here is the
-point of having built the harness first, and it should continue until the
-benchmark surfaces stop moving.
+Everything in this stage is a reading. Stage 4 fixed the frame — the corpus, the
+core, the target scale, the schedule family, the vehicle and its seed floor — so
+nothing here invalidates anything measured before it, and the items below are
+ordered by what each one needs rather than by what it would spoil.
+`docs/scaling.md` owns the program and the coupling that sets the order; the
+sequence here is that program applied to this project's queue.
+
+**Hyperparameter rules come first**, because the peak learning rate is coupled to
+almost everything else and a comparison whose two arms are unequally tuned
+measures the tuning. What is wanted is a rule producing the setting from the
+scale rather than a value that was right once — for the learning rate, the batch
+size, the warmup length, and the weight-decay timescale — validated at one size
+not used in fitting it.
+
+**The size-versus-data question is one decision, not several.** Total training
+compute is about six times the parameter count times the positions processed, so
+a fixed budget leaves the ratio between them as the only free quantity, and
+positions processed is steps times batch rather than a separate axis. A ladder of
+several small sizes answers it once and the target's size and horizon follow
+arithmetically. The absolute size is not tuned here: it was derived in stage 4
+from budget and envelope, and outside work puts a sizing error within roughly 1.5x
+below what any reading here resolves.
+
+The one thing the ladder needs that this project has not measured is where the
+current architecture stops improving. Every checkpoint read so far stopped on a
+step bound while still improving, so whether capacity or budget binds is unknown.
+It is now a two-way question rather than three: at the corpus stage 4 builds,
+every size in the plausible range trains on well under one pass, so data is not
+the binding resource and does not need a run to rule out. Under a constant trunk
+with cooldowns the answer is one run branched at several horizons rather than
+several runs, which is what makes this the ladder's cheap half rather than a
+separate exercise.
+
+**Candidate changes are then arms against the vehicle**, one variable each,
+priced against the vehicle's seed floor rather than against the evaluation floor
+alone. Reading the clock belongs here: it is a change to what the model is given,
+so it is measured the way any other candidate is, and doing so at vehicle scale
+is what makes its improvement readable without spending a target-scale run on it.
+Because arms against a frozen base yield no interaction terms, the accepted set
+runs together as one further arm before any of it reaches the canonical line.
+
+**A confirmation run then reads the target size at a fraction of its horizon**,
+which holds the size term fixed and removes the hardest extrapolation, before the
+full run. A confirmation that misses its predicted loss is a confound rather than
+a surprise, and is cheaper to find there than in the run itself.
 
 Distribution replicates the model rather than sharding it, so it buys throughput
 and not capacity, and the per-card memory ceiling still bounds how large a model
-this stage can select.
-
-Before capacity is scaled, the current architecture should be trained until its
-held-out metrics plateau. Every checkpoint the project has read so far stopped
-on a step bound while still improving, so which resource is binding — capacity,
-data, or budget — is not yet known. A budget answer costs one run at the current
-size; a capacity answer costs several runs at larger sizes against a fixed
-memory ceiling. Establishing the plateau first is both the cheaper question and
-the control that makes the capacity comparison readable.
+this stage can select. That ceiling is a constraint on the allocation rule rather
+than a separate decision: where it binds, size is not a free parameter at all.
 
 The data work that establishes the reference happens in stage 4, in an order
 later comparisons depend on: training selection becomes a filterable dial over
@@ -248,16 +312,22 @@ hurried move to the position rather than to the clock, and is wrong in a way
 more data cannot fix.
 
 Within that, training selection widens across speeds first and trains
-unconditioned; the inputs are added afterward and the two arms compared. The
-widened unconditioned arm is the control, and training it is not wasted work:
-`docs/decisions/0029-model-change-control-arm.md` requires a control identical
-in corpus, so a narrow blitz baseline cannot carry a claim about conditioning.
-That arm may read flat or worse than the narrow baseline despite training on
-more data, because widening adds variation the model cannot yet attribute; the
-gap is what conditioning closes rather than a regression to chase. Read the
-comparison per speed, since an unconditioned model regresses toward the dominant
-speed and an aggregate hides that in the blend. The class is derivable from a
-normalized row, so the slice costs nothing — see
+unconditioned; the inputs are added afterward and the two arms compared. A
+control identical in corpus is what
+`docs/decisions/0029-model-change-control-arm.md` requires, so a narrow blitz
+baseline cannot carry a claim about conditioning. **Whether that control has to
+be trained is decided by the vehicle's selection**: where the vehicle already
+spans speeds unconditioned, it is the control and the comparison costs one arm;
+where it does not, the widened unconditioned arm is trained here and is not
+wasted work. Sizing the vehicle's selection is therefore a decision about what it
+can serve as a control for, not only about what it costs to run.
+
+An unconditioned arm on the widened selection may read flat or worse than a
+narrow baseline despite training on more data, because widening adds variation
+the model cannot yet attribute; the gap is what conditioning closes rather than a
+regression to chase. Read the comparison per speed, since an unconditioned model
+regresses toward the dominant speed and an aggregate hides that in the blend. The
+class is derivable from a normalized row, so the slice costs nothing — see
 `docs/decisions/0056-the-speed-axis-is-derived-from-the-time-control.md`.
 
 Untimed play becomes the missing-value path once the move head reads clocks,

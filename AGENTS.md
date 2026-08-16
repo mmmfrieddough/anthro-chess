@@ -42,6 +42,7 @@ refined or superseded it, so the one you land on says where to go next.
 | the change alters what a player observes | `docs/engine-behavior.md` |
 | touching acquisition, preparation, or the normalized record | `docs/data.md` |
 | touching training, checkpoints, or the artifact roots | `docs/training-and-runtime.md` |
+| choosing a model size, or reading a change against the vehicle | `docs/scaling.md` |
 | touching UCI or any external protocol | `docs/interfaces.md` |
 | adding or changing a benchmark or metric — read the matching section | `docs/evaluation.md` |
 | preference-control work | `docs/preference-controls.md` |
@@ -63,10 +64,11 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   no checkpoints; an empty worktree is not evidence, because unset roots and a
   machine with no artifacts look identical from inside the repository.
 - A `noise cleared` verdict does not say a change worked. A floor says the delta
-  survived a different draw of the units the two readings scored; no floor here
-  sees training-seed noise, and two arms differ by their seeds as well as by the
-  change. `docs/evaluation.md` (Regression Comparisons) says what a claim rests
-  on.
+  survived a different draw of the units the two readings scored, and two arms
+  differ by their seeds as well as by the change. Only a comparison read against
+  the ablation vehicle carries a seed floor as well; every other comparison is
+  unqualified on seed. `docs/evaluation.md` (Regression Comparisons) says what a
+  claim rests on.
 - Use exact chess logic for board reconstruction, legal move generation, and
   rule bookkeeping.
 - Legal-mask model move outputs before sampling.

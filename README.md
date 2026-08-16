@@ -326,6 +326,7 @@ capability is implemented:
 - [Engine behavior](docs/engine-behavior.md)
 - [Data](docs/data.md)
 - [Training and runtime](docs/training-and-runtime.md)
+- [Scaling](docs/scaling.md)
 - [Interfaces](docs/interfaces.md)
 - [Evaluation](docs/evaluation.md)
 - [Preference controls](docs/preference-controls.md)
