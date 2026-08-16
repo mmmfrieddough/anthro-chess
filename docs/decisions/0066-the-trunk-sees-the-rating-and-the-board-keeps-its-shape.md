@@ -210,20 +210,44 @@ source-destination head. Chessformer's 57.1% at 79M against Allie's 355M was run
 with more compute than this project has, and re-deriving it costs runs and
 returns the same answer.
 
-**Measured here.** The conditioning path, because no published result covers it:
-Maia-2's contribution was avoiding per-band models, ChessMimic retreated to
-shipping them, and neither targets a dial that spans strength the way
-`docs/vision.md` asks for. The arms and what they read are recorded in the pull
-request that landed this record; `docs/evaluation.md` owns what such a reading is
-and is not.
+**Measured here, and the measurement came back short of the claim.** Arms were
+run because no published result covers the conditioning path: Maia-2's
+contribution was avoiding per-band models, ChessMimic retreated to shipping them,
+and neither targets a dial that spans strength the way `docs/vision.md` asks for.
+What the arms established is narrower than what this record decides, and the
+difference is worth stating plainly rather than leaving to be inferred.
 
-A pre-vehicle bake-off is **unqualified on seed**, because the vehicle whose
+**What was measured.** The architecture as a whole is a much better move
+predictor — 1.80 held-out move loss against 2.49 for a baseline with twice the
+parameters, at a seed spread of 0.03. That is a large effect and it is not in
+doubt.
+
+**What was not.** That reading cannot say which of the three changes earned it,
+and the board representation is the likeliest cause: it is the one Chessformer
+credits for beating a model 4.5 times its size. The ladder, which is the
+instrument that targets the dial, did not separate the arms — nine to 66 Elo of
+span across a 900-Elo configured range, better at two temperatures and worse at
+the third. **No reading here shows that moving the rating improved the dial.**
+
+So the placement is taken on the same footing as the other two: what both
+comparable unified models do, and the mechanism argument above. That is the
+disposition `#500` prescribes for a close reading — pick on the other grounds and
+say that is what happened — and it is what happened.
+
+Two facts from those readings belong here because they bear on whether the dial
+is an architecture question at all. **Every seat fits near its arm's own playing
+strength** regardless of the rating it was asked for, and that strength sits
+where the corpus mass sits: the training selection is unimodal at 1400-2000,
+which is 69% of it. And **temperature moves fitted strength five to ten times
+further than the dial does** — 330 Elo against 30 to 66 in the same reading. A
+model that will not play down on request is not obviously short of capacity,
+since playing worse costs none. `#496` owns what follows from that.
+
+A pre-vehicle bake-off is also **unqualified on seed**, because the vehicle whose
 dispersion would qualify it does not exist yet — 0029 measured up to 14 of 54
-floored metrics clearing on initialization alone. It is therefore an instrument
-for large effects only, which is the right instrument for this question: a
-conditioning path that fixes a 12-Elo span across a 900-Elo range should not need
-a floor to be visible. Where the reading is close, it did not decide anything,
-and the choice rests on the mechanism argument above rather than on a margin.
+floored metrics clearing on initialization alone. It is an instrument for large
+effects only. The move-prediction effect was large; the dial effect, if there is
+one, was not.
 
 ## What This Gives Up, Deliberately
 
