@@ -153,9 +153,7 @@ class PoolConfig(ConfigModel):
     #: The generation this cut must contain, absent only for the first one.
     #: Verified by reading it, so cutting a generation means holding its
     #: predecessor's artifact — which is the cost of the check being a missing
-    #: game rather than a changed setting. A lowered fraction, an edited sample
-    #: seed, a widened marked-account snapshot, and a filter that newly rejects
-    #: an accepted game all surface here and nowhere else.
+    #: game rather than a changed setting.
     predecessor: Path | None = None
     #: Which generation the predecessor is required to be. Without it the check
     #: still runs, against whatever pool the path happens to hold — and a
@@ -221,8 +219,7 @@ class FrozenPool:
     games_path: Path
     manifest: dict[str, Any]
     games: tuple[PoolGame, ...]
-    #: Absent until a generation is designated, which is the state every
-    #: reading before that point was taken in.
+    #: Absent until a generation is designated.
     core: DesignatedCore | None = None
 
     @property
@@ -271,9 +268,8 @@ class PoolResult:
     games: int
     plies: int
     game_ids_sha256: str
-    #: What this cut designated the core as, absent when it designated none.
     #: The name every later generation inherits, and the one a second
-    #: designation is refused against.
+    #: designation is refused against. Absent when this cut designated nothing.
     core_id: str | None = None
     #: The per-axis counts a caller reports at designation, when the core's
     #: power on each axis stops being changeable. Carried out of the freeze
@@ -511,9 +507,8 @@ def load_pool(
     A load repeated in the same process reuses the games an earlier one
     parsed, but skips none of the verification: the manifest is re-read, the
     artifact re-checksummed, and the recorded identity re-derived every time.
-    The core a generation carries is verified here too, deliberately rather than
-    where a reader first asks for it — a corrupt one propagates into every cut
-    taken afterwards, so it is worth catching on the load that reads it.
+    That includes the core a generation carries, verified on the load rather
+    than lazily where a reader first asks for it.
 
     Every check but one asks whether the pool is intact and readable by this
     code. ``expected_game_ids_sha256`` is what the caller's configuration
@@ -660,15 +655,14 @@ class _ShardScan:
 
 @dataclass(frozen=True)
 class _Predecessor:
-    """The three facts a cut needs from the generation before it.
+    """What a cut needs from the generation before it.
 
     Deliberately not the :class:`FrozenPool` itself. This is read before the
-    scan so a wrong path fails in seconds instead of at the end of it, which
-    means whatever is held here stays resident across the whole scan and is
-    copied into all sixteen workers at the fork. A loaded pool carries its
-    manifest — every game id and content digest in it — for the two fields
-    below, which measured 45.7 MB against a 50,073-game generation and scales
-    with the pool.
+    scan so a wrong path fails in seconds rather than at the end of one, which
+    means whatever it holds stays resident for the whole scan and is inherited
+    by every forked worker. A loaded pool would drag its manifest along — every
+    game id and content digest in it — measured at 45.7 MB against a
+    50,073-game generation, and growing with the pool.
     """
 
     game_ids: frozenset[int]
@@ -768,6 +762,12 @@ def _designated_core(
     """
 
     if config.designates_core:
+        # Reachable only through a named predecessor, and deliberately so: a cut
+        # that names none is claiming to be the first generation, and nothing in
+        # the artifacts can check that claim. Containment rests on the same
+        # claim — a cut with no predecessor verifies nothing — so the two holes
+        # are one hole, and it is the reason `designates_core` is worth a review
+        # rather than a flag.
         if previous is not None and previous.core is not None:
             raise EvaluationPoolError(
                 "the generation at "
@@ -802,7 +802,12 @@ def _core_record(
     game_ids_sha256: str,
     game_ids: Sequence[int],
 ) -> dict[str, Any]:
-    """Return the core block a generation carries, in ascending game id.
+    """Return the core block a generation carries.
+
+    ``game_ids`` must already be ascending: the loader digests this record with
+    the helper that assumes sorted input, so an unsorted caller would write a
+    record whose digest is self-consistent and does not equal the canonical
+    digest of that set — wrong in a way nothing downstream can see.
 
     One shape whether this generation designated the core or inherited it. The
     designating one could leave its ids out, since its own are the core's, but
@@ -849,10 +854,9 @@ def _scan_shards(
     corpus scale: the pass is two SHA-256 digests and a Python-level loop over
     every row, none of which vectorizes, so processes are the only lever.
 
-    Results arrive in the order the shards were submitted rather than the order
-    they finished, which bounds what the merge holds without the caller
-    depending on either: it sorts by game id before deriving identity, so the
-    pool's digest is independent of how the work was divided.
+    The caller depends on neither the order shards finish in nor the order they
+    arrive: it sorts by game id before deriving identity, so the pool's digest
+    is independent of how the work was divided.
     """
 
     if workers == 1:

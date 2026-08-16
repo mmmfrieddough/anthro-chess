@@ -26,10 +26,8 @@ from anthro_chess.data.schema import (
 )
 from anthro_chess.evaluation.slices import position_slices
 
-#: The coverage entries counted in games rather than in positions. Named here,
-#: with the dict that produces them, because that is where one is added or
-#: renamed — a caller holding its own copy of these keys would keep reporting
-#: the old set, or fail on a key that moved.
+#: The coverage entries counted in games rather than in positions, which the
+#: key names alone do not say for all three.
 PER_GAME_AXES = ("results", "speed_games", "clock_presence_games")
 
 

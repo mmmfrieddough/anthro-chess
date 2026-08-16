@@ -20,10 +20,10 @@ from enum import StrEnum
 #: PGN ``TimeControl`` for a game played without a clock.
 _UNLIMITED = "-"
 
-#: What a game with no bandable clock is counted under on a speed axis. Named
-#: beside the derivation because the corpus manifest and the pool manifest both
-#: carry that axis and are meant to be read against each other; two spellings of
-#: this bucket would make one of those comparisons quietly wrong.
+#: What a game with no bandable clock is counted under on the speed axis. The
+#: corpus manifest and the pool manifest both carry that axis and are meant to
+#: be read against each other, so two spellings of this bucket would make the
+#: comparison quietly wrong.
 UNCLASSIFIED_SPEED = "unclassified"
 
 _TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")

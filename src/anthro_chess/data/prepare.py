@@ -1976,10 +1976,15 @@ def _summed_counts(blocks: Iterable[Mapping[str, int]]) -> dict[str, int]:
 
 
 def _rating_bucket(rating: object) -> str:
-    """Name the bucket a player-slot's normalized rating falls in."""
+    """Name the bucket a player-slot's normalized rating falls in.
+
+    A slot with no usable rating lands in a bucket spelled like the speed axis'
+    but meaning something else on a different axis; the two are not the same
+    fact and do not have to move together.
+    """
 
     if not isinstance(rating, int):
-        return UNCLASSIFIED_SPEED
+        return "unclassified"
     floor = rating // _RATING_BUCKET_POINTS * _RATING_BUCKET_POINTS
     # Zero-padded so the manifest's sorted keys read in rating order; without
     # it a three-digit bucket lands between the two- and four-digit ones.
