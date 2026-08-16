@@ -48,6 +48,7 @@ from anthro_chess.evaluation.results.noise import combined_floor
 from anthro_chess.evaluation.results.records import (
     CORE_VIEW_SUFFIX,
     Measurement,
+    MetricDispersion,
     ResultEnvelope,
 )
 from anthro_chess.evaluation.results.store import (
@@ -364,6 +365,12 @@ class HistoryPoint:
     environment_changed: bool = False
     #: Which view of the pool produced this point, once a core is designated.
     view: str | None = None
+    #: Which pool it was scored over. A cadence preview writes this metric
+    #: under the same checkpoint label, over the validation split of another
+    #: pool, so the label alone does not say two points are comparable halves.
+    pool_id: str | None = None
+    #: What this reading's own spread was estimated at, where one was.
+    dispersion: MetricDispersion | None = None
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable point."""
@@ -379,6 +386,7 @@ class HistoryPoint:
             "environment": self.environment,
             "environment_changed": self.environment_changed,
             "view": self.view,
+            "pool_id": self.pool_id,
         }
 
 
@@ -394,12 +402,25 @@ class CoreDivergence:
     checkpoint: str
     core: float
     current: float
+    #: The gap noise alone produces between these two readings, absent when
+    #: either lacks a spread. The two score different game sets, so their
+    #: sampling error does not cancel the way it does for two checkpoints read
+    #: against one fixed reference.
+    floor: float | None = None
 
     @property
     def divergence(self) -> float:
         """Return how far current sits from core, signed toward current."""
 
         return self.current - self.core
+
+    @property
+    def clears_noise(self) -> bool | None:
+        """Return whether the gap is larger than noise alone would produce."""
+
+        if self.floor is None:
+            return None
+        return abs(self.divergence) > self.floor
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable divergence."""
@@ -409,6 +430,8 @@ class CoreDivergence:
             "core": self.core,
             "current": self.current,
             "divergence": self.divergence,
+            "floor": self.floor,
+            "clears_noise": self.clears_noise,
         }
 
 
@@ -429,21 +452,31 @@ class MetricHistory:
         measured badly.
         """
 
-        by_checkpoint: dict[str, dict[bool, float]] = {}
+        paired: dict[tuple[str, str | None], dict[bool, HistoryPoint]] = {}
         for point in self.points:
             if point.view is None:
                 continue
-            views = by_checkpoint.setdefault(point.checkpoint, {})
-            views[point.view.endswith(f"-{CORE_VIEW_SUFFIX}")] = point.value
-        return tuple(
-            CoreDivergence(
-                checkpoint=checkpoint,
-                core=views[True],
-                current=views[False],
+            views = paired.setdefault((point.checkpoint, point.pool_id), {})
+            views[point.view.endswith(f"-{CORE_VIEW_SUFFIX}")] = point
+        divergences: list[CoreDivergence] = []
+        for (checkpoint, _pool), views in paired.items():
+            if len(views) != 2:
+                continue
+            core, current = views[True], views[False]
+            floor = (
+                combined_floor(core.dispersion, current.dispersion)
+                if core.dispersion is not None and current.dispersion is not None
+                else None
             )
-            for checkpoint, views in by_checkpoint.items()
-            if len(views) == 2
-        )
+            divergences.append(
+                CoreDivergence(
+                    checkpoint=checkpoint,
+                    core=core.value,
+                    current=current.value,
+                    floor=floor,
+                )
+            )
+        return tuple(divergences)
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable history."""
@@ -675,6 +708,8 @@ def build_history(
                     and environment != previous_environment
                 ),
                 view=None if envelope.data is None else envelope.data.view,
+                pool_id=None if envelope.data is None else envelope.data.pool_id,
+                dispersion=found.dispersion,
             )
         )
         previous_fingerprint = found.fingerprint
@@ -906,10 +941,12 @@ def _render_divergences(history: MetricHistory) -> list[str]:
     if not divergences:
         return []
     lines = ["", "  current less core, per checkpoint:"]
-    lines.extend(
-        f"    {item.checkpoint:<24} {_format(item.divergence, signed=True):>12}"
-        for item in divergences
-    )
+    for item in divergences:
+        row = f"    {item.checkpoint:<24} {_format(item.divergence, signed=True):>12}"
+        if item.floor is not None:
+            verdict = "clears noise" if item.clears_noise else "within noise"
+            row = f"{row}  floor {_format(item.floor):>10}  {verdict}"
+        lines.append(row)
     return lines
 
 

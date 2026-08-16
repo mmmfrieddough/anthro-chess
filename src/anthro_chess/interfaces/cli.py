@@ -1862,6 +1862,24 @@ def _recorded_lines(recorded_paths: Sequence[Path]) -> list[str]:
     return ["", *(f"Recorded: {path}" for path in recorded_paths)]
 
 
+def _core_view_line(result: CheckpointEvaluationResult) -> list[str]:
+    """Name the core reading this invocation also recorded, where there is one.
+
+    The numbers printed below are the current view's. The core reading is
+    written to the store rather than rendered, so without this the operator has
+    no sign that a second reading exists or which files hold it.
+    """
+
+    views = {
+        envelope.data.view
+        for envelope in result.envelopes
+        if envelope.data is not None and envelope.data.view.endswith("-core")
+    }
+    if not views:
+        return []
+    return [f"Core: also recorded against {', '.join(sorted(views))}"]
+
+
 def _render_evaluation(result: CheckpointEvaluationResult) -> str:
     from anthro_chess.evaluation.aggregation import PHASE_DIMENSION
 
@@ -1879,6 +1897,7 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
             f"{result.leakage.training_split} game(s) "
             f"[{result.leakage.algorithm}]"
         ),
+        *_core_view_line(result),
         "",
         f"move_loss                 {overall.move_loss:.6f}",
         f"legal_move_loss           {overall.legal_move_loss:.6f}",

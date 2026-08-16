@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 
-from pydantic import Field, StrictBool
+from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import Speed
@@ -53,6 +53,15 @@ class ViewConfig(ConfigModel):
     #: date for is excluded by either bound rather than assumed to be in range.
     minimum_date: date | None = None
     maximum_date: date | None = None
+
+    @model_validator(mode="after")
+    def _check_name(self) -> ViewConfig:
+        if self.name.endswith(f"-{CORE_VIEW_SUFFIX}"):
+            raise ValueError(
+                f"a view name ending in -{CORE_VIEW_SUFFIX} is how a stored "
+                "reading says it was taken against the designated core"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -103,10 +112,13 @@ class DualSelection:
         """Return the views this reading reports, current first.
 
         Current leads because it is the number that answers how good a
-        checkpoint is; core follows and answers whether it improved.
+        checkpoint is; core follows and answers whether it improved. A core
+        view this reading's filters emptied is dropped rather than reported,
+        since scoring nothing would end the reading and take the current view
+        down with it.
         """
 
-        if self.core is None:
+        if self.core is None or not self.core.game_ids:
             return (self.current,)
         return (self.current, self.core)
 

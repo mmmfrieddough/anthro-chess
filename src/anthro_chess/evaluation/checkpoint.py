@@ -493,9 +493,12 @@ def evaluate_checkpoint(
         shuffle_seed=config.dependency.shuffle_seed,
     )
     logger.info(
-        "Scoring %s game(s) from pool view %r",
-        inputs.selection.selected_games,
-        inputs.selection.name,
+        "Scoring %s game(s) for %s",
+        len(inputs.dual.scored_game_ids),
+        ", ".join(
+            f"{item.name} ({item.selected_games} game(s))"
+            for item in inputs.dual.reported
+        ),
     )
     positions, action_set_scores = session.score_primary()
     passes = (
@@ -564,6 +567,7 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
 def _estimate_dispersions(
     config: CheckpointEvaluationConfig,
     inputs: _EvaluationInputs,
+    selection: ViewSelection,
     positions: Sequence[PositionPolicy],
     adjudication: AdjudicationReport | None,
     dependency: DependencyTestResult | None,
@@ -598,8 +602,8 @@ def _estimate_dispersions(
             component=component,
             config=config.noise,
             source=(
-                f"bootstrap over {inputs.selection.selected_games} game(s) of "
-                f"pool view {inputs.selection.name!r}"
+                f"bootstrap over {selection.selected_games} game(s) of "
+                f"pool view {selection.name!r}"
             ),
         )
     except NoiseCharacterizationError as error:
@@ -671,14 +675,14 @@ def _report_view(
     slices = aggregate_positions(scored, inputs.scoring, opening_frequency=frequency)
     opening_tail = None if frequency is None else read_opening_tail(slices, frequency)
     adjudication = build_adjudication_report(
-        [item for item in action_set_scores if item.game_id in game_ids],
+        action_set_scores,
         inputs.scoring,
         game_ids=game_ids,
     )
     dependency = (
         None
         if passes is None
-        else _dependency_for(config, inputs, passes, positions, game_ids)
+        else _dependency_for(config, inputs, passes, scored, game_ids)
     )
     component = projection_content_digest(
         [row for row in inputs.scoring.rows if row_game_id(row) in game_ids],
@@ -693,6 +697,7 @@ def _report_view(
     dispersions = _estimate_dispersions(
         config,
         inputs,
+        selection,
         scored,
         adjudication,
         dependency,
@@ -816,13 +821,17 @@ def _dependency_for(
     positions: Sequence[PositionPolicy],
     game_ids: frozenset[int],
 ) -> DependencyTestResult:
-    """Assemble the dependency reading over one view's share of the passes."""
+    """Assemble the dependency reading over one view's share of the passes.
+
+    ``positions`` is already this view's; the conditioning passes span the
+    union and are narrowed here.
+    """
 
     try:
         return build_dependency_result(
             config=config.dependency,
             contexts=inputs.scoring.contexts,
-            true_positions=_within(positions, game_ids),
+            true_positions=positions,
             corrupted_positions={
                 name: (conditioning, _within(scored, game_ids))
                 for name, (conditioning, scored) in passes.corrupted.items()

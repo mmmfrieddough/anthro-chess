@@ -401,6 +401,14 @@ def measurements_by_workload(
         key = UNSCOPED_WORKLOAD
         if workload_scoped and envelope.execution is not None:
             key = envelope.execution.workload_sha256
+        # The view joins the key for the same reason the workload does: once a
+        # core is designated one checkpoint has two readings of this metric,
+        # recorded together and differing only by which games they scored.
+        # Without it the two land on one key and the survivor is decided by a
+        # content-hash tie-break, so a delta could compare one view's number
+        # against the other's.
+        if envelope.data is not None:
+            key = f"{key}\0{envelope.data.view}"
         grouped[key] = (envelope, found)
     return grouped
 

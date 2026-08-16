@@ -1132,3 +1132,114 @@ def test_the_core_holds_its_games_while_the_current_view_grows(
         for name, envelope in by_view.items()
     }
     assert fingerprints[core] != fingerprints[current]
+
+
+def test_each_view_adjudicates_and_tests_dependency_over_its_own_games(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The counts, not just the digests, have to come from the view's games.
+
+    A digest is computed from the rows separately, so a reading whose
+    adjudication or dependency was assembled over the whole union would still
+    carry the right fingerprint and be wrong underneath it.
+    """
+
+    rows = [
+        normalized_row(
+            index,
+            split="train" if index < 3 else "test",
+            plies=10,
+            rating=1000 + index * 100,
+        )
+        for index in range(1, 13)
+    ]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:6])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+    designated = _freeze(
+        tmp_path, smaller, smaller_manifest, name="first", designates_core=True
+    )
+    grown_pool = _freeze(
+        tmp_path, grown, grown_manifest, name="second", predecessor=designated
+    )
+    checkpoint = training_run(
+        tmp_path / "run", normalized=smaller, manifest=smaller_manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    _evaluate(_config(grown_pool, checkpoint), store=store)
+
+    recorded = store.results()
+
+    def _sample(kind: str, metric: str, core: bool) -> int | None:
+        envelope = next(
+            item
+            for item in recorded
+            if item.kind == kind
+            and item.data is not None
+            and item.data.view.endswith("-core") is core
+        )
+        found = envelope.measurement(metric)
+        assert found is not None
+        return found.sample_size
+
+    core_rated = _sample(
+        DEPENDENCY_KIND, "dependency.rating_anchor_policy_divergence", True
+    )
+    current_rated = _sample(
+        DEPENDENCY_KIND, "dependency.rating_anchor_policy_divergence", False
+    )
+    assert core_rated is not None and current_rated is not None
+    assert core_rated < current_rated
+
+    core_seen = _sample(ADJUDICATION_KIND, "adjudicated.material_gain_human_rate", True)
+    current_seen = _sample(
+        ADJUDICATION_KIND, "adjudicated.material_gain_human_rate", False
+    )
+    assert core_seen is not None and current_seen is not None
+    assert core_seen < current_seen
+
+
+def test_a_core_view_its_filters_empty_still_reports_the_current_one(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """Scoring nothing would end the reading and take the current view with it."""
+
+    rows = [
+        normalized_row(
+            index,
+            split="train" if index < 3 else "test",
+            plies=6 if index < 7 else 10,
+            rating=1000 + index * 100,
+        )
+        for index in range(1, 13)
+    ]
+    smaller, smaller_manifest = write_corpus(tmp_path / "smaller", rows[:6])
+    grown, grown_manifest = write_corpus(tmp_path / "grown", rows)
+    designated = _freeze(
+        tmp_path, smaller, smaller_manifest, name="first", designates_core=True
+    )
+    grown_pool = _freeze(
+        tmp_path, grown, grown_manifest, name="second", predecessor=designated
+    )
+    checkpoint = training_run(
+        tmp_path / "run", normalized=smaller, manifest=smaller_manifest
+    )
+    store = ResultsStore(tmp_path / "results")
+
+    # Every game the core holds is six plies, so this keeps the current view
+    # and empties the core.
+    _evaluate(
+        _config(grown_pool, checkpoint, view={"name": "long", "minimum_plies": 8}),
+        store=store,
+    )
+
+    held_out = [item for item in store.results() if item.kind == HELD_OUT_KIND]
+    assert len(held_out) == 1
+    assert held_out[0].data is not None
+    assert not held_out[0].data.view.endswith("-core")
