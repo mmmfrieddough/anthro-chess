@@ -39,16 +39,19 @@ _SIDE_TO_MOVE_COUNT = 2
 _CASTLING_RIGHTS_COUNT = 16
 _PROMOTION_CHOICE_COUNT = 4
 #: The ratings the two anchor embeddings stand for. Every rating is placed on
-#: the segment between them, so these bound where the dial can move rather than
-#: naming values the corpus is expected to contain: at or below the weak anchor
-#: and at or above the strong one, turning the dial further does nothing.
+#: the segment between them, so these bound where the dial can move: at or below
+#: the weak anchor and at or above the strong one, turning it further does
+#: nothing.
 #:
-#: They bracket the human range rather than starting at zero. A weak anchor at
-#: rating zero would spend most of the segment on ratings no player has, leaving
-#: the range the corpus actually covers compressed into part of it — a
-#: resolution problem that would reproduce `#177`'s symptom for a new reason.
-_WEAK_RATING_ANCHOR = 600.0
-_STRONG_RATING_ANCHOR = 2800.0
+#: Set wide. The span is close to a reparameterization -- the distance between
+#: two ratings' embeddings is their difference in interpolation weight times the
+#: learned gap between the anchors, and the second factor absorbs the first, so
+#: narrowing this buys far less resolution than it appears to. Clamping is the
+#: one effect training cannot absorb, because it makes a stretch of the dial
+#: inert. Rating scales also differ -- Lichess blitz is not FIDE and not Lichess
+#: bullet -- so the range that must not clamp is wider than any one corpus.
+_WEAK_RATING_ANCHOR = 400.0
+_STRONG_RATING_ANCHOR = 3000.0
 
 
 class RatingEmbedding(nn.Module):

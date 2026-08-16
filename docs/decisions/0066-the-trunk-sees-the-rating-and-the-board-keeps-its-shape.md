@@ -151,14 +151,38 @@ logits per head. The bias generator's output layer is initialized to zero, so a
 fresh model is ordinary dot-product attention and training adds the geometry
 rather than first having to undo a random one.
 
-**History stays on the ply axis.** Chessformer presents history by concatenating
-the previous seven positions into each square token's input depth; this project
-keeps a causal transformer over plies. That is not an oversight and it is where
-the product lives: an unbounded history rather than a seven-position window, a
-per-ply place for clock features and timing output, terminal actions that belong
-to a trajectory rather than to a position, and the common-prefix reuse the
-runtime already depends on. Taking the mechanics without taking the shape is the
-whole of what `#500` asked for.
+**History stays on the ply axis — for now, and on a weaker footing than this
+record first claimed.** Chessformer presents history by concatenating the
+previous seven positions into each square token's input depth; this project
+keeps a causal transformer over plies. That is what this change preserves,
+because replacing it is a second rewrite and this one is already the largest
+thing standing between the project and a frozen vehicle. It is not preserved
+because the argument for it survived scrutiny.
+
+Three justifications were offered for the ply axis and two of them do not hold.
+**Terminal actions** are entries in the action vocabulary, not a property of the
+sequence model. **Clock features and timing output** are per-decision quantities;
+Chessformer's engine variant carries comparable auxiliary state on a single
+position, and a time head conditional on the chosen action needs no ply axis
+either. Only **unbounded history** genuinely requires it, and no product
+requirement has been attached to reach beyond the seven plies a stacked window
+covers.
+
+The efficiency argument that originally motivated the ply axis is also void, and
+this change is what voided it. When each ply was one cheap projection, a causal
+mask bought many supervised decisions for roughly one pass. Square tokens move
+the dominant cost into per-position encoding, which is per-position for any
+architecture, so the arrangement no longer saves anything: encoding T positions
+costs the same whether they are batched along a sequence or as separate
+examples, and the trunk is a further cost on top.
+
+What the axis delivers is also the weaker of the two mechanisms. The trunk reads
+one pooled vector per ply, so every historical position is compressed before it
+is seen, where a stacked window keeps history square-resolved. Long and lossy
+against short and detailed, on a task where recent positions dominate.
+
+So the ply axis is retained here as scope control rather than on its merits, and
+whether it survives is open.
 
 Reconciling the two gives the model three stages:
 
@@ -268,6 +292,11 @@ per ply where the old encoder ran a single projection, which is roughly the cost
 Chessformer pays and is most of why it wins at a quarter of Allie's parameters.
 The causal trunk is unchanged and still costs one token per ply, so the growth is
 in the stages that were previously doing almost nothing.
+
+**And it takes the ply axis's reason for existing with it**, as the section above
+records. That is the largest thing this change gives up, because what it gives up
+is an argument rather than a capability, and an architecture retaining a
+component whose justification has gone is one decision short of finished.
 
 **Three changes land together, so their individual contributions are not
 separated.** A reading against this architecture says what the three are worth
