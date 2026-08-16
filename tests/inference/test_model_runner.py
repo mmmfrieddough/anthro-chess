@@ -91,10 +91,8 @@ def test_decision_tensorization_rates_the_whole_trajectory() -> None:
     """A served history has to be shaped like a trained one.
 
     The trunk reads the rating from ply zero, so a row rated only in its final
-    column presents a trajectory no training game contains -- an unrated
-    history with one rated move on the end -- and the served policy would then
-    differ from the trained one for that reason rather than because of the
-    strength the caller asked for.
+    column would present a trajectory no training game contains. Decision 0066
+    records what rating the whole row assumes instead.
     """
 
     board, moves = _position(("d2d4", "d7d5"))

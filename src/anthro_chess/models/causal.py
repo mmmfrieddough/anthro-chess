@@ -206,11 +206,7 @@ class GeometricAttentionBias(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head attention over one axis, masked by whatever a subclass names.
-
-    The two axes differ only in the mask they attend under, so that is the only
-    thing a subclass supplies.
-    """
+    """Multi-head attention over one axis, masked by whatever a subclass names."""
 
     def __init__(self, config: MoveModelConfig) -> None:
         super().__init__()
@@ -219,9 +215,8 @@ class MultiHeadAttention(nn.Module):
         self.dropout = config.dropout
         self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
         self.output_projection = nn.Linear(config.model_dim, config.model_dim)
-        # ``nn.Linear``'s own default is a generic fan-based one. A transformer
-        # wants the projection drawn across all three of query, key, and value
-        # at once, which is what this restates.
+        # ``nn.Linear``'s own default scales from fan-in alone, which reads this
+        # fused weight as one projection rather than the three it fans out into.
         nn.init.xavier_uniform_(self.qkv_projection.weight)
         nn.init.zeros_(self.qkv_projection.bias)
         nn.init.zeros_(self.output_projection.bias)
@@ -535,11 +530,7 @@ def _spatially(
     blocks: nn.ModuleList,
     normalization: nn.Module,
 ) -> Tensor:
-    """Run a stack over each position's squares, batch and ply folded together.
-
-    A spatial stage reads one position at a time, so the two leading dimensions
-    are collapsed into the batch for the whole stack and restored after it.
-    """
+    """Run a stack over each position's squares, batch and ply folded together."""
 
     positions = tokens.flatten(0, 1)
     for block in blocks:
@@ -562,6 +553,9 @@ def _move_index_tables() -> tuple[tuple[int, ...], tuple[int, ...]]:
     for action_id in range(MOVE_ACTION_COUNT):
         move = decode_move(action_id)
         square_slots.append(move.from_square * BOARD_SQUARE_COUNT + move.to_square)
+        # A move that promotes nothing reads the zero column
+        # ``SourceDestinationHead`` pads on, one past the four choices, so the
+        # padded width rather than the choice count is the row stride.
         choice = (
             _PROMOTION_CHOICE_COUNT
             if move.promotion is None

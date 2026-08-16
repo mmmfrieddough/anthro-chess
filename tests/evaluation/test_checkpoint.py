@@ -515,8 +515,7 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
 
     The cross-conditioning match rate and the within-game response declare why
     in the registry, so a report renders them ``unqualifiable`` rather than
-    sending a reader after a spread nothing can estimate. Those two are the
-    rule and are asserted as such.
+    sending a reader after a spread nothing can estimate.
 
     The rest are asserted as a property rather than as a list. Whether a given
     dependency metric carries a spread also depends on whether the fixture's

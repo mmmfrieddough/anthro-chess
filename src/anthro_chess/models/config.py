@@ -29,9 +29,10 @@ class MoveModelConfig(ConfigModel):
     geometric_token_dim: int = Field(default=8, ge=1)
     #: Width of the geometric bias generator's hidden stages, and the number of
     #: 64-by-64 bias templates its output layer mixes. Every template is 4096
-    #: values, so this is the one width whose cost does not fall with
-    #: ``model_dim``: left at a large model's setting it would dominate a small
-    #: model's parameter count outright.
+    #: values and one generator is built per spatial layer, so this width's cost
+    #: neither falls with ``model_dim`` nor is paid once: at the defaults the
+    #: generators outweigh the rest of the model, and left at a large model's
+    #: setting they would dominate a small model's parameter count outright.
     geometric_bias_dim: int = Field(default=16, ge=1)
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
     #: One past the furthest ply index the model can encode, and the length of

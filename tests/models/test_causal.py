@@ -377,11 +377,11 @@ def test_future_context_does_not_change_earlier_predictions() -> None:
 def test_rating_reaches_the_trajectory_rather_than_only_the_decision() -> None:
     """The fault `#177` measured, stated as the invariant that replaces it.
 
-    Version 5 encoded the history rating-neutrally and modulated the finished
-    feature, so the trunk could not let rating change which history it attended
-    to. This asserts the opposite: the encoded trajectory itself moves with the
-    rating. An implementation that regressed to late conditioning would still
-    pass every shape and vocabulary test above, and would fail here.
+    The encoded trajectory itself moves with the rating, so the trunk can let
+    rating change which history it attends to. An implementation that
+    conditioned only after the trunk -- correcting a rating-neutral feature at
+    the end -- would still pass every shape and vocabulary test above, and would
+    fail here.
     """
 
     torch.manual_seed(7)

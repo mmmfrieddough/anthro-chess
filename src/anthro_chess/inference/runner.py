@@ -246,8 +246,8 @@ class CheckpointModelRunner:
     ) -> tuple[Tensor, ...]:
         """Return served logits for a batch and decision rows already built.
 
-        Split out from :meth:`predict_batch` so a benchmark can time the model
-        work alone against the same call the engine makes. Timing the whole
+        A seam :meth:`predict_batch` also goes through, so a benchmark can time
+        the model work alone against the same call the engine makes. Timing the whole
         forward pass instead would score every historical ply, which serving
         does not do, and the difference would read as batch-construction cost.
         """
