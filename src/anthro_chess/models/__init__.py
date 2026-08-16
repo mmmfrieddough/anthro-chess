@@ -5,15 +5,21 @@ from anthro_chess.models.batching import (
     MoveModelInputs,
     OptionalTensor,
 )
-from anthro_chess.models.causal import BoardEncoder, CausalMoveModel, RatingConditioner
+from anthro_chess.models.causal import (
+    CausalMoveModel,
+    RatingEmbedding,
+    SourceDestinationHead,
+    SquareTokenEncoder,
+)
 from anthro_chess.models.config import MoveModelConfig
 
 __all__ = [
-    "BoardEncoder",
     "CausalMoveModel",
     "MoveModelBatch",
     "MoveModelConfig",
     "MoveModelInputs",
     "OptionalTensor",
-    "RatingConditioner",
+    "RatingEmbedding",
+    "SourceDestinationHead",
+    "SquareTokenEncoder",
 ]

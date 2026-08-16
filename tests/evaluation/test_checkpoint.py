@@ -513,7 +513,10 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
 
     The cross-conditioning match rate and the within-game response declare why
     in the registry, so a report renders them ``unqualifiable`` rather than
-    sending a reader after a spread nothing can estimate.
+    sending a reader after a spread nothing can estimate. Naming those two is
+    what states the rule; the rest of the reading carries a spread because it
+    resamples games, and listing which ones would instead pin whatever the
+    fixture model happened to produce.
     """
 
     normalized, manifest = corpus(tmp_path / "corpus")
@@ -530,19 +533,14 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
         if envelope.kind == DEPENDENCY_KIND
         for item in envelope.measurements
     }
-    dispersed = {
-        metric for metric, item in reported.items() if item.dispersion is not None
+    undispersed = {
+        metric for metric, item in reported.items() if item.dispersion is None
     }
-    assert dispersed == {
-        "dependency.rating_shuffled_degradation",
-        "dependency.rating_constant_degradation",
-        "dependency.rating_absent_degradation",
-        "dependency.rating_anchor_policy_divergence",
+    assert undispersed == {
+        "dependency.rating_cross_conditioning_match_rate",
+        "dependency.rating_within_game_response",
     }
-    # The two anchor conditionings agree on every fixture position, so no
-    # redraw of these games moves the agreement rate and it carries no spread
-    # rather than a zero that would clear every later delta.
-    assert reported["dependency.rating_anchor_top1_agreement"].dispersion is None
+    assert reported.keys() - undispersed
     divergence = reported["dependency.rating_anchor_policy_divergence"].dispersion
     assert divergence is not None
     assert result.dependency is not None

@@ -7,11 +7,13 @@ import chess
 import pytest
 import torch
 import torch._dynamo
-from torch import nn
 from torch._dynamo.testing import CompileCounter
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
+    MOVE_ACTION_COUNT,
+    RESIGNATION_ACTION_ID,
     action_vocabulary_identity,
     decode_move,
     encode_move,
@@ -31,8 +33,15 @@ from anthro_chess.models import (
     CausalMoveModel,
     MoveModelBatch,
     MoveModelConfig,
+    OptionalTensor,
+    RatingEmbedding,
+    SourceDestinationHead,
 )
-from anthro_chess.models.causal import TransformerBlock
+from anthro_chess.models.causal import (
+    CausalSelfAttention,
+    GeometricAttentionBias,
+    ResidualBlock,
+)
 from anthro_chess.training import masked_action_cross_entropy
 
 from accelerators import training_accelerator_parameters
@@ -112,12 +121,10 @@ def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
     assert logits.shape == (2, 3, ACTION_VOCABULARY_SIZE)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    assert model.identity()["version"] == 5
+    assert model.identity()["version"] == 6
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
-    assert (
-        model.identity()["rating_conditioning"] == "post-transformer-feature-modulation"
-    )
+    assert model.identity()["rating_conditioning"] == "square-token-input-embedding"
     assert model.identity()["timing_inputs"] is False
     assert model.identity()["timing_head"] is False
 
@@ -173,36 +180,6 @@ def test_the_position_table_is_sized_from_the_declared_context_and_never_saved()
     )
 
 
-def test_the_block_stack_computes_what_the_encoder_wrapper_it_replaced_did() -> None:
-    """The function stayed where it was; the parameter names and the mask moved.
-
-    The wrapper had to be handed a materialized triangular mask *and* the
-    causal flag, because it reads the flag as a hint accompanying a mask rather
-    than as a substitute for one. The blocks ask attention for the causal form
-    directly and arrive at the same numbers.
-
-    Two layers because that is what every training configuration runs, and
-    because a stack is where the residual order and the trailing normalization
-    could disagree with the wrapper while one block alone still matched.
-    """
-
-    torch.manual_seed(23)
-    config = _tiny_config(transformer_layers=2)
-    model = CausalMoveModel(config).eval()
-    wrapper = _encoder_wrapper(config, model).eval()
-    hidden = torch.randn(3, 11, config.model_dim)
-    causal = nn.Transformer.generate_square_subsequent_mask(hidden.shape[1])
-
-    with torch.no_grad():
-        explicit = hidden
-        for block in model.transformer_blocks:
-            explicit = block(explicit)
-        explicit = model.transformer_norm(explicit)
-        wrapped = wrapper(hidden, mask=causal, is_causal=True)
-
-    torch.testing.assert_close(explicit, wrapped, rtol=1e-5, atol=1e-5)
-
-
 def test_every_layer_is_drawn_on_its_own_rather_than_copied() -> None:
     """The one thing about a fresh model this change did move.
 
@@ -216,7 +193,9 @@ def test_every_layer_is_drawn_on_its_own_rather_than_copied() -> None:
     model = CausalMoveModel(_tiny_config(transformer_layers=2))
 
     first, second = (
-        cast(TransformerBlock, block).attention.qkv_projection.weight
+        cast(
+            CausalSelfAttention, cast(ResidualBlock, block).attention
+        ).qkv_projection.weight
         for block in model.transformer_blocks
     )
 
@@ -234,7 +213,7 @@ def test_the_dropout_setting_reaches_attention_and_the_block_around_it() -> None
 
     torch.manual_seed(37)
     config = _tiny_config(dropout=0.5)
-    block = cast(TransformerBlock, CausalMoveModel(config).transformer_blocks[0])
+    block = cast(ResidualBlock, CausalMoveModel(config).transformer_blocks[0])
     hidden = torch.randn(2, 7, config.model_dim)
 
     with torch.no_grad():
@@ -394,7 +373,16 @@ def test_future_context_does_not_change_earlier_predictions() -> None:
     assert not torch.equal(original_logits[:, 2], changed_logits[:, 2])
 
 
-def test_rating_changes_decision_without_changing_encoded_history() -> None:
+def test_rating_reaches_the_trajectory_rather_than_only_the_decision() -> None:
+    """The fault `#177` measured, stated as the invariant that replaces it.
+
+    Version 5 encoded the history rating-neutrally and modulated the finished
+    feature, so the trunk could not let rating change which history it attended
+    to. This asserts the opposite: the encoded trajectory itself moves with the
+    rating. An implementation that regressed to late conditioning would still
+    pass every shape and vocabulary test above, and would fail here.
+    """
+
     torch.manual_seed(7)
     unrated = MoveModelBatch.from_sequence_batch(
         _sequence_batch(("e2e4", "e7e5", "g1f3"))
@@ -409,13 +397,151 @@ def test_rating_changes_decision_without_changing_encoded_history() -> None:
     model = CausalMoveModel(_tiny_config()).eval()
 
     with torch.no_grad():
-        unrated_history = model.encode_history(unrated)
-        rated_history = model.encode_history(rated)
+        unrated_trajectory = model.encode_trajectory(unrated)
+        rated_trajectory = model.encode_trajectory(rated)
         unrated_logits = model(unrated)
         rated_logits = model(rated)
 
-    torch.testing.assert_close(unrated_history, rated_history, rtol=0.0, atol=0.0)
+    assert not torch.equal(unrated_trajectory, rated_trajectory)
     assert not torch.equal(unrated_logits, rated_logits)
+
+
+def test_the_rating_embedding_moves_monotonically_along_one_axis() -> None:
+    """What the interpolated anchors buy over a free map, stated directly.
+
+    The dial has to be ordered to mean anything, and `#177` measured an ordering
+    no better than chance. Every rating lands on the segment between the two
+    anchors, so a higher rating is always further along it -- a property of the
+    parameterization rather than something the loss has to discover.
+    """
+
+    torch.manual_seed(13)
+    embedding = RatingEmbedding(_tiny_config())
+    ratings = torch.tensor([[800, 1200, 1600, 2000, 2400]])
+
+    with torch.no_grad():
+        placed = embedding(
+            OptionalTensor(ratings, torch.ones_like(ratings, dtype=torch.bool))
+        )
+
+    steps = placed[0, 1:] - placed[0, :-1]
+    direction = steps[0] / steps[0].norm()
+    projections = torch.stack([step @ direction for step in steps])
+    assert torch.all(projections > 0)
+    torch.testing.assert_close(
+        steps,
+        direction.unsqueeze(0) * projections.unsqueeze(-1),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+def test_an_absent_rating_is_its_own_embedding_rather_than_a_rating_of_zero() -> None:
+    """Missing has to stay explicit, or unrated play reads as maximally weak."""
+
+    torch.manual_seed(17)
+    embedding = RatingEmbedding(_tiny_config())
+    values = torch.tensor([[0, 1500]])
+
+    with torch.no_grad():
+        absent = embedding(OptionalTensor(values, torch.tensor([[False, False]])))
+        present = embedding(OptionalTensor(values, torch.tensor([[True, True]])))
+
+    torch.testing.assert_close(absent[0, 0], absent[0, 1], rtol=0.0, atol=0.0)
+    assert not torch.equal(absent[0, 0], present[0, 0])
+
+
+def test_every_move_reads_the_head_square_pair_its_action_id_names() -> None:
+    """The gather joining a square-by-square board to a flat vocabulary.
+
+    The head scores a move as source-square against destination-square, while
+    legal masking, UCI, and every benchmark speak flat action ids. If those two
+    disagree by even one entry the model trains toward the wrong move and
+    nothing else in the suite notices, so the mapping is checked against the
+    vocabulary itself rather than against a second copy of the arithmetic.
+    """
+
+    head = SourceDestinationHead(_tiny_config())
+
+    for action_id in range(MOVE_ACTION_COUNT):
+        move = decode_move(action_id)
+        assert int(head.move_square_slots[action_id]) == move.from_square * 64 + (
+            move.to_square
+        )
+        choice = 4 if move.promotion is None else move.promotion - chess.KNIGHT
+        assert int(head.move_promotion_slots[action_id]) == (
+            move.to_square * 5 + choice
+        )
+
+
+def test_a_promotion_choice_moves_only_the_promotions_that_choose_it() -> None:
+    """The promotion bias is per destination and per piece, not per move.
+
+    Four promotions share one source and one destination, so the square pair
+    alone cannot separate them. This is what does, and a bias leaking onto the
+    quiet moves into the same square would make the head unable to tell a
+    promotion from an ordinary arrival there.
+    """
+
+    torch.manual_seed(19)
+    config = _tiny_config()
+    head = SourceDestinationHead(config)
+    squares = torch.randn(1, 1, 64, config.model_dim)
+    hidden = torch.randn(1, 1, config.model_dim)
+    queen = encode_move(chess.Move.from_uci("a7a8q"))
+    knight = encode_move(chess.Move.from_uci("a7a8n"))
+    quiet = encode_move(chess.Move.from_uci("a6a7"))
+
+    with torch.no_grad():
+        before = head(squares, hidden)
+        head.promotion_projection.bias[chess.QUEEN - chess.KNIGHT] += 5.0
+        after = head(squares, hidden)
+
+    assert after[0, 0, queen] - before[0, 0, queen] == pytest.approx(5.0, abs=1e-4)
+    assert after[0, 0, knight] == pytest.approx(before[0, 0, knight].item(), abs=1e-5)
+    assert after[0, 0, quiet] == pytest.approx(before[0, 0, quiet].item(), abs=1e-5)
+
+
+def test_terminal_actions_are_scored_from_the_history_not_from_a_square_pair() -> None:
+    """Resignation and a draw claim carry no move, so they read no squares."""
+
+    torch.manual_seed(23)
+    config = _tiny_config()
+    head = SourceDestinationHead(config)
+    squares = torch.randn(1, 1, 64, config.model_dim)
+    hidden = torch.randn(1, 1, config.model_dim)
+
+    with torch.no_grad():
+        logits = head(squares, hidden)
+        terminal = head.terminal_projection(hidden)
+
+    assert logits.shape[-1] == ACTION_VOCABULARY_SIZE
+    torch.testing.assert_close(
+        logits[..., RESIGNATION_ACTION_ID], terminal[..., 0], rtol=0.0, atol=0.0
+    )
+    torch.testing.assert_close(
+        logits[..., DRAW_CLAIM_ACTION_ID], terminal[..., 1], rtol=0.0, atol=0.0
+    )
+
+
+def test_the_geometric_bias_starts_as_no_bias_at_all() -> None:
+    """A fresh model is ordinary dot-product attention over the squares.
+
+    Training adds the geometry rather than first having to undo a random one,
+    which is what the zeroed output layer buys. A default initialization here
+    would perturb every attention logit of every spatial layer at step zero.
+    """
+
+    torch.manual_seed(29)
+    config = _tiny_config()
+    bias = GeometricAttentionBias(config)
+    tokens = torch.randn(3, 64, config.model_dim)
+
+    with torch.no_grad():
+        generated = bias(tokens)
+
+    assert generated.shape == (3, config.attention_heads, 64, 64)
+    assert torch.count_nonzero(generated) == 0
 
 
 @pytest.mark.parametrize(
@@ -535,70 +661,6 @@ def _batch_of_width(
     )
 
 
-def _encoder_wrapper(
-    config: MoveModelConfig,
-    model: CausalMoveModel,
-) -> nn.TransformerEncoder:
-    """Return the replaced wrapper, holding the explicit blocks' own weights.
-
-    This characterizes one migration rather than stating an invariant, and it
-    is the only thing in the project still naming the framework's private
-    parameter layout. A later change to what a block computes — a different
-    position encoding, a normalized query, another feed-forward — retires this
-    helper and the test above it rather than updating either. Its failure means
-    the blocks stopped being the wrapper, which after that point is the
-    intent rather than a defect.
-    """
-
-    layer = nn.TransformerEncoderLayer(
-        d_model=config.model_dim,
-        nhead=config.attention_heads,
-        dim_feedforward=config.feedforward_dim,
-        dropout=config.dropout,
-        activation="gelu",
-        batch_first=True,
-        norm_first=True,
-    )
-    wrapper = nn.TransformerEncoder(
-        layer,
-        num_layers=config.transformer_layers,
-        norm=nn.LayerNorm(config.model_dim),
-        enable_nested_tensor=False,
-    )
-    state: dict[str, torch.Tensor] = {
-        "norm.weight": model.transformer_norm.weight,
-        "norm.bias": model.transformer_norm.bias,
-    }
-    for index, module in enumerate(model.transformer_blocks):
-        block = cast(TransformerBlock, module)
-        feedforward_in = cast(nn.Linear, block.feedforward[0])
-        feedforward_out = cast(nn.Linear, block.feedforward[3])
-        state |= {
-            f"layers.{index}.norm1.weight": block.attention_norm.weight,
-            f"layers.{index}.norm1.bias": block.attention_norm.bias,
-            f"layers.{index}.self_attn.in_proj_weight": (
-                block.attention.qkv_projection.weight
-            ),
-            f"layers.{index}.self_attn.in_proj_bias": (
-                block.attention.qkv_projection.bias
-            ),
-            f"layers.{index}.self_attn.out_proj.weight": (
-                block.attention.output_projection.weight
-            ),
-            f"layers.{index}.self_attn.out_proj.bias": (
-                block.attention.output_projection.bias
-            ),
-            f"layers.{index}.norm2.weight": block.feedforward_norm.weight,
-            f"layers.{index}.norm2.bias": block.feedforward_norm.bias,
-            f"layers.{index}.linear1.weight": feedforward_in.weight,
-            f"layers.{index}.linear1.bias": feedforward_in.bias,
-            f"layers.{index}.linear2.weight": feedforward_out.weight,
-            f"layers.{index}.linear2.bias": feedforward_out.bias,
-        }
-    wrapper.load_state_dict(state)
-    return wrapper
-
-
 def _tiny_config(
     maximum_context_plies: int = 8,
     *,
@@ -610,8 +672,12 @@ def _tiny_config(
         action_embedding_dim=4,
         model_dim=16,
         attention_heads=2,
+        spatial_layers=1,
         transformer_layers=transformer_layers,
+        decision_layers=1,
         feedforward_dim=24,
+        geometric_token_dim=4,
+        geometric_bias_dim=8,
         dropout=dropout,
         maximum_context_plies=maximum_context_plies,
     )

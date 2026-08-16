@@ -359,9 +359,7 @@ def _validate_artifact_contract(
         or checkpoint_execution.get("parameter_dtype") != "float32"
     ):
         raise ModelRunnerError("checkpoint parameter precision is unsupported")
-    if expected_model.get("rating_conditioning") != (
-        "post-transformer-feature-modulation"
-    ):
+    if expected_model.get("rating_conditioning") != "square-token-input-embedding":
         raise ModelRunnerError("checkpoint uses an unsupported rating context contract")
     if (
         expected_model.get("timing_inputs") is not False

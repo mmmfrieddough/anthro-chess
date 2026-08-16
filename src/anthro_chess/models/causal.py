@@ -1,17 +1,28 @@
-"""Minimal action-only causal model over exact per-ply chess context."""
+"""Action-only causal model over exact per-ply chess context.
+
+Three stages, in the order a decision passes through them: a spatial encoder
+over the 64 square tokens of each position, a causal trunk over the ply axis,
+and a spatial decoder that reads the trunk's history feature back onto the
+squares the move head scores. Rating is embedded into the square tokens before
+the first stage, so every layer computes with it rather than being corrected
+afterwards. Decision 0066 records why each of those is what it is.
+"""
 
 from __future__ import annotations
 
 import math
 from typing import cast
 
+import chess
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
 from anthro_chess.chess import (
-    ACTION_VOCABULARY_SIZE,
+    MOVE_ACTION_COUNT,
+    TERMINAL_ACTION_IDS,
     action_vocabulary_identity,
+    decode_move,
 )
 from anthro_chess.data import (
     EN_PASSANT_TOKEN_COUNT,
@@ -24,11 +35,54 @@ from anthro_chess.models.config import MoveModelConfig
 _PIECE_ID_COUNT = 13
 _SIDE_TO_MOVE_COUNT = 2
 _CASTLING_RIGHTS_COUNT = 16
-_RATING_CONTEXT_COUNT = 2
+_BOARD_SQUARE_COUNT = 64
+_PROMOTION_CHOICE_COUNT = 4
+#: The rating the strong anchor embedding stands for. Every rating is placed on
+#: the segment between the two anchors, so this is the point past which the dial
+#: stops moving rather than a value the corpus is expected to contain.
+_RATING_ANCHOR = 3000.0
 
 
-class BoardEncoder(nn.Module):
-    """Learn an embedding of the exact pre-move standard-chess state."""
+class RatingEmbedding(nn.Module):
+    """Place a rating on the segment between a weak and a strong anchor.
+
+    Two learned endpoints and a linear interpolation between them, rather than a
+    network free to map ratings wherever it likes. The dial's whole job is to be
+    ordered, and an unconstrained map is under no obligation to keep it that way:
+    `#177` measured 900 configured Elo arriving as a 12-Elo span with the
+    ordering itself no better than chance. Interpolation makes the representation
+    monotone in the rating by construction, which is the one property the product
+    needs and the one the free map never had to learn.
+    """
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.weak = nn.Parameter(torch.empty(config.model_dim))
+        self.strong = nn.Parameter(torch.empty(config.model_dim))
+        self.unrated = nn.Parameter(torch.empty(config.model_dim))
+        for anchor in (self.weak, self.strong, self.unrated):
+            nn.init.normal_(anchor, std=0.02)
+
+    def forward(self, rating: OptionalTensor) -> Tensor:
+        """Return one embedding per timestep, shaped batch by sequence by width."""
+
+        weakness = (
+            ((_RATING_ANCHOR - rating.values.float()) / _RATING_ANCHOR)
+            .clamp(0.0, 1.0)
+            .unsqueeze(-1)
+        )
+        placed = weakness * self.weak + (1.0 - weakness) * self.strong
+        return torch.where(rating.present.unsqueeze(-1), placed, self.unrated)
+
+
+class SquareTokenEncoder(nn.Module):
+    """Build the 64 square tokens each position is read as.
+
+    Every token carries its own square's piece, the rule state that applies to
+    the whole position, and the rating, so the spatial layers above this see a
+    board whose geometry survived and a decision-maker whose strength is already
+    part of the representation.
+    """
 
     def __init__(self, config: MoveModelConfig) -> None:
         super().__init__()
@@ -36,24 +90,27 @@ class BoardEncoder(nn.Module):
         self.piece_embedding = nn.Embedding(_PIECE_ID_COUNT, embedding_dim)
         self.side_embedding = nn.Embedding(_SIDE_TO_MOVE_COUNT, embedding_dim)
         self.castling_embedding = nn.Embedding(_CASTLING_RIGHTS_COUNT, embedding_dim)
-        self.en_passant_embedding = nn.Embedding(
-            EN_PASSANT_TOKEN_COUNT,
-            embedding_dim,
+        self.en_passant_embedding = nn.Embedding(EN_PASSANT_TOKEN_COUNT, embedding_dim)
+        self.previous_action_embedding = nn.Embedding(
+            PREVIOUS_ACTION_TOKEN_COUNT,
+            config.action_embedding_dim,
         )
-        input_dim = (64 + 3) * embedding_dim + 2
-        self.projection = nn.Sequential(
-            nn.Linear(input_dim, config.model_dim),
-            nn.GELU(),
-            nn.LayerNorm(config.model_dim),
+        self.square_identity = nn.Parameter(
+            torch.empty(_BOARD_SQUARE_COUNT, config.model_dim)
         )
+        nn.init.normal_(self.square_identity, std=0.02)
+        position_dim = 3 * embedding_dim + config.action_embedding_dim + 2
+        self.projection = nn.Linear(embedding_dim + position_dim, config.model_dim)
+        self.normalization = nn.LayerNorm(config.model_dim)
+        self.rating_embedding = RatingEmbedding(config)
 
     def forward(self, batch: MoveModelBatch) -> Tensor:
-        """Encode board pieces and rule state for every timestep."""
+        """Return tokens shaped batch by sequence by square by width."""
 
         inputs = batch.inputs
-        piece_features = self.piece_embedding(inputs.piece_ids).flatten(-2)
-        # A transform rather than a token vocabulary, so it stays here while
-        # the two nullable inputs moved. Decision 0035 says why.
+        pieces = self.piece_embedding(inputs.piece_ids)
+        # A transform rather than a token vocabulary, so it stays here while the
+        # two nullable inputs moved. Decision 0035 says why.
         rule_counts = torch.log1p(
             torch.stack(
                 (
@@ -63,45 +120,112 @@ class BoardEncoder(nn.Module):
                 dim=-1,
             )
         )
-        features = torch.cat(
+        position = torch.cat(
             (
-                piece_features,
                 self.side_embedding(inputs.side_to_move),
                 self.castling_embedding(inputs.castling_rights),
                 self.en_passant_embedding(inputs.en_passant_token),
+                self.previous_action_embedding(inputs.previous_action_token),
                 rule_counts,
             ),
             dim=-1,
         )
-        return cast(Tensor, self.projection(features))
+        broadcast = position.unsqueeze(-2).expand(
+            *pieces.shape[:-1],
+            position.shape[-1],
+        )
+        tokens = self.projection(torch.cat((pieces, broadcast), dim=-1))
+        tokens = tokens + self.square_identity
+        tokens = tokens + self.rating_embedding(inputs.target_rating).unsqueeze(-2)
+        return cast(Tensor, self.normalization(tokens))
 
 
-class RatingConditioner(nn.Module):
-    """Modulate completed history features for one decision-maker rating."""
+class GeometricAttentionBias(nn.Module):
+    """Generate a per-head square-by-square attention bias from the position.
+
+    Dot-product attention between square tokens has no idea which squares are
+    adjacent, on a diagonal, or a knight's move apart, and a fixed positional
+    encoding cannot say which of those relations matters in *this* position — a
+    pinned bishop's diagonal is load-bearing and an empty one is not. This reads
+    the whole board down to a small vector and mixes a learned set of
+    64-by-64 templates from it, so the geometry each head attends along is
+    chosen per position.
+
+    The output layer starts at zero, so a fresh model is ordinary dot-product
+    attention and the bias is something training adds rather than something it
+    has to first undo.
+    """
 
     def __init__(self, config: MoveModelConfig) -> None:
         super().__init__()
-        self.modulation = nn.Sequential(
-            nn.Linear(_RATING_CONTEXT_COUNT, config.model_dim),
+        self.heads = config.attention_heads
+        bias_dim = config.geometric_bias_dim
+        self.compression = nn.Linear(config.model_dim, config.geometric_token_dim)
+        self.board = nn.Sequential(
+            nn.Linear(_BOARD_SQUARE_COUNT * config.geometric_token_dim, bias_dim),
             nn.GELU(),
-            nn.Linear(config.model_dim, config.model_dim * 2),
+            nn.LayerNorm(bias_dim),
+            nn.Linear(bias_dim, self.heads * bias_dim),
+            nn.GELU(),
         )
-        self.normalization = nn.LayerNorm(config.model_dim)
-
-    def forward(self, hidden: Tensor, rating: OptionalTensor) -> Tensor:
-        """Apply nonlinear, position-dependent rating feature modulation."""
-
-        rating_features = torch.stack(
-            (
-                _nullable_log_value(rating),
-                rating.present.float(),
-            ),
-            dim=-1,
+        self.mixture_norm = nn.LayerNorm(bias_dim)
+        self.templates = nn.Linear(
+            bias_dim,
+            _BOARD_SQUARE_COUNT * _BOARD_SQUARE_COUNT,
         )
-        scale, shift = self.modulation(rating_features).chunk(2, dim=-1)
+        nn.init.zeros_(self.templates.weight)
+        nn.init.zeros_(self.templates.bias)
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        """Return biases shaped position by head by square by square."""
+
+        compressed = self.compression(hidden).flatten(-2)
+        mixture = self.mixture_norm(
+            self.board(compressed).unflatten(-1, (self.heads, -1))
+        )
         return cast(
             Tensor,
-            self.normalization(hidden * (1.0 + torch.tanh(scale)) + shift),
+            self.templates(mixture).unflatten(
+                -1,
+                (_BOARD_SQUARE_COUNT, _BOARD_SQUARE_COUNT),
+            ),
+        )
+
+
+class SpatialAttention(nn.Module):
+    """Attend between the squares of one position, along learned geometry."""
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.heads = config.attention_heads
+        self.head_dim = config.model_dim // config.attention_heads
+        self.dropout = config.dropout
+        self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
+        self.output_projection = nn.Linear(config.model_dim, config.model_dim)
+        self.geometric_bias = GeometricAttentionBias(config)
+        nn.init.xavier_uniform_(self.qkv_projection.weight)
+        nn.init.zeros_(self.qkv_projection.bias)
+        nn.init.zeros_(self.output_projection.bias)
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        """Return attended square features for a flattened run of positions."""
+
+        query, key, value = (
+            self.qkv_projection(hidden)
+            .unflatten(-1, (3, self.heads, self.head_dim))
+            .permute(2, 0, 3, 1, 4)
+            .unbind(0)
+        )
+        attended = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=self.geometric_bias(hidden).to(query.dtype),
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        return cast(
+            Tensor,
+            self.output_projection(attended.transpose(1, 2).flatten(-2)),
         )
 
 
@@ -150,13 +274,18 @@ class CausalSelfAttention(nn.Module):
         )
 
 
-class TransformerBlock(nn.Module):
-    """One pre-norm residual pair: causal attention, then a feed-forward."""
+class ResidualBlock(nn.Module):
+    """One pre-norm residual pair: the given attention, then a feed-forward.
 
-    def __init__(self, config: MoveModelConfig) -> None:
+    The spatial and causal stages differ only in which axis their attention
+    reads, so the block around it is written once and handed the attention it
+    should wrap.
+    """
+
+    def __init__(self, config: MoveModelConfig, attention: nn.Module) -> None:
         super().__init__()
         self.attention_norm = nn.LayerNorm(config.model_dim)
-        self.attention = CausalSelfAttention(config)
+        self.attention = attention
         self.feedforward_norm = nn.LayerNorm(config.model_dim)
         self.feedforward = nn.Sequential(
             nn.Linear(config.model_dim, config.feedforward_dim),
@@ -168,7 +297,7 @@ class TransformerBlock(nn.Module):
         self.residual_dropout = nn.Dropout(config.dropout)
 
     def forward(self, hidden: Tensor) -> Tensor:
-        """Return the block's output for a whole batch of timesteps."""
+        """Return the block's output for a whole batch of tokens."""
 
         hidden = hidden + self.residual_dropout(
             self.attention(self.attention_norm(hidden))
@@ -179,6 +308,57 @@ class TransformerBlock(nn.Module):
         return hidden
 
 
+class SourceDestinationHead(nn.Module):
+    """Score a move as the attention from its source square to its destination.
+
+    The vocabulary this project speaks to the rest of the system is unchanged: a
+    flat action id, because legal masking, UCI, and every benchmark are written
+    in it. What changes is where a move's logit comes from. A source-square query
+    against a destination-square key means the head is expressed in the same
+    board geometry the encoder produced, and a move it has never seen still
+    scores from squares it has, which a flat projection over a fixed vocabulary
+    cannot do.
+    """
+
+    move_square_slots: Tensor
+    move_promotion_slots: Tensor
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__()
+        self.scale = config.model_dim**-0.5
+        self.source_projection = nn.Linear(config.model_dim, config.model_dim)
+        self.destination_projection = nn.Linear(config.model_dim, config.model_dim)
+        self.promotion_projection = nn.Linear(
+            config.model_dim,
+            _PROMOTION_CHOICE_COUNT,
+        )
+        self.terminal_projection = nn.Linear(
+            config.model_dim,
+            len(TERMINAL_ACTION_IDS),
+        )
+        square_slots, promotion_slots = _move_index_tables()
+        # Derived constants, not state: a pure function of the action
+        # vocabulary, so they do not belong in a checkpoint.
+        self.register_buffer("move_square_slots", square_slots, persistent=False)
+        self.register_buffer("move_promotion_slots", promotion_slots, persistent=False)
+
+    def forward(self, squares: Tensor, hidden: Tensor) -> Tensor:
+        """Return logits over the whole action vocabulary, moves then terminals."""
+
+        sources = self.source_projection(squares)
+        destinations = self.destination_projection(squares)
+        board = (sources @ destinations.transpose(-1, -2)) * self.scale
+        # The padded column is a constant zero rather than a parameter, so a
+        # move that promotes nothing reads an exact zero instead of a weight
+        # that has to learn to be one.
+        promotions = F.pad(self.promotion_projection(squares), (0, 1))
+        moves = (
+            board.flatten(-2)[..., self.move_square_slots]
+            + promotions.flatten(-2)[..., self.move_promotion_slots]
+        )
+        return torch.cat((moves, self.terminal_projection(hidden)), dim=-1)
+
+
 class CausalMoveModel(nn.Module):
     """Predict human action logits from exact state and causal trajectory."""
 
@@ -187,30 +367,35 @@ class CausalMoveModel(nn.Module):
     def __init__(self, config: MoveModelConfig | None = None) -> None:
         super().__init__()
         self.config = config or MoveModelConfig()
-        self.board_encoder = BoardEncoder(self.config)
-        self.previous_action_embedding = nn.Embedding(
-            PREVIOUS_ACTION_TOKEN_COUNT,
-            self.config.action_embedding_dim,
+        self.square_encoder = SquareTokenEncoder(self.config)
+        self.spatial_blocks = nn.ModuleList(
+            ResidualBlock(self.config, SpatialAttention(self.config))
+            for _ in range(self.config.spatial_layers)
         )
-        context_input_dim = self.config.model_dim + self.config.action_embedding_dim
-        self.context_combiner = nn.Sequential(
-            nn.Linear(context_input_dim, self.config.model_dim),
-            nn.GELU(),
-            nn.LayerNorm(self.config.model_dim),
-        )
+        self.spatial_norm = nn.LayerNorm(self.config.model_dim)
+        # Pooling 64 normalized tokens leaves a vector an order of magnitude
+        # shorter than the position features added to it next, so it is brought
+        # back to their scale before the trunk rather than after.
+        self.trajectory_norm = nn.LayerNorm(self.config.model_dim)
         self.transformer_blocks = nn.ModuleList(
-            TransformerBlock(self.config) for _ in range(self.config.transformer_layers)
+            ResidualBlock(self.config, CausalSelfAttention(self.config))
+            for _ in range(self.config.transformer_layers)
         )
         # A pre-norm block leaves its output unnormalized for whatever follows,
         # so the stack ends with one. Named rather than the last element of a
         # sequence, because a checkpoint key that moves with the layer count
         # cannot be read without also reading the configuration.
         self.transformer_norm = nn.LayerNorm(self.config.model_dim)
-        self.rating_conditioner = RatingConditioner(self.config)
-        self.action_head = nn.Linear(
+        self.decision_projection = nn.Linear(
             self.config.model_dim,
-            ACTION_VOCABULARY_SIZE,
+            self.config.model_dim,
         )
+        self.decision_blocks = nn.ModuleList(
+            ResidualBlock(self.config, SpatialAttention(self.config))
+            for _ in range(self.config.decision_layers)
+        )
+        self.decision_norm = nn.LayerNorm(self.config.model_dim)
+        self.action_head = SourceDestinationHead(self.config)
         # A derived constant, not state: a pure function of the configuration,
         # so it does not belong in a checkpoint.
         self.register_buffer(
@@ -231,12 +416,25 @@ class CausalMoveModel(nn.Module):
         gathers by the loss mask before looking.
         """
 
-        hidden = self.encode_history(batch)
-        conditioned = self.rating_conditioner(hidden, batch.inputs.target_rating)
-        return cast(Tensor, self.action_head(conditioned))
+        squares = self.encode_squares(batch)
+        hidden = self.encode_trajectory(batch, squares)
+        return cast(Tensor, self.action_head(self.decide(squares, hidden), hidden))
 
-    def encode_history(self, batch: MoveModelBatch) -> Tensor:
-        """Encode rating-neutral exact state and causal move history."""
+    def encode_squares(self, batch: MoveModelBatch) -> Tensor:
+        """Encode each position's squares, reading no position but its own."""
+
+        tokens = self.square_encoder(batch)
+        positions = tokens.flatten(0, 1)
+        for block in self.spatial_blocks:
+            positions = block(positions)
+        return cast(Tensor, self.spatial_norm(positions).unflatten(0, tokens.shape[:2]))
+
+    def encode_trajectory(
+        self,
+        batch: MoveModelBatch,
+        squares: Tensor | None = None,
+    ) -> Tensor:
+        """Encode rating-aware exact state and causal move history."""
 
         declared = self.config.maximum_context_plies
         if batch.position_bound > declared:
@@ -244,14 +442,9 @@ class CausalMoveModel(nn.Module):
                 f"batch reaches ply index {batch.position_bound - 1}, past the "
                 f"{declared} plies this model declares as its context"
             )
-        context = torch.cat(
-            (
-                self.board_encoder(batch),
-                self.previous_action_embedding(batch.inputs.previous_action_token),
-            ),
-            dim=-1,
-        )
-        hidden = self.context_combiner(context)
+        if squares is None:
+            squares = self.encode_squares(batch)
+        hidden = self.trajectory_norm(squares.mean(dim=-2))
         # A chunked selection carries ply indices past the row's own width.
         hidden = hidden + self.position_table[batch.ply_indices].to(hidden.dtype)
         # No key padding mask. Padding is right-aligned, so a real query attends
@@ -261,6 +454,18 @@ class CausalMoveModel(nn.Module):
         for block in self.transformer_blocks:
             hidden = block(hidden)
         return cast(Tensor, self.transformer_norm(hidden))
+
+    def decide(self, squares: Tensor, hidden: Tensor) -> Tensor:
+        """Read the history feature back onto the squares the head scores."""
+
+        decision = squares + self.decision_projection(hidden).unsqueeze(-2)
+        positions = decision.flatten(0, 1)
+        for block in self.decision_blocks:
+            positions = block(positions)
+        return cast(
+            Tensor,
+            self.decision_norm(positions).unflatten(0, squares.shape[:2]),
+        )
 
     def identity(self) -> dict[str, object]:
         """Return compatibility metadata for future runs and checkpoints."""
@@ -283,24 +488,41 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
 
     return {
         "name": "anthro-causal-move-model",
-        # Version 5 renamed every transformer parameter, so this is what
-        # refuses an older checkpoint by name rather than letting it fail as
-        # missing state-dict keys.
-        "version": 5,
+        # Version 6 is the deliberate architecture 0066 records: square tokens,
+        # rating in the input representation, and a source-destination move
+        # head. None of the three can read a version 5 checkpoint.
+        "version": 6,
         "config": config.model_dump(mode="json"),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
-        "rating_conditioning": "post-transformer-feature-modulation",
+        "rating_conditioning": "square-token-input-embedding",
         "timing_inputs": False,
         "timing_head": False,
     }
 
 
-def _nullable_log_value(value: OptionalTensor) -> Tensor:
-    return torch.where(
-        value.present,
-        torch.log1p(value.values.float()),
-        0.0,
+def _move_index_tables() -> tuple[Tensor, Tensor]:
+    """Return where each move id reads its board and promotion logit.
+
+    The head produces a square-by-square board and a per-destination promotion
+    bias; the vocabulary is a flat list. These are the gather that joins them,
+    built once from the vocabulary itself so the two can never drift.
+    """
+
+    square_slots = []
+    promotion_slots = []
+    for action_id in range(MOVE_ACTION_COUNT):
+        move = decode_move(action_id)
+        square_slots.append(move.from_square * _BOARD_SQUARE_COUNT + move.to_square)
+        choice = (
+            _PROMOTION_CHOICE_COUNT
+            if move.promotion is None
+            else move.promotion - chess.KNIGHT
+        )
+        promotion_slots.append(move.to_square * (_PROMOTION_CHOICE_COUNT + 1) + choice)
+    return (
+        torch.tensor(square_slots, dtype=torch.long),
+        torch.tensor(promotion_slots, dtype=torch.long),
     )
 
 
