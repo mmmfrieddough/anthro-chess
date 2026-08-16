@@ -234,14 +234,26 @@ comparable unified models do, and the mechanism argument above. That is the
 disposition `#500` prescribes for a close reading — pick on the other grounds and
 say that is what happened — and it is what happened.
 
-Two facts from those readings belong here because they bear on whether the dial
-is an architecture question at all. **Every seat fits near its arm's own playing
-strength** regardless of the rating it was asked for, and that strength sits
-where the corpus mass sits: the training selection is unimodal at 1400-2000,
-which is 69% of it. And **temperature moves fitted strength five to ten times
-further than the dial does** — 330 Elo against 30 to 66 in the same reading. A
-model that will not play down on request is not obviously short of capacity,
-since playing worse costs none. `#496` owns what follows from that.
+One fact from those readings belongs here, because it closes a question `#177`
+left open about the instrument rather than the model: **temperature moves fitted
+strength five to ten times further than the dial does** — 330 Elo against 30 to
+66, in the same joint fit. So the ladder resolves a real strength difference when
+one is there, and a flat dial is a fact about the model rather than about
+self-play as a measurement.
+
+Nothing here bears on **capacity**, and it is worth being explicit that the
+obvious argument against it does not work. Playing weakly is free to *execute*,
+so a seat asked for 1200 that plays at its own strength looks at first like a
+model that could comply and does not. But complying means representing a second
+conditional distribution — which mistakes a 1200 makes, and how that differs from
+an 1800 — layered on top of playing reasonable chess at all. That is not free,
+and a model with no capacity to spare minimizes its loss by predicting the modal
+human move and ignoring the rating. Every arm read here is under a million
+parameters, which is the regime where that is the expected outcome.
+
+`#496` owns the capacity question and already sequences it correctly: the
+vehicle's first full sweep is a larger model carrying the *same* conditioning
+architecture, which is the reading that isolates capacity and nothing else.
 
 A pre-vehicle bake-off is also **unqualified on seed**, because the vehicle whose
 dispersion would qualify it does not exist yet — 0029 measured up to 14 of 54
