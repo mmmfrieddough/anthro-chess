@@ -11,7 +11,8 @@ afterwards. Decision 0066 records why each of those is what it is.
 from __future__ import annotations
 
 import math
-from typing import cast
+from functools import cache
+from typing import Any, cast
 
 import chess
 import torch
@@ -25,6 +26,7 @@ from anthro_chess.chess import (
     decode_move,
 )
 from anthro_chess.data import (
+    BOARD_SQUARE_COUNT,
     EN_PASSANT_TOKEN_COUNT,
     PREVIOUS_ACTION_TOKEN_COUNT,
     encoding_identity,
@@ -35,12 +37,18 @@ from anthro_chess.models.config import MoveModelConfig
 _PIECE_ID_COUNT = 13
 _SIDE_TO_MOVE_COUNT = 2
 _CASTLING_RIGHTS_COUNT = 16
-_BOARD_SQUARE_COUNT = 64
 _PROMOTION_CHOICE_COUNT = 4
-#: The rating the strong anchor embedding stands for. Every rating is placed on
-#: the segment between the two anchors, so this is the point past which the dial
-#: stops moving rather than a value the corpus is expected to contain.
-_RATING_ANCHOR = 3000.0
+#: The ratings the two anchor embeddings stand for. Every rating is placed on
+#: the segment between them, so these bound where the dial can move rather than
+#: naming values the corpus is expected to contain: at or below the weak anchor
+#: and at or above the strong one, turning the dial further does nothing.
+#:
+#: They bracket the human range rather than starting at zero. A weak anchor at
+#: rating zero would spend most of the segment on ratings no player has, leaving
+#: the range the corpus actually covers compressed into part of it — a
+#: resolution problem that would reproduce `#177`'s symptom for a new reason.
+_WEAK_RATING_ANCHOR = 600.0
+_STRONG_RATING_ANCHOR = 2800.0
 
 
 class RatingEmbedding(nn.Module):
@@ -66,8 +74,9 @@ class RatingEmbedding(nn.Module):
     def forward(self, rating: OptionalTensor) -> Tensor:
         """Return one embedding per timestep, shaped batch by sequence by width."""
 
+        span = _STRONG_RATING_ANCHOR - _WEAK_RATING_ANCHOR
         weakness = (
-            ((_RATING_ANCHOR - rating.values.float()) / _RATING_ANCHOR)
+            ((_STRONG_RATING_ANCHOR - rating.values.float()) / span)
             .clamp(0.0, 1.0)
             .unsqueeze(-1)
         )
@@ -96,11 +105,17 @@ class SquareTokenEncoder(nn.Module):
             config.action_embedding_dim,
         )
         self.square_identity = nn.Parameter(
-            torch.empty(_BOARD_SQUARE_COUNT, config.model_dim)
+            torch.empty(BOARD_SQUARE_COUNT, config.model_dim)
         )
         nn.init.normal_(self.square_identity, std=0.02)
         position_dim = 3 * embedding_dim + config.action_embedding_dim + 2
-        self.projection = nn.Linear(embedding_dim + position_dim, config.model_dim)
+        # Two projections summed rather than one over a concatenation. A linear
+        # map over concatenated inputs is exactly the sum of its parts, and the
+        # position half is the same value on all 64 squares -- projecting it
+        # once and broadcasting the result costs a fraction of replicating it
+        # across the board first and is the same function.
+        self.piece_projection = nn.Linear(embedding_dim, config.model_dim, bias=False)
+        self.position_projection = nn.Linear(position_dim, config.model_dim)
         self.normalization = nn.LayerNorm(config.model_dim)
         self.rating_embedding = RatingEmbedding(config)
 
@@ -130,11 +145,9 @@ class SquareTokenEncoder(nn.Module):
             ),
             dim=-1,
         )
-        broadcast = position.unsqueeze(-2).expand(
-            *pieces.shape[:-1],
-            position.shape[-1],
-        )
-        tokens = self.projection(torch.cat((pieces, broadcast), dim=-1))
+        tokens = self.piece_projection(pieces) + self.position_projection(
+            position
+        ).unsqueeze(-2)
         tokens = tokens + self.square_identity
         tokens = tokens + self.rating_embedding(inputs.target_rating).unsqueeze(-2)
         return cast(Tensor, self.normalization(tokens))
@@ -162,7 +175,7 @@ class GeometricAttentionBias(nn.Module):
         bias_dim = config.geometric_bias_dim
         self.compression = nn.Linear(config.model_dim, config.geometric_token_dim)
         self.board = nn.Sequential(
-            nn.Linear(_BOARD_SQUARE_COUNT * config.geometric_token_dim, bias_dim),
+            nn.Linear(BOARD_SQUARE_COUNT * config.geometric_token_dim, bias_dim),
             nn.GELU(),
             nn.LayerNorm(bias_dim),
             nn.Linear(bias_dim, self.heads * bias_dim),
@@ -171,7 +184,7 @@ class GeometricAttentionBias(nn.Module):
         self.mixture_norm = nn.LayerNorm(bias_dim)
         self.templates = nn.Linear(
             bias_dim,
-            _BOARD_SQUARE_COUNT * _BOARD_SQUARE_COUNT,
+            BOARD_SQUARE_COUNT * BOARD_SQUARE_COUNT,
         )
         nn.init.zeros_(self.templates.weight)
         nn.init.zeros_(self.templates.bias)
@@ -187,55 +200,16 @@ class GeometricAttentionBias(nn.Module):
             Tensor,
             self.templates(mixture).unflatten(
                 -1,
-                (_BOARD_SQUARE_COUNT, _BOARD_SQUARE_COUNT),
+                (BOARD_SQUARE_COUNT, BOARD_SQUARE_COUNT),
             ),
         )
 
 
-class SpatialAttention(nn.Module):
-    """Attend between the squares of one position, along learned geometry."""
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention over one axis, masked by whatever a subclass names.
 
-    def __init__(self, config: MoveModelConfig) -> None:
-        super().__init__()
-        self.heads = config.attention_heads
-        self.head_dim = config.model_dim // config.attention_heads
-        self.dropout = config.dropout
-        self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
-        self.output_projection = nn.Linear(config.model_dim, config.model_dim)
-        self.geometric_bias = GeometricAttentionBias(config)
-        nn.init.xavier_uniform_(self.qkv_projection.weight)
-        nn.init.zeros_(self.qkv_projection.bias)
-        nn.init.zeros_(self.output_projection.bias)
-
-    def forward(self, hidden: Tensor) -> Tensor:
-        """Return attended square features for a flattened run of positions."""
-
-        query, key, value = (
-            self.qkv_projection(hidden)
-            .unflatten(-1, (3, self.heads, self.head_dim))
-            .permute(2, 0, 3, 1, 4)
-            .unbind(0)
-        )
-        attended = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=self.geometric_bias(hidden).to(query.dtype),
-            dropout_p=self.dropout if self.training else 0.0,
-        )
-        return cast(
-            Tensor,
-            self.output_projection(attended.transpose(1, 2).flatten(-2)),
-        )
-
-
-class CausalSelfAttention(nn.Module):
-    """Attend over earlier timesteps, stating causality as the flag it is.
-
-    ``scaled_dot_product_attention`` reads ``is_causal`` as the mask rather than
-    as a hint accompanying one, which is what the encoder wrapper this replaced
-    could not do. Flash and cuDNN attention refuse a non-null ``attn_mask``, so
-    handing one over is what put them out of reach.
+    The two axes differ only in the mask they attend under, so that is the only
+    thing a subclass supplies.
     """
 
     def __init__(self, config: MoveModelConfig) -> None:
@@ -245,15 +219,20 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.dropout
         self.qkv_projection = nn.Linear(config.model_dim, 3 * config.model_dim)
         self.output_projection = nn.Linear(config.model_dim, config.model_dim)
-        # What the wrapper's attention initialized itself to. ``nn.Linear``'s
-        # own default is a generic one, and restating this is what keeps a
-        # fresh model drawn the way it was before.
+        # ``nn.Linear``'s own default is a generic fan-based one. A transformer
+        # wants the projection drawn across all three of query, key, and value
+        # at once, which is what this restates.
         nn.init.xavier_uniform_(self.qkv_projection.weight)
         nn.init.zeros_(self.qkv_projection.bias)
         nn.init.zeros_(self.output_projection.bias)
 
+    def masking(self, hidden: Tensor, dtype: torch.dtype) -> dict[str, Any]:
+        """Return the mask keywords this axis attends under."""
+
+        raise NotImplementedError
+
     def forward(self, hidden: Tensor) -> Tensor:
-        """Return attended features for every timestep, batch dimension first."""
+        """Return attended features, batch dimension first."""
 
         query, key, value = (
             self.qkv_projection(hidden)
@@ -266,12 +245,41 @@ class CausalSelfAttention(nn.Module):
             key,
             value,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True,
+            **self.masking(hidden, query.dtype),
         )
         return cast(
             Tensor,
             self.output_projection(attended.transpose(1, 2).flatten(-2)),
         )
+
+
+class SpatialAttention(MultiHeadAttention):
+    """Attend between the squares of one position, along learned geometry."""
+
+    def __init__(self, config: MoveModelConfig) -> None:
+        super().__init__(config)
+        self.geometric_bias = GeometricAttentionBias(config)
+
+    def masking(self, hidden: Tensor, dtype: torch.dtype) -> dict[str, Any]:
+        """Attend everywhere, tilted by the geometry read off this position."""
+
+        return {"attn_mask": self.geometric_bias(hidden).to(dtype)}
+
+
+class CausalSelfAttention(MultiHeadAttention):
+    """Attend over earlier timesteps, stating causality as the flag it is.
+
+    ``scaled_dot_product_attention`` reads ``is_causal`` as the mask rather than
+    as a hint accompanying one. Flash and cuDNN attention refuse a non-null
+    ``attn_mask``, so handing one over is what puts them out of reach — which is
+    why this axis, the one whose length grows with the game, is the one kept
+    free of a bias.
+    """
+
+    def masking(self, hidden: Tensor, dtype: torch.dtype) -> dict[str, Any]:
+        """Attend backwards only, by the flag rather than a built mask."""
+
+        return {"is_causal": True}
 
 
 class ResidualBlock(nn.Module):
@@ -339,8 +347,16 @@ class SourceDestinationHead(nn.Module):
         square_slots, promotion_slots = _move_index_tables()
         # Derived constants, not state: a pure function of the action
         # vocabulary, so they do not belong in a checkpoint.
-        self.register_buffer("move_square_slots", square_slots, persistent=False)
-        self.register_buffer("move_promotion_slots", promotion_slots, persistent=False)
+        self.register_buffer(
+            "move_square_slots",
+            torch.tensor(square_slots, dtype=torch.long),
+            persistent=False,
+        )
+        self.register_buffer(
+            "move_promotion_slots",
+            torch.tensor(promotion_slots, dtype=torch.long),
+            persistent=False,
+        )
 
     def forward(self, squares: Tensor, hidden: Tensor) -> Tensor:
         """Return logits over the whole action vocabulary, moves then terminals."""
@@ -416,25 +432,28 @@ class CausalMoveModel(nn.Module):
         gathers by the loss mask before looking.
         """
 
-        squares = self.encode_squares(batch)
-        hidden = self.encode_trajectory(batch, squares)
+        squares, hidden = self.encode(batch)
         return cast(Tensor, self.action_head(self.decide(squares, hidden), hidden))
 
-    def encode_squares(self, batch: MoveModelBatch) -> Tensor:
-        """Encode each position's squares, reading no position but its own."""
+    def decide_at(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
+        """Return logits for one named ply per row, shaped batch by vocabulary.
 
-        tokens = self.square_encoder(batch)
-        positions = tokens.flatten(0, 1)
-        for block in self.spatial_blocks:
-            positions = block(positions)
-        return cast(Tensor, self.spatial_norm(positions).unflatten(0, tokens.shape[:2]))
+        Serving reads a single decision out of each history, and the two stages
+        after the trunk are the most expensive in the model — both run 64 tokens
+        per ply, and the head builds a square-by-square board for each. Both are
+        per-position, so taking the decision's row before them rather than after
+        is the same arithmetic over one ply instead of the whole game.
+        """
 
-    def encode_trajectory(
-        self,
-        batch: MoveModelBatch,
-        squares: Tensor | None = None,
-    ) -> Tensor:
-        """Encode rating-aware exact state and causal move history."""
+        squares, hidden = self.encode(batch)
+        rows = torch.arange(squares.shape[0], device=squares.device)
+        squares = squares[rows, decisions].unsqueeze(1)
+        hidden = hidden[rows, decisions].unsqueeze(1)
+        decided = self.action_head(self.decide(squares, hidden), hidden)
+        return cast(Tensor, decided[:, 0])
+
+    def encode(self, batch: MoveModelBatch) -> tuple[Tensor, Tensor]:
+        """Return each position's encoded squares and the history over them."""
 
         declared = self.config.maximum_context_plies
         if batch.position_bound > declared:
@@ -442,8 +461,19 @@ class CausalMoveModel(nn.Module):
                 f"batch reaches ply index {batch.position_bound - 1}, past the "
                 f"{declared} plies this model declares as its context"
             )
-        if squares is None:
-            squares = self.encode_squares(batch)
+        squares = self.encode_squares(batch)
+        return squares, self.encode_trajectory(batch, squares)
+
+    def encode_squares(self, batch: MoveModelBatch) -> Tensor:
+        """Encode each position's squares, reading no position but its own."""
+
+        return _spatially(
+            self.square_encoder(batch), self.spatial_blocks, self.spatial_norm
+        )
+
+    def encode_trajectory(self, batch: MoveModelBatch, squares: Tensor) -> Tensor:
+        """Encode rating-aware exact state and causal move history."""
+
         hidden = self.trajectory_norm(squares.mean(dim=-2))
         # A chunked selection carries ply indices past the row's own width.
         hidden = hidden + self.position_table[batch.ply_indices].to(hidden.dtype)
@@ -459,13 +489,7 @@ class CausalMoveModel(nn.Module):
         """Read the history feature back onto the squares the head scores."""
 
         decision = squares + self.decision_projection(hidden).unsqueeze(-2)
-        positions = decision.flatten(0, 1)
-        for block in self.decision_blocks:
-            positions = block(positions)
-        return cast(
-            Tensor,
-            self.decision_norm(positions).unflatten(0, squares.shape[:2]),
-        )
+        return _spatially(decision, self.decision_blocks, self.decision_norm)
 
     def identity(self) -> dict[str, object]:
         """Return compatibility metadata for future runs and checkpoints."""
@@ -496,34 +520,55 @@ def model_identity(config: MoveModelConfig) -> dict[str, object]:
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "rating_conditioning": "square-token-input-embedding",
+        # The anchors are not config, but they decide what every stored rating
+        # means: move one and a retained checkpoint's dial silently reinterprets
+        # itself. Carrying them here is what makes the runner's identity check
+        # refuse such a checkpoint instead of serving it under new endpoints.
+        "rating_anchors": [_WEAK_RATING_ANCHOR, _STRONG_RATING_ANCHOR],
         "timing_inputs": False,
         "timing_head": False,
     }
 
 
-def _move_index_tables() -> tuple[Tensor, Tensor]:
+def _spatially(
+    tokens: Tensor,
+    blocks: nn.ModuleList,
+    normalization: nn.Module,
+) -> Tensor:
+    """Run a stack over each position's squares, batch and ply folded together.
+
+    A spatial stage reads one position at a time, so the two leading dimensions
+    are collapsed into the batch for the whole stack and restored after it.
+    """
+
+    positions = tokens.flatten(0, 1)
+    for block in blocks:
+        positions = block(positions)
+    return cast(Tensor, normalization(positions).unflatten(0, tokens.shape[:2]))
+
+
+@cache
+def _move_index_tables() -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Return where each move id reads its board and promotion logit.
 
     The head produces a square-by-square board and a per-destination promotion
     bias; the vocabulary is a flat list. These are the gather that joins them,
-    built once from the vocabulary itself so the two can never drift.
+    derived from the vocabulary itself so the two can never drift, and cached
+    because every model built walks the whole vocabulary to produce them.
     """
 
     square_slots = []
     promotion_slots = []
     for action_id in range(MOVE_ACTION_COUNT):
         move = decode_move(action_id)
-        square_slots.append(move.from_square * _BOARD_SQUARE_COUNT + move.to_square)
+        square_slots.append(move.from_square * BOARD_SQUARE_COUNT + move.to_square)
         choice = (
             _PROMOTION_CHOICE_COUNT
             if move.promotion is None
             else move.promotion - chess.KNIGHT
         )
         promotion_slots.append(move.to_square * (_PROMOTION_CHOICE_COUNT + 1) + choice)
-    return (
-        torch.tensor(square_slots, dtype=torch.long),
-        torch.tensor(promotion_slots, dtype=torch.long),
-    )
+    return tuple(square_slots), tuple(promotion_slots)
 
 
 def _sinusoidal_table(length: int, dimension: int) -> Tensor:

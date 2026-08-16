@@ -17,6 +17,7 @@ import chess.engine
 import pytest
 import torch
 from pydantic import ValidationError
+from tiny_models import tiny_model_config
 
 from anthro_chess.application_logging import (
     LOG_LEVEL_NAMES,
@@ -32,7 +33,7 @@ from anthro_chess.chess import (
 from anthro_chess.data import DecisionContext, encoding_identity
 from anthro_chess.interfaces.config import UCI_MAX_RATING, UciConfig
 from anthro_chess.interfaces.uci import UciEngine
-from anthro_chess.models import CausalMoveModel, MoveModelConfig
+from anthro_chess.models import CausalMoveModel
 from anthro_chess.runtime import RuntimeConfig
 from anthro_chess.runtime import session as session_module
 from anthro_chess.training.checkpoints import save_training_checkpoint
@@ -1113,15 +1114,7 @@ def _uci_config(path: Path, checkpoint: Path, *, seed: str) -> Path:
 def _write_run(path: Path) -> Path:
     torch.manual_seed(7)
     path.mkdir(parents=True)
-    model_config = MoveModelConfig(
-        piece_embedding_dim=2,
-        action_embedding_dim=2,
-        model_dim=4,
-        attention_heads=1,
-        transformer_layers=1,
-        feedforward_dim=8,
-        dropout=0.0,
-    )
+    model_config = tiny_model_config()
     model = CausalMoveModel(model_config)
     model_identity = model.identity()
     resolved_config = {

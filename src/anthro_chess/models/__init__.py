@@ -9,7 +9,6 @@ from anthro_chess.models.causal import (
     CausalMoveModel,
     RatingEmbedding,
     SourceDestinationHead,
-    SquareTokenEncoder,
 )
 from anthro_chess.models.config import MoveModelConfig
 
@@ -21,5 +20,4 @@ __all__ = [
     "OptionalTensor",
     "RatingEmbedding",
     "SourceDestinationHead",
-    "SquareTokenEncoder",
 ]

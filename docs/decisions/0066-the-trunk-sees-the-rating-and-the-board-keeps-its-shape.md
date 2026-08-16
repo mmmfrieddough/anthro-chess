@@ -103,18 +103,45 @@ necessary for an ordered dial, not sufficient. What it removes is the failure
 mode where the representation itself is non-monotone and no amount of downstream
 capacity can recover an ordering that was never encoded.
 
-**Everything else 0009 decided is kept.** One encoding per game and supervision
-from every valid ply; the mover's rating only; no rating on past moves; no
-opponent-rating input; no controlled-color input. Only the placement is
-reversed, and 0009's own Consequences section anticipated this exact revision,
-naming a rating-aware reader over the causal states as the experiment to run "if
+0009's own Consequences section anticipated this exact revision, naming a
+rating-aware reader over the causal states as the experiment to run "if
 rating-control evaluation shows this is limiting." The evaluation showed it.
 
-This is a deliberate divergence from both Maia-2 and Maia-3, which condition on
-**both** players' ratings. 0009's reason for the mover's rating alone is a
-runtime one rather than a modeling one: an opponent rating is not reliably
-available when the engine is asked to move, and a model that requires it cannot
-answer. That reasoning is untouched by anything measured here.
+**One of 0009's constraints does not survive, and saying which one matters.**
+Its rule that ratings stay out of the causal transformer's inputs was the whole
+point of a rating-neutral trunk, and moving the rating into the square tokens
+ends it: a training ply carries its own mover's rating, and the trunk at ply `t`
+attends over earlier plies carrying the other player's. Ratings are on past
+moves now, and in training the opponent's rating is among them.
+
+What survives is the constraint that was doing the runtime work — **nothing is
+required from the caller but Anthro's own target rating** — along with one
+encoding per game, supervision from every valid ply, and no controlled-color
+input.
+
+That leaves a question 0009 never had to answer, because a rating-neutral trunk
+made it moot: what rating do the *history* plies carry when the engine is
+playing, where the opponent's is unknown? **The target rating is broadcast
+across the whole served trajectory.** A history rated only on its final ply
+would be a shape no training game contains — an unrated trajectory with one
+rated move on the end — and the served policy would then differ from the trained
+one for that reason rather than because of the strength that was asked for.
+Broadcasting says the game so far was played at the requested strength, which is
+what asking for an opponent of that strength means.
+
+The approximation in that is worth naming rather than leaving to be found:
+training reads each player's true rating, so a game between mismatched players
+presents two values where serving presents one. Close pairing is the modal case
+in the corpus, which is what makes this an approximation rather than a
+mismatch — but it is not exact, and nothing here measures what it costs. The
+exact form is a per-game subject view, which 0009 priced and rejected for
+doubling the transformer work, and that trade is worth revisiting only if a
+reading attributes something to it.
+
+This remains a deliberate divergence from Maia-2 and Maia-3, which take **both**
+players' ratings as separate inputs. They can: they are per-position models
+answering about a position handed to them. An engine asked to move cannot rely
+on knowing who it is playing.
 
 ### The board keeps its shape
 

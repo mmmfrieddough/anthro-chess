@@ -32,7 +32,7 @@ class MoveModelConfig(ConfigModel):
     #: values, so this is the one width whose cost does not fall with
     #: ``model_dim``: left at a large model's setting it would dominate a small
     #: model's parameter count outright.
-    geometric_bias_dim: int = Field(default=32, ge=1)
+    geometric_bias_dim: int = Field(default=16, ge=1)
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
     #: One past the furthest ply index the model can encode, and the length of
     #: the position table derived from it. A shape assertion rather than a dial:

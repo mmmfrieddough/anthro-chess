@@ -214,12 +214,20 @@ class MoveModelBatch:
                 .T
             )
             attention[index, :length] = True
-            # Only the decision being made is rated, which is the last real
-            # timestep of its own row rather than a shared final column.
+            # Every real timestep of the row carries the rating, not just the
+            # decision's own. The trunk reads the rating from ply zero now, so a
+            # row rated only in its last column would present a history no
+            # training game ever contains -- an unrated trajectory with one
+            # rated move on the end -- and the served policy would drift from
+            # the trained one for that reason alone. Broadcasting says the game
+            # so far was played at the requested strength, which is what a
+            # caller asking for an opponent of that strength means.
+            # `0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`
+            # records what that assumes about the opponent.
             target_rating = contexts[index].target_rating
             if target_rating is not None:
-                ratings[index, length - 1] = target_rating
-                rated[index, length - 1] = True
+                ratings[index, :length] = target_rating
+                rated[index, :length] = True
 
         def transferred(values: np.ndarray) -> Tensor:
             return torch.from_numpy(values).to(device=tensor_device)

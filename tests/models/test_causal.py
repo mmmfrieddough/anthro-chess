@@ -20,6 +20,7 @@ from anthro_chess.chess import (
     legal_action_ids,
 )
 from anthro_chess.data import (
+    BOARD_SQUARE_COUNT,
     GameEncodingInput,
     SequenceBatch,
     SequenceExample,
@@ -181,12 +182,12 @@ def test_the_position_table_is_sized_from_the_declared_context_and_never_saved()
 
 
 def test_every_layer_is_drawn_on_its_own_rather_than_copied() -> None:
-    """The one thing about a fresh model this change did move.
+    """A stack built by cloning one prototype layer starts degenerate.
 
-    ``nn.TransformerEncoder`` built its stack by deep-copying one prototype
-    layer, so the configured two-layer model began training with two identical
-    layers. Explicit construction draws each block, and a later collapse back
-    to a cloned prototype would be a silent return to a degenerate start.
+    Every block is drawn on its own, and a later collapse back to a copied
+    prototype -- which is what the framework's own stack builder does -- would
+    leave a multi-layer model beginning training as identical layers, with
+    nothing else in the suite noticing.
     """
 
     torch.manual_seed(31)
@@ -397,13 +398,40 @@ def test_rating_reaches_the_trajectory_rather_than_only_the_decision() -> None:
     model = CausalMoveModel(_tiny_config()).eval()
 
     with torch.no_grad():
-        unrated_trajectory = model.encode_trajectory(unrated)
-        rated_trajectory = model.encode_trajectory(rated)
+        unrated_trajectory = model.encode_trajectory(
+            unrated, model.encode_squares(unrated)
+        )
+        rated_trajectory = model.encode_trajectory(rated, model.encode_squares(rated))
         unrated_logits = model(unrated)
         rated_logits = model(rated)
 
     assert not torch.equal(unrated_trajectory, rated_trajectory)
     assert not torch.equal(unrated_logits, rated_logits)
+
+
+def test_reading_one_decision_agrees_with_reading_the_whole_pass() -> None:
+    """The serving shortcut is sound only while it is the same arithmetic.
+
+    Serving slices each history's decision row before the spatial decoder and
+    the move head rather than after, which is valid because both stages read one
+    position at a time. A later change letting either reach across plies would
+    make the two disagree, and every served move would quietly stop matching the
+    model that was trained.
+    """
+
+    torch.manual_seed(41)
+    model = CausalMoveModel(_tiny_config()).eval()
+    batch = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4", "e7e5", "g1f3"), ("d2d4",), white_rating=1500)
+    )
+    decisions = torch.tensor([2, 0])
+
+    with torch.no_grad():
+        whole = model(batch)
+        expected = whole[torch.arange(decisions.shape[0]), decisions]
+        actual = model.decide_at(batch, decisions)
+
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=1e-6)
 
 
 def test_the_rating_embedding_moves_monotonically_along_one_axis() -> None:
@@ -457,21 +485,34 @@ def test_every_move_reads_the_head_square_pair_its_action_id_names() -> None:
     The head scores a move as source-square against destination-square, while
     legal masking, UCI, and every benchmark speak flat action ids. If those two
     disagree by even one entry the model trains toward the wrong move and
-    nothing else in the suite notices, so the mapping is checked against the
-    vocabulary itself rather than against a second copy of the arithmetic.
+    nothing else in the suite notices.
+
+    So the board is rebuilt here by two-dimensional indexing while the head
+    reaches it through a packed flat offset. A transposed pair or a wrong stride
+    passes any check that repeats the packing arithmetic and fails this one.
     """
 
-    head = SourceDestinationHead(_tiny_config())
+    torch.manual_seed(43)
+    config = _tiny_config()
+    head = SourceDestinationHead(config)
+    squares = torch.randn(1, 1, BOARD_SQUARE_COUNT, config.model_dim)
+    hidden = torch.randn(1, 1, config.model_dim)
+
+    with torch.no_grad():
+        logits = head(squares, hidden)[0, 0]
+        sources = head.source_projection(squares)[0, 0]
+        destinations = head.destination_projection(squares)[0, 0]
+        board = sources @ destinations.transpose(-1, -2) * config.model_dim**-0.5
+        promotions = head.promotion_projection(squares)[0, 0]
 
     for action_id in range(MOVE_ACTION_COUNT):
         move = decode_move(action_id)
-        assert int(head.move_square_slots[action_id]) == move.from_square * 64 + (
-            move.to_square
-        )
-        choice = 4 if move.promotion is None else move.promotion - chess.KNIGHT
-        assert int(head.move_promotion_slots[action_id]) == (
-            move.to_square * 5 + choice
-        )
+        expected = board[move.from_square, move.to_square]
+        if move.promotion is not None:
+            expected = (
+                expected + promotions[move.to_square, move.promotion - chess.KNIGHT]
+            )
+        assert logits[action_id] == pytest.approx(expected.item(), abs=1e-5)
 
 
 def test_a_promotion_choice_moves_only_the_promotions_that_choose_it() -> None:
@@ -486,11 +527,14 @@ def test_a_promotion_choice_moves_only_the_promotions_that_choose_it() -> None:
     torch.manual_seed(19)
     config = _tiny_config()
     head = SourceDestinationHead(config)
-    squares = torch.randn(1, 1, 64, config.model_dim)
+    squares = torch.randn(1, 1, BOARD_SQUARE_COUNT, config.model_dim)
     hidden = torch.randn(1, 1, config.model_dim)
     queen = encode_move(chess.Move.from_uci("a7a8q"))
     knight = encode_move(chess.Move.from_uci("a7a8n"))
-    quiet = encode_move(chess.Move.from_uci("a6a7"))
+    # The same square pair as the promotions above, so only the zero-padded
+    # promotion column separates it from them. A quiet arrival at a different
+    # square would be kept clean by its destination rather than by the pad.
+    quiet = encode_move(chess.Move.from_uci("a7a8"))
 
     with torch.no_grad():
         before = head(squares, hidden)
@@ -508,7 +552,7 @@ def test_terminal_actions_are_scored_from_the_history_not_from_a_square_pair() -
     torch.manual_seed(23)
     config = _tiny_config()
     head = SourceDestinationHead(config)
-    squares = torch.randn(1, 1, 64, config.model_dim)
+    squares = torch.randn(1, 1, BOARD_SQUARE_COUNT, config.model_dim)
     hidden = torch.randn(1, 1, config.model_dim)
 
     with torch.no_grad():
@@ -535,12 +579,17 @@ def test_the_geometric_bias_starts_as_no_bias_at_all() -> None:
     torch.manual_seed(29)
     config = _tiny_config()
     bias = GeometricAttentionBias(config)
-    tokens = torch.randn(3, 64, config.model_dim)
+    tokens = torch.randn(3, BOARD_SQUARE_COUNT, config.model_dim)
 
     with torch.no_grad():
         generated = bias(tokens)
 
-    assert generated.shape == (3, config.attention_heads, 64, 64)
+    assert generated.shape == (
+        3,
+        config.attention_heads,
+        BOARD_SQUARE_COUNT,
+        BOARD_SQUARE_COUNT,
+    )
     assert torch.count_nonzero(generated) == 0
 
 

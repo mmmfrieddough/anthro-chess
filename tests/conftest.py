@@ -22,6 +22,7 @@ from typing import Any
 import chess
 import pytest
 import torch
+from tiny_models import tiny_model_config
 
 from anthro_chess.application_logging import (
     APPLICATION_LOGGER_NAME,
@@ -63,7 +64,7 @@ from anthro_chess.evaluation.results import (
     restore_registry,
 )
 from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
-from anthro_chess.models import CausalMoveModel, MoveModelConfig
+from anthro_chess.models import CausalMoveModel
 from anthro_chess.models.causal import model_identity
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
@@ -632,17 +633,7 @@ def loadable_run_record() -> dict[str, Any]:
     """
 
     return {
-        "model": model_identity(
-            MoveModelConfig(
-                piece_embedding_dim=2,
-                action_embedding_dim=2,
-                model_dim=4,
-                attention_heads=1,
-                transformer_layers=1,
-                feedforward_dim=8,
-                dropout=0.0,
-            )
-        ),
+        "model": model_identity(tiny_model_config()),
         "action_vocabulary": action_vocabulary_identity(),
         "encoding": encoding_identity(),
         "execution": {"precision": "float32", "parameter_dtype": "float32"},
@@ -654,23 +645,7 @@ def write_inference_run(path: Path, *, seed: int = 5) -> Path:
 
     torch.manual_seed(seed)
     path.mkdir(parents=True, exist_ok=True)
-    config = MoveModelConfig(
-        piece_embedding_dim=2,
-        action_embedding_dim=2,
-        model_dim=4,
-        attention_heads=1,
-        spatial_layers=1,
-        transformer_layers=1,
-        decision_layers=1,
-        feedforward_dim=8,
-        # The geometric bias generator emits a 64-by-64 template per head
-        # whatever ``model_dim`` is, so these two are the one place a fixture
-        # meaning "as small as it goes" has to say so explicitly: left at their
-        # defaults they would outweigh every other width here put together.
-        geometric_token_dim=1,
-        geometric_bias_dim=2,
-        dropout=0.0,
-    )
+    config = tiny_model_config()
     model = CausalMoveModel(config)
     model_identity = model.identity()
     resolved_config = {
@@ -743,23 +718,7 @@ def write_training_run(
 
     torch.manual_seed(seed)
     path.mkdir(parents=True, exist_ok=True)
-    config = MoveModelConfig(
-        piece_embedding_dim=2,
-        action_embedding_dim=2,
-        model_dim=4,
-        attention_heads=1,
-        spatial_layers=1,
-        transformer_layers=1,
-        decision_layers=1,
-        feedforward_dim=8,
-        # The geometric bias generator emits a 64-by-64 template per head
-        # whatever ``model_dim`` is, so these two are the one place a fixture
-        # meaning "as small as it goes" has to say so explicitly: left at their
-        # defaults they would outweigh every other width here put together.
-        geometric_token_dim=1,
-        geometric_bias_dim=2,
-        dropout=0.0,
-    )
+    config = tiny_model_config()
     model = CausalMoveModel(config)
     model_identity = model.identity()
     shard = normalized / "games.parquet"

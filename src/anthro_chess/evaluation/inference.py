@@ -776,18 +776,17 @@ def _measure_forward(
 
     _reset_batch(sessions, histories_used)
     with _measured_decision():
-        batch = MoveModelBatch.from_decision_contexts(
-            [session.decision_context() for session in sessions],
-            device=runner.device,
-        )
+        contexts = [session.decision_context() for session in sessions]
+        batch = MoveModelBatch.from_decision_contexts(contexts, device=runner.device)
+        decisions = runner.decision_indices(contexts)
         for _ in range(config.warmup_batches):
-            runner.action_logits(batch)
+            runner.decision_logits(batch, decisions)
         synchronize(runner.device)
 
         durations: list[float] = []
         for _ in range(config.batches):
             started = time.perf_counter()
-            runner.action_logits(batch)
+            runner.decision_logits(batch, decisions)
             synchronize(runner.device)
             durations.append((time.perf_counter() - started) * 1000.0)
     return durations

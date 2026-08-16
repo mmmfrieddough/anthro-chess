@@ -122,9 +122,12 @@ learned weak anchor and a learned strong anchor, which makes the representation
 monotone in the rating by construction rather than leaving the ordering to be
 discovered.
 
-The rating supplied is the one belonging to the player choosing that move, and
-only that player. Ratings are not attached to past moves, no opponent rating is
-an input, and no controlled-color input is needed because the exact board
+In training each ply carries its own mover's rating, so the trunk reads both
+players' ratings across a game. When the engine is playing, the opponent's is
+unknown and the configured target rating is broadcast across the whole
+trajectory instead, because a history rated only on its final ply is a shape no
+training game contains. Nothing is required from the caller but Anthro's own
+target rating, and no controlled-color input is needed because the exact board
 already identifies the side to move.
 
 The current checkpoint-backed model runner implements that correctness
