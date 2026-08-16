@@ -176,7 +176,9 @@ identity, so none can follow the vehicle without invalidating it.
   deployment envelope rather than from any measurement, and which sizes
   everything below it.
 - **The learning-rate schedule family**, which decides for the life of the
-  project whether extending a run is a branch or a restart.
+  project whether extending a run is a branch or a restart, and which
+  `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` settles as a
+  branch.
 - **The architecture**, which has never been designed. It was assembled from
   defaults, and the flat rating dial is what that produced: the trunk is
   rating-neutral by construction, so the rating cannot reach the representation

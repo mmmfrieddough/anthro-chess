@@ -410,14 +410,19 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
     assert "fused_optimizer" in provenance
 
 
-def test_the_training_identity_holds_everything_but_the_seed(
+def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     tmp_path: Path,
 ) -> None:
     """The scope a training noise floor is stored under, and what it excludes.
 
-    Seed replicates are the arms such a floor is characterized from, so they
-    have to land on one identity; anything else that decides the weights has to
-    move it, or the floor would qualify a configuration it never measured.
+    Everything deciding the weights has to move the identity, or a floor would
+    qualify a configuration it never measured — everything except the axes the
+    program reads differences across. The seed is one, because seed replicates
+    are the arms such a floor is characterized from. A branch is the other: a
+    cooldown branched off a trunk declares its own horizon and resumes from the
+    trunk's checkpoint, and
+    `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` needs the two to
+    read as one configuration measured at two horizons.
     """
 
     config = load_config(
@@ -447,6 +452,15 @@ def test_the_training_identity_holds_everything_but_the_seed(
             model={"parameters": 276_002},
         )
     )
+    branched = training_identity_sha256(
+        _compatibility_record(
+            config.model_copy(
+                update={"steps": config.steps * 2, "resume_from": "latest"}
+            ),
+            data=data,
+            model={"parameters": 276_002},
+        )
+    )
     resized = training_identity_sha256(
         _compatibility_record(config, data=data, model={"parameters": 9_000_000})
     )
@@ -462,6 +476,7 @@ def test_the_training_identity_holds_everything_but_the_seed(
     )
 
     assert reseeded == identity
+    assert branched == identity
     assert resized != identity
     assert retrained != identity
 

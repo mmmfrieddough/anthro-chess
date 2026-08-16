@@ -380,6 +380,14 @@ learning-rate schedules, and data coverage remain meaningful. If exact sample
 order cannot be restored without significant complexity, resuming from a recent
 checkpoint and continuing with an equivalent sampling recipe is acceptable.
 
+The learning rate is the one part of that a resume recomputes rather than
+restores. It follows from the resumed step and the horizon the resuming run
+declares, so a cooldown branched off a trunk cools at its own end rather than at
+the trunk's, which is the whole of what makes a branch a branch under
+`docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md`. A restored
+scheduler state would carry the trunk's horizon into the branch and report
+nothing wrong.
+
 The current action-only runner restores model and optimizer state, global
 progress counters, Python and Torch random-number-generator state, and the
 loader's exact deterministic next-batch cursor. Each checkpoint retains the
