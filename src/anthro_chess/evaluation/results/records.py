@@ -168,8 +168,8 @@ class ProjectionDigest(ResultModel):
         )
 
 
-#: What a core view's name ends in. A display detail: which core a reading was
-#: taken against is :attr:`DatasetReference.core_id`, not this.
+#: What a core view's name ends in. Do not read core-ness off it;
+#: :attr:`DatasetReference.core_id` is what says which core, if any.
 CORE_VIEW_SUFFIX = "core"
 
 

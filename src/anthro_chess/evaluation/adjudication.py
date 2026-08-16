@@ -197,9 +197,8 @@ def build_adjudication_report(
 ) -> AdjudicationReport | None:
     """Join action-set policy readings to exact predicates and human targets.
 
-    ``game_ids`` narrows the report to one view's games. The inputs span every
-    game a pass scored, which is more than one view holds once a reading
-    reports against both the current pool and the core.
+    The inputs may span more games than the report should cover, since this
+    walks them rather than the scored sequence; ``game_ids`` bounds it.
     """
 
     by_key = {(item.game_id, item.ply_index, item.name): item for item in scored}

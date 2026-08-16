@@ -94,19 +94,16 @@ class DualSelection:
     """What one reading scores, and the two views it reports it under."""
 
     current: ViewSelection
-    #: Absent until a generation is designated, since a core view has no
-    #: reference to be taken against before then.
+    #: Absent until a generation is designated.
     core: ViewSelection | None
 
     @property
     def reported(self) -> tuple[ViewSelection, ...]:
         """Return the views this reading reports, current first.
 
-        Current leads because it is the number that answers how good a
-        checkpoint is; core follows and answers whether it improved. A core
-        view this reading's filters emptied is dropped rather than reported,
-        since scoring nothing would end the reading and take the current view
-        down with it.
+        A core view this reading's filters emptied is dropped rather than
+        reported: scoring nothing raises downstream, which would end the
+        reading and take the current view down with it.
         """
 
         if self.core is None or not self.core.game_ids:

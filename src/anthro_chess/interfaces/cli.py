@@ -1863,11 +1863,9 @@ def _recorded_lines(recorded_paths: Sequence[Path]) -> list[str]:
 
 
 def _core_view_line(result: CheckpointEvaluationResult) -> list[str]:
-    """Name the core reading this invocation also recorded, where there is one.
+    """Name the core reading this invocation also recorded, if there is one.
 
-    The numbers printed below are the current view's. The core reading is
-    written to the store rather than rendered, so without this the operator has
-    no sign that a second reading exists or which files hold it.
+    Everything else printed here is the current view's.
     """
 
     views = {

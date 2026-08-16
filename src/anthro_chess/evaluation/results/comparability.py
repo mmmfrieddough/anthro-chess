@@ -414,11 +414,8 @@ def measurements_by_workload(
         workload = UNSCOPED_WORKLOAD
         if workload_scoped and envelope.execution is not None:
             workload = envelope.execution.workload_sha256
-        # The core joins the key for the reason the workload does: once one is
-        # designated, a checkpoint has two readings of this metric recorded
-        # together, differing only by which games they scored. Sharing a key,
-        # the survivor would be decided by a content-hash tie-break, so a delta
-        # could compare one view's number against the other's.
+        # Last writer wins below, so a coordinate left out of the key is a
+        # reading silently dropped rather than a group merged.
         key = ReadingKey(
             workload,
             None if envelope.data is None else envelope.data.core_id,

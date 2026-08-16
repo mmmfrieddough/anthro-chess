@@ -507,9 +507,9 @@ def evaluate_checkpoint(
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
     )
-    # Assembled before the reporting loop so the conditioning passes, which are
-    # seven whole scored copies of the union, are freed before the bootstraps
-    # and the detail payloads allocate against them.
+    # Assembled before the reporting loop so the conditioning passes, one whole
+    # scored copy of the union each, are freed before the bootstraps and the
+    # detail payloads allocate against them.
     dependencies = [
         None
         if passes is None
@@ -520,8 +520,6 @@ def evaluate_checkpoint(
     ]
     del passes
 
-    # Current leads, and is what this returns: it is the number that answers
-    # how good a checkpoint is.
     current, *_ = [
         _report_view(
             selection,
@@ -558,10 +556,10 @@ def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
             f"view {config.view.name!r} selected no games from the pool"
         )
 
-    # The union of both views, scored once. Where a core is designated the two
-    # views overlap heavily and diverge only as the pool grows past the core.
     scored = dual.scored_game_ids
     rows = [
+        # Both selections come from one view config, so either one's prefix
+        # bound is the bound for every row the union holds.
         _truncate(row, dual.current.prefix_plies)
         for row in pool_rows(
             pool,
@@ -681,11 +679,7 @@ def _report_view(
     frequency: OpeningFrequency | None,
     recorder: ResultRecorder,
 ) -> CheckpointEvaluationResult:
-    """Aggregate one scoring pass under one view, and record what it measured.
-
-    Every quantity here is derived from games already scored, so the second
-    view costs aggregation rather than another pass over the pool.
-    """
+    """Aggregate one scoring pass under one view, and record what it measured."""
 
     game_ids = frozenset(selection.game_ids)
     scored = _within(positions, game_ids)
@@ -717,6 +711,9 @@ def _report_view(
         component,
         opening_frequency=frequency,
     )
+    # Safe to share the recorder across views: a dispersion keys on a
+    # fingerprint carrying this view's own data component, so the two views'
+    # spreads never collide.
     recorder.disperse(dispersions)
     result = CheckpointEvaluationResult(
         checkpoint=checkpoint,
@@ -774,8 +771,8 @@ def _report_view(
 class _ConditioningPasses:
     """Every conditioning pass one dependency reading is assembled from.
 
-    Scored once over the union of the reported views and aggregated per view,
-    because a second pass here is nine more passes over the pool.
+    These span the union of the reported views rather than any one of them, so
+    a reading assembled from them narrows first.
     """
 
     corrupted: Mapping[str, tuple[Conditioning, Sequence[PositionPolicy]]]

@@ -365,13 +365,13 @@ class HistoryPoint:
     #: long-run trend and the annotation is what keeps it honest.
     environment: str | None = None
     environment_changed: bool = False
-    #: Which view of the pool produced this point, once a core is designated.
+    #: Which view of the pool produced this point, for a reading that scored
+    #: one. Absent for a metric with no data dependency.
     view: str | None = None
     #: Which core it was scored against, absent for the current pool.
     core_id: str | None = None
-    #: Which pool it was scored over. A cadence preview writes this metric
-    #: under the same checkpoint label, over the validation split of another
-    #: pool, so the label alone does not say two points are comparable halves.
+    #: Which pool it was scored over. Two pools can carry one checkpoint label,
+    #: so pairing points on the label alone crosses them.
     pool_id: str | None = None
 
     def as_record(self) -> dict[str, object]:
@@ -395,12 +395,7 @@ class HistoryPoint:
 
 @dataclass(frozen=True)
 class CoreDivergence:
-    """How far one checkpoint's current reading sits from its core reading.
-
-    Sustained divergence in one direction is the observable symptom of the core
-    having been overfit, which is the cost the growing current view is kept
-    alongside it to expose.
-    """
+    """How far one checkpoint's current reading sits from its core reading."""
 
     checkpoint: str
     core: float
@@ -929,11 +924,7 @@ def _noise_legend(report: DeltaReport) -> list[str]:
 
 
 def _render_divergences(history: MetricHistory) -> list[str]:
-    """Render how far each checkpoint's current reading sits from its core.
-
-    One sample says little; the column is here so a run of them in one
-    direction is visible without anybody assembling it by hand.
-    """
+    """Render how far each checkpoint's current reading sits from its core."""
 
     divergences = history.divergences
     if not divergences:
