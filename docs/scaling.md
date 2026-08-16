@@ -192,6 +192,31 @@ it, at a stated scale, rather than by the raw delta. A candidate whose answer is
 smaller than the compute wasted by an ordinary sizing error does not justify
 delaying a run.
 
+## When To Measure, And When To Take The Published Answer
+
+Not every choice earns an experiment. Running one where the answer already exists
+spends compute to reproduce a result; skipping one where it does not is how an
+architecture gets assembled from defaults.
+
+**Take the published answer where a comparison already exists under conditions
+close enough to transfer.** Outside work has swept most generic modelling
+mechanics with more compute than this project will ever have, and its results in
+this area are reported at sizes and on tasks near enough to be usable —
+`docs/research.md` (Human-Like Chess Modeling) carries the chess-specific ones.
+Re-deriving them returns the same answer and costs runs.
+
+**Measure where the answer would be this project's own.** That is the case when
+the published work targets a different objective, filters out the regime this
+project intends to model, or retreated from the thing being attempted here. A
+choice in that category settled by argument is the failure the vehicle exists to
+prevent.
+
+A reading taken **before the vehicle exists** carries no seed floor, because the
+floor is a property of the vehicle. That does not make such a reading worthless;
+it makes it an instrument for large effects. Run more than one seed per arm where
+the budget allows, treat a narrow margin as undecided rather than as a winner, and
+say the reading did not decide it rather than promoting the margin into a finding.
+
 ## The Order
 
 Each step is entered only when the one above it has an answer, and every exit is

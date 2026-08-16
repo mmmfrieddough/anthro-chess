@@ -168,20 +168,35 @@ So this stage ends by fixing the whole reference frame rather than only the
 evaluation half of it. Deciding engine-assisted filtering, widening the corpus
 across the measurement axes, cutting the first pool generation, and designating
 the core land in that order, each breaking containment or ending a series and all
-free until the designation and permanent after it. Three further items close the
-frame, and none of them is an experiment:
+free until the designation and permanent after it. Four further items close the
+frame, and all of them share one property: each is carried inside the vehicle's
+identity, so none can follow the vehicle without invalidating it.
 
 - **The target model scale**, which follows from the compute budget and the
   deployment envelope rather than from any measurement, and which sizes
   everything below it.
 - **The learning-rate schedule family**, which decides for the life of the
-  project whether extending a run is a branch or a restart, and which is part of
-  the vehicle's configuration and so cannot follow it.
-- **The ablation vehicle**: one frozen training configuration that every later
-  candidate change is read against, its identity pinned by a test, and its
-  seed dispersion characterized against that pin.
-  `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
-  owns why it exists and what it gives up.
+  project whether extending a run is a branch or a restart.
+- **The architecture**, which has never been designed. It was assembled from
+  defaults, and the flat rating dial is what that produced: the trunk is
+  rating-neutral by construction, so the rating cannot reach the representation
+  at all. Settling it means copying what the field has already established and
+  measuring only what would be this project's own answer — the conditioning path
+  being the case where no published result transfers.
+- **The optimization surface** — schedule, warmup, decoupled weight decay — which
+  does not exist today. A single learning-rate float and a plain optimizer cannot
+  express any of the settings the scaling program treats as scale-coupled.
+
+Those close into **the ablation vehicle**: one frozen training configuration that
+every later candidate change is read against, its identity pinned by a test, and
+its seed dispersion characterized against that pin.
+`docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
+owns why it exists and what it gives up.
+
+Two of the four are experiments despite closing the frame, and they run without a
+seed floor because the vehicle they would be measured against does not exist yet.
+That makes them instruments for large effects only; `docs/scaling.md` says what
+such a reading can and cannot carry.
 
 The vehicle follows the designation rather than preceding it, because it needs a
 pool to read against. That ordering costs something worth naming: the core's
