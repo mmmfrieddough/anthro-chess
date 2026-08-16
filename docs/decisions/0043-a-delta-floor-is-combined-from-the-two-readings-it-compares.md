@@ -16,7 +16,12 @@ family's quantities can be resampled at all is retained. Rests
 on `0026-conservative-dispersion-bounds.md`, which is retained unchanged.
 Extended by `0061-a-training-cost-reading-has-no-replicate-to-resample.md`,
 which answers the obligation below — a dispersion or a stated reason — for the
-training-efficiency family.
+training-efficiency family. Refined by `0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`, which returns a training
+floor for one configuration that cannot move. That record does not reopen the
+collapse below: the objection here is to a floor keyed to a baseline every
+accepted change redefines, and a frozen instrument is not one. What it adds is
+one number attached to one identity digest, not a kind, a producer, a tier, or an
+index.
 
 ## Context
 

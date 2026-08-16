@@ -19,6 +19,12 @@ one. That record also reverses the scale "Both Arms Are Read The Same Way"
 argues for below — the full sweep decides a change and the reduced sweep
 iterates — so read the reasoning here and the rule there.
 
+Answered by `0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`, which
+builds the base this record asked for. The seed measurement below concluded that
+such a characterization "belongs to a configuration rather than to a change, so a
+base worth several changes pays for it once"; nothing here ever created one, and
+that record designates a frozen configuration that promotions do not advance.
+
 ## Context
 
 The test suite proves that a change did not break anything. Nothing in the
