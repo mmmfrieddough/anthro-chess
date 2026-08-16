@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 
-from pydantic import Field, StrictBool, model_validator
+from pydantic import Field, StrictBool
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data import Speed
@@ -53,15 +53,6 @@ class ViewConfig(ConfigModel):
     #: date for is excluded by either bound rather than assumed to be in range.
     minimum_date: date | None = None
     maximum_date: date | None = None
-
-    @model_validator(mode="after")
-    def _check_name(self) -> ViewConfig:
-        if self.name.endswith(f"-{CORE_VIEW_SUFFIX}"):
-            raise ValueError(
-                f"a view name ending in -{CORE_VIEW_SUFFIX} is how a stored "
-                "reading says it was taken against the designated core"
-            )
-        return self
 
 
 @dataclass(frozen=True)
@@ -126,9 +117,7 @@ class DualSelection:
     def scored_game_ids(self) -> tuple[int, ...]:
         """Return every game either view reports, each exactly once."""
 
-        if self.core is None:
-            return self.current.game_ids
-        return tuple(sorted({*self.current.game_ids, *self.core.game_ids}))
+        return tuple(sorted({game for view in self.reported for game in view.game_ids}))
 
 
 def apply_dual_view(

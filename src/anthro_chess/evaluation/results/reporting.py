@@ -28,6 +28,7 @@ from anthro_chess.evaluation.results.comparability import (
     BridgeIndex,
     Comparability,
     ProvenanceDifference,
+    ReadingKey,
     attribute,
     condition_differences,
     environment_differences,
@@ -46,9 +47,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.results.noise import combined_floor
 from anthro_chess.evaluation.results.records import (
-    CORE_VIEW_SUFFIX,
     Measurement,
-    MetricDispersion,
     ResultEnvelope,
 )
 from anthro_chess.evaluation.results.store import (
@@ -358,6 +357,9 @@ class HistoryPoint:
     series: str
     starts_new_series: bool
     bridged_from_previous: bool
+    #: The recorded measurement behind this point, which carries the spread a
+    #: comparison against it needs.
+    measurement: Measurement
     #: Where this point was measured, for an efficiency metric. The series is
     #: continuous across machines by design, so the line stays readable as a
     #: long-run trend and the annotation is what keeps it honest.
@@ -365,12 +367,12 @@ class HistoryPoint:
     environment_changed: bool = False
     #: Which view of the pool produced this point, once a core is designated.
     view: str | None = None
+    #: Which core it was scored against, absent for the current pool.
+    core_id: str | None = None
     #: Which pool it was scored over. A cadence preview writes this metric
     #: under the same checkpoint label, over the validation split of another
     #: pool, so the label alone does not say two points are comparable halves.
     pool_id: str | None = None
-    #: What this reading's own spread was estimated at, where one was.
-    dispersion: MetricDispersion | None = None
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable point."""
@@ -386,6 +388,7 @@ class HistoryPoint:
             "environment": self.environment,
             "environment_changed": self.environment_changed,
             "view": self.view,
+            "core_id": self.core_id,
             "pool_id": self.pool_id,
         }
 
@@ -402,25 +405,17 @@ class CoreDivergence:
     checkpoint: str
     core: float
     current: float
-    #: The gap noise alone produces between these two readings, absent when
-    #: either lacks a spread. The two score different game sets, so their
-    #: sampling error does not cancel the way it does for two checkpoints read
-    #: against one fixed reference.
-    floor: float | None = None
+    #: The gap noise alone produces between these two readings. The two score
+    #: different game sets, so their sampling error does not cancel the way it
+    #: does for two checkpoints read against one fixed reference.
+    floor: float | None
+    verdict: NoiseVerdict
 
     @property
     def divergence(self) -> float:
         """Return how far current sits from core, signed toward current."""
 
         return self.current - self.core
-
-    @property
-    def clears_noise(self) -> bool | None:
-        """Return whether the gap is larger than noise alone would produce."""
-
-        if self.floor is None:
-            return None
-        return abs(self.divergence) > self.floor
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable divergence."""
@@ -431,7 +426,7 @@ class CoreDivergence:
             "current": self.current,
             "divergence": self.divergence,
             "floor": self.floor,
-            "clears_noise": self.clears_noise,
+            "verdict": self.verdict.value,
         }
 
 
@@ -457,16 +452,15 @@ class MetricHistory:
             if point.view is None:
                 continue
             views = paired.setdefault((point.checkpoint, point.pool_id), {})
-            views[point.view.endswith(f"-{CORE_VIEW_SUFFIX}")] = point
+            views[point.core_id is not None] = point
+        definition = metric_definition(self.metric)
         divergences: list[CoreDivergence] = []
         for (checkpoint, _pool), views in paired.items():
             if len(views) != 2:
                 continue
             core, current = views[True], views[False]
-            floor = (
-                combined_floor(core.dispersion, current.dispersion)
-                if core.dispersion is not None and current.dispersion is not None
-                else None
+            floor, _source = _delta_floor(
+                definition, core.measurement, current.measurement
             )
             divergences.append(
                 CoreDivergence(
@@ -474,6 +468,9 @@ class MetricHistory:
                     core=core.value,
                     current=current.value,
                     floor=floor,
+                    verdict=_noise_verdict(
+                        definition, current.value - core.value, floor
+                    ),
                 )
             )
         return tuple(divergences)
@@ -708,8 +705,9 @@ def build_history(
                     and environment != previous_environment
                 ),
                 view=None if envelope.data is None else envelope.data.view,
+                core_id=None if envelope.data is None else envelope.data.core_id,
                 pool_id=None if envelope.data is None else envelope.data.pool_id,
-                dispersion=found.dispersion,
+                measurement=found,
             )
         )
         previous_fingerprint = found.fingerprint
@@ -944,9 +942,8 @@ def _render_divergences(history: MetricHistory) -> list[str]:
     for item in divergences:
         row = f"    {item.checkpoint:<24} {_format(item.divergence, signed=True):>12}"
         if item.floor is not None:
-            verdict = "clears noise" if item.clears_noise else "within noise"
-            row = f"{row}  floor {_format(item.floor):>10}  {verdict}"
-        lines.append(row)
+            row = f"{row}  floor {_format(item.floor):>10}"
+        lines.append(f"{row}  {item.verdict.value}")
     return lines
 
 
@@ -1145,7 +1142,7 @@ def _family_report(
             continue
         groups.append(
             SeriesGroup(
-                workload=None if key == UNSCOPED_WORKLOAD else key,
+                workload=None if key.workload == UNSCOPED_WORKLOAD else key.workload,
                 # One group has nothing to be told apart from, so the family
                 # renders exactly as it did before any benchmark wrote a matrix.
                 label=labels[key] if len(labels) > 1 else None,
@@ -1164,7 +1161,7 @@ def _family_report(
     return FamilyReport(family=family, series=tuple(groups), absence=None)
 
 
-Readings = Mapping[str, Mapping[str, tuple[ResultEnvelope, Measurement]]]
+Readings = Mapping[str, Mapping[ReadingKey, tuple[ResultEnvelope, Measurement]]]
 
 
 def _hidden_series(
@@ -1187,7 +1184,7 @@ def _hidden_series(
 def _group_pairings(
     current_readings: Readings,
     baseline_readings: Readings,
-) -> dict[str, str]:
+) -> dict[ReadingKey, ReadingKey]:
     """Return each group of a family, and the baseline workload it reads.
 
     Normally a workload identifies itself on both sides and the pairing is the
@@ -1211,27 +1208,27 @@ def _group_pairings(
     return {key: key for key in sorted(current_keys | baseline_keys)}
 
 
-def _workload_keys(readings: Readings) -> set[str]:
+def _workload_keys(readings: Readings) -> set[ReadingKey]:
     return {key for by_workload in readings.values() for key in by_workload}
 
 
 def _group_workloads(
-    pairings: Mapping[str, str],
+    pairings: Mapping[ReadingKey, ReadingKey],
     current_readings: Readings,
     baseline_readings: Readings,
-) -> dict[str, tuple[tuple[str, str], ...]]:
+) -> dict[ReadingKey, tuple[tuple[str, str], ...]]:
     """Return the flattened declared workload behind each group of a family.
 
     The current side is preferred where both recorded a group, so the label a
     reader sees names the run they are asking about.
     """
 
-    recorded: dict[str, tuple[tuple[str, str], ...]] = {}
+    recorded: dict[ReadingKey, tuple[tuple[str, str], ...]] = {}
     for readings in (baseline_readings, current_readings):
         for by_workload in readings.values():
             for key, (envelope, _) in by_workload.items():
                 execution = envelope.execution
-                if key == UNSCOPED_WORKLOAD or execution is None:
+                if key.workload == UNSCOPED_WORKLOAD or execution is None:
                     recorded[key] = ()
                     continue
                 recorded[key] = _flatten(execution.workload)
@@ -1242,8 +1239,8 @@ def _group_workloads(
 
 
 def _series_labels(
-    workloads: Mapping[str, tuple[tuple[str, str], ...]],
-) -> dict[str, str]:
+    workloads: Mapping[ReadingKey, tuple[tuple[str, str], ...]],
+) -> dict[ReadingKey, str]:
     """Name each group by the workload fields that actually tell them apart.
 
     Rendering the whole declared workload would put a dozen fields above every
@@ -1251,16 +1248,20 @@ def _series_labels(
     information, so only those are shown; the envelope keeps the rest.
     """
 
-    scoped = {key: dict(fields) for key, fields in workloads.items() if key}
+    scoped = {
+        key: dict(fields)
+        for key, fields in workloads.items()
+        if key.workload != UNSCOPED_WORKLOAD
+    }
     fields = sorted({field for entry in scoped.values() for field in entry})
     differing = [
         field
         for field in fields
         if len({entry.get(field) for entry in scoped.values()}) > 1
     ]
-    labels: dict[str, str] = {}
+    labels: dict[ReadingKey, str] = {}
     for key in workloads:
-        if key == UNSCOPED_WORKLOAD:
+        if key.workload == UNSCOPED_WORKLOAD:
             labels[key] = UNSCOPED_SERIES_LABEL
             continue
         entry = scoped[key]
@@ -1270,11 +1271,11 @@ def _series_labels(
         # Two workloads with the same fields cannot share a digest, so an empty
         # label means the only difference is in a field one of them omits
         # entirely. The digest prefix is then the honest discriminator.
-        labels[key] = rendered or f"workload {key[:12]}"
+        labels[key] = rendered or f"workload {key.workload[:12]}"
     return labels
 
 
-def _ordered_groups(labels: Mapping[str, str]) -> tuple[str, ...]:
+def _ordered_groups(labels: Mapping[ReadingKey, str]) -> tuple[ReadingKey, ...]:
     """Order a family's groups so a report does not depend on record order."""
 
     return tuple(sorted(labels, key=lambda key: (labels[key], key)))

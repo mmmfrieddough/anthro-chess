@@ -1873,7 +1873,7 @@ def _core_view_line(result: CheckpointEvaluationResult) -> list[str]:
     views = {
         envelope.data.view
         for envelope in result.envelopes
-        if envelope.data is not None and envelope.data.view.endswith("-core")
+        if envelope.data is not None and envelope.data.is_core
     }
     if not views:
         return []

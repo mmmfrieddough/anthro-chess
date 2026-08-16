@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import NamedTuple
 
 from anthro_chess.evaluation.results.records import (
     Bridge,
@@ -369,12 +370,24 @@ def latest_measurement(
 UNSCOPED_WORKLOAD = ""
 
 
+class ReadingKey(NamedTuple):
+    """What tells one checkpoint's several readings of a metric apart.
+
+    Both halves are coordinates a benchmark declared rather than properties of
+    the value: a matrix cell records one envelope per workload, and a pool
+    reading records one per view once a core is designated.
+    """
+
+    workload: str = UNSCOPED_WORKLOAD
+    core_id: str | None = None
+
+
 def measurements_by_workload(
     envelopes: Sequence[ResultEnvelope],
     metric: str,
     *,
     workload_scoped: bool,
-) -> dict[str, tuple[ResultEnvelope, Measurement]]:
+) -> dict[ReadingKey, tuple[ResultEnvelope, Measurement]]:
     """Return one checkpoint's most recent reading of a metric per workload.
 
     A benchmark that writes one envelope per matrix cell records several
@@ -390,7 +403,7 @@ def measurements_by_workload(
     rows for readings that are genuinely on one series.
     """
 
-    grouped: dict[str, tuple[ResultEnvelope, Measurement]] = {}
+    grouped: dict[ReadingKey, tuple[ResultEnvelope, Measurement]] = {}
     for envelope in sorted(
         envelopes,
         key=lambda item: (item.recorded_at, item.result_id),
@@ -398,17 +411,18 @@ def measurements_by_workload(
         found = envelope.measurement(metric)
         if found is None:
             continue
-        key = UNSCOPED_WORKLOAD
+        workload = UNSCOPED_WORKLOAD
         if workload_scoped and envelope.execution is not None:
-            key = envelope.execution.workload_sha256
-        # The view joins the key for the same reason the workload does: once a
-        # core is designated one checkpoint has two readings of this metric,
-        # recorded together and differing only by which games they scored.
-        # Without it the two land on one key and the survivor is decided by a
-        # content-hash tie-break, so a delta could compare one view's number
-        # against the other's.
-        if envelope.data is not None:
-            key = f"{key}\0{envelope.data.view}"
+            workload = envelope.execution.workload_sha256
+        # The core joins the key for the reason the workload does: once one is
+        # designated, a checkpoint has two readings of this metric recorded
+        # together, differing only by which games they scored. Sharing a key,
+        # the survivor would be decided by a content-hash tie-break, so a delta
+        # could compare one view's number against the other's.
+        key = ReadingKey(
+            workload,
+            None if envelope.data is None else envelope.data.core_id,
+        )
         grouped[key] = (envelope, found)
     return grouped
 

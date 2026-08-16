@@ -168,8 +168,8 @@ class ProjectionDigest(ResultModel):
         )
 
 
-#: What :attr:`DatasetReference.view` ends in for a reading taken against the
-#: designated core rather than the current pool.
+#: What a core view's name ends in. A display detail: which core a reading was
+#: taken against is :attr:`DatasetReference.core_id`, not this.
 CORE_VIEW_SUFFIX = "core"
 
 
@@ -182,6 +182,16 @@ class DatasetReference(ResultModel):
     selected_games: int = Field(ge=1)
     game_ids_sha256: Sha256Hex
     components: tuple[ProjectionDigest, ...] = Field(min_length=1)
+    #: Which designated core this reading was taken against, absent for a
+    #: reading of the current pool. Defaulted so a record written before any
+    #: core existed reads as one of the current pool, which it was.
+    core_id: Identifier | None = None
+
+    @property
+    def is_core(self) -> bool:
+        """Return whether this reading was taken against the core."""
+
+        return self.core_id is not None
 
     @model_validator(mode="after")
     def _validate_components(self) -> DatasetReference:
@@ -674,6 +684,7 @@ def dataset_reference(
     selected_games: int,
     game_ids_sha256: str,
     components: Sequence[DataComponent],
+    core_id: str | None = None,
 ) -> DatasetReference:
     """Return the dataset reference for one benchmark's realized inputs."""
 
@@ -687,6 +698,7 @@ def dataset_reference(
         view=view,
         selected_games=selected_games,
         game_ids_sha256=game_ids_sha256,
+        core_id=core_id,
         components=tuple(digests),
     )
 

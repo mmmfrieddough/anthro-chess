@@ -127,6 +127,7 @@ def pool_dataset_reference(
     selection: ViewSelection,
     component: DataComponent,
     *,
+    core_id: str | None = None,
     error: type[Exception],
 ) -> DatasetReference:
     """Describe the human games behind one reading from the pool's identity.
@@ -145,6 +146,7 @@ def pool_dataset_reference(
         selected_games=selection.selected_games,
         game_ids_sha256=game_ids_sha256(selection.game_ids),
         components=[component],
+        core_id=core_id,
     )
 
 

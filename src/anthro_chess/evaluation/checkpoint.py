@@ -271,12 +271,6 @@ class _EvaluationInputs:
     dual: DualSelection
     scoring: ScoringInputs
 
-    @property
-    def selection(self) -> ViewSelection:
-        """Return the view a scored game count and a log line describe."""
-
-        return self.dual.current
-
 
 class _ScoringSession:
     """Repeated deterministic passes over one view under varied conditioning."""
@@ -513,22 +507,44 @@ def evaluate_checkpoint(
         kind=HELD_OUT_KIND,
         benchmark=HELD_OUT_BENCHMARK,
     )
-    reported = [
+    # Assembled before the reporting loop so the conditioning passes, which are
+    # seven whole scored copies of the union, are freed before the bootstraps
+    # and the detail payloads allocate against them.
+    dependencies = [
+        None
+        if passes is None
+        else _dependency_for(
+            config, inputs, passes, _within(positions, frozenset(view.game_ids))
+        )
+        for view in inputs.dual.reported
+    ]
+    del passes
+
+    # Current leads, and is what this returns: it is the number that answers
+    # how good a checkpoint is.
+    current, *_ = [
         _report_view(
             selection,
+            core_id=(
+                None
+                if inputs.pool.core is None or selection is not inputs.dual.core
+                else inputs.pool.core.core_id
+            ),
             config=config,
             inputs=inputs,
             checkpoint=checkpoint,
             leakage=leakage,
             positions=positions,
             action_set_scores=action_set_scores,
-            passes=passes,
+            dependency=dependency,
             frequency=frequency,
             recorder=recorder,
         )
-        for selection in inputs.dual.reported
+        for selection, dependency in zip(
+            inputs.dual.reported, dependencies, strict=True
+        )
     ]
-    return reported[0]
+    return current
 
 
 def _load_inputs(config: CheckpointEvaluationConfig) -> _EvaluationInputs:
@@ -654,13 +670,14 @@ def _count_training_frequency(
 def _report_view(
     selection: ViewSelection,
     *,
+    core_id: str | None,
     config: CheckpointEvaluationConfig,
     inputs: _EvaluationInputs,
     checkpoint: CheckpointReference,
     leakage: LeakageCheck,
     positions: Sequence[PositionPolicy],
     action_set_scores: Sequence[ActionSetPolicy],
-    passes: _ConditioningPasses | None,
+    dependency: DependencyTestResult | None,
     frequency: OpeningFrequency | None,
     recorder: ResultRecorder,
 ) -> CheckpointEvaluationResult:
@@ -679,11 +696,6 @@ def _report_view(
         inputs.scoring,
         game_ids=game_ids,
     )
-    dependency = (
-        None
-        if passes is None
-        else _dependency_for(config, inputs, passes, scored, game_ids)
-    )
     component = projection_content_digest(
         [row for row in inputs.scoring.rows if row_game_id(row) in game_ids],
         MOVE_PREDICTION_PROJECTION,
@@ -692,6 +704,7 @@ def _report_view(
         inputs.pool,
         selection,
         component,
+        core_id=core_id,
         error=CheckpointEvaluationError,
     )
     dispersions = _estimate_dispersions(
@@ -819,13 +832,14 @@ def _dependency_for(
     inputs: _EvaluationInputs,
     passes: _ConditioningPasses,
     positions: Sequence[PositionPolicy],
-    game_ids: frozenset[int],
 ) -> DependencyTestResult:
     """Assemble the dependency reading over one view's share of the passes.
 
-    ``positions`` is already this view's; the conditioning passes span the
-    union and are narrowed here.
+    ``positions`` is already this view's, and the games it names are what the
+    conditioning passes are narrowed to.
     """
+
+    game_ids = frozenset(position.game_id for position in positions)
 
     try:
         return build_dependency_result(

@@ -1264,6 +1264,7 @@ def test_divergence_pairs_the_two_views_of_one_checkpoint(
             recorded_result(
                 label="checkpoint-a",
                 view="canonical-core",
+                core_id="generation-one",
                 move_loss=3.5,
                 component=move_prediction_component([scored_row(1)]),
             ),
@@ -1310,8 +1311,12 @@ def test_the_core_view_crosses_a_generation_that_the_current_view_cannot(
     core = move_prediction_component([scored_row(1)])
     bridges = BridgeIndex()
 
-    before_core = recorded_result(view="canonical-core", component=core)
-    after_core = recorded_result(view="canonical-core", component=core)
+    before_core = recorded_result(
+        view="canonical-core", core_id="generation-one", component=core
+    )
+    after_core = recorded_result(
+        view="canonical-core", core_id="generation-one", component=core
+    )
     before_current = recorded_result(
         view="canonical",
         component=move_prediction_component([scored_row(1), scored_row(2)]),
@@ -1358,6 +1363,7 @@ def test_the_rendered_history_shows_the_gap_between_the_two_views(
             recorded_result(
                 label="checkpoint-a",
                 view="canonical-core",
+                core_id="generation-one",
                 move_loss=3.5,
                 component=move_prediction_component([scored_row(1)]),
             ),
