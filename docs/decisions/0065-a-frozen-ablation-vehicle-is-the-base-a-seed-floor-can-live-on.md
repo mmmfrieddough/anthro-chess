@@ -16,6 +16,12 @@ named the base this record creates, and on
 whose training-identity digest is what freezes the vehicle by machine rather than
 by convention.
 
+`0067-a-horizon-is-a-branch-not-a-restart.md` rests on this record and settles
+the learning-rate schedule the frozen configuration carries, ahead of the freeze
+rather than after it. It also qualifies the exact-digest guarantee below: the
+horizon is outside the digest, so a cooldown branched at a different one matches
+the vehicle's floor without having been shown to share its spread.
+
 `docs/scaling.md` states the resulting rule and owns the program the vehicle
 serves.
 

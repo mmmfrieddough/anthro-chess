@@ -126,7 +126,7 @@ undo it.
   if it was recorded as a value.
 - **Soft** — survives within the ranges outside work has tested. Spot-check; do
   not re-tune.
-- **Open** — the sources disagree on whether it fires.
+- **Open** — the sources do not settle whether it fires.
 
 | Decision | Width | Depth | Batch | Horizon | Positions per parameter | Corpus or selection | Architecture | Optimizer |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -139,13 +139,12 @@ undo it.
 | Batch size | soft | — | — | **hard** | soft | soft | — | soft |
 | Adam second-moment decay | — | — | **hard** | soft | — | — | — | **hard** |
 | Weight decay | recompute | — | recompute | recompute | **hard** | — | — | **hard** |
-| Warmup length | recompute | — | recompute | recompute | — | — | — | soft |
-| Schedule — matched-horizon decay | — | — | — | **hard** | — | — | — | — |
-| Schedule — constant trunk with cooldown | — | — | — | soft | — | — | — | — |
+| Warmup length | open | — | recompute | soft | — | soft | — | soft |
+| Learning-rate schedule | — | — | — | soft | — | — | — | — |
 | Selection filters | — | — | — | **hard** | **hard** | **hard** | — | — |
 | Allocation rule | — | — | — | — | **hard** | open | **hard** | soft |
 
-Three rows carry most of the weight.
+Three entries carry most of the weight.
 
 **Peak learning rate is the most coupled quantity in the system**, hard against
 six of eight columns. This is why a candidate change compared against a baseline
@@ -153,13 +152,24 @@ whose learning rate suits the baseline and not the candidate measures the tuning
 rather than the change, and why that is the most common way a comparison here
 produces a confident wrong answer.
 
-**The schedule family decides whether a horizon change is a branch or a
-restart.** A decay schedule shaped to a step count is invalidated by changing
-that step count, so every horizon question costs a fresh run. A constant trunk
-cooled down at the end is not, so one trunk yields several horizons and "train
-longer" stays cheap for the life of the project. This is the single
-highest-leverage entry in the table and it is nearly free to get right before the
-vehicle is frozen.
+**The schedule is a constant trunk with a cooldown, so a horizon change is a
+branch rather than a restart.** A run warms up, holds the peak rate through a
+trunk, and cools to zero on a square-root curve over the final fraction of its
+steps. That length is declared as a fraction and never as a step count. Warmup is
+declared as a quantity of training data and converted to steps by the run's own
+batch, which keeps it invariant to the horizon, and the rule holds where warmup
+stays under roughly a tenth of the run — which is what a short branch has to be
+checked against.
+
+A mid-trunk checkpoint is not a cooled one. It sits at the full peak rate, so
+it reads as worse than the same compute properly cooled. A point standing for what
+a horizon achieved is therefore taken at the end of a cooldown, the ladder's data
+axis is a set of branches rather than a set of steps of one run, and branched and
+from-scratch points are not mixed in one fit. Comparing two uncooled checkpoints
+of one run is unaffected, since both sides sit at the same rate.
+`docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` owns why, what the
+loss-only evidence behind it does not establish, and what reversing it would
+cost.
 
 **The repetition row is absent because it does not apply.** At the corpus this
 project is building, every model size in the plausible range trains on well under
@@ -224,8 +234,10 @@ a reading or a recorded decision rather than a judgement that enough was done.
 
 1. **Target scale.** Derived from budget and envelope. A written decision, not an
    experiment.
-2. **Schedule family.** Free to decide, expensive to change after the vehicle is
-   frozen.
+2. **Schedule family.** Settled by
+   `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md`, which did not
+   wait on the step above it: the family follows from what a horizon change costs
+   rather than from the size, and the freeze below it is what prices being late.
 3. **Vehicle designation and digest pin.** Requires a corpus and a pool to read
    against, so it follows the breadth and generation work.
 4. **Seed dispersion of the vehicle.** The denominator every later comparison is

@@ -2845,8 +2845,11 @@ A vehicle comparison is qualified by both floors — the combined evaluation flo
 every reading carries, and the vehicle's seed floor. The seed floor describes
 baseline arms, so it does not describe a treatment whose training-health readings
 depart from the vehicle's: instability widens an arm's spread past what the floor
-allows, which makes the floor read too narrow rather than too wide. A comparison
-in that state reports the mismatch instead of quoting the floor.
+allows, which makes the floor read too narrow rather than too wide. It describes
+the vehicle at the horizon it was characterized at as well, and the digest does
+not hold that, so a reading from a cooldown branched at another horizon matches
+the floor without having been shown to share its spread. A comparison in either
+state reports the mismatch instead of quoting the floor.
 `docs/decisions/0029-model-change-control-arm.md` owns why the control is
 required rather than recommended, what it costs, and what it still does not buy;
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
