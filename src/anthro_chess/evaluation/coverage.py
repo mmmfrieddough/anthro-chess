@@ -9,9 +9,15 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any
 
-from anthro_chess.data import GameEncodingInput, encode_game
+from anthro_chess.data import (
+    UNCLASSIFIED_SPEED,
+    GameEncodingInput,
+    encode_game,
+    speed_from_clock_ms,
+)
 from anthro_chess.data.artifacts import DataLoadingError
 from anthro_chess.data.schema import (
     NormalizedColumn,
@@ -19,6 +25,10 @@ from anthro_chess.data.schema import (
     row_game_id,
 )
 from anthro_chess.evaluation.slices import position_slices
+
+#: The coverage entries counted in games rather than in positions, which the
+#: key names alone do not say for all three.
+PER_GAME_AXES = ("results", "speed_games", "clock_presence_games")
 
 
 def pool_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -30,13 +40,28 @@ def pool_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     rating_bands: Counter[str] = Counter()
     results: Counter[str] = Counter()
     clock_presence: Counter[str] = Counter()
+    speeds: Counter[str] = Counter()
     total_plies = 0
     minimum_plies: int | None = None
     maximum_plies: int | None = None
     unrated_positions = 0
+    earliest: date | None = None
+    latest: date | None = None
+    undated_games = 0
 
     for row in rows:
         results[str(row[NormalizedColumn.RESULT])] += 1
+        speed = speed_from_clock_ms(
+            row[NormalizedColumn.TIME_INITIAL_MS],
+            row[NormalizedColumn.TIME_INCREMENT_MS],
+        )
+        speeds[UNCLASSIFIED_SPEED if speed is None else str(speed)] += 1
+        dated = row[NormalizedColumn.SOURCE_DATE]
+        if dated is None:
+            undated_games += 1
+        else:
+            earliest = dated if earliest is None else min(earliest, dated)
+            latest = dated if latest is None else max(latest, dated)
         clock_statuses = row[NormalizedColumn.CLOCK_STATUS]
         clock_presence[
             "present"
@@ -70,6 +95,15 @@ def pool_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "maximum_per_game": maximum_plies,
         },
         "results": dict(sorted(results.items())),
+        # Counted per game rather than per position, because a speed class is a
+        # property of the game and a long one would otherwise outvote a short
+        # one on the axis that separates them.
+        "speed_games": dict(sorted(speeds.items())),
+        "source_dates": {
+            "earliest": None if earliest is None else earliest.isoformat(),
+            "latest": None if latest is None else latest.isoformat(),
+            "undated_games": undated_games,
+        },
         "clock_presence_games": dict(sorted(clock_presence.items())),
         "phase_positions": dict(sorted(phases.items())),
         "color_positions": dict(sorted(colors.items())),

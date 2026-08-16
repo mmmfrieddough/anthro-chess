@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, field
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
@@ -39,6 +40,7 @@ from anthro_chess.data.artifacts import (
     read_normalized_row_group,
     read_normalized_rows,
     row_group_column,
+    sorted_game_ids_sha256,
     take_rows,
     validate_manifest_compatibility,
     write_normalized_rows,
@@ -53,7 +55,7 @@ from anthro_chess.data.schema import (
     derive_game_id,
     row_game_id,
 )
-from anthro_chess.evaluation.coverage import pool_coverage
+from anthro_chess.evaluation.coverage import PER_GAME_AXES, pool_coverage
 from anthro_chess.evaluation.results.records import Sha256Hex
 
 BENCHMARK_VERSION = 1
@@ -148,7 +150,33 @@ class PoolConfig(ConfigModel):
     #: ``docs/decisions/0041-games-of-marked-accounts-leave-the-corpus.md`` why
     #: the rejection acts on accounts.
     marked_accounts: Path | None = None
+    #: The generation this cut must contain, absent only for the first one.
+    #: Verified by reading it, so cutting a generation means holding its
+    #: predecessor's artifact — which is the cost of the check being a missing
+    #: game rather than a changed setting.
+    predecessor: Path | None = None
+    #: Which generation the predecessor is required to be. Without it the check
+    #: still runs, against whatever pool the path happens to hold — and a
+    #: containment check against the wrong generation passes while proving
+    #: nothing, which is the one failure it exists to prevent.
+    predecessor_game_ids_sha256: Sha256Hex | None = None
+    #: Designates this cut as the evaluation core: the reference every later
+    #: generation reports a continuous line against. Set once in the project's
+    #: life, and false everywhere after, because a generation that inherits its
+    #: predecessor's core is what keeps that line unbroken.
+    #: ``docs/decisions/0013-benchmark-result-comparability.md`` owns what the
+    #: core is for, and why its per-axis power is fixed permanently here.
+    designates_core: StrictBool = False
     expected_game_ids_sha256: Sha256Hex | None = None
+
+    @model_validator(mode="after")
+    def _check_predecessor(self) -> PoolConfig:
+        if self.predecessor is None and self.predecessor_game_ids_sha256 is not None:
+            raise ValueError(
+                "predecessor_game_ids_sha256 names the generation this cut must "
+                "contain, but no predecessor pool is configured to read it from"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -170,12 +198,29 @@ class PoolGame:
 
 
 @dataclass(frozen=True)
+class DesignatedCore:
+    """The evaluation core one generation carries.
+
+    ``game_ids`` is the whole of it, not this generation's share: containment
+    guarantees the generation holds every one of them, which is what lets a
+    core view be the same set of games in every generation after designation
+    and therefore one unbroken series.
+    """
+
+    core_id: str
+    game_ids_sha256: str
+    game_ids: frozenset[int]
+
+
+@dataclass(frozen=True)
 class FrozenPool:
     """A loaded pool artifact and its manifest."""
 
     games_path: Path
     manifest: dict[str, Any]
     games: tuple[PoolGame, ...]
+    #: Absent until a generation is designated.
+    core: DesignatedCore | None = None
 
     @property
     def game_ids(self) -> tuple[int, ...]:
@@ -223,11 +268,21 @@ class PoolResult:
     games: int
     plies: int
     game_ids_sha256: str
+    #: The name every later generation inherits, and the one a second
+    #: designation is refused against. Absent when this cut designated nothing.
+    core_id: str | None = None
+    #: The per-axis counts a caller reports at designation, when the core's
+    #: power on each axis stops being changeable. Carried out of the freeze
+    #: rather than re-read from the manifest, so what is reported is what was
+    #: written.
+    coverage_axes: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
 
 
 def freeze_pool(
     resolved_config: ResolvedConfig[PoolConfig],
     output_directory: str | Path,
+    *,
+    workers: int = 1,
 ) -> PoolResult:
     """Materialize the configured split as a checksummed evaluation pool.
 
@@ -237,7 +292,7 @@ def freeze_pool(
     """
 
     try:
-        return _freeze_pool(resolved_config, output_directory)
+        return _freeze_pool(resolved_config, output_directory, workers)
     except DataLoadingError as error:
         raise EvaluationPoolError(str(error)) from error
 
@@ -245,8 +300,10 @@ def freeze_pool(
 def _freeze_pool(
     resolved_config: ResolvedConfig[PoolConfig],
     output_directory: str | Path,
+    workers: int,
 ) -> PoolResult:
     config = resolved_config.value
+    workers = max(workers, 1)
     output_path = Path(output_directory)
     source_paths = normalized_shard_paths(config.normalized)
     manifest_path = Path(config.manifest)
@@ -271,12 +328,18 @@ def _freeze_pool(
         frozenset[int]() if snapshot is None else snapshot.accounts.row_digests()
     )
 
+    # Before the scan rather than after it. Everything this decides is readable
+    # without touching the corpus, and the scan it would otherwise sit behind is
+    # twenty minutes at best — long enough that finding out a path is wrong at
+    # the end of it is what makes a re-cut something to avoid.
+    previous = _predecessor(config)
+
     logger.info(
-        "Freezing the %s split of %s shard(s) into an evaluation pool",
+        "Freezing the %s split of %s shard(s) into an evaluation pool, %s at a time",
         config.split,
         len(source_paths),
+        workers,
     )
-    admits = _admission(config.sample_fraction)
     selected: list[dict[str, Any]] = []
     split_games = 0
     marked_games = 0
@@ -285,41 +348,11 @@ def _freeze_pool(
     # the corpus for nothing. The narrowing is the pool's to accept: what a
     # freeze can still see is whether the games it wrote are held out.
     train_game_ids: set[int] = set()
-    for path in source_paths:
-        shard = open_normalized_shard(path)
-        for row_group in range(normalized_row_group_count(shard)):
-            scan = read_normalized_row_group(shard, row_group, _FREEZE_SCAN_COLUMNS)
-            identities = zip(
-                row_group_column(scan, NormalizedColumn.SPLIT),
-                row_group_column(scan, NormalizedColumn.SOURCE_ID),
-                row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
-                strict=True,
-            )
-            positions: list[int] = []
-            for position, (split, source_id, game_key) in enumerate(identities):
-                if split == config.split:
-                    split_games += 1
-                    if admits(derive_game_id(source_id, game_key)):
-                        positions.append(position)
-                elif split == "train":
-                    train_game_id = derive_game_id(source_id, game_key)
-                    if admits(train_game_id):
-                        train_game_ids.add(train_game_id)
-            if positions:
-                # A projection does not reorder a row group, so a position the
-                # scan found names the same game in the full read.
-                full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
-                for row in materialize_rows(take_rows(full, positions)):
-                    # Rejecting here rather than in the scan above keeps the
-                    # digest columns out of the projection every freeze reads,
-                    # filtered or not; they come free with the rows a freeze was
-                    # going to materialize anyway. Rejecting after admission
-                    # also makes the count the share this generation lost rather
-                    # than a share of the corpus.
-                    if marks_a_player(row, marked_digests):
-                        marked_games += 1
-                    else:
-                        selected.append(row)
+    for scanned in _scan_shards(source_paths, config, marked_digests, workers):
+        selected.extend(scanned.rows)
+        train_game_ids |= scanned.train_game_ids
+        split_games += scanned.split_games
+        marked_games += scanned.marked_games
 
     if not selected:
         if split_games == 0:
@@ -355,6 +388,10 @@ def _freeze_pool(
             f"{len(overlap)} pool game(s) also appear in the train split; "
             f"first offending game id is {overlap[0]}"
         )
+
+    held = frozenset(game_ids)
+    containment = _verify_containment(config, previous, game_ids, held)
+    core = _designated_core(config, previous, game_ids, identity)
 
     output_path.mkdir(parents=True, exist_ok=True)
     games_path = output_path / POOL_GAMES_FILE_NAME
@@ -411,6 +448,15 @@ def _freeze_pool(
                 for row in selected
             ],
         },
+        # Absent on the first generation, which has nothing to contain. Every
+        # later one carries what it was checked against, so a generation states
+        # its own place in the chain rather than leaving it to be reconstructed
+        # from the selections that happened to be checked in at the time.
+        "containment": containment,
+        # Absent until a generation is designated. From then on every cut
+        # carries it forward, so which games a continuous series is defined
+        # over is a property of the artifact a benchmark loads.
+        "core": core,
         "leakage": {
             "algorithm": "game-id-intersection-v1",
             "compared_split": "train",
@@ -446,6 +492,8 @@ def _freeze_pool(
         games=len(games),
         plies=total_plies,
         game_ids_sha256=identity,
+        core_id=config.pool_id if config.designates_core else None,
+        coverage_axes={axis: dict(coverage[axis]) for axis in PER_GAME_AXES},
     )
 
 
@@ -459,6 +507,8 @@ def load_pool(
     A load repeated in the same process reuses the games an earlier one
     parsed, but skips none of the verification: the manifest is re-read, the
     artifact re-checksummed, and the recorded identity re-derived every time.
+    That includes the core a generation carries, verified on the load rather
+    than lazily where a reader first asks for it.
 
     Every check but one asks whether the pool is intact and readable by this
     code. ``expected_game_ids_sha256`` is what the caller's configuration
@@ -520,7 +570,8 @@ def _load_pool(
     recorded = manifest.get("identity")
     if not isinstance(recorded, Mapping):
         raise EvaluationPoolError(f"{manifest_path} has no identity record")
-    identity = game_ids_sha256([game.game_id for game in games])
+    pool_game_ids = [game.game_id for game in games]
+    identity = game_ids_sha256(pool_game_ids)
     if recorded.get("game_ids_sha256") != identity:
         raise EvaluationPoolError(
             f"evaluation pool contents do not match the recorded identity: {games_path}"
@@ -531,7 +582,351 @@ def _load_pool(
             f"configuration is defined over: expected {expected_game_ids_sha256}, "
             f"loaded {identity}"
         )
-    return FrozenPool(games_path=games_path, manifest=manifest, games=games)
+    return FrozenPool(
+        games_path=games_path,
+        manifest=manifest,
+        games=games,
+        core=_core_from_manifest(manifest, manifest_path, pool_game_ids),
+    )
+
+
+def _core_from_manifest(
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    pool_game_ids: Sequence[int],
+) -> DesignatedCore | None:
+    """Return the core a generation records, verifying it against its digest.
+
+    Every field is checked before it is used. This is a parsed file rather than
+    an internal caller, and a core is the one record here whose corruption is
+    silent: a mislabelled one propagates into every generation cut afterwards.
+    """
+
+    recorded = manifest.get("core")
+    if recorded is None:
+        return None
+    if not isinstance(recorded, Mapping):
+        raise EvaluationPoolError(f"{manifest_path} has an unreadable core record")
+    core_id = recorded.get("core_id")
+    if not isinstance(core_id, str) or not core_id:
+        raise EvaluationPoolError(f"{manifest_path} records a core with no id")
+    listed = recorded.get("game_ids")
+    if not isinstance(listed, list) or not all(
+        isinstance(game_id, int) for game_id in listed
+    ):
+        raise EvaluationPoolError(
+            f"{manifest_path} records a core whose games are not a list of ids"
+        )
+    # The record is written in ascending order, so the digest helper that
+    # re-sorts is the wrong one: at half a million ids it sorts twice for 278 ms
+    # where this takes 69, on every one of the five to twelve loads a sweep
+    # makes.
+    identity = sorted_game_ids_sha256(listed)
+    if recorded.get("game_ids_sha256") != identity:
+        raise EvaluationPoolError(
+            f"{manifest_path} carries a core whose games do not match the "
+            "identity it records"
+        )
+    game_ids = frozenset(listed)
+    escaped = game_ids - frozenset(pool_game_ids)
+    if escaped:
+        raise EvaluationPoolError(
+            f"{manifest_path} carries the core {core_id!r}, which names "
+            f"{len(escaped)} game(s) this pool does not hold; the first is game "
+            f"id {min(escaped)}. A core is only a reference while every "
+            "generation carrying it can still score all of it"
+        )
+    return DesignatedCore(
+        core_id=core_id,
+        game_ids_sha256=identity,
+        game_ids=game_ids,
+    )
+
+
+@dataclass(frozen=True)
+class _ShardScan:
+    """What one shard contributes to a freeze."""
+
+    rows: list[dict[str, Any]]
+    train_game_ids: set[int]
+    split_games: int
+    marked_games: int
+
+
+@dataclass(frozen=True)
+class _Predecessor:
+    """What a cut needs from the generation before it.
+
+    Deliberately not the :class:`FrozenPool` itself. This is read before the
+    scan so a wrong path fails in seconds rather than at the end of one, which
+    means whatever it holds stays resident for the whole scan and is inherited
+    by every forked worker. A loaded pool would drag its manifest along — every
+    game id and content digest in it — measured at 45.7 MB against a
+    50,073-game generation, and growing with the pool.
+    """
+
+    game_ids: frozenset[int]
+    game_ids_sha256: str
+    core: DesignatedCore | None
+
+
+def _predecessor(config: PoolConfig) -> _Predecessor | None:
+    """Read the generation this cut is defined against, if it names one.
+
+    Read once and handed to both the containment check and the core it carries
+    forward, because loading it twice would let a pool swapped between the two
+    reads pass one and define the other.
+    """
+
+    if config.predecessor is None:
+        return None
+    loaded = load_pool(
+        config.predecessor,
+        expected_game_ids_sha256=config.predecessor_game_ids_sha256,
+    )
+    game_ids = loaded.game_ids
+    return _Predecessor(
+        game_ids=frozenset(game_ids),
+        game_ids_sha256=sorted_game_ids_sha256(game_ids),
+        core=loaded.core,
+    )
+
+
+def _verify_containment(
+    config: PoolConfig,
+    previous: _Predecessor | None,
+    game_ids: Sequence[int],
+    held: frozenset[int],
+) -> dict[str, Any] | None:
+    """Refuse a generation that drops a game its predecessor holds.
+
+    Containment is what makes a core possible at all: an earlier measurement
+    stays reproducible only while every game it scored is still in the pool.
+    Appending preserves it automatically, because both split assignment and
+    pool admission are pure functions of the game id — so what this catches is
+    the deliberate change that does not, and `0052` names each one.
+
+    The check is stated in games rather than in settings on purpose. Comparing
+    the configured fraction and seed instead would pass a corpus whose filters
+    newly reject a game that was admitted before, which is the same damage
+    arriving through a door no setting names.
+    """
+
+    if previous is None:
+        return None
+
+    previous_ids = previous.game_ids
+    missing = previous_ids - held
+    if missing:
+        raise EvaluationPoolError(
+            f"this generation drops {len(missing)} game(s) that the generation "
+            f"at {config.predecessor} contains; the first is game id "
+            f"{min(missing)}. Every generation must contain the last, so the "
+            "admission fraction only ever rises, the sample seed never moves, "
+            "and no filter may newly reject a game an earlier cut accepted"
+        )
+    logger.info(
+        "This generation contains all %s game(s) of the one at %s, and adds %s",
+        len(previous_ids),
+        config.predecessor,
+        len(game_ids) - len(previous_ids),
+    )
+    return {
+        "algorithm": "generation-superset-v1",
+        "predecessor_game_ids_sha256": previous.game_ids_sha256,
+        "predecessor_games": len(previous_ids),
+        "added_games": len(game_ids) - len(previous_ids),
+    }
+
+
+def _designated_core(
+    config: PoolConfig,
+    previous: _Predecessor | None,
+    game_ids: Sequence[int],
+    identity: str,
+) -> dict[str, Any] | None:
+    """Return the core this generation carries, designating it if asked.
+
+    The core rides on the generation rather than in a file beside it, so a
+    benchmark finds it in the pool it was already going to load. The
+    alternative — naming the core artifact in every selection that reads a
+    pool — would make each benchmark process load two pools to score against
+    one, and would let a selection point at a core its pool does not descend
+    from.
+
+    Carrying it forward is what makes the line continuous: every later cut
+    inherits the same set from its predecessor, which containment has already
+    proved is still here — the loader refuses a generation whose recorded core
+    reaches outside its own games, so the predecessor's core is a subset of the
+    predecessor's pool before this is asked.
+    """
+
+    if config.designates_core:
+        # Reachable only through a named predecessor, and deliberately so: a cut
+        # that names none is claiming to be the first generation, and nothing in
+        # the artifacts can check that claim. Containment rests on the same
+        # claim — a cut with no predecessor verifies nothing — so the two holes
+        # are one hole, and it is the reason `designates_core` is worth a review
+        # rather than a flag.
+        if previous is not None and previous.core is not None:
+            raise EvaluationPoolError(
+                "the generation at "
+                f"{config.predecessor} already carries the core "
+                f"{previous.core.core_id!r}; a second designation would end "
+                "every series the first one holds"
+            )
+        logger.info(
+            "Designating this generation as the evaluation core: %s game(s), "
+            "whose per-axis power is now fixed for as long as it is the core",
+            len(game_ids),
+        )
+        return _core_record(config.pool_id, identity, game_ids)
+    if previous is None or previous.core is None:
+        # Said out loud, because designation happens once and a generation that
+        # quietly carries no core looks exactly like one cut before there was a
+        # core to carry — including when a cut names an ancestor older than the
+        # designation by mistake.
+        logger.info("This generation carries no evaluation core")
+        return None
+
+    inherited = previous.core
+    return _core_record(
+        inherited.core_id,
+        inherited.game_ids_sha256,
+        sorted(inherited.game_ids),
+    )
+
+
+def _core_record(
+    core_id: str,
+    game_ids_sha256: str,
+    game_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Return the core block a generation carries.
+
+    ``game_ids`` must already be ascending: the loader digests this record with
+    the helper that assumes sorted input, so an unsorted caller would write a
+    record whose digest is self-consistent and does not equal the canonical
+    digest of that set — wrong in a way nothing downstream can see.
+
+    One shape whether this generation designated the core or inherited it. The
+    designating one could leave its ids out, since its own are the core's, but
+    the manifest lists every game id under ``identity`` regardless, so omitting
+    them saves nothing and buys the loader a second case to get right.
+    """
+
+    return {
+        "algorithm": "designated-core-v1",
+        "core_id": core_id,
+        "game_ids_sha256": game_ids_sha256,
+        "games": len(game_ids),
+        "game_ids": list(game_ids),
+    }
+
+
+@dataclass(frozen=True)
+class _ScanRule:
+    """What deciding one shard's contribution needs."""
+
+    split: SplitName
+    admits: Callable[[int], bool]
+    marked_digests: frozenset[int]
+
+
+#: The admission rule a scan worker was started with. Held in the worker rather
+#: than passed with each shard because the marked digests are the same hundreds
+#: of kilobytes for every one of tens of thousands of shards, and because the
+#: predicate closes over a threshold and so cannot be pickled at all. The serial
+#: path installs it too, so both paths run the identical scan.
+_SCAN_RULE: _ScanRule | None = None
+
+
+def _scan_shards(
+    paths: Sequence[Path],
+    config: PoolConfig,
+    marked_digests: frozenset[int],
+    workers: int,
+) -> Iterator[_ShardScan]:
+    """Scan every shard, on ``workers`` processes, yielding as results arrive.
+
+    Deciding a game's admission is a pure function of its id, so a shard is
+    independent of every other and the whole scan is separable. That matters at
+    corpus scale: the pass is two SHA-256 digests and a Python-level loop over
+    every row, none of which vectorizes, so processes are the only lever.
+
+    The caller depends on neither the order shards finish in nor the order they
+    arrive: it sorts by game id before deriving identity, so the pool's digest
+    is independent of how the work was divided.
+    """
+
+    if workers == 1:
+        _init_scan(config.split, config.sample_fraction, marked_digests)
+        yield from (_scan_shard(path) for path in paths)
+        return
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_init_scan,
+        initargs=(config.split, config.sample_fraction, marked_digests),
+    ) as pool:
+        yield from pool.map(_scan_shard, paths)
+
+
+def _init_scan(
+    split: SplitName,
+    fraction: float | None,
+    marked_digests: frozenset[int],
+) -> None:
+    """Install the admission rule this process will scan under."""
+
+    global _SCAN_RULE
+    _SCAN_RULE = _ScanRule(split, _admission(fraction), marked_digests)
+
+
+def _scan_shard(path: Path) -> _ShardScan:
+    """Return what one shard contributes, under the installed rule."""
+
+    rule = _SCAN_RULE
+    if rule is None:  # pragma: no cover - the initializer precedes every task
+        raise EvaluationPoolError("a pool scan worker was started without a rule")
+    rows: list[dict[str, Any]] = []
+    train_game_ids: set[int] = set()
+    split_games = 0
+    marked_games = 0
+    shard = open_normalized_shard(path)
+    for row_group in range(normalized_row_group_count(shard)):
+        scan = read_normalized_row_group(shard, row_group, _FREEZE_SCAN_COLUMNS)
+        identities = zip(
+            row_group_column(scan, NormalizedColumn.SPLIT),
+            row_group_column(scan, NormalizedColumn.SOURCE_ID),
+            row_group_column(scan, NormalizedColumn.SOURCE_GAME_KEY),
+            strict=True,
+        )
+        positions: list[int] = []
+        for position, (split, source_id, game_key) in enumerate(identities):
+            if split == rule.split:
+                split_games += 1
+                if rule.admits(derive_game_id(source_id, game_key)):
+                    positions.append(position)
+            elif split == "train":
+                train_game_id = derive_game_id(source_id, game_key)
+                if rule.admits(train_game_id):
+                    train_game_ids.add(train_game_id)
+        if positions:
+            # A projection does not reorder a row group, so a position the scan
+            # found names the same game in the full read.
+            full = read_normalized_row_group(shard, row_group, NORMALIZED_COLUMNS)
+            for row in materialize_rows(take_rows(full, positions)):
+                # Rejecting here rather than in the scan above keeps the digest
+                # columns out of the projection every freeze reads, filtered or
+                # not; they come free with the rows a freeze was going to
+                # materialize anyway. Rejecting after admission also makes the
+                # count the share this generation lost rather than a share of
+                # the corpus.
+                if marks_a_player(row, rule.marked_digests):
+                    marked_games += 1
+                else:
+                    rows.append(row)
+    return _ShardScan(rows, train_game_ids, split_games, marked_games)
 
 
 def rank_key(seed: str, game_id: int) -> bytes:
