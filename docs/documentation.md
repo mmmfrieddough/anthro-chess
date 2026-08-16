@@ -43,6 +43,8 @@ the project specification.
 - `docs/data.md`: data philosophy, source handling, schema direction, and
   training-data constraints.
 - `docs/training-and-runtime.md`: model training and runtime behavior.
+- `docs/scaling.md`: how model size is chosen, the order the scaling decisions
+  are taken in, and which of them a later change forces back open.
 - `docs/interfaces.md`: UCI and other external or native interfaces.
 - `docs/evaluation.md`: evaluation philosophy, metrics, and benchmark shape.
 - `docs/preference-controls.md`: preference-control subsystem design.
@@ -156,7 +158,12 @@ earlier one names it in its own `## Status` section, and adds the matching line
 to the `## Status` of the record it names. Invalidating a decision means editing
 the decision that was invalidated: a reader arriving at the older record has no
 other way to learn that a later one changed it, and would apply a stale rule
-confidently. CI fails when an edge points only one way.
+confidently.
+
+Write the backward edge as part of writing the record, not as a correction
+afterwards. A record whose relationships are declared in one direction is
+finished only from its own side, and the side that still needs them is the one
+nobody is reading yet.
 
 ## Research Notes
 

@@ -16,6 +16,12 @@ pressure the consequences below put on the rating ladder: its structure is not
 where that cost comes off, so the seeds lever named there is the whole of what
 is available rather than an interim measure.
 
+`0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md` reads the
+canonical line established here as the reason a second base can stay frozen:
+promotions advance this line and leave the ablation vehicle alone, which is what
+lets that vehicle carry a seed floor that stays current. The `training_sha256`
+digest wired in here is what pins it.
+
 ## Context
 
 Decision 0029 answered a real gap: nothing said how a change showed it improved

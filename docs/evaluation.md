@@ -523,8 +523,14 @@ improved between two of its own steps is a checkpoint delta. Whether a change to
 the model, the data, or the training setup improved anything is a configuration
 change, and clearing a floor does not establish it: the two arms differ by their
 initialization seeds as well as by the change, and no floor built from a
-reading's own units can see that. **Regression Comparisons** below holds what a
-claim rests on, and decision 0029 holds the measurement that settled it.
+reading's own units can see that. One configuration is the exception, and it is
+the exception by construction: the ablation vehicle carries a seed dispersion
+stored against its identity digest, so a comparison whose two readings both carry
+that digest can be qualified on seed as well.
+`docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
+owns why that is affordable there and nowhere else. **Regression Comparisons**
+below holds what a claim rests on, and decision 0029 holds the measurement that
+settled it.
 
 A floor that qualifies a delta must exclude anything the two sides of that delta
 share. Two checkpoints are compared against the *same fixed* human reference, so
@@ -2825,6 +2831,22 @@ everything but the change under test, and an arbitrary recorded reading is not
 one, because a baseline that drifted in corpus, step budget, or machine carries
 those differences into the delta. Which of the two a comparison holds is decided
 by the recorded identity rather than by recollection.
+
+Two identities serve as controls, for different questions. The **canonical
+line's** prior checkpoint is the control for a change to that line, and is what
+the paragraph above describes. The **ablation vehicle** is the control for a
+candidate being evaluated for adoption, and it differs in one respect that
+matters here: it is frozen, so adopting a candidate does not advance it, and the
+seed dispersion characterized against its digest stays current however many
+candidates are accepted. That is the whole reason it exists, and
+`docs/scaling.md` owns the program it serves.
+
+A vehicle comparison is qualified by both floors — the combined evaluation floor
+every reading carries, and the vehicle's seed floor. The seed floor describes
+baseline arms, so it does not describe a treatment whose training-health readings
+depart from the vehicle's: instability widens an arm's spread past what the floor
+allows, which makes the floor read too narrow rather than too wide. A comparison
+in that state reports the mismatch instead of quoting the floor.
 `docs/decisions/0029-model-change-control-arm.md` owns why the control is
 required rather than recommended, what it costs, and what it still does not buy;
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`

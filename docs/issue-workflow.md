@@ -331,6 +331,30 @@ that alters what the model learns improved it. It applies to a change under
 run reads. `docs/evaluation.md` owns what the reading is; this section owns when
 it is required and how a session that cannot take it routes it.
 
+**What the control is depends on which question the change asks.** A candidate
+being evaluated for adoption is read as an arm against the ablation vehicle — the
+frozen configuration
+`docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
+designates — because it is the only base in this project carrying a characterized
+seed dispersion. A change to the canonical line itself is read against the prior
+checkpoint whose training identity matches, which is what `0063` settles. Neither
+substitutes for the other, and the pull request says which it took.
+
+Arms against a frozen base give main effects and no interaction terms, so a set
+of separately accepted candidates runs together as one further arm before any of
+it reaches the canonical line. That arm is what says the set composes; without
+it, a stack of individually justified changes is an assumption.
+
+**Both arms get their own learning rate, or the reading is about the tuning.**
+The peak learning rate is coupled to nearly every other choice a candidate might
+change, so a candidate compared against a baseline whose rate suits the baseline
+and not the candidate measures which arm was better tuned. Where the project's
+fitted rule covers the candidate, applying it to both arms discharges this; where
+the candidate is the kind of change the rule does not cover, the pull request
+says how each arm's rate was set. `docs/scaling.md` owns which changes those are.
+A candidate discarded on a negative reading is only discarded where this was
+done.
+
 Not every change under those paths trains a different model. A change meant to
 leave the weights alone — a loader representation, an instrumentation path, a
 refactor — says so in the pull request and shows it instead: two short runs at
@@ -344,13 +368,25 @@ tests — which metric moves, in which direction — is written down before eith
 arm runs. It belongs in the pull request beside the other commands that were
 run, and the pull request says which benchmarks were read and which were not.
 
-Two arms establish that two models differ. Nothing the report prints establishes
-that the change is why: no floor sees training-seed noise, so a `cleared` verdict
-says the delta survived a different draw of evaluation units and nothing more.
-The pull request says that rather than reporting the verdict as a result, and
-carries the claim only where the delta is far enough outside seed variance that
-nothing else explains it, or where arms were read at several seeds;
-`docs/evaluation.md` (Regression Comparisons) owns the rule.
+Two arms establish that two models differ. What establishes that the change is
+why depends on whether the comparison has a seed floor available.
+
+**Read against the vehicle, it does.** The vehicle's dispersion is stored against
+its identity digest, so a delta clearing both it and the evaluation floor is
+qualified on the term that otherwise fakes narrow results. The exception is an
+arm whose training-health readings depart from the vehicle's: instability widens
+an arm's spread beyond what a floor measured on stable baselines allows, so the
+floor reads too narrow and the comparison says so rather than quoting it.
+
+**Read anywhere else, it does not.** No floor sees training-seed noise, so a
+`cleared` verdict says the delta survived a different draw of evaluation units and
+nothing more. The pull request says that rather than reporting the verdict as a
+result, and carries the claim only where the delta is far enough outside seed
+variance that nothing else explains it, or where arms were read at several seeds.
+
+`docs/evaluation.md` (Regression Comparisons) owns the rule, and
+`docs/decisions/0065-...md` owns why the vehicle is the one place this is
+affordable.
 
 A session with neither the training hardware nor the corpus cannot produce an
 arm. Route it the way a pending GPU check is routed: complete the
