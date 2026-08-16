@@ -361,14 +361,21 @@ def test_throughput_times_the_batch_it_builds(
 ) -> None:
     """The suite's cost unit has to include what a decision actually builds.
 
-    Timing a batch built once and reused excluded batch construction, masking,
-    and sampling — the work a generated decision pays for every ply. That figure
-    is still reported, as its own declared quantity.
+    Both windows run the same model call, so what separates them is exactly the
+    batch construction, masking, and sampling a generated decision pays for
+    every ply. That difference is a fraction of a millisecond here, so this
+    times more batches than the other tests need: at the shared two, one
+    scheduling stall on a loaded machine moves the median past a real gap.
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=18)
 
-    sample = _measure(_config(checkpoint)).reference_throughput
+    sample = _measure(
+        _config(
+            checkpoint,
+            throughput=FAST_THROUGHPUT.model_copy(update={"batches": 9}),
+        )
+    ).reference_throughput
 
     assert sample.decisions_per_second > 0.0
     # Re-running a built batch drops batch construction, masking, and sampling
