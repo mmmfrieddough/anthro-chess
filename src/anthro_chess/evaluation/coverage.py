@@ -12,7 +12,12 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
-from anthro_chess.data import GameEncodingInput, encode_game, speed_from_clock_ms
+from anthro_chess.data import (
+    UNCLASSIFIED_SPEED,
+    GameEncodingInput,
+    encode_game,
+    speed_from_clock_ms,
+)
 from anthro_chess.data.artifacts import DataLoadingError
 from anthro_chess.data.schema import (
     NormalizedColumn,
@@ -21,10 +26,11 @@ from anthro_chess.data.schema import (
 )
 from anthro_chess.evaluation.slices import position_slices
 
-#: What a game the source gave no clock for is counted under. A named bucket
-#: rather than an omission, because an axis the core cannot measure has to be
-#: visible at designation, when its power on that axis is fixed for good.
-UNCLASSIFIED_SPEED = "unclassified"
+#: The coverage entries counted in games rather than in positions. Named here,
+#: with the dict that produces them, because that is where one is added or
+#: renamed — a caller holding its own copy of these keys would keep reporting
+#: the old set, or fail on a key that moved.
+PER_GAME_AXES = ("results", "speed_games", "clock_presence_games")
 
 
 def pool_coverage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

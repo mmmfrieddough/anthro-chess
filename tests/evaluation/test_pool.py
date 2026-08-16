@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import Speed
@@ -376,20 +377,17 @@ def test_containment_is_checked_against_the_named_generation_only(
         )
 
 
-def test_a_pinned_predecessor_with_no_pool_to_read_is_refused(
-    tmp_path: Path,
-    corpus: Callable[[Path], tuple[Path, Path]],
-) -> None:
-    normalized, manifest = corpus(tmp_path)
+def test_a_pinned_predecessor_with_no_pool_to_read_is_refused() -> None:
+    """Refused when the selection loads, rather than once a freeze runs it."""
 
-    with pytest.raises(EvaluationPoolError, match="no predecessor pool is configured"):
-        freeze_pool(
-            _resolved(
-                normalized,
-                manifest,
-                predecessor_game_ids_sha256="0" * 64,
-            ),
-            tmp_path / "pool",
+    with pytest.raises(ValidationError, match="no predecessor pool is configured"):
+        PoolConfig.model_validate(
+            {
+                "pool_id": "fixture-test",
+                "normalized": "corpus",
+                "manifest": "manifest.json",
+                "predecessor_game_ids_sha256": "0" * 64,
+            }
         )
 
 
@@ -1088,8 +1086,7 @@ def test_designating_a_generation_records_the_core_it_becomes(
     assert record["core_id"] == "core-one"
     assert record["game_ids_sha256"] == result.game_ids_sha256
     assert record["games"] == result.games
-    # The designating generation lists no ids, because its own are the core's.
-    assert "game_ids" not in record
+    assert record["game_ids"] == sorted(load_pool(tmp_path / "pool").game_ids)
     assert result.core_id == "core-one"
 
 
@@ -1271,7 +1268,7 @@ def test_a_core_whose_games_are_not_ids_is_refused(
     record["core"]["game_ids"] = 5
     result.manifest_path.write_text(json.dumps(record))
 
-    with pytest.raises(EvaluationPoolError, match="games are not a list"):
+    with pytest.raises(EvaluationPoolError, match="games are not a list of ids"):
         load_pool(tmp_path / "pool")
 
 
@@ -1305,7 +1302,7 @@ def test_a_core_reaching_outside_the_generation_carrying_it_is_refused(
     record["core"]["game_ids_sha256"] = pool_module.game_ids_sha256(escaped)
     (tmp_path / "first" / "manifest.json").write_text(json.dumps(record))
 
-    with pytest.raises(EvaluationPoolError, match="this generation does not hold"):
+    with pytest.raises(EvaluationPoolError, match="this pool does not hold"):
         freeze_pool(
             _resolved(
                 normalized,

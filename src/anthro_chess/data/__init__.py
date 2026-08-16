@@ -61,6 +61,7 @@ from anthro_chess.data.prepare import (
 )
 from anthro_chess.data.rating_namespace import rating_namespace_from_event
 from anthro_chess.data.speed import (
+    UNCLASSIFIED_SPEED,
     Speed,
     speed_from_clock_ms,
     speed_from_time_control,
@@ -147,6 +148,7 @@ __all__ = [
     "prepare_pgn",
     "previous_action_token",
     "rating_namespace_from_event",
+    "UNCLASSIFIED_SPEED",
     "speed_from_clock_ms",
     "speed_from_time_control",
     "terminal_action_for",

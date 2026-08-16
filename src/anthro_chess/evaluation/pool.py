@@ -18,7 +18,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ConfigModel, ResolvedConfig
@@ -40,6 +40,7 @@ from anthro_chess.data.artifacts import (
     read_normalized_row_group,
     read_normalized_rows,
     row_group_column,
+    sorted_game_ids_sha256,
     take_rows,
     validate_manifest_compatibility,
     write_normalized_rows,
@@ -54,23 +55,12 @@ from anthro_chess.data.schema import (
     derive_game_id,
     row_game_id,
 )
-from anthro_chess.evaluation.coverage import pool_coverage
+from anthro_chess.evaluation.coverage import PER_GAME_AXES, pool_coverage
 from anthro_chess.evaluation.results.records import Sha256Hex
 
 BENCHMARK_VERSION = 1
 POOL_GAMES_FILE_NAME = "games.parquet"
 POOL_MANIFEST_FILE_NAME = "manifest.json"
-
-#: How a generation names the core it carries. Versioned separately from the
-#: pool's own identity because what a core *is* could change while what a
-#: generation is does not.
-CORE_ALGORITHM = "designated-core-v1"
-
-#: The coverage axes a designation reports, which are the ones `0062` says this
-#: corpus exists to keep measurable. Position-weighted slices are in the
-#: manifest too and are left out here: what designation fixes is how many
-#: *games* each axis will ever have, and a game count is what sizes a reading.
-COVERAGE_AXES = ("speed_games", "clock_presence_games", "results")
 
 #: The seed the pool's own admission ranks under. Separate from any view seed so
 #: that what a view takes first is independent of what the pool admitted, and a
@@ -178,8 +168,17 @@ class PoolConfig(ConfigModel):
     #: predecessor's core is what keeps that line unbroken.
     #: ``docs/decisions/0013-benchmark-result-comparability.md`` owns what the
     #: core is for, and why its per-axis power is fixed permanently here.
-    designates_core: bool = False
+    designates_core: StrictBool = False
     expected_game_ids_sha256: Sha256Hex | None = None
+
+    @model_validator(mode="after")
+    def _check_predecessor(self) -> PoolConfig:
+        if self.predecessor is None and self.predecessor_game_ids_sha256 is not None:
+            raise ValueError(
+                "predecessor_game_ids_sha256 names the generation this cut must "
+                "contain, but no predecessor pool is configured to read it from"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -308,6 +307,7 @@ def _freeze_pool(
     workers: int,
 ) -> PoolResult:
     config = resolved_config.value
+    workers = max(workers, 1)
     output_path = Path(output_directory)
     source_paths = normalized_shard_paths(config.normalized)
     manifest_path = Path(config.manifest)
@@ -342,7 +342,7 @@ def _freeze_pool(
         "Freezing the %s split of %s shard(s) into an evaluation pool, %s at a time",
         config.split,
         len(source_paths),
-        max(workers, 1),
+        workers,
     )
     selected: list[dict[str, Any]] = []
     split_games = 0
@@ -393,7 +393,8 @@ def _freeze_pool(
             f"first offending game id is {overlap[0]}"
         )
 
-    containment = _verify_containment(config, previous, game_ids)
+    held = frozenset(game_ids)
+    containment = _verify_containment(config, previous, game_ids, held)
     core = _designated_core(config, previous, game_ids, identity)
 
     output_path.mkdir(parents=True, exist_ok=True)
@@ -496,14 +497,8 @@ def _freeze_pool(
         plies=total_plies,
         game_ids_sha256=identity,
         core_id=config.pool_id if config.designates_core else None,
-        coverage_axes=_coverage_axes(coverage),
+        coverage_axes={axis: dict(coverage[axis]) for axis in PER_GAME_AXES},
     )
-
-
-def _coverage_axes(coverage: Mapping[str, Any]) -> dict[str, dict[str, int]]:
-    """Return the axes a designation reports, off the coverage it just wrote."""
-
-    return {axis: dict(coverage[axis]) for axis in COVERAGE_AXES}
 
 
 def load_pool(
@@ -516,6 +511,9 @@ def load_pool(
     A load repeated in the same process reuses the games an earlier one
     parsed, but skips none of the verification: the manifest is re-read, the
     artifact re-checksummed, and the recorded identity re-derived every time.
+    The core a generation carries is verified here too, deliberately rather than
+    where a reader first asks for it — a corrupt one propagates into every cut
+    taken afterwards, so it is worth catching on the load that reads it.
 
     Every check but one asks whether the pool is intact and readable by this
     code. ``expected_game_ids_sha256`` is what the caller's configuration
@@ -593,7 +591,7 @@ def _load_pool(
         games_path=games_path,
         manifest=manifest,
         games=games,
-        core=_core_from_manifest(manifest, manifest_path, pool_game_ids, identity),
+        core=_core_from_manifest(manifest, manifest_path, pool_game_ids),
     )
 
 
@@ -601,13 +599,8 @@ def _core_from_manifest(
     manifest: Mapping[str, Any],
     manifest_path: Path,
     pool_game_ids: Sequence[int],
-    pool_identity: str,
 ) -> DesignatedCore | None:
     """Return the core a generation records, verifying it against its digest.
-
-    A generation that *is* the core lists no ids, because its own are the
-    core's. Reading them off the pool rather than storing a second copy is what
-    keeps the designating manifest the same size as any other.
 
     Every field is checked before it is used. This is a parsed file rather than
     an internal caller, and a core is the one record here whose corruption is
@@ -623,23 +616,30 @@ def _core_from_manifest(
     if not isinstance(core_id, str) or not core_id:
         raise EvaluationPoolError(f"{manifest_path} records a core with no id")
     listed = recorded.get("game_ids")
-    if listed is None:
-        game_ids, identity = frozenset(pool_game_ids), pool_identity
-    else:
-        if not isinstance(listed, Sequence) or isinstance(listed, str):
-            raise EvaluationPoolError(
-                f"{manifest_path} records a core whose games are not a list"
-            )
-        if not all(isinstance(game_id, int) for game_id in listed):
-            raise EvaluationPoolError(
-                f"{manifest_path} records a core whose games are not all ids"
-            )
-        game_ids = frozenset(listed)
-        identity = game_ids_sha256(sorted(game_ids))
+    if not isinstance(listed, list) or not all(
+        isinstance(game_id, int) for game_id in listed
+    ):
+        raise EvaluationPoolError(
+            f"{manifest_path} records a core whose games are not a list of ids"
+        )
+    # The record is written in ascending order, so the digest helper that
+    # re-sorts is the wrong one: at half a million ids it sorts twice for 278 ms
+    # where this takes 69, on every one of the five to twelve loads a sweep
+    # makes.
+    identity = sorted_game_ids_sha256(listed)
     if recorded.get("game_ids_sha256") != identity:
         raise EvaluationPoolError(
             f"{manifest_path} carries a core whose games do not match the "
             "identity it records"
+        )
+    game_ids = frozenset(listed)
+    escaped = game_ids - frozenset(pool_game_ids)
+    if escaped:
+        raise EvaluationPoolError(
+            f"{manifest_path} carries the core {core_id!r}, which names "
+            f"{len(escaped)} game(s) this pool does not hold; the first is game "
+            f"id {min(escaped)}. A core is only a reference while every "
+            "generation carrying it can still score all of it"
         )
     return DesignatedCore(
         core_id=core_id,
@@ -658,8 +658,26 @@ class _ShardScan:
     marked_games: int
 
 
-def _predecessor(config: PoolConfig) -> FrozenPool | None:
-    """Load the generation this cut is defined against, if it names one.
+@dataclass(frozen=True)
+class _Predecessor:
+    """The three facts a cut needs from the generation before it.
+
+    Deliberately not the :class:`FrozenPool` itself. This is read before the
+    scan so a wrong path fails in seconds instead of at the end of it, which
+    means whatever is held here stays resident across the whole scan and is
+    copied into all sixteen workers at the fork. A loaded pool carries its
+    manifest — every game id and content digest in it — for the two fields
+    below, which measured 45.7 MB against a 50,073-game generation and scales
+    with the pool.
+    """
+
+    game_ids: frozenset[int]
+    game_ids_sha256: str
+    core: DesignatedCore | None
+
+
+def _predecessor(config: PoolConfig) -> _Predecessor | None:
+    """Read the generation this cut is defined against, if it names one.
 
     Read once and handed to both the containment check and the core it carries
     forward, because loading it twice would let a pool swapped between the two
@@ -667,22 +685,24 @@ def _predecessor(config: PoolConfig) -> FrozenPool | None:
     """
 
     if config.predecessor is None:
-        if config.predecessor_game_ids_sha256 is not None:
-            raise EvaluationPoolError(
-                "predecessor_game_ids_sha256 names the generation this cut must "
-                "contain, but no predecessor pool is configured to read it from"
-            )
         return None
-    return load_pool(
+    loaded = load_pool(
         config.predecessor,
         expected_game_ids_sha256=config.predecessor_game_ids_sha256,
+    )
+    game_ids = loaded.game_ids
+    return _Predecessor(
+        game_ids=frozenset(game_ids),
+        game_ids_sha256=sorted_game_ids_sha256(game_ids),
+        core=loaded.core,
     )
 
 
 def _verify_containment(
     config: PoolConfig,
-    previous: FrozenPool | None,
+    previous: _Predecessor | None,
     game_ids: Sequence[int],
+    held: frozenset[int],
 ) -> dict[str, Any] | None:
     """Refuse a generation that drops a game its predecessor holds.
 
@@ -702,7 +722,7 @@ def _verify_containment(
         return None
 
     previous_ids = previous.game_ids
-    missing = set(previous_ids) - set(game_ids)
+    missing = previous_ids - held
     if missing:
         raise EvaluationPoolError(
             f"this generation drops {len(missing)} game(s) that the generation "
@@ -719,7 +739,7 @@ def _verify_containment(
     )
     return {
         "algorithm": "generation-superset-v1",
-        "predecessor_game_ids_sha256": game_ids_sha256(previous_ids),
+        "predecessor_game_ids_sha256": previous.game_ids_sha256,
         "predecessor_games": len(previous_ids),
         "added_games": len(game_ids) - len(previous_ids),
     }
@@ -727,7 +747,7 @@ def _verify_containment(
 
 def _designated_core(
     config: PoolConfig,
-    previous: FrozenPool | None,
+    previous: _Predecessor | None,
     game_ids: Sequence[int],
     identity: str,
 ) -> dict[str, Any] | None:
@@ -741,11 +761,10 @@ def _designated_core(
     from.
 
     Carrying it forward is what makes the line continuous: every later cut
-    inherits the same set from its predecessor, and this generation is checked
-    to hold all of it. Containment against the predecessor does not imply that
-    on its own — it compares this cut against the predecessor's *pool*, and a
-    predecessor whose recorded core reaches outside its own games would pass it
-    while handing on a core no generation can score.
+    inherits the same set from its predecessor, which containment has already
+    proved is still here — the loader refuses a generation whose recorded core
+    reaches outside its own games, so the predecessor's core is a subset of the
+    predecessor's pool before this is asked.
     """
 
     if config.designates_core:
@@ -761,12 +780,7 @@ def _designated_core(
             "whose per-axis power is now fixed for as long as it is the core",
             len(game_ids),
         )
-        return {
-            "algorithm": CORE_ALGORITHM,
-            "core_id": config.pool_id,
-            "game_ids_sha256": identity,
-            "games": len(game_ids),
-        }
+        return _core_record(config.pool_id, identity, game_ids)
     if previous is None or previous.core is None:
         # Said out loud, because designation happens once and a generation that
         # quietly carries no core looks exactly like one cut before there was a
@@ -776,23 +790,32 @@ def _designated_core(
         return None
 
     inherited = previous.core
-    escaped = inherited.game_ids - set(game_ids)
-    if escaped:
-        raise EvaluationPoolError(
-            f"the core {inherited.core_id!r} names {len(escaped)} game(s) this "
-            f"generation does not hold; the first is game id {min(escaped)}. A "
-            "core no generation can score is one no continuous series can be "
-            "read from"
-        )
+    return _core_record(
+        inherited.core_id,
+        inherited.game_ids_sha256,
+        sorted(inherited.game_ids),
+    )
+
+
+def _core_record(
+    core_id: str,
+    game_ids_sha256: str,
+    game_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Return the core block a generation carries, in ascending game id.
+
+    One shape whether this generation designated the core or inherited it. The
+    designating one could leave its ids out, since its own are the core's, but
+    the manifest lists every game id under ``identity`` regardless, so omitting
+    them saves nothing and buys the loader a second case to get right.
+    """
+
     return {
-        "algorithm": CORE_ALGORITHM,
-        "core_id": inherited.core_id,
-        "game_ids_sha256": inherited.game_ids_sha256,
-        "games": len(inherited.game_ids),
-        # Listed here and not on the designating generation, whose own ids are
-        # the core's. From this cut on the two differ, so the core has to say
-        # which games it is rather than be read off the pool carrying it.
-        "game_ids": sorted(inherited.game_ids),
+        "algorithm": "designated-core-v1",
+        "core_id": core_id,
+        "game_ids_sha256": game_ids_sha256,
+        "games": len(game_ids),
+        "game_ids": list(game_ids),
     }
 
 
@@ -826,12 +849,13 @@ def _scan_shards(
     corpus scale: the pass is two SHA-256 digests and a Python-level loop over
     every row, none of which vectorizes, so processes are the only lever.
 
-    Order is not one of the guarantees. The caller sorts by game id before
-    deriving identity, which is what keeps the pool's digest independent of how
-    the work was divided.
+    Results arrive in the order the shards were submitted rather than the order
+    they finished, which bounds what the merge holds without the caller
+    depending on either: it sorts by game id before deriving identity, so the
+    pool's digest is independent of how the work was divided.
     """
 
-    if workers <= 1:
+    if workers == 1:
         _init_scan(config.split, config.sample_fraction, marked_digests)
         yield from (_scan_shard(path) for path in paths)
         return
