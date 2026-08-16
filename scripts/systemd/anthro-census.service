@@ -9,4 +9,6 @@ EnvironmentFile=%h/.config/anthro-chess/census.env
 # Counting a newly acquired archive is hours of decompression, and the cores it
 # runs on belong to whatever this machine is training.
 Nice=10
-ExecStart=%h/.local/bin/uv run --directory ${ANTHRO_CHESS_CHECKOUT} anthro data census --config ${ANTHRO_CHESS_CENSUS_CONFIG}
+# Unbraced, so an unset variable expands to no argument at all rather than to
+# an empty one: a machine with no set to prioritize runs the plain census.
+ExecStart=%h/.local/bin/uv run --directory ${ANTHRO_CHESS_CHECKOUT} anthro data census --config ${ANTHRO_CHESS_CENSUS_CONFIG} $ANTHRO_CHESS_CENSUS_PRIORITY_ARGS
