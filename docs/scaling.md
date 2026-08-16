@@ -107,12 +107,18 @@ quarter of `model_dim`**, which is the ratio Chessformer runs at every size it
 publishes.
 
 The consequence worth carrying forward is that the generator's *share* of the
-parameters is not constant under that rule — it falls as the model grows, from
-roughly half at the proof width to a few percent at the sizes the target run
-will use. So a parameter count at proof scale is not comparable to one at target
-scale for this architecture, and a small model's count is mostly a statement
-about the bias generator rather than about the trunk. Compare like for like, or
-compare the trunk widths instead.
+parameters is not constant under that rule — it falls as the model grows, but far
+more slowly than "negligible once the model is real". Chessformer's own sizes are
+the reference: at its 23M configuration the bias generators are roughly a third
+of the parameters, and only by 79M do they fall to about a seventh. At this
+project's proof width they are about half.
+
+So a parameter count at proof scale is not comparable to one at target scale for
+this architecture, and a small model's count is substantially a statement about
+the bias generator rather than about the trunk. Compare like for like, or compare
+the trunk widths instead. And do not treat the generator as a rounding error at
+any size this project is likely to reach — it is a design cost that stays
+material, which is part of what an arm removing it would be measuring.
 
 `docs/decisions/0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`
 records what the bias buys and why it is carried at all.
