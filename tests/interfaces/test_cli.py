@@ -2642,3 +2642,32 @@ def test_eval_puzzles_says_when_it_estimated_no_response_resolution(
     printed = capsys.readouterr().out
     assert "Response resolution: not estimated" in printed
     assert "(±" not in printed
+
+
+@pytest.mark.parametrize(
+    ("cores", "expected"),
+    [(4, 4), (16, 16), (32, 16), (128, 16)],
+)
+def test_freeze_concurrency_stops_where_the_merge_does(
+    monkeypatch: pytest.MonkeyPatch,
+    cores: int,
+    expected: int,
+) -> None:
+    """A bigger machine does not scan faster, because the merge does not divide.
+
+    Measured on the widened corpus, thirty-two workers projected 26.4 minutes
+    against 19.7 at sixteen, so taking the machine's count would be slower than
+    the cap on every host larger than the cap.
+    """
+
+    from anthro_chess.interfaces.cli import _freeze_concurrency
+
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(cores)), raising=False
+    )
+
+    assert _freeze_concurrency(None) == expected
+    # A caller sizing this against other work on the same host is obeyed
+    # exactly, past the cap and down to the serial path.
+    assert _freeze_concurrency(48) == 48
+    assert _freeze_concurrency(0) == 0

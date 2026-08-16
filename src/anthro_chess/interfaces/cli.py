@@ -403,8 +403,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=_worker_count,
         help=(
-            "How many shards to scan at once. Defaults to the cores this "
-            f"process may run on, at most {_MAXIMUM_FREEZE_WORKERS}."
+            "How many shards to scan at once, or 0 to scan them in this "
+            "process. Defaults to the cores this process may run on, at most "
+            f"{_MAXIMUM_FREEZE_WORKERS}; an explicit count is obeyed past that."
         ),
     )
     freeze_parser.set_defaults(handler=_run_eval_freeze)
@@ -1557,7 +1558,7 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     print(f"Pool: {result.games_path}")
     print(f"Manifest: {result.manifest_path}")
     print(f"Identity: {result.game_ids_sha256}")
-    if result.designated_core:
+    if result.core_id is not None:
         _print_designation(result)
     return 0
 
@@ -1571,7 +1572,7 @@ def _print_designation(result: PoolResult) -> None:
     nobody can act on afterwards.
     """
 
-    print(f"\nDesignated as the evaluation core: {result.game_ids_sha256}")
+    print(f"\nDesignated as the evaluation core: {result.core_id}")
     print("Per-axis coverage, fixed permanently from here:")
     for axis, counts in sorted(result.coverage_axes.items()):
         readings = ", ".join(

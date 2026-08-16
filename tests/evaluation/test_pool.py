@@ -1090,7 +1090,7 @@ def test_designating_a_generation_records_the_core_it_becomes(
     assert record["games"] == result.games
     # The designating generation lists no ids, because its own are the core's.
     assert "game_ids" not in record
-    assert result.designated_core is True
+    assert result.core_id == "core-one"
 
 
 def test_an_undesignated_generation_carries_no_core(
@@ -1103,7 +1103,7 @@ def test_an_undesignated_generation_carries_no_core(
 
     assert json.loads(result.manifest_path.read_text())["core"] is None
     assert load_pool(tmp_path / "pool").core is None
-    assert result.designated_core is False
+    assert result.core_id is None
 
 
 def test_a_designated_core_loads_as_the_pool_it_designated(
@@ -1237,3 +1237,113 @@ def test_designation_reports_the_axes_it_fixes_permanently(
         "results",
     }
     assert sum(result.coverage_axes["speed_games"].values()) == result.games
+
+
+def test_a_core_with_no_id_is_refused(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """An unnamed core would be inherited under that non-name by every cut after."""
+
+    normalized, manifest = corpus(tmp_path)
+    result = freeze_pool(
+        _resolved(normalized, manifest, pool_id="core-one", designates_core=True),
+        tmp_path / "pool",
+    )
+    record = json.loads(result.manifest_path.read_text())
+    del record["core"]["core_id"]
+    result.manifest_path.write_text(json.dumps(record))
+
+    with pytest.raises(EvaluationPoolError, match="records a core with no id"):
+        load_pool(tmp_path / "pool")
+
+
+def test_a_core_whose_games_are_not_ids_is_refused(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    normalized, manifest = corpus(tmp_path)
+    result = freeze_pool(
+        _resolved(normalized, manifest, pool_id="core-one", designates_core=True),
+        tmp_path / "pool",
+    )
+    record = json.loads(result.manifest_path.read_text())
+    record["core"]["game_ids"] = 5
+    result.manifest_path.write_text(json.dumps(record))
+
+    with pytest.raises(EvaluationPoolError, match="games are not a list"):
+        load_pool(tmp_path / "pool")
+
+
+def test_a_core_reaching_outside_the_generation_carrying_it_is_refused(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Containment against the predecessor's pool does not cover its core.
+
+    The two are different sets once a generation has been cut past designation,
+    so a predecessor whose recorded core names a game it does not itself hold
+    passes the containment check and would hand on a core nothing can score.
+    """
+
+    rows = [normalized_row(index, split="test") for index in range(240)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    first = freeze_pool(
+        _resolved(
+            normalized,
+            manifest,
+            pool_id="core-one",
+            sample_fraction=0.25,
+            designates_core=True,
+        ),
+        tmp_path / "first",
+    )
+    record = json.loads((tmp_path / "first" / "manifest.json").read_text())
+    escaped = sorted({*load_pool(tmp_path / "first").game_ids, 2**63 - 1})
+    record["core"]["game_ids"] = escaped
+    record["core"]["game_ids_sha256"] = pool_module.game_ids_sha256(escaped)
+    (tmp_path / "first" / "manifest.json").write_text(json.dumps(record))
+
+    with pytest.raises(EvaluationPoolError, match="this generation does not hold"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                pool_id="generation-two",
+                sample_fraction=0.5,
+                predecessor=str(tmp_path / "first"),
+                predecessor_game_ids_sha256=first.game_ids_sha256,
+            ),
+            tmp_path / "second",
+        )
+
+
+def test_a_missing_predecessor_is_refused_before_the_corpus_is_scanned(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Everything the predecessor decides is readable without touching a shard.
+
+    The scan behind it is twenty minutes at best on a real corpus, which is
+    long enough that learning a path is wrong at the end of one is what makes a
+    re-cut something to avoid.
+    """
+
+    normalized, manifest = corpus(tmp_path)
+
+    def _refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the corpus was scanned before the predecessor was read")
+
+    monkeypatch.setattr(pool_module, "_scan_shards", _refuse)
+
+    with pytest.raises(EvaluationPoolError, match="do not exist"):
+        freeze_pool(
+            _resolved(
+                normalized,
+                manifest,
+                predecessor=str(tmp_path / "absent"),
+            ),
+            tmp_path / "pool",
+        )
