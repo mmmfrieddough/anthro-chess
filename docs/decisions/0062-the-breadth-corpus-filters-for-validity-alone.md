@@ -68,20 +68,25 @@ sets a higher one. Nothing about this selection changes — it declared no filte
 before — so what is decided here is the declining. Game
 length is an axis benchmarks measure the model's own distribution over, and
 `0016` closes exactly that class of axis to reshaping — so a floor here is the
-blind spot above rather than a validity rule. Measured on 2018-01 over 400,000
-rated standard games with both ratings, a floor of eight drops **0.851%** of
-accepted games and a floor of one drops **0.007%**. Benchmarks that need depth
-declare it in their own view, where the rejection is counted and visible.
+blind spot above rather than a validity rule. Measured over the built corpus
+rather than sampled ahead of it: a floor of eight would drop **0.9528%** of
+accepted games, against the **0.2663%** a floor of one drops. Benchmarks that
+need depth declare it in their own view, where the rejection is counted and
+visible.
 
-The remaining 0.007% is not an arbitrary residue. All 27 zero-move games in that
-sample are `1-0` with a `Normal` termination, which is Black resigning before
-White has moved; none is `0-1`, consistent with the player on move being able to
-abort instead. `0017-derived-termination-and-terminal-actions.md` excludes a
-resignation made on the opponent's clock from the action sequence, having no
-decision point to attach it to. A zero-move game therefore normalizes to an
-empty action sequence — no plies, no actions, nothing to train or score on. One
-ply is the boundary below which a record carries no action at all, not a
-judgement about which games are worth keeping.
+Both numbers come from the artifact. The first is the share of games at ply
+seven or below among 10,050,000 read from every two-hundredth shard, so the
+sample spans all 42 archives; the second is the manifest's own `too_short` count
+against the games that reached that filter.
+
+What a floor of one removes is games carrying no ply at all, which normalize to
+an empty action sequence — nothing to train or score on. One ply is therefore
+the boundary below which a record holds no action, rather than a judgement about
+which games are worth keeping, and that holds whichever player ended the game.
+`0017-derived-termination-and-terminal-actions.md` keeps a resignation made on
+the opponent's clock out of the action sequence for want of a decision point to
+attach it to; a resignation made on one's own clock before moving leaves a
+sequence holding that action and no ply.
 
 **The marked-account rejection is not applied here, and is not thereby
 abandoned.** `0041` still binds before the core is designated. What changed is
