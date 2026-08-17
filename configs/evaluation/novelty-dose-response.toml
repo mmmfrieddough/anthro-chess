@@ -9,10 +9,10 @@
 # The model selection is deliberately absent: with no explicit checkpoint or
 # run, `anthro eval novelty` uses the machine-local default selection beneath
 # ANTHRO_CHESS_RUN_ROOT.
-pool = "artifacts/lichess-blitz-2017-04-test"
+pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 # The generation this reading is defined over. A superseded pool left at that
 # path is refused rather than scored.
-expected_pool_game_ids_sha256 = "b0a26d0e56609a4f971651f18f5804f1ee414e38bf01644d2d80db46eff18f50"
+expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
 
 [view]
 # Games have to be long enough for the window to open and run, so this view

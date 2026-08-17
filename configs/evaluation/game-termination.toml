@@ -19,10 +19,10 @@
 # Every reading here is against human endings, so the pool is required rather
 # than optional: the mix and the deficit are compared against it, and the
 # held-out resignation reading is scored on it.
-pool = "artifacts/lichess-blitz-2017-04-test"
+pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 # The generation this reading is defined over. A superseded pool left at that
 # path is refused rather than scored.
-expected_pool_game_ids_sha256 = "b0a26d0e56609a4f971651f18f5804f1ee414e38bf01644d2d80db46eff18f50"
+expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
 # One mix reading per speed class, each its own series. The corpus is blitz, so
 # reading against the undivided reference is the honest default: a named speed
 # only becomes useful once the corpus spans speeds, and an unpopulated class

@@ -75,10 +75,10 @@ enabled = true
 # seats replay one game however many times they are asked, so a ladder that
 # includes low temperatures needs its variety to come from the position source
 # instead of from sampling.
-pool = "artifacts/lichess-blitz-2017-04-test"
+pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 # The generation these openings are drawn from. A superseded pool left at that
 # path is refused rather than played.
-expected_pool_game_ids_sha256 = "b0a26d0e56609a4f971651f18f5804f1ee414e38bf01644d2d80db46eff18f50"
+expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
 plies = 8
 
 [openings.view]
