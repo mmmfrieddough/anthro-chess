@@ -222,23 +222,42 @@ class CheckpointModelRunner:
 
         if not contexts:
             raise ModelRunnerError("a prediction batch needs at least one context")
-        lengths = tuple(len(context.plies) for context in contexts)
         try:
             batch = MoveModelBatch.from_decision_contexts(
                 contexts,
                 device=self.device,
             )
-            with torch.inference_mode():
-                predicted = self._model(batch)
-            decisions = torch.as_tensor(
-                [length - 1 for length in lengths],
-                device=predicted.device,
-            )
-            rows = torch.arange(len(contexts), device=predicted.device)
-            logits = predicted[rows, decisions]
         except (RuntimeError, ValueError) as error:
             raise ModelRunnerError(f"model inference failed: {error}") from error
-        if logits.shape != (len(contexts), ACTION_VOCABULARY_SIZE):
+        return self.decision_logits(batch, self.decision_indices(contexts))
+
+    def decision_indices(self, contexts: Sequence[DecisionContext]) -> Tensor:
+        """Return the ply each context is deciding at, one per row."""
+
+        return torch.as_tensor(
+            [len(context.plies) - 1 for context in contexts],
+            device=self.device,
+        )
+
+    def decision_logits(
+        self,
+        batch: MoveModelBatch,
+        decisions: Tensor,
+    ) -> tuple[Tensor, ...]:
+        """Return served logits for a batch and decision rows already built.
+
+        A seam :meth:`predict_batch` also goes through, so a benchmark can time
+        the model work alone against the same call the engine makes. Timing the whole
+        forward pass instead would score every historical ply, which serving
+        does not do, and the difference would read as batch-construction cost.
+        """
+
+        try:
+            with torch.inference_mode():
+                logits = self._model.decide_at(batch, decisions)
+        except (RuntimeError, ValueError) as error:
+            raise ModelRunnerError(f"model inference failed: {error}") from error
+        if logits.shape != (decisions.shape[0], ACTION_VOCABULARY_SIZE):
             raise ModelRunnerError("model returned an invalid action-logit shape")
         # Checked on the host copy the caller was getting anyway. Asking the
         # device instead would block on the whole queued forward pass once per
@@ -246,7 +265,7 @@ class CheckpointModelRunner:
         resolved = logits.detach().to(device="cpu", dtype=torch.float32).clone()
         if not torch.isfinite(resolved).all():
             raise ModelRunnerError("model returned non-finite action logits")
-        return tuple(cast(Tensor, row) for row in resolved.unbind(0))
+        return resolved.unbind(0)
 
 
 def _load_run_record(path: Path) -> dict[str, Any]:
@@ -359,9 +378,7 @@ def _validate_artifact_contract(
         or checkpoint_execution.get("parameter_dtype") != "float32"
     ):
         raise ModelRunnerError("checkpoint parameter precision is unsupported")
-    if expected_model.get("rating_conditioning") != (
-        "post-transformer-feature-modulation"
-    ):
+    if expected_model.get("rating_conditioning") != "square-token-input-embedding":
         raise ModelRunnerError("checkpoint uses an unsupported rating context contract")
     if (
         expected_model.get("timing_inputs") is not False

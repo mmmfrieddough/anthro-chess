@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 import torch
+from tiny_models import tiny_model_config
 
 from anthro_chess.data import (
     SelectionConfig,
@@ -19,7 +20,7 @@ from anthro_chess.evaluation.results import (
     ResultsStore,
     series_fingerprint,
 )
-from anthro_chess.models import CausalMoveModel, MoveModelConfig
+from anthro_chess.models import CausalMoveModel
 from anthro_chess.training.cadence import (
     HEALTH_KIND,
     PREVIEW_KIND,
@@ -78,17 +79,7 @@ def _corpus(
 
 def _model() -> CausalMoveModel:
     torch.manual_seed(5)
-    return CausalMoveModel(
-        MoveModelConfig(
-            piece_embedding_dim=2,
-            action_embedding_dim=4,
-            model_dim=16,
-            attention_heads=2,
-            transformer_layers=1,
-            feedforward_dim=24,
-            dropout=0.0,
-        )
-    )
+    return CausalMoveModel(tiny_model_config())
 
 
 def _evaluation(

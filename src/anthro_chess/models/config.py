@@ -8,14 +8,32 @@ from anthro_chess.config import ConfigModel
 
 
 class MoveModelConfig(ConfigModel):
-    """Hyperparameters for the first action-only causal model."""
+    """Hyperparameters for the action-only causal move model."""
 
     piece_embedding_dim: int = Field(default=8, ge=1)
     action_embedding_dim: int = Field(default=16, ge=1)
     model_dim: int = Field(default=64, ge=2)
     attention_heads: int = Field(default=4, ge=1)
+    #: Spatial layers over the 64 square tokens of one position, run before the
+    #: ply trunk sees that position at all.
+    spatial_layers: int = Field(default=2, ge=1)
+    #: Causal layers over the ply axis. The only stage that reads more than one
+    #: position, and the only one whose cost grows with game length.
     transformer_layers: int = Field(default=2, ge=1)
+    #: Spatial layers that read the trunk's history feature back onto the square
+    #: tokens, so the move head scores squares that know the history.
+    decision_layers: int = Field(default=1, ge=1)
     feedforward_dim: int = Field(default=128, ge=1)
+    #: Width each square token is compressed to before the geometric bias
+    #: generator flattens the board into one vector.
+    geometric_token_dim: int = Field(default=8, ge=1)
+    #: Width of the geometric bias generator's hidden stages, and the number of
+    #: 64-by-64 bias templates its output layer mixes. Every template is 4096
+    #: values and one generator is built per spatial layer, so this width's cost
+    #: neither falls with ``model_dim`` nor is paid once: at the defaults the
+    #: generators outweigh the rest of the model, and left at a large model's
+    #: setting they would dominate a small model's parameter count outright.
+    geometric_bias_dim: int = Field(default=16, ge=1)
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
     #: One past the furthest ply index the model can encode, and the length of
     #: the position table derived from it. A shape assertion rather than a dial:

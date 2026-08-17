@@ -50,11 +50,11 @@ the live-game decision history, and by the model sizing its embedding tables.
 Absence is a row rather than a flag, so each input travels as one column
 instead of a value beside a presence mask.
 
-`log1p` on the two rule counters stays in `BoardEncoder`, beside the same
-transform the rating conditioner applies to a rating that also travels as an
-integer. Moving it would have made the encoding responsible for a modelling
-choice, and would have widened two `int16` columns to `float32` on the host side
-of a step whose measured problem is the host side.
+`log1p` on the two rule counters stays in the model's square-token encoder,
+which is likewise where a rating that travels as an integer is turned into a
+representation. Moving it would have made the encoding responsible for a
+modelling choice, and would have widened two `int16` columns to `float32` on the
+host side of a step whose measured problem is the host side.
 
 ## What this is not
 

@@ -425,13 +425,15 @@ def test_evaluation_bootstraps_a_spread_for_every_series_it_reports(
         if item.dispersion is not None
     }
     assert "held_out.move_loss" in spread
-    # A rate the fixture's games all agree on carries none rather than a zero,
-    # since a redraw of those games observed that it could not move the rate
-    # rather than that nothing could.
     assert "adjudicated.material_gain_best_rank" in spread
-    assert "adjudicated.material_gain_selected_rate" not in spread
     for dispersion in spread.values():
         assert dispersion.bound >= dispersion.value
+        # A quantity the fixture's games all agree on carries no spread rather
+        # than a zero one, since a redraw of those games observed that it could
+        # not move rather than that nothing could. Which quantity that is
+        # depends on the fixture model's weights, so the rule is stated over
+        # every spread reported instead of over the one that happens to be flat.
+        assert dispersion.value > 0.0
 
 
 def test_a_sampled_spread_is_reproducible_and_can_be_declined(
@@ -514,6 +516,11 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
     The cross-conditioning match rate and the within-game response declare why
     in the registry, so a report renders them ``unqualifiable`` rather than
     sending a reader after a spread nothing can estimate.
+
+    The rest are asserted as a property rather than as a list. Whether a given
+    dependency metric carries a spread also depends on whether the fixture's
+    weights make it vary at all, so naming which ones do would pin the model
+    this fixture happens to build rather than anything the reading guarantees.
     """
 
     normalized, manifest = corpus(tmp_path / "corpus")
@@ -530,19 +537,24 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
         if envelope.kind == DEPENDENCY_KIND
         for item in envelope.measurements
     }
+    undispersed = {
+        metric for metric, item in reported.items() if item.dispersion is None
+    }
+    assert undispersed >= {
+        "dependency.rating_cross_conditioning_match_rate",
+        "dependency.rating_within_game_response",
+    }
     dispersed = {
-        metric for metric, item in reported.items() if item.dispersion is not None
+        metric: item.dispersion
+        for metric, item in reported.items()
+        if item.dispersion is not None
     }
-    assert dispersed == {
-        "dependency.rating_shuffled_degradation",
-        "dependency.rating_constant_degradation",
-        "dependency.rating_absent_degradation",
-        "dependency.rating_anchor_policy_divergence",
-    }
-    # The two anchor conditionings agree on every fixture position, so no
-    # redraw of these games moves the agreement rate and it carries no spread
-    # rather than a zero that would clear every later delta.
-    assert reported["dependency.rating_anchor_top1_agreement"].dispersion is None
+    assert dispersed
+    for dispersion in dispersed.values():
+        # A quantity that could not move across the fixture's games is absent
+        # above rather than present with a zero, which would clear every later
+        # delta it was ever combined into.
+        assert dispersion.value > 0.0
     divergence = reported["dependency.rating_anchor_policy_divergence"].dispersion
     assert divergence is not None
     assert result.dependency is not None

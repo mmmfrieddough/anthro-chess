@@ -373,8 +373,14 @@ Key information:
 
 - Extends Maia-style human move modeling into a unified model across skill
   levels.
-- Uses skill-aware conditioning to capture how human move choice changes with
-  player strength, conditioning on both players' ratings.
+- Conditions **inside the trunk, in every block**. Its skill-aware attention
+  projects the rating embedding to the attention inner width and adds it to the
+  **query** vectors before the dot product, so the rating changes what each
+  layer attends to rather than only how a finished representation is read. Both
+  players' ratings are embedded and concatenated into that one signal.
+- Runs a residual CNN over the board first and then treats its **channels** as
+  the transformer's tokens — "channel-wise patching" — so a token is one feature
+  map over all 64 squares rather than a square.
 - Carries a policy head, an auxiliary head over move components, and a value
   head. None of them predicts time.
 - Trains on rapid games only, and uses the clock solely to drop positions where
@@ -401,10 +407,35 @@ Link: <https://arxiv.org/abs/2605.19091>
 Key information:
 
 - Introduces a chess-specific transformer architecture using board-square
-  tokens.
+  tokens, each carrying a one-hot piece indicator, with the board flipped to the
+  side to move.
 - Adds geometric attention bias and an attention-based source-destination move
-  head.
+  head. The bias is generated per position from a compressed view of the board
+  and added to the attention logits, one 64-by-64 map per head, so it is dynamic
+  rather than a fixed positional encoding. The head scores a move as a
+  source-square query against a destination-square key, and handles promotion as
+  an additive bias on last-rank destinations.
+- Conditions **in the input representation**: two skill embeddings, one per
+  player, are prepended to each of the 64 square tokens, so the rating is
+  present before the first layer. Each is an interpolation between a learned
+  weak anchor and a learned strong anchor rather than a free map from rating to
+  vector, which makes the embedding monotone in the rating by construction.
+- Presents history by concatenating the previous seven positions into each
+  token's input depth rather than along a sequence axis. Those stacked boards
+  are also its move history: differencing consecutive snapshots recovers what
+  moved, so it carries no explicit previous-move input.
+- Splits the rule state between its two models, and the split is instructive.
+  The human-emulation input is **only** the stacked piece planes plus the two
+  skill embeddings, at a depth of `12 x (1 + n) + 2 x 128`; it carries no
+  castling rights, en passant, halfmove clock, or repetition flags, and the
+  paper says so, noting a full chess state is Markov only with them. Its engine
+  model adds all of it back — repetition per stacked board, the four castling
+  options, side to move, and plies since the last capture or pawn move — for a
+  depth of 112. A model that never claims a draw can drop what a model that
+  does cannot.
 - Reaches 57.1% move-matching accuracy at 79M parameters, above Allie at 355M.
+- Runs 8 layers for every human-emulation size, widening rather than deepening
+  from 5M to 79M.
 - Trains on Lichess blitz from 2023-01 to 2025-07, on eight A100s for about a
   week at the largest size.
 - Models no timing at all, and drops every position after a player first falls

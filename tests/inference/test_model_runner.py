@@ -12,6 +12,7 @@ from typing import Any, cast
 import chess
 import pytest
 import torch
+from tiny_models import tiny_model_config
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -35,7 +36,7 @@ from anthro_chess.inference import (
     write_model_selection,
 )
 from anthro_chess.machine import RUN_ROOT_VARIABLE
-from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
+from anthro_chess.models import CausalMoveModel, MoveModelBatch
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
 from accelerators import inference_accelerator_parameters
@@ -70,18 +71,10 @@ def test_cpu_runner_loads_and_recomputes_complete_target_free_history(
     board, moves = _position(("e2e4", "e7e5", "g1f3"))
     developed = build_decision_context(board, moves, target_rating=1650)
 
-    seen_lengths: list[int] = []
-    hook = runner._model.register_forward_pre_hook(  # noqa: SLF001
-        lambda _module, arguments: seen_lengths.append(
-            arguments[0].attention_mask.shape[1]
-        )
-    )
-    try:
+    with _observed_widths(runner) as seen_lengths:
         empty_logits = runner.predict(empty)
         developed_logits = runner.predict(developed)
         repeated_logits = runner.predict(developed)
-    finally:
-        hook.remove()
 
     assert seen_lengths == [1, 4, 4]
     assert empty_logits.shape == (ACTION_VOCABULARY_SIZE,)
@@ -94,14 +87,21 @@ def test_cpu_runner_loads_and_recomputes_complete_target_free_history(
     assert runner.selection.as_record()["source"] == "explicit-checkpoint"
 
 
-def test_decision_tensorization_rates_only_the_current_decision() -> None:
+def test_decision_tensorization_rates_the_whole_trajectory() -> None:
+    """A served history has to be shaped like a trained one.
+
+    The trunk reads the rating from ply zero, so a row rated only in its final
+    column would present a trajectory no training game contains. Decision 0066
+    records what rating the whole row assumes instead.
+    """
+
     board, moves = _position(("d2d4", "d7d5"))
     context = build_decision_context(board, moves, target_rating=1800)
 
     batch = MoveModelBatch.from_decision_context(context)
 
-    assert batch.inputs.target_rating.present.tolist() == [[False, False, True]]
-    assert batch.inputs.target_rating.values.tolist() == [[0, 0, 1800]]
+    assert batch.inputs.target_rating.present.tolist() == [[True, True, True]]
+    assert batch.inputs.target_rating.values.tolist() == [[1800, 1800, 1800]]
     assert batch.inputs.previous_action_token[0, 0] == previous_action_token(None)
     assert batch.ply_indices.tolist() == [[0, 1, 2]]
     assert not batch.action_loss_mask.any()
@@ -153,11 +153,16 @@ def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:
         [True, True, False, False],
         [True, True, True, True],
     ]
-    # Each history's rating marks its own last real timestep, and the padded
-    # columns carry no inputs at all.
+    # Each history's rating covers its own real timesteps and stops at its own
+    # length, so a shorter row batched beside a longer one does not pick up a
+    # rating in the columns it is padded into.
     assert batch.inputs.target_rating.values.tolist() == [
-        [0, 1800, 0, 0],
-        [0, 0, 0, 1200],
+        [1800, 1800, 0, 0],
+        [1200, 1200, 1200, 1200],
+    ]
+    assert batch.inputs.target_rating.present.tolist() == [
+        [True, True, False, False],
+        [True, True, True, True],
     ]
     # A padded timestep has no previous action, so it reads the same row as a
     # game's first ply rather than the move a zero fill would name.
@@ -181,14 +186,8 @@ def test_a_batched_prediction_serves_every_pending_decision_in_one_pass(
     )
     separate = tuple(runner.predict(context) for context in contexts)
 
-    widths: list[int] = []
-    hook = runner._model.register_forward_pre_hook(  # noqa: SLF001
-        lambda _module, arguments: widths.append(arguments[0].attention_mask.shape[1])
-    )
-    try:
+    with _observed_widths(runner) as widths:
         together = runner.predict_batch(contexts)
-    finally:
-        hook.remove()
 
     assert widths == [4]
     assert len(together) == len(contexts)
@@ -241,19 +240,52 @@ def test_a_prediction_batch_never_asks_the_device_for_a_scalar(
 
 
 @contextmanager
+def _observed_widths(runner: CheckpointModelRunner) -> Iterator[list[int]]:
+    """Record the padded width of every batch a served decision is read from.
+
+    Serving reads the model through ``decide_at`` rather than through its
+    forward pass, so a module hook records nothing.
+    """
+
+    widths: list[int] = []
+    model = runner._model  # noqa: SLF001
+    decide_at = model.decide_at
+
+    def recorded(batch: MoveModelBatch, decisions: Any) -> Any:
+        widths.append(batch.attention_mask.shape[1])
+        return decide_at(batch, decisions)
+
+    model.decide_at = recorded  # type: ignore[method-assign]
+    try:
+        yield widths
+    finally:
+        model.decide_at = decide_at  # type: ignore[method-assign]
+
+
+@contextmanager
 def _replaced_logits(
     runner: CheckpointModelRunner,
     transform: Callable[[Any], Any],
 ) -> Iterator[None]:
-    """Substitute what the model hands back, leaving the runner path intact."""
+    """Substitute what the model hands back, leaving the runner path intact.
 
-    handle = runner._model.register_forward_hook(  # noqa: SLF001
+    Two seams, because the runner reads the model two ways: batched offline
+    scoring goes through the forward pass, while a served decision goes through
+    ``decide_at``, which skips the plies whose logits it would discard. A helper
+    covering only the first would leave every served-path guard untested.
+    """
+
+    model = runner._model  # noqa: SLF001
+    handle = model.register_forward_hook(
         lambda _module, _arguments, output: transform(output)
     )
+    decide_at = model.decide_at
+    model.decide_at = lambda *arguments: transform(decide_at(*arguments))  # type: ignore[method-assign]
     try:
         yield
     finally:
         handle.remove()
+        model.decide_at = decide_at  # type: ignore[method-assign]
 
 
 def test_a_prediction_batch_cannot_be_empty(tmp_path: Path) -> None:
@@ -505,15 +537,7 @@ def _write_run(
 ) -> Path:
     torch.manual_seed(seed)
     path.mkdir(parents=True)
-    config = MoveModelConfig(
-        piece_embedding_dim=2,
-        action_embedding_dim=2,
-        model_dim=4,
-        attention_heads=1,
-        transformer_layers=1,
-        feedforward_dim=8,
-        dropout=0.0,
-    )
+    config = tiny_model_config()
     if maximum_context_plies is not None:
         config = config.model_copy(
             update={"maximum_context_plies": maximum_context_plies}

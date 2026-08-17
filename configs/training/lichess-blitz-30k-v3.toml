@@ -29,8 +29,12 @@ piece_embedding_dim = 8
 action_embedding_dim = 16
 model_dim = 64
 attention_heads = 4
+spatial_layers = 2
 transformer_layers = 2
+decision_layers = 1
 feedforward_dim = 128
+geometric_token_dim = 8
+geometric_bias_dim = 16
 dropout = 0.0
 
 # One in-training cadence: a subsampled validation preview plus the optimizer
