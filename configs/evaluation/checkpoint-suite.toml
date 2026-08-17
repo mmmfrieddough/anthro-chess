@@ -78,7 +78,7 @@ reduced = [
 # so at the default conditioning grid this step pays nine passes over whatever
 # the view selects. The passes stay — dropping one would drop a measurement
 # rather than shrink it — so the view is what carries the reduction.
-config = "configs/evaluation/lichess-blitz-2017-04-checkpoint.toml"
+config = "configs/evaluation/lichess-univ-2018-01-2021-06-checkpoint.toml"
 reduced = ["view.maximum_games=400"]
 
 [benchmarks.novelty]

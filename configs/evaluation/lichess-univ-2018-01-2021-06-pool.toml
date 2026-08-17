@@ -1,0 +1,29 @@
+pool_id = "lichess-univ-2018-01-2021-06-test"
+pool_version = 1
+normalized = "artifacts/lichess-univ-2018-01-2021-06/normalized"
+manifest = "artifacts/lichess-univ-2018-01-2021-06/manifests/manifest.json"
+# Never consumed by training. See the split section of the source data config.
+split = "test"
+
+# Sized from what a metric needs to resolve a 1% effect, divided by the share
+# of the pool that realizes it. The binding whole-pass metric is the legality
+# family at 64,277 games; a speed class holds a fraction of the pool, so
+# resolving that family within blitz needs about 133,000 games and within
+# bullet about 189,000. This admitted 229,000 and realized 211,475 once the
+# snapshot below took the marked accounts out, giving blitz 102,698 games and
+# bullet 71,654, both above the 64,277 the metric needs. Rapid lands at 29,374
+# and does not resolve it; reaching that would take a pool near 477,000.
+#
+# It only ever rises. A later cut may raise it freely and may never lower it,
+# since lowering drops games an earlier generation holds.
+sample_fraction = 0.0022
+
+# The accounts the source had marked when this was cut. Every game either
+# player appears in is left out. The census behind it had answered for every
+# account the pool was expected to hold, and for 80.46% of the corpus's
+# player-slots; the snapshot header carries both figures.
+marked_accounts = "../data/marked-accounts/lichess-univ-2018-01-2021-06.txt"
+
+# Recorded from the first successful build so a rebuild on another machine is
+# verified rather than merely plausible.
+expected_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
