@@ -345,9 +345,9 @@ def test_data_acquire_command_routes_to_importable_pipeline(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    write_pinned_archive_config: Callable[..., Path],
 ) -> None:
-    repository_root = Path(__file__).parents[2]
-    config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
+    config = write_pinned_archive_config(tmp_path)
     archive_path = tmp_path / "raw/archive.pgn.zst"
     monkeypatch.setattr(
         "anthro_chess.data.acquire_configured_archive",
@@ -426,9 +426,9 @@ sha256 = "{"2" * 64}"
 def test_data_acquire_uses_data_root_when_output_is_omitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    write_pinned_archive_config: Callable[..., Path],
 ) -> None:
-    repository_root = Path(__file__).parents[2]
-    config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
+    config = write_pinned_archive_config(tmp_path)
     data_root = tmp_path / "datasets"
     captured_output: list[Path] = []
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
@@ -445,7 +445,7 @@ def test_data_acquire_uses_data_root_when_output_is_omitted(
     monkeypatch.setattr("anthro_chess.data.acquire_configured_archive", fake_acquire)
 
     assert main(["data", "acquire", "--config", str(config)]) == 0
-    assert captured_output == [data_root / "lichess-blitz-2017-04"]
+    assert captured_output == [data_root / "fixture-archive"]
 
 
 def _census_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -704,9 +704,9 @@ def test_data_mark_accounts_cuts_a_snapshot_from_the_census_as_it_stands(
 def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    write_pinned_archive_config: Callable[..., Path],
 ) -> None:
-    repository_root = Path(__file__).parents[2]
-    config = repository_root / "configs/data/lichess-blitz-2017-04.toml"
+    config = write_pinned_archive_config(tmp_path)
     data_root = tmp_path / "datasets"
     captured_paths: list[tuple[Path, Path, Path | None]] = []
     monkeypatch.setenv("ANTHRO_CHESS_DATA_ROOT", str(data_root))
@@ -748,11 +748,9 @@ def test_data_prepare_infers_shared_archive_independently_of_prepared_name(
     # leaves behind belong to the archive, which selections share.
     assert captured_paths == [
         (
-            data_root / "lichess-blitz-2017-04/raw/"
-            "lichess_db_standard_rated_2017-04.pgn.zst",
+            data_root / "fixture-archive/raw/fixture.pgn.zst",
             data_root / "proof-slice",
-            data_root / "lichess-blitz-2017-04/census/"
-            "lichess_db_standard_rated_2017-04.pgn.zst.accounts.tsv",
+            data_root / "fixture-archive/census/fixture.pgn.zst.accounts.tsv",
         )
     ]
 

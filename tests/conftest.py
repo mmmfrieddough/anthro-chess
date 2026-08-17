@@ -302,6 +302,58 @@ def _write_corpus(
     return normalized_directory, manifest_path
 
 
+def _write_pinned_archive_config(
+    directory: Path,
+    *,
+    artifact_name: str = "fixture-corpus",
+    archive_artifact_name: str = "fixture-archive",
+    file_name: str = "fixture.pgn.zst",
+) -> Path:
+    """Write a selection pinning exactly one archive, returning its path.
+
+    The corpus and the archive are named differently so a caller asserting a
+    resolved path shows which of the two it followed.
+    """
+
+    config_path = directory / "pinned-archive.toml"
+    config_path.write_text(
+        f"""
+artifact_name = "{artifact_name}"
+
+[source]
+id = "fixture"
+version = "fixture"
+url = "https://example.test/"
+license = "CC0-1.0"
+rating_namespace_prefix = "lichess"
+rating_system = "glicko2"
+ratings_are_normalized = true
+
+[[archives]]
+artifact_name = "{archive_artifact_name}"
+url = "https://example.test/{file_name}"
+file_name = "{file_name}"
+sha256 = "{"5" * 64}"
+compression = "zstd"
+
+[split]
+seed = "fixture-split-v1"
+validation_fraction = 0.05
+test_fraction = 0.05
+require_nonempty = true
+
+[filters]
+minimum_plies = 1
+require_rated = true
+
+[output]
+games_per_shard = 50000
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 @pytest.fixture
 def action_ids() -> Callable[[tuple[str, ...]], tuple[int, ...]]:
     """Return a helper converting UCI move strings into action ids."""
@@ -343,6 +395,13 @@ def write_puzzle_artifact() -> Callable[..., Path]:
     """Return a factory writing a loadable puzzle artifact and its manifest."""
 
     return _write_puzzle_artifact
+
+
+@pytest.fixture
+def write_pinned_archive_config() -> Callable[..., Path]:
+    """Return a factory writing a selection that pins exactly one archive."""
+
+    return _write_pinned_archive_config
 
 
 #: Two verified puzzle lines — an opponent setup move, then one and two

@@ -20,12 +20,8 @@ rating_system = "glicko2"
 ratings_are_normalized = true
 
 [split]
-# Deliberately the same seed the standard-export selection uses, not a new one.
-# The two exports publish the same games under the same ids, so a fresh seed
-# would reassign every one of them: measured over 200k ids, only 5.2% of the
-# games held out by the existing selection stay held out under a different
-# seed. Sharing the seed keeps the existing frozen pool held out against a
-# model trained here.
+# The pool generation was cut under this seed, so changing it reassigns every
+# game and re-cuts the pool. The name predates this corpus.
 seed = "anthro-lichess-blitz-baseline-v1"
 validation_fraction = 0.05
 test_fraction = 0.05
