@@ -6,22 +6,19 @@ validation, and defaults; the shared loading boundary lives under
 `anthro_chess.config`. TOML files here select values but do not define the
 schema.
 
-`data/` contains the offline sample selection and the pinned, bounded Lichess
-baseline-corpus selection. The latter owns the archive identity, published
-checksum, rating namespace prefix, deterministic maximum, and normalized shard
-size.
+`data/` contains the offline sample selection and the pinned Lichess
+universal-export corpus selection. The latter owns the archive identities,
+their published checksums, the rating namespace prefix, the split seed, and
+the normalized shard size.
 It can also name a marked-account snapshot, though it does not yet;
 `data/marked-accounts/` explains why that one input is checked in rather than
 regenerated on demand, since account status is a live judgement and a corpus
 that re-asked for it would shrink on every run.
 `training/` contains the strict CPU and explicitly selected MPS and CUDA smoke
 paths against the prepared sample artifact, including step-keyed checkpoint and
-resume coverage. It also contains the first measured many-game MPS proof
-selection, which owns its own reproducible corpus slice; `#61` records the
-evidence and interpretation. The accelerator smoke selections
-enable synchronized phase profiling for bounded device verification;
-larger-corpus batch and accumulation choices belong in resolved run
-configuration and measured artifacts.
+resume coverage. The accelerator smoke selections enable synchronized phase
+profiling for bounded device verification; larger-corpus batch and accumulation
+choices belong in resolved run configuration and measured artifacts.
 
 The two accelerator smoke selections differ in their determinism setting, and
 the difference belongs to the backend rather than to taste: the CUDA backward
