@@ -13,6 +13,7 @@ from anthro_chess.models import MoveModelConfig
 from anthro_chess.training.cadence import TrainingEvaluationConfig
 from anthro_chess.training.devices import DeviceSelection
 from anthro_chess.training.efficiency import TrainingEfficiencyConfig
+from anthro_chess.training.schedule import LearningRateSchedule, resolve_schedule
 
 #: Parameters always stay float32. ``bfloat16-mixed`` autocasts the forward
 #: pass, so activations are held at half the width while the optimizer keeps
@@ -51,7 +52,28 @@ class TrainingConfig(ConfigModel):
     run_name: str = Field(default="training", pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     seed: int = Field(default=17, ge=0)
     steps: int = Field(default=10, ge=1)
+    #: The rate the trunk holds, which warmup rises to and the cooldown decays
+    #: from.
     learning_rate: float = Field(default=1e-3, gt=0.0)
+    #: How much training data warmup spans, converted to steps by this run's own
+    #: batch and accumulation. Declared as data rather than as steps or as a
+    #: share of the run so that a branch and the trunk it resumes warm up over
+    #: the same prefix; sequences rather than positions because games vary in
+    #: length, so only the first is known before a run starts.
+    warmup_sequences: int = Field(default=0, ge=0)
+    #: The share of the horizon the cooldown occupies. A step count would
+    #: survive a horizon change syntactically and reshape the curve silently.
+    cooldown_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
+    #: Decoupled from the gradient, so what it sets is a timescale against the
+    #: learning rate rather than a term the second moment rescales.
+    weight_decay: float = Field(default=0.0, ge=0.0)
+    #: Adam's second moment, which averages over a number of steps rather than
+    #: over a quantity of data, so it moves when the batch does.
+    second_moment_decay: float = Field(default=0.999, gt=0.0, lt=1.0)
+    #: The global gradient norm a step is scaled back to. The default sits above
+    #: the norms an ordinary step reaches, so it catches a spike rather than
+    #: capping every step.
+    gradient_clip_norm: float = Field(default=10.0, gt=0.0)
     log_every_steps: int = Field(default=1, ge=1)
     checkpoint_every_steps: int = Field(default=100, ge=1)
     resume_from: Literal["latest"] | Path | None = None
@@ -66,6 +88,31 @@ class TrainingConfig(ConfigModel):
     efficiency: TrainingEfficiencyConfig = TrainingEfficiencyConfig()
     train: SequenceDataConfig
     validation: SequenceDataConfig | None = None
+
+    def learning_rate_schedule(self) -> LearningRateSchedule:
+        """Resolve the rate curve this run's steps are taken at."""
+
+        return resolve_schedule(
+            peak=self.learning_rate,
+            steps=self.steps,
+            warmup_sequences=self.warmup_sequences,
+            cooldown_fraction=self.cooldown_fraction,
+            sequences_per_step=(
+                self.train.loader.batch_size * self.gradient_accumulation_steps
+            ),
+        )
+
+    @model_validator(mode="after")
+    def _resolve_schedule(self) -> TrainingConfig:
+        """Refuse a schedule the declared horizon cannot carry.
+
+        At validation rather than at the first optimizer step, so a horizon
+        that cannot carry its schedule fails before the corpus loads rather
+        than minutes into a run.
+        """
+
+        self.learning_rate_schedule()
+        return self
 
     @model_validator(mode="after")
     def _reject_test_split(self) -> TrainingConfig:

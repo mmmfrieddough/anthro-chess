@@ -389,6 +389,7 @@ def test_a_firing_records_previews_and_health_as_separate_results(
             gradient_norm=1.25,
             gradient_norm_interval_maximum=1.5,
             update_to_weight_ratio=None,
+            clip_rate=0.0,
         ),
     )
 

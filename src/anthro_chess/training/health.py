@@ -14,6 +14,10 @@ copy for a statistic that moves slowly. Gradient norm is different — it reads
 gradients the backward pass just wrote, so it runs every step and reports both
 the reported step's value and the interval's maximum, which is what catches a
 spike between two logging points.
+
+The norm is handed back rather than only recorded, because the gradient clip a
+step applies scales against that same reduction, and computing it twice would
+double the only expensive part.
 """
 
 from __future__ import annotations
@@ -29,15 +33,18 @@ from torch.nn.utils import get_total_norm
 
 from anthro_chess.evaluation.results import Measurement, measurement
 from anthro_chess.evaluation.results.metrics import (
+    TRAINING_HEALTH_CLIP_RATE,
     TRAINING_HEALTH_GRADIENT_NORM,
     TRAINING_HEALTH_UPDATE_TO_WEIGHT_RATIO,
 )
 
-STEP_HEALTH_VERSION = 1
+#: Version 2 added the clip rate.
+STEP_HEALTH_VERSION = 2
 
 #: The metrics a health monitor can report. A cadence naming anything else has
 #: to compute it from data, which is a different affordability question.
 STEP_HEALTH_METRICS: tuple[str, ...] = (
+    TRAINING_HEALTH_CLIP_RATE.identifier,
     TRAINING_HEALTH_GRADIENT_NORM.identifier,
     TRAINING_HEALTH_UPDATE_TO_WEIGHT_RATIO.identifier,
 )
@@ -52,6 +59,7 @@ class StepHealth:
     gradient_norm: float
     gradient_norm_interval_maximum: float
     update_to_weight_ratio: float | None
+    clip_rate: float
 
     def as_record(self) -> dict[str, object]:
         """Return the metrics-stream record for one drained interval."""
@@ -62,6 +70,7 @@ class StepHealth:
             "gradient_norm": self.gradient_norm,
             "gradient_norm_interval_maximum": (self.gradient_norm_interval_maximum),
             "update_to_weight_ratio": self.update_to_weight_ratio,
+            "clip_rate": self.clip_rate,
         }
 
     def measurements(
@@ -77,6 +86,7 @@ class StepHealth:
         wanted = None if metrics is None else frozenset(metrics)
         values: list[Measurement] = []
         pairs: tuple[tuple[str, float | None], ...] = (
+            (TRAINING_HEALTH_CLIP_RATE.identifier, self.clip_rate),
             (TRAINING_HEALTH_GRADIENT_NORM.identifier, self.gradient_norm),
             (
                 TRAINING_HEALTH_UPDATE_TO_WEIGHT_RATIO.identifier,
@@ -93,14 +103,21 @@ class StepHealth:
 class StepHealthMonitor:
     """Accumulate optimizer statistics on device between logging intervals."""
 
-    def __init__(self, parameters: Iterable[Parameter]) -> None:
+    def __init__(
+        self,
+        parameters: Iterable[Parameter],
+        *,
+        clip_norm: float,
+    ) -> None:
         self._parameters = tuple(
             parameter for parameter in parameters if parameter.requires_grad
         )
         if not self._parameters:
             raise ValueError("training health needs at least one trainable parameter")
+        self._clip_norm = clip_norm
         self._latest_gradient_norm: Tensor | None = None
         self._maximum_gradient_norm: Tensor | None = None
+        self._clipped_steps: Tensor | None = None
         self._update_ratio: Tensor | None = None
         self._snapshot: tuple[Tensor, ...] | None = None
         self._steps = 0
@@ -126,8 +143,8 @@ class StepHealthMonitor:
         )
         self._instrumentation_seconds += time.perf_counter() - started
 
-    def observe_gradients(self) -> None:
-        """Record the global gradient norm from the gradients just written."""
+    def observe_gradients(self) -> Tensor | None:
+        """Record the global gradient norm, and return it for the step to clip."""
 
         started = time.perf_counter()
         gradients = [
@@ -135,6 +152,7 @@ class StepHealthMonitor:
             for parameter in self._parameters
             if parameter.grad is not None
         ]
+        gradient_norm: Tensor | None = None
         if gradients:
             gradient_norm = get_total_norm(gradients)
             self._latest_gradient_norm = gradient_norm
@@ -143,8 +161,15 @@ class StepHealthMonitor:
                 if self._maximum_gradient_norm is None
                 else torch.maximum(self._maximum_gradient_norm, gradient_norm)
             )
+            clipped = (gradient_norm > self._clip_norm).to(gradient_norm.dtype)
+            self._clipped_steps = (
+                clipped
+                if self._clipped_steps is None
+                else self._clipped_steps + clipped
+            )
         self._steps += 1
         self._instrumentation_seconds += time.perf_counter() - started
+        return gradient_norm
 
     @torch.no_grad()
     def observe_update(self) -> None:
@@ -179,6 +204,7 @@ class StepHealthMonitor:
             return None
         started = time.perf_counter()
         assert self._maximum_gradient_norm is not None
+        assert self._clipped_steps is not None
         health = StepHealth(
             steps=self._steps,
             global_step=global_step,
@@ -187,9 +213,11 @@ class StepHealthMonitor:
             update_to_weight_ratio=(
                 None if self._update_ratio is None else float(self._update_ratio.item())
             ),
+            clip_rate=float(self._clipped_steps.item()) / self._steps,
         )
         self._latest_gradient_norm = None
         self._maximum_gradient_norm = None
+        self._clipped_steps = None
         self._update_ratio = None
         self._steps = 0
         self._instrumentation_seconds += time.perf_counter() - started

@@ -960,15 +960,18 @@ computed from training-batch predictions are weaker, because cross-entropy
 against a legal target already moves when the model degrades; they add
 specificity rather than early warning.
 
-The two implemented statistics sit on opposite sides of that rule, which is
-worth knowing when reading them. Gradient norm reads gradients the backward
-pass just wrote, so it runs every step and reports both the value at the
-reported step and the interval's maximum, which is what catches a spike between
-two logging points. The update-to-weight ratio needs the parameters from before
-the update, so measuring it every step means a permanent parameter-sized shadow
-copy; it is measured on reported steps instead, and its cost is paid only
-there. Measured instrumentation time is reported with the run rather than
-assumed to be free.
+The implemented statistics sit on both sides of that rule, which is worth
+knowing when reading them. Gradient norm reads gradients the backward pass just
+wrote, so it runs every step and reports both the value at the reported step and
+the interval's maximum, which is what catches a spike between two logging
+points. The clip rate is that same norm compared against the ceiling and
+counted, so it needs no second reduction, and it is reported as a share of the
+interval's steps because the question it answers is whether clipping is
+insurance against a spike or a learning-rate cap acting on every step. The
+update-to-weight ratio needs the parameters from before the update, so measuring
+it every step means a permanent parameter-sized shadow copy; it is measured on
+reported steps instead, and its cost is paid only there. Measured
+instrumentation time is reported with the run rather than assumed to be free.
 
 ### Periodic Benchmarks
 

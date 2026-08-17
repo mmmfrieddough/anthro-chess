@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn.utils import clip_grads_with_norm_
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ResolvedConfig
@@ -89,6 +90,7 @@ from anthro_chess.training.efficiency import (
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
     TENSORBOARD_DIRECTORY,
     TrainingTensorBoard,
@@ -96,6 +98,8 @@ from anthro_chess.training.tensorboard import (
 
 RUN_ARTIFACT_VERSION = 7
 logger = logging.getLogger(__name__)
+
+_FIRST_MOMENT_DECAY = 0.9
 
 
 class TrainingError(ValueError):
@@ -153,6 +157,7 @@ class _RunRecordWriter:
 
     path: Path
     identity: Mapping[str, object]
+    optimizer: str
     starting_step: int
     resumed_from: Path | None
     initial_parameter_sha256: str
@@ -178,7 +183,7 @@ class _RunRecordWriter:
             # and still never finished.
             "complete": complete,
             "optimization": {
-                "optimizer": "Adam",
+                "optimizer": self.optimizer,
                 "starting_step": self.starting_step,
                 # The step whose checkpoint this record describes, which lags
                 # the last step executed when a run dies between checkpoints.
@@ -338,9 +343,11 @@ def run_training(
             device=device,
             dtype=_training_dtype(config),
         )
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config.learning_rate,
+            betas=(_FIRST_MOMENT_DECAY, config.second_moment_decay),
+            weight_decay=config.weight_decay,
             fused=_fused_optimizer(device),
         )
         code_record = code_provenance().as_record()
@@ -405,8 +412,10 @@ def run_training(
                 ) from error
             if checkpoint["scheduler_state"] is not None:
                 raise CheckpointError(
-                    "checkpoint contains scheduler state but the current "
-                    "training configuration has no scheduler"
+                    "checkpoint contains scheduler state, which a resume must "
+                    "not restore: the rate follows from the resumed step and "
+                    "this run's own horizon, and restoring one would cool a "
+                    "branch at the horizon the trunk declared"
                 )
             if checkpoint["scaler_state"] is not None:
                 raise CheckpointError(
@@ -468,6 +477,7 @@ def run_training(
                 "seed": config.seed,
                 "hardware": hardware_record(device),
             },
+            optimizer=type(optimizer).__name__,
             starting_step=starting_step,
             resumed_from=resumed_from,
             initial_parameter_sha256=initial_parameter_sha256,
@@ -505,6 +515,8 @@ def run_training(
             compatibility=compatibility,
             checkpoint_metadata=checkpoint_metadata,
             schedule=schedule,
+            learning_rate_schedule=config.learning_rate_schedule(),
+            gradient_clip_norm=config.gradient_clip_norm,
             run_id=run_id,
             efficiency=efficiency_recorder,
             run_record=run_record,
@@ -651,6 +663,8 @@ def _optimize(
     compatibility: Mapping[str, object],
     checkpoint_metadata: Mapping[str, object],
     schedule: CadenceSchedule,
+    learning_rate_schedule: LearningRateSchedule,
+    gradient_clip_norm: float,
     run_id: str,
     efficiency: _EfficiencyRecorder,
     run_record: _RunRecordWriter,
@@ -664,7 +678,10 @@ def _optimize(
     transfer_seconds = 0.0
     compute_seconds = 0.0
     optimizer_seconds = 0.0
-    health_monitor = StepHealthMonitor(model.parameters())
+    health_monitor = StepHealthMonitor(
+        model.parameters(),
+        clip_norm=gradient_clip_norm,
+    )
     charged_instrumentation = 0.0
     readings: list[CadenceReading] = []
     efficiency_paths: list[Path] = []
@@ -750,11 +767,22 @@ def _optimize(
                 if probe:
                     totals.synchronize()
 
-            health_monitor.observe_gradients()
+            gradient_norm = health_monitor.observe_gradients()
             if reported:
                 health_monitor.snapshot_parameters()
 
             optimizer_started = time.perf_counter()
+            if gradient_norm is not None:
+                # Clamped at a scale of one, so a step under the ceiling is left
+                # alone without the host-side comparison that would synchronize.
+                clip_grads_with_norm_(
+                    model.parameters(),
+                    gradient_clip_norm,
+                    gradient_norm,
+                )
+            rate = learning_rate_schedule.rate_at(global_step)
+            for group in optimizer.param_groups:
+                group["lr"] = rate
             optimizer.step()
             if profile_phases:
                 _synchronize_device(device)
