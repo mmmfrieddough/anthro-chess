@@ -99,9 +99,6 @@ from anthro_chess.training.tensorboard import (
 RUN_ARTIFACT_VERSION = 7
 logger = logging.getLogger(__name__)
 
-#: Adam's first moment. Left as a constant because nothing in the scaling
-#: program sets it against anything, unlike the second moment, whose averaging
-#: window is a number of steps and so moves with the batch.
 _FIRST_MOMENT_DECAY = 0.9
 
 
@@ -776,6 +773,8 @@ def _optimize(
 
             optimizer_started = time.perf_counter()
             if gradient_norm is not None:
+                # Clamped at a scale of one, so a step under the ceiling is left
+                # alone without the host-side comparison that would synchronize.
                 clip_grads_with_norm_(
                     model.parameters(),
                     gradient_clip_norm,

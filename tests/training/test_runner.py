@@ -1900,8 +1900,6 @@ def test_a_run_warms_up_holds_the_peak_and_cools_over_its_own_tail(
 def test_a_branch_recomputes_the_rate_from_the_horizon_it_declares(
     tmp_path: Path,
 ) -> None:
-    """A resumed run cools at its own end rather than where the trunk was."""
-
     prepared = prepare_pgn(
         SAMPLE_PGN,
         tmp_path / "data",
@@ -2066,9 +2064,6 @@ def test_a_run_reports_the_share_of_steps_the_ceiling_caught(tmp_path: Path) -> 
     ]
 
     assert [item["clip_rate"] for item in health] == [1.0, 1.0]
-    # The norm is reported as the backward pass produced it rather than as the
-    # step went on to apply it, or a clipped run could not say how far over it
-    # had been.
     assert all(item["gradient_norm"] > 1e-6 for item in health)
     assert (
         json.loads(result.run_path.read_text(encoding="utf-8"))["optimization"][

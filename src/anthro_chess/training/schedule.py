@@ -17,11 +17,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-#: The share of a run its warmup may occupy before the rule that set the warmup
-#: stops describing anything. Past it a run spends enough of itself warming up
-#: that its readings are partly about the warmup, which is one of the confounds
-#: the scaling program exists to avoid. A short branch is where that bites, so a
-#: configuration past this is refused rather than quietly reshaped.
+#: The share of a run its warmup may occupy. Past it a run spends enough of
+#: itself warming up that its readings are partly about the warmup rather than
+#: about what the run set out to measure.
 MAXIMUM_WARMUP_FRACTION = 0.1
 
 
@@ -58,10 +56,8 @@ def resolve_schedule(
 ) -> LearningRateSchedule:
     """Convert one run's declared schedule into the step counts it applies.
 
-    Warmup arrives as a quantity of training data, so a branch and the trunk it
-    resumes warm up over the same prefix whatever horizon either declares. It
-    converts by the batch and accumulation the run declares, which is a step
-    count known before the first batch is read.
+    The conversion uses the batch and accumulation the run declares, so the
+    step count is known before the first batch is read.
     """
 
     warmup_steps = -(-warmup_sequences // sequences_per_step)

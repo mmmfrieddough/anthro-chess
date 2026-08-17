@@ -15,12 +15,9 @@ gradients the backward pass just wrote, so it runs every step and reports both
 the reported step's value and the interval's maximum, which is what catches a
 spike between two logging points.
 
-The norm is handed back rather than only recorded, because the gradient clip the
-step applies scales against that same reduction and computing it twice would
-double the only expensive part. The clip itself belongs to the step loop, where
-what changes the weights is visible; what stays here is the share of steps that
-exceeded the ceiling, since insurance that never fires and a cap on every step
-look identical from the loss curve.
+The norm is handed back rather than only recorded, because the gradient clip a
+step applies scales against that same reduction, and computing it twice would
+double the only expensive part.
 """
 
 from __future__ import annotations

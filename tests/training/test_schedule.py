@@ -82,10 +82,10 @@ def test_a_branch_cools_at_its_own_horizon_rather_than_the_trunk_s() -> None:
     branch = _schedule(steps=1200)
 
     # One step sits in the trunk's constant stretch and inside the branch's
-    # cooldown, which is the whole of what branching a horizon is.
+    # cooldown.
     assert trunk.rate_at(1100) == pytest.approx(0.01)
     assert branch.rate_at(1100) < 0.01 * 0.5
-    # The prefix the two share is the reason a branch is not a second run.
+    # The warmup prefix is shared, so only the tail differs.
     assert branch.warmup_steps == trunk.warmup_steps
 
 

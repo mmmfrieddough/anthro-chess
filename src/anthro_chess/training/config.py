@@ -70,11 +70,9 @@ class TrainingConfig(ConfigModel):
     #: Adam's second moment, which averages over a number of steps rather than
     #: over a quantity of data, so it moves when the batch does.
     second_moment_decay: float = Field(default=0.999, gt=0.0, lt=1.0)
-    #: The global gradient norm a step is scaled back to. Insurance against the
-    #: loss spike that would otherwise widen a comparison base's seed spread,
-    #: rather than a rate cap: the default sits well above the norms a corpus
-    #: run at this project's proof width recorded, and a run reports the share
-    #: of its steps that met it.
+    #: The global gradient norm a step is scaled back to. The default sits above
+    #: the norms an ordinary step reaches, so it catches a spike rather than
+    #: capping every step.
     gradient_clip_norm: float = Field(default=2.0, gt=0.0)
     log_every_steps: int = Field(default=1, ge=1)
     checkpoint_every_steps: int = Field(default=100, ge=1)
@@ -108,9 +106,9 @@ class TrainingConfig(ConfigModel):
     def _resolve_schedule(self) -> TrainingConfig:
         """Refuse a schedule the declared horizon cannot carry.
 
-        Here rather than at the first optimizer step, because the horizon a
-        branch declares is exactly what a session gets wrong, and a run that
-        loads its corpus first would report it minutes later.
+        At validation rather than at the first optimizer step, so a horizon
+        that cannot carry its schedule fails before the corpus loads rather
+        than minutes into a run.
         """
 
         self.learning_rate_schedule()
