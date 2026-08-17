@@ -19,7 +19,7 @@ Two kinds of decision run through this program, and confusing them is what makes
 the order feel arbitrary.
 
 **A reference-frame decision is one whose change invalidates readings already
-taken.** The corpus, the evaluation core, the ablation vehicle, and the schedule
+taken.** The corpus, the evaluation pool, the ablation vehicle, and the schedule
 family are all of this kind. Being wrong about one is expensive not because the
 item is expensive to redo but because everything measured against it is.
 

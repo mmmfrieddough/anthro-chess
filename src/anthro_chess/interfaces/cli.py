@@ -1558,22 +1558,20 @@ def _run_eval_freeze(arguments: argparse.Namespace) -> int:
     print(f"Pool: {result.games_path}")
     print(f"Manifest: {result.manifest_path}")
     print(f"Identity: {result.game_ids_sha256}")
-    if result.core_id is not None:
-        _print_designation(result)
+    _print_coverage(result)
     return 0
 
 
-def _print_designation(result: PoolResult) -> None:
-    """Print what designating this generation fixed permanently.
+def _print_coverage(result: PoolResult) -> None:
+    """Print the per-axis composition of the pool just cut.
 
     Every one of these numbers is in the manifest already. They are printed
-    because designation is the moment a per-axis power is set for as long as
-    the core is the reference, and a number nobody read at that moment is one
-    nobody can act on afterwards.
+    because what a reading can resolve on an axis follows from how many games
+    the pool holds on it, and a number nobody read when the pool was cut is one
+    nobody acts on afterwards.
     """
 
-    print(f"\nDesignated as the evaluation core: {result.core_id}")
-    print("Per-axis coverage, fixed permanently from here:")
+    print("\nPer-axis coverage:")
     for axis, counts in sorted(result.coverage_axes.items()):
         readings = ", ".join(
             f"{name} {count}" for name, count in sorted(counts.items())

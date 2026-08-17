@@ -4,7 +4,10 @@ Date: 2026-07-25
 
 ## Status
 
-Accepted.
+Accepted, except for "Pool Generations, Core, And Current", which
+`0068-a-pool-re-cut-breaks-benchmark-history-and-that-is-accepted.md`
+supersedes: there is no core, a re-cut re-baselines, and containment still
+binds.
 
 ## Context
 
@@ -189,3 +192,4 @@ core and current is the observable symptom, available at no extra cost.
 - `docs/decisions/0012-derived-evaluation-views.md`
 - `docs/decisions/0014-evaluation-result-storage.md`
 - `docs/decisions/0018-workload-scoped-efficiency-series.md`
+- `docs/decisions/0068-a-pool-re-cut-breaks-benchmark-history-and-that-is-accepted.md`

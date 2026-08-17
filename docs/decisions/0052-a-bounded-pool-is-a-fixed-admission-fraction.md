@@ -4,7 +4,10 @@ Date: 2026-08-10
 
 ## Status
 
-Accepted. Refines `0012-derived-evaluation-views.md`.
+Accepted. Refines `0012-derived-evaluation-views.md`. Refined by
+`0068-a-pool-re-cut-breaks-benchmark-history-and-that-is-accepted.md`, under
+which no core is designated: the sizing below stands, but a later cut may raise
+the fraction freely, so this cut fixes no axis permanently.
 
 ## Context
 
@@ -171,4 +174,5 @@ for as long as the core is the reference.
 - `docs/decisions/0011-held-out-test-partition.md`
 - `docs/decisions/0012-derived-evaluation-views.md`
 - `docs/decisions/0013-benchmark-result-comparability.md`
+- `docs/decisions/0068-a-pool-re-cut-breaks-benchmark-history-and-that-is-accepted.md`
 - `src/anthro_chess/evaluation/pool.py`
