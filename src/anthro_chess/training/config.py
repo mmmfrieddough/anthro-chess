@@ -73,7 +73,7 @@ class TrainingConfig(ConfigModel):
     #: The global gradient norm a step is scaled back to. The default sits above
     #: the norms an ordinary step reaches, so it catches a spike rather than
     #: capping every step.
-    gradient_clip_norm: float = Field(default=2.0, gt=0.0)
+    gradient_clip_norm: float = Field(default=10.0, gt=0.0)
     log_every_steps: int = Field(default=1, ge=1)
     checkpoint_every_steps: int = Field(default=100, ge=1)
     resume_from: Literal["latest"] | Path | None = None
