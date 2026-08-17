@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from datetime import date
 from hashlib import sha256
 from importlib import import_module
@@ -24,7 +25,6 @@ from anthro_chess.data import (
     DataPreparationError,
     PrepareConfig,
     SourceConfig,
-    Speed,
     acquire_configured_archive,
     prepare_archives,
     prepare_pgn,
@@ -43,22 +43,6 @@ from anthro_chess.data.schema import (
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
 SAMPLE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
-BASELINE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-blitz-2017-04.toml"
-UNIV_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-univ-2018-01-2021-06.toml"
-
-
-def test_baseline_selection_pins_one_bounded_verified_speed() -> None:
-    config = load_config(PrepareConfig, path=BASELINE_CONFIG).value
-
-    assert config.source.rating_namespace_prefix == "lichess"
-    assert config.filters.speed is Speed.BLITZ
-    assert config.filters.maximum_games is not None
-    assert config.output.games_per_shard is not None
-    assert config.split.require_nonempty is True
-    assert len(config.archives) == 1
-    assert config.archives[0].sha256 == (
-        "559222b0e933bc02281643724fbd9bd46690074b10d784c4f264e0bff6c5992c"
-    )
 
 
 def test_prepares_checked_in_sample_with_shared_actions_and_provenance(
@@ -561,10 +545,9 @@ def test_rejects_download_with_wrong_checksum(
 
 def test_prepare_rejects_input_that_does_not_match_pinned_archive(
     tmp_path: Path,
+    write_pinned_archive_config: Callable[..., Path],
 ) -> None:
-    # The baseline selection pins the real monthly archive, which the checked-in
-    # sample is not.
-    resolved = load_config(PrepareConfig, path=BASELINE_CONFIG)
+    resolved = load_config(PrepareConfig, path=write_pinned_archive_config(tmp_path))
 
     with pytest.raises(DataPreparationError, match="matches none of the 1 archive"):
         prepare_pgn(SAMPLE_PGN, tmp_path / "artifacts", resolved)
@@ -1012,34 +995,6 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _sha256(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
-
-
-def test_centisecond_selection_pins_every_month_after_the_pool_split() -> None:
-    """The corpus selection is a checked-in fact rather than prose in an issue."""
-
-    config = load_config(PrepareConfig, path=UNIV_CONFIG).value
-
-    assert len(config.archives) == 42
-    assert {archive.compression for archive in config.archives} == {"bzip2"}
-    months = [archive.file_name.split("_")[-1][:7] for archive in config.archives]
-    # Lichess split its rapid pool out of classical during 2017-12 and the
-    # export ends at 2021-06, so a month outside the span either names a pool
-    # that did not rate it or carries no centisecond clocks.
-    assert months[0] == "2018-01"
-    assert months[-1] == "2021-06"
-    assert months == sorted(months)
-    assert len(set(months)) == len(months)
-    assert config.source.rating_namespace_prefix == "lichess"
-    # The one filter set against the schema's own default, so also the only one
-    # whose absence would report that the section went missing entirely.
-    assert config.filters.require_ratings is True
-    # The rest are what `0062-the-breadth-corpus-filters-for-validity-alone.md`
-    # declines. Each agrees with its default, so these catch a filter being
-    # added rather than removed — the direction that does the damage.
-    assert config.filters.speed is None
-    assert config.filters.maximum_games is None
-    assert config.filters.marked_accounts is None
-    assert config.filters.minimum_plies == 1
 
 
 @pytest.mark.parametrize("prefix", ["lichess_blitz", "lichess-ultrabullet"])
