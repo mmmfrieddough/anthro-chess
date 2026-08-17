@@ -386,7 +386,23 @@ declares, so a cooldown branched off a trunk cools at its own end rather than at
 the trunk's, which is the whole of what makes a branch a branch under
 `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md`. A restored
 scheduler state would carry the trunk's horizon into the branch and report
-nothing wrong.
+nothing wrong, so a checkpoint carrying one is refused rather than resumed.
+
+Branching a horizon is therefore an ordinary resume that declares its own step
+count and its own run name:
+
+```console
+uv run anthro train --config configs/training/sample-smoke.toml \
+  --set 'run_name="training-smoke-cooled"' \
+  --set "resume_from=\"$ANTHRO_CHESS_RUN_ROOT/training-smoke/checkpoints/step-00000004.pt\"" \
+  --set steps=8
+```
+
+The trunk's schedule settings are part of the identity a resume has to match, so
+a branch differs from its trunk in those two values and in nothing else. Its own
+run name is what keeps the trunk intact: a resume writes into the run directory
+its name selects, and one pointed back at the trunk would drop the trunk's
+metrics past the resumed step and leave nothing to branch again from.
 
 The current action-only runner restores model and optimizer state, global
 progress counters, Python and Torch random-number-generator state, and the

@@ -89,6 +89,7 @@ from anthro_chess.training.efficiency import (
 )
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 from anthro_chess.training.losses import masked_action_cross_entropy
+from anthro_chess.training.schedule import LearningRateSchedule
 from anthro_chess.training.tensorboard import (
     TENSORBOARD_DIRECTORY,
     TrainingTensorBoard,
@@ -96,6 +97,11 @@ from anthro_chess.training.tensorboard import (
 
 RUN_ARTIFACT_VERSION = 7
 logger = logging.getLogger(__name__)
+
+#: Adam's first moment. Left as a constant because nothing in the scaling
+#: program sets it against anything, unlike the second moment, whose averaging
+#: window is a number of steps and so moves with the batch.
+_FIRST_MOMENT_DECAY = 0.9
 
 
 class TrainingError(ValueError):
@@ -178,7 +184,7 @@ class _RunRecordWriter:
             # and still never finished.
             "complete": complete,
             "optimization": {
-                "optimizer": "Adam",
+                "optimizer": "AdamW",
                 "starting_step": self.starting_step,
                 # The step whose checkpoint this record describes, which lags
                 # the last step executed when a run dies between checkpoints.
@@ -338,9 +344,11 @@ def run_training(
             device=device,
             dtype=_training_dtype(config),
         )
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config.learning_rate,
+            betas=(_FIRST_MOMENT_DECAY, config.second_moment_decay),
+            weight_decay=config.weight_decay,
             fused=_fused_optimizer(device),
         )
         code_record = code_provenance().as_record()
@@ -405,8 +413,10 @@ def run_training(
                 ) from error
             if checkpoint["scheduler_state"] is not None:
                 raise CheckpointError(
-                    "checkpoint contains scheduler state but the current "
-                    "training configuration has no scheduler"
+                    "checkpoint contains scheduler state, which a resume must "
+                    "not restore: the rate follows from the resumed step and "
+                    "this run's own horizon, and restoring one would cool a "
+                    "branch at the horizon the trunk declared"
                 )
             if checkpoint["scaler_state"] is not None:
                 raise CheckpointError(
@@ -505,6 +515,8 @@ def run_training(
             compatibility=compatibility,
             checkpoint_metadata=checkpoint_metadata,
             schedule=schedule,
+            learning_rate_schedule=config.learning_rate_schedule(),
+            gradient_clip_norm=config.gradient_clip_norm,
             run_id=run_id,
             efficiency=efficiency_recorder,
             run_record=run_record,
@@ -651,6 +663,8 @@ def _optimize(
     compatibility: Mapping[str, object],
     checkpoint_metadata: Mapping[str, object],
     schedule: CadenceSchedule,
+    learning_rate_schedule: LearningRateSchedule,
+    gradient_clip_norm: float,
     run_id: str,
     efficiency: _EfficiencyRecorder,
     run_record: _RunRecordWriter,
@@ -664,7 +678,10 @@ def _optimize(
     transfer_seconds = 0.0
     compute_seconds = 0.0
     optimizer_seconds = 0.0
-    health_monitor = StepHealthMonitor(model.parameters())
+    health_monitor = StepHealthMonitor(
+        model.parameters(),
+        clip_norm=gradient_clip_norm,
+    )
     charged_instrumentation = 0.0
     readings: list[CadenceReading] = []
     efficiency_paths: list[Path] = []
@@ -754,6 +771,9 @@ def _optimize(
             if reported:
                 health_monitor.snapshot_parameters()
 
+            optimizer.param_groups[0]["lr"] = learning_rate_schedule.rate_at(
+                global_step
+            )
             optimizer_started = time.perf_counter()
             optimizer.step()
             if profile_phases:

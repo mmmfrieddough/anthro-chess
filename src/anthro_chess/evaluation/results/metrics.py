@@ -2543,6 +2543,22 @@ TRAINING_HEALTH_GRADIENT_NORM = register_metric(
     )
 )
 
+TRAINING_HEALTH_CLIP_RATE = register_metric(
+    MetricDefinition(
+        identifier="training_health.clip_rate",
+        family=TRAINING_HEALTH_FAMILY.identifier,
+        direction=MetricDirection.INFORMATIONAL,
+        definition_version=1,
+        cost=MetricCost.FREE,
+        summary=(
+            "Share of the reported interval's steps whose gradient norm met "
+            "the configured ceiling. Near zero means clipping is insurance "
+            "against a spike; sustained means it is a learning-rate cap under "
+            "another name."
+        ),
+    )
+)
+
 TRAINING_HEALTH_UPDATE_TO_WEIGHT_RATIO = register_metric(
     MetricDefinition(
         identifier="training_health.update_to_weight_ratio",

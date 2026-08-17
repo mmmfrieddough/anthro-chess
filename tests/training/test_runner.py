@@ -461,6 +461,13 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
             model={"parameters": 276_002},
         )
     )
+    rescheduled = training_identity_sha256(
+        _compatibility_record(
+            config.model_copy(update={"cooldown_fraction": 0.25}),
+            data=data,
+            model={"parameters": 276_002},
+        )
+    )
     resized = training_identity_sha256(
         _compatibility_record(config, data=data, model={"parameters": 9_000_000})
     )
@@ -477,6 +484,10 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
 
     assert reseeded == identity
     assert branched == identity
+    # The shape of the curve is not one of those axes: a run that cools
+    # differently is a different configuration rather than the same one read
+    # somewhere else.
+    assert rescheduled != identity
     assert resized != identity
     assert retrained != identity
 
@@ -1842,6 +1853,241 @@ def test_a_checkpoint_without_a_usable_position_count_is_refused(
 
     with pytest.raises(CheckpointError, match=message):
         load_training_checkpoint(path)
+
+
+def test_a_run_warms_up_holds_the_peak_and_cools_over_its_own_tail(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    result = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="scheduled",
+                validation=False,
+                steps=20,
+                learning_rate=0.004,
+                extra="warmup_sequences = 2\ncooldown_fraction = 0.25",
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    rates = [
+        record["learning_rate"]
+        for record in _metric_records(result.metrics_path)
+        if record["record"] == "step"
+    ]
+
+    assert len(rates) == 20
+    assert rates[0] == pytest.approx(0.002)
+    # The peak is reached at the end of warmup and held through the trunk.
+    assert rates[1] == pytest.approx(0.004)
+    assert rates[14] == pytest.approx(0.004)
+    # Five cooldown steps, the first of which is still at the peak.
+    assert rates[15] == pytest.approx(0.004)
+    assert rates[16] < 0.004
+    assert rates[16:] == sorted(rates[16:], reverse=True)
+    assert 0.0 < rates[-1] < 0.001
+
+
+def test_a_branch_recomputes_the_rate_from_the_horizon_it_declares(
+    tmp_path: Path,
+) -> None:
+    """A resumed run cools at its own end rather than where the trunk was."""
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    schedule = "warmup_sequences = 0\ncooldown_fraction = 0.25"
+    config_directory = tmp_path / "config"
+    trunk = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                config_directory,
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="trunk",
+                validation=False,
+                steps=8,
+                learning_rate=0.004,
+                checkpoint_every_steps=8,
+                extra=schedule,
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+    branch = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                config_directory,
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="trunk",
+                validation=False,
+                steps=12,
+                learning_rate=0.004,
+                checkpoint_every_steps=8,
+                resume_from="latest",
+                extra=schedule,
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    rates = {
+        record["global_step"]: record["learning_rate"]
+        for record in _metric_records(branch.metrics_path)
+        if record["record"] == "step"
+    }
+
+    assert load_training_checkpoint(trunk.checkpoint_path)["scheduler_state"] is None
+    # The trunk was already cooling at step 8 for its own eight-step horizon.
+    assert rates[8] < 0.004
+    # The branch puts that step back in its trunk, which is what a restored
+    # schedule state would have made impossible.
+    assert rates[9] == pytest.approx(0.004)
+    assert rates[12] < rates[11] < 0.004
+
+
+def test_a_checkpoint_carrying_schedule_state_is_refused(tmp_path: Path) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_directory = tmp_path / "config"
+    trunk = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                config_directory,
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="trunk",
+                validation=False,
+                steps=2,
+                checkpoint_every_steps=2,
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+    payload = load_training_checkpoint(trunk.checkpoint_path)
+    save_training_checkpoint(
+        trunk.checkpoint_path,
+        global_step=payload["global_step"],
+        counters=payload["counters"],
+        model_state=payload["model_state"],
+        optimizer_state=payload["optimizer_state"],
+        scheduler_state={"last_epoch": 2},
+        scaler_state=None,
+        loader_state=payload["loader_state"],
+        compatibility=payload["compatibility"],
+        metadata=payload["metadata"],
+        device="cpu",
+    )
+
+    with pytest.raises(TrainingError, match="scheduler state"):
+        run_training(
+            load_config(
+                TrainingConfig,
+                path=_write_training_config(
+                    config_directory,
+                    normalized=prepared.normalized_path,
+                    manifest=prepared.manifest_path,
+                    run_name="trunk",
+                    validation=False,
+                    steps=4,
+                    checkpoint_every_steps=2,
+                    resume_from="latest",
+                ),
+            ),
+            output_directory=tmp_path / "run",
+        )
+
+
+def test_a_warmup_the_horizon_cannot_carry_is_refused_before_the_run(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path / "config",
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="short",
+        validation=False,
+        steps=4,
+        extra="warmup_sequences = 2",
+    )
+
+    with pytest.raises(ValueError, match="outside the range"):
+        load_config(TrainingConfig, path=config_path)
+
+
+@pytest.mark.parametrize(
+    ("clip_norm", "expected_rate"),
+    [(1e-6, 1.0), (1e6, 0.0)],
+)
+def test_a_run_reports_the_share_of_steps_the_ceiling_caught(
+    tmp_path: Path,
+    clip_norm: float,
+    expected_rate: float,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    result = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="clipped",
+                validation=False,
+                steps=2,
+                extra=f"gradient_clip_norm = {clip_norm}",
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    health = [
+        record["training_health"]
+        for record in _metric_records(result.metrics_path)
+        if record["record"] == "step"
+    ]
+
+    assert [item["clip_rate"] for item in health] == [expected_rate, expected_rate]
+    assert (
+        json.loads(result.run_path.read_text(encoding="utf-8"))["optimization"][
+            "optimizer"
+        ]
+        == "AdamW"
+    )
+
+
+def _metric_records(path: Path) -> list[dict[str, Any]]:
+    """Read one run's metrics stream back as records."""
+
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def _train_at_declared_context(

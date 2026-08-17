@@ -59,6 +59,7 @@ class TrainingTensorBoard:
                     "training_health/gradient_norm_interval_maximum": (
                         health.gradient_norm_interval_maximum
                     ),
+                    "training_health/clip_rate": health.clip_rate,
                 }
             )
             if health.update_to_weight_ratio is not None:

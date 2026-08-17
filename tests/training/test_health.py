@@ -8,6 +8,10 @@ from torch import nn
 
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 
+#: Far above anything these fixtures produce, so a test that is not about
+#: clipping measures the gradients it would have measured without a ceiling.
+_LOOSE_CEILING = 1e6
+
 
 def _module() -> nn.Module:
     torch.manual_seed(11)
@@ -16,7 +20,7 @@ def _module() -> nn.Module:
 
 def test_gradient_norm_matches_the_gradients_the_step_already_computed() -> None:
     module = _module()
-    monitor = StepHealthMonitor(module.parameters())
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
     module(torch.ones(1, 3)).sum().backward()
 
     gradients = [
@@ -39,7 +43,7 @@ def test_gradient_norm_matches_the_gradients_the_step_already_computed() -> None
 
 def test_the_interval_maximum_survives_a_spike_between_logging_points() -> None:
     module = _module()
-    monitor = StepHealthMonitor(module.parameters())
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
 
     for scale in (1.0, 50.0, 2.0):
         module.zero_grad(set_to_none=True)
@@ -55,7 +59,7 @@ def test_the_interval_maximum_survives_a_spike_between_logging_points() -> None:
 def test_update_to_weight_ratio_measures_the_realized_optimizer_update() -> None:
     module = _module()
     optimizer = torch.optim.SGD(module.parameters(), lr=0.5)
-    monitor = StepHealthMonitor(module.parameters())
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
 
     module(torch.ones(1, 3)).sum().backward()
     monitor.observe_gradients()
@@ -89,7 +93,7 @@ def test_observation_defers_every_device_synchronization_to_the_drain(
 
     module = _module()
     optimizer = torch.optim.SGD(module.parameters(), lr=0.5)
-    monitor = StepHealthMonitor(module.parameters())
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
     synchronizations = 0
     original = torch.Tensor.item
 
@@ -110,18 +114,18 @@ def test_observation_defers_every_device_synchronization_to_the_drain(
     assert synchronizations == 0
 
     assert monitor.drain(global_step=3) is not None
-    assert synchronizations == 3
+    assert synchronizations == 4
 
 
 def test_a_drain_without_an_observed_step_reports_nothing() -> None:
-    monitor = StepHealthMonitor(_module().parameters())
+    monitor = StepHealthMonitor(_module().parameters(), clip_norm=_LOOSE_CEILING)
 
     assert monitor.drain(global_step=1) is None
 
 
 def test_draining_resets_the_interval_rather_than_accumulating_forever() -> None:
     module = _module()
-    monitor = StepHealthMonitor(module.parameters())
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
     module(torch.ones(1, 3)).sum().backward()
     monitor.observe_gradients()
     monitor.drain(global_step=1)
@@ -142,12 +146,14 @@ def test_health_reports_only_the_registered_metrics_a_cadence_declares() -> None
         gradient_norm=1.5,
         gradient_norm_interval_maximum=2.5,
         update_to_weight_ratio=0.25,
+        clip_rate=0.0,
     )
 
     every = health.measurements()
     declared = health.measurements(["training_health.gradient_norm"])
 
     assert {item.metric for item in every} == {
+        "training_health.clip_rate",
         "training_health.gradient_norm",
         "training_health.update_to_weight_ratio",
     }
@@ -167,12 +173,77 @@ def test_an_unmeasured_ratio_is_absent_rather_than_reported_as_zero() -> None:
         gradient_norm=1.5,
         gradient_norm_interval_maximum=1.5,
         update_to_weight_ratio=None,
+        clip_rate=0.0,
     )
 
     assert [item.metric for item in health.measurements()] == [
-        "training_health.gradient_norm"
+        "training_health.clip_rate",
+        "training_health.gradient_norm",
     ]
     assert health.as_record()["update_to_weight_ratio"] is None
+
+
+def test_a_gradient_over_the_ceiling_is_scaled_back_to_it() -> None:
+    module = _module()
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=0.5)
+    (module(torch.full((1, 3), 4.0)).sum() * 10.0).backward()
+
+    monitor.observe_gradients()
+    health = monitor.drain(global_step=1)
+    clipped = math.sqrt(
+        sum(
+            float(parameter.grad.pow(2).sum().item())
+            for parameter in module.parameters()
+            if parameter.grad is not None
+        )
+    )
+
+    assert health is not None
+    # The norm is reported as it was measured, before the scaling it caused.
+    assert health.gradient_norm > 0.5
+    assert clipped == pytest.approx(0.5, rel=1e-4)
+    assert health.clip_rate == pytest.approx(1.0)
+
+
+def test_a_gradient_under_the_ceiling_is_left_alone() -> None:
+    module = _module()
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
+    module(torch.ones(1, 3)).sum().backward()
+    before = [
+        parameter.grad.detach().clone()
+        for parameter in module.parameters()
+        if parameter.grad is not None
+    ]
+
+    monitor.observe_gradients()
+    health = monitor.drain(global_step=1)
+    after = [
+        parameter.grad
+        for parameter in module.parameters()
+        if parameter.grad is not None
+    ]
+
+    assert health is not None
+    assert health.clip_rate == 0.0
+    assert all(
+        bool(torch.equal(first, second))
+        for first, second in zip(before, after, strict=True)
+    )
+
+
+def test_the_clip_rate_is_the_interval_share_rather_than_the_last_step() -> None:
+    module = _module()
+    monitor = StepHealthMonitor(module.parameters(), clip_norm=1.0)
+
+    for scale in (0.01, 50.0, 0.01, 0.01):
+        module.zero_grad(set_to_none=True)
+        (module(torch.full((1, 3), scale)).sum() * scale).backward()
+        monitor.observe_gradients()
+    health = monitor.drain(global_step=4)
+
+    assert health is not None
+    assert health.steps == 4
+    assert health.clip_rate == pytest.approx(0.25)
 
 
 def test_a_monitor_needs_a_trainable_parameter() -> None:
@@ -181,4 +252,4 @@ def test_a_monitor_needs_a_trainable_parameter() -> None:
         parameter.requires_grad_(False)
 
     with pytest.raises(ValueError, match="trainable parameter"):
-        StepHealthMonitor(module.parameters())
+        StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
