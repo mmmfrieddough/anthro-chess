@@ -2642,3 +2642,129 @@ def test_eval_puzzles_says_when_it_estimated_no_response_resolution(
     printed = capsys.readouterr().out
     assert "Response resolution: not estimated" in printed
     assert "(±" not in printed
+
+
+@pytest.mark.parametrize(
+    ("cores", "expected"),
+    [(4, 4), (16, 16), (32, 16), (128, 16)],
+)
+def test_freeze_concurrency_stops_where_the_merge_does(
+    monkeypatch: pytest.MonkeyPatch,
+    cores: int,
+    expected: int,
+) -> None:
+    """A bigger machine does not scan faster, because the merge does not divide.
+
+    Measured on the widened corpus, thirty-two workers projected 26.4 minutes
+    against 19.7 at sixteen, so taking the machine's count would be slower than
+    the cap on every host larger than the cap.
+    """
+
+    from anthro_chess.interfaces.cli import _freeze_concurrency
+
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda _pid: set(range(cores)), raising=False
+    )
+
+    assert _freeze_concurrency(None) == expected
+    # A caller sizing this against other work on the same host is obeyed
+    # exactly, past the cap and down to the serial path.
+    assert _freeze_concurrency(48) == 48
+    assert _freeze_concurrency(0) == 0
+
+
+def test_eval_freeze_reports_the_axes_a_designation_fixes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Designation prints what it fixed, because that is the moment to read it.
+
+    Every number here is in the manifest too. It reaches the terminal because
+    a per-axis power is settled for as long as the core is the reference, and
+    one nobody read then is one nobody can act on afterwards.
+    """
+
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    data_config = repository_root / "configs/data/lichess-sample.toml"
+    corpus = tmp_path / "corpus"
+    assert (
+        main(
+            [
+                "data",
+                "prepare",
+                str(sample),
+                str(corpus),
+                "--config",
+                str(data_config),
+                "--set",
+                "split.validation_fraction=0.1",
+                "--set",
+                "split.test_fraction=0.85",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    pool_config = tmp_path / "pool.toml"
+    pool_config.write_text(
+        'pool_id = "cli-core"\n'
+        f'normalized = "{corpus / "normalized"}"\n'
+        f'manifest = "{corpus / "manifests/manifest.json"}"\n'
+        'split = "test"\n'
+        "designates_core = true\n"
+    )
+
+    assert (
+        main(["eval", "freeze", str(tmp_path / "pool"), "--config", str(pool_config)])
+        == 0
+    )
+
+    command_output = capsys.readouterr().out
+    assert "Designated as the evaluation core: cli-core" in command_output
+    assert "speed_games:" in command_output
+    assert "clock_presence_games:" in command_output
+
+
+def test_eval_freeze_does_not_announce_a_designation_it_did_not_make(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository_root = Path(__file__).parents[2]
+    sample = repository_root / "samples/lichess/standard-export-sample.pgn"
+    data_config = repository_root / "configs/data/lichess-sample.toml"
+    corpus = tmp_path / "corpus"
+    assert (
+        main(
+            [
+                "data",
+                "prepare",
+                str(sample),
+                str(corpus),
+                "--config",
+                str(data_config),
+                "--set",
+                "split.validation_fraction=0.1",
+                "--set",
+                "split.test_fraction=0.85",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    pool_config = tmp_path / "pool.toml"
+    pool_config.write_text(
+        'pool_id = "cli-plain"\n'
+        f'normalized = "{corpus / "normalized"}"\n'
+        f'manifest = "{corpus / "manifests/manifest.json"}"\n'
+        'split = "test"\n'
+    )
+
+    assert (
+        main(["eval", "freeze", str(tmp_path / "pool"), "--config", str(pool_config)])
+        == 0
+    )
+
+    assert "Designated as the evaluation core" not in capsys.readouterr().out

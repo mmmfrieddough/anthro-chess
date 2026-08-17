@@ -20,6 +20,12 @@ from enum import StrEnum
 #: PGN ``TimeControl`` for a game played without a clock.
 _UNLIMITED = "-"
 
+#: What a game with no bandable clock is counted under on the speed axis. The
+#: corpus manifest and the pool manifest both carry that axis and are meant to
+#: be read against each other, so two spellings of this bucket would make the
+#: comparison quietly wrong.
+UNCLASSIFIED_SPEED = "unclassified"
+
 _TIME_CONTROL_RE = re.compile(r"(\d+)\+(\d+)")
 
 #: A game is assumed to last this many moves per side when its length is

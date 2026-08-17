@@ -37,8 +37,10 @@ ROLLOUT_ARTIFACT_FIELDS = ("pool",)
 TERMINATION_ARTIFACT_FIELDS = ("pool",)
 #: ``anthro eval ladder``: the pool the frozen openings are drawn from.
 LADDER_ARTIFACT_FIELDS = ("openings.pool",)
-#: ``anthro eval freeze``: the normalized corpus and its manifest.
-POOL_ARTIFACT_FIELDS = ("normalized", "manifest")
+#: ``anthro eval freeze``: the normalized corpus and its manifest, plus the
+#: generation the cut must contain, which is a machine-local artifact like any
+#: other.
+POOL_ARTIFACT_FIELDS = ("normalized", "manifest", "predecessor")
 
 ConfigT = TypeVar("ConfigT", bound=ConfigModel)
 

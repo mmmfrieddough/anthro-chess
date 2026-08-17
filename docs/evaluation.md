@@ -713,10 +713,12 @@ statistics. It carries no
 per-benchmark tailoring, and it is a regenerable pipeline output rather than
 committed data. Its manifest records source, split recipe, schema,
 preprocessing, action, encoding, and benchmark versions, the selected game ids
-and their content hashes, and a build-time overlap check against the train
-split. Coverage statistics report ply counts, results, clock presence, and
-position counts by phase, color, legal-move-count bucket, and rating band, so a
-thin slice is visible before a benchmark reports a number computed from it.
+and their content hashes, a build-time overlap check against the train split,
+the generation it was verified to contain, and the core it carries. Coverage
+statistics report ply counts, results, games by speed class and by clock
+presence, the span of source dates, and position counts by phase, color,
+legal-move-count bucket, and rating band, so a thin slice is visible before a
+benchmark reports a number computed from it.
 
 The bound is an admission fraction, applied by ranking a game id under a fixed
 seed, so a game is admitted on its id alone and corpus growth only ever adds.
@@ -2845,8 +2847,11 @@ A vehicle comparison is qualified by both floors — the combined evaluation flo
 every reading carries, and the vehicle's seed floor. The seed floor describes
 baseline arms, so it does not describe a treatment whose training-health readings
 depart from the vehicle's: instability widens an arm's spread past what the floor
-allows, which makes the floor read too narrow rather than too wide. A comparison
-in that state reports the mismatch instead of quoting the floor.
+allows, which makes the floor read too narrow rather than too wide. It describes
+the vehicle at the horizon it was characterized at as well, and the digest does
+not hold that, so a reading from a cooldown branched at another horizon matches
+the floor without having been shown to share its spread. A comparison in either
+state reports the mismatch instead of quoting the floor.
 `docs/decisions/0029-model-change-control-arm.md` owns why the control is
 required rather than recommended, what it costs, and what it still does not buy;
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`

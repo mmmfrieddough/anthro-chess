@@ -69,6 +69,7 @@ from anthro_chess.data.schema import (
     row_game_id,
 )
 from anthro_chess.data.speed import (
+    UNCLASSIFIED_SPEED,
     parse_time_control,
     speed_from_clock_ms,
     speed_from_time_control,
@@ -150,7 +151,6 @@ _ATTRIBUTION_LABELS: dict[bool | None, str] = {
 #: pinning one benchmark's current choice into every corpus ever prepared.
 _RATING_BUCKET_POINTS = 200
 
-_AXIS_UNCLASSIFIED = "unclassified"
 
 logger = logging.getLogger(__name__)
 
@@ -737,7 +737,7 @@ def _prepare_archive(
                     )
                     speed_split_counts[
                         (
-                            _AXIS_UNCLASSIFIED if speed is None else str(speed),
+                            UNCLASSIFIED_SPEED if speed is None else str(speed),
                             split_name,
                         )
                     ] += 1
@@ -1976,10 +1976,15 @@ def _summed_counts(blocks: Iterable[Mapping[str, int]]) -> dict[str, int]:
 
 
 def _rating_bucket(rating: object) -> str:
-    """Name the bucket a player-slot's normalized rating falls in."""
+    """Name the bucket a player-slot's normalized rating falls in.
+
+    A slot with no usable rating lands in a bucket spelled like the speed axis'
+    but meaning something else on a different axis; the two are not the same
+    fact and do not have to move together.
+    """
 
     if not isinstance(rating, int):
-        return _AXIS_UNCLASSIFIED
+        return "unclassified"
     floor = rating // _RATING_BUCKET_POINTS * _RATING_BUCKET_POINTS
     # Zero-padded so the manifest's sorted keys read in rating order; without
     # it a three-digit bucket lands between the two- and four-digit ones.
