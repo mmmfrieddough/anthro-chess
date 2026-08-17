@@ -498,7 +498,7 @@ Carrying them is what makes account-level filtering a property of the rows
 rather than of the parse. A filter that can only run while reading PGN has to be
 decided before preparation and costs a full re-parse to revisit, and whether
 splitting on game id leaks a player between train and test cannot be asked at
-all. Both stay answerable while the evaluation core is still unfrozen.
+all. Both stay answerable while no pool has been cut from the corpus.
 
 Each game is dated to the calendar day its source recorded it on, so a corpus
 spanning several populations can be read one era at a time. A day is what the

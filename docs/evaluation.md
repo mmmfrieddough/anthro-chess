@@ -714,7 +714,7 @@ per-benchmark tailoring, and it is a regenerable pipeline output rather than
 committed data. Its manifest records source, split recipe, schema,
 preprocessing, action, encoding, and benchmark versions, the selected game ids
 and their content hashes, a build-time overlap check against the train split,
-the generation it was verified to contain, and the core it carries. Coverage
+and the generation it was verified to contain. Coverage
 statistics report ply counts, results, games by speed class and by clock
 presence, the span of source dates, and position counts by phase, color,
 legal-move-count bucket, and rating band, so a thin slice is visible before a
@@ -724,12 +724,11 @@ The bound is an admission fraction, applied by ranking a game id under a fixed
 seed, so a game is admitted on its id alone and corpus growth only ever adds.
 A game count could not: a later generation would rank a larger split, and the
 games it gains would push some of the previous generation's past the count.
-The fraction is sized at designation from the games each metric needs to
-resolve an effect, which `uv run anthro eval noise plan` reports from measured
-dispersion. It can be raised by a later generation cut and can never be
-lowered, so it is chosen as the smallest size that resolves what the project
-intends to read. Without it the pool is the whole split, which is what the
-pre-designation generation is.
+The fraction is sized from the games each metric needs to resolve an effect,
+which `uv run anthro eval noise plan` reports from measured dispersion. It can
+be raised by a later cut and can never be lowered, so it is chosen as the
+smallest size that resolves what the project intends to read. Without it the
+pool is the whole split.
 
 The cut is also where the marked-account rejection is applied when preparation
 did not apply it. A pool selection may name the snapshot `docs/data.md`
@@ -739,8 +738,7 @@ many games it took: containment makes the cut permanent, so what a generation
 claims has to be readable off the generation itself, and a rejection nobody can
 audit is indistinguishable from one that never ran. A snapshot that never
 counted an archive the corpus holds is refused rather than applied to it. Which
-recall a pool carries is therefore settled when it is cut, which for the core
-means at designation, by whoever designates it.
+recall a pool carries is therefore settled when it is cut, by whoever cuts it.
 
 **Views** are per-benchmark deterministic selections over the pool: filtering by
 ply count, rating presence, or the day the source dated a game; projecting to
@@ -765,8 +763,7 @@ component, so raising a cap starts a new series instead of continuing the old
 one more precisely, and decision 0013 forbids bridging that seam as explicitly
 as the fingerprint breaks it. A series meant to last therefore takes the
 unbounded view, which has no cap to regret; the only seam it then meets is a
-generation cut, which is the one that carries anchor checkpoints re-scored
-across it. This is what separates a pool-reading count, chosen per generation,
+generation cut. This is what separates a pool-reading count, chosen per generation,
 from a generating count such as seeds or games per position, which stays
 provenance under
 `docs/decisions/0020-declared-settings-scope-generated-series.md` and can be
@@ -794,21 +791,16 @@ asks only whether the pool is intact and readable by this code, which a
 superseded pool left where it was materialized is: it would keep scoring after
 the selection moved on, labelled as itself and comparable to nothing.
 
-Once a generation is designated as the **core**, benchmarks report against both
-it and the current full pool. Core gives one continuous line for the rest of the
-project; current gives more statistical power on a line that restarts at each
-generation. Current is the number that answers how good a checkpoint is, core is
-the number that answers whether it improved over the long run, and sustained
-divergence between them for one checkpoint is the visible symptom of core
-overfitting.
-
-A small set of retained **anchor checkpoints** is re-scored whenever a generation
-is cut, so the new generation overlaps the previous one and a shift at the seam
-is attributable to the pool rather than mistaken for a model regression.
+A benchmark reports one number, over the pool it is pinned to. Cutting a new
+generation therefore breaks the series it affects, and the break is taken rather
+than bridged: fingerprints detect it, a report renders the seam as a seam, and
+readings after the cut re-baseline. What that gives up is comparing a reading
+from before a re-cut against one from after.
 
 Comparing checkpoints on the pool applies selection pressure to it over time.
-That is accepted rather than designed away, and is the second reason to keep the
-growing current view alongside the fixed core.
+That is accepted rather than designed away, and a re-cut is what relieves it.
+`docs/decisions/0068-a-pool-re-cut-breaks-benchmark-history-and-that-is-accepted.md`
+records what that costs and why one number per reading was preferred to two.
 
 See `docs/decisions/0011-held-out-test-partition.md`,
 `docs/decisions/0012-derived-evaluation-views.md`,

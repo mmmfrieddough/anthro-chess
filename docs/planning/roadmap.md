@@ -113,7 +113,7 @@ number nobody can act on.
 
 Some of stage 3's freedom runs through this stage and ends inside it. No
 benchmark history is protected and no checkpoint is worth preserving until the
-evaluation core is designated, so breaking a comparability series, bumping the
+first pool is cut, so breaking a comparability series, bumping the
 preprocessing version, changing the action vocabulary, and regenerating the
 corpus all stay cheap, and work should not be deferred or resequenced to avoid
 them. Batching an expensive corpus regeneration is still worthwhile, but that is
@@ -273,11 +273,10 @@ than a separate decision: where it binds, size is not a free parameter at all.
 The data work that establishes the reference happens in stage 4, in an order
 later comparisons depend on: training selection becomes a filterable dial over
 one broad corpus, the corpus widens across the axes the project intends to keep
-measuring, and cutting the resulting pool generation is the point at which the
-long-lived evaluation core is designated and benchmarks begin reporting against
-both it and the growing current pool. What remains here is scaling volume within
-those axes, with the earlier baseline re-scored against the reference so the
-whole arc stays on one comparable scale.
+measuring, and the resulting pool generation is cut and becomes what every
+reading is taken against. What remains here is scaling volume within those axes,
+with the earlier baseline re-scored so the whole arc stays on one comparable
+scale.
 
 That ordering is why the core is not frozen during stage 3. A reference
 designated against the narrow first corpus could never measure the axes added
@@ -285,8 +284,8 @@ later, and there is almost no benchmark history to protect before it exists.
 
 Decisions that would remove games from the corpus belong before the widening
 rather than after it. Expansion has to preserve containment, so a rejection
-filter introduced later cannot be applied to a corpus an evaluation core has
-already been designated from. Whether engine-assisted filtering acts on the
+filter introduced later cannot be applied to a corpus a pool has already been
+cut from. Whether engine-assisted filtering acts on the
 corpus or only on training selection is therefore settled ahead of the breadth
 pass, even though implementing it may not be.
 
@@ -313,9 +312,9 @@ data that makes either possible lands earlier still.
 
 **Timed-game breadth belongs to the stage-4 breadth pass and cannot slip.** Time
 control and timing-data presence are among the axes the corpus widens across,
-and the evaluation core is designated from the result. A core holding no timed
-games across speeds could never measure timing behavior, for the life of the
-project, so this half is irreversible and lands with the breadth pass rather
+and the pool is cut from the result. A pool holding no timed games across
+speeds could not measure timing behavior without being cut again, so this half
+lands with the breadth pass rather
 than with the feature it serves. Benchmarks slice by speed from that point on.
 
 **The model learns to read time last in this stage**, after the move-only path
@@ -368,7 +367,7 @@ diagnostics available when a regression or surprising result appears.
 Give the model a move-time output, once it already reads time and the rest of
 the stack is clearly working.
 
-The corpus, the evaluation core, benchmark slicing, and the policy's clock
+The corpus, the evaluation pool, benchmark slicing, and the policy's clock
 inputs all arrive before this stage, so what remains is the output half: an
 action-conditioned time head, a masked timing objective for the games that carry
 usable clocks, the timing diagnostics deferred out of stage 3, and clock
