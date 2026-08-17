@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn.utils import clip_grads_with_norm_
 
 from anthro_chess.chess import action_vocabulary_identity
 from anthro_chess.config import ResolvedConfig
@@ -769,14 +770,20 @@ def _optimize(
                 if probe:
                     totals.synchronize()
 
-            health_monitor.observe_gradients()
+            gradient_norm = health_monitor.observe_gradients()
             if reported:
                 health_monitor.snapshot_parameters()
 
+            optimizer_started = time.perf_counter()
+            if gradient_norm is not None:
+                clip_grads_with_norm_(
+                    model.parameters(),
+                    gradient_clip_norm,
+                    gradient_norm,
+                )
             rate = learning_rate_schedule.rate_at(global_step)
             for group in optimizer.param_groups:
                 group["lr"] = rate
-            optimizer_started = time.perf_counter()
             optimizer.step()
             if profile_phases:
                 _synchronize_device(device)

@@ -15,12 +15,12 @@ gradients the backward pass just wrote, so it runs every step and reports both
 the reported step's value and the interval's maximum, which is what catches a
 spike between two logging points.
 
-Gradient clipping is applied from here for that last reason: the norm it scales
-against is the one this already reduced, and computing it a second time would
-double the only expensive part. Clipping does change what the optimizer sees, so
-the share of steps that exceeded the ceiling is reported beside the norm.
-Insurance that never fires and a cap on every step look identical from the loss
-curve.
+The norm is handed back rather than only recorded, because the gradient clip the
+step applies scales against that same reduction and computing it twice would
+double the only expensive part. The clip itself belongs to the step loop, where
+what changes the weights is visible; what stays here is the share of steps that
+exceeded the ceiling, since insurance that never fires and a cap on every step
+look identical from the loss curve.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 from torch.nn import Parameter
-from torch.nn.utils import clip_grads_with_norm_, get_total_norm
+from torch.nn.utils import get_total_norm
 
 from anthro_chess.evaluation.results import Measurement, measurement
 from anthro_chess.evaluation.results.metrics import (
@@ -146,8 +146,8 @@ class StepHealthMonitor:
         )
         self._instrumentation_seconds += time.perf_counter() - started
 
-    def observe_gradients(self) -> None:
-        """Measure the gradients just written, and clip them to the ceiling."""
+    def observe_gradients(self) -> Tensor | None:
+        """Record the global gradient norm, and return it for the step to clip."""
 
         started = time.perf_counter()
         gradients = [
@@ -172,11 +172,7 @@ class StepHealthMonitor:
             )
         self._steps += 1
         self._instrumentation_seconds += time.perf_counter() - started
-        # Outside the measured span: scaling the gradients is the optimizer's
-        # work rather than the monitor's, and charging it to instrumentation
-        # would report a run as slower at training for clipping.
-        if gradient_norm is not None:
-            clip_grads_with_norm_(self._parameters, self._clip_norm, gradient_norm)
+        return gradient_norm
 
     @torch.no_grad()
     def observe_update(self) -> None:

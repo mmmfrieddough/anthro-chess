@@ -5,6 +5,7 @@ import math
 import pytest
 import torch
 from torch import nn
+from torch.nn.utils import clip_grads_with_norm_
 
 from anthro_chess.training.health import StepHealth, StepHealthMonitor
 
@@ -183,12 +184,16 @@ def test_an_unmeasured_ratio_is_absent_rather_than_reported_as_zero() -> None:
     assert health.as_record()["update_to_weight_ratio"] is None
 
 
-def test_a_gradient_over_the_ceiling_is_scaled_back_to_it() -> None:
+def test_the_returned_norm_is_the_one_a_step_clips_against() -> None:
+    """The composition the step loop performs: measure once, scale by that."""
+
     module = _module()
     monitor = StepHealthMonitor(module.parameters(), clip_norm=0.5)
     (module(torch.full((1, 3), 4.0)).sum() * 10.0).backward()
 
-    monitor.observe_gradients()
+    gradient_norm = monitor.observe_gradients()
+    assert gradient_norm is not None
+    clip_grads_with_norm_(module.parameters(), 0.5, gradient_norm)
     health = monitor.drain(global_step=1)
     clipped = math.sqrt(
         sum(
@@ -199,36 +204,23 @@ def test_a_gradient_over_the_ceiling_is_scaled_back_to_it() -> None:
     )
 
     assert health is not None
-    # The norm is reported as it was measured, before the scaling it caused.
+    # Reported as measured, before the scaling it caused, or a clipped run
+    # could not say how far over the ceiling it had been.
     assert health.gradient_norm > 0.5
     assert clipped == pytest.approx(0.5, rel=1e-4)
     assert health.clip_rate == pytest.approx(1.0)
 
 
-def test_a_gradient_under_the_ceiling_is_left_alone() -> None:
+def test_a_norm_under_the_ceiling_counts_as_unclipped() -> None:
     module = _module()
     monitor = StepHealthMonitor(module.parameters(), clip_norm=_LOOSE_CEILING)
     module(torch.ones(1, 3)).sum().backward()
-    before = [
-        parameter.grad.detach().clone()
-        for parameter in module.parameters()
-        if parameter.grad is not None
-    ]
 
     monitor.observe_gradients()
     health = monitor.drain(global_step=1)
-    after = [
-        parameter.grad
-        for parameter in module.parameters()
-        if parameter.grad is not None
-    ]
 
     assert health is not None
     assert health.clip_rate == 0.0
-    assert all(
-        bool(torch.equal(first, second))
-        for first, second in zip(before, after, strict=True)
-    )
 
 
 def test_the_clip_rate_is_the_interval_share_rather_than_the_last_step() -> None:
