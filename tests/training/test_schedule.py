@@ -94,6 +94,15 @@ def test_a_warmup_past_the_range_the_rule_holds_over_is_refused() -> None:
         _schedule(steps=1000, warmup_sequences=1600, sequences_per_step=8)
 
 
+def test_a_cooldown_that_rounds_away_on_a_short_horizon_is_refused() -> None:
+    """A declared cooldown that decays nothing is the silent reshape the
+    fraction was chosen to prevent, so it fails instead of holding the peak.
+    """
+
+    with pytest.raises(ValueError, match="decays nothing"):
+        _schedule(steps=10, warmup_sequences=0, cooldown_fraction=0.04)
+
+
 def test_a_warmup_and_cooldown_that_do_not_fit_the_horizon_are_refused() -> None:
     with pytest.raises(ValueError, match="do not fit"):
         _schedule(steps=1000, warmup_sequences=800, cooldown_fraction=0.95)

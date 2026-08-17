@@ -965,7 +965,7 @@ knowing when reading them. Gradient norm reads gradients the backward pass just
 wrote, so it runs every step and reports both the value at the reported step and
 the interval's maximum, which is what catches a spike between two logging
 points. The clip rate is that same norm compared against the ceiling and
-counted, so it costs nothing more, and it is reported as a share of the
+counted, so it needs no second reduction, and it is reported as a share of the
 interval's steps because the question it answers is whether clipping is
 insurance against a spike or a learning-rate cap acting on every step. The
 update-to-weight ratio needs the parameters from before the update, so measuring

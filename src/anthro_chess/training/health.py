@@ -18,8 +18,9 @@ spike between two logging points.
 Gradient clipping is applied from here for that last reason: the norm it scales
 against is the one this already reduced, and computing it a second time would
 double the only expensive part. Clipping does change what the optimizer sees, so
-the share of steps that met the ceiling is reported beside the norm. Insurance
-that never fires and a cap on every step look identical from the loss curve.
+the share of steps that exceeded the ceiling is reported beside the norm.
+Insurance that never fires and a cap on every step look identical from the loss
+curve.
 """
 
 from __future__ import annotations

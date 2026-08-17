@@ -159,6 +159,7 @@ class _RunRecordWriter:
 
     path: Path
     identity: Mapping[str, object]
+    optimizer: str
     starting_step: int
     resumed_from: Path | None
     initial_parameter_sha256: str
@@ -184,7 +185,7 @@ class _RunRecordWriter:
             # and still never finished.
             "complete": complete,
             "optimization": {
-                "optimizer": "AdamW",
+                "optimizer": self.optimizer,
                 "starting_step": self.starting_step,
                 # The step whose checkpoint this record describes, which lags
                 # the last step executed when a run dies between checkpoints.
@@ -478,6 +479,7 @@ def run_training(
                 "seed": config.seed,
                 "hardware": hardware_record(device),
             },
+            optimizer=type(optimizer).__name__,
             starting_step=starting_step,
             resumed_from=resumed_from,
             initial_parameter_sha256=initial_parameter_sha256,
@@ -771,9 +773,9 @@ def _optimize(
             if reported:
                 health_monitor.snapshot_parameters()
 
-            optimizer.param_groups[0]["lr"] = learning_rate_schedule.rate_at(
-                global_step
-            )
+            rate = learning_rate_schedule.rate_at(global_step)
+            for group in optimizer.param_groups:
+                group["lr"] = rate
             optimizer_started = time.perf_counter()
             optimizer.step()
             if profile_phases:

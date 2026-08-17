@@ -59,13 +59,19 @@ def resolve_schedule(
     """Convert one run's declared schedule into the step counts it applies.
 
     Warmup arrives as a quantity of training data, so a branch and the trunk it
-    resumes warm up over the same prefix whatever horizon either declares. The
-    conversion is exact before a run starts because the loader delivers whole
-    sequences at a rate the batch and accumulation fix.
+    resumes warm up over the same prefix whatever horizon either declares. It
+    converts by the batch and accumulation the run declares, which is a step
+    count known before the first batch is read.
     """
 
     warmup_steps = -(-warmup_sequences // sequences_per_step)
     cooldown_steps = round(cooldown_fraction * steps)
+    if cooldown_fraction > 0.0 and cooldown_steps < 2:
+        raise ValueError(
+            f"a cooldown of {cooldown_fraction:.3f} over {steps} step(s) rounds "
+            f"to {cooldown_steps} step(s), which decays nothing; a run whose "
+            f"endpoint stands for what its horizon reached has to cool"
+        )
     if warmup_steps > MAXIMUM_WARMUP_FRACTION * steps:
         raise ValueError(
             f"warmup of {warmup_sequences} sequence(s) is {warmup_steps} step(s) "

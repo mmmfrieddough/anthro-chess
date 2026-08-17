@@ -2551,10 +2551,10 @@ TRAINING_HEALTH_CLIP_RATE = register_metric(
         definition_version=1,
         cost=MetricCost.FREE,
         summary=(
-            "Share of the reported interval's steps whose gradient norm met "
-            "the configured ceiling. Near zero means clipping is insurance "
-            "against a spike; sustained means it is a learning-rate cap under "
-            "another name."
+            "Share of the reported interval's steps whose gradient norm "
+            "exceeded the configured ceiling. Near zero means clipping is "
+            "insurance against a spike; sustained means it is a learning-rate "
+            "cap under another name."
         ),
     )
 )
