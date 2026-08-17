@@ -421,7 +421,18 @@ Key information:
   weak anchor and a learned strong anchor rather than a free map from rating to
   vector, which makes the embedding monotone in the rating by construction.
 - Presents history by concatenating the previous seven positions into each
-  token's input depth rather than along a sequence axis.
+  token's input depth rather than along a sequence axis. Those stacked boards
+  are also its move history: differencing consecutive snapshots recovers what
+  moved, so it carries no explicit previous-move input.
+- Splits the rule state between its two models, and the split is instructive.
+  The human-emulation input is **only** the stacked piece planes plus the two
+  skill embeddings, at a depth of `12 x (1 + n) + 2 x 128`; it carries no
+  castling rights, en passant, halfmove clock, or repetition flags, and the
+  paper says so, noting a full chess state is Markov only with them. Its engine
+  model adds all of it back — repetition per stacked board, the four castling
+  options, side to move, and plies since the last capture or pawn move — for a
+  depth of 112. A model that never claims a draw can drop what a model that
+  does cannot.
 - Reaches 57.1% move-matching accuracy at 79M parameters, above Allie at 355M.
 - Runs 8 layers for every human-emulation size, widening rather than deepening
   from 5M to 79M.
