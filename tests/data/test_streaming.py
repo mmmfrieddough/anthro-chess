@@ -16,6 +16,7 @@ from anthro_chess.data import (
     StreamingLoaderConfig,
     StreamingSequenceDataLoader,
     resolve_sharded_selection,
+    streaming,
 )
 from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.artifacts import (
@@ -400,6 +401,49 @@ def test_resume_continues_the_epoch_from_the_saved_cursor(
     resumed.load_state(saved)
 
     assert consumed + _drain(resumed) == complete
+
+
+def test_resume_plans_one_row_group_however_deep_the_cursor_is(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run long enough to need resuming is long enough for this to matter.
+
+    Replaying the plan batch by batch would re-derive every row group before
+    the cursor, so a run crashing deep into a corpus-scale epoch would pay a
+    read per row group it had already passed. The cursor names its row group so
+    that arithmetic reaches it instead.
+    """
+
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 64), games_per_shard=4
+    )
+    config = SequenceLoaderConfig(split="train", batch_size=1, length_bucket_width=4)
+
+    interrupted = _loader(corpus, config)
+    # Deep enough to be past most of the sixteen row groups this corpus holds.
+    for _ in range(40):
+        next(interrupted)
+    saved = interrupted.state().as_record()
+    interrupted.close()
+    assert int(str(saved["group_index"])) > 1
+
+    reads = 0
+    inner = streaming.read_normalized_row_group
+
+    def counted(*arguments: Any, **keywords: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        return inner(*arguments, **keywords)
+
+    resumed = _loader(corpus, config)
+    monkeypatch.setattr(streaming, "read_normalized_row_group", counted)
+    resumed.load_state(saved)
+
+    assert reads == 1
+    resumed.close()
 
 
 def test_resume_across_epochs_restores_that_epoch_order(

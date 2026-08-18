@@ -38,7 +38,7 @@ from anthro_chess.data.speed import speed_from_clock_ms
 if TYPE_CHECKING:
     import numpy as np
 
-LOADER_STATE_VERSION = 4
+LOADER_STATE_VERSION = 5
 SELECTION_SPEC_VERSION = 4
 logger = logging.getLogger(__name__)
 #: The columns a selection filters on. Reading only these keeps the pass that
@@ -225,13 +225,21 @@ class SelectionResolution:
 
 @dataclass(frozen=True)
 class SequenceLoaderState:
-    """Serializable exact next-batch cursor for one deterministic loader epoch."""
+    """Serializable exact next-batch cursor for one deterministic loader epoch.
+
+    ``position`` counts the epoch's batches and is what a reader wants. It is
+    not enough to restore a loader that plans lazily, because finding the
+    position'"'"'s row group means planning every row group before it. Such a
+    loader records where that is as well, and the two are written together.
+    """
 
     version: int
     dataset_sha256: str
     configuration_sha256: str
     epoch: int
     position: int
+    group_index: int = 0
+    group_position: int = 0
 
     def __post_init__(self) -> None:
         if type(self.version) is not int:
@@ -249,6 +257,10 @@ class SequenceLoaderState:
             raise DataLoadingError("loader state epoch must be nonnegative")
         if type(self.position) is not int or self.position < 0:
             raise DataLoadingError("loader state position must be nonnegative")
+        if type(self.group_index) is not int or self.group_index < 0:
+            raise DataLoadingError("loader state group index must be nonnegative")
+        if type(self.group_position) is not int or self.group_position < 0:
+            raise DataLoadingError("loader state group position must be nonnegative")
 
     def as_record(self) -> dict[str, object]:
         """Return the JSON-serializable checkpoint representation."""
@@ -259,6 +271,8 @@ class SequenceLoaderState:
             "configuration_sha256": self.configuration_sha256,
             "epoch": self.epoch,
             "position": self.position,
+            "group_index": self.group_index,
+            "group_position": self.group_position,
         }
 
 
@@ -993,6 +1007,8 @@ def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:
         "configuration_sha256",
         "epoch",
         "position",
+        "group_index",
+        "group_position",
     }
     if set(record) != expected_keys:
         raise DataLoadingError("loader state fields are incomplete or unknown")
@@ -1001,12 +1017,16 @@ def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:
     configuration_sha256 = record["configuration_sha256"]
     epoch = record["epoch"]
     position = record["position"]
+    group_index = record["group_index"]
+    group_position = record["group_position"]
     if (
         type(version) is not int
         or not isinstance(dataset_sha256, str)
         or not isinstance(configuration_sha256, str)
         or type(epoch) is not int
         or type(position) is not int
+        or type(group_index) is not int
+        or type(group_position) is not int
     ):
         raise DataLoadingError("loader state fields have invalid types")
     return SequenceLoaderState(
@@ -1015,4 +1035,6 @@ def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:
         configuration_sha256,
         epoch,
         position,
+        group_index,
+        group_position,
     )

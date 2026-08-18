@@ -795,8 +795,11 @@ thousand costs. A selection that filters has to look, and that pass is the one
 cost here that follows corpus size. Either way what a run pays to plan follows
 what it reads, and what stays resident is one row group's projected columns, one
 entry per row group, and the batches in flight.
-A resumed run replays the plan to its saved cursor, which re-derives the row
-groups it passes and decodes nothing in them.
+A resumed run reaches its saved cursor by arithmetic over the epoch order and
+plans only the row group the cursor names, so a run interrupted weeks into an
+epoch restarts at the cost of one projected read. That is why the cursor records
+its row group rather than only its place in the epoch: finding the one from the
+other means planning everything before it.
 
 Two things follow from holding no game. A run does not record which games its
 selection kept, because naming them means enumerating a split that reaches

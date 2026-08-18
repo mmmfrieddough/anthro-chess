@@ -411,9 +411,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._reader_shard: int | None = None
         self._table: Any | None = None
         self._table_group: _RowGroup | None = None
-        self._inflight: deque[Future[SequenceBatch]] = deque()
+        self._inflight: deque[tuple[int, Future[SequenceBatch]]] = deque()
         self._epoch = 0
         self._position = 0
+        self._group_index = 0
+        self._group_position = 0
         self._plan = self._plan_epoch(self._epoch)
 
     def __iter__(self) -> StreamingSequenceDataLoader:
@@ -423,8 +425,16 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._fill()
         if not self._inflight:
             raise StopIteration
-        batch = self._inflight.popleft().result()
+        ordinal, pending = self._inflight.popleft()
+        batch = pending.result()
         self._position += 1
+        # Tracked on the way out rather than on the way in, because the cursor
+        # has to name the batch a resumed run reads next and the plan runs
+        # ahead of that by the prefetch depth.
+        self._group_position = (
+            self._group_position + 1 if ordinal == self._group_index else 1
+        )
+        self._group_index = ordinal
         self._fill()
         return batch
 
@@ -449,13 +459,16 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             configuration_sha256=self.configuration_sha256,
             epoch=self._epoch,
             position=self._position,
+            group_index=self._group_index,
+            group_position=self._group_position,
         )
 
     def load_state(self, state: SequenceLoaderState | Mapping[str, object]) -> None:
         """Restore a compatible saved cursor and deterministic epoch order.
 
-        An epoch over a corpus is millions of batches, so a cursor a run
-        actually reached sits a few row groups into the plan it replays.
+        The saved row group is reached by arithmetic over the epoch order and
+        only that one is planned, so a cursor deep into a corpus-scale epoch
+        costs one projected read rather than one per row group before it.
         """
 
         parsed = (
@@ -472,12 +485,15 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         if parsed.configuration_sha256 != self.configuration_sha256:
             raise DataLoadingError("loader state uses different loader configuration")
         self.start_epoch(parsed.epoch)
-        for _ in range(parsed.position):
+        self._plan = self._plan_epoch(parsed.epoch, start=parsed.group_index)
+        self._group_index = parsed.group_index
+        for _ in range(parsed.group_position):
             if next(self._plan, None) is None:
                 raise DataLoadingError(
                     "loader state position is outside the epoch plan"
                 )
         self._position = parsed.position
+        self._group_position = parsed.group_position
 
     def start_epoch(self, epoch: int) -> None:
         """Start a deterministic epoch from its first example."""
@@ -487,6 +503,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._drain()
         self._epoch = epoch
         self._position = 0
+        self._group_index = 0
+        self._group_position = 0
         self._plan = self._plan_epoch(epoch)
 
     def close(self) -> None:
@@ -501,20 +519,25 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._table = None
         self._table_group = None
 
-    def _plan_epoch(self, epoch: int) -> Iterator[_PlannedBatch]:
-        """Yield one epoch's batches as plans, decoding nothing.
+    def _plan_epoch(
+        self,
+        epoch: int,
+        start: int = 0,
+    ) -> Iterator[tuple[int, _PlannedBatch]]:
+        """Yield one epoch's batches as plans, with their place in the order.
 
         Generated rather than materialized so a corpus-scale epoch costs a
-        cursor instead of a list of every example in it, and so a resumed run
-        can skip forward through the plan at the price of one projected read
-        per row group it passes.
+        cursor instead of a list of every example in it. ``start`` skips whole
+        row groups by arithmetic, which is what lets a resumed run reach a
+        cursor deep into an epoch without planning what came before it.
         """
 
         order = list(self.corpus.row_groups)
         if self.config.shuffle:
             order.sort(key=partial(_group_key, self.config.seed, epoch))
-        for group in order:
-            yield from self._plan_row_group(group, epoch)
+        for ordinal in range(start, len(order)):
+            for planned in self._plan_row_group(order[ordinal], epoch):
+                yield ordinal, planned
 
     def _plan_row_group(
         self,
@@ -568,7 +591,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             planned = next(self._plan, None)
             if planned is None:
                 return
-            self._inflight.append(self._submit(planned))
+            ordinal, batch = planned
+            self._inflight.append((ordinal, self._submit(batch)))
 
     def _submit(self, planned: _PlannedBatch) -> Future[SequenceBatch]:
         job = self._job(planned)
@@ -629,7 +653,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         return self._table
 
     def _drain(self) -> None:
-        for pending in self._inflight:
+        for _, pending in self._inflight:
             pending.cancel()
         self._inflight.clear()
 
