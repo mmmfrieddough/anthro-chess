@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, date, datetime
@@ -289,6 +290,10 @@ def _write_corpus(
                             "path": f"normalized/{games_path.name}",
                             "sha256": file_sha256(games_path),
                             "games": len(shard_rows),
+                            # Preparation counts every split as it writes each
+                            # shard, and a loader reads these rather than
+                            # counting a corpus again.
+                            "split_counts": Counter(row["split"] for row in shard_rows),
                         }
                         for games_path, shard_rows in shards
                     ],

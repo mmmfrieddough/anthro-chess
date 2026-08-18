@@ -117,6 +117,16 @@ digest, selection size, filters, split recipe, and shard sizing remain owned by
 the checked-in configuration. Raw archives and generated outputs remain
 outside Git, and ordinary tests continue to use local fixtures.
 
+A consumer checks the shards it is about to read against that manifest, and
+what it checks is a choice rather than a constant. By default it compares each
+shard's recorded row count against the shard's own footer, which catches a
+missing, extra, truncated or replaced shard and reads kilobytes of each file.
+Hashing every shard end to end is the stronger check, and the only one that
+sees a page rewritten in place; it costs a full read of the corpus at whatever
+the drive sustains, so it is asked for rather than paid by every run. Which
+runs ask for it is a judgement about what a reading is worth, not a default
+worth setting once.
+
 ### Building One Corpus From Many Archives
 
 A selection may pin many archives, and preparation appends the acquired ones to
@@ -291,8 +301,11 @@ The selection filters on the axes worth comparing models across, currently time
 control and rating, and subsamples by ranking on a digest of the game id. That
 rank is what makes a fraction reproducible on any machine and makes a smaller
 fraction a subset of a larger one, so a data-scaling curve is a series of
-nested selections rather than unrelated samples. A selection that matches no
-games fails rather than starting a run on nothing.
+nested selections rather than unrelated samples. Ranking means holding every
+candidate's identity at once, so it is bounded by what one loader can hold and
+the shard-backed loader declines it; the section on the two loaders below says
+what that costs and where it leaves a corpus-scale curve. A selection that
+matches no games fails rather than starting a run on nothing.
 
 Time control is filtered by a speed class, by explicit clock bounds, or by
 both, which intersect. The class is what keeping training narrow across a
@@ -301,12 +314,12 @@ initial clock plus forty increments, which no pair of bounds over those two
 fields draws.
 
 Each run records the selection it resolved, not only the one it requested: the
-counts it kept, why it excluded the rest, and a digest of the selected game ids.
-The digest is what lets a later run confirm it reproduced the same games rather
-than only the same configuration, and it is what tells two runs over one corpus
-apart in the results store, where a result reaches its run through the
-checkpoint's run id. Exact field names, axes, and defaults live in
-`anthro_chess.data` rather than here.
+counts it kept and why it excluded the rest. Those, with the corpus the run
+also records, are what tell two runs over one corpus apart in the results
+store, where a result reaches its run through the checkpoint's run id. Which
+games a selection kept is not recorded, because naming them means enumerating a
+split that reaches billions and no reader holds them to compare against. Exact
+field names, axes, and defaults live in `anthro_chess.data` rather than here.
 
 Ply-count, result, and opening filters are deliberately absent. Benchmarks
 measure the model's own distribution over those, so narrowing training on them
@@ -762,20 +775,34 @@ before the first batch. A per-ply encoding is far larger than the normalized
 row it came from, so this suits checked-in fixtures and bounded proof slices
 and reaches neither the memory nor the startup time a corpus needs.
 
-The **shard-backed** loader decodes a batch at a time. It first indexes the
-selection from columns cheap enough to read for a whole corpus, which is
-possible because a game's decoded length follows from its ply count and whether
-a terminal action was appended, so no game is decoded to plan against it. An
-epoch then orders row groups, orders the games inside each one, and cuts that
-stream into planning windows. A window is where length buckets fill and flush,
-so every example in a batch comes from one row group and a batch is read with a
-single columnar take. Flushing at a window boundary rather than an epoch
+The **shard-backed** loader decodes a batch at a time and holds nothing per
+game. An epoch orders row groups, orders the games inside each one, and cuts
+that stream into planning windows. A window is where length buckets fill and
+flush, so every example in a batch comes from one row group and a batch is read
+with a single columnar take. Flushing at a window boundary rather than an epoch
 boundary is the one visible cost: each window ends with a short batch per
 occupied bucket, which `drop_last` drops and otherwise leaves slightly small.
-What stays resident is one row group's projected columns, the index, and the
-batches in flight, none of which grows with corpus size.
-Because the plan follows from the index alone, a resumed run replays it to its
-saved cursor without reading or decoding anything.
+
+Because a batch never spans row groups, which rows a row group contributes and
+how long each one decodes to are derived from that row group when the plan
+reaches it, from columns cheap enough to project. A game's decoded length
+follows from its ply count and whether a terminal action was appended, so no
+game is decoded to plan against it. Nothing is read before the first batch
+beyond a footer per shard, so what a run pays to plan follows what it reads
+rather than what the corpus holds, and opening a corpus of two billion games
+costs what opening one of two thousand costs. What stays resident is one row
+group's projected columns, one entry per row group, and the batches in flight.
+A resumed run replays the plan to its saved cursor, which re-derives the row
+groups it passes and decodes nothing in them.
+
+Two things follow from holding no game. A run records how many games its
+selection kept and not which, because naming them means enumerating a split
+that reaches billions. And the shard-backed loader refuses a subsample rather
+than approximating one: taking the lowest-ranked share of a split means ranking
+every candidate, which needs a digest per game of the whole corpus, and a
+cutoff over that same rank keeps whatever share it happens to rather than the
+size it was asked for. Subsampling stays available through the eager loader,
+where a selection is small enough to rank.
 
 The two produce different orders and neither is a defect. A global shuffle over
 a corpus means a seek per example, so the shard-backed loader shuffles row

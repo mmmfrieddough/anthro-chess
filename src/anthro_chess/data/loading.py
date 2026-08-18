@@ -17,7 +17,6 @@ from anthro_chess.data.accounts import marks_a_player
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     read_normalized_rows,
-    sorted_game_ids_sha256,
 )
 from anthro_chess.data.config import SelectionConfig, SequenceLoaderConfig
 from anthro_chess.data.encoding import (
@@ -40,7 +39,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 LOADER_STATE_VERSION = 4
-SELECTION_SPEC_VERSION = 3
+SELECTION_SPEC_VERSION = 4
 logger = logging.getLogger(__name__)
 #: The columns a selection filters on. Reading only these keeps the pass that
 #: resolves which games to keep far cheaper than the pass that encodes them.
@@ -179,21 +178,16 @@ class SequenceBatch:
 class SelectionResolution:
     """Which games a load-time selection kept, and how to reproduce that set.
 
-    ``game_ids_sha256`` is what makes the record reproducible rather than
-    merely descriptive: a later run over the same corpus with the same spec
-    resolves the same digest, and a corpus that has since grown resolves a
-    different one.
-
-    It is also all that survives of the ids themselves. Confirming that a later
-    run reproduced the same games is the only thing anything downstream reads
-    them for, the digest answers exactly that, and a corpus-scale selection's
-    ids are tens of gigabytes of Python object held for the length of a run.
+    The spec and the counts are what reproduce it. Which games those are
+    follows from the corpus a run also records, so this describes the selection
+    rather than enumerating its members: over a corpus-scale split the members
+    are the one quantity that cannot be held or derived cheaply, and nothing
+    downstream reads them.
     """
 
     spec: dict[str, object]
     eligible_games: int
     selected_games: int
-    game_ids_sha256: str
     excluded_games: dict[str, int]
 
     def as_record(self) -> dict[str, object]:
@@ -205,7 +199,6 @@ class SelectionResolution:
             "eligible_games": self.eligible_games,
             "selected_games": self.selected_games,
             "excluded_games": dict(sorted(self.excluded_games.items())),
-            "game_ids_sha256": self.game_ids_sha256,
         }
 
     def as_identity_record(self) -> dict[str, object]:
@@ -215,7 +208,7 @@ class SelectionResolution:
         holds that such an identity may carry only values another machine could
         reproduce. The snapshot path is not one: the same file sits at different
         paths on two machines, and what its contents did to this selection is
-        already carried by ``game_ids_sha256``.
+        already carried by the counts it excluded.
         """
 
         record = self.as_record()
@@ -749,7 +742,6 @@ def _resolve_selection(
             spec=selection.model_dump(mode="json"),
             eligible_games=len(eligible),
             selected_games=len(selected),
-            game_ids_sha256=sorted_game_ids_sha256(selected),
             excluded_games=excluded,
         ),
         frozenset(selected),
@@ -779,7 +771,6 @@ def _resolution_for_examples(
         spec=selection.model_dump(mode="json"),
         eligible_games=len(game_ids),
         selected_games=len(game_ids),
-        game_ids_sha256=sorted_game_ids_sha256(game_ids),
         excluded_games={},
     )
 

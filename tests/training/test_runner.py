@@ -1226,10 +1226,6 @@ def test_two_selections_of_one_corpus_are_told_apart_by_the_run_record(
         "below_minimum_time_initial": 4
     }
     assert narrow_data["selection"]["spec"]["minimum_time_initial_ms"] == 300_000
-    assert (
-        broad_data["selection"]["game_ids_sha256"]
-        != narrow_data["selection"]["game_ids_sha256"]
-    )
     assert broad_data["dataset_sha256"] != narrow_data["dataset_sha256"]
 
 

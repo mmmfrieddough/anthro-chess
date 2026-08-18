@@ -24,14 +24,14 @@ from anthro_chess.data import (
     SequenceDataset,
     SequenceLoaderConfig,
     Speed,
-    build_sharded_index,
+    StreamingLoaderConfig,
+    StreamingSequenceDataLoader,
+    resolve_sharded_selection,
 )
 from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.artifacts import (
-    _DIGEST_CHUNK_GAMES,
     game_ids_sha256,
     normalized_shard_paths,
-    sorted_game_ids_sha256,
     validate_manifest_outputs,
 )
 
@@ -259,9 +259,7 @@ def test_the_resolved_selection_reproduces_the_same_games_by_identity(
     assert record == second.resolution.as_record()
     # Two selections over one corpus stay distinguishable by what they realized,
     # not only by the configuration that asked for it.
-    assert (
-        record["game_ids_sha256"] != narrower.resolution.as_record()["game_ids_sha256"]
-    )
+    assert record["selected_games"] != narrower.resolution.as_record()["selected_games"]
     assert first.identity_sha256 == second.identity_sha256
     assert first.identity_sha256 != narrower.identity_sha256
 
@@ -340,7 +338,7 @@ def test_a_changed_selection_changes_the_loader_configuration_identity(
     ],
     ids=["everything", "half", "quarter", "capped", "other-seed"],
 )
-def test_a_corpus_and_spec_still_resolve_to_the_digest_they_always_have(
+def test_a_corpus_and_spec_still_select_the_games_they_always_have(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
@@ -349,15 +347,15 @@ def test_a_corpus_and_spec_still_resolve_to_the_digest_they_always_have(
 ) -> None:
     """A selection is reproducible only against something outside itself.
 
-    Every other test here compares one resolution to another resolved by the
+    Every other test here compares one selection to another resolved by the
     same code, so a rewritten rank, floor, or ordering agrees with itself and
     passes. A run recorded a year ago cannot be re-resolved to check, which is
     what these constants stand in for. A failure means this corpus and spec now
-    select different games — decide which of the two moved before updating it.
+    select different games: decide which of the two moved before updating it.
 
-    Both loaders are held to the one constant. They resolve a selection through
-    structures chosen for what each can afford to hold, so agreeing with each
-    other is a weaker claim than agreeing with a value neither produced.
+    The constants are read off the games the loader encoded rather than off any
+    figure it recorded about them, so a resolution that miscounted its own
+    selection fails here too.
     """
 
     rows = [
@@ -365,43 +363,17 @@ def test_a_corpus_and_spec_still_resolve_to_the_digest_they_always_have(
         for game_id in range(1, 17)
     ]
     normalized, manifest_path = write_corpus(tmp_path, rows)
-    manifest_bytes = manifest_path.read_bytes()
     shards = validate_manifest_outputs(
-        json.loads(manifest_bytes), manifest_path, normalized_shard_paths(normalized)
+        json.loads(manifest_path.read_bytes()),
+        manifest_path,
+        normalized_shard_paths(normalized),
     )
 
     eager = SequenceDataset.from_parquet(
         [shard.path for shard in shards], split="train", selection=selection
     )
-    index = build_sharded_index(
-        shards,
-        split="train",
-        selection=selection,
-        manifest_sha256=sha256(manifest_bytes).hexdigest(),
-    )
 
-    assert eager.resolution.game_ids_sha256 == digest
-    assert index.resolution.game_ids_sha256 == digest
-
-
-@pytest.mark.parametrize(
-    "games",
-    [0, 1, _DIGEST_CHUNK_GAMES - 1, _DIGEST_CHUNK_GAMES, _DIGEST_CHUNK_GAMES + 1],
-)
-def test_a_folded_identity_is_the_digest_of_the_string_it_never_builds(
-    games: int,
-) -> None:
-    """A corpus-scale selection's joined ids are tens of gigabytes of string.
-
-    Folding them in a chunk at a time is worth something only if it is the same
-    digest, across the boundary between chunks included, so that a run recorded
-    before still names the games it named.
-    """
-
-    game_ids = [game_id * 2**40 + game_id for game_id in range(games)]
-    joined = ",".join(str(game_id) for game_id in game_ids)
-
-    assert sorted_game_ids_sha256(game_ids) == sha256(joined.encode()).hexdigest()
+    assert game_ids_sha256(_loaded(eager)) == digest
 
 
 def test_selection_bounds_must_be_ordered() -> None:
@@ -451,8 +423,9 @@ def test_both_loaders_reject_the_same_accounts(
     ]
     normalized, manifest_path = write_corpus(tmp_path, rows)
     manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
     shards = validate_manifest_outputs(
-        json.loads(manifest_bytes), manifest_path, normalized_shard_paths(normalized)
+        manifest, manifest_path, normalized_shard_paths(normalized)
     )
     marked = frozenset(
         {account_row_digest(f"white{game_id}") for game_id in (2, 5, 11)}
@@ -464,18 +437,31 @@ def test_both_loaders_reject_the_same_accounts(
         selection=_naming_a_snapshot(),
         marked_digests=marked,
     )
-    index = build_sharded_index(
-        shards,
-        split="train",
-        selection=_naming_a_snapshot(),
-        manifest_sha256=sha256(manifest_bytes).hexdigest(),
-        marked_digests=marked,
+    streaming = StreamingSequenceDataLoader(
+        resolve_sharded_selection(
+            shards,
+            split="train",
+            selection=_naming_a_snapshot(),
+            manifest=manifest,
+            manifest_sha256=sha256(manifest_bytes).hexdigest(),
+            marked_digests=marked,
+        ),
+        SequenceLoaderConfig(split="train", selection=_naming_a_snapshot()),
+        StreamingLoaderConfig(),
     )
+    try:
+        read = {
+            int(batch.game_ids[row][0])
+            for batch in streaming
+            for row in range(batch.batch_size)
+        }
+    finally:
+        streaming.close()
 
     assert eager.resolution.selected_games == 13
-    assert index.resolution.game_ids_sha256 == eager.resolution.game_ids_sha256
+    assert read == set(_loaded(eager))
     assert eager.resolution.excluded_games == {"marked_account": 3}
-    assert index.resolution.excluded_games == eager.resolution.excluded_games
+    assert streaming.resolution.excluded_games == eager.resolution.excluded_games
 
 
 def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(
@@ -581,13 +567,12 @@ def _selected(games: Path, selection: SelectionConfig) -> tuple[int, ...]:
 def _loaded(dataset: SequenceDataset) -> tuple[int, ...]:
     """Return the games a dataset actually encoded, in ascending order.
 
-    Read from the examples rather than from the resolution, which records only
-    the digest of what it kept. That leaves the resolution's claim uncheckable
-    from any one test, so it is checked here instead, on every selection any
-    test in this file resolves.
+    Read from the examples rather than from the resolution, which records how
+    many games it kept and not which. That leaves the count uncheckable from
+    any one test, so it is checked here instead, on every selection any test in
+    this file resolves.
     """
 
     game_ids = tuple(sorted({example.game_id for example in dataset}))
     assert dataset.resolution.selected_games == len(game_ids)
-    assert dataset.resolution.game_ids_sha256 == game_ids_sha256(game_ids)
     return game_ids

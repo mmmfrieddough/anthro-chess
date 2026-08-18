@@ -989,6 +989,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     train_parser.add_argument(
+        "--verify-data",
+        action="store_true",
+        help=(
+            "Hash every normalized shard against the data manifest before "
+            "training. The default check compares each shard's recorded row "
+            "count against its Parquet footer, which catches a missing, "
+            "truncated or replaced shard; this also catches a page rewritten "
+            "in place, and costs a full read of the corpus."
+        ),
+    )
+    train_parser.add_argument(
         "--output-directory",
         type=_named_directory,
         help=(
@@ -3706,6 +3717,7 @@ def _run_train(arguments: argparse.Namespace) -> int:
             ),
             store=store,
             detail=detail,
+            verify_data=arguments.verify_data,
         )
     except (ConfigError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)

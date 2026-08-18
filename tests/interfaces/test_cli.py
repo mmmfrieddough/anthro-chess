@@ -796,6 +796,7 @@ split = "train"
         output_directory: Path,
         store: object = None,
         detail: object = None,
+        verify_data: bool = False,
     ) -> TrainingResult:
         assert resolved.value.steps == 2
         return TrainingResult(
@@ -864,6 +865,7 @@ split = "train"
         output_directory: Path,
         store: object = None,
         detail: object = None,
+        verify_data: bool = False,
     ) -> TrainingResult:
         assert output_directory == run_root / expected_name
         assert resolved.value.train.normalized == data_root / "example-data/normalized"
@@ -919,6 +921,7 @@ workers = 2
         output_directory: Path,
         store: object = None,
         detail: object = None,
+        verify_data: bool = False,
     ) -> TrainingResult:
         selection = resolved.value.train
         assert selection.normalized == data_root / "example-data/normalized"
@@ -970,6 +973,7 @@ split = "train"
         output_directory: Path,
         store: object = None,
         detail: object = None,
+        verify_data: bool = False,
     ) -> TrainingResult:
         assert output_directory == explicit_output
         assert resolved.value.train.normalized == explicit_normalized
@@ -1034,6 +1038,7 @@ split = "train"
         output_directory: Path,
         store: object = None,
         detail: object = None,
+        verify_data: bool = False,
     ) -> TrainingResult:
         assert output_directory == Path("artifacts/example-run")
         return TrainingResult(

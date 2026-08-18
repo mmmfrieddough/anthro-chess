@@ -8,16 +8,23 @@ would need does not fit in host memory and would be paid before the first
 optimizer step regardless.
 
 This loader keeps the same promises and holds almost none of it. What is
-resident is one row group's projected columns, an index naming which games each
-row group holds and how long each one is, and the batches currently in flight.
-Everything else is decoded on the way past and released.
+resident is one row group's projected columns, the batches currently in
+flight, and a list naming which row groups the corpus has. Everything else is
+decoded on the way past and released.
 
-The index is what makes that possible. Sequence length is derivable from the
-normalized schema without decoding a game, so the epoch's whole batch plan is a
-pure function of columns cheap enough to read for a corpus. A resumed run
-replays that plan to its saved cursor without reading or decoding anything,
-and the plan is what a batch's rows are read against rather than the other way
-around.
+Nothing per game is resident. A batch's examples all come from one row group,
+so which rows a row group contributes and how long each one decodes to are
+derived from that row group at the moment it is reached, which makes what a run
+pays to plan follow what it reads rather than what the corpus holds.
+
+Opening a corpus therefore reads a footer per shard and nothing else, as long
+as the selection rejects nothing: preparation already counted every split, and
+a count it recorded is a count nobody has to take again. A selection that
+filters has to look, and that is the one pass here whose cost follows corpus
+size.
+
+A resumed run replays the plan to its saved cursor, which re-derives the row
+groups it passes over rather than decoding any game in them.
 """
 
 from __future__ import annotations
@@ -25,15 +32,12 @@ from __future__ import annotations
 import json
 import logging
 from array import array
-from bisect import bisect_left
 from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
-from heapq import nsmallest
-from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +49,6 @@ from anthro_chess.data.artifacts import (
     open_normalized_shard,
     read_normalized_row_group,
     row_group_column,
-    sorted_game_ids_sha256,
     take_rows,
 )
 from anthro_chess.data.config import (
@@ -66,12 +69,10 @@ from anthro_chess.data.loading import (
     _exclusion_reason,
     _game_from_row,
     _length_bucket,
-    _rank_key,
     _state_from_record,
     collate_sequences,
     loader_configuration_sha256,
     require_resolved_snapshot,
-    subsample_size,
 )
 from anthro_chess.data.schema import (
     NormalizedColumn,
@@ -81,58 +82,63 @@ from anthro_chess.data.termination import TerminalActionStatus
 
 #: Bumped when the shard-backed identity or plan changes shape, so a checkpoint
 #: written by an earlier one is refused rather than silently replanned.
-STREAMING_IDENTITY_VERSION = 1
+STREAMING_IDENTITY_VERSION = 2
 #: How the loader names itself in identities and run records.
 STREAMING_LOADER_NAME = "shard-backed"
 
 logger = logging.getLogger(__name__)
 
-#: What the index pass reads. Every column here is fixed-width or dictionary
-#: encoded, so a pass over a corpus-scale shard costs a projection rather than
-#: a decode. ``ply_count`` counts moves and ``terminal_action_status`` says
-#: whether one further action was appended, which together give the encoded
-#: length of a game without touching its actions.
-_INDEX_COLUMNS = (
-    NormalizedColumn.SOURCE_ID,
-    NormalizedColumn.SOURCE_GAME_KEY,
+#: How many shards are opened at once to learn how many row groups they hold.
+#: The read is a footer parse rather than a scan, so this is bound by the drive.
+_FOOTER_READERS = 8
+
+#: What planning reads from every row group. ``ply_count`` counts moves and
+#: ``terminal_action_status`` says whether one further action was appended,
+#: which together give a game's encoded length without touching its actions.
+_PLAN_COLUMNS = (
+    NormalizedColumn.SPLIT,
     NormalizedColumn.PLY_COUNT,
     NormalizedColumn.TERMINAL_ACTION_STATUS,
+)
+#: Joined to that projection only when the selection filters on them.
+_FILTER_COLUMNS = (
     NormalizedColumn.WHITE_NORMALIZED_RATING,
     NormalizedColumn.BLACK_NORMALIZED_RATING,
     NormalizedColumn.TIME_INITIAL_MS,
     NormalizedColumn.TIME_INCREMENT_MS,
-    NormalizedColumn.SPLIT,
 )
 
 
 @dataclass(frozen=True)
-class _RowGroupIndex:
-    """Which games one row group holds, in file order.
-
-    The three parallel arrays are typed storage rather than tuples of objects
-    on purpose: at corpus scale this index is resident for the whole run, and
-    the difference between twelve bytes a game and a hundred is the difference
-    between a rounding error and a real share of host memory.
-    """
+class _RowGroup:
+    """One row group of one shard, as the epoch order names it."""
 
     shard: int
     row_group: int
-    positions: array[int]
-    game_ids: array[int]
-    lengths: array[int]
-
-    def __len__(self) -> int:
-        return len(self.game_ids)
 
 
 @dataclass(frozen=True)
 class _Example:
-    """One planned full game or contiguous chunk, named by where it lives."""
+    """One planned full game or contiguous chunk, by its row in a row group.
 
-    group: int
-    slot: int
+    ``game_length`` is the whole game's encoded length rather than this
+    example's, because it is what a decoded game is checked against and a chunk
+    is not the game.
+    """
+
+    position: int
     start_ply: int
     length: int
+    game_length: int
+
+
+@dataclass(frozen=True)
+class _PlannedBatch:
+    """One batch's examples, which all come from a single row group."""
+
+    shard: int
+    row_group: int
+    examples: tuple[_Example, ...]
 
 
 @dataclass(frozen=True)
@@ -149,36 +155,31 @@ class _BatchJob:
     field of every game in the batch, so leaving it in the parent would make
     the one process every batch passes through the slowest part of the loader
     at a wide batch, however many workers were decoding behind it.
-
-    The game ids travel with them because the index already derived them. A row
-    does not carry its id, so a worker deriving it again is a SHA-256 per game
-    per epoch for an answer the index has held since it was built.
     """
 
     shard: int
     path: str
     row_table: Any
-    game_ids: tuple[int, ...]
     lengths: tuple[int, ...]
     entries: tuple[tuple[int, int, int], ...]
     legal_actions: bool
 
 
 @dataclass(frozen=True)
-class ShardedSequenceIndex:
-    """Where every selected game lives, and how long it is when decoded.
+class ShardedSelection:
+    """One split of a prepared corpus, as the shard-backed loader reads it.
 
-    This is the whole corpus as the loader knows it. Building it reads the
-    projected index columns once; nothing here required decoding a game or
-    hashing a shard, because the manifest already established what the shards
-    are.
+    Nothing here is per game. The epoch order is a function of which row groups
+    exist, and which rows a row group contributes is derived from that row
+    group when the plan reaches it.
     """
 
     shards: tuple[ShardIdentity, ...]
-    groups: tuple[_RowGroupIndex, ...]
+    row_groups: tuple[_RowGroup, ...]
     split: str
     chunk_length: int | None
     selection: SelectionConfig
+    marked_digests: frozenset[int] | None
     resolution: SelectionResolution
     identity_sha256: str
 
@@ -189,56 +190,39 @@ class ShardedSequenceIndex:
         return self.resolution.selected_games
 
 
-def build_sharded_index(
+def resolve_sharded_selection(
     shards: Sequence[ShardIdentity],
     *,
     split: str,
     selection: SelectionConfig,
     chunk_length: int | None = None,
+    manifest: Mapping[str, Any],
     manifest_sha256: str,
     marked_digests: frozenset[int] | None = None,
-) -> ShardedSequenceIndex:
-    """Index one split of a prepared corpus without decoding any game."""
+) -> ShardedSelection:
+    """Open one split of a prepared corpus without reading any game."""
 
     require_resolved_snapshot(selection, marked_digests)
+    _reject_subsample(selection)
     if not shards:
         raise DataLoadingError("at least one normalized shard is required")
-    logger.info("Indexing %s shard(s) for the %s split", len(shards), split)
-
-    scanned: list[_RowGroupIndex] = []
-    excluded: dict[str, int] = {}
-    for shard_index, shard in enumerate(shards):
-        reader = open_normalized_shard(shard.path)
-        for row_group in range(normalized_row_group_count(reader)):
-            group = _scan_row_group(
-                reader,
-                shard_index=shard_index,
-                row_group=row_group,
-                split=split,
-                selection=selection,
-                marked_digests=marked_digests,
-                excluded=excluded,
-            )
-            if len(group):
-                scanned.append(group)
-
-    eligible = sum(len(group) for group in scanned)
-    kept = _kept_game_ids(scanned, eligible, selection)
-    groups = (
-        tuple(scanned)
-        if len(kept) == eligible
-        else tuple(_selected_groups(scanned, kept))
+    row_groups = _enumerate_row_groups(shards)
+    eligible, excluded = _resolve_counts(
+        shards,
+        row_groups,
+        split=split,
+        selection=selection,
+        manifest=manifest,
+        marked_digests=marked_digests,
     )
+    if not eligible:
+        raise DataLoadingError("no normalized games matched the loader selection")
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
         eligible_games=eligible,
-        selected_games=len(kept),
-        game_ids_sha256=sorted_game_ids_sha256(kept),
+        selected_games=eligible,
         excluded_games=excluded,
     )
-    if not groups:
-        raise DataLoadingError("no normalized games matched the loader selection")
-
     identity = {
         "version": STREAMING_IDENTITY_VERSION,
         "loader": STREAMING_LOADER_NAME,
@@ -251,22 +235,159 @@ def build_sharded_index(
         "selection": resolution.as_identity_record(),
     }
     logger.info(
-        "Indexed %s of %s eligible %s game(s) across %s row group(s)",
+        "Opened %s of %s eligible %s game(s) across %s row group(s) in %s shard(s)",
         resolution.selected_games,
         resolution.eligible_games,
         split,
-        len(groups),
+        len(row_groups),
+        len(shards),
     )
-    return ShardedSequenceIndex(
+    return ShardedSelection(
         shards=tuple(shards),
-        groups=groups,
+        row_groups=row_groups,
         split=split,
         chunk_length=chunk_length,
         selection=selection,
+        marked_digests=marked_digests,
         resolution=resolution,
         identity_sha256=sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
+    )
+
+
+def _enumerate_row_groups(shards: Sequence[ShardIdentity]) -> tuple[_RowGroup, ...]:
+    """Return every row group of every shard, in shard order."""
+
+    readers = ThreadPoolExecutor(max_workers=_FOOTER_READERS)
+    try:
+        counts = list(readers.map(_shard_row_group_count, shards))
+    finally:
+        readers.shutdown(wait=False, cancel_futures=True)
+    return tuple(
+        _RowGroup(shard=shard_index, row_group=row_group)
+        for shard_index, count in enumerate(counts)
+        for row_group in range(count)
+    )
+
+
+def _shard_row_group_count(shard: ShardIdentity) -> int:
+    return normalized_row_group_count(open_normalized_shard(shard.path))
+
+
+def _filters_rows(
+    selection: SelectionConfig,
+    marked_digests: frozenset[int] | None,
+) -> bool:
+    """Say whether the selection can reject a row of the split it names."""
+
+    return marked_digests is not None or any(
+        (
+            selection.speed is not None,
+            selection.require_ratings,
+            selection.minimum_time_initial_ms is not None,
+            selection.maximum_time_initial_ms is not None,
+            selection.minimum_time_increment_ms is not None,
+            selection.maximum_time_increment_ms is not None,
+            selection.minimum_rating is not None,
+            selection.maximum_rating is not None,
+        )
+    )
+
+
+def _resolve_counts(
+    shards: Sequence[ShardIdentity],
+    row_groups: Sequence[_RowGroup],
+    *,
+    split: str,
+    selection: SelectionConfig,
+    manifest: Mapping[str, Any],
+    marked_digests: frozenset[int] | None,
+) -> tuple[int, dict[str, int]]:
+    """Return how many games the split offers, and why the rest were rejected.
+
+    A selection that rejects nothing is answered from the manifest, which
+    already counted every split when the corpus was written. One that filters
+    has to look, and looking costs a projected read and a check per row of the
+    split.
+    """
+
+    if not _filters_rows(selection, marked_digests):
+        recorded = _manifest_split_games(manifest, split)
+        if recorded is not None:
+            return recorded, {}
+    eligible = 0
+    excluded: dict[str, int] = {}
+    columns = (
+        _PLAN_COLUMNS + _FILTER_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
+    )
+    for group in row_groups:
+        reader = open_normalized_shard(shards[group.shard].path)
+        table = read_normalized_row_group(reader, group.row_group, columns)
+        values = {
+            column.value: row_group_column(table, column.value) for column in columns
+        }
+        splits = values[NormalizedColumn.SPLIT]
+        for position in range(len(splits)):
+            if splits[position] != split:
+                continue
+            row = {
+                column: column_values[position]
+                for column, column_values in values.items()
+            }
+            reason = _exclusion_reason(row, selection, marked_digests)
+            if reason is None:
+                eligible += 1
+            else:
+                excluded[reason] = excluded.get(reason, 0) + 1
+    return eligible, excluded
+
+
+def _manifest_split_games(manifest: Mapping[str, Any], split: str) -> int | None:
+    """Return what a manifest recorded for one split, or ``None`` if it cannot.
+
+    Preparation counts every split as it writes each shard, so a selection that
+    rejects nothing has already been counted and does not have to be counted
+    again. A manifest predating those per-shard counts answers nothing here
+    rather than answering wrongly.
+    """
+
+    output = manifest.get("output")
+    shards = output.get("shards") if isinstance(output, Mapping) else None
+    if not isinstance(shards, list) or not shards:
+        return None
+    total = 0
+    for shard in shards:
+        counts = shard.get("split_counts") if isinstance(shard, Mapping) else None
+        if not isinstance(counts, Mapping):
+            return None
+        recorded = counts.get(split)
+        if type(recorded) is not int:
+            return None
+        total += recorded
+    return total
+
+
+def _reject_subsample(selection: SelectionConfig) -> None:
+    """Refuse a subsample this loader could not resolve without reading it all.
+
+    Taking the lowest-ranked share of a split means ranking every candidate,
+    which needs each one's identity, which is a digest per game over the whole
+    corpus. That is the pass this loader exists not to make, and a cutoff over
+    the same rank does not stand in for it: the count it lands on is the count
+    it lands on, so a run would record a size it did not train on.
+
+    The eager loader still ranks, which is where a selection small enough to
+    hold belongs.
+    """
+
+    if selection.fraction is None and selection.maximum_games is None:
+        return
+    raise DataLoadingError(
+        "the shard-backed loader cannot subsample a selection: ranking every "
+        "candidate needs a digest per game of the whole corpus. Select with "
+        "the filters instead, or read a selection small enough for the eager "
+        "loader"
     )
 
 
@@ -286,26 +407,28 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
 
     def __init__(
         self,
-        index: ShardedSequenceIndex,
+        selection: ShardedSelection,
         config: SequenceLoaderConfig,
         streaming: StreamingLoaderConfig,
         *,
         legal_actions: bool = True,
     ) -> None:
-        if config.split != index.split:
-            raise DataLoadingError("loader split does not match the sequence index")
-        if config.chunk_length != index.chunk_length:
+        if config.split != selection.split:
+            raise DataLoadingError("loader split does not match the sequence selection")
+        if config.chunk_length != selection.chunk_length:
             raise DataLoadingError(
-                "loader chunk_length does not match the sequence index"
+                "loader chunk_length does not match the sequence selection"
             )
-        if config.selection != index.selection:
-            raise DataLoadingError("loader selection does not match the sequence index")
-        self.index = index
+        if config.selection != selection.selection:
+            raise DataLoadingError(
+                "loader selection does not match the sequence selection"
+            )
+        self.corpus = selection
         self.config = config
         self.streaming = streaming
         # Outside the configuration digest for the same reason as in the eager
         # loader: it decides what a decoded ply carries, not which games the
-        # index holds.
+        # selection holds.
         self.legal_actions = legal_actions
         self.configuration_sha256 = sha256(
             json.dumps(
@@ -325,11 +448,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._reader: Any | None = None
         self._reader_shard: int | None = None
         self._table: Any | None = None
-        self._table_group: int | None = None
+        self._table_group: tuple[int, int] | None = None
         self._inflight: deque[Future[SequenceBatch]] = deque()
         self._epoch = 0
         self._position = 0
-        self._plan = _plan_epoch(index, config, streaming, self._epoch)
+        self._plan = self._plan_epoch(self._epoch)
 
     def __iter__(self) -> StreamingSequenceDataLoader:
         return self
@@ -345,29 +468,35 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
 
     @property
     def identity_sha256(self) -> str:
-        """Return the manifest-derived identity of the indexed corpus."""
+        """Return the manifest-derived identity of the selected corpus."""
 
-        return self.index.identity_sha256
+        return self.corpus.identity_sha256
 
     @property
     def resolution(self) -> SelectionResolution:
         """Return which games the configured selection kept."""
 
-        return self.index.resolution
+        return self.corpus.resolution
 
     def state(self) -> SequenceLoaderState:
         """Return the exact next-batch cursor for checkpointing."""
 
         return SequenceLoaderState(
             version=LOADER_STATE_VERSION,
-            dataset_sha256=self.index.identity_sha256,
+            dataset_sha256=self.corpus.identity_sha256,
             configuration_sha256=self.configuration_sha256,
             epoch=self._epoch,
             position=self._position,
         )
 
     def load_state(self, state: SequenceLoaderState | Mapping[str, object]) -> None:
-        """Restore a compatible saved cursor and deterministic epoch order."""
+        """Restore a compatible saved cursor and deterministic epoch order.
+
+        Replaying the plan re-derives every row group it passes, which is a
+        projected read per row group and no decoding at all. An epoch over a
+        corpus is millions of batches, so a cursor a run actually reached sits
+        a few row groups in.
+        """
 
         parsed = (
             state
@@ -378,13 +507,11 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             raise DataLoadingError(
                 f"unsupported loader state version: {parsed.version}"
             )
-        if parsed.dataset_sha256 != self.index.identity_sha256:
+        if parsed.dataset_sha256 != self.corpus.identity_sha256:
             raise DataLoadingError("loader state belongs to different sequence data")
         if parsed.configuration_sha256 != self.configuration_sha256:
             raise DataLoadingError("loader state uses different loader configuration")
         self.start_epoch(parsed.epoch)
-        # Replaying the plan touches the index alone, so a cursor deep into a
-        # corpus-scale epoch is restored without reading or decoding anything.
         for _ in range(parsed.position):
             if next(self._plan, None) is None:
                 raise DataLoadingError(
@@ -400,7 +527,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._drain()
         self._epoch = epoch
         self._position = 0
-        self._plan = _plan_epoch(self.index, self.config, self.streaming, epoch)
+        self._plan = self._plan_epoch(epoch)
 
     def close(self) -> None:
         """Release the worker pool and the row group currently resident."""
@@ -414,6 +541,91 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._table = None
         self._table_group = None
 
+    def _plan_epoch(self, epoch: int) -> Iterator[_PlannedBatch]:
+        """Yield one epoch's batches as plans, decoding nothing.
+
+        Generated rather than materialized so a corpus-scale epoch costs a
+        cursor instead of a list of every example in it, and so a resumed run
+        can skip forward through the plan at the price of one projected read
+        per row group it passes.
+        """
+
+        order = list(self.corpus.row_groups)
+        if self.config.shuffle:
+            order.sort(key=partial(_group_key, self.config.seed, epoch))
+        for group in order:
+            yield from self._plan_row_group(group, epoch)
+
+    def _plan_row_group(
+        self,
+        group: _RowGroup,
+        epoch: int,
+    ) -> Iterator[_PlannedBatch]:
+        """Yield the batches one row group contributes to an epoch."""
+
+        positions, lengths = self._eligible_rows(group)
+        rows = list(zip(positions, lengths, strict=True))
+        if self.config.shuffle:
+            rows.sort(key=partial(_game_key, self.config.seed, epoch, group))
+        examples = [
+            example
+            for position, length in rows
+            for example in _examples_for(position, length, self.corpus.chunk_length)
+        ]
+        window = self.streaming.planning_window_examples
+        for start in range(0, len(examples), window):
+            for batch in _window_batches(
+                examples[start : start + window], self.config, epoch
+            ):
+                yield _PlannedBatch(
+                    shard=group.shard,
+                    row_group=group.row_group,
+                    examples=batch,
+                )
+
+    def _eligible_rows(self, group: _RowGroup) -> tuple[array[int], array[int]]:
+        """Return which rows of one row group the selection keeps, and how long.
+
+        Reading this here rather than before the run is what keeps the whole
+        loader free of per-game state: the answer is wanted once, in the order
+        the epoch visits row groups, and it is derived from columns cheap
+        enough to project.
+        """
+
+        selection = self.corpus.selection
+        marked = self.corpus.marked_digests
+        filtered = _filters_rows(selection, marked)
+        columns = (
+            _PLAN_COLUMNS
+            + (_FILTER_COLUMNS if filtered else ())
+            + (_MARKED_COLUMNS if marked else ())
+        )
+        table = read_normalized_row_group(
+            self._shard_reader(group.shard), group.row_group, columns
+        )
+        values = {
+            column.value: row_group_column(table, column.value) for column in columns
+        }
+        splits = values[NormalizedColumn.SPLIT]
+        ply_counts = values[NormalizedColumn.PLY_COUNT]
+        terminal = values[NormalizedColumn.TERMINAL_ACTION_STATUS]
+        positions: array[int] = array("I")
+        lengths: array[int] = array("i")
+        for position in range(len(splits)):
+            if splits[position] != self.corpus.split:
+                continue
+            if filtered:
+                row = {
+                    column: column_values[position]
+                    for column, column_values in values.items()
+                }
+                if _exclusion_reason(row, selection, marked) is not None:
+                    continue
+            appended = terminal[position] == TerminalActionStatus.APPENDED
+            positions.append(position)
+            lengths.append(ply_counts[position] + (1 if appended else 0))
+        return positions, lengths
+
     def _fill(self) -> None:
         # One job per worker plus the declared depth, never the depth alone:
         # that would leave a larger pool with nothing to do. The reason the two
@@ -426,7 +638,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 return
             self._inflight.append(self._submit(planned))
 
-    def _submit(self, planned: tuple[_Example, ...]) -> Future[SequenceBatch]:
+    def _submit(self, planned: _PlannedBatch) -> Future[SequenceBatch]:
         job = self._job(planned)
         if self.streaming.workers:
             return self._executor().submit(_materialize_batch, job)
@@ -445,41 +657,41 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             self._pool = ProcessPoolExecutor(max_workers=self.streaming.workers)
         return self._pool
 
-    def _job(self, planned: tuple[_Example, ...]) -> _BatchJob:
-        group = self.index.groups[planned[0].group]
-        table = self._row_group_table(planned[0].group)
-        slots = sorted({example.slot for example in planned})
-        row_index = {slot: index for index, slot in enumerate(slots)}
+    def _job(self, planned: _PlannedBatch) -> _BatchJob:
+        table = self._row_group_table(planned.shard, planned.row_group)
+        rows = sorted({example.position for example in planned.examples})
+        row_index = {position: index for index, position in enumerate(rows)}
+        game_lengths = {
+            example.position: example.game_length for example in planned.examples
+        }
         return _BatchJob(
-            shard=group.shard,
-            path=str(self.index.shards[group.shard].path),
-            row_table=take_rows(table, [group.positions[slot] for slot in slots]),
-            game_ids=tuple(group.game_ids[slot] for slot in slots),
-            lengths=tuple(group.lengths[slot] for slot in slots),
+            shard=planned.shard,
+            path=str(self.corpus.shards[planned.shard].path),
+            row_table=take_rows(table, rows),
+            lengths=tuple(game_lengths[position] for position in rows),
             entries=tuple(
-                (row_index[example.slot], example.start_ply, example.length)
-                for example in planned
+                (row_index[example.position], example.start_ply, example.length)
+                for example in planned.examples
             ),
             legal_actions=self.legal_actions,
         )
 
-    def _row_group_table(self, group_index: int) -> Any:
-        if self._table_group == group_index:
+    def _shard_reader(self, shard: int) -> Any:
+        if self._reader_shard != shard:
+            self._reader = open_normalized_shard(self.corpus.shards[shard].path)
+            self._reader_shard = shard
+        return self._reader
+
+    def _row_group_table(self, shard: int, row_group: int) -> Any:
+        if self._table_group == (shard, row_group):
             return self._table
-        group = self.index.groups[group_index]
-        if self._reader_shard != group.shard:
-            self._reader = open_normalized_shard(self.index.shards[group.shard].path)
-            self._reader_shard = group.shard
+        reader = self._shard_reader(shard)
         # One row group at a time, and the previous one released before the
         # next is read. This is the loader's largest resident structure and the
         # only one preparation's shard sizing decides.
         self._table = None
-        self._table = read_normalized_row_group(
-            self._reader,
-            group.row_group,
-            _LOADER_COLUMNS,
-        )
-        self._table_group = group_index
+        self._table = read_normalized_row_group(reader, row_group, _LOADER_COLUMNS)
+        self._table_group = (shard, row_group)
         return self._table
 
     def _drain(self) -> None:
@@ -498,13 +710,14 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
     for row_index, start_ply, length in job.entries:
         plies = decoded.get(row_index)
         if plies is None:
+            row = rows[row_index]
             plies = encode_game(
-                _game_from_row(rows[row_index], path, job.game_ids[row_index]),
+                _game_from_row(row, path, row_game_id(row)),
                 legal_actions=job.legal_actions,
             )
             if len(plies) != job.lengths[row_index]:
                 raise DataLoadingError(
-                    f"{path} game {job.game_ids[row_index]} "
+                    f"{path} game {row_game_id(row)} "
                     f"decodes to {len(plies)} action(s) where its ply count and "
                     f"terminal action status describe {job.lengths[row_index]}"
                 )
@@ -521,180 +734,26 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
     return collate_sequences(examples)
 
 
-def _scan_row_group(
-    reader: Any,
-    *,
-    shard_index: int,
-    row_group: int,
-    split: str,
-    selection: SelectionConfig,
-    marked_digests: frozenset[int] | None,
-    excluded: dict[str, int],
-) -> _RowGroupIndex:
-    """Read one row group's index columns and apply the selection filters."""
-
-    columns = _INDEX_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
-    table = read_normalized_row_group(reader, row_group, columns)
-    values = {column.value: row_group_column(table, column.value) for column in columns}
-    positions: array[int] = array("I")
-    game_ids: array[int] = array("Q")
-    lengths: array[int] = array("i")
-    splits = values[NormalizedColumn.SPLIT]
-    ply_counts = values[NormalizedColumn.PLY_COUNT]
-    terminal = values[NormalizedColumn.TERMINAL_ACTION_STATUS]
-    for position in range(len(splits)):
-        if splits[position] != split:
-            continue
-        row = {
-            column: column_values[position] for column, column_values in values.items()
-        }
-        reason = _exclusion_reason(row, selection, marked_digests)
-        if reason is not None:
-            excluded[reason] = excluded.get(reason, 0) + 1
-            continue
-        appended = terminal[position] == TerminalActionStatus.APPENDED
-        positions.append(position)
-        game_ids.append(row_game_id(row))
-        lengths.append(ply_counts[position] + (1 if appended else 0))
-    return _RowGroupIndex(
-        shard=shard_index,
-        row_group=row_group,
-        positions=positions,
-        game_ids=game_ids,
-        lengths=lengths,
-    )
-
-
-def _kept_game_ids(
-    scanned: Sequence[_RowGroupIndex],
-    eligible: int,
-    selection: SelectionConfig,
-) -> array[int]:
-    """Return the selected game ids in ascending order, eight bytes each.
-
-    Ascending because both of its readers want them that way: the digest is
-    defined over the sorted ids, and membership is a binary search over them.
-    """
-
-    # Deferred the way `collate_sequences` defers it, and for the same reason:
-    # `anthro machine` has to run wherever the package is installed, including
-    # on an install carrying no extras.
-    import numpy as np
-
-    kept = subsample_size(eligible, selection)
-    gathered: array[int] = array("Q")
-    if kept >= eligible:
-        for group in scanned:
-            gathered.extend(group.game_ids)
-    else:
-        gathered.extend(
-            nsmallest(
-                kept,
-                chain.from_iterable(group.game_ids for group in scanned),
-                key=partial(_rank_key, selection.seed),
-            )
-        )
-    # Sorted in place through a view over this array's own memory: `sorted`
-    # would hand back a list of Python integers, five times the width of the
-    # ids themselves and the kind of structure this loader exists not to build.
-    np.frombuffer(gathered, dtype=np.uint64).sort()
-    return gathered
-
-
-def _selected_groups(
-    scanned: Sequence[_RowGroupIndex],
-    kept: array[int],
-) -> Iterator[_RowGroupIndex]:
-    """Drop the games a subsample excluded, and any row group left empty."""
-
-    end = len(kept)
-    for group in scanned:
-        positions: array[int] = array("I")
-        game_ids: array[int] = array("Q")
-        lengths: array[int] = array("i")
-        for slot, game_id in enumerate(group.game_ids):
-            found = bisect_left(kept, game_id)
-            if found == end or kept[found] != game_id:
-                continue
-            positions.append(group.positions[slot])
-            game_ids.append(game_id)
-            lengths.append(group.lengths[slot])
-        if not game_ids:
-            continue
-        yield _RowGroupIndex(
-            shard=group.shard,
-            row_group=group.row_group,
-            positions=positions,
-            game_ids=game_ids,
-            lengths=lengths,
-        )
-
-
-def _plan_epoch(
-    index: ShardedSequenceIndex,
-    config: SequenceLoaderConfig,
-    streaming: StreamingLoaderConfig,
-    epoch: int,
-) -> Iterator[tuple[_Example, ...]]:
-    """Yield one epoch's batches as plans, reading nothing.
-
-    Generated rather than materialized so a corpus-scale epoch costs a cursor
-    instead of a list of every example in it, and so a resumed run can skip
-    forward through the plan at the price of arithmetic.
-    """
-
-    for window in _plan_windows(index, config, streaming, epoch):
-        yield from _window_batches(window, config, epoch)
-
-
-def _plan_windows(
-    index: ShardedSequenceIndex,
-    config: SequenceLoaderConfig,
-    streaming: StreamingLoaderConfig,
-    epoch: int,
-) -> Iterator[tuple[_Example, ...]]:
-    """Yield the epoch's planning windows in deterministic order."""
-
-    order = list(range(len(index.groups)))
-    if config.shuffle:
-        order.sort(
-            key=lambda position: _group_key(config.seed, epoch, index.groups[position])
-        )
-    window = streaming.planning_window_examples
-    for group_index in order:
-        group = index.groups[group_index]
-        slots = list(range(len(group)))
-        if config.shuffle:
-            slots.sort(key=partial(_game_key, config.seed, epoch, group))
-        examples = [
-            example
-            for slot in slots
-            for example in _examples_for(group_index, slot, group, index.chunk_length)
-        ]
-        for start in range(0, len(examples), window):
-            yield tuple(examples[start : start + window])
-
-
 def _examples_for(
-    group_index: int,
-    slot: int,
-    group: _RowGroupIndex,
+    position: int,
+    length: int,
     chunk_length: int | None,
 ) -> Iterator[_Example]:
     """Expand one game into the full sequence or the chunks it is cut into."""
 
-    length = group.lengths[slot]
     if chunk_length is None:
-        yield _Example(group=group_index, slot=slot, start_ply=0, length=length)
+        yield _Example(
+            position=position, start_ply=0, length=length, game_length=length
+        )
         return
     if type(chunk_length) is not int or chunk_length < 1:
         raise ValueError("chunk_length must be a positive integer or None")
     for start in range(0, length, chunk_length):
         yield _Example(
-            group=group_index,
-            slot=slot,
+            position=position,
             start_ply=start,
             length=min(chunk_length, length - start),
+            game_length=length,
         )
 
 
@@ -724,33 +783,31 @@ def _window_batches(
             continue
         batches.append(tuple(remainder))
     if config.shuffle:
-        batches.sort(key=lambda batch: _batch_key(config.seed, epoch, batch))
+        batches.sort(key=partial(_batch_key, config.seed, epoch))
     yield from batches
 
 
-def _group_key(seed: str, epoch: int, group: _RowGroupIndex) -> bytes:
+def _group_key(seed: str, epoch: int, group: _RowGroup) -> bytes:
     return sha256(
         f"{seed}\0{epoch}\0group\0{group.shard}\0{group.row_group}".encode()
     ).digest()
 
 
-def _game_key(seed: str, epoch: int, group: _RowGroupIndex, slot: int) -> bytes:
+def _game_key(seed: str, epoch: int, group: _RowGroup, row: tuple[int, int]) -> bytes:
     return sha256(
-        f"{seed}\0{epoch}\0{group.shard}\0{group.game_ids[slot]}".encode()
+        f"{seed}\0{epoch}\0{group.shard}\0{group.row_group}\0{row[0]}".encode()
     ).digest()
 
 
 def _batch_key(seed: str, epoch: int, batch: Sequence[_Example]) -> bytes:
-    members = ",".join(
-        f"{example.group}:{example.slot}:{example.start_ply}" for example in batch
-    )
+    members = ",".join(f"{example.position}:{example.start_ply}" for example in batch)
     return sha256(f"{seed}\0{epoch}\0batch\0{members}".encode()).digest()
 
 
 __all__ = [
     "STREAMING_IDENTITY_VERSION",
     "STREAMING_LOADER_NAME",
-    "ShardedSequenceIndex",
+    "ShardedSelection",
     "StreamingSequenceDataLoader",
-    "build_sharded_index",
+    "resolve_sharded_selection",
 ]

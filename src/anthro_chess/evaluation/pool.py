@@ -40,7 +40,6 @@ from anthro_chess.data.artifacts import (
     read_normalized_row_group,
     read_normalized_rows,
     row_group_column,
-    sorted_game_ids_sha256,
     take_rows,
     validate_manifest_compatibility,
     write_normalized_rows,
@@ -595,7 +594,7 @@ def _predecessor(config: PoolConfig) -> _Predecessor | None:
     game_ids = loaded.game_ids
     return _Predecessor(
         game_ids=frozenset(game_ids),
-        game_ids_sha256=sorted_game_ids_sha256(game_ids),
+        game_ids_sha256=game_ids_sha256(game_ids),
     )
 
 
