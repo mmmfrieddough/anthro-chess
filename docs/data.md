@@ -804,8 +804,9 @@ that reaches billions. And the shard-backed loader refuses a subsample rather
 than approximating one: taking the lowest-ranked share of a split means ranking
 every candidate, which needs a digest per game of the whole corpus, and a
 cutoff over that same rank keeps whatever share it happens to rather than the
-size it was asked for. Subsampling stays available through the eager loader,
-where a selection is small enough to rank.
+size it was asked for. A dial that keeps the whole split ranks nothing and is
+admitted. Subsampling stays available through the eager loader, where a
+selection is small enough to rank.
 
 The two produce different orders and neither is a defect. A global shuffle over
 a corpus means a seek per example, so the shard-backed loader shuffles row
@@ -960,9 +961,9 @@ count it names whether or not the dial is set, and two such runs then differ in
 which games they read rather than in how many. `fraction` does not hold them
 together, because it takes a share of whatever survived the filter, so a
 comparison resting on it confounds the rejection with how much data each run
-saw. Both dials rank, so both are the eager loader's: a corpus large enough to
-need the shard-backed loader holds the two runs together by their filters
-instead. A run records the snapshot it rejected against beside the resolved
+saw. Ranking every candidate means holding every candidate's identity, so a dial
+that would drop any game is the eager loader's; a corpus large enough to need
+the shard-backed loader holds the two runs together by their filters instead. A run records the snapshot it rejected against beside the resolved
 selection counting what it removed.
 
 In-training previews read that snapshot too, and no other selection filter. A

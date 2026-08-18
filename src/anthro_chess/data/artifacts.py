@@ -14,7 +14,6 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import partial
 from hashlib import sha256
 from io import TextIOWrapper
 from pathlib import Path
@@ -113,14 +112,19 @@ def open_pgn_text(source_path: Path) -> Iterator[TextIO]:
 
 @dataclass(frozen=True)
 class ShardIdentity:
-    """One normalized shard, named by the digest its manifest recorded.
+    """One normalized shard, as its manifest describes it and its footer confirms.
 
-    A consumer that has verified a shard against its manifest already knows
-    what the shard is, so identifying a corpus does not have to read it again.
+    A consumer that has checked a shard against its manifest already knows what
+    the shard is, so identifying a corpus does not have to read it again. It
+    also had the footer open, so how many row groups the shard holds and how its
+    games divide between the splits travel out of that same pass rather than
+    costing another one.
     """
 
     path: Path
     sha256: str
+    split_counts: Mapping[str, int]
+    row_groups: int
 
 
 def file_sha256(path: Path) -> str:
@@ -220,6 +224,12 @@ def normalized_row_group_count(shard: Any) -> int:
     """Return how many row groups one opened shard holds."""
 
     return int(shard.reader.metadata.num_row_groups)
+
+
+def normalized_row_count(shard: Any) -> int:
+    """Return how many rows one opened shard holds."""
+
+    return int(shard.reader.metadata.num_rows)
 
 
 def read_normalized_row_group(
@@ -381,11 +391,11 @@ def validate_manifest_compatibility(
         )
 
 
-#: How many shards are read at once when a corpus is checked. Both checks are
-#: bound by the drive rather than by the processor, and threads are enough
-#: because the Parquet footer parse and the hashing each release the
-#: interpreter lock.
-_VERIFY_READERS = 8
+#: How many shards are hashed at once. Hashing releases the interpreter lock and
+#: saturates the drive well before the processor, so threads reach the ceiling
+#: and more of them do not raise it. The footer pass gets none of this: parsing
+#: one holds the lock throughout, which measures as no gain at any width.
+_SHARD_HASHERS = 8
 
 
 @dataclass(frozen=True)
@@ -394,6 +404,7 @@ class _ExpectedShard:
 
     sha256: str
     games: int
+    split_counts: Mapping[str, int]
 
 
 def _expected_shards(
@@ -417,57 +428,52 @@ def _expected_shards(
         relative_path = shard.get("path")
         digest = shard.get("sha256")
         games = shard.get("games")
+        split_counts = shard.get("split_counts")
         if (
             not isinstance(relative_path, str)
             or not isinstance(digest, str)
             or type(games) is not int
+            or not isinstance(split_counts, Mapping)
+            or any(type(count) is not int for count in split_counts.values())
         ):
             raise DataLoadingError(f"{manifest_path} has an invalid output shard")
         expected[(artifact_root / relative_path).resolve()] = _ExpectedShard(
             sha256=digest,
             games=games,
+            split_counts=dict(split_counts),
         )
     return expected
 
 
-def _shard_extent_failure(
-    expected: Mapping[Path, _ExpectedShard],
-    path: Path,
-) -> str | None:
-    """Return why one shard's extent disagrees with its manifest record.
+def _checked_extent(recorded: _ExpectedShard, path: Path) -> ShardIdentity:
+    """Check one shard's footer against its manifest record.
 
     A truncated or replaced file either fails to parse its footer or reports a
     different row count, which is what an interrupted preparation and a partial
-    copy both leave behind. A page rewritten in place is invisible here, and
-    that is what the content check exists for.
+    copy both leave behind. A page rewritten in place survives this, and hashing
+    the file is what sees that.
     """
 
-    try:
-        import pyarrow.parquet as pq
-    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
-        raise DataLoadingError(_PARQUET_MISSING) from error
-    try:
-        rows = int(pq.ParquetFile(path).metadata.num_rows)
-    except (OSError, ValueError) as error:
-        return f"cannot read normalized data {path}: {error}"
-    recorded = expected[path.resolve()].games
-    if rows != recorded:
-        return (
+    shard = open_normalized_shard(path)
+    rows = normalized_row_count(shard)
+    if rows != recorded.games:
+        raise DataLoadingError(
             f"normalized shard holds {rows} row(s) where the manifest records "
-            f"{recorded}: {path}"
+            f"{recorded.games}: {path}"
         )
-    return None
+    return ShardIdentity(
+        path=path,
+        sha256=recorded.sha256,
+        split_counts=recorded.split_counts,
+        row_groups=normalized_row_group_count(shard),
+    )
 
 
-def _shard_content_failure(
-    expected: Mapping[Path, _ExpectedShard],
-    path: Path,
-) -> str | None:
-    """Return why one shard's bytes disagree with its manifest record."""
+def _checked_contents(shard: ShardIdentity) -> None:
+    """Refuse one shard whose bytes are not the ones the manifest recorded."""
 
-    if file_sha256(path) != expected[path.resolve()].sha256:
-        return f"normalized data checksum mismatch: {path}"
-    return None
+    if file_sha256(shard.path) != shard.sha256:
+        raise DataLoadingError(f"normalized data checksum mismatch: {shard.path}")
 
 
 def validate_manifest_outputs(
@@ -482,30 +488,33 @@ def validate_manifest_outputs(
     The default check compares each shard's recorded row count against its
     Parquet footer, reading kilobytes of a file rather than all of it.
 
-    ``verify_contents`` hashes every shard end to end instead. That is the only
+    ``verify_contents`` hashes every shard end to end as well. That is the only
     check which sees a page rewritten in place, and it costs a full read of the
     corpus at whatever the drive sustains, so it is asked for rather than paid
     by every run.
 
-    The recorded digests are returned either way. They are what identifies this
-    corpus to a caller, and the check has just established that the shards on
-    disk are the ones the manifest describes.
+    What the manifest recorded is returned either way. It identifies this corpus
+    to a caller and says how its games divide between the splits, and the check
+    has just established that the shards on disk are the ones it describes.
     """
 
     expected = _expected_shards(manifest, manifest_path)
-    if {path.resolve() for path in paths} != set(expected):
+    # Resolved once and carried, because a corpus is tens of thousands of paths
+    # and resolving one is a system call.
+    resolved = [path.resolve() for path in paths]
+    if set(resolved) != set(expected):
         raise DataLoadingError(
             "configured normalized paths do not match the data manifest outputs"
         )
-    failure_for = _shard_content_failure if verify_contents else _shard_extent_failure
-    readers = ThreadPoolExecutor(max_workers=_VERIFY_READERS)
-    try:
-        for failure in readers.map(partial(failure_for, expected), paths):
-            if failure is not None:
-                raise DataLoadingError(failure)
-    finally:
-        readers.shutdown(wait=False, cancel_futures=True)
-    return tuple(
-        ShardIdentity(path=path, sha256=expected[path.resolve()].sha256)
-        for path in paths
+    shards = tuple(
+        _checked_extent(expected[resolved[index]], path)
+        for index, path in enumerate(paths)
     )
+    if verify_contents:
+        hashers = ThreadPoolExecutor(max_workers=_SHARD_HASHERS)
+        try:
+            for _ in hashers.map(_checked_contents, shards):
+                pass
+        finally:
+            hashers.shutdown(wait=False, cancel_futures=True)
+    return shards

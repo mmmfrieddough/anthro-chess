@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from anthro_chess.data.artifacts import (
     validate_manifest_outputs,
 )
 
-Corpus = tuple[tuple[ShardIdentity, ...], dict[str, Any], str]
+Corpus = tuple[tuple[ShardIdentity, ...], str]
 
 #: Lengths that straddle a bucket boundary of four, so a fixture corpus has
 #: more than one bucket to fill and flush.
@@ -39,13 +40,12 @@ def _corpus(
 
     normalized, manifest_path = write_corpus(directory, rows, **layout)
     manifest_bytes = manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
     shards = validate_manifest_outputs(
-        manifest,
+        json.loads(manifest_bytes),
         manifest_path,
         normalized_shard_paths(normalized),
     )
-    return shards, manifest, sha256(manifest_bytes).hexdigest()
+    return shards, sha256(manifest_bytes).hexdigest()
 
 
 def _loader(
@@ -55,13 +55,12 @@ def _loader(
     *,
     legal_actions: bool = True,
 ) -> StreamingSequenceDataLoader:
-    shards, manifest, manifest_sha256 = corpus
+    shards, manifest_sha256 = corpus
     selection = resolve_sharded_selection(
         shards,
         split=config.split,
         selection=config.selection,
         chunk_length=config.chunk_length,
-        manifest=manifest,
         manifest_sha256=manifest_sha256,
     )
     return StreamingSequenceDataLoader(
@@ -91,20 +90,12 @@ def _sequences(batch: SequenceBatch) -> list[tuple[int, tuple[int, ...]]]:
     return sequences
 
 
-def _read_game_ids(loader: StreamingSequenceDataLoader) -> set[int]:
-    """Return every game one loader actually yields, then release it."""
-
-    try:
-        return {game for batch in loader for game, _ in _sequences(batch)}
-    finally:
-        loader.close()
-
-
 def _decoded(batch: SequenceBatch) -> list[tuple[Any, ...]]:
     """Return each row of a batch as enough of its decode to identify the row.
 
-    A game id alone is not: it comes from the index rather than from the row
-    it labels, so a batch built from the wrong row would still be named right.
+    A game id alone is not: the plan chooses a row and the id is derived from
+    whichever row was gathered, so a batch built from the wrong row would still
+    be named consistently with itself.
     """
 
     inputs = batch.inputs
@@ -589,14 +580,13 @@ def test_identity_follows_the_manifest_the_shards_the_split_and_the_selection(
         *_rows(normalized_row, 12),
         *_rows(normalized_row, 4, split="validation"),
     ]
-    shards, manifest, manifest_sha256 = _corpus(write_corpus, tmp_path, rows)
+    shards, manifest_sha256 = _corpus(write_corpus, tmp_path, rows)
 
     def identity(**overrides: Any) -> str:
         arguments: dict[str, Any] = {
             "split": "train",
             "selection": SelectionConfig(),
             "chunk_length": None,
-            "manifest": manifest,
             "manifest_sha256": manifest_sha256,
         }
         arguments.update(overrides)
@@ -610,10 +600,9 @@ def test_identity_follows_the_manifest_the_shards_the_split_and_the_selection(
     assert identity(manifest_sha256="0" * 64) != baseline
     assert (
         resolve_sharded_selection(
-            (ShardIdentity(path=shards[0].path, sha256="0" * 64),),
+            (replace(shards[0], sha256="0" * 64),),
             split="train",
             selection=SelectionConfig(),
-            manifest=manifest,
             manifest_sha256=manifest_sha256,
         ).identity_sha256
         != baseline
@@ -632,17 +621,16 @@ def test_identity_costs_no_decode_of_the_corpus(
         raise AssertionError("opening the corpus decoded a game")
 
     monkeypatch.setattr("anthro_chess.data.streaming.encode_game", refuse)
-    shards, manifest, manifest_sha256 = corpus
+    shards, manifest_sha256 = corpus
     selection = resolve_sharded_selection(
         shards,
         split="train",
         selection=SelectionConfig(),
-        manifest=manifest,
         manifest_sha256=manifest_sha256,
     )
 
     assert selection.identity_sha256
-    assert selection.games == 16
+    assert selection.resolution.selected_games == 16
 
 
 def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
@@ -698,40 +686,15 @@ def test_a_selection_rejecting_nothing_opens_without_reading_a_row_group(
         raise AssertionError("opening the corpus read a row group")
 
     monkeypatch.setattr("anthro_chess.data.streaming.read_normalized_row_group", refuse)
-    shards, manifest, manifest_sha256 = corpus
+    shards, manifest_sha256 = corpus
     selection = resolve_sharded_selection(
         shards,
         split="train",
         selection=SelectionConfig(),
-        manifest=manifest,
         manifest_sha256=manifest_sha256,
     )
 
     assert selection.resolution.eligible_games == 8
-
-
-def test_a_manifest_that_cannot_answer_counts_the_split_instead(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[..., tuple[Path, Path]],
-) -> None:
-    """A corpus written before the per-shard counts still has to open."""
-
-    shards, manifest, manifest_sha256 = _corpus(
-        write_corpus, tmp_path, _rows(normalized_row, 16), games_per_shard=4
-    )
-    for shard in manifest["output"]["shards"]:
-        del shard["split_counts"]
-
-    selection = resolve_sharded_selection(
-        shards,
-        split="train",
-        selection=SelectionConfig(),
-        manifest=manifest,
-        manifest_sha256=manifest_sha256,
-    )
-
-    assert selection.resolution.eligible_games == 16
 
 
 def test_an_unsubsampled_selection_reads_every_eligible_game(
@@ -750,7 +713,7 @@ def test_an_unsubsampled_selection_reads_every_eligible_game(
     )
     loader = _loader(corpus, SequenceLoaderConfig(split="train"))
 
-    read = _read_game_ids(loader)
+    read = {game for game, _ in _drain(loader)}
 
     assert len(read) == 16
     assert loader.resolution.selected_games == 16
@@ -820,7 +783,7 @@ def test_an_unreadable_row_group_names_the_shard_it_could_not_be_read_from(
         list(loader)
 
 
-def test_a_game_that_decodes_to_another_length_than_indexed_fails_clearly(
+def test_a_game_that_decodes_to_another_length_than_planned_fails_clearly(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],

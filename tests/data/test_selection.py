@@ -423,9 +423,8 @@ def test_both_loaders_reject_the_same_accounts(
     ]
     normalized, manifest_path = write_corpus(tmp_path, rows)
     manifest_bytes = manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
     shards = validate_manifest_outputs(
-        manifest, manifest_path, normalized_shard_paths(normalized)
+        json.loads(manifest_bytes), manifest_path, normalized_shard_paths(normalized)
     )
     marked = frozenset(
         {account_row_digest(f"white{game_id}") for game_id in (2, 5, 11)}
@@ -442,7 +441,6 @@ def test_both_loaders_reject_the_same_accounts(
             shards,
             split="train",
             selection=_naming_a_snapshot(),
-            manifest=manifest,
             manifest_sha256=sha256(manifest_bytes).hexdigest(),
             marked_digests=marked,
         ),

@@ -98,6 +98,40 @@ def test_a_shard_the_manifest_does_not_name_is_refused(
         validate_manifest_outputs(manifest, manifest_path, paths)
 
 
+def test_a_manifest_without_per_split_counts_is_refused(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A loader reads those counts instead of counting a corpus itself.
+
+    Preparation has written them for every shard since the current
+    preprocessing version, which a manifest is checked against before this, so
+    a record missing them is malformed rather than merely old.
+    """
+
+    manifest, manifest_path, paths = _corpus(write_corpus, tmp_path, normalized_row)
+    del manifest["output"]["shards"][0]["split_counts"]
+
+    with pytest.raises(DataLoadingError, match="invalid output shard"):
+        validate_manifest_outputs(manifest, manifest_path, paths)
+
+
+def test_the_check_reports_how_many_row_groups_each_shard_holds(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The footer was open, so a reader does not open it a second time."""
+
+    manifest, manifest_path, paths = _corpus(write_corpus, tmp_path, normalized_row)
+
+    shards = validate_manifest_outputs(manifest, manifest_path, paths)
+
+    assert [shard.row_groups for shard in shards] == [1, 1]
+    assert [shard.split_counts["train"] for shard in shards] == [4, 4]
+
+
 def test_a_shard_holding_the_wrong_number_of_rows_is_refused(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],

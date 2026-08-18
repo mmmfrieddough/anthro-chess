@@ -31,10 +31,9 @@ from __future__ import annotations
 
 import json
 import logging
-from array import array
 from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
@@ -45,7 +44,6 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     ShardIdentity,
     materialize_rows,
-    normalized_row_group_count,
     open_normalized_shard,
     read_normalized_row_group,
     row_group_column,
@@ -139,8 +137,7 @@ class _Example:
 class _PlannedBatch:
     """One batch's examples, which all come from a single row group."""
 
-    shard: int
-    row_group: int
+    group: _RowGroup
     examples: tuple[_Example, ...]
 
 
@@ -186,12 +183,6 @@ class ShardedSelection:
     resolution: SelectionResolution
     identity_sha256: str
 
-    @property
-    def games(self) -> int:
-        """Return how many games the selection kept."""
-
-        return self.resolution.selected_games
-
 
 def resolve_sharded_selection(
     shards: Sequence[ShardIdentity],
@@ -199,7 +190,6 @@ def resolve_sharded_selection(
     split: str,
     selection: SelectionConfig,
     chunk_length: int | None = None,
-    manifest: Mapping[str, Any],
     manifest_sha256: str,
     marked_digests: frozenset[int] | None = None,
 ) -> ShardedSelection:
@@ -208,18 +198,22 @@ def resolve_sharded_selection(
     require_resolved_snapshot(selection, marked_digests)
     if not shards:
         raise DataLoadingError("at least one normalized shard is required")
+    # Ahead of the counting pass, which a filtering selection pays for over the
+    # whole corpus. A share below one subsamples whatever it finds, so this half
+    # of the refusal does not need the count that the other half does.
+    if selection.fraction is not None and selection.fraction < 1.0:
+        raise _refuse_subsample()
     row_groups = _enumerate_row_groups(shards)
     eligible, excluded = _resolve_counts(
         shards,
-        row_groups,
         split=split,
         selection=selection,
-        manifest=manifest,
         marked_digests=marked_digests,
     )
     if not eligible:
         raise DataLoadingError("no normalized games matched the loader selection")
-    _reject_subsample(eligible, selection)
+    if subsample_size(eligible, selection) < eligible:
+        raise _refuse_subsample()
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
         eligible_games=eligible,
@@ -262,20 +256,11 @@ def resolve_sharded_selection(
 def _enumerate_row_groups(shards: Sequence[ShardIdentity]) -> tuple[_RowGroup, ...]:
     """Return every row group of every shard, in shard order."""
 
-    readers = ThreadPoolExecutor(max_workers=_FOOTER_READERS)
-    try:
-        counts = list(readers.map(_shard_row_group_count, shards))
-    finally:
-        readers.shutdown(wait=False, cancel_futures=True)
     return tuple(
         _RowGroup(shard=shard_index, row_group=row_group)
-        for shard_index, count in enumerate(counts)
-        for row_group in range(count)
+        for shard_index, shard in enumerate(shards)
+        for row_group in range(shard.row_groups)
     )
-
-
-def _shard_row_group_count(shard: ShardIdentity) -> int:
-    return normalized_row_group_count(open_normalized_shard(shard.path))
 
 
 def _filters_rows(
@@ -300,99 +285,101 @@ def _filters_rows(
 
 def _resolve_counts(
     shards: Sequence[ShardIdentity],
-    row_groups: Sequence[_RowGroup],
     *,
     split: str,
     selection: SelectionConfig,
-    manifest: Mapping[str, Any],
     marked_digests: frozenset[int] | None,
 ) -> tuple[int, dict[str, int]]:
     """Return how many games the split offers, and why the rest were rejected.
 
-    A selection that rejects nothing is answered from the manifest, which
-    already counted every split when the corpus was written. One that filters
-    has to look, and looking costs a projected read and a check per row of the
-    split.
+    A selection that rejects nothing is answered from what preparation counted
+    when it wrote each shard. One that filters has to look, and looking costs a
+    projected read and a check per row of the split.
     """
 
     if not _filters_rows(selection, marked_digests):
-        recorded = _manifest_split_games(manifest, split)
-        if recorded is not None:
-            return recorded, {}
+        return sum(shard.split_counts.get(split, 0) for shard in shards), {}
     eligible = 0
     excluded: dict[str, int] = {}
+    for shard_index, shard in enumerate(shards):
+        reader = open_normalized_shard(shard.path)
+        for row_group in range(shard.row_groups):
+            for _, reason, _length in _scan_row_group(
+                reader,
+                _RowGroup(shard=shard_index, row_group=row_group),
+                split=split,
+                selection=selection,
+                marked_digests=marked_digests,
+            ):
+                if reason is None:
+                    eligible += 1
+                else:
+                    excluded[reason] = excluded.get(reason, 0) + 1
+    return eligible, excluded
+
+
+def _scan_row_group(
+    reader: Any,
+    group: _RowGroup,
+    *,
+    split: str,
+    selection: SelectionConfig,
+    marked_digests: frozenset[int] | None,
+    lengths: bool = False,
+) -> Iterator[tuple[int, str | None, int]]:
+    """Yield each row of one row group that is in the split, and its verdict.
+
+    Both passes over a row group start the same way, and only one of them ever
+    wants a game's length, so the projection follows what the caller asked for
+    rather than the union of the two.
+    """
+
+    filtered = _filters_rows(selection, marked_digests)
     columns = (
-        _SPLIT_COLUMNS + _FILTER_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
+        _SPLIT_COLUMNS
+        + (_LENGTH_COLUMNS if lengths else ())
+        + (_FILTER_COLUMNS if filtered else ())
+        + (_MARKED_COLUMNS if marked_digests else ())
     )
-    for group in row_groups:
-        reader = open_normalized_shard(shards[group.shard].path)
-        table = read_normalized_row_group(reader, group.row_group, columns)
-        values = {
-            column.value: row_group_column(table, column.value) for column in columns
-        }
-        splits = values[NormalizedColumn.SPLIT]
-        for position in range(len(splits)):
-            if splits[position] != split:
-                continue
+    table = read_normalized_row_group(reader, group.row_group, columns)
+    values = {column.value: row_group_column(table, column.value) for column in columns}
+    splits = values[NormalizedColumn.SPLIT]
+    ply_counts = values[NormalizedColumn.PLY_COUNT] if lengths else ()
+    terminal = values[NormalizedColumn.TERMINAL_ACTION_STATUS] if lengths else ()
+    for position in range(len(splits)):
+        if splits[position] != split:
+            continue
+        reason = None
+        if filtered:
             row = {
                 column: column_values[position]
                 for column, column_values in values.items()
             }
             reason = _exclusion_reason(row, selection, marked_digests)
-            if reason is None:
-                eligible += 1
-            else:
-                excluded[reason] = excluded.get(reason, 0) + 1
-    return eligible, excluded
+        if not lengths or reason is not None:
+            yield position, reason, 0
+            continue
+        appended = terminal[position] == TerminalActionStatus.APPENDED
+        yield position, None, ply_counts[position] + (1 if appended else 0)
 
 
-def _manifest_split_games(manifest: Mapping[str, Any], split: str) -> int | None:
-    """Return what a manifest recorded for one split, or ``None`` if it cannot.
+def _refuse_subsample() -> DataLoadingError:
+    """Say why this loader will not take a share of a split.
 
-    Preparation counts every split as it writes each shard, so a selection that
-    rejects nothing has already been counted and does not have to be counted
-    again. A manifest predating those per-shard counts answers nothing here
-    rather than answering wrongly.
+    Taking the lowest-ranked share means ranking every candidate, which needs
+    each one's identity, which is a digest per game over the whole corpus. That
+    is the pass this loader exists not to make, and a cutoff over the same rank
+    does not stand in for it: the count it lands on is the count it lands on, so
+    a run would record a size it did not train on.
+
+    A dial that keeps the whole split ranks nothing and is admitted. The eager
+    loader still ranks, which is where a selection small enough to hold belongs.
     """
 
-    output = manifest.get("output")
-    shards = output.get("shards") if isinstance(output, Mapping) else None
-    if not isinstance(shards, list) or not shards:
-        return None
-    total = 0
-    for shard in shards:
-        counts = shard.get("split_counts") if isinstance(shard, Mapping) else None
-        if not isinstance(counts, Mapping):
-            return None
-        recorded = counts.get(split)
-        if type(recorded) is not int:
-            return None
-        total += recorded
-    return total
-
-
-def _reject_subsample(eligible: int, selection: SelectionConfig) -> None:
-    """Refuse a subsample this loader could not resolve without reading it all.
-
-    Taking the lowest-ranked share of a split means ranking every candidate,
-    which needs each one's identity, which is a digest per game over the whole
-    corpus. That is the pass this loader exists not to make, and a cutoff over
-    the same rank does not stand in for it: the count it lands on is the count
-    it lands on, so a run would record a size it did not train on.
-
-    A dial that keeps the whole split ranks nothing, so it is admitted. Only a
-    selection asking for fewer games than it found has to choose which, and the
-    eager loader still ranks, which is where a selection small enough to hold
-    belongs.
-    """
-
-    if subsample_size(eligible, selection) >= eligible:
-        return
-    raise DataLoadingError(
+    return DataLoadingError(
         "the shard-backed loader cannot subsample a selection: ranking every "
-        "candidate needs a digest per game of the whole corpus. Select with "
-        "the filters instead, or read a selection small enough for the eager "
-        "loader"
+        "candidate needs a digest per game of the whole corpus. Select with the "
+        "filters instead, or read a selection small enough for the eager loader"
     )
 
 
@@ -453,7 +440,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._reader: Any | None = None
         self._reader_shard: int | None = None
         self._table: Any | None = None
-        self._table_group: tuple[int, int] | None = None
+        self._table_group: _RowGroup | None = None
         self._inflight: deque[Future[SequenceBatch]] = deque()
         self._epoch = 0
         self._position = 0
@@ -568,8 +555,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
     ) -> Iterator[_PlannedBatch]:
         """Yield the batches one row group contributes to an epoch."""
 
-        positions, lengths = self._eligible_rows(group)
-        rows = list(zip(positions, lengths, strict=True))
+        rows = self._eligible_rows(group)
         if self.config.shuffle:
             rows.sort(key=partial(_game_key, self.config.seed, epoch, group))
         examples = [
@@ -582,55 +568,29 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             for batch in _window_batches(
                 examples[start : start + window], self.config, epoch
             ):
-                yield _PlannedBatch(
-                    shard=group.shard,
-                    row_group=group.row_group,
-                    examples=batch,
-                )
+                yield _PlannedBatch(group=group, examples=batch)
 
-    def _eligible_rows(self, group: _RowGroup) -> tuple[array[int], array[int]]:
+    def _eligible_rows(self, group: _RowGroup) -> list[tuple[int, int]]:
         """Return which rows of one row group the selection keeps, and how long.
 
-        Reading this here rather than before the run is what keeps the whole
-        loader free of per-game state: the answer is wanted once, in the order
-        the epoch visits row groups, and it is derived from columns cheap
-        enough to project.
+        Reading this here rather than before the run is what keeps the loader
+        free of per-game state: the answer is wanted once, in the order the
+        epoch visits row groups, and it is derived from columns cheap enough to
+        project.
         """
 
-        selection = self.corpus.selection
-        marked = self.corpus.marked_digests
-        filtered = _filters_rows(selection, marked)
-        columns = (
-            _SPLIT_COLUMNS
-            + _LENGTH_COLUMNS
-            + (_FILTER_COLUMNS if filtered else ())
-            + (_MARKED_COLUMNS if marked else ())
-        )
-        table = read_normalized_row_group(
-            self._shard_reader(group.shard), group.row_group, columns
-        )
-        values = {
-            column.value: row_group_column(table, column.value) for column in columns
-        }
-        splits = values[NormalizedColumn.SPLIT]
-        ply_counts = values[NormalizedColumn.PLY_COUNT]
-        terminal = values[NormalizedColumn.TERMINAL_ACTION_STATUS]
-        positions: array[int] = array("I")
-        lengths: array[int] = array("i")
-        for position in range(len(splits)):
-            if splits[position] != self.corpus.split:
-                continue
-            if filtered:
-                row = {
-                    column: column_values[position]
-                    for column, column_values in values.items()
-                }
-                if _exclusion_reason(row, selection, marked) is not None:
-                    continue
-            appended = terminal[position] == TerminalActionStatus.APPENDED
-            positions.append(position)
-            lengths.append(ply_counts[position] + (1 if appended else 0))
-        return positions, lengths
+        return [
+            (position, length)
+            for position, reason, length in _scan_row_group(
+                self._shard_reader(group.shard),
+                group,
+                split=self.corpus.split,
+                selection=self.corpus.selection,
+                marked_digests=self.corpus.marked_digests,
+                lengths=True,
+            )
+            if reason is None
+        ]
 
     def _fill(self) -> None:
         # One job per worker plus the declared depth, never the depth alone:
@@ -664,15 +624,15 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         return self._pool
 
     def _job(self, planned: _PlannedBatch) -> _BatchJob:
-        table = self._row_group_table(planned.shard, planned.row_group)
-        rows = sorted({example.position for example in planned.examples})
-        row_index = {position: index for index, position in enumerate(rows)}
+        table = self._row_group_table(planned.group)
         game_lengths = {
             example.position: example.game_length for example in planned.examples
         }
+        rows = sorted(game_lengths)
+        row_index = {position: index for index, position in enumerate(rows)}
         return _BatchJob(
-            shard=planned.shard,
-            path=str(self.corpus.shards[planned.shard].path),
+            shard=planned.group.shard,
+            path=str(self.corpus.shards[planned.group.shard].path),
             row_table=take_rows(table, rows),
             lengths=tuple(game_lengths[position] for position in rows),
             entries=tuple(
@@ -688,16 +648,18 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             self._reader_shard = shard
         return self._reader
 
-    def _row_group_table(self, shard: int, row_group: int) -> Any:
-        if self._table_group == (shard, row_group):
+    def _row_group_table(self, group: _RowGroup) -> Any:
+        if self._table_group == group:
             return self._table
-        reader = self._shard_reader(shard)
+        reader = self._shard_reader(group.shard)
         # One row group at a time, and the previous one released before the
         # next is read. This is the loader's largest resident structure and the
         # only one preparation's shard sizing decides.
         self._table = None
-        self._table = read_normalized_row_group(reader, row_group, _LOADER_COLUMNS)
-        self._table_group = (shard, row_group)
+        self._table = read_normalized_row_group(
+            reader, group.row_group, _LOADER_COLUMNS
+        )
+        self._table_group = group
         return self._table
 
     def _drain(self) -> None:

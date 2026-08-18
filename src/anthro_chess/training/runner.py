@@ -293,6 +293,7 @@ def run_training(
         device.type,
         config.steps,
     )
+    checked: dict[tuple[Path, ...], tuple[ShardIdentity, ...]] = {}
     try:
         # Training reads targets and masks; validation scores policies against
         # each position's legal actions. Only the second needs them, so only
@@ -304,6 +305,7 @@ def run_training(
             maximum_context_plies=config.model.maximum_context_plies,
             config_source=resolved_config.provenance.source,
             verify_data=verify_data,
+            checked=checked,
         )
         validation = (
             _load_data_selection(
@@ -312,6 +314,7 @@ def run_training(
                 maximum_context_plies=config.model.maximum_context_plies,
                 config_source=resolved_config.provenance.source,
                 verify_data=verify_data,
+                checked=checked,
             )
             if config.validation is not None
             else None
@@ -1310,6 +1313,7 @@ def _load_data_selection(
     maximum_context_plies: int,
     config_source: str | None,
     verify_data: bool,
+    checked: dict[tuple[Path, ...], tuple[ShardIdentity, ...]],
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1332,15 +1336,21 @@ def _load_data_selection(
         manifest,
         manifest_path,
     )
-    shards = validate_manifest_outputs(
-        manifest, manifest_path, paths, verify_contents=verify_data
-    )
+    # Keyed on the shards rather than the manifest, because it is reading them
+    # that costs: a configuration naming one corpus for train and for validation
+    # would otherwise check all of it once per selection.
+    checked_shards = checked.get(paths)
+    if checked_shards is None:
+        checked_shards = validate_manifest_outputs(
+            manifest, manifest_path, paths, verify_contents=verify_data
+        )
+        checked[paths] = checked_shards
+    shards = checked_shards
     manifest_sha256 = sha256(manifest_bytes).hexdigest()
     marked_digests = None if snapshot is None else snapshot.accounts.row_digests()
     loader = _open_loader(
         config,
         shards,
-        manifest=manifest,
         manifest_sha256=manifest_sha256,
         legal_actions=legal_actions,
         marked_digests=marked_digests,
@@ -1374,7 +1384,6 @@ def _open_loader(
     config: SequenceDataConfig,
     shards: Sequence[ShardIdentity],
     *,
-    manifest: dict[str, Any],
     manifest_sha256: str,
     legal_actions: bool,
     marked_digests: frozenset[int] | None,
@@ -1393,7 +1402,6 @@ def _open_loader(
         split=config.loader.split,
         selection=config.loader.selection,
         chunk_length=config.loader.chunk_length,
-        manifest=manifest,
         manifest_sha256=manifest_sha256,
         marked_digests=marked_digests,
     )
