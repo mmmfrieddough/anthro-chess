@@ -963,8 +963,9 @@ together, because it takes a share of whatever survived the filter, so a
 comparison resting on it confounds the rejection with how much data each run
 saw. Ranking every candidate means holding every candidate's identity, so a dial
 that would drop any game is the eager loader's; a corpus large enough to need
-the shard-backed loader holds the two runs together by their filters instead. A run records the snapshot it rejected against beside the resolved
-selection counting what it removed.
+the shard-backed loader holds the two runs together by their filters instead. A
+run records the snapshot it rejected against beside the resolved selection
+counting what it removed.
 
 In-training previews read that snapshot too, and no other selection filter. A
 preview is an estimate of the canonical reading rather than a different

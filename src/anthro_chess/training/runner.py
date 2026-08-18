@@ -293,7 +293,7 @@ def run_training(
         device.type,
         config.steps,
     )
-    checked: dict[tuple[Path, ...], tuple[ShardIdentity, ...]] = {}
+    checked: dict[tuple[str, tuple[Path, ...]], tuple[ShardIdentity, ...]] = {}
     try:
         # Training reads targets and masks; validation scores policies against
         # each position's legal actions. Only the second needs them, so only
@@ -1313,7 +1313,7 @@ def _load_data_selection(
     maximum_context_plies: int,
     config_source: str | None,
     verify_data: bool,
-    checked: dict[tuple[Path, ...], tuple[ShardIdentity, ...]],
+    checked: dict[tuple[str, tuple[Path, ...]], tuple[ShardIdentity, ...]],
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1336,17 +1336,18 @@ def _load_data_selection(
         manifest,
         manifest_path,
     )
-    # Keyed on the shards rather than the manifest, because it is reading them
-    # that costs: a configuration naming one corpus for train and for validation
-    # would otherwise check all of it once per selection.
-    checked_shards = checked.get(paths)
-    if checked_shards is None:
-        checked_shards = validate_manifest_outputs(
+    # A configuration naming one corpus for train and for validation would
+    # otherwise read all of it once per selection, which is minutes when the
+    # contents are being hashed. Keyed on the manifest as well as the shards,
+    # because what the check establishes is that the two agree.
+    manifest_sha256 = sha256(manifest_bytes).hexdigest()
+    already = checked.get((manifest_sha256, paths))
+    if already is None:
+        already = validate_manifest_outputs(
             manifest, manifest_path, paths, verify_contents=verify_data
         )
-        checked[paths] = checked_shards
-    shards = checked_shards
-    manifest_sha256 = sha256(manifest_bytes).hexdigest()
+        checked[manifest_sha256, paths] = already
+    shards = already
     marked_digests = None if snapshot is None else snapshot.accounts.row_digests()
     loader = _open_loader(
         config,

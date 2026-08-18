@@ -178,11 +178,9 @@ class SequenceBatch:
 class SelectionResolution:
     """Which games a load-time selection kept, and how to reproduce that set.
 
-    The spec and the counts are what reproduce it. Which games those are
-    follows from the corpus a run also records, so this describes the selection
-    rather than enumerating its members: over a corpus-scale split the members
-    are the one quantity that cannot be held or derived cheaply, and nothing
-    downstream reads them.
+    The spec and the counts are what reproduce it, against the corpus a run
+    records beside them. Which games those are is not held here, because a
+    corpus-scale split has more members than anything downstream would read.
     """
 
     spec: dict[str, object]
@@ -206,9 +204,10 @@ class SelectionResolution:
 
         A resumed run has to match this, and ``docs/training-and-runtime.md``
         holds that such an identity may carry only values another machine could
-        reproduce. The snapshot path is not one: the same file sits at different
-        paths on two machines, and what its contents did to this selection is
-        already carried by the counts it excluded.
+        reproduce. The snapshot path is not one, because the same file sits at
+        different paths on two machines. What its contents did to a selection is
+        not carried here either, so a loader whose own identity does not name
+        the games it holds has to carry that itself.
         """
 
         record = self.as_record()

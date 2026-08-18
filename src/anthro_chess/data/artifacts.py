@@ -112,13 +112,15 @@ def open_pgn_text(source_path: Path) -> Iterator[TextIO]:
 
 @dataclass(frozen=True)
 class ShardIdentity:
-    """One normalized shard, as its manifest describes it and its footer confirms.
+    """One normalized shard, as its manifest describes it.
 
-    A consumer that has checked a shard against its manifest already knows what
-    the shard is, so identifying a corpus does not have to read it again. It
-    also had the footer open, so how many row groups the shard holds and how its
-    games divide between the splits travel out of that same pass rather than
-    costing another one.
+    ``sha256`` is what the manifest recorded rather than what the bytes hash to,
+    unless the check that produced this was asked to verify contents. Every
+    consumer identifying a corpus reads it, so a caller wanting the stronger
+    claim has to ask for it there.
+
+    ``split_counts`` is copied from that record too. ``row_groups`` is the one
+    field read off the shard, by the check that already had its footer open.
     """
 
     path: Path
@@ -516,5 +518,7 @@ def validate_manifest_outputs(
             for _ in hashers.map(_checked_contents, shards):
                 pass
         finally:
+            # Not waiting, so a mismatch raises now rather than behind however
+            # many whole-shard reads are still in flight.
             hashers.shutdown(wait=False, cancel_futures=True)
     return shards

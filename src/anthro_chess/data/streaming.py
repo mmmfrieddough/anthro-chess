@@ -17,9 +17,9 @@ so which rows a row group contributes and how long each one decodes to are
 derived from that row group at the moment it is reached, which makes what a run
 pays to plan follow what it reads rather than what the corpus holds.
 
-Opening a corpus therefore reads a footer per shard and nothing else, as long
-as the selection rejects nothing: preparation already counted every split, and
-a count it recorded is a count nobody has to take again. A selection that
+Opening a corpus therefore reads nothing, as long as the selection rejects
+nothing: preparation counted every split when it wrote each shard, and the
+check that admitted the corpus carried those counts here. A selection that
 filters has to look, and that is the one pass here whose cost follows corpus
 size.
 
@@ -86,10 +86,6 @@ STREAMING_IDENTITY_VERSION = 2
 STREAMING_LOADER_NAME = "shard-backed"
 
 logger = logging.getLogger(__name__)
-
-#: How many shards are opened at once to learn how many row groups they hold.
-#: The read is a footer parse rather than a scan, so this is bound by the drive.
-_FOOTER_READERS = 8
 
 #: What every pass over a row group reads, because both of them start by
 #: dropping the rows of other splits.
@@ -230,6 +226,7 @@ def resolve_sharded_selection(
             {"name": shard.path.name, "sha256": shard.sha256} for shard in shards
         ],
         "selection": resolution.as_identity_record(),
+        "marked_accounts": _marked_accounts_sha256(marked_digests),
     }
     logger.info(
         "Opened %s of %s eligible %s game(s) across %s row group(s) in %s shard(s)",
@@ -261,6 +258,25 @@ def _enumerate_row_groups(shards: Sequence[ShardIdentity]) -> tuple[_RowGroup, .
         for shard_index, shard in enumerate(shards)
         for row_group in range(shard.row_groups)
     )
+
+
+def _marked_accounts_sha256(marked_digests: frozenset[int] | None) -> str | None:
+    """Return what a snapshot rejected, as something a resume can compare.
+
+    The resolved record counts what it removed and does not say who, and two
+    snapshots rejecting the same number of games are a set of games apart. The
+    snapshot's own path cannot stand in either, because the same file sits at
+    different paths on two machines. This is bounded by the account census
+    rather than by the corpus, so it is affordable where a digest per game is
+    not.
+    """
+
+    if marked_digests is None:
+        return None
+    digest = sha256()
+    for account in sorted(marked_digests):
+        digest.update(account.to_bytes(8, "big"))
+    return digest.hexdigest()
 
 
 def _filters_rows(
@@ -366,14 +382,9 @@ def _scan_row_group(
 def _refuse_subsample() -> DataLoadingError:
     """Say why this loader will not take a share of a split.
 
-    Taking the lowest-ranked share means ranking every candidate, which needs
-    each one's identity, which is a digest per game over the whole corpus. That
-    is the pass this loader exists not to make, and a cutoff over the same rank
-    does not stand in for it: the count it lands on is the count it lands on, so
-    a run would record a size it did not train on.
-
-    A dial that keeps the whole split ranks nothing and is admitted. The eager
-    loader still ranks, which is where a selection small enough to hold belongs.
+    A cutoff over the same rank would need no identities and is not offered
+    instead: the count it lands on is the count it lands on, so a run would
+    record a size it did not train on.
     """
 
     return DataLoadingError(
@@ -484,10 +495,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
     def load_state(self, state: SequenceLoaderState | Mapping[str, object]) -> None:
         """Restore a compatible saved cursor and deterministic epoch order.
 
-        Replaying the plan re-derives every row group it passes, which is a
-        projected read per row group and no decoding at all. An epoch over a
-        corpus is millions of batches, so a cursor a run actually reached sits
-        a few row groups in.
+        An epoch over a corpus is millions of batches, so a cursor a run
+        actually reached sits a few row groups into the plan it replays.
         """
 
         parsed = (
@@ -573,10 +582,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
     def _eligible_rows(self, group: _RowGroup) -> list[tuple[int, int]]:
         """Return which rows of one row group the selection keeps, and how long.
 
-        Reading this here rather than before the run is what keeps the loader
-        free of per-game state: the answer is wanted once, in the order the
-        epoch visits row groups, and it is derived from columns cheap enough to
-        project.
+        The answer is wanted once, in the order the epoch visits row groups,
+        and it is derived from columns cheap enough to project.
         """
 
         return [

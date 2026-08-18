@@ -17,11 +17,13 @@ from anthro_chess.data import (
     StreamingSequenceDataLoader,
     resolve_sharded_selection,
 )
+from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.artifacts import (
     ShardIdentity,
     normalized_shard_paths,
     validate_manifest_outputs,
 )
+from anthro_chess.data.streaming import ShardedSelection
 
 Corpus = tuple[tuple[ShardIdentity, ...], str]
 
@@ -666,9 +668,9 @@ def test_a_selection_rejecting_nothing_opens_without_reading_a_row_group(
 ) -> None:
     """Preparation counted every split, so opening one does not count it again.
 
-    This is the whole reason a corpus opens in seconds. A manifest that cannot
-    answer falls back to counting, so the fallback is what a corpus with more
-    than one split would silently take if this stopped holding.
+    This is the whole reason a corpus opens in seconds, and a corpus holding
+    more than one split is where it would break: a count read for the wrong
+    split, or not read at all, sends the open down the counting path instead.
     """
 
     rows = [
@@ -718,6 +720,38 @@ def test_an_unsubsampled_selection_reads_every_eligible_game(
     assert len(read) == 16
     assert loader.resolution.selected_games == 16
     assert loader.resolution.eligible_games == 16
+
+
+def test_two_snapshots_rejecting_the_same_count_resolve_different_identities(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The resolved record counts what a snapshot removed and not who.
+
+    So the identity a resumed run is compared against has to carry the accounts
+    itself. Without that, a run continues against a snapshot rejecting a
+    different set of the same size and nothing notices.
+    """
+
+    shards, manifest_sha256 = _corpus(write_corpus, tmp_path, _rows(normalized_row, 16))
+    selection = SelectionConfig(marked_accounts=Path("marked-accounts.txt"))
+
+    def identity(*marked: int) -> ShardedSelection:
+        return resolve_sharded_selection(
+            shards,
+            split="train",
+            selection=selection,
+            manifest_sha256=manifest_sha256,
+            marked_digests=frozenset(marked),
+        )
+
+    first = identity(*(account_row_digest(f"white{game}") for game in (1, 2, 3)))
+    second = identity(*(account_row_digest(f"white{game}") for game in (4, 5, 6)))
+
+    assert first.resolution.excluded_games == second.resolution.excluded_games
+    assert first.resolution.selected_games == second.resolution.selected_games
+    assert first.identity_sha256 != second.identity_sha256
 
 
 @pytest.mark.parametrize(
