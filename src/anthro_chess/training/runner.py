@@ -734,8 +734,9 @@ def _optimize(
                         sequence_batch = next(loader)
                     except StopIteration as error:
                         raise TrainingError(
-                            "training data produced no batches; "
-                            "check drop_last and batch size"
+                            "training data produced no batches; check whether "
+                            "the selection matches any games, and whether "
+                            "drop_last and batch size discard every batch"
                         ) from error
                 data_seconds += time.perf_counter() - data_started
 

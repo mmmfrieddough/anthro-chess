@@ -1255,6 +1255,36 @@ def test_a_selection_cannot_reach_the_held_out_test_split(
         load_config(TrainingConfig, path=config_path)
 
 
+def test_a_shard_backed_selection_matching_nobody_refuses_the_run(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The shard-backed loader opens without reading, so this lands at step one.
+
+    A run that trained on nothing would otherwise report a completed schedule
+    over an empty stream, so the refusal has to survive the move.
+    """
+
+    rows = [normalized_row(game_id, split="train", plies=6) for game_id in range(1, 5)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=normalized,
+        manifest=manifest,
+        run_name="run",
+        validation=False,
+        train_streaming=_SHARD_BACKED,
+        train_selection="\n[train.loader.selection]\nminimum_rating = 4000\n",
+    )
+
+    with pytest.raises(TrainingError, match="produced no batches"):
+        run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
+
+
 def test_gradient_accumulation_uses_multiple_batches_per_optimizer_step(
     tmp_path: Path,
 ) -> None:

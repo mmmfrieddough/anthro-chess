@@ -459,7 +459,9 @@ def test_both_loaders_reject_the_same_accounts(
     assert eager.resolution.selected_games == 13
     assert read == set(_loaded(eager))
     assert eager.resolution.excluded_games == {"marked_account": 3}
-    assert streaming.resolution.excluded_games == eager.resolution.excluded_games
+    # The shard-backed loader rejects the same accounts and never counts them:
+    # a tally over a corpus-scale split costs a read of every row of it.
+    assert streaming.resolution.excluded_games is None
 
 
 def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(

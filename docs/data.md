@@ -313,12 +313,12 @@ widened corpus needs, and the bounds cannot stand in for it: a class bands the
 initial clock plus forty increments, which no pair of bounds over those two
 fields draws.
 
-Each run records the selection it resolved, not only the one it requested: the
-counts it kept and why it excluded the rest. Those, with the corpus the run
-also records, are what tell two runs over one corpus apart in the results
-store, where a result reaches its run through the checkpoint's run id. Which
-games a selection kept is not recorded, because naming them means enumerating a
-split that reaches billions and no reader holds them to compare against. Exact
+Each run records the selection it requested and the corpus it read, which is
+what tells two runs over one corpus apart in the results store, where a result
+reaches its run through the checkpoint's run id. What that selection resolved
+to is recorded where a loader knows it without going to look: which games it
+kept is never recorded, and how many only where no filter had to be applied
+row by row. The section on the two loaders below says which is which. Exact
 field names, axes, and defaults live in `anthro_chess.data` rather than here.
 
 Ply-count, result, and opening filters are deliberately absent. Benchmarks
@@ -798,9 +798,13 @@ entry per row group, and the batches in flight.
 A resumed run replays the plan to its saved cursor, which re-derives the row
 groups it passes and decodes nothing in them.
 
-Two things follow from holding no game. A run records how many games its
-selection kept and not which, because naming them means enumerating a split
-that reaches billions. And the shard-backed loader refuses a subsample rather
+Two things follow from holding no game. A run does not record which games its
+selection kept, because naming them means enumerating a split that reaches
+billions, nor how many where the selection filters rows: counting that means
+reading every row of the split for a number nothing computes from, and the rows
+a filter rejects are dropped as the epoch reaches them instead. What the split
+held before selection is recorded either way, from the manifest. And the
+shard-backed loader refuses a subsample rather
 than approximating one: taking the lowest-ranked share of a split means ranking
 every candidate, which needs a digest per game of the whole corpus, and a
 cutoff over that same rank keeps whatever share it happens to rather than the

@@ -194,32 +194,28 @@ def resolve_sharded_selection(
     require_resolved_snapshot(selection, marked_digests)
     if not shards:
         raise DataLoadingError("at least one normalized shard is required")
-    # Ahead of the counting pass, which a filtering selection pays for over the
-    # whole corpus. A share below one subsamples whatever it finds, so this half
-    # of the refusal does not need the count that the other half does.
-    if selection.fraction is not None and selection.fraction < 1.0:
+    split_games = sum(shard.split_counts.get(split, 0) for shard in shards)
+    if not split_games:
+        raise DataLoadingError(f"the corpus holds no {split} games")
+    if subsample_size(split_games, selection) < split_games:
         raise _refuse_subsample()
     row_groups = _enumerate_row_groups(shards)
-    eligible, excluded = _resolve_counts(
-        shards,
-        split=split,
-        selection=selection,
-        marked_digests=marked_digests,
-    )
-    if not eligible:
-        raise DataLoadingError("no normalized games matched the loader selection")
-    if subsample_size(eligible, selection) < eligible:
-        raise _refuse_subsample()
+    filtered = _filters_rows(selection, marked_digests)
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
-        eligible_games=eligible,
-        selected_games=eligible,
-        excluded_games=excluded,
+        # What a filter kept is not counted, because counting it means reading
+        # every row of the corpus for two numbers nothing computes from. The
+        # rows a filter rejects are dropped as the epoch reaches them instead,
+        # which costs what a run reads rather than what the split holds.
+        eligible_games=None if filtered else split_games,
+        selected_games=None if filtered else split_games,
+        excluded_games=None if filtered else {},
     )
     identity = {
         "version": STREAMING_IDENTITY_VERSION,
         "loader": STREAMING_LOADER_NAME,
         "split": split,
+        "split_games": split_games,
         "chunk_length": chunk_length,
         "manifest_sha256": manifest_sha256,
         "shards": [
@@ -229,12 +225,10 @@ def resolve_sharded_selection(
         "marked_accounts": _marked_accounts_sha256(marked_digests),
     }
     logger.info(
-        "Opened %s of %s eligible %s game(s) across %s row group(s) in %s shard(s)",
-        resolution.selected_games,
-        resolution.eligible_games,
+        "Opened the %s split of %s shard(s), %s game(s) before selection",
         split,
-        len(row_groups),
         len(shards),
+        split_games,
     )
     return ShardedSelection(
         shards=tuple(shards),
@@ -297,41 +291,6 @@ def _filters_rows(
             selection.maximum_rating is not None,
         )
     )
-
-
-def _resolve_counts(
-    shards: Sequence[ShardIdentity],
-    *,
-    split: str,
-    selection: SelectionConfig,
-    marked_digests: frozenset[int] | None,
-) -> tuple[int, dict[str, int]]:
-    """Return how many games the split offers, and why the rest were rejected.
-
-    A selection that rejects nothing is answered from what preparation counted
-    when it wrote each shard. One that filters has to look, and looking costs a
-    projected read and a check per row of the split.
-    """
-
-    if not _filters_rows(selection, marked_digests):
-        return sum(shard.split_counts.get(split, 0) for shard in shards), {}
-    eligible = 0
-    excluded: dict[str, int] = {}
-    for shard_index, shard in enumerate(shards):
-        reader = open_normalized_shard(shard.path)
-        for row_group in range(shard.row_groups):
-            for _, reason, _length in _scan_row_group(
-                reader,
-                _RowGroup(shard=shard_index, row_group=row_group),
-                split=split,
-                selection=selection,
-                marked_digests=marked_digests,
-            ):
-                if reason is None:
-                    eligible += 1
-                else:
-                    excluded[reason] = excluded.get(reason, 0) + 1
-    return eligible, excluded
 
 
 def _scan_row_group(

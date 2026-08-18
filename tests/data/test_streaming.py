@@ -635,11 +635,18 @@ def test_identity_costs_no_decode_of_the_corpus(
     assert selection.resolution.selected_games == 16
 
 
-def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
+def test_a_filter_keeps_the_games_the_eager_loader_keeps(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
+    """One filter, two loaders, and only one of them counts what it rejected.
+
+    So agreement is read off the games rather than off the record: the
+    shard-backed loader drops rows as the epoch reaches them and never learns
+    how many the split held.
+    """
+
     rows = [
         *[normalized_row(index, split="train", rating=1200) for index in range(1, 9)],
         *[normalized_row(index, split="train", rating=1900) for index in range(9, 17)],
@@ -654,9 +661,12 @@ def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
         config,
     )
 
-    assert streaming.resolution.as_record() == eager.resolution.as_record()
-    assert streaming.resolution.excluded_games == {"below_minimum_rating": 8}
-    assert streaming.resolution.selected_games == 8
+    assert {game for game, _ in _drain(streaming)} == {
+        example.game_id for example in eager.dataset
+    }
+    assert eager.resolution.excluded_games == {"below_minimum_rating": 8}
+    assert streaming.resolution.excluded_games is None
+    assert streaming.resolution.eligible_games is None
     streaming.close()
 
 
@@ -777,21 +787,40 @@ def test_a_subsample_is_refused_rather_than_approximated(
         _loader(corpus, SequenceLoaderConfig(split="train", selection=selection))
 
 
-def test_an_empty_selection_fails_instead_of_starting_a_run_on_nothing(
+def test_a_split_the_corpus_does_not_hold_is_refused_at_the_open(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
+    """The manifest counted every split, so this one costs nothing to catch."""
+
     corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
 
-    with pytest.raises(DataLoadingError, match="no normalized games matched"):
-        _loader(
-            corpus,
-            SequenceLoaderConfig(
-                split="train",
-                selection=SelectionConfig(minimum_rating=3000),
-            ),
-        )
+    with pytest.raises(DataLoadingError, match="holds no test games"):
+        _loader(corpus, SequenceLoaderConfig(split="test"))
+
+
+def test_a_filter_matching_nobody_yields_no_batches(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Opening reads nothing, so this is found where the rows are.
+
+    A run turns it into a refusal at its first step rather than at its first
+    second, which `tests/training/test_runner.py` covers.
+    """
+
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+    loader = _loader(
+        corpus,
+        SequenceLoaderConfig(
+            split="train", selection=SelectionConfig(minimum_rating=3000)
+        ),
+    )
+
+    assert list(loader) == []
+    loader.close()
 
 
 def test_an_unreadable_row_group_names_the_shard_it_could_not_be_read_from(

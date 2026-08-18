@@ -178,15 +178,19 @@ class SequenceBatch:
 class SelectionResolution:
     """Which games a load-time selection kept, and how to reproduce that set.
 
-    The spec and the counts are what reproduce it, against the corpus a run
-    records beside them. Which games those are is not held here, because a
-    corpus-scale split has more members than anything downstream would read.
+    The spec is what reproduces it, against the corpus a run records beside it.
+    Which games that resolves to is not held here, because a corpus-scale split
+    has more members than anything downstream would read.
+
+    The counts are absent where a loader resolves lazily and a selection filters
+    rows: knowing them means reading every row of the split, and no reader
+    computes from them. A loader that already holds its games fills them in.
     """
 
     spec: dict[str, object]
-    eligible_games: int
-    selected_games: int
-    excluded_games: dict[str, int]
+    eligible_games: int | None
+    selected_games: int | None
+    excluded_games: dict[str, int] | None
 
     def as_record(self) -> dict[str, object]:
         """Return the resolved-selection record stored in run artifacts."""
@@ -196,7 +200,11 @@ class SelectionResolution:
             "spec": dict(sorted(self.spec.items())),
             "eligible_games": self.eligible_games,
             "selected_games": self.selected_games,
-            "excluded_games": dict(sorted(self.excluded_games.items())),
+            "excluded_games": (
+                None
+                if self.excluded_games is None
+                else dict(sorted(self.excluded_games.items()))
+            ),
         }
 
     def as_identity_record(self) -> dict[str, object]:
