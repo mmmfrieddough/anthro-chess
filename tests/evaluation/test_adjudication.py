@@ -64,7 +64,7 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
     assert mate.mean_best_rank == pytest.approx(1.0)
     assert mate.rankable_opportunities == 1
 
-    totals = report.per_game_totals()
+    totals = report.per_game_totals
     assert len(totals) == 1
     assert totals[0].metrics[
         "adjudicated.mate_available_human_rate"

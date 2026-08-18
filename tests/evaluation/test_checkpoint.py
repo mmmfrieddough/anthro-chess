@@ -953,6 +953,7 @@ def _config(
     noise: dict[str, Any] | None = None,
     dependency: dict[str, Any] | None = None,
     openings: dict[str, Any] | None = None,
+    detail: dict[str, Any] | None = None,
     expected_pool_game_ids_sha256: str | None = None,
 ) -> ResolvedConfig[CheckpointEvaluationConfig]:
     return ResolvedConfig(
@@ -970,6 +971,7 @@ def _config(
                 },
                 "noise": noise or {"resamples": 100},
                 "openings": openings or {},
+                "detail": detail or {},
             }
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
@@ -992,3 +994,89 @@ def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
         output,
     )
     return output
+
+
+def test_the_batch_plan_matches_the_batches_the_loader_would_build(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+) -> None:
+    """The reading plans batches from lengths; the loader builds them from games.
+
+    Both have to describe the same batches, because the forward pass is not
+    reproducible across batch shapes. Planning is shared rather than copied,
+    and this is what says the sharing still holds end to end.
+    """
+
+    from anthro_chess.data import SequenceDataLoader
+    from anthro_chess.evaluation.checkpoint import _open_reading
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    resolved = _config(pool, tmp_path / "unused.pt")
+    reading = _open_reading(resolved.value)
+
+    whole = reading.inputs(reading.game_ids)
+    planned = [list(batch) for batch in reading.batches]
+    # Column zero of each row, so a padded timestep's absent id stays out.
+    built = [
+        sorted(int(row[0]) for row in batch.game_ids)
+        for batch in SequenceDataLoader(whole.dataset, whole.loader_config)
+    ]
+    assert planned == built
+
+
+def test_the_batch_plan_counts_a_terminal_decision_as_a_scored_ply(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A resignation is a decision, and the pool's ply count does not hold it.
+
+    Planning off that column would bucket every game that ended in a terminal
+    action one length short, so the plan and the loader would disagree about a
+    third of a real pool.
+    """
+
+    from anthro_chess.evaluation.checkpoint import _open_reading
+
+    rows = [normalized_row(index, split="test", plies=8) for index in (1, 2)]
+    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    pool = _freeze(tmp_path, normalized, manifest)
+    reading = _open_reading(_config(pool, tmp_path / "unused.pt").value)
+
+    inputs = reading.inputs(reading.game_ids)
+    for game_id in reading.game_ids:
+        encoded = sum(1 for key in inputs.plies if key[0] == game_id)
+        assert reading.encoded_plies[game_id] == encoded
+
+
+def test_the_adjudicated_decisions_stay_out_of_the_payload_unless_asked_for(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """One record per realized opportunity is millions over the canonical pool.
+
+    Every reported quantity is computed from the summary beside them, so they
+    are retained only where a session asked to look at the decisions.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+
+    default = _evaluate(_config(pool, checkpoint))
+    assert default.adjudication is not None
+    assert default.adjudication.positions is None
+    assert default.adjudication.as_record()["positions"] is None
+    assert default.adjudication.per_game_totals
+
+    retained = _evaluate(
+        _config(pool, checkpoint, detail={"per_position": True}),
+    )
+    assert retained.adjudication is not None
+    assert retained.adjudication.positions
+    assert retained.adjudication.as_record()["positions"]
+    assert retained.adjudication.predicates == default.adjudication.predicates

@@ -271,6 +271,22 @@ def take_rows(table: Any, positions: Sequence[int]) -> Any:
     return table.take(list(positions))
 
 
+def list_column_lengths(table: Any, column: str) -> list[int]:
+    """Return how many values each row holds in one list column.
+
+    Read off the column's offsets rather than its values, so asking how long a
+    game is does not materialize the game. The checkpoint reading plans its
+    batches from these lengths over a whole pool, where materializing would
+    cost more than the scoring pass it is preparing.
+    """
+
+    try:
+        import pyarrow.compute as pc  # type: ignore[import-untyped]
+    except ImportError as error:  # pragma: no cover - exercised by wheel smoke only
+        raise DataLoadingError(_PARQUET_MISSING) from error
+    return cast(list[int], pc.list_value_length(table.column(column)).to_pylist())
+
+
 def materialize_rows(table: Any) -> list[dict[str, Any]]:
     """Return one dictionary of Python values per row of a columnar table."""
 

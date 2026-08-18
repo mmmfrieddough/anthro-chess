@@ -572,37 +572,63 @@ class SequenceDataLoader(SequenceBatchSource):
         self._batches = self._batches_for_epoch(epoch)
 
     def _batches_for_epoch(self, epoch: int) -> tuple[tuple[int, ...], ...]:
-        buckets: dict[int, list[int]] = {}
-        for index, example in enumerate(self.dataset):
-            bucket = _length_bucket(len(example.plies), self.config.length_bucket_width)
-            buckets.setdefault(bucket, []).append(index)
-
-        batches: list[tuple[int, ...]] = []
-        for bucket in sorted(buckets):
-            indices = buckets[bucket]
-            if self.config.shuffle:
-                indices.sort(
-                    key=lambda index: _shuffle_key(
-                        self.config.seed,
-                        epoch,
-                        self.dataset[index],
+        batches = length_bucketed_batches(
+            [len(example.plies) for example in self.dataset],
+            self.config,
+            within_bucket=(
+                (
+                    lambda index: _shuffle_key(
+                        self.config.seed, epoch, self.dataset[index]
                     )
                 )
-            for start in range(0, len(indices), self.config.batch_size):
-                batch = tuple(indices[start : start + self.config.batch_size])
-                if self.config.drop_last and len(batch) < self.config.batch_size:
-                    continue
-                batches.append(batch)
-
-        if self.config.shuffle:
-            batches.sort(
-                key=lambda batch: _batch_shuffle_key(
-                    self.config.seed,
-                    epoch,
-                    batch,
-                )
+                if self.config.shuffle
+                else None
+            ),
+        )
+        if not self.config.shuffle:
+            return batches
+        return tuple(
+            sorted(
+                batches,
+                key=lambda batch: _batch_shuffle_key(self.config.seed, epoch, batch),
             )
-        return tuple(batches)
+        )
+
+
+def length_bucketed_batches(
+    lengths: Sequence[int],
+    config: SequenceLoaderConfig,
+    *,
+    within_bucket: Callable[[int], Any] | None = None,
+) -> tuple[tuple[int, ...], ...]:
+    """Group sequence indices into the batches one epoch draws, by length.
+
+    Lengths rather than examples, because the checkpoint reading plans its
+    batches before it has encoded anything: it knows how many plies each game
+    holds from the pool and materializes one batch at a time. Sharing the
+    planning is what keeps the two from drifting into scoring different batch
+    shapes, which the forward pass is not reproducible across.
+
+    ``within_bucket`` orders a bucket's members before they are cut into
+    batches. Only a shuffling loader passes one.
+    """
+
+    buckets: dict[int, list[int]] = {}
+    for index, length in enumerate(lengths):
+        bucket = _length_bucket(length, config.length_bucket_width)
+        buckets.setdefault(bucket, []).append(index)
+
+    batches: list[tuple[int, ...]] = []
+    for bucket in sorted(buckets):
+        indices = buckets[bucket]
+        if within_bucket is not None:
+            indices.sort(key=within_bucket)
+        for start in range(0, len(indices), config.batch_size):
+            batch = tuple(indices[start : start + config.batch_size])
+            if config.drop_last and len(batch) < config.batch_size:
+                continue
+            batches.append(batch)
+    return tuple(batches)
 
 
 def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:

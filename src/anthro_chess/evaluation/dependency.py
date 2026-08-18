@@ -361,6 +361,86 @@ class DependencyTestResult:
         }
 
 
+@dataclass(frozen=True)
+class DependencyColumns:
+    """Every per-position quantity the dependency reductions read, as columns.
+
+    This family is the one part of a checkpoint reading that no running total
+    finishes: the within-game split takes a median of each slice, and an
+    accumulator recovers no median. So a pool-scale pass holds an entry per
+    scored position, and what decides whether that is affordable is the shape
+    it is held in rather than the fact of holding it. One scored position here
+    is about a hundred bytes of typed array where the scored objects it
+    replaces were several kilobytes spread over eight conditioning passes.
+
+    Columns are filled in scoring order, which is the order each pass produced
+    when it returned a list of its own, so a reduction sums the same values in
+    the same sequence and lands on the same float.
+    """
+
+    game_ids: Sequence[int]
+    ply_indices: Sequence[int]
+    #: Interned per column rather than repeated: a handful of names cover every
+    #: position, and the strings are what a per-position record would spend on.
+    color_names: tuple[str, ...]
+    colors: Sequence[int]
+    band_names: tuple[str, ...]
+    #: An index into ``band_names``, or negative where the position has no band.
+    bands: Sequence[int]
+    rated: Sequence[bool]
+    true_move_nll: Sequence[float]
+    corrupted: Mapping[str, tuple[Conditioning, Sequence[float]]]
+    conditioned: Mapping[int, Sequence[float]]
+    has_signal: Sequence[bool]
+    strength_signal: Sequence[float]
+    alignment: Sequence[float]
+    anchor_divergence: Sequence[float]
+    anchor_agreement: Sequence[bool]
+
+    def __post_init__(self) -> None:
+        widths = {
+            len(self.game_ids),
+            len(self.ply_indices),
+            len(self.colors),
+            len(self.bands),
+            len(self.rated),
+            len(self.true_move_nll),
+            len(self.has_signal),
+            len(self.strength_signal),
+            len(self.alignment),
+            len(self.anchor_divergence),
+            len(self.anchor_agreement),
+            *(len(values) for _, values in self.corrupted.values()),
+            *(len(values) for values in self.conditioned.values()),
+        }
+        if len(widths) > 1:
+            raise DependencyError(
+                "dependency columns must all cover the same scored positions"
+            )
+
+    @property
+    def positions(self) -> int:
+        """Return how many scored positions these columns describe."""
+
+        return len(self.game_ids)
+
+    def band(self, index: int) -> str | None:
+        """Return one position's rating band, absent where it has none."""
+
+        offset = self.bands[index]
+        return None if offset < 0 else self.band_names[offset]
+
+    def rated_indices(self) -> tuple[int, ...]:
+        """Return the positions a dependency test may compare, in pass order.
+
+        Only positions whose true rating is present take part. Comparing a
+        rated position against an unrated one would mix the effect of
+        corrupting the input with the effect of its being absent to begin with.
+        """
+
+        return tuple(index for index in range(self.positions) if self.rated[index])
+
+
 def build_dependency_result(
     *,
     config: DependencyTestConfig,
@@ -374,45 +454,114 @@ def build_dependency_result(
 ) -> DependencyTestResult:
     """Assemble every dependency test from already-scored conditioning passes.
 
-    Only positions whose true rating is present take part. Comparing a rated
-    position against an unrated one would mix the effect of corrupting the
-    input with the effect of the input being absent to begin with.
+    What a caller holding whole scored positions passes. A reading that scores
+    a pool a batch at a time fills the columns directly and calls
+    :func:`reduce_dependency_columns`, which is where the arithmetic lives.
     """
 
-    rated = tuple(
-        position
-        for position in true_positions
-        if _context(contexts, position).rating is not None
+    _require_conditioning_passes(config, conditioned_positions)
+    return reduce_dependency_columns(
+        config=config,
+        columns=dependency_columns(
+            contexts,
+            true_positions,
+            corrupted_positions,
+            conditioned_positions,
+            trajectory,
+        ),
+        maturity=maturity,
+        rating_bands=rating_bands,
     )
+
+
+def dependency_columns(
+    contexts: Mapping[PositionKey, PositionContext],
+    true_positions: Sequence[PositionPolicy],
+    corrupted_positions: Mapping[str, tuple[Conditioning, Sequence[PositionPolicy]]],
+    conditioned_positions: Mapping[int, Sequence[PositionPolicy]],
+    trajectory: Mapping[PositionKey, TrajectorySignal],
+) -> DependencyColumns:
+    """Project whole scored conditioning passes onto aligned columns."""
+
+    keys = [(position.game_id, position.ply_index) for position in true_positions]
+    resolved = [_context_at(contexts, key) for key in keys]
+    order = {key: index for index, key in enumerate(keys)}
+    colors = _interned([context.color for context in resolved])
+    bands = _interned_optional([context.rating_band for context in resolved])
+    signals = [trajectory.get(key) for key in keys]
+
+    def aligned(positions: Sequence[PositionPolicy], what: str) -> list[float]:
+        losses = [0.0] * len(keys)
+        seen = [False] * len(keys)
+        for position in positions:
+            index = order.get((position.game_id, position.ply_index))
+            if index is None:
+                raise DependencyError(
+                    f"{what} scored a position the true-conditioning pass did not"
+                )
+            losses[index] = position.move_nll
+            seen[index] = True
+        if not all(seen):
+            raise DependencyError(
+                f"{what} scored {sum(seen)} of {len(keys)} scored position(s)"
+            )
+        return losses
+
+    return DependencyColumns(
+        game_ids=[key[0] for key in keys],
+        ply_indices=[key[1] for key in keys],
+        color_names=colors[0],
+        colors=colors[1],
+        band_names=bands[0],
+        bands=bands[1],
+        rated=[context.rating is not None for context in resolved],
+        true_move_nll=[position.move_nll for position in true_positions],
+        corrupted={
+            name: (conditioning, aligned(positions, f"conditioning pass {name!r}"))
+            for name, (conditioning, positions) in corrupted_positions.items()
+        },
+        conditioned={
+            rating: aligned(positions, f"conditioning rating {rating}")
+            for rating, positions in conditioned_positions.items()
+        },
+        has_signal=[signal is not None for signal in signals],
+        strength_signal=[0.0 if s is None else s.strength_signal for s in signals],
+        alignment=[0.0 if s is None else s.alignment for s in signals],
+        anchor_divergence=[0.0 if s is None else s.anchor_divergence for s in signals],
+        anchor_agreement=[False if s is None else s.anchor_agreement for s in signals],
+    )
+
+
+def reduce_dependency_columns(
+    *,
+    config: DependencyTestConfig,
+    columns: DependencyColumns,
+    maturity: MaturityContext,
+    rating_bands: Sequence[RatingBand] = DEFAULT_RATING_BANDS,
+) -> DependencyTestResult:
+    """Assemble every dependency test from one pass' aligned columns."""
+
+    rated = columns.rated_indices()
     if not rated:
         raise DependencyError(
             "dependency tests need held-out positions with a present rating"
         )
-    rated_keys = {(position.game_id, position.ply_index) for position in rated}
-    true_move_loss = fmean(position.move_nll for position in rated)
+    true_move_loss = fmean(columns.true_move_nll[index] for index in rated)
 
     corruptions = tuple(
-        _corruption_result(conditioning, positions, rated_keys, true_move_loss)
-        for conditioning, positions in (
-            corrupted_positions[name] for name in sorted(corrupted_positions)
-        )
+        _corruption_result(columns, name, rated, true_move_loss)
+        for name in sorted(columns.corrupted)
     )
-    cross = _cross_conditioning(
-        config,
-        contexts,
-        conditioned_positions,
-        rating_bands,
-    )
+    cross = _cross_conditioning(config, columns, rating_bands)
     values = config.conditioning_values()
     within = _within_game(
         config,
-        contexts,
+        columns,
         rated,
-        trajectory,
         anchor_low=values[0],
         anchor_high=values[-1],
     )
-    signals = tuple(trajectory[key] for key in sorted(rated_keys) if key in trajectory)
+    signals = tuple(index for index in rated if columns.has_signal[index])
     if not signals:
         raise DependencyError(
             "dependency tests need anchor policies for scored positions"
@@ -423,25 +572,47 @@ def build_dependency_result(
         corruptions=corruptions,
         cross_conditioning=cross,
         within_game=within,
-        anchor_divergence=fmean(signal.anchor_divergence for signal in signals),
+        anchor_divergence=fmean(columns.anchor_divergence[index] for index in signals),
         anchor_agreement_rate=fmean(
-            float(signal.anchor_agreement) for signal in signals
+            float(columns.anchor_agreement[index]) for index in signals
         ),
         maturity=maturity,
-        per_game_totals=_per_game_totals(
-            rated,
-            rated_keys,
-            corrupted_positions,
-            trajectory,
-        ),
+        per_game_totals=_per_game_totals(columns, rated),
     )
 
 
+def _require_conditioning_passes(
+    config: DependencyTestConfig,
+    conditioned: Mapping[int, object],
+) -> tuple[int, ...]:
+    """Return the configured conditioning ratings, refusing an unscored one."""
+
+    values = config.conditioning_values()
+    missing = tuple(value for value in values if value not in conditioned)
+    if missing:
+        raise DependencyError(
+            f"cross-conditioning is missing a scoring pass for rating {missing[0]}"
+        )
+    return values
+
+
+def _interned(values: Sequence[str]) -> tuple[tuple[str, ...], list[int]]:
+    names = tuple(sorted(set(values)))
+    offsets = {name: index for index, name in enumerate(names)}
+    return names, [offsets[value] for value in values]
+
+
+def _interned_optional(
+    values: Sequence[str | None],
+) -> tuple[tuple[str, ...], list[int]]:
+    names = tuple(sorted({value for value in values if value is not None}))
+    offsets = {name: index for index, name in enumerate(names)}
+    return names, [-1 if value is None else offsets[value] for value in values]
+
+
 def _per_game_totals(
-    rated: Sequence[PositionPolicy],
-    rated_keys: set[PositionKey],
-    corrupted_positions: Mapping[str, tuple[Conditioning, Sequence[PositionPolicy]]],
-    trajectory: Mapping[PositionKey, TrajectorySignal],
+    columns: DependencyColumns,
+    rated: Sequence[int],
 ) -> tuple[GameTotals, ...]:
     """Return each game's share of the position-mean dependency results.
 
@@ -460,27 +631,26 @@ def _per_game_totals(
     anchor_positions: dict[int, int] = defaultdict(int)
     divergence: dict[int, float] = defaultdict(float)
     agreement: dict[int, float] = defaultdict(float)
-    for position in rated:
-        positions[position.game_id] += 1
-        true_totals[position.game_id] += position.move_nll
-        signal = trajectory.get((position.game_id, position.ply_index))
-        if signal is None:
+    for index in rated:
+        game_id = columns.game_ids[index]
+        positions[game_id] += 1
+        true_totals[game_id] += columns.true_move_nll[index]
+        if not columns.has_signal[index]:
             continue
-        anchor_positions[position.game_id] += 1
-        divergence[position.game_id] += signal.anchor_divergence
-        agreement[position.game_id] += float(signal.anchor_agreement)
+        anchor_positions[game_id] += 1
+        divergence[game_id] += columns.anchor_divergence[index]
+        agreement[game_id] += float(columns.anchor_agreement[index])
 
     # Name-sorted and first-wins, matching how a corruption result is selected
     # by kind, so a share is drawn from the pass whose value it qualifies.
     degradations: dict[ConditioningKind, dict[int, float]] = {}
-    for name in sorted(corrupted_positions):
-        conditioning, scored = corrupted_positions[name]
+    for name in sorted(columns.corrupted):
+        conditioning, losses = columns.corrupted[name]
         if conditioning.kind in degradations:
             continue
         totals: dict[int, float] = defaultdict(float)
-        for position in scored:
-            if (position.game_id, position.ply_index) in rated_keys:
-                totals[position.game_id] += position.move_nll
+        for index in rated:
+            totals[columns.game_ids[index]] += losses[index]
         degradations[conditioning.kind] = {
             game_id: total - true_totals[game_id] for game_id, total in totals.items()
         }
@@ -515,25 +685,16 @@ def _per_game_totals(
 
 
 def _corruption_result(
-    conditioning: Conditioning,
-    positions: Sequence[PositionPolicy],
-    rated_keys: set[PositionKey],
+    columns: DependencyColumns,
+    name: str,
+    rated: Sequence[int],
     true_move_loss: float,
 ) -> CorruptionResult:
-    losses = [
-        position.move_nll
-        for position in positions
-        if (position.game_id, position.ply_index) in rated_keys
-    ]
-    if len(losses) != len(rated_keys):
-        raise DependencyError(
-            f"conditioning pass {conditioning.name!r} scored "
-            f"{len(losses)} of {len(rated_keys)} rated position(s)"
-        )
-    move_loss = fmean(losses)
+    conditioning, losses = columns.corrupted[name]
+    move_loss = fmean(losses[index] for index in rated)
     return CorruptionResult(
         conditioning=conditioning,
-        position_count=len(losses),
+        position_count=len(rated),
         move_loss=move_loss,
         degradation=move_loss - true_move_loss,
     )
@@ -541,33 +702,26 @@ def _corruption_result(
 
 def _cross_conditioning(
     config: DependencyTestConfig,
-    contexts: Mapping[PositionKey, PositionContext],
-    conditioned_positions: Mapping[int, Sequence[PositionPolicy]],
+    columns: DependencyColumns,
     rating_bands: Sequence[RatingBand],
 ) -> CrossConditioningResult:
-    values = config.conditioning_values()
-    missing = tuple(value for value in values if value not in conditioned_positions)
-    if missing:
-        raise DependencyError(
-            f"cross-conditioning is missing a scoring pass for rating {missing[0]}"
-        )
+    values = _require_conditioning_passes(config, columns.conditioned)
 
     band_losses: dict[str, dict[int, list[float]]] = {}
     for value in values:
-        for position in conditioned_positions[value]:
-            context = _context(contexts, position)
-            if context.rating_band is None:
+        losses = columns.conditioned[value]
+        for index in range(columns.positions):
+            band = columns.band(index)
+            if band is None:
                 continue
-            band_losses.setdefault(context.rating_band, {}).setdefault(
-                value, []
-            ).append(position.move_nll)
+            band_losses.setdefault(band, {}).setdefault(value, []).append(losses[index])
 
     cells: list[CrossConditioningCell] = []
     compared: list[str] = []
     matched: list[str] = []
     excluded: list[str] = []
-    for band in rating_bands:
-        by_value = band_losses.get(band.name)
+    for definition in rating_bands:
+        by_value = band_losses.get(definition.name)
         if by_value is None:
             continue
         for value in values:
@@ -576,7 +730,7 @@ def _cross_conditioning(
                 continue
             cells.append(
                 CrossConditioningCell(
-                    rating_band=band.name,
+                    rating_band=definition.name,
                     conditioning_rating=value,
                     position_count=len(losses),
                     move_loss=fmean(losses),
@@ -584,12 +738,12 @@ def _cross_conditioning(
             )
         counts = {value: len(by_value.get(value, [])) for value in values}
         if min(counts.values()) < config.minimum_slice_positions:
-            excluded.append(band.name)
+            excluded.append(definition.name)
             continue
         best = min(values, key=lambda value: fmean(by_value[value]))
-        compared.append(band.name)
-        if rating_band_name(best, rating_bands) == band.name:
-            matched.append(band.name)
+        compared.append(definition.name)
+        if rating_band_name(best, rating_bands) == definition.name:
+            matched.append(definition.name)
 
     return CrossConditioningResult(
         cells=tuple(cells),
@@ -601,21 +755,20 @@ def _cross_conditioning(
 
 def _within_game(
     config: DependencyTestConfig,
-    contexts: Mapping[PositionKey, PositionContext],
-    rated: Sequence[PositionPolicy],
-    trajectory: Mapping[PositionKey, TrajectorySignal],
+    columns: DependencyColumns,
+    rated: Sequence[int],
     *,
     anchor_low: int,
     anchor_high: int,
 ) -> WithinGameResult:
-    prefixes = _prefix_strengths(config, contexts, rated, trajectory)
-    by_band: dict[str, list[tuple[float, PositionPolicy]]] = {}
-    for position in rated:
-        context = _context(contexts, position)
-        strength = prefixes.get(context.key)
-        if strength is None or context.rating_band is None:
+    prefixes = _prefix_strengths(config, columns, rated)
+    by_band: dict[str, list[tuple[float, int]]] = {}
+    for index in rated:
+        strength = prefixes.get(index)
+        band = columns.band(index)
+        if strength is None or band is None:
             continue
-        by_band.setdefault(context.rating_band, []).append((strength, position))
+        by_band.setdefault(band, []).append((strength, index))
 
     groups: list[WithinGameGroup] = []
     compared: list[str] = []
@@ -637,10 +790,7 @@ def _within_game(
             continue
         compared.append(band)
         for name, half in halves.items():
-            alignments = [
-                trajectory[(position.game_id, position.ply_index)].alignment
-                for _, position in half
-            ]
+            alignments = [columns.alignment[index] for _, index in half]
             groups.append(
                 WithinGameGroup(
                     rating_band=band,
@@ -648,7 +798,7 @@ def _within_game(
                     position_count=len(half),
                     mean_prefix_strength=fmean(strength for strength, _ in half),
                     mean_alignment=fmean(alignments),
-                    move_loss=fmean(position.move_nll for _, position in half),
+                    move_loss=fmean(columns.true_move_nll[index] for _, index in half),
                 )
             )
             if name == WEAKER_PREFIX_GROUP:
@@ -677,10 +827,9 @@ def _within_game(
 
 def _prefix_strengths(
     config: DependencyTestConfig,
-    contexts: Mapping[PositionKey, PositionContext],
-    rated: Sequence[PositionPolicy],
-    trajectory: Mapping[PositionKey, TrajectorySignal],
-) -> dict[PositionKey, float]:
+    columns: DependencyColumns,
+    rated: Sequence[int],
+) -> dict[int, float]:
     """Return each position's mean prefix strength for the player to move.
 
     Only the same player's earlier decisions count. A player's own moves are
@@ -688,35 +837,31 @@ def _prefix_strengths(
     opponent's would measure the game rather than the player.
     """
 
-    by_player: dict[tuple[int, str], list[tuple[int, float]]] = {}
-    for key, context in contexts.items():
-        signal = trajectory.get(key)
-        if signal is None:
+    by_player: dict[tuple[int, int], list[tuple[int, float]]] = {}
+    for index in range(columns.positions):
+        if not columns.has_signal[index]:
             continue
-        by_player.setdefault((context.game_id, context.color), []).append(
-            (context.ply_index, signal.strength_signal)
-        )
+        by_player.setdefault(
+            (columns.game_ids[index], columns.colors[index]), []
+        ).append((columns.ply_indices[index], columns.strength_signal[index]))
     for entries in by_player.values():
         entries.sort()
 
-    strengths: dict[PositionKey, float] = {}
-    for position in rated:
-        context = _context(contexts, position)
-        entries = by_player.get((context.game_id, context.color), [])
-        earlier = [
-            value for ply_index, value in entries if ply_index < context.ply_index
-        ]
+    strengths: dict[int, float] = {}
+    for index in rated:
+        entries = by_player.get((columns.game_ids[index], columns.colors[index]), [])
+        ply_index = columns.ply_indices[index]
+        earlier = [value for earlier_ply, value in entries if earlier_ply < ply_index]
         if len(earlier) < config.minimum_prefix_decisions:
             continue
-        strengths[context.key] = fmean(earlier)
+        strengths[index] = fmean(earlier)
     return strengths
 
 
-def _context(
+def _context_at(
     contexts: Mapping[PositionKey, PositionContext],
-    position: PositionPolicy,
+    key: PositionKey,
 ) -> PositionContext:
-    key = (position.game_id, position.ply_index)
     context = contexts.get(key)
     if context is None:
         raise DependencyError(f"scored position {key} has no recorded true context")

@@ -351,6 +351,14 @@ detail tier. Speed stays there while one corpus is one class: the slice is what
 makes a mixed pool readable, and committing a series over it is a question for
 the generation that spans speeds.
 
+Per-position records are the one part of that tier a run has to ask for. Both
+kinds — every scored decision, and every decision a predicate adjudicated — are
+one record per position over a pool that holds millions, and every reported
+quantity is computed from the summaries beside them rather than from the
+records. So they are written when the reading's detail configuration turns them
+on, for a session that means to look at the decisions themselves, and left out
+otherwise.
+
 Rating-band series are committed only when the run uses the default bands. A
 changed band boundary is a different measurement rather than movement in an
 existing series, so it reports into the detail tier instead of quietly
