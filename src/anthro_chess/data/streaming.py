@@ -71,7 +71,8 @@ from anthro_chess.data.loading import (
     collate_sequences,
     loader_configuration_sha256,
     require_resolved_snapshot,
-    subsample_size,
+    subsample_threshold,
+    within_subsample,
 )
 from anthro_chess.data.schema import (
     NormalizedColumn,
@@ -90,6 +91,12 @@ logger = logging.getLogger(__name__)
 #: What every pass over a row group reads, because both of them start by
 #: dropping the rows of other splits.
 _SPLIT_COLUMNS = (NormalizedColumn.SPLIT,)
+#: Joined only when a subsample cuts the rank space, because a game's place in
+#: it is the one thing that follows from its identity rather than its position.
+_IDENTITY_COLUMNS = (
+    NormalizedColumn.SOURCE_ID,
+    NormalizedColumn.SOURCE_GAME_KEY,
+)
 #: What planning adds to that. ``ply_count`` counts moves and
 #: ``terminal_action_status`` says whether one further action was appended,
 #: which together give a game's encoded length without touching its actions.
@@ -176,6 +183,7 @@ class ShardedSelection:
     chunk_length: int | None
     selection: SelectionConfig
     marked_digests: frozenset[int] | None
+    subsample_threshold: int | None
     resolution: SelectionResolution
     identity_sha256: str
 
@@ -197,18 +205,24 @@ def resolve_sharded_selection(
     split_games = sum(shard.split_counts.get(split, 0) for shard in shards)
     if not split_games:
         raise DataLoadingError(f"the corpus holds no {split} games")
-    if subsample_size(split_games, selection) < split_games:
-        raise _refuse_subsample()
+    if selection.maximum_games is not None:
+        raise DataLoadingError(
+            "the shard-backed loader cannot hold a selection to a game count: "
+            "delivering an exact one means ranking every candidate, which is a "
+            "digest per game of the whole corpus. Use fraction, which cuts the "
+            "same rank space and needs no count"
+        )
     row_groups = _enumerate_row_groups(shards)
     filtered = _filters_rows(selection, marked_digests)
+    threshold = subsample_threshold(selection)
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
-        # What a filter kept is not counted, because counting it means reading
-        # every row of the corpus for two numbers nothing computes from. The
-        # rows a filter rejects are dropped as the epoch reaches them instead,
-        # which costs what a run reads rather than what the split holds.
+        # Counted only where the manifest already counted it. A filter is
+        # applied as the epoch reaches each row and a subsample cuts a rank
+        # space rather than a list, so neither knows its own size without
+        # reading every row of the split for a number nothing computes from.
         eligible_games=None if filtered else split_games,
-        selected_games=None if filtered else split_games,
+        selected_games=None if filtered or threshold is not None else split_games,
         excluded_games=None if filtered else {},
     )
     identity = {
@@ -222,6 +236,7 @@ def resolve_sharded_selection(
             {"name": shard.path.name, "sha256": shard.sha256} for shard in shards
         ],
         "selection": resolution.as_identity_record(),
+        "subsample_threshold": threshold,
         "marked_accounts": _marked_accounts_sha256(marked_digests),
     }
     logger.info(
@@ -237,6 +252,7 @@ def resolve_sharded_selection(
         chunk_length=chunk_length,
         selection=selection,
         marked_digests=marked_digests,
+        subsample_threshold=threshold,
         resolution=resolution,
         identity_sha256=sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
@@ -300,6 +316,7 @@ def _scan_row_group(
     split: str,
     selection: SelectionConfig,
     marked_digests: frozenset[int] | None,
+    threshold: int | None = None,
     lengths: bool = False,
 ) -> Iterator[tuple[int, str | None, int]]:
     """Yield each row of one row group that is in the split, and its verdict.
@@ -315,6 +332,7 @@ def _scan_row_group(
         + (_LENGTH_COLUMNS if lengths else ())
         + (_FILTER_COLUMNS if filtered else ())
         + (_MARKED_COLUMNS if marked_digests else ())
+        + (_IDENTITY_COLUMNS if threshold is not None else ())
     )
     table = read_normalized_row_group(reader, group.row_group, columns)
     values = {column.value: row_group_column(table, column.value) for column in columns}
@@ -325,32 +343,24 @@ def _scan_row_group(
         if splits[position] != split:
             continue
         reason = None
-        if filtered:
+        if filtered or threshold is not None:
             row = {
                 column: column_values[position]
                 for column, column_values in values.items()
             }
-            reason = _exclusion_reason(row, selection, marked_digests)
+            if filtered:
+                reason = _exclusion_reason(row, selection, marked_digests)
+            if (
+                reason is None
+                and threshold is not None
+                and not within_subsample(row_game_id(row), selection.seed, threshold)
+            ):
+                continue
         if not lengths or reason is not None:
             yield position, reason, 0
             continue
         appended = terminal[position] == TerminalActionStatus.APPENDED
         yield position, None, ply_counts[position] + (1 if appended else 0)
-
-
-def _refuse_subsample() -> DataLoadingError:
-    """Say why this loader will not take a share of a split.
-
-    A cutoff over the same rank would need no identities and is not offered
-    instead: the count it lands on is the count it lands on, so a run would
-    record a size it did not train on.
-    """
-
-    return DataLoadingError(
-        "the shard-backed loader cannot subsample a selection: ranking every "
-        "candidate needs a digest per game of the whole corpus. Select with the "
-        "filters instead, or read a selection small enough for the eager loader"
-    )
 
 
 class StreamingSequenceDataLoader(SequenceBatchSource):
@@ -576,6 +586,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 split=self.corpus.split,
                 selection=self.corpus.selection,
                 marked_digests=self.corpus.marked_digests,
+                threshold=self.corpus.subsample_threshold,
                 lengths=True,
             )
             if reason is None

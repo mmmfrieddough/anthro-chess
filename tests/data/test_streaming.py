@@ -808,27 +808,87 @@ def test_two_snapshots_rejecting_the_same_count_resolve_different_identities(
     assert first.identity_sha256 != second.identity_sha256
 
 
-@pytest.mark.parametrize(
-    "selection",
-    [SelectionConfig(fraction=0.5), SelectionConfig(maximum_games=5)],
-    ids=["fraction", "capped"],
-)
-def test_a_subsample_is_refused_rather_than_approximated(
+def test_a_game_count_is_refused_where_a_share_is_not(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
-    selection: SelectionConfig,
 ) -> None:
-    """A cutoff over the rank keeps whatever share of a corpus it happens to.
+    """A share cuts the rank space; a count has to know what it is cutting.
 
-    Refusing is what keeps the recorded size honest. Approximating would let a
-    run record a count nobody trained on, and nothing holds the ids to notice.
+    So the dial that needs a number this loader would have to read the corpus
+    for is the one it refuses, and the dial that needs none is not.
     """
 
     corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 16))
 
-    with pytest.raises(DataLoadingError, match="cannot subsample"):
-        _loader(corpus, SequenceLoaderConfig(split="train", selection=selection))
+    with pytest.raises(DataLoadingError, match="cannot hold a selection"):
+        _loader(
+            corpus,
+            SequenceLoaderConfig(
+                split="train", selection=SelectionConfig(maximum_games=5)
+            ),
+        )
+
+    shared = _loader(
+        corpus,
+        SequenceLoaderConfig(split="train", selection=SelectionConfig(fraction=0.5)),
+    )
+    assert _drain(shared)
+
+
+def test_both_loaders_read_one_set_of_games_for_one_share(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A streaming section is a memory choice, so it cannot move the data.
+
+    The two loaders cut the same rank space at the same place. Were one of them
+    ranking instead, a configuration differing only in that section would train
+    on a different set of games and nothing would say so.
+    """
+
+    rows = [
+        normalized_row(game_id, split="train", plies=6) for game_id in range(1, 129)
+    ]
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=16)
+    selection = SelectionConfig(fraction=0.25)
+    config = SequenceLoaderConfig(split="train", batch_size=4, selection=selection)
+
+    streaming = _loader(corpus, config)
+    eager = SequenceDataLoader.from_parquet([shard.path for shard in corpus[0]], config)
+
+    assert {game for game, _ in _drain(streaming)} == {
+        example.game_id for example in eager.dataset
+    }
+    streaming.close()
+
+
+def test_a_smaller_share_reads_a_subset_of_a_larger_one(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A data-scaling curve is a series of nested selections or it is not one."""
+
+    rows = [
+        normalized_row(game_id, split="train", plies=6) for game_id in range(1, 129)
+    ]
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=16)
+
+    def read(fraction: float) -> set[int]:
+        loader = _loader(
+            corpus,
+            SequenceLoaderConfig(
+                split="train", selection=SelectionConfig(fraction=fraction)
+            ),
+        )
+        try:
+            return {game for game, _ in _drain(loader)}
+        finally:
+            loader.close()
+
+    assert read(0.25) < read(0.5) < read(1.0)
 
 
 def test_a_split_the_corpus_does_not_hold_is_refused_at_the_open(

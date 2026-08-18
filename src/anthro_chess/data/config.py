@@ -219,9 +219,10 @@ class SelectionConfig(ConfigModel):
     count it names to a run that sets this and to one that does not, which is
     what lets two such runs differ in which games they read rather than in how
     many. ``fraction`` does not: it takes a share of whatever survived, so the
-    filtered run reads fewer games and confounds the two. Both dials rank, and
-    ranking means holding every candidate's identity, so both are bounded by
-    what one loader can hold rather than by what a corpus contains.
+    filtered run reads fewer games and confounds the two. Naming a size is also
+    what makes ``maximum_games`` the dial that has to rank its candidates, and
+    so the one bounded by what a loader can hold; ``fraction`` cuts a rank space
+    and is not.
     """
 
     speed: Speed | None = None

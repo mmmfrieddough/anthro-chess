@@ -298,14 +298,19 @@ That is the measurement working rather than a regression, which is why these
 comparisons need the axis slice and not only the aggregate.
 
 The selection filters on the axes worth comparing models across, currently time
-control and rating, and subsamples by ranking on a digest of the game id. That
-rank is what makes a fraction reproducible on any machine and makes a smaller
-fraction a subset of a larger one, so a data-scaling curve is a series of
-nested selections rather than unrelated samples. Ranking means holding every
-candidate's identity at once, so it is bounded by what one loader can hold and
-the shard-backed loader declines it; the section on the two loaders below says
-what that costs and where it leaves a corpus-scale curve. A selection that
-matches no games fails rather than starting a run on nothing.
+control and rating, and subsamples against a digest of the game id. `fraction`
+keeps the games whose digest falls below a share of that space, which is
+reproducible on any machine and makes a smaller fraction a subset of a larger
+one, so a data-scaling curve is a series of nested selections rather than
+unrelated samples. It needs no count of the candidates, so both loaders cut the
+same space at the same place and a share names one set of games whichever reads
+it. What that gives up is an exact size, which lands within sampling noise of
+the share and is a fraction of a percent over a corpus.
+
+`maximum_games` names a size instead, so it has to rank what it is cutting and
+is bounded by what one loader can hold. The eager loader holds its candidates
+already and delivers the count exactly; the shard-backed loader refuses rather
+than approximating.
 
 Time control is filtered by a speed class, by explicit clock bounds, or by
 both, which intersect. The class is what keeping training narrow across a
@@ -801,19 +806,15 @@ epoch restarts at the cost of one projected read. That is why the cursor records
 its row group rather than only its place in the epoch: finding the one from the
 other means planning everything before it.
 
-Two things follow from holding no game. A run does not record which games its
+Three things follow from holding no game. A run does not record which games its
 selection kept, because naming them means enumerating a split that reaches
 billions, nor how many where the selection filters rows: counting that means
 reading every row of the split for a number nothing computes from, and the rows
 a filter rejects are dropped as the epoch reaches them instead. What the split
-held before selection is recorded either way, from the manifest. And the
-shard-backed loader refuses a subsample rather
-than approximating one: taking the lowest-ranked share of a split means ranking
-every candidate, which needs a digest per game of the whole corpus, and a
-cutoff over that same rank keeps whatever share it happens to rather than the
-size it was asked for. A dial that keeps the whole split ranks nothing and is
-admitted. Subsampling stays available through the eager loader, where a
-selection is small enough to rank.
+held before selection is recorded either way, from the manifest. A share of a
+selection is a cut of the rank space rather than a ranking, so it needs no such
+count. And `maximum_games`, which does, is refused here rather than
+approximated: a run would otherwise record a size it did not train on.
 
 The two produce different orders and neither is a defect. A global shuffle over
 a corpus means a seek per example, so the shard-backed loader shuffles row

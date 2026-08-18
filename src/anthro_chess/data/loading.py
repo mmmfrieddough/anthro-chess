@@ -756,8 +756,21 @@ def _resolve_selection(
             else:
                 excluded[reason] = excluded.get(reason, 0) + 1
 
-    kept = subsample_size(len(eligible), selection)
-    selected = sorted(nsmallest(kept, eligible, key=partial(_rank_key, selection.seed)))
+    threshold = subsample_threshold(selection)
+    share = [
+        game_id
+        for game_id in eligible
+        if within_subsample(game_id, selection.seed, threshold)
+    ]
+    # The cap ranks what the share left, which this loader can afford because
+    # it is holding every one of them already.
+    selected = sorted(
+        share
+        if selection.maximum_games is None
+        else nsmallest(
+            selection.maximum_games, share, key=partial(_rank_key, selection.seed)
+        )
+    )
     return (
         SelectionResolution(
             spec=selection.model_dump(mode="json"),
@@ -770,7 +783,7 @@ def _resolve_selection(
 
 
 def subsample_size(eligible_games: int, selection: SelectionConfig) -> int:
-    """Return how many of the eligible games the configured dials keep."""
+    """Return how many of the eligible games the configured dials ask for."""
 
     kept = eligible_games
     if selection.fraction is not None:
@@ -781,6 +794,39 @@ def subsample_size(eligible_games: int, selection: SelectionConfig) -> int:
     if selection.maximum_games is not None:
         kept = min(kept, selection.maximum_games)
     return kept
+
+
+#: The rank space a subsample cuts. A game keeps its place in it whatever else
+#: the corpus holds, which is what makes a share of one selection a subset of a
+#: larger share rather than a fresh draw.
+_RANK_SPACE = 1 << 64
+
+
+def subsample_threshold(selection: SelectionConfig) -> int | None:
+    """Return the rank below which a share of a selection keeps a game.
+
+    A cut rather than a ranking, because ranking means holding every
+    candidate's identity at once and a corpus-scale split has more of them than
+    a loader can hold. It needs no count of the candidates either, so it reads
+    the same on a split nobody has measured.
+
+    Both loaders cut the same space at the same place, so a share names one set
+    of games whichever of them reads it. What it gives up is an exact size: the
+    realized count lands within sampling noise of the share asked for, which is
+    a fraction of a percent over a corpus and loose over a fixture.
+    """
+
+    if selection.fraction is None or selection.fraction >= 1.0:
+        return None
+    return int(selection.fraction * _RANK_SPACE)
+
+
+def within_subsample(game_id: int, seed: str, threshold: int | None) -> bool:
+    """Say whether one game falls inside a subsample's cut."""
+
+    if threshold is None:
+        return True
+    return int.from_bytes(_rank_key(seed, game_id)[:8], "big") < threshold
 
 
 def _resolution_for_examples(

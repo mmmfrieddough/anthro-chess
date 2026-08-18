@@ -154,7 +154,7 @@ def test_subsampling_is_deterministic_and_a_smaller_dial_is_a_subset(
         tmp_path,
         normalized_row,
         write_corpus,
-        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 11)],
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 201)],
     )
 
     half = _selected(games, SelectionConfig(fraction=0.5))
@@ -162,13 +162,16 @@ def test_subsampling_is_deterministic_and_a_smaller_dial_is_a_subset(
     fifth = _selected(games, SelectionConfig(fraction=0.2))
     whole = _selected(games, SelectionConfig(fraction=1.0))
 
-    assert len(half) == 5
-    assert len(fifth) == 2
-    assert len(whole) == 10
-    # Reproducible on any machine, and nested, because the rank is a digest of
-    # the game id rather than a shuffle of whatever order the shards held.
+    # Reproducible on any machine, and nested, because a share is a cut of the
+    # rank space each game's own digest places it in rather than a shuffle of
+    # whatever order the shards held.
     assert half == half_again
     assert set(fifth) < set(half) < set(whole)
+    assert len(whole) == 200
+    # The size follows the share it asked for rather than matching it, because
+    # a cut needs no count of the candidates and so cannot land on one exactly.
+    assert 80 <= len(half) <= 120
+    assert 20 <= len(fifth) <= 60
 
 
 def test_maximum_games_caps_a_selection_after_filtering(
@@ -239,7 +242,7 @@ def test_the_resolved_selection_reproduces_the_same_games_by_identity(
         tmp_path,
         normalized_row,
         write_corpus,
-        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 9)],
+        [(game_id, BLITZ_MS, 1500) for game_id in range(1, 201)],
     )
     selection = SelectionConfig(fraction=0.5)
 
@@ -253,8 +256,7 @@ def test_the_resolved_selection_reproduces_the_same_games_by_identity(
 
     record = first.resolution.as_record()
     assert record["spec"] == selection.model_dump(mode="json")
-    assert record["eligible_games"] == 8
-    assert record["selected_games"] == 4
+    assert record["eligible_games"] == 200
     assert record["excluded_games"] == {}
     assert record == second.resolution.as_record()
     # Two selections over one corpus stay distinguishable by what they realized,
@@ -321,11 +323,11 @@ def test_a_changed_selection_changes_the_loader_configuration_identity(
         ),
         (
             SelectionConfig(fraction=0.5),
-            "87ab2df502d1063ddbe72ba411f2ff89ced734abc0fa22504d8b4e990ef89af0",
+            "755deaddf342ec7abab42be561159513cacff304083c44f7c3696a5f38ddff76",
         ),
         (
             SelectionConfig(fraction=0.25),
-            "662617ba6153b08353b65fa76a0f3cc04bcdce50f2733c6ead3dd77ad41c47e1",
+            "4221a20eacc3d0ad6289b158d94131173be6f5b21270483d0addbc2a8bf21f7d",
         ),
         (
             SelectionConfig(maximum_games=5),
@@ -333,7 +335,7 @@ def test_a_changed_selection_changes_the_loader_configuration_identity(
         ),
         (
             SelectionConfig(fraction=0.5, seed="frozen-digest-seed"),
-            "24e4a54b145b27728a1acc4f7a77f4a3ff3f3c81ae7e75736bcb08ba72899709",
+            "d3e2655ad361d4f8d628bb925beda7f53e42998b6a1dbdadddbad4cff90b87da",
         ),
     ],
     ids=["everything", "half", "quarter", "capped", "other-seed"],
@@ -500,29 +502,20 @@ def test_the_rejection_runs_before_the_subsample_that_sizes_an_arm(
 
     # A fraction takes its share of whatever survived, so the two arms differ in
     # how much data each saw as well as in which games.
-    assert (
-        len(
-            _loaded(
-                SequenceDataset.from_parquet(
-                    games, split="train", selection=SelectionConfig(fraction=0.5)
-                )
-            )
+    unfiltered_share = _loaded(
+        SequenceDataset.from_parquet(
+            games, split="train", selection=SelectionConfig(fraction=0.5)
         )
-        == 10
     )
-    assert (
-        len(
-            _loaded(
-                SequenceDataset.from_parquet(
-                    games,
-                    split="train",
-                    selection=_naming_a_snapshot(fraction=0.5),
-                    marked_digests=marked,
-                )
-            )
+    filtered_share = _loaded(
+        SequenceDataset.from_parquet(
+            games,
+            split="train",
+            selection=_naming_a_snapshot(fraction=0.5),
+            marked_digests=marked,
         )
-        == 6
     )
+    assert set(filtered_share) < set(unfiltered_share)
 
 
 def _naming_a_snapshot(
