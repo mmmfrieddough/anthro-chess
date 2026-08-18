@@ -11,6 +11,7 @@ from __future__ import annotations
 import bz2
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
@@ -111,14 +112,21 @@ def open_pgn_text(source_path: Path) -> Iterator[TextIO]:
 
 @dataclass(frozen=True)
 class ShardIdentity:
-    """One normalized shard, named by the digest its manifest recorded.
+    """One normalized shard, as its manifest describes it.
 
-    A consumer that has verified a shard against its manifest already knows
-    what the shard is, so identifying a corpus does not have to read it again.
+    ``sha256`` is what the manifest recorded rather than what the bytes hash to,
+    unless the check that produced this was asked to verify contents. Every
+    consumer identifying a corpus reads it, so a caller wanting the stronger
+    claim has to ask for it there.
+
+    ``split_counts`` is copied from that record too. ``row_groups`` is the one
+    field read off the shard, by the check that already had its footer open.
     """
 
     path: Path
     sha256: str
+    split_counts: Mapping[str, int]
+    row_groups: int
 
 
 def file_sha256(path: Path) -> str:
@@ -131,43 +139,17 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def game_ids_sha256(game_ids: Sequence[int]) -> str:
+def game_ids_sha256(game_ids: Iterable[int]) -> str:
     """Return the order-independent identity digest for a set of game ids.
 
-    Both a frozen evaluation pool and a load-time training selection identify
-    themselves by which games they hold, so they share one digest rather than
-    two that could drift apart.
+    A frozen evaluation pool and the views cut from it both identify themselves
+    by which games they hold, so they share one digest rather than two that
+    could drift apart.
     """
 
-    return sorted_game_ids_sha256(sorted(game_ids))
-
-
-#: How many ids are joined before being folded in. Large enough that the joining
-#: is what costs rather than the call, small enough that the joined form stays a
-#: buffer rather than becoming the structure this exists to avoid building.
-_DIGEST_CHUNK_GAMES = 1 << 16
-
-
-def sorted_game_ids_sha256(game_ids: Iterable[int]) -> str:
-    """Return the same digest over ids that are already in ascending order.
-
-    The joined form the digest is defined over is fed in a chunk at a time
-    rather than built. A corpus-scale selection's is tens of gigabytes of
-    string, read once, to produce sixty-four characters.
-    """
-
-    digest = sha256()
-    chunk: list[str] = []
-    for game_id in game_ids:
-        chunk.append(str(game_id))
-        if len(chunk) == _DIGEST_CHUNK_GAMES:
-            digest.update(",".join(chunk).encode())
-            # The empty entry is the comma between this chunk and the next,
-            # written by the join that flushes the next one. A tail that never
-            # grows past it joins to nothing and updates nothing.
-            chunk = [""]
-    digest.update(",".join(chunk).encode())
-    return digest.hexdigest()
+    return sha256(
+        ",".join(str(game_id) for game_id in sorted(game_ids)).encode()
+    ).hexdigest()
 
 
 def normalized_shard_paths(path: Path) -> tuple[Path, ...]:
@@ -244,6 +226,12 @@ def normalized_row_group_count(shard: Any) -> int:
     """Return how many row groups one opened shard holds."""
 
     return int(shard.reader.metadata.num_row_groups)
+
+
+def normalized_row_count(shard: Any) -> int:
+    """Return how many rows one opened shard holds."""
+
+    return int(shard.reader.metadata.num_rows)
 
 
 def read_normalized_row_group(
@@ -405,17 +393,27 @@ def validate_manifest_compatibility(
         )
 
 
-def validate_manifest_outputs(
+#: How many shards are hashed at once. Hashing releases the interpreter lock and
+#: saturates the drive well before the processor, so threads reach the ceiling
+#: and more of them do not raise it. The footer pass gets none of this: parsing
+#: one holds the lock throughout, which measures as no gain at any width.
+_SHARD_HASHERS = 8
+
+
+@dataclass(frozen=True)
+class _ExpectedShard:
+    """What a manifest recorded about one output shard."""
+
+    sha256: str
+    games: int
+    split_counts: Mapping[str, int]
+
+
+def _expected_shards(
     manifest: Mapping[str, Any],
     manifest_path: Path,
-    paths: Sequence[Path],
-) -> tuple[ShardIdentity, ...]:
-    """Check that the selected shards are exactly the ones the manifest recorded.
-
-    The verified digests are returned rather than discarded, because a caller
-    that needs to identify this corpus would otherwise read every shard a
-    second time to learn what this pass already established.
-    """
+) -> dict[Path, _ExpectedShard]:
+    """Return a manifest's output shards, resolved against the artifact root."""
 
     output = manifest.get("output")
     if not isinstance(output, Mapping):
@@ -424,25 +422,103 @@ def validate_manifest_outputs(
     if not isinstance(shards, list):
         raise DataLoadingError(f"{manifest_path} has no output shard records")
 
-    expected: dict[Path, str] = {}
+    expected: dict[Path, _ExpectedShard] = {}
     artifact_root = manifest_path.parent.parent
     for shard in shards:
         if not isinstance(shard, Mapping):
             raise DataLoadingError(f"{manifest_path} has an invalid output shard")
         relative_path = shard.get("path")
         digest = shard.get("sha256")
-        if not isinstance(relative_path, str) or not isinstance(digest, str):
+        games = shard.get("games")
+        split_counts = shard.get("split_counts")
+        if (
+            not isinstance(relative_path, str)
+            or not isinstance(digest, str)
+            or type(games) is not int
+            or not isinstance(split_counts, Mapping)
+            or any(type(count) is not int for count in split_counts.values())
+        ):
             raise DataLoadingError(f"{manifest_path} has an invalid output shard")
-        expected[(artifact_root / relative_path).resolve()] = digest
+        expected[(artifact_root / relative_path).resolve()] = _ExpectedShard(
+            sha256=digest,
+            games=games,
+            split_counts=dict(split_counts),
+        )
+    return expected
 
-    if {path.resolve() for path in paths} != set(expected):
+
+def _checked_extent(recorded: _ExpectedShard, path: Path) -> ShardIdentity:
+    """Check one shard's footer against its manifest record.
+
+    A truncated or replaced file either fails to parse its footer or reports a
+    different row count, which is what an interrupted preparation and a partial
+    copy both leave behind. A page rewritten in place survives this, and hashing
+    the file is what sees that.
+    """
+
+    shard = open_normalized_shard(path)
+    rows = normalized_row_count(shard)
+    if rows != recorded.games:
+        raise DataLoadingError(
+            f"normalized shard holds {rows} row(s) where the manifest records "
+            f"{recorded.games}: {path}"
+        )
+    return ShardIdentity(
+        path=path,
+        sha256=recorded.sha256,
+        split_counts=recorded.split_counts,
+        row_groups=normalized_row_group_count(shard),
+    )
+
+
+def _checked_contents(shard: ShardIdentity) -> None:
+    """Refuse one shard whose bytes are not the ones the manifest recorded."""
+
+    if file_sha256(shard.path) != shard.sha256:
+        raise DataLoadingError(f"normalized data checksum mismatch: {shard.path}")
+
+
+def validate_manifest_outputs(
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    paths: Sequence[Path],
+    *,
+    verify_contents: bool = False,
+) -> tuple[ShardIdentity, ...]:
+    """Check that the selected shards are the ones the manifest recorded.
+
+    The default check compares each shard's recorded row count against its
+    Parquet footer, reading kilobytes of a file rather than all of it.
+
+    ``verify_contents`` hashes every shard end to end as well. That is the only
+    check which sees a page rewritten in place, and it costs a full read of the
+    corpus at whatever the drive sustains, so it is asked for rather than paid
+    by every run.
+
+    What the manifest recorded is returned either way. It identifies this corpus
+    to a caller and says how its games divide between the splits, and the check
+    has just established that the shards on disk are the ones it describes.
+    """
+
+    expected = _expected_shards(manifest, manifest_path)
+    # Resolved once and carried, because a corpus is tens of thousands of paths
+    # and resolving one is a system call.
+    resolved = [path.resolve() for path in paths]
+    if set(resolved) != set(expected):
         raise DataLoadingError(
             "configured normalized paths do not match the data manifest outputs"
         )
-    identities: list[ShardIdentity] = []
-    for path in paths:
-        digest = file_sha256(path)
-        if digest != expected[path.resolve()]:
-            raise DataLoadingError(f"normalized data checksum mismatch: {path}")
-        identities.append(ShardIdentity(path=path, sha256=digest))
-    return tuple(identities)
+    shards = tuple(
+        _checked_extent(expected[resolved[index]], path)
+        for index, path in enumerate(paths)
+    )
+    if verify_contents:
+        hashers = ThreadPoolExecutor(max_workers=_SHARD_HASHERS)
+        try:
+            for _ in hashers.map(_checked_contents, shards):
+                pass
+        finally:
+            # Not waiting, so a mismatch raises now rather than behind however
+            # many whole-shard reads are still in flight.
+            hashers.shutdown(wait=False, cancel_futures=True)
+    return shards

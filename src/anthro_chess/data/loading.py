@@ -17,7 +17,6 @@ from anthro_chess.data.accounts import marks_a_player
 from anthro_chess.data.artifacts import (
     DataLoadingError,
     read_normalized_rows,
-    sorted_game_ids_sha256,
 )
 from anthro_chess.data.config import SelectionConfig, SequenceLoaderConfig
 from anthro_chess.data.encoding import (
@@ -39,8 +38,8 @@ from anthro_chess.data.speed import speed_from_clock_ms
 if TYPE_CHECKING:
     import numpy as np
 
-LOADER_STATE_VERSION = 4
-SELECTION_SPEC_VERSION = 3
+LOADER_STATE_VERSION = 5
+SELECTION_SPEC_VERSION = 4
 logger = logging.getLogger(__name__)
 #: The columns a selection filters on. Reading only these keeps the pass that
 #: resolves which games to keep far cheaper than the pass that encodes them.
@@ -179,22 +178,19 @@ class SequenceBatch:
 class SelectionResolution:
     """Which games a load-time selection kept, and how to reproduce that set.
 
-    ``game_ids_sha256`` is what makes the record reproducible rather than
-    merely descriptive: a later run over the same corpus with the same spec
-    resolves the same digest, and a corpus that has since grown resolves a
-    different one.
+    The spec is what reproduces it, against the corpus a run records beside it.
+    Which games that resolves to is not held here, because a corpus-scale split
+    has more members than anything downstream would read.
 
-    It is also all that survives of the ids themselves. Confirming that a later
-    run reproduced the same games is the only thing anything downstream reads
-    them for, the digest answers exactly that, and a corpus-scale selection's
-    ids are tens of gigabytes of Python object held for the length of a run.
+    The counts are absent where a loader resolves lazily and a selection filters
+    rows: knowing them means reading every row of the split, and no reader
+    computes from them. A loader that already holds its games fills them in.
     """
 
     spec: dict[str, object]
-    eligible_games: int
-    selected_games: int
-    game_ids_sha256: str
-    excluded_games: dict[str, int]
+    eligible_games: int | None
+    selected_games: int | None
+    excluded_games: dict[str, int] | None
 
     def as_record(self) -> dict[str, object]:
         """Return the resolved-selection record stored in run artifacts."""
@@ -204,8 +200,11 @@ class SelectionResolution:
             "spec": dict(sorted(self.spec.items())),
             "eligible_games": self.eligible_games,
             "selected_games": self.selected_games,
-            "excluded_games": dict(sorted(self.excluded_games.items())),
-            "game_ids_sha256": self.game_ids_sha256,
+            "excluded_games": (
+                None
+                if self.excluded_games is None
+                else dict(sorted(self.excluded_games.items()))
+            ),
         }
 
     def as_identity_record(self) -> dict[str, object]:
@@ -213,9 +212,10 @@ class SelectionResolution:
 
         A resumed run has to match this, and ``docs/training-and-runtime.md``
         holds that such an identity may carry only values another machine could
-        reproduce. The snapshot path is not one: the same file sits at different
-        paths on two machines, and what its contents did to this selection is
-        already carried by ``game_ids_sha256``.
+        reproduce. The snapshot path is not one, because the same file sits at
+        different paths on two machines. What its contents did to a selection is
+        not carried here either, so a loader whose own identity does not name
+        the games it holds has to carry that itself.
         """
 
         record = self.as_record()
@@ -225,13 +225,21 @@ class SelectionResolution:
 
 @dataclass(frozen=True)
 class SequenceLoaderState:
-    """Serializable exact next-batch cursor for one deterministic loader epoch."""
+    """Serializable exact next-batch cursor for one deterministic loader epoch.
+
+    ``position`` counts the epoch's batches and is what a reader wants. It is
+    not enough to restore a loader that plans lazily, because finding the
+    position'"'"'s row group means planning every row group before it. Such a
+    loader records where that is as well, and the two are written together.
+    """
 
     version: int
     dataset_sha256: str
     configuration_sha256: str
     epoch: int
     position: int
+    group_index: int = 0
+    group_position: int = 0
 
     def __post_init__(self) -> None:
         if type(self.version) is not int:
@@ -249,6 +257,10 @@ class SequenceLoaderState:
             raise DataLoadingError("loader state epoch must be nonnegative")
         if type(self.position) is not int or self.position < 0:
             raise DataLoadingError("loader state position must be nonnegative")
+        if type(self.group_index) is not int or self.group_index < 0:
+            raise DataLoadingError("loader state group index must be nonnegative")
+        if type(self.group_position) is not int or self.group_position < 0:
+            raise DataLoadingError("loader state group position must be nonnegative")
 
     def as_record(self) -> dict[str, object]:
         """Return the JSON-serializable checkpoint representation."""
@@ -259,6 +271,8 @@ class SequenceLoaderState:
             "configuration_sha256": self.configuration_sha256,
             "epoch": self.epoch,
             "position": self.position,
+            "group_index": self.group_index,
+            "group_position": self.group_position,
         }
 
 
@@ -742,14 +756,26 @@ def _resolve_selection(
             else:
                 excluded[reason] = excluded.get(reason, 0) + 1
 
-    kept = subsample_size(len(eligible), selection)
-    selected = sorted(nsmallest(kept, eligible, key=partial(_rank_key, selection.seed)))
+    threshold = subsample_threshold(selection)
+    share = [
+        game_id
+        for game_id in eligible
+        if within_subsample(game_id, selection.seed, threshold)
+    ]
+    # The cap ranks what the share left, which this loader can afford because
+    # it is holding every one of them already.
+    selected = sorted(
+        share
+        if selection.maximum_games is None
+        else nsmallest(
+            selection.maximum_games, share, key=partial(_rank_key, selection.seed)
+        )
+    )
     return (
         SelectionResolution(
             spec=selection.model_dump(mode="json"),
             eligible_games=len(eligible),
             selected_games=len(selected),
-            game_ids_sha256=sorted_game_ids_sha256(selected),
             excluded_games=excluded,
         ),
         frozenset(selected),
@@ -757,7 +783,7 @@ def _resolve_selection(
 
 
 def subsample_size(eligible_games: int, selection: SelectionConfig) -> int:
-    """Return how many of the eligible games the configured dials keep."""
+    """Return how many of the eligible games the configured dials ask for."""
 
     kept = eligible_games
     if selection.fraction is not None:
@@ -770,6 +796,39 @@ def subsample_size(eligible_games: int, selection: SelectionConfig) -> int:
     return kept
 
 
+#: The rank space a subsample cuts. A game keeps its place in it whatever else
+#: the corpus holds, which is what makes a share of one selection a subset of a
+#: larger share rather than a fresh draw.
+_RANK_SPACE = 1 << 64
+
+
+def subsample_threshold(selection: SelectionConfig) -> int | None:
+    """Return the rank below which a share of a selection keeps a game.
+
+    A cut rather than a ranking, because ranking means holding every
+    candidate's identity at once and a corpus-scale split has more of them than
+    a loader can hold. It needs no count of the candidates either, so it reads
+    the same on a split nobody has measured.
+
+    Both loaders cut the same space at the same place, so a share names one set
+    of games whichever of them reads it. What it gives up is an exact size: the
+    realized count lands within sampling noise of the share asked for, which is
+    a fraction of a percent over a corpus and loose over a fixture.
+    """
+
+    if selection.fraction is None or selection.fraction >= 1.0:
+        return None
+    return int(selection.fraction * _RANK_SPACE)
+
+
+def within_subsample(game_id: int, seed: str, threshold: int | None) -> bool:
+    """Say whether one game falls inside a subsample's cut."""
+
+    if threshold is None:
+        return True
+    return int.from_bytes(_rank_key(seed, game_id)[:8], "big") < threshold
+
+
 def _resolution_for_examples(
     examples: Sequence[SequenceExample],
     selection: SelectionConfig,
@@ -779,7 +838,6 @@ def _resolution_for_examples(
         spec=selection.model_dump(mode="json"),
         eligible_games=len(game_ids),
         selected_games=len(game_ids),
-        game_ids_sha256=sorted_game_ids_sha256(game_ids),
         excluded_games={},
     )
 
@@ -995,6 +1053,8 @@ def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:
         "configuration_sha256",
         "epoch",
         "position",
+        "group_index",
+        "group_position",
     }
     if set(record) != expected_keys:
         raise DataLoadingError("loader state fields are incomplete or unknown")
@@ -1003,12 +1063,16 @@ def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:
     configuration_sha256 = record["configuration_sha256"]
     epoch = record["epoch"]
     position = record["position"]
+    group_index = record["group_index"]
+    group_position = record["group_position"]
     if (
         type(version) is not int
         or not isinstance(dataset_sha256, str)
         or not isinstance(configuration_sha256, str)
         or type(epoch) is not int
         or type(position) is not int
+        or type(group_index) is not int
+        or type(group_position) is not int
     ):
         raise DataLoadingError("loader state fields have invalid types")
     return SequenceLoaderState(
@@ -1017,4 +1081,6 @@ def _state_from_record(record: Mapping[str, object]) -> SequenceLoaderState:
         configuration_sha256,
         epoch,
         position,
+        group_index,
+        group_position,
     )

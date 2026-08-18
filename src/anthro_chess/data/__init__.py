@@ -69,9 +69,9 @@ from anthro_chess.data.speed import (
 from anthro_chess.data.streaming import (
     STREAMING_IDENTITY_VERSION,
     STREAMING_LOADER_NAME,
-    ShardedSequenceIndex,
+    ShardedSelection,
     StreamingSequenceDataLoader,
-    build_sharded_index,
+    resolve_sharded_selection,
 )
 from anthro_chess.data.termination import (
     TERMINAL_ACTION_STATUSES,
@@ -126,7 +126,7 @@ __all__ = [
     "SequenceInputs",
     "SequenceLoaderConfig",
     "SequenceLoaderState",
-    "ShardedSequenceIndex",
+    "ShardedSelection",
     "SourceConfig",
     "Speed",
     "SplitConfig",
@@ -137,7 +137,7 @@ __all__ = [
     "TerminationConfig",
     "acquire_configured_archive",
     "build_decision_context",
-    "build_sharded_index",
+    "resolve_sharded_selection",
     "collate_sequences",
     "derive_termination",
     "en_passant_token",

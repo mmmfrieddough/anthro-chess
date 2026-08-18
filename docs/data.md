@@ -117,6 +117,16 @@ digest, selection size, filters, split recipe, and shard sizing remain owned by
 the checked-in configuration. Raw archives and generated outputs remain
 outside Git, and ordinary tests continue to use local fixtures.
 
+A consumer checks the shards it is about to read against that manifest, and
+what it checks is a choice rather than a constant. By default it compares each
+shard's recorded row count against the shard's own footer, which catches a
+missing, extra, truncated or replaced shard and reads kilobytes of each file.
+Hashing every shard end to end is the stronger check, and the only one that
+sees a page rewritten in place; it costs a full read of the corpus at whatever
+the drive sustains, so it is asked for rather than paid by every run. Which
+runs ask for it is a judgement about what a reading is worth, not a default
+worth setting once.
+
 ### Building One Corpus From Many Archives
 
 A selection may pin many archives, and preparation appends the acquired ones to
@@ -288,11 +298,19 @@ That is the measurement working rather than a regression, which is why these
 comparisons need the axis slice and not only the aggregate.
 
 The selection filters on the axes worth comparing models across, currently time
-control and rating, and subsamples by ranking on a digest of the game id. That
-rank is what makes a fraction reproducible on any machine and makes a smaller
-fraction a subset of a larger one, so a data-scaling curve is a series of
-nested selections rather than unrelated samples. A selection that matches no
-games fails rather than starting a run on nothing.
+control and rating, and subsamples against a digest of the game id. `fraction`
+keeps the games whose digest falls below a share of that space, which is
+reproducible on any machine and makes a smaller fraction a subset of a larger
+one, so a data-scaling curve is a series of nested selections rather than
+unrelated samples. It needs no count of the candidates, so both loaders cut the
+same space at the same place and a share names one set of games whichever reads
+it. What that gives up is an exact size, which lands within sampling noise of
+the share and is a fraction of a percent over a corpus.
+
+`maximum_games` names a size instead, so it has to rank what it is cutting and
+is bounded by what one loader can hold. The eager loader holds its candidates
+already and delivers the count exactly; the shard-backed loader refuses rather
+than approximating.
 
 Time control is filtered by a speed class, by explicit clock bounds, or by
 both, which intersect. The class is what keeping training narrow across a
@@ -300,13 +318,13 @@ widened corpus needs, and the bounds cannot stand in for it: a class bands the
 initial clock plus forty increments, which no pair of bounds over those two
 fields draws.
 
-Each run records the selection it resolved, not only the one it requested: the
-counts it kept, why it excluded the rest, and a digest of the selected game ids.
-The digest is what lets a later run confirm it reproduced the same games rather
-than only the same configuration, and it is what tells two runs over one corpus
-apart in the results store, where a result reaches its run through the
-checkpoint's run id. Exact field names, axes, and defaults live in
-`anthro_chess.data` rather than here.
+Each run records the selection it requested and the corpus it read, which is
+what tells two runs over one corpus apart in the results store, where a result
+reaches its run through the checkpoint's run id. What that selection resolved
+to is recorded where a loader knows it without going to look: which games it
+kept is never recorded, and how many only where no filter had to be applied
+row by row. The section on the two loaders below says which is which. Exact
+field names, axes, and defaults live in `anthro_chess.data` rather than here.
 
 Ply-count, result, and opening filters are deliberately absent. Benchmarks
 measure the model's own distribution over those, so narrowing training on them
@@ -762,20 +780,41 @@ before the first batch. A per-ply encoding is far larger than the normalized
 row it came from, so this suits checked-in fixtures and bounded proof slices
 and reaches neither the memory nor the startup time a corpus needs.
 
-The **shard-backed** loader decodes a batch at a time. It first indexes the
-selection from columns cheap enough to read for a whole corpus, which is
-possible because a game's decoded length follows from its ply count and whether
-a terminal action was appended, so no game is decoded to plan against it. An
-epoch then orders row groups, orders the games inside each one, and cuts that
-stream into planning windows. A window is where length buckets fill and flush,
-so every example in a batch comes from one row group and a batch is read with a
-single columnar take. Flushing at a window boundary rather than an epoch
+The **shard-backed** loader decodes a batch at a time and holds nothing per
+game. An epoch orders row groups, orders the games inside each one, and cuts
+that stream into planning windows. A window is where length buckets fill and
+flush, so every example in a batch comes from one row group and a batch is read
+with a single columnar take. Flushing at a window boundary rather than an epoch
 boundary is the one visible cost: each window ends with a short batch per
 occupied bucket, which `drop_last` drops and otherwise leaves slightly small.
-What stays resident is one row group's projected columns, the index, and the
-batches in flight, none of which grows with corpus size.
-Because the plan follows from the index alone, a resumed run replays it to its
-saved cursor without reading or decoding anything.
+
+Because a batch never spans row groups, which rows a row group contributes and
+how long each one decodes to are derived from that row group when the plan
+reaches it, from columns cheap enough to project. A game's decoded length
+follows from its ply count and whether a terminal action was appended, so no
+game is decoded to plan against it. A selection that rejects nothing reads a
+footer per shard before the first batch and nothing else, because preparation
+already counted every split and a count it recorded is one nobody has to take
+again; opening a corpus of two billion games then costs what opening one of two
+thousand costs. A selection that filters has to look, and that pass is the one
+cost here that follows corpus size. Either way what a run pays to plan follows
+what it reads, and what stays resident is one row group's projected columns, one
+entry per row group, and the batches in flight.
+A resumed run reaches its saved cursor by arithmetic over the epoch order and
+plans only the row group the cursor names, so a run interrupted weeks into an
+epoch restarts at the cost of one projected read. That is why the cursor records
+its row group rather than only its place in the epoch: finding the one from the
+other means planning everything before it.
+
+Three things follow from holding no game. A run does not record which games its
+selection kept, because naming them means enumerating a split that reaches
+billions, nor how many where the selection filters rows: counting that means
+reading every row of the split for a number nothing computes from, and the rows
+a filter rejects are dropped as the epoch reaches them instead. What the split
+held before selection is recorded either way, from the manifest. A share of a
+selection is a cut of the rank space rather than a ranking, so it needs no such
+count. And `maximum_games`, which does, is refused here rather than
+approximated: a run would otherwise record a size it did not train on.
 
 The two produce different orders and neither is a defect. A global shuffle over
 a corpus means a seek per example, so the shard-backed loader shuffles row
@@ -928,10 +967,13 @@ comparison `0016` says an editorial filter belongs in training selection to
 preserve. Excluding runs before subsampling, so `maximum_games` delivers the
 count it names whether or not the dial is set, and two such runs then differ in
 which games they read rather than in how many. `fraction` does not hold them
-together — it takes a share of whatever survived the filter — so a comparison
-resting on it confounds the rejection with how much data each run saw. A run
-records the snapshot it rejected against beside the resolved selection counting
-what it removed.
+together, because it takes a share of whatever survived the filter, so a
+comparison resting on it confounds the rejection with how much data each run
+saw. Ranking every candidate means holding every candidate's identity, so a dial
+that would drop any game is the eager loader's; a corpus large enough to need
+the shard-backed loader holds the two runs together by their filters instead. A
+run records the snapshot it rejected against beside the resolved selection
+counting what it removed.
 
 In-training previews read that snapshot too, and no other selection filter. A
 preview is an estimate of the canonical reading rather than a different

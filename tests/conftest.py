@@ -45,6 +45,7 @@ from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    SPLIT_NAMES,
     derive_game_id,
     encode_clock_remaining_deltas,
     normalized_parquet_schema,
@@ -289,6 +290,15 @@ def _write_corpus(
                             "path": f"normalized/{games_path.name}",
                             "sha256": file_sha256(games_path),
                             "games": len(shard_rows),
+                            # One entry per split whether or not this shard
+                            # holds any, because that is what preparation
+                            # writes and a manifest is read against it.
+                            "split_counts": {
+                                split_name: sum(
+                                    row["split"] == split_name for row in shard_rows
+                                )
+                                for split_name in SPLIT_NAMES
+                            },
                         }
                         for games_path, shard_rows in shards
                     ],

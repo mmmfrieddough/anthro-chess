@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -14,14 +15,16 @@ from anthro_chess.data import (
     SequenceLoaderConfig,
     StreamingLoaderConfig,
     StreamingSequenceDataLoader,
-    build_sharded_index,
+    resolve_sharded_selection,
+    streaming,
 )
+from anthro_chess.data.accounts import account_row_digest
 from anthro_chess.data.artifacts import (
     ShardIdentity,
-    game_ids_sha256,
     normalized_shard_paths,
     validate_manifest_outputs,
 )
+from anthro_chess.data.streaming import ShardedSelection
 
 Corpus = tuple[tuple[ShardIdentity, ...], str]
 
@@ -56,7 +59,7 @@ def _loader(
     legal_actions: bool = True,
 ) -> StreamingSequenceDataLoader:
     shards, manifest_sha256 = corpus
-    index = build_sharded_index(
+    selection = resolve_sharded_selection(
         shards,
         split=config.split,
         selection=config.selection,
@@ -64,7 +67,7 @@ def _loader(
         manifest_sha256=manifest_sha256,
     )
     return StreamingSequenceDataLoader(
-        index,
+        selection,
         config,
         StreamingLoaderConfig() if streaming is None else streaming,
         legal_actions=legal_actions,
@@ -93,8 +96,9 @@ def _sequences(batch: SequenceBatch) -> list[tuple[int, tuple[int, ...]]]:
 def _decoded(batch: SequenceBatch) -> list[tuple[Any, ...]]:
     """Return each row of a batch as enough of its decode to identify the row.
 
-    A game id alone is not: it comes from the index rather than from the row
-    it labels, so a batch built from the wrong row would still be named right.
+    A game id alone is not: the plan chooses a row and the id is derived from
+    whichever row was gathered, so a batch built from the wrong row would still
+    be named consistently with itself.
     """
 
     inputs = batch.inputs
@@ -399,6 +403,49 @@ def test_resume_continues_the_epoch_from_the_saved_cursor(
     assert consumed + _drain(resumed) == complete
 
 
+def test_resume_plans_one_row_group_however_deep_the_cursor_is(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run long enough to need resuming is long enough for this to matter.
+
+    Replaying the plan batch by batch would re-derive every row group before
+    the cursor, so a run crashing deep into a corpus-scale epoch would pay a
+    read per row group it had already passed. The cursor names its row group so
+    that arithmetic reaches it instead.
+    """
+
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 64), games_per_shard=4
+    )
+    config = SequenceLoaderConfig(split="train", batch_size=1, length_bucket_width=4)
+
+    interrupted = _loader(corpus, config)
+    # Deep enough to be past most of the sixteen row groups this corpus holds.
+    for _ in range(40):
+        next(interrupted)
+    saved = interrupted.state().as_record()
+    interrupted.close()
+    assert int(str(saved["group_index"])) > 1
+
+    reads = 0
+    inner = streaming.read_normalized_row_group
+
+    def counted(*arguments: Any, **keywords: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        return inner(*arguments, **keywords)
+
+    resumed = _loader(corpus, config)
+    monkeypatch.setattr(streaming, "read_normalized_row_group", counted)
+    resumed.load_state(saved)
+
+    assert reads == 1
+    resumed.close()
+
+
 def test_resume_across_epochs_restores_that_epoch_order(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -589,7 +636,7 @@ def test_identity_follows_the_manifest_the_shards_the_split_and_the_selection(
             "manifest_sha256": manifest_sha256,
         }
         arguments.update(overrides)
-        return build_sharded_index(shards, **arguments).identity_sha256
+        return resolve_sharded_selection(shards, **arguments).identity_sha256
 
     baseline = identity()
     assert identity() == baseline
@@ -598,8 +645,8 @@ def test_identity_follows_the_manifest_the_shards_the_split_and_the_selection(
     assert identity(selection=SelectionConfig(minimum_rating=1400)) != baseline
     assert identity(manifest_sha256="0" * 64) != baseline
     assert (
-        build_sharded_index(
-            (ShardIdentity(path=shards[0].path, sha256="0" * 64),),
+        resolve_sharded_selection(
+            (replace(shards[0], sha256="0" * 64),),
             split="train",
             selection=SelectionConfig(),
             manifest_sha256=manifest_sha256,
@@ -617,32 +664,39 @@ def test_identity_costs_no_decode_of_the_corpus(
     corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 16))
 
     def refuse(*arguments: Any, **keywords: Any) -> None:
-        raise AssertionError("indexing decoded a game")
+        raise AssertionError("opening the corpus decoded a game")
 
     monkeypatch.setattr("anthro_chess.data.streaming.encode_game", refuse)
     shards, manifest_sha256 = corpus
-    index = build_sharded_index(
+    selection = resolve_sharded_selection(
         shards,
         split="train",
         selection=SelectionConfig(),
         manifest_sha256=manifest_sha256,
     )
 
-    assert index.identity_sha256
-    assert index.games == 16
+    assert selection.identity_sha256
+    assert selection.resolution.selected_games == 16
 
 
-def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
+def test_a_filter_keeps_the_games_the_eager_loader_keeps(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
+    """One filter, two loaders, and only one of them counts what it rejected.
+
+    So agreement is read off the games rather than off the record: the
+    shard-backed loader drops rows as the epoch reaches them and never learns
+    how many the split held.
+    """
+
     rows = [
         *[normalized_row(index, split="train", rating=1200) for index in range(1, 9)],
         *[normalized_row(index, split="train", rating=1900) for index in range(9, 17)],
     ]
     corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=4)
-    selection = SelectionConfig(minimum_rating=1500, fraction=0.5)
+    selection = SelectionConfig(minimum_rating=1500)
     config = SequenceLoaderConfig(split="train", batch_size=2, selection=selection)
 
     streaming = _loader(corpus, config)
@@ -651,65 +705,226 @@ def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
         config,
     )
 
-    assert streaming.resolution.as_record() == eager.resolution.as_record()
-    assert streaming.resolution.excluded_games == {"below_minimum_rating": 8}
-    assert streaming.resolution.selected_games == 4
+    assert {game for game, _ in _drain(streaming)} == {
+        example.game_id for example in eager.dataset
+    }
+    assert eager.resolution.excluded_games == {"below_minimum_rating": 8}
+    assert streaming.resolution.excluded_games is None
+    assert streaming.resolution.eligible_games is None
     streaming.close()
 
 
-@pytest.mark.parametrize(
-    "selection",
-    [
-        SelectionConfig(),
-        SelectionConfig(fraction=1.0),
-        SelectionConfig(fraction=0.5),
-        SelectionConfig(maximum_games=5),
-    ],
-    ids=["everything", "whole-fraction", "half", "capped"],
-)
-def test_the_resolved_digest_names_the_games_the_index_actually_holds(
+def test_a_selection_rejecting_nothing_opens_without_reading_a_row_group(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
-    selection: SelectionConfig,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The digest is all that is kept of the ids, so it has to be theirs.
+    """Preparation counted every split, so opening one does not count it again.
 
-    A subsample that the index disagreed with would otherwise record a set of
-    games no run ever read, and nothing downstream holds the ids to notice.
+    This is the whole reason a corpus opens in seconds, and a corpus holding
+    more than one split is where it would break: a count read for the wrong
+    split, or not read at all, sends the open down the counting path instead.
     """
 
-    shards, manifest_sha256 = _corpus(
-        write_corpus, tmp_path, _rows(normalized_row, 16), games_per_shard=4
-    )
+    rows = [
+        normalized_row(game_id, split=split, plies=6)
+        for split, game_ids in (
+            ("train", range(1, 9)),
+            ("validation", range(9, 13)),
+            ("test", range(13, 17)),
+        )
+        for game_id in game_ids
+    ]
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=4)
 
-    index = build_sharded_index(
+    def refuse(*arguments: Any, **keywords: Any) -> None:
+        raise AssertionError("opening the corpus read a row group")
+
+    monkeypatch.setattr("anthro_chess.data.streaming.read_normalized_row_group", refuse)
+    shards, manifest_sha256 = corpus
+    selection = resolve_sharded_selection(
         shards,
         split="train",
-        selection=selection,
+        selection=SelectionConfig(),
         manifest_sha256=manifest_sha256,
     )
 
-    held = [game_id for group in index.groups for game_id in group.game_ids]
-    assert index.resolution.selected_games == len(held)
-    assert index.resolution.game_ids_sha256 == game_ids_sha256(held)
+    assert selection.resolution.eligible_games == 8
 
 
-def test_an_empty_selection_fails_instead_of_starting_a_run_on_nothing(
+def test_an_unsubsampled_selection_reads_every_eligible_game(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
 ) -> None:
-    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+    """The recorded count is not derived from the games, so it has to match.
 
-    with pytest.raises(DataLoadingError, match="no normalized games matched"):
+    Nothing holds the ids any more, so a plan that skipped or repeated a game
+    would leave a run training on a set its own record misdescribes.
+    """
+
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 16), games_per_shard=4
+    )
+    loader = _loader(corpus, SequenceLoaderConfig(split="train"))
+
+    read = {game for game, _ in _drain(loader)}
+
+    assert len(read) == 16
+    assert loader.resolution.selected_games == 16
+    assert loader.resolution.eligible_games == 16
+
+
+def test_two_snapshots_rejecting_the_same_count_resolve_different_identities(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The resolved record counts what a snapshot removed and not who.
+
+    So the identity a resumed run is compared against has to carry the accounts
+    itself. Without that, a run continues against a snapshot rejecting a
+    different set of the same size and nothing notices.
+    """
+
+    shards, manifest_sha256 = _corpus(write_corpus, tmp_path, _rows(normalized_row, 16))
+    selection = SelectionConfig(marked_accounts=Path("marked-accounts.txt"))
+
+    def identity(*marked: int) -> ShardedSelection:
+        return resolve_sharded_selection(
+            shards,
+            split="train",
+            selection=selection,
+            manifest_sha256=manifest_sha256,
+            marked_digests=frozenset(marked),
+        )
+
+    first = identity(*(account_row_digest(f"white{game}") for game in (1, 2, 3)))
+    second = identity(*(account_row_digest(f"white{game}") for game in (4, 5, 6)))
+
+    assert first.resolution.excluded_games == second.resolution.excluded_games
+    assert first.resolution.selected_games == second.resolution.selected_games
+    assert first.identity_sha256 != second.identity_sha256
+
+
+def test_a_game_count_is_refused_where_a_share_is_not(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A share cuts the rank space; a count has to know what it is cutting.
+
+    So the dial that needs a number this loader would have to read the corpus
+    for is the one it refuses, and the dial that needs none is not.
+    """
+
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 16))
+
+    with pytest.raises(DataLoadingError, match="cannot hold a selection"):
         _loader(
             corpus,
             SequenceLoaderConfig(
-                split="train",
-                selection=SelectionConfig(minimum_rating=3000),
+                split="train", selection=SelectionConfig(maximum_games=5)
             ),
         )
+
+    shared = _loader(
+        corpus,
+        SequenceLoaderConfig(split="train", selection=SelectionConfig(fraction=0.5)),
+    )
+    assert _drain(shared)
+
+
+def test_both_loaders_read_one_set_of_games_for_one_share(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A streaming section is a memory choice, so it cannot move the data.
+
+    The two loaders cut the same rank space at the same place. Were one of them
+    ranking instead, a configuration differing only in that section would train
+    on a different set of games and nothing would say so.
+    """
+
+    rows = [
+        normalized_row(game_id, split="train", plies=6) for game_id in range(1, 129)
+    ]
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=16)
+    selection = SelectionConfig(fraction=0.25)
+    config = SequenceLoaderConfig(split="train", batch_size=4, selection=selection)
+
+    streaming = _loader(corpus, config)
+    eager = SequenceDataLoader.from_parquet([shard.path for shard in corpus[0]], config)
+
+    assert {game for game, _ in _drain(streaming)} == {
+        example.game_id for example in eager.dataset
+    }
+    streaming.close()
+
+
+def test_a_smaller_share_reads_a_subset_of_a_larger_one(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A data-scaling curve is a series of nested selections or it is not one."""
+
+    rows = [
+        normalized_row(game_id, split="train", plies=6) for game_id in range(1, 129)
+    ]
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=16)
+
+    def read(fraction: float) -> set[int]:
+        loader = _loader(
+            corpus,
+            SequenceLoaderConfig(
+                split="train", selection=SelectionConfig(fraction=fraction)
+            ),
+        )
+        try:
+            return {game for game, _ in _drain(loader)}
+        finally:
+            loader.close()
+
+    assert read(0.25) < read(0.5) < read(1.0)
+
+
+def test_a_split_the_corpus_does_not_hold_is_refused_at_the_open(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """The manifest counted every split, so this one costs nothing to catch."""
+
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+
+    with pytest.raises(DataLoadingError, match="holds no test games"):
+        _loader(corpus, SequenceLoaderConfig(split="test"))
+
+
+def test_a_filter_matching_nobody_yields_no_batches(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """Opening reads nothing, so this is found where the rows are.
+
+    A run turns it into a refusal at its first step rather than at its first
+    second, which `tests/training/test_runner.py` covers.
+    """
+
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+    loader = _loader(
+        corpus,
+        SequenceLoaderConfig(
+            split="train", selection=SelectionConfig(minimum_rating=3000)
+        ),
+    )
+
+    assert list(loader) == []
+    loader.close()
 
 
 def test_an_unreadable_row_group_names_the_shard_it_could_not_be_read_from(
@@ -721,24 +936,21 @@ def test_an_unreadable_row_group_names_the_shard_it_could_not_be_read_from(
     rebuild it, and what the read itself raises locates no file at all.
     """
 
-    shards, manifest_sha256 = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
-    raw = bytearray(shards[0].path.read_bytes())
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+    shard = corpus[0][0].path
+    raw = bytearray(shard.read_bytes())
     # A read parses the footer first, so corrupting only the data pages ahead
     # of it fails the row group rather than the open.
     footer = len(raw) - 8 - int.from_bytes(raw[-8:-4], "little")
     raw[4:footer] = bytes(footer - 4)
-    shards[0].path.write_bytes(bytes(raw))
+    shard.write_bytes(bytes(raw))
+    loader = _loader(corpus, SequenceLoaderConfig(split="train"))
 
-    with pytest.raises(DataLoadingError, match=str(shards[0].path)):
-        build_sharded_index(
-            shards,
-            split="train",
-            selection=SelectionConfig(),
-            manifest_sha256=manifest_sha256,
-        )
+    with pytest.raises(DataLoadingError, match=str(shard)):
+        list(loader)
 
 
-def test_a_game_that_decodes_to_another_length_than_indexed_fails_clearly(
+def test_a_game_that_decodes_to_another_length_than_planned_fails_clearly(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],

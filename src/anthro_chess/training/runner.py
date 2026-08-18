@@ -26,9 +26,9 @@ from anthro_chess.data import (
     SequenceDataConfig,
     SequenceDataLoader,
     StreamingSequenceDataLoader,
-    build_sharded_index,
     encoding_identity,
     maximum_position_bound,
+    resolve_sharded_selection,
 )
 from anthro_chess.data.accounts import snapshot_for_corpus
 from anthro_chess.data.artifacts import (
@@ -267,6 +267,7 @@ def run_training(
     output_directory: Path,
     store: ResultsStore | None = None,
     detail: DetailStore | None = None,
+    verify_data: bool = False,
 ) -> TrainingResult:
     """Run a bounded optimization on the resolved device and write provenance.
 
@@ -292,6 +293,7 @@ def run_training(
         device.type,
         config.steps,
     )
+    checked: dict[tuple[str, tuple[Path, ...]], tuple[ShardIdentity, ...]] = {}
     try:
         # Training reads targets and masks; validation scores policies against
         # each position's legal actions. Only the second needs them, so only
@@ -302,6 +304,8 @@ def run_training(
             legal_actions=False,
             maximum_context_plies=config.model.maximum_context_plies,
             config_source=resolved_config.provenance.source,
+            verify_data=verify_data,
+            checked=checked,
         )
         validation = (
             _load_data_selection(
@@ -309,6 +313,8 @@ def run_training(
                 legal_actions=True,
                 maximum_context_plies=config.model.maximum_context_plies,
                 config_source=resolved_config.provenance.source,
+                verify_data=verify_data,
+                checked=checked,
             )
             if config.validation is not None
             else None
@@ -728,8 +734,9 @@ def _optimize(
                         sequence_batch = next(loader)
                     except StopIteration as error:
                         raise TrainingError(
-                            "training data produced no batches; "
-                            "check drop_last and batch size"
+                            "training data produced no batches; check whether "
+                            "the selection matches any games, and whether "
+                            "drop_last and batch size discard every batch"
                         ) from error
                 data_seconds += time.perf_counter() - data_started
 
@@ -1306,6 +1313,8 @@ def _load_data_selection(
     legal_actions: bool,
     maximum_context_plies: int,
     config_source: str | None,
+    verify_data: bool,
+    checked: dict[tuple[str, tuple[Path, ...]], tuple[ShardIdentity, ...]],
 ) -> _DataSelection:
     paths = normalized_shard_paths(config.normalized)
     manifest_path = config.manifest
@@ -1316,21 +1325,30 @@ def _load_data_selection(
     if not isinstance(manifest, dict):
         raise DataLoadingError("data manifest must contain a JSON object")
     validate_manifest_compatibility(manifest, manifest_path)
-    # Ahead of the output check, which hashes every shard end to end. Both
-    # refuse the run, and this one reads two integers, so it is the cheaper of
-    # the two to fail on.
+    # Ahead of the output check, which reads a footer per shard and every byte
+    # of every shard when asked to. All three refuse the run, and this one
+    # reads two integers, so it is the cheapest of them to fail on.
     _reject_uncoverable_corpus(manifest, config, maximum_context_plies)
     # Ahead of the output check for the same reason as the corpus bound above:
-    # both refuse the run, and this one reads one small file where that one
-    # hashes every shard end to end.
+    # this one reads one small file.
     snapshot = snapshot_for_corpus(
         config.loader.selection.marked_accounts,
         config_source,
         manifest,
         manifest_path,
     )
-    shards = validate_manifest_outputs(manifest, manifest_path, paths)
+    # A configuration naming one corpus for train and for validation would
+    # otherwise read all of it once per selection, which is minutes when the
+    # contents are being hashed. Keyed on the manifest as well as the shards,
+    # because what the check establishes is that the two agree.
     manifest_sha256 = sha256(manifest_bytes).hexdigest()
+    already = checked.get((manifest_sha256, paths))
+    if already is None:
+        already = validate_manifest_outputs(
+            manifest, manifest_path, paths, verify_contents=verify_data
+        )
+        checked[manifest_sha256, paths] = already
+    shards = already
     marked_digests = None if snapshot is None else snapshot.accounts.row_digests()
     loader = _open_loader(
         config,
@@ -1381,7 +1399,7 @@ def _open_loader(
             legal_actions=legal_actions,
             marked_digests=marked_digests,
         )
-    index = build_sharded_index(
+    selection = resolve_sharded_selection(
         shards,
         split=config.loader.split,
         selection=config.loader.selection,
@@ -1390,7 +1408,7 @@ def _open_loader(
         marked_digests=marked_digests,
     )
     return StreamingSequenceDataLoader(
-        index,
+        selection,
         config.loader,
         config.streaming,
         legal_actions=legal_actions,
