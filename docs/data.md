@@ -787,11 +787,14 @@ Because a batch never spans row groups, which rows a row group contributes and
 how long each one decodes to are derived from that row group when the plan
 reaches it, from columns cheap enough to project. A game's decoded length
 follows from its ply count and whether a terminal action was appended, so no
-game is decoded to plan against it. Nothing is read before the first batch
-beyond a footer per shard, so what a run pays to plan follows what it reads
-rather than what the corpus holds, and opening a corpus of two billion games
-costs what opening one of two thousand costs. What stays resident is one row
-group's projected columns, one entry per row group, and the batches in flight.
+game is decoded to plan against it. A selection that rejects nothing reads a
+footer per shard before the first batch and nothing else, because preparation
+already counted every split and a count it recorded is one nobody has to take
+again; opening a corpus of two billion games then costs what opening one of two
+thousand costs. A selection that filters has to look, and that pass is the one
+cost here that follows corpus size. Either way what a run pays to plan follows
+what it reads, and what stays resident is one row group's projected columns, one
+entry per row group, and the batches in flight.
 A resumed run replays the plan to its saved cursor, which re-derives the row
 groups it passes and decodes nothing in them.
 
@@ -955,10 +958,12 @@ comparison `0016` says an editorial filter belongs in training selection to
 preserve. Excluding runs before subsampling, so `maximum_games` delivers the
 count it names whether or not the dial is set, and two such runs then differ in
 which games they read rather than in how many. `fraction` does not hold them
-together — it takes a share of whatever survived the filter — so a comparison
-resting on it confounds the rejection with how much data each run saw. A run
-records the snapshot it rejected against beside the resolved selection counting
-what it removed.
+together, because it takes a share of whatever survived the filter, so a
+comparison resting on it confounds the rejection with how much data each run
+saw. Both dials rank, so both are the eager loader's: a corpus large enough to
+need the shard-backed loader holds the two runs together by their filters
+instead. A run records the snapshot it rejected against beside the resolved
+selection counting what it removed.
 
 In-training previews read that snapshot too, and no other selection filter. A
 preview is an estimate of the canonical reading rather than a different

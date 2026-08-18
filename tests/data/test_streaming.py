@@ -670,6 +670,70 @@ def test_selection_resolves_the_games_and_reasons_the_eager_loader_does(
     streaming.close()
 
 
+def test_a_selection_rejecting_nothing_opens_without_reading_a_row_group(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preparation counted every split, so opening one does not count it again.
+
+    This is the whole reason a corpus opens in seconds. A manifest that cannot
+    answer falls back to counting, so the fallback is what a corpus with more
+    than one split would silently take if this stopped holding.
+    """
+
+    rows = [
+        normalized_row(game_id, split=split, plies=6)
+        for split, game_ids in (
+            ("train", range(1, 9)),
+            ("validation", range(9, 13)),
+            ("test", range(13, 17)),
+        )
+        for game_id in game_ids
+    ]
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=4)
+
+    def refuse(*arguments: Any, **keywords: Any) -> None:
+        raise AssertionError("opening the corpus read a row group")
+
+    monkeypatch.setattr("anthro_chess.data.streaming.read_normalized_row_group", refuse)
+    shards, manifest, manifest_sha256 = corpus
+    selection = resolve_sharded_selection(
+        shards,
+        split="train",
+        selection=SelectionConfig(),
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+    )
+
+    assert selection.resolution.eligible_games == 8
+
+
+def test_a_manifest_that_cannot_answer_counts_the_split_instead(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A corpus written before the per-shard counts still has to open."""
+
+    shards, manifest, manifest_sha256 = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 16), games_per_shard=4
+    )
+    for shard in manifest["output"]["shards"]:
+        del shard["split_counts"]
+
+    selection = resolve_sharded_selection(
+        shards,
+        split="train",
+        selection=SelectionConfig(),
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+    )
+
+    assert selection.resolution.eligible_games == 16
+
+
 def test_an_unsubsampled_selection_reads_every_eligible_game(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],

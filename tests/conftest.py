@@ -12,7 +12,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, date, datetime
@@ -46,6 +45,7 @@ from anthro_chess.data.artifacts import file_sha256
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    SPLIT_NAMES,
     derive_game_id,
     encode_clock_remaining_deltas,
     normalized_parquet_schema,
@@ -290,10 +290,15 @@ def _write_corpus(
                             "path": f"normalized/{games_path.name}",
                             "sha256": file_sha256(games_path),
                             "games": len(shard_rows),
-                            # Preparation counts every split as it writes each
-                            # shard, and a loader reads these rather than
-                            # counting a corpus again.
-                            "split_counts": Counter(row["split"] for row in shard_rows),
+                            # Every split, including the ones this shard holds
+                            # none of, because a loader reading these treats a
+                            # missing key as a manifest that cannot answer.
+                            "split_counts": {
+                                split_name: sum(
+                                    row["split"] == split_name for row in shard_rows
+                                )
+                                for split_name in SPLIT_NAMES
+                            },
                         }
                         for games_path, shard_rows in shards
                     ],

@@ -73,6 +73,7 @@ from anthro_chess.data.loading import (
     collate_sequences,
     loader_configuration_sha256,
     require_resolved_snapshot,
+    subsample_size,
 )
 from anthro_chess.data.schema import (
     NormalizedColumn,
@@ -92,11 +93,13 @@ logger = logging.getLogger(__name__)
 #: The read is a footer parse rather than a scan, so this is bound by the drive.
 _FOOTER_READERS = 8
 
-#: What planning reads from every row group. ``ply_count`` counts moves and
+#: What every pass over a row group reads, because both of them start by
+#: dropping the rows of other splits.
+_SPLIT_COLUMNS = (NormalizedColumn.SPLIT,)
+#: What planning adds to that. ``ply_count`` counts moves and
 #: ``terminal_action_status`` says whether one further action was appended,
 #: which together give a game's encoded length without touching its actions.
-_PLAN_COLUMNS = (
-    NormalizedColumn.SPLIT,
+_LENGTH_COLUMNS = (
     NormalizedColumn.PLY_COUNT,
     NormalizedColumn.TERMINAL_ACTION_STATUS,
 )
@@ -203,7 +206,6 @@ def resolve_sharded_selection(
     """Open one split of a prepared corpus without reading any game."""
 
     require_resolved_snapshot(selection, marked_digests)
-    _reject_subsample(selection)
     if not shards:
         raise DataLoadingError("at least one normalized shard is required")
     row_groups = _enumerate_row_groups(shards)
@@ -217,6 +219,7 @@ def resolve_sharded_selection(
     )
     if not eligible:
         raise DataLoadingError("no normalized games matched the loader selection")
+    _reject_subsample(eligible, selection)
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
         eligible_games=eligible,
@@ -319,7 +322,7 @@ def _resolve_counts(
     eligible = 0
     excluded: dict[str, int] = {}
     columns = (
-        _PLAN_COLUMNS + _FILTER_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
+        _SPLIT_COLUMNS + _FILTER_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
     )
     for group in row_groups:
         reader = open_normalized_shard(shards[group.shard].path)
@@ -368,7 +371,7 @@ def _manifest_split_games(manifest: Mapping[str, Any], split: str) -> int | None
     return total
 
 
-def _reject_subsample(selection: SelectionConfig) -> None:
+def _reject_subsample(eligible: int, selection: SelectionConfig) -> None:
     """Refuse a subsample this loader could not resolve without reading it all.
 
     Taking the lowest-ranked share of a split means ranking every candidate,
@@ -377,11 +380,13 @@ def _reject_subsample(selection: SelectionConfig) -> None:
     the same rank does not stand in for it: the count it lands on is the count
     it lands on, so a run would record a size it did not train on.
 
-    The eager loader still ranks, which is where a selection small enough to
-    hold belongs.
+    A dial that keeps the whole split ranks nothing, so it is admitted. Only a
+    selection asking for fewer games than it found has to choose which, and the
+    eager loader still ranks, which is where a selection small enough to hold
+    belongs.
     """
 
-    if selection.fraction is None and selection.maximum_games is None:
+    if subsample_size(eligible, selection) >= eligible:
         return
     raise DataLoadingError(
         "the shard-backed loader cannot subsample a selection: ranking every "
@@ -596,7 +601,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         marked = self.corpus.marked_digests
         filtered = _filters_rows(selection, marked)
         columns = (
-            _PLAN_COLUMNS
+            _SPLIT_COLUMNS
+            + _LENGTH_COLUMNS
             + (_FILTER_COLUMNS if filtered else ())
             + (_MARKED_COLUMNS if marked else ())
         )

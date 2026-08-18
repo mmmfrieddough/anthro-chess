@@ -216,10 +216,12 @@ class SelectionConfig(ConfigModel):
     against the selection naming it.
 
     The exclusion runs before subsampling, so ``maximum_games`` still delivers the
-    count it names to a run that sets this and to one that does not — which is
+    count it names to a run that sets this and to one that does not, which is
     what lets two such runs differ in which games they read rather than in how
     many. ``fraction`` does not: it takes a share of whatever survived, so the
-    filtered run reads fewer games and confounds the two.
+    filtered run reads fewer games and confounds the two. Both dials rank every
+    candidate, so both belong to the loader that can hold a selection; the
+    shard-backed one refuses them.
     """
 
     speed: Speed | None = None
