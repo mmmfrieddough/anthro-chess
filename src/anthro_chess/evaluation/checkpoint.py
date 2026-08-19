@@ -20,8 +20,11 @@ from __future__ import annotations
 import logging
 import random
 from array import array
+from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -57,9 +60,11 @@ from anthro_chess.evaluation.dependency import (
     DependencyTestConfig,
     DependencyTestResult,
     MaturityContext,
-    PositionKey,
-    TrajectorySignal,
     reduce_dependency_columns,
+)
+from anthro_chess.evaluation.labels import (
+    PositionLabelStore,
+    open_position_labels,
 )
 from anthro_chess.evaluation.leakage import LeakageCheck, LeakageError, check_leakage
 from anthro_chess.evaluation.noise import (
@@ -78,12 +83,15 @@ from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
     ActiveBatch,
+    PositionColumns,
     PositionPolicy,
+    TrajectoryColumns,
     active_batch,
-    legal_policy_log_probabilities,
-    policy_divergence,
+    position_records,
     score_action_sets,
-    score_positions,
+    score_columns,
+    trajectory_columns,
+    treatment_move_losses,
 )
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
@@ -121,11 +129,11 @@ from anthro_chess.evaluation.scoring import (
     EvaluationLoaderConfig,
     ScoringError,
     ScoringInputs,
-    accumulate_positions,
     build_scoring_inputs,
     per_game_totals,
     rows_identity_sha256,
     slice_measurements,
+    slice_memberships,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION
@@ -277,6 +285,9 @@ class _PoolReading:
     pool: FrozenPool
     selection: ViewSelection
     projection: PoolProjection
+    #: Every pool position's rule-sensitive labels, derived once per pool
+    #: generation rather than once per reading.
+    labels: PositionLabelStore
     split: SplitName
     loader: SequenceLoaderConfig
     prefix_plies: int | None
@@ -318,6 +329,7 @@ class _PoolReading:
             batch_size=self.loader.batch_size,
             length_bucket_width=self.loader.length_bucket_width,
             identity_sha256=rows_identity_sha256(rows, context=self.identity_context),
+            labels=self.labels.labels(game_ids),
         )
         for example in encoded.dataset:
             planned = self.encoded_plies[example.game_id]
@@ -403,11 +415,14 @@ class _BatchScores:
     The conditioning maps are empty where the dependency family is off.
     """
 
-    positions: tuple[PositionPolicy, ...]
+    #: The batch these scores are of. Carried because a reading scoring on
+    #: several devices merges what they return rather than what it sent.
+    inputs: ScoringInputs
+    positions: PositionColumns
     action_sets: tuple[ActionSetPolicy, ...]
-    corrupted: Mapping[str, tuple[Conditioning, tuple[PositionPolicy, ...]]]
-    conditioned: Mapping[int, tuple[PositionPolicy, ...]]
-    trajectory: Mapping[PositionKey, TrajectorySignal]
+    corrupted: Mapping[str, tuple[Conditioning, tuple[float, ...]]]
+    conditioned: Mapping[int, tuple[float, ...]]
+    trajectory: TrajectoryColumns | None
 
 
 class _BatchSession:
@@ -430,19 +445,18 @@ class _BatchSession:
         """Score one batch under every treatment the configuration asks for."""
 
         batch = self._batch(inputs)
-        active = active_batch(self._runner.action_logits(batch), batch)
-        positions = score_positions(active)
-        if not positions:
+        logits = self._runner.action_logits(batch)
+        active = active_batch(logits, batch)
+        if not active.legal_rows:
             raise CheckpointEvaluationError(
                 "the configured view selected no positions to score"
             )
+        positions = score_columns(active)
         adjudicated = score_action_sets(active, action_sets(inputs))
         if self._shuffled is None:
-            return _BatchScores(positions, adjudicated, {}, {}, {})
+            return _BatchScores(inputs, positions, adjudicated, {}, {}, None)
 
-        corrupted: dict[str, tuple[Conditioning, tuple[PositionPolicy, ...]]] = {}
-        conditioned: dict[int, tuple[PositionPolicy, ...]] = {}
-        trajectory: dict[PositionKey, TrajectorySignal] = {}
+        corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
             Conditioning(
@@ -454,72 +468,43 @@ class _BatchSession:
         ):
             corrupted[conditioning.name] = (
                 conditioning,
-                self._conditioned(batch, conditioning),
+                self._treatment(batch, conditioning, active),
             )
 
+        # The anchors' logits are held while the trajectory reads them, because
+        # each is also a fixed-conditioning pass the cross-conditioning table
+        # wants; without that these two conditionings run a second time.
         values = self._config.conditioning_values()
-        self._trajectory(
-            batch, active, inputs, conditioned, trajectory, values[0], values[-1]
-        )
+        conditioned: dict[int, tuple[float, ...]] = {}
+        anchors: list[Tensor] = []
+        for rating in (values[0], values[-1]):
+            anchored = self._condition(batch, _constant_conditioning(rating))
+            anchor_logits = self._runner.action_logits(anchored)
+            anchors.append(anchor_logits)
+            conditioned[rating] = treatment_move_losses(anchor_logits, batch, active)
+        low, high = anchors
+        trajectory = trajectory_columns(logits, low, high, batch, active)
+
         for value in values:
             if value in conditioned:
                 continue
-            conditioned[value] = self._conditioned(batch, _constant_conditioning(value))
-        return _BatchScores(positions, adjudicated, corrupted, conditioned, trajectory)
-
-    def _trajectory(
-        self,
-        batch: MoveModelBatch,
-        active: ActiveBatch,
-        inputs: ScoringInputs,
-        conditioned: dict[int, tuple[PositionPolicy, ...]],
-        trajectory: dict[PositionKey, TrajectorySignal],
-        anchor_low: int,
-        anchor_high: int,
-    ) -> None:
-        """Compare each position's policy at two anchor conditioning ratings.
-
-        All three policies a signal needs are computed for one batch, which is
-        also the only span over which the distributions themselves exist: a
-        policy is a value per legal action, and retaining one per position is
-        gigabytes over a pool.
-
-        The anchors' ordinary scores come back beside the signals, because both
-        anchors are fixed-conditioning passes the cross-conditioning table
-        wants anyway. That retention is a handful of scalars per position, and
-        without it these two conditionings run a second time.
-        """
-
-        true = legal_policy_log_probabilities(active)
-        policies = []
-        for rating in (anchor_low, anchor_high):
-            anchored = self._condition(batch, _constant_conditioning(rating))
-            rescored = active.rescored(
-                self._runner.action_logits(anchored),
-                anchored,
+            conditioned[value] = self._treatment(
+                batch, _constant_conditioning(value), active
             )
-            policies.append(legal_policy_log_probabilities(rescored))
-            conditioned[rating] = score_positions(rescored)
-        low, high = policies
-        for offset, key in enumerate(
-            zip(active.game_ids, active.ply_indices, strict=True)
-        ):
-            trajectory[key] = _trajectory_signal(
-                legal_actions=inputs.plies[key].enabled_actions(),
-                target_action_id=inputs.plies[key].target_action_id,
-                true=true[offset],
-                low=low[offset],
-                high=high[offset],
-            )
+        return _BatchScores(
+            inputs, positions, adjudicated, corrupted, conditioned, trajectory
+        )
 
-    def _conditioned(
+    def _treatment(
         self,
         batch: MoveModelBatch,
         conditioning: Conditioning,
-    ) -> tuple[PositionPolicy, ...]:
+        active: ActiveBatch,
+    ) -> tuple[float, ...]:
         conditioned = self._condition(batch, conditioning)
-        active = active_batch(self._runner.action_logits(conditioned), conditioned)
-        return score_positions(active)
+        return treatment_move_losses(
+            self._runner.action_logits(conditioned), batch, active
+        )
 
     def _batch(self, inputs: ScoringInputs) -> MoveModelBatch:
         return MoveModelBatch.from_sequence_batch(
@@ -728,7 +713,7 @@ def _score(
     """Score every batch of the view, keeping only what outlives its batch."""
 
     dependency = config.dependency.enabled
-    session = _BatchSession(
+    sessions = _sessions(
         runner,
         config.dependency,
         _ShuffledRatings(reading, config.dependency.shuffle_seed)
@@ -742,20 +727,15 @@ def _score(
     totals: list[GameTotals] = []
     retained: list[PositionPolicy] | None = [] if config.detail.per_position else None
 
-    for game_ids in reading.batches:
-        inputs = reading.inputs(game_ids)
-        scores = session.score(inputs)
-        accumulate_positions(
-            aggregator,
-            scores.positions,
-            inputs,
-            opening_frequency=frequency,
+    for scores in _scored_batches(reading, sessions):
+        inputs = scores.inputs
+        memberships = slice_memberships(
+            scores.positions, inputs, opening_frequency=frequency
         )
+        aggregator.accumulate(scores.positions, memberships)
         adjudication.add(scores.action_sets, inputs)
         if resampled:
-            totals.extend(
-                per_game_totals(scores.positions, inputs, opening_frequency=frequency)
-            )
+            totals.extend(per_game_totals(scores.positions, memberships))
         if columns is not None:
             columns.add(
                 inputs.contexts,
@@ -765,7 +745,7 @@ def _score(
                 scores.trajectory,
             )
         if retained is not None:
-            retained.extend(scores.positions)
+            retained.extend(position_records(scores.positions))
 
     report = adjudication.report()
     result = None
@@ -793,6 +773,117 @@ def _score(
         ),
         positions=None if retained is None else tuple(retained),
     )
+
+
+#: Batches encoded ahead of the one being scored, and the workers encoding
+#: them. Encoding a batch costs about half of what scoring it does, so a couple
+#: of workers stay ahead of the pass; the queue is bounded because an encoded
+#: batch is held until it is scored.
+_ENCODE_WORKERS = 4
+_ENCODE_PREFETCH = 6
+
+#: The reading a forked encoding worker reads. Set before the pool starts, so a
+#: worker inherits the pool projection and the label store rather than being
+#: sent them: the projection alone is the whole pool held columnar.
+_encoding_reading: _PoolReading | None = None
+
+
+def _encode_batch(game_ids: tuple[int, ...]) -> ScoringInputs:
+    if _encoding_reading is None:
+        raise CheckpointEvaluationError("an encoding worker has no reading to read")
+    return _encoding_reading.inputs(game_ids)
+
+
+def _encoded_batches(reading: _PoolReading) -> Iterator[ScoringInputs]:
+    """Yield each batch's scoring inputs, encoded ahead of the scoring loop.
+
+    Encoding is host work that does not depend on the checkpoint, so it runs
+    beside the pass rather than in front of it. Batches are yielded in plan
+    order however many workers ran, which is what keeps the worker count out of
+    the reading.
+    """
+
+    global _encoding_reading
+
+    if len(reading.batches) <= _ENCODE_WORKERS:
+        for game_ids in reading.batches:
+            yield reading.inputs(game_ids)
+        return
+
+    _encoding_reading = reading
+    pool = ProcessPoolExecutor(
+        max_workers=_ENCODE_WORKERS,
+        mp_context=get_context("fork"),
+    )
+    pending = deque(reading.batches)
+    inflight: deque[Future[ScoringInputs]] = deque()
+    try:
+        while pending or inflight:
+            while pending and len(inflight) < _ENCODE_PREFETCH:
+                inflight.append(pool.submit(_encode_batch, pending.popleft()))
+            yield inflight.popleft().result()
+    finally:
+        pool.shutdown(cancel_futures=True)
+        _encoding_reading = None
+
+
+def _sessions(
+    runner: CheckpointModelRunner,
+    config: DependencyTestConfig,
+    shuffled: _ShuffledRatings | None,
+) -> tuple[_BatchSession, ...]:
+    """Return one scoring session per accelerator this machine exposes.
+
+    The forward passes are what a reading is mostly made of, and they are the
+    part of a batch a second device can take. Replicas answer for the same
+    selection and the same digest, so which device scored a batch is not a
+    property of the reading.
+    """
+
+    if runner.device.type != "cuda":
+        return (_BatchSession(runner, config, shuffled),)
+    devices = torch.cuda.device_count()
+    if devices > 1:
+        logger.info("Scoring across %s devices", devices)
+    replicas = (
+        runner,
+        *(
+            runner.replicated(torch.device("cuda", index))
+            for index in range(1, devices)
+        ),
+    )
+    return tuple(_BatchSession(replica, config, shuffled) for replica in replicas)
+
+
+def _scored_batches(
+    reading: _PoolReading,
+    sessions: Sequence[_BatchSession],
+) -> Iterator[_BatchScores]:
+    """Yield each batch's scores in plan order, scored across every device.
+
+    A session owns one device and holds one batch at a time, so the devices
+    work at once while the reading merges what they return in the order the
+    plan named. What a batch contributes is therefore independent of how many
+    devices ran and of which one ran it.
+    """
+
+    batches = _encoded_batches(reading)
+    if len(sessions) == 1:
+        for inputs in batches:
+            yield sessions[0].score(inputs)
+        return
+
+    pool = ThreadPoolExecutor(max_workers=len(sessions))
+    inflight: deque[Future[_BatchScores]] = deque()
+    try:
+        for index, inputs in enumerate(batches):
+            if len(inflight) >= len(sessions):
+                yield inflight.popleft().result()
+            inflight.append(pool.submit(sessions[index % len(sessions)].score, inputs))
+        while inflight:
+            yield inflight.popleft().result()
+    finally:
+        pool.shutdown(cancel_futures=True)
 
 
 def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:
@@ -840,6 +931,7 @@ def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:
         pool=pool,
         selection=selection,
         projection=projection,
+        labels=open_position_labels(pool, projection),
         split=loader.split,
         loader=loader,
         prefix_plies=prefix,
@@ -996,24 +1088,6 @@ def _truncate(row: Mapping[str, Any], prefix_plies: int | None) -> dict[str, Any
         updated[NormalizedColumn.ACTION_IDS.value]
     )
     return updated
-
-
-def _trajectory_signal(
-    *,
-    legal_actions: Sequence[int],
-    target_action_id: int,
-    true: Tensor,
-    low: Tensor,
-    high: Tensor,
-) -> TrajectorySignal:
-    target_offset = legal_actions.index(target_action_id)
-    return TrajectorySignal(
-        strength_signal=float(high[target_offset].item() - low[target_offset].item()),
-        alignment=policy_divergence(true, low) - policy_divergence(true, high),
-        anchor_divergence=policy_divergence(low, high),
-        anchor_agreement=int(torch.argmax(low).item())
-        == int(torch.argmax(high).item()),
-    )
 
 
 __all__ = [

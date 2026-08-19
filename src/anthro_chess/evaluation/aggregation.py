@@ -7,16 +7,21 @@ pool-wide mean at all. So every metric is aggregated per slice as well as
 overall, and a comparison that does not hold those slices fixed is reading
 composition rather than model quality.
 
-Aggregation is deliberately separate from scoring: it consumes per-position
-records and knows nothing about models, batches, or torch.
+Aggregation is deliberately separate from scoring: it knows nothing about
+models or forward passes. It does read a batch of positions as columns rather
+than one record at a time, because a pool holds millions of them and a slice is
+a sum.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from anthro_chess.evaluation.policy import PositionPolicy
+import numpy as np
+from numpy.typing import NDArray
+
+from anthro_chess.evaluation.policy import PositionColumns, PositionPolicy
 from anthro_chess.evaluation.slices import PositionCharacteristic, PositionSlices
 
 SLICE_TABLE_VERSION = 2
@@ -44,6 +49,21 @@ REPORTED_CHARACTERISTICS: tuple[PositionCharacteristic, ...] = (
     PositionCharacteristic.ONLY_MOVE,
     PositionCharacteristic.PIN,
     PositionCharacteristic.PROMOTION,
+)
+
+#: What a slice sums, in the order a batch's value matrix carries it. One
+#: order, read by the columns a batch is summed from and by the accumulator
+#: those sums land in.
+SUMMED_METRICS: tuple[str, ...] = (
+    "move_loss",
+    "legal_move_loss",
+    "uniform_over_legal_move_loss",
+    "mask_penalty",
+    "legal_mass",
+    "top1_illegal",
+    "top_illegal_fraction",
+    "legal_margin",
+    "legality_lift",
 )
 
 PHASE_DIMENSION = "phase"
@@ -138,24 +158,19 @@ class PositionAccumulator:
 
         return self._count
 
-    def add(self, position: PositionPolicy) -> None:
-        """Add one scored position."""
+    def add_block(
+        self,
+        count: int,
+        sums: NDArray[np.float64],
+        within_top: NDArray[np.float64],
+    ) -> None:
+        """Add positions already summed, in :data:`SUMMED_METRICS` order."""
 
-        self._count += 1
-        self._sums["move_loss"] += position.move_nll
-        self._sums["legal_move_loss"] += position.legal_move_nll
-        self._sums["uniform_over_legal_move_loss"] += (
-            position.uniform_over_legal_move_nll
-        )
-        self._sums["mask_penalty"] += position.mask_penalty
-        self._sums["legal_mass"] += position.legal_mass
-        self._sums["top1_illegal"] += float(position.top1_illegal)
-        self._sums["top_illegal_fraction"] += position.top_illegal_fraction
-        self._sums["legal_margin"] += position.legal_margin
-        self._sums["legality_lift"] += position.legality_lift
-        for cutoff in TOP_K_ACCURACIES:
-            if position.within_top(cutoff):
-                self._within_top[cutoff] += 1
+        self._count += count
+        for metric, total in zip(SUMMED_METRICS, sums.tolist(), strict=True):
+            self._sums[metric] += total
+        for cutoff, total in zip(TOP_K_ACCURACIES, within_top.tolist(), strict=True):
+            self._within_top[cutoff] += int(total)
 
     def summary(self) -> PositionSummary | None:
         """Return the aggregate, or ``None`` when the slice is empty.
@@ -216,6 +231,119 @@ class SliceTable:
         }
 
 
+@dataclass(frozen=True)
+class SliceMembership:
+    """Which buckets of one dimension each position of a batch falls in.
+
+    A position holds exactly one phase and every rule case it realizes, so
+    membership is a column per bucket rather than an index into one. The two
+    kinds of dimension then sum the same way.
+    """
+
+    names: tuple[str, ...]
+    columns: NDArray[np.bool_]
+
+    def select(self, rows: NDArray[np.int64]) -> SliceMembership:
+        """Return the same membership restricted to some of its positions."""
+
+        return SliceMembership(names=self.names, columns=self.columns[rows])
+
+
+def one_of(names: Sequence[str], indices: NDArray[np.int64]) -> SliceMembership:
+    """Return membership for a dimension every position falls in exactly once."""
+
+    return SliceMembership(
+        names=tuple(names),
+        columns=indices[:, None] == np.arange(len(names)),
+    )
+
+
+def value_matrix(columns: PositionColumns) -> NDArray[np.float64]:
+    """Return one row per position: what a slice sums, then what it counts.
+
+    The order is :data:`SUMMED_METRICS` followed by :data:`TOP_K_ACCURACIES`,
+    which is the order :meth:`PositionAccumulator.add_block` reads back.
+    """
+
+    return np.stack(
+        (
+            columns.move_nll,
+            columns.legal_move_nll,
+            columns.uniform_over_legal_move_nll,
+            columns.mask_penalty,
+            columns.legal_mass,
+            columns.top1_illegal.astype(np.float64),
+            columns.top_illegal_fraction,
+            columns.legal_margin,
+            columns.legality_lift,
+            *(
+                (columns.target_rank <= cutoff).astype(np.float64)
+                for cutoff in TOP_K_ACCURACIES
+            ),
+        ),
+        axis=1,
+    )
+
+
+def position_memberships(
+    slices: Sequence[PositionSlices],
+    characteristics: Sequence[Collection[PositionCharacteristic]],
+    *,
+    opening_families: Sequence[str] | None = None,
+    opening_tiers: Sequence[str] | None = None,
+) -> dict[str, SliceMembership]:
+    """Return which slice of every dimension each position falls in.
+
+    Derived from the labels rather than from the scores, so a reading that
+    knows a batch's slices before it scores it can build these off the pass
+    that scores it.
+    """
+
+    observed = np.zeros((len(slices), len(REPORTED_CHARACTERISTICS)), dtype=np.bool_)
+    for row, present in enumerate(characteristics):
+        for column, characteristic in enumerate(REPORTED_CHARACTERISTICS):
+            observed[row, column] = characteristic in present
+
+    memberships = {
+        PHASE_DIMENSION: _labelled([str(item.phase) for item in slices]),
+        COLOR_DIMENSION: _labelled([str(item.color) for item in slices]),
+        RATING_DIMENSION: _labelled(
+            [item.rating_band or UNRATED_SLICE for item in slices]
+        ),
+        SPEED_DIMENSION: _labelled(
+            [
+                UNTIMED_SLICE if item.speed is None else str(item.speed)
+                for item in slices
+            ]
+        ),
+        LEGAL_MOVE_COUNT_DIMENSION: _labelled(
+            [item.legal_move_count_bucket for item in slices]
+        ),
+        RULE_CASE_DIMENSION: SliceMembership(
+            names=tuple(str(item) for item in REPORTED_CHARACTERISTICS),
+            columns=observed,
+        ),
+    }
+    if opening_families is not None:
+        memberships[OPENING_FAMILY_DIMENSION] = _labelled(list(opening_families))
+    if opening_tiers is not None:
+        memberships[OPENING_TIER_DIMENSION] = _labelled(list(opening_tiers))
+    return memberships
+
+
+def _labelled(values: Sequence[str]) -> SliceMembership:
+    """Return membership over whichever names these positions realized."""
+
+    names = tuple(dict.fromkeys(values))
+    index = {name: offset for offset, name in enumerate(names)}
+    return one_of(
+        names,
+        np.fromiter(
+            (index[value] for value in values), dtype=np.int64, count=len(values)
+        ),
+    )
+
+
 class SliceAggregator:
     """Accumulate one scored position into every slice it belongs to."""
 
@@ -234,36 +362,56 @@ class SliceAggregator:
         opening_family: str | None = None,
         opening_tier: str | None = None,
     ) -> None:
-        """Add one scored position under its derived slice labels.
+        """Add one scored position under its derived slice labels."""
+
+        self.accumulate(
+            PositionColumns.from_records((position,)),
+            position_memberships(
+                (slices,),
+                (frozenset(characteristics),),
+                opening_families=None if opening_family is None else (opening_family,),
+                opening_tiers=None if opening_tier is None else (opening_tier,),
+            ),
+        )
+
+    def accumulate(
+        self,
+        columns: PositionColumns,
+        memberships: Mapping[str, SliceMembership],
+    ) -> None:
+        """Add a batch of scored positions under their slice labels.
+
+        Every slice a batch touches is summed in one pass over it. A slice is a
+        sum, and a pool holds more positions than a walk through them one at a
+        time can afford.
 
         The two opening labels describe the game rather than the position, so
         every decision in a game classified as a Sicilian counts toward that
         family, endgame included.
         """
 
-        self._overall.add(position)
-        self._bucket(PHASE_DIMENSION, str(slices.phase)).add(position)
-        self._bucket(COLOR_DIMENSION, str(slices.color)).add(position)
-        self._bucket(
-            RATING_DIMENSION,
-            slices.rating_band if slices.rating_band is not None else UNRATED_SLICE,
-        ).add(position)
-        self._bucket(
-            SPEED_DIMENSION,
-            str(slices.speed) if slices.speed is not None else UNTIMED_SLICE,
-        ).add(position)
-        self._bucket(
-            LEGAL_MOVE_COUNT_DIMENSION,
-            slices.legal_move_count_bucket,
-        ).add(position)
-        observed = frozenset(characteristics)
-        for characteristic in REPORTED_CHARACTERISTICS:
-            if characteristic in observed:
-                self._bucket(RULE_CASE_DIMENSION, str(characteristic)).add(position)
-        if opening_family is not None:
-            self._bucket(OPENING_FAMILY_DIMENSION, opening_family).add(position)
-        if opening_tier is not None:
-            self._bucket(OPENING_TIER_DIMENSION, opening_tier).add(position)
+        positions = len(columns)
+        if not positions:
+            return
+        blocks: list[PositionAccumulator] = [self._overall]
+        membership = [np.ones((positions, 1), dtype=np.bool_)]
+        for dimension in SLICE_DIMENSIONS:
+            present = memberships.get(dimension)
+            if present is None:
+                continue
+            blocks.extend(self._bucket(dimension, name) for name in present.names)
+            membership.append(present.columns)
+
+        counted = np.concatenate(membership, axis=1).astype(np.float64)
+        totals = counted.T @ value_matrix(columns)
+        counts = counted.sum(axis=0)
+        summed = len(SUMMED_METRICS)
+        for offset, accumulator in enumerate(blocks):
+            count = int(counts[offset])
+            if count:
+                accumulator.add_block(
+                    count, totals[offset, :summed], totals[offset, summed:]
+                )
 
     def compute(self) -> SliceTable:
         """Return every slice summary, rejecting an empty evaluation."""
@@ -293,7 +441,11 @@ class SliceAggregator:
 def summarize(positions: Sequence[PositionPolicy]) -> PositionSummary | None:
     """Return the aggregate over an explicit set of scored positions."""
 
+    if not positions:
+        return None
     accumulator = PositionAccumulator()
-    for position in positions:
-        accumulator.add(position)
+    columns = PositionColumns.from_records(positions)
+    totals = value_matrix(columns).sum(axis=0)
+    summed = len(SUMMED_METRICS)
+    accumulator.add_block(len(positions), totals[:summed], totals[summed:])
     return accumulator.summary()

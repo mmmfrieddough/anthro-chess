@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -140,6 +141,27 @@ class CheckpointModelRunner:
         """Return the digest identifying the loaded parameters."""
 
         return parameter_sha256(self._model)
+
+    def replicated(self, device: torch.device) -> CheckpointModelRunner:
+        """Return the same loaded checkpoint on another device.
+
+        A reading that spreads its batches over several accelerators needs one
+        model per device. These are copies of the parameters already in memory
+        rather than a second read of the checkpoint, so every replica answers
+        for the same selection and the same digest.
+        """
+
+        model = copy.deepcopy(self._model).to(device=device)
+        model.eval()
+        return CheckpointModelRunner(
+            model,
+            selection=self.selection,
+            device=device,
+            global_step=self.global_step,
+            processed_positions=self.processed_positions,
+            metadata=self.metadata,
+            training_sha256=self.training_sha256,
+        )
 
     @classmethod
     def load(

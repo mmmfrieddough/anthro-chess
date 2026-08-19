@@ -41,7 +41,10 @@ from pydantic import Field, StrictBool, model_validator
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
-from anthro_chess.evaluation.policy import PositionPolicy
+from anthro_chess.evaluation.policy import (
+    PositionColumns,
+    TrajectoryColumns,
+)
 from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ABSENT_DEGRADATION,
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
@@ -160,23 +163,6 @@ class PositionContext:
         """Return this position's identity across conditioning passes."""
 
         return (self.game_id, self.ply_index)
-
-
-@dataclass(frozen=True)
-class TrajectorySignal:
-    """What two anchor conditionings say about one position and its prefix.
-
-    ``strength_signal`` is positive when the strong-rating conditioning
-    explains the move actually played better than the weak one, which is the
-    available proxy for how strong the play looked. ``alignment`` is positive
-    when the policy at the position's true rating sits closer to the
-    strong-conditioned policy than to the weak-conditioned one.
-    """
-
-    strength_signal: float
-    alignment: float
-    anchor_divergence: float
-    anchor_agreement: bool
 
 
 @dataclass(frozen=True)
@@ -438,6 +424,26 @@ class DependencyColumns:
         return tuple(index for index in range(self.positions) if self.rated[index])
 
 
+def _signal_columns(
+    trajectory: TrajectoryColumns | None,
+    scored: int,
+) -> tuple[list[float], list[float], list[float], list[bool]]:
+    """Return the four trajectory columns as lists, or zeros where absent."""
+
+    if trajectory is None:
+        return [0.0] * scored, [0.0] * scored, [0.0] * scored, [False] * scored
+    if len(trajectory.strength_signal) != scored:
+        raise DependencyError(
+            "the trajectory columns do not cover every scored position"
+        )
+    return (
+        list(trajectory.strength_signal),
+        list(trajectory.alignment),
+        list(trajectory.anchor_divergence),
+        list(trajectory.anchor_agreement),
+    )
+
+
 class DependencyColumnBuilder:
     """Fills :class:`DependencyColumns` from scored conditioning passes.
 
@@ -467,17 +473,25 @@ class DependencyColumnBuilder:
     def add(
         self,
         contexts: Mapping[PositionKey, PositionContext],
-        true_positions: Sequence[PositionPolicy],
-        corrupted_positions: Mapping[
-            str, tuple[Conditioning, Sequence[PositionPolicy]]
-        ],
-        conditioned_positions: Mapping[int, Sequence[PositionPolicy]],
-        trajectory: Mapping[PositionKey, TrajectorySignal],
+        true_positions: PositionColumns,
+        corrupted_losses: Mapping[str, tuple[Conditioning, Sequence[float]]],
+        conditioned_losses: Mapping[int, Sequence[float]],
+        trajectory: TrajectoryColumns | None,
     ) -> None:
-        """Append one pass over some positions to every column."""
+        """Append one pass over some positions to every column.
 
-        keys = [(position.game_id, position.ply_index) for position in true_positions]
-        for key, position in zip(keys, true_positions, strict=True):
+        A treatment is aligned to the true pass by position rather than joined
+        to it: a conditioning changes the rating the model saw and nothing
+        about which rows a batch enables, so its losses arrive in the order
+        this pass scored.
+        """
+
+        strength, alignment, divergence, agreement = _signal_columns(
+            trajectory, len(true_positions)
+        )
+        losses = true_positions.move_nll.tolist()
+        keys = zip(true_positions.game_ids, true_positions.ply_indices, strict=True)
+        for offset, key in enumerate(keys):
             context = contexts.get(key)
             if context is None:
                 raise DependencyError(
@@ -488,27 +502,25 @@ class DependencyColumnBuilder:
             self._colors.append(context.color)
             self._bands.append(context.rating_band)
             self._rated.append(context.rating is not None)
-            self._true.append(position.move_nll)
-            signal = trajectory.get(key)
-            self._has_signal.append(signal is not None)
-            self._strength.append(0.0 if signal is None else signal.strength_signal)
-            self._alignment.append(0.0 if signal is None else signal.alignment)
-            self._divergence.append(0.0 if signal is None else signal.anchor_divergence)
-            self._agreement.append(False if signal is None else signal.anchor_agreement)
+            self._true.append(losses[offset])
+            self._has_signal.append(trajectory is not None)
+            self._strength.append(strength[offset])
+            self._alignment.append(alignment[offset])
+            self._divergence.append(divergence[offset])
+            self._agreement.append(agreement[offset])
 
-        order = {key: index for index, key in enumerate(keys)}
-        for name, (conditioning, positions) in corrupted_positions.items():
+        for name, (conditioning, losses) in corrupted_losses.items():
             self._extend(
                 self._corrupted.setdefault(name, (conditioning, array("d")))[1],
-                positions,
-                order,
+                losses,
+                len(true_positions),
                 f"conditioning pass {name!r}",
             )
-        for rating, positions in conditioned_positions.items():
+        for rating, losses in conditioned_losses.items():
             self._extend(
                 self._conditioned.setdefault(rating, array("d")),
-                positions,
-                order,
+                losses,
+                len(true_positions),
                 f"conditioning rating {rating}",
             )
 
@@ -535,23 +547,13 @@ class DependencyColumnBuilder:
     def _extend(
         self,
         column: array[float],
-        positions: Sequence[PositionPolicy],
-        order: Mapping[PositionKey, int],
+        losses: Sequence[float],
+        scored: int,
         what: str,
     ) -> None:
-        losses = [0.0] * len(order)
-        seen = 0
-        for position in positions:
-            index = order.get((position.game_id, position.ply_index))
-            if index is None:
-                raise DependencyError(
-                    f"{what} scored a position the true-conditioning pass did not"
-                )
-            losses[index] = position.move_nll
-            seen += 1
-        if seen != len(order):
+        if len(losses) != scored:
             raise DependencyError(
-                f"{what} scored {seen} of {len(order)} scored position(s)"
+                f"{what} scored {len(losses)} of {scored} scored position(s)"
             )
         column.extend(losses)
 
