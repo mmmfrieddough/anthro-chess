@@ -155,12 +155,10 @@ class ScoringInputs:
     def labels(self, key: PositionKey) -> PositionLabels:
         """Return one position's rule-sensitive labels, deriving them once.
 
-        Rebuilding a board and resolving its predicates costs about thirty
-        times encoding the ply did, and the benchmarks built on these inputs
-        read the result for a window of the positions they score or for none
-        of them. Deriving on demand keeps that cost proportional to what a
-        reading actually asks about, and the memo keeps a position that several
-        readers ask about from being resolved twice.
+        A reading over a frozen pool hands the pool's derived labels to
+        :func:`build_scoring_inputs` rather than paying for them again.
+        Positions no artifact covers, such as a perturbed continuation, are
+        resolved here.
         """
 
         labels = self._labels.get(key)
@@ -177,11 +175,12 @@ def build_scoring_inputs(
     batch_size: int,
     length_bucket_width: int | None,
     identity_sha256: str,
+    labels: Mapping[PositionKey, PositionLabels] | None = None,
 ) -> ScoringInputs:
     """Encode normalized rows once and derive the slices every reading needs.
 
-    The rule-sensitive labels are left to :meth:`ScoringInputs.labels`, which
-    resolves them where a reading asks for them.
+    ``labels`` are the rule-sensitive labels of these positions, already
+    derived. Left out, :meth:`ScoringInputs.labels` resolves them on demand.
     """
 
     ordered = sorted(
@@ -229,7 +228,7 @@ def build_scoring_inputs(
         shuffle=False,
         drop_last=False,
     )
-    return ScoringInputs(
+    inputs = ScoringInputs(
         rows=tuple(ordered),
         dataset=dataset,
         loader_config=loader_config,
@@ -237,6 +236,9 @@ def build_scoring_inputs(
         slices=slices,
         contexts=contexts,
     )
+    if labels is not None:
+        inputs._labels.update(labels)
+    return inputs
 
 
 def aggregate_positions(

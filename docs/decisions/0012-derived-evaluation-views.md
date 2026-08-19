@@ -6,7 +6,10 @@ Date: 2026-07-25
 
 Accepted. Refined by `0052-a-bounded-pool-is-a-fixed-admission-fraction.md`,
 under which the pool is a bounded uniform sample of the split rather than the
-whole of it.
+whole of it. Refined by
+`0069-a-frozen-pool-carries-its-position-labels.md`, under which the
+rule-sensitive labels of a frozen pool's positions are stored beside it; what
+stays a derivation with no stored form is the view.
 
 ## Context
 

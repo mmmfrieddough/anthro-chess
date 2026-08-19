@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import fields, replace
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -15,16 +15,16 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE, MOVE_ACTION_COUNT
 from anthro_chess.data import SequenceBatch
 from anthro_chess.evaluation.policy import (
     TOP_ILLEGAL_ACTIONS,
-    ActiveBatch,
     active_batch,
-    legal_policy_log_probabilities,
-    policy_divergence,
     score_action_sets,
     score_positions,
     score_terminal_actions,
     top_action,
+    trajectory_columns,
+    treatment_move_losses,
+    treatment_rows,
 )
-from anthro_chess.models import MoveModelBatch, OptionalTensor
+from anthro_chess.models import MoveModelBatch
 
 
 def test_policy_records_hand_computable_legality_and_rank(
@@ -174,57 +174,6 @@ def test_the_legal_mask_marks_exactly_the_actions_each_row_allows(
     ] == list(active.legal_rows)
 
 
-def test_rescoring_matches_aligning_the_second_pass_from_scratch(
-    sequence_batch: Callable[..., SequenceBatch],
-    device_read_trap: Callable[[Any], Any],
-) -> None:
-    """A second conditioning treatment reuses the alignment and lies nowhere.
-
-    Only the logits and the rating the model saw differ between treatments, so
-    everything else is carried across. ``ratings`` is the field that would go
-    stale: it comes from the conditioning the second pass replaced, so a
-    carried copy would report the first treatment's rating under the second
-    one's name.
-
-    The comparison walks the fields the class declares rather than naming
-    them, so a field added to ``ActiveBatch`` later is held to the same
-    standard without anyone remembering to add an assertion. The second pass
-    runs under the read trap because carrying the alignment must not cost the
-    per-position reads it exists to remove.
-    """
-
-    batch = MoveModelBatch.from_sequence_batch(
-        sequence_batch((("e2e4", "e7e5"), 1500, None))
-    )
-    conditioned = replace(
-        batch,
-        inputs=replace(
-            batch.inputs,
-            target_rating=OptionalTensor(
-                values=torch.full_like(batch.inputs.target_rating.values, 2100),
-                present=batch.inputs.target_rating.present,
-            ),
-        ),
-    )
-    first = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
-    second = torch.full_like(first, 0.5)
-
-    rescored = active_batch(first, batch).rescored(
-        device_read_trap(second),
-        device_read_trap(conditioned),
-    )
-
-    rebuilt = active_batch(second, conditioned)
-    assert rescored.ratings == (2100, None)
-    for field in fields(ActiveBatch):
-        carried = getattr(rescored, field.name)
-        expected = getattr(rebuilt, field.name)
-        if isinstance(carried, Tensor):
-            assert torch.equal(carried, expected), field.name
-        else:
-            assert carried == expected, field.name
-
-
 def test_comparing_two_active_batches_answers_rather_than_asking_the_tensors(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
@@ -244,36 +193,15 @@ def test_comparing_two_active_batches_answers_rather_than_asking_the_tensors(
     assert (active == replace(active)) is False
 
 
-def test_legal_policy_normalizes_over_legal_actions_only(
+def test_a_treatment_reads_the_same_move_loss_as_the_scored_pass(
     sequence_batch: Callable[..., SequenceBatch],
 ) -> None:
-    batch = MoveModelBatch.from_sequence_batch(
-        sequence_batch((("e2e4", "e7e5"), 1500, 1500))
-    )
-    assert batch.legal_action_ids is not None
-    legal_actions = batch.legal_action_ids[0][0]
-    logits = torch.zeros((*batch.action_targets.shape, ACTION_VOCABULARY_SIZE))
-    logits[0, 0, legal_actions[0]] = 4.0
-    logits[0, 0, _first_illegal_action(legal_actions)] = 9.0
+    """The reduced treatment path agrees with the host pass it replaces.
 
-    first, second = legal_policy_log_probabilities(active_batch(logits, batch))
-
-    assert first.shape == (len(legal_actions),)
-    assert float(torch.exp(first).sum().item()) == pytest.approx(1.0)
-    assert top_action(first, legal_actions) == legal_actions[0]
-    assert policy_divergence(first, first) == pytest.approx(0.0)
-    assert policy_divergence(first, second) > 0.0
-
-
-def test_the_legal_policy_hands_each_position_its_own_actions(
-    sequence_batch: Callable[..., SequenceBatch],
-) -> None:
-    """Each row is its own position's policy, over its own sorted actions.
-
-    Every row is cut from one gather across the whole batch, so a cut taken at
-    the wrong offset would hand a position its neighbour's numbers. The games
-    here reach positions with different numbers of legal moves, which is what
-    makes a shifted cut visible rather than merely wrong.
+    A conditioning treatment contributes one number per position, and it is
+    the same number the full per-position pass would have reported for those
+    logits. Reducing it where the logits live is what makes reading the whole
+    action vocabulary across unnecessary.
     """
 
     batch = MoveModelBatch.from_sequence_batch(
@@ -284,18 +212,72 @@ def test_the_legal_policy_hands_each_position_its_own_actions(
     )
     shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
     logits = torch.linspace(-2.0, 2.0, math.prod(shape)).reshape(shape)
-
     active = active_batch(logits, batch)
 
-    rows = legal_policy_log_probabilities(active)
+    rows = treatment_rows(active, device=logits.device)
+    losses = treatment_move_losses(logits, batch, rows)
 
-    normalized = torch.log_softmax(
-        active.logits.masked_fill(~active.legal_mask, -torch.inf), dim=-1
+    assert losses == pytest.approx(
+        [position.move_nll for position in score_positions(active)]
     )
-    assert [row.tolist() for row in rows] == [
-        normalized[offset, list(legal_actions)].tolist()
-        for offset, legal_actions in enumerate(active.legal_rows)
-    ]
+
+
+def test_the_trajectory_columns_compare_the_two_anchor_policies(
+    sequence_batch: Callable[..., SequenceBatch],
+) -> None:
+    """Each column is the reduction its definition names, over legal actions.
+
+    The anchors are two conditioning ratings of one batch, so every quantity
+    is a comparison of two policies at the same position, and an illegal
+    action contributes nothing to any of them.
+    """
+
+    batch = MoveModelBatch.from_sequence_batch(
+        sequence_batch(
+            (("e2e4", "e7e5", "g1f3"), 1500, None),
+            (("d2d4",), None, 1600),
+        )
+    )
+    shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
+    true_logits = torch.linspace(-2.0, 2.0, math.prod(shape)).reshape(shape)
+    low_logits = torch.linspace(-1.0, 3.0, math.prod(shape)).reshape(shape)
+    high_logits = torch.linspace(-3.0, 1.5, math.prod(shape)).reshape(shape)
+    active = active_batch(true_logits, batch)
+    rows = treatment_rows(active, device=true_logits.device)
+
+    columns = trajectory_columns(true_logits, low_logits, high_logits, batch, rows)
+
+    for offset, legal_actions in enumerate(active.legal_rows):
+        actions = list(legal_actions)
+        true, low, high = (
+            torch.log_softmax(
+                logits[batch.action_loss_mask][offset]
+                .to(dtype=torch.float64)
+                .masked_fill(~active.legal_mask[offset], -torch.inf),
+                dim=-1,
+            )[actions]
+            for logits in (true_logits, low_logits, high_logits)
+        )
+        target = actions.index(active.targets[offset])
+        assert columns.strength_signal[offset] == pytest.approx(
+            float(high[target] - low[target])
+        )
+        assert columns.alignment[offset] == pytest.approx(
+            _divergence(true, low) - _divergence(true, high)
+        )
+        assert columns.anchor_divergence[offset] == pytest.approx(
+            _divergence(low, high)
+        )
+        assert columns.anchor_agreement[offset] == (
+            top_action(low, actions) == top_action(high, actions)
+        )
+
+
+def _divergence(reference: Tensor, candidate: Tensor) -> float:
+    """Return the Kullback-Leibler divergence between two legal policies."""
+
+    probabilities = torch.exp(reference)
+    return float((probabilities * (reference - candidate)).sum().item())
 
 
 def test_scoring_rejects_legal_actions_that_do_not_align(

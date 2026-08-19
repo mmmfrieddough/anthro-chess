@@ -1,10 +1,4 @@
-"""Derived position slices shared by offline and rollout evaluation.
-
-Slices are recomputed from exact state rather than stored in normalized
-artifacts. A benchmark that needs a slice this module cannot derive is a
-signal that the underlying field belongs in the normalized schema, not that
-this layer should grow a private cache.
-"""
+"""Derived position slices shared by offline and rollout evaluation."""
 
 from __future__ import annotations
 

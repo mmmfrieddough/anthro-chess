@@ -20,11 +20,10 @@ from anthro_chess.evaluation.dependency import (
     MaturityContext,
     PositionContext,
     PositionKey,
-    TrajectorySignal,
     _require_conditioning_passes,
     reduce_dependency_columns,
 )
-from anthro_chess.evaluation.policy import PositionPolicy
+from anthro_chess.evaluation.policy import PositionPolicy, TrajectoryColumns
 from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
@@ -42,7 +41,7 @@ def test_corruption_degradation_uses_only_positions_with_a_true_rating() -> None
     corrupted = {
         "shuffled": (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
-            [_policy(1, 0, 2.5), _policy(1, 1, 1.0)],
+            [2.5, 1.0],
         ),
     }
 
@@ -59,14 +58,14 @@ def test_corruption_degradation_uses_only_positions_with_a_true_rating() -> None
 def test_cross_conditioning_matches_when_each_slice_prefers_its_own_value() -> None:
     contexts: dict[PositionKey, PositionContext] = {}
     true: list[PositionPolicy] = []
-    low_scores: list[PositionPolicy] = []
-    high_scores: list[PositionPolicy] = []
+    low_scores: list[float] = []
+    high_scores: list[float] = []
     for index in range(4):
         contexts[(1, index)] = _context(1, index, rating=1000, band="under_1200")
         contexts[(2, index)] = _context(2, index, rating=2200, band="2000_plus")
         true.extend([_policy(1, index, 2.0), _policy(2, index, 2.0)])
-        low_scores.extend([_policy(1, index, 1.0), _policy(2, index, 4.0)])
-        high_scores.extend([_policy(1, index, 3.0), _policy(2, index, 1.5)])
+        low_scores.extend([1.0, 4.0])
+        high_scores.extend([3.0, 1.5])
 
     result = _build(
         contexts,
@@ -94,7 +93,7 @@ def test_cross_conditioning_reports_thin_slices_without_scoring_them() -> None:
         contexts,
         true,
         {},
-        conditioned={1000: [_policy(1, 0, 1.0)], 2200: [_policy(1, 0, 3.0)]},
+        conditioned={1000: [1.0], 2200: [3.0]},
         minimum_slice_positions=2,
     )
 
@@ -107,7 +106,6 @@ def test_cross_conditioning_reports_thin_slices_without_scoring_them() -> None:
 
 def test_within_game_response_compares_prefix_strength_halves() -> None:
     contexts: dict[PositionKey, PositionContext] = {}
-    trajectory: dict[PositionKey, TrajectorySignal] = {}
     true: list[PositionPolicy] = []
     for ply_index in range(8):
         contexts[(1, ply_index)] = _context(
@@ -118,14 +116,13 @@ def test_within_game_response_compares_prefix_strength_halves() -> None:
             color="white" if ply_index % 2 == 0 else "black",
         )
         true.append(_policy(1, ply_index, 2.0))
-        # White's play looks progressively stronger; Black's looks weaker.
-        strength = 1.0 if ply_index % 2 == 0 else -1.0
-        trajectory[(1, ply_index)] = TrajectorySignal(
-            strength_signal=strength,
-            alignment=0.4 if ply_index % 2 == 0 else 0.1,
-            anchor_divergence=0.2,
-            anchor_agreement=ply_index % 4 == 0,
-        )
+    # White's play looks progressively stronger; Black's looks weaker.
+    trajectory = TrajectoryColumns(
+        strength_signal=tuple(1.0 if ply % 2 == 0 else -1.0 for ply in range(8)),
+        alignment=tuple(0.4 if ply % 2 == 0 else 0.1 for ply in range(8)),
+        anchor_divergence=(0.2,) * 8,
+        anchor_agreement=tuple(ply % 4 == 0 for ply in range(8)),
+    )
 
     result = _build(
         contexts,
@@ -190,12 +187,7 @@ def test_per_game_totals_recover_the_reported_degradation() -> None:
     corrupted = {
         "absent": (
             Conditioning(name="absent", kind=ConditioningKind.ABSENT),
-            [
-                _policy(1, 0, 5.0),
-                _policy(2, 0, 2.1),
-                _policy(2, 1, 3.2),
-                _policy(2, 2, 4.3),
-            ],
+            [5.0, 2.1, 3.2, 4.3],
         ),
     }
 
@@ -220,37 +212,44 @@ def test_per_game_totals_recover_the_reported_degradation() -> None:
 
 
 def test_the_anchor_quantities_are_weighted_by_the_positions_that_carry_them() -> None:
-    """A rated position with no anchor signal is absent from the anchors only.
+    """A pass with no anchor signal is absent from the anchors only.
 
     The degradations average over every rated position and the anchors average
     over the ones a signal was computed for, so each metric carries the count
     behind its own total rather than sharing one.
     """
 
-    contexts = {
-        (1, 0): _context(1, 0, rating=1500, band="1200_to_1599"),
-        (2, 0): _context(2, 0, rating=1500, band="1200_to_1599"),
-    }
-    trajectory = {
-        (1, 0): TrajectorySignal(
-            strength_signal=0.0,
-            alignment=0.0,
-            anchor_divergence=0.4,
-            anchor_agreement=True,
+    shuffled_conditioning = Conditioning(
+        name="shuffled", kind=ConditioningKind.SHUFFLED
+    )
+    builder = DependencyColumnBuilder()
+    builder.add(
+        {(1, 0): _context(1, 0, rating=1500, band="1200_to_1599")},
+        [_policy(1, 0, 2.0)],
+        {"shuffled": (shuffled_conditioning, [2.5])},
+        {value: [2.0] for value in CONDITIONING_VALUES},
+        TrajectoryColumns(
+            strength_signal=(0.0,),
+            alignment=(0.0,),
+            anchor_divergence=(0.4,),
+            anchor_agreement=(True,),
         ),
-    }
-    corrupted = {
-        "shuffled": (
-            Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
-            [_policy(1, 0, 2.5), _policy(2, 0, 2.5)],
+    )
+    builder.add(
+        {(2, 0): _context(2, 0, rating=1500, band="1200_to_1599")},
+        [_policy(2, 0, 2.0)],
+        {"shuffled": (shuffled_conditioning, [2.5])},
+        {value: [2.0] for value in CONDITIONING_VALUES},
+        None,
+    )
+    result = reduce_dependency_columns(
+        config=DependencyTestConfig(
+            cross_conditioning_ratings=CONDITIONING_VALUES,
+            minimum_slice_positions=1,
+            minimum_prefix_decisions=1,
         ),
-    }
-
-    result = _build(
-        contexts,
-        [_policy(1, 0, 2.0), _policy(2, 0, 2.0)],
-        corrupted,
-        trajectory=trajectory,
+        columns=builder.build(),
+        maturity=MaturityContext(step=8000, processed_positions=640_000),
     )
 
     shuffled = DEGRADATION_METRICS[ConditioningKind.SHUFFLED].identifier
@@ -285,27 +284,27 @@ def test_dependency_tests_need_a_rated_position() -> None:
 def _build(
     contexts: Mapping[PositionKey, PositionContext],
     true: Sequence[PositionPolicy],
-    corrupted: Mapping[str, tuple[Conditioning, Sequence[PositionPolicy]]],
+    corrupted: Mapping[str, tuple[Conditioning, Sequence[float]]],
     *,
-    conditioned: Mapping[int, Sequence[PositionPolicy]] | None = None,
-    trajectory: Mapping[PositionKey, TrajectorySignal] | None = None,
+    conditioned: Mapping[int, Sequence[float]] | None = None,
+    trajectory: TrajectoryColumns | None = None,
     minimum_slice_positions: int = 1,
     minimum_prefix_decisions: int = 1,
 ) -> DependencyTestResult:
     resolved = (
-        {value: list(true) for value in CONDITIONING_VALUES}
+        {
+            value: [position.move_nll for position in true]
+            for value in CONDITIONING_VALUES
+        }
         if conditioned is None
         else conditioned
     )
-    signals = trajectory or {
-        key: TrajectorySignal(
-            strength_signal=0.0,
-            alignment=0.0,
-            anchor_divergence=0.2,
-            anchor_agreement=True,
-        )
-        for key in contexts
-    }
+    signals = trajectory or TrajectoryColumns(
+        strength_signal=(0.0,) * len(true),
+        alignment=(0.0,) * len(true),
+        anchor_divergence=(0.2,) * len(true),
+        anchor_agreement=(True,) * len(true),
+    )
     config = DependencyTestConfig(
         cross_conditioning_ratings=CONDITIONING_VALUES,
         minimum_slice_positions=minimum_slice_positions,

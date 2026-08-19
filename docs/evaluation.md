@@ -755,6 +755,15 @@ audit is indistinguishable from one that never ran. A snapshot that never
 counted an archive the corpus holds is refused rather than applied to it. Which
 recall a pool carries is therefore settled when it is cut, by whoever cuts it.
 
+A pool also carries the **position labels** its readings share: what exact
+chess logic says about each of its positions, which is a pure function of a
+generation that is frozen and refused when superseded. The first reading of a
+pool with no matching artifact derives one and saves it beside the pool, so
+nothing has to remember to build it, and the artifact carries a key over the
+pool identity and every scheme the labels were derived under, so a stale one is
+a miss rather than a wrong answer.
+`docs/decisions/0069-a-frozen-pool-carries-its-position-labels.md` records why.
+
 **Views** are per-benchmark deterministic selections over the pool: filtering by
 ply count, rating presence, or the day the source dated a game; projecting to
 prefixes; subsampling by hash rank.
@@ -1292,9 +1301,10 @@ rate. Predicates should record which class they belong to, since the two carry
 different weight in a report.
 
 Deciding whether mate is available means pushing every legal move and testing
-for checkmate, which is the most expensive characteristic derived so far. It
-belongs to the positions a benchmark actually scores, never to pool-wide
-coverage statistics, and a subsampled view is appropriate if it proves slow.
+for checkmate, which is the most expensive characteristic derived so far. Over a
+frozen pool it is derived once per generation into the artifact beside it and
+read back; anything scoring positions no pool holds, such as a perturbed
+continuation, resolves it live.
 
 The implemented predicate registry lives in
 `anthro_chess.evaluation.slices`. It records whether a predicate is decidable or
