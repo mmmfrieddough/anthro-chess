@@ -620,8 +620,11 @@ def _load_pool(
     # otherwise fail names the absent column rather than the stale pool behind
     # it.
     validate_manifest_compatibility(manifest, manifest_path)
-    if manifest.get("encoding") != encoding_identity():
-        raise EvaluationPoolError(f"{manifest_path} uses an incompatible encoding")
+    # The manifest records which encoding the pool was cut under, and reading it
+    # back does not depend on that: a pool holds normalized games, which the
+    # current code encodes as it reads them, exactly as it does a corpus. A
+    # corpus manifest carries no encoding identity at all for the same reason.
+    # Gating here instead made every model-input change unfreeze the pool.
 
     output = manifest.get("output")
     if not isinstance(output, Mapping) or not isinstance(output.get("sha256"), str):

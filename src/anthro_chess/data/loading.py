@@ -25,7 +25,6 @@ from anthro_chess.data.encoding import (
     PlyEncoding,
     en_passant_token,
     encode_game,
-    previous_action_token,
 )
 from anthro_chess.data.schema import (
     SCHEMA_VERSION,
@@ -110,7 +109,7 @@ class OptionalIntBatch:
 class SequenceInputs:
     """Framework-neutral numeric model inputs shaped batch by sequence.
 
-    ``en_passant_token`` and ``previous_action_token`` are the embedding rows
+    ``en_passant_token`` is the embedding row
     :mod:`anthro_chess.data.encoding` assigns, absence included, rather than a
     value beside a presence flag.
     """
@@ -121,7 +120,7 @@ class SequenceInputs:
     en_passant_token: np.ndarray
     halfmove_clock: np.ndarray
     fullmove_number: np.ndarray
-    previous_action_token: np.ndarray
+    repetition_count: np.ndarray
     target_rating: OptionalIntBatch
     time_initial_ms: OptionalIntBatch
     time_increment_ms: OptionalIntBatch
@@ -131,7 +130,7 @@ class SequenceInputs:
 
 @dataclass(frozen=True, eq=False)
 class SequenceBatch:
-    """Padded causal batch with aligned targets, masks, and slice metadata.
+    """Padded batch with aligned targets, masks, and slice metadata.
 
     Every field is a contiguous array narrow enough to hold what it carries,
     which is what lets a consumer wrap it rather than walk it: the tensor
@@ -140,10 +139,10 @@ class SequenceBatch:
 
     Boolean attention values are ``True`` where a timestep is present.
 
-    Causality is a property of the model rather than of the batch, so no
-    sequence-by-sequence mask travels here. Padding is right-aligned, which is
-    what makes that safe: a real query attends only to earlier timesteps, and
-    every timestep earlier than a real one is itself real.
+    Every timestep is its own decision and no mask travels between them.
+    Padding is right-aligned, which is what keeps the stacked history each
+    decision reads real: it reaches only at or before its own column, and every
+    column before a real one is itself real.
 
     ``legal_action_ids`` is absent when nothing downstream will read it. Policy
     scoring and the batch's own legality check are its only consumers and
@@ -698,10 +697,9 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         piece_ids=piece_ids,
         side_to_move=required(lambda ply: ply.board.side_to_move, np.uint8),
         castling_rights=required(lambda ply: ply.board.castling_rights, np.uint8),
-        # A padded timestep has no en-passant square and no previous action, so
-        # each is filled with the row that names absence. Only the second one
-        # differs from a zero fill, and both say so rather than one relying on
-        # a coincidence.
+        # A padded timestep has no en-passant square, so the column is filled
+        # with the row that names absence rather than relying on that being
+        # what a zero fill happens to mean.
         en_passant_token=required(
             lambda ply: en_passant_token(ply.board.en_passant_square),
             np.uint8,
@@ -709,11 +707,7 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         ),
         halfmove_clock=required(lambda ply: ply.board.halfmove_clock, np.int16),
         fullmove_number=required(lambda ply: ply.board.fullmove_number, np.int16),
-        previous_action_token=required(
-            lambda ply: previous_action_token(ply.previous_action_id),
-            np.int16,
-            padding=previous_action_token(None),
-        ),
+        repetition_count=required(lambda ply: ply.board.repetition_count, np.uint8),
         target_rating=optional(lambda ply: ply.target_rating, np.int16),
         time_initial_ms=optional(lambda ply: ply.time_initial_ms, np.int32),
         time_increment_ms=optional(lambda ply: ply.time_increment_ms, np.int32),
@@ -1009,23 +1003,6 @@ def _game_from_row(
         )
     except (KeyError, TypeError, ValueError) as error:
         raise DataLoadingError(f"invalid normalized game in {path}: {error}") from error
-
-
-def maximum_position_bound(maximum_game_plies: int, chunk_length: int | None) -> int:
-    """Return the furthest ``MoveModelBatch.position_bound`` a corpus can reach.
-
-    Both loaders cut non-overlapping chunks, so a game of ``L`` plies starts
-    its last chunk at ``(L - 1) // C * C`` and has no chunk wider than
-    ``min(C, L)``. Both grow with ``L``, so the longest game in a corpus bounds
-    a batch that mixes its last chunk with any other game's widest one, and
-    that worst case is what this returns. Unchunked, a row is a whole game and
-    the reach is ``L``.
-    """
-
-    if chunk_length is None:
-        return maximum_game_plies
-    last_chunk_start = (maximum_game_plies - 1) // chunk_length * chunk_length
-    return last_chunk_start + min(chunk_length, maximum_game_plies)
 
 
 def _chunk_plies(

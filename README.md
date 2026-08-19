@@ -13,7 +13,7 @@ The repository currently provides an installable Python package, a lightweight
 `anthro` command, strict configuration foundations, `python-chess` integration,
 stable model action ids, a reproducible PGN sample-data path, automated tests,
 versioned per-ply model-facing encodings, deterministic sequence batching, and
-a minimal causal action model with masked move loss, a reproducible bounded
+a minimal action model with masked move loss, a reproducible bounded
 Lichess baseline-corpus path, shared CPU/MPS/CUDA training with explicit device
 and determinism selection, an end-to-end minimal training proof, compatible
 checkpoint-backed full-history inference, an untimed game-session runtime with

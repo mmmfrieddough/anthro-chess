@@ -33,7 +33,7 @@ from anthro_chess.chess import (
 from anthro_chess.data import DecisionContext, encoding_identity
 from anthro_chess.interfaces.config import UCI_MAX_RATING, UciConfig
 from anthro_chess.interfaces.uci import UciEngine
-from anthro_chess.models import CausalMoveModel
+from anthro_chess.models import MoveModel
 from anthro_chess.runtime import RuntimeConfig
 from anthro_chess.runtime import session as session_module
 from anthro_chess.training.checkpoints import save_training_checkpoint
@@ -1115,7 +1115,7 @@ def _write_run(path: Path) -> Path:
     torch.manual_seed(7)
     path.mkdir(parents=True)
     model_config = tiny_model_config()
-    model = CausalMoveModel(model_config)
+    model = MoveModel(model_config)
     model_identity = model.identity()
     resolved_config = {
         "config": {"model": model_config.model_dump(mode="json")},

@@ -65,8 +65,8 @@ from anthro_chess.evaluation.results import (
     restore_registry,
 )
 from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
-from anthro_chess.models import CausalMoveModel
-from anthro_chess.models.causal import model_identity
+from anthro_chess.models import MoveModel
+from anthro_chess.models.move_model import model_identity
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
 from accelerators import HOST
@@ -715,7 +715,7 @@ def write_inference_run(path: Path, *, seed: int = 5) -> Path:
     torch.manual_seed(seed)
     path.mkdir(parents=True, exist_ok=True)
     config = tiny_model_config()
-    model = CausalMoveModel(config)
+    model = MoveModel(config)
     model_identity = model.identity()
     resolved_config = {
         "config": {"model": config.model_dump(mode="json")},
@@ -793,7 +793,7 @@ def write_training_run(
     torch.manual_seed(seed)
     path.mkdir(parents=True, exist_ok=True)
     config = tiny_model_config()
-    model = CausalMoveModel(config)
+    model = MoveModel(config)
     model_identity = model.identity()
     shard = normalized / "games.parquet"
     manifest_record = json.loads(manifest.read_text(encoding="utf-8"))

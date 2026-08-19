@@ -179,12 +179,12 @@ identity, so none can follow the vehicle without invalidating it.
   project whether extending a run is a branch or a restart, and which
   `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` settles as a
   branch.
-- **The architecture**, which has never been designed. It was assembled from
-  defaults, and the flat rating dial is what that produced: the trunk is
-  rating-neutral by construction, so the rating cannot reach the representation
-  at all. Settling it means copying what the field has already established and
-  measuring only what would be this project's own answer — the conditioning path
-  being the case where no published result transfers.
+- **The architecture**, which had never been designed. It was assembled from
+  defaults, and the flat rating dial is what that produced: the trunk it grew
+  around was rating-neutral by construction, so the rating could not reach the
+  representation at all. Settling it meant copying what the field has already
+  established and measuring only what would be this project's own answer, the
+  conditioning path being the case where no published result transfers.
 - **The optimization surface** — schedule, warmup, decoupled weight decay — which
   does not exist today. A single learning-rate float and a plain optimizer cannot
   express any of the settings the scaling program treats as scale-coupled.

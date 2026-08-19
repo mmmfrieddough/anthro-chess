@@ -101,7 +101,7 @@ def _context_key(context: DecisionContext) -> tuple[object, ...]:
         board.en_passant_square,
         board.halfmove_clock,
         board.fullmove_number,
-        context.plies[-1].previous_action_id,
+        board.repetition_count,
     )
 
 

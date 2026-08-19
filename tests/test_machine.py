@@ -213,7 +213,7 @@ def test_a_run_record_this_code_would_write_itself_is_loadable(
 @pytest.mark.parametrize(
     ("field", "value", "expected"),
     [
-        ("model", {"version": 4}, "model identity 4, and this code loads 6"),
+        ("model", {"version": 4}, "model identity 4, and this code loads 7"),
         (
             "model",
             {"rating_conditioning": "post-transformer-feature-modulation"},

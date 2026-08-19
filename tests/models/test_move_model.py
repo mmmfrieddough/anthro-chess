@@ -21,6 +21,7 @@ from anthro_chess.chess import (
 )
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
+    DecisionHistory,
     GameEncodingInput,
     SequenceBatch,
     SequenceExample,
@@ -28,21 +29,16 @@ from anthro_chess.data import (
     en_passant_token,
     encode_game,
     encoding_identity,
-    previous_action_token,
 )
 from anthro_chess.models import (
-    CausalMoveModel,
+    MoveModel,
     MoveModelBatch,
     MoveModelConfig,
     OptionalTensor,
     RatingEmbedding,
     SourceDestinationHead,
 )
-from anthro_chess.models.causal import (
-    CausalSelfAttention,
-    GeometricAttentionBias,
-    ResidualBlock,
-)
+from anthro_chess.models.move_model import ResidualBlock
 from anthro_chess.training import masked_action_cross_entropy
 
 from accelerators import training_accelerator_parameters
@@ -57,8 +53,6 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
 
     batch = MoveModelBatch.from_sequence_batch(loader_batch)
     initial_board = chess.Board()
-    first_action = encode_move(chess.Move.from_uci("e2e4"))
-    second_action = encode_move(chess.Move.from_uci("e7e5"))
 
     assert batch.inputs.piece_ids.shape == (2, 3, 64)
     assert batch.inputs.piece_ids.dtype == torch.long
@@ -74,11 +68,7 @@ def test_tensor_boundary_preserves_board_target_context_and_padding() -> None:
     ]
     assert batch.inputs.halfmove_clock[0].tolist() == [0, 0, 0]
     assert batch.inputs.fullmove_number[0].tolist() == [1, 1, 2]
-    assert batch.inputs.previous_action_token[0].tolist() == [
-        previous_action_token(None),
-        first_action,
-        second_action,
-    ]
+    assert batch.inputs.repetition_count[0].tolist() == [0, 0, 0]
     assert batch.inputs.target_rating.present[0].tolist() == [True, False, True]
     assert batch.inputs.target_rating.values[0].tolist() == [1500, 0, 1500]
     assert decode_move(int(batch.action_targets[0, 0].item())).uci() == "e2e4"
@@ -115,14 +105,14 @@ def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
             ("d2d4",),
         )
     )
-    model = CausalMoveModel(_tiny_config())
+    model = MoveModel(_tiny_config())
 
     logits = model(batch)
 
     assert logits.shape == (2, 3, ACTION_VOCABULARY_SIZE)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    assert model.identity()["version"] == 6
+    assert model.identity()["version"] == 7
     assert model.identity()["action_vocabulary"] == action_vocabulary_identity()
     assert model.identity()["encoding"] == encoding_identity()
     assert model.identity()["rating_conditioning"] == "square-token-input-embedding"
@@ -131,7 +121,7 @@ def test_forward_is_cpu_only_and_action_vocabulary_compatible() -> None:
 
 
 def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
-    """What replaces the key padding mask, and what makes padded logits ignorable.
+    """What makes a padded logit ignorable rather than merely unread.
 
     A shorter history batched beside a longer one must see exactly what it
     would have seen alone.
@@ -142,7 +132,7 @@ def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
     padded = MoveModelBatch.from_sequence_batch(
         _sequence_batch(("d2d4",), ("e2e4", "e7e5", "g1f3"))
     )
-    model = CausalMoveModel(_tiny_config()).eval()
+    model = MoveModel(_tiny_config()).eval()
 
     with torch.no_grad():
         alone_logits = model(alone)
@@ -159,26 +149,172 @@ def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
     assert torch.count_nonzero(padded_logits[0, 1:]) > 0
 
 
-def test_the_position_table_is_sized_from_the_declared_context_and_never_saved() -> (
-    None
-):
-    """It is a function of the configuration, so it is not state to restore.
+def test_a_decision_and_its_mirror_image_score_the_same_chess() -> None:
+    """The flip is only sound if undoing it lands on the same move.
 
-    Causality used to be a second table beside it, sized the same way and
-    quadratic where this one is linear. Attention states it as a flag now, so
-    the only derived table left is this one.
+    Every board is presented from the side to move, so a position with black to
+    move and the same position with the colours swapped and the ranks mirrored
+    reach the layers as one input. Their logits therefore have to agree under
+    the same mirror on the action vocabulary, or the model is playing one
+    position and answering about the other.
+
+    The colour input is the one thing that genuinely differs between them, so it
+    is held inert here; the test above covers that it reaches the model at all.
     """
 
-    config = _tiny_config()
-    model = CausalMoveModel(config)
-    declared = config.maximum_context_plies
+    torch.manual_seed(67)
+    model = MoveModel(_tiny_config(layers=2)).eval()
+    with torch.no_grad():
+        # A random weight everywhere, so no table can pass by accident: an
+        # untrained model is symmetric enough that a wrong permutation could.
+        for parameter in model.parameters():
+            parameter.normal_(0.0, 0.3)
+        model.square_encoder.side_embedding.weight.zero_()
 
-    assert model.position_table.shape == (declared, config.model_dim)
-    assert "position_table" not in set(model.state_dict())
-    # The weights outlive the bound, so a differently bounded model loads them.
-    CausalMoveModel(_tiny_config(maximum_context_plies=32)).load_state_dict(
-        model.state_dict()
+    position = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 5 4"
+    mirrored = chess.Board(position).mirror().fen()
+
+    with torch.no_grad():
+        black, white = (
+            model(
+                MoveModelBatch.from_decision_context(
+                    DecisionHistory(initial_fen=fen).context(target_rating=1500)
+                )
+            )[0, -1]
+            for fen in (position, mirrored)
+        )
+
+    mirror = torch.tensor(
+        [
+            encode_move(
+                chess.Move(
+                    move.from_square ^ 56,
+                    move.to_square ^ 56,
+                    promotion=move.promotion,
+                )
+            )
+            for move in (decode_move(action) for action in range(MOVE_ACTION_COUNT))
+        ]
     )
+    torch.testing.assert_close(
+        black[:MOVE_ACTION_COUNT][mirror],
+        white[:MOVE_ACTION_COUNT],
+        rtol=0.0,
+        atol=1e-5,
+    )
+    torch.testing.assert_close(
+        black[MOVE_ACTION_COUNT:], white[MOVE_ACTION_COUNT:], rtol=0.0, atol=1e-5
+    )
+
+
+def test_the_side_playing_reaches_the_model_even_though_the_board_is_flipped() -> None:
+    """Flipping erases which player is which, and human play is not symmetric.
+
+    A repertoire as white is not the mirror of a repertoire as black, so the one
+    bit the flip destroys is put back. Leela-CF carries it for the same reason.
+    """
+
+    torch.manual_seed(71)
+    model = MoveModel(_tiny_config()).eval()
+    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+    swapped = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+    swapped.inputs.side_to_move[0, 0] = 1
+
+    with torch.no_grad():
+        assert not torch.equal(model(batch)[0, 0], model(swapped)[0, 0])
+
+
+@pytest.mark.parametrize(
+    ("history_positions", "reaches"),
+    [(2, False), (4, True)],
+    ids=["outside-the-stack", "inside-the-stack"],
+)
+def test_a_decision_reads_exactly_the_boards_its_stack_declares(
+    history_positions: int,
+    reaches: bool,
+) -> None:
+    """History is the token depth now, so what it reaches is what it holds."""
+
+    torch.manual_seed(53)
+    model = MoveModel(_tiny_config(history_positions=history_positions)).eval()
+    moves = ("e2e4", "e7e5", "g1f3", "b8c6")
+    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    disturbed = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    disturbed.inputs.piece_ids[0, 0].zero_()
+
+    with torch.no_grad():
+        unchanged = torch.equal(model(batch)[0, 3], model(disturbed)[0, 3])
+
+    assert unchanged is not reaches
+
+
+def test_a_history_shorter_than_the_stack_repeats_its_earliest_board() -> None:
+    """Every game opens with fewer boards behind it than the stack holds.
+
+    Reaching before a row's first column clamps onto it, so a decision three
+    plies into a game reads what a row of three copies of that same board would
+    have given it.
+    """
+
+    torch.manual_seed(59)
+    model = MoveModel(_tiny_config(history_positions=3)).eval()
+    moves = ("e2e4", "e7e5", "g1f3")
+    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    repeated = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
+    inputs = repeated.inputs
+    for column in (
+        inputs.piece_ids,
+        inputs.side_to_move,
+        inputs.castling_rights,
+        inputs.en_passant_token,
+        inputs.halfmove_clock,
+        inputs.fullmove_number,
+        inputs.repetition_count,
+        inputs.target_rating.values,
+        inputs.target_rating.present,
+    ):
+        column[0, 1:] = column[0, :1]
+
+    with torch.no_grad():
+        opening = model.encode(batch, torch.tensor([[0]]))
+        stacked = model.encode(repeated, torch.tensor([[2]]))
+
+    torch.testing.assert_close(opening, stacked, rtol=0.0, atol=1e-6)
+
+
+def test_a_repetition_the_rules_would_let_a_player_claim_reaches_the_model() -> None:
+    """A model that cannot see a repetition cannot decide when to claim a draw."""
+
+    torch.manual_seed(73)
+    model = MoveModel(_tiny_config()).eval()
+    batch = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+    repeated = MoveModelBatch.from_sequence_batch(_sequence_batch(("e2e4", "e7e5")))
+    repeated.inputs.repetition_count[0, 1] = 2
+
+    with torch.no_grad():
+        assert not torch.equal(model(batch)[0, 1], model(repeated)[0, 1])
+
+
+def test_history_is_truncated_only_while_training() -> None:
+    """Opening plies are short, and training on nothing else would leave them odd.
+
+    Every configuration would otherwise exercise this only in a real run, so a
+    truncation wired to nothing would be invisible until then. Serving must not
+    truncate at all.
+    """
+
+    torch.manual_seed(61)
+    model = MoveModel(_tiny_config(history_positions=4, history_dropout=1.0))
+    batch = MoveModelBatch.from_sequence_batch(
+        _sequence_batch(("e2e4", "e7e5", "g1f3", "b8c6"))
+    )
+
+    with torch.no_grad():
+        trained = [model.train()(batch) for _ in range(2)]
+        evaluated = [model.eval()(batch) for _ in range(2)]
+
+    assert not torch.equal(trained[0], trained[1])
+    torch.testing.assert_close(evaluated[0], evaluated[1], rtol=0.0, atol=0.0)
 
 
 def test_every_layer_is_drawn_on_its_own_rather_than_copied() -> None:
@@ -191,16 +327,28 @@ def test_every_layer_is_drawn_on_its_own_rather_than_copied() -> None:
     """
 
     torch.manual_seed(31)
-    model = CausalMoveModel(_tiny_config(transformer_layers=2))
+    model = MoveModel(_tiny_config(layers=2))
 
     first, second = (
-        cast(
-            CausalSelfAttention, cast(ResidualBlock, block).attention
-        ).qkv_projection.weight
-        for block in model.transformer_blocks
+        cast(ResidualBlock, block).attention.qkv_projection.weight
+        for block in model.blocks
     )
 
     assert not torch.equal(first, second)
+
+
+def test_one_template_bank_serves_every_layer() -> None:
+    """A template is 4096 values whatever the model width is.
+
+    Held per layer instead, the bank would multiply by depth and dominate the
+    parameter count outright, which is what makes a fixed depth affordable at
+    all. Chessformer shares one bank across its whole model and so does this.
+    """
+
+    model = MoveModel(_tiny_config(layers=3))
+
+    banks = [name for name, _ in model.named_parameters() if "template" in name]
+    assert banks == ["bias_templates"]
 
 
 def test_the_dropout_setting_reaches_attention_and_the_block_around_it() -> None:
@@ -214,13 +362,15 @@ def test_the_dropout_setting_reaches_attention_and_the_block_around_it() -> None
 
     torch.manual_seed(37)
     config = _tiny_config(dropout=0.5)
-    block = cast(ResidualBlock, CausalMoveModel(config).transformer_blocks[0])
-    hidden = torch.randn(2, 7, config.model_dim)
+    model = MoveModel(config)
+    templates = model.bias_templates
+    block = cast(ResidualBlock, model.blocks[0])
+    hidden = torch.randn(2, BOARD_SQUARE_COUNT, config.model_dim)
 
     with torch.no_grad():
-        attention = [block.attention.train()(hidden) for _ in range(2)]
-        trained = [block.train()(hidden) for _ in range(2)]
-        evaluated = [block.eval()(hidden) for _ in range(2)]
+        attention = [block.attention.train()(hidden, templates) for _ in range(2)]
+        trained = [block.train()(hidden, templates) for _ in range(2)]
+        evaluated = [block.eval()(hidden, templates) for _ in range(2)]
 
     assert not torch.equal(attention[0], attention[1])
     assert not torch.equal(trained[0], trained[1])
@@ -231,14 +381,12 @@ def test_the_forward_pass_compiles_whole_and_once_across_a_run_of_widths() -> No
     """Length buckets vary the padded width, and none of them is a recompile.
 
     ``fullgraph`` is what makes a graph break an error here rather than a
-    silently slower run. The remaining Python-level guard is the batch's own
-    ``chunk_start_plies``, which is `#275`; every row below starts at ply zero,
-    as a full-game selection feeds them, so width is what varies.
+    silently slower run.
     """
 
     torch._dynamo.reset()
     counter = CompileCounter()
-    model = CausalMoveModel(_tiny_config(maximum_context_plies=64)).eval()
+    model = MoveModel(_tiny_config()).eval()
     compiled = torch.compile(model, backend=counter, fullgraph=True, dynamic=True)
 
     with torch.no_grad():
@@ -267,7 +415,7 @@ def test_the_compiled_forward_pass_agrees_with_the_eager_one(
 
     torch._dynamo.reset()
     torch.manual_seed(29)
-    model = CausalMoveModel(_tiny_config(maximum_context_plies=64)).to(backend).eval()
+    model = MoveModel(_tiny_config()).to(backend).eval()
     batch = _batch_of_width(12, device=backend)
     compiled = torch.compile(model, fullgraph=True, mode=mode)
 
@@ -280,73 +428,17 @@ def test_the_compiled_forward_pass_agrees_with_the_eager_one(
     torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize("start_ply", [0, 2], ids=["from-ply-zero", "chunk-past-zero"])
-def test_position_features_are_read_at_each_timestep_own_ply_index(
-    start_ply: int,
-) -> None:
-    """A chunked game's indices run past its own width, and the table reaches."""
-
-    config = _tiny_config()
-    model = CausalMoveModel(config)
-    batch = MoveModelBatch.from_sequence_batch(
-        _sequence_batch(("e2e4", "e7e5", "g1f3", "b8c6"), start_ply=start_ply)
-    )
-
-    features = model.position_table[batch.ply_indices]
-
-    assert int(batch.ply_indices[0, 0].item()) == start_ply
-    dimension = config.model_dim
-    frequencies = torch.exp(
-        torch.arange(0, dimension, 2, dtype=torch.float32)
-        * (-math.log(10_000.0) / dimension)
-    )
-    angles = batch.ply_indices.float().unsqueeze(-1) * frequencies
-    expected = torch.zeros((*batch.ply_indices.shape, dimension))
-    expected[..., 0::2] = torch.sin(angles)
-    expected[..., 1::2] = torch.cos(angles)
-
-    torch.testing.assert_close(features, expected)
-
-
-def test_position_features_do_not_narrow_with_the_forward_pass() -> None:
-    """The table is the model's own, not the width the forward pass runs at.
-
-    bfloat16 carries eight mantissa bits, so ply 257 and ply 258 are the same
-    number in it. Building the table at whatever width attention happened to be
-    running under collapsed one onto the other.
-    """
-
-    model = CausalMoveModel(_tiny_config(maximum_context_plies=512))
-
-    assert model.position_table.dtype == torch.float32
-    assert not torch.equal(model.position_table[257], model.position_table[258])
-
-
-def test_a_batch_reaching_past_the_declared_context_is_refused() -> None:
-    """A late chunk is measured by the ply it reaches, not by how wide it is."""
-
-    moves = ("e2e4", "e7e5", "g1f3", "b8c6")
-    model = CausalMoveModel(_tiny_config(maximum_context_plies=3))
-    whole = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
-    tail = MoveModelBatch.from_sequence_batch(_sequence_batch(moves, start_ply=2))
-
-    assert tail.ply_indices.shape[1] < 3
-    for batch in (whole, tail):
-        with pytest.raises(ValueError, match="ply index 3, past the 3 plies"):
-            model(batch)
-
-
 def test_the_identity_carries_every_value_needed_to_rebuild_the_model() -> None:
     """A checkpoint is rebuilt from its identity, so a gap becomes a default."""
 
     config = _tiny_config()
-    config_record = CausalMoveModel(config).identity()["config"]
+    config_record = MoveModel(config).identity()["config"]
 
     assert config_record == config.model_dump(mode="json")
     assert MoveModelConfig.model_validate(config_record) == config
     assert (
-        CausalMoveModel(_tiny_config(maximum_context_plies=32)).identity()
-        != CausalMoveModel(config).identity()
+        MoveModel(_tiny_config(history_positions=4)).identity()
+        != MoveModel(config).identity()
     )
 
 
@@ -359,7 +451,7 @@ def test_future_context_does_not_change_earlier_predictions() -> None:
         _sequence_batch(("e2e4", "e7e5", "d2d4"))
     )
     changed.inputs.piece_ids[0, 2].zero_()
-    model = CausalMoveModel(_tiny_config()).eval()
+    model = MoveModel(_tiny_config()).eval()
 
     with torch.no_grad():
         original_logits = model(original)
@@ -374,14 +466,13 @@ def test_future_context_does_not_change_earlier_predictions() -> None:
     assert not torch.equal(original_logits[:, 2], changed_logits[:, 2])
 
 
-def test_rating_reaches_the_trajectory_rather_than_only_the_decision() -> None:
+def test_rating_reaches_the_squares_rather_than_only_the_logits() -> None:
     """The fault `#177` measured, stated as the invariant that replaces it.
 
-    The encoded trajectory itself moves with the rating, so the trunk can let
-    rating change which history it attends to. An implementation that
-    conditioned only after the trunk -- correcting a rating-neutral feature at
-    the end -- would still pass every shape and vocabulary test above, and would
-    fail here.
+    The board representation itself moves with the rating, so every layer
+    computes with it. An implementation that conditioned at the end --
+    correcting a rating-neutral feature on the way out -- would still pass every
+    shape and vocabulary test above, and would fail here.
     """
 
     torch.manual_seed(7)
@@ -395,32 +486,31 @@ def test_rating_reaches_the_trajectory_rather_than_only_the_decision() -> None:
             black_rating=1800,
         )
     )
-    model = CausalMoveModel(_tiny_config()).eval()
+    model = MoveModel(_tiny_config()).eval()
+    decisions = torch.arange(3).unsqueeze(0)
 
     with torch.no_grad():
-        unrated_trajectory = model.encode_trajectory(
-            unrated, model.encode_squares(unrated)
-        )
-        rated_trajectory = model.encode_trajectory(rated, model.encode_squares(rated))
+        unrated_squares = model.encode(unrated, decisions)
+        rated_squares = model.encode(rated, decisions)
         unrated_logits = model(unrated)
         rated_logits = model(rated)
 
-    assert not torch.equal(unrated_trajectory, rated_trajectory)
+    assert not torch.equal(unrated_squares, rated_squares)
     assert not torch.equal(unrated_logits, rated_logits)
 
 
 def test_reading_one_decision_agrees_with_reading_the_whole_pass() -> None:
     """The serving shortcut is sound only while it is the same arithmetic.
 
-    Serving slices each history's decision row before the spatial decoder and
-    the move head rather than after, which is valid because both stages read one
-    position at a time. A later change letting either reach across plies would
-    make the two disagree, and every served move would quietly stop matching the
-    model that was trained.
+    Serving names one ply per row and runs the model on that decision alone,
+    which is valid because every stage reads one decision at a time. A later
+    change letting any of them reach across decisions would make the two
+    disagree, and every served move would quietly stop matching the model that
+    was trained.
     """
 
     torch.manual_seed(41)
-    model = CausalMoveModel(_tiny_config()).eval()
+    model = MoveModel(_tiny_config()).eval()
     batch = MoveModelBatch.from_sequence_batch(
         _sequence_batch(("e2e4", "e7e5", "g1f3"), ("d2d4",), white_rating=1500)
     )
@@ -496,10 +586,10 @@ def test_every_move_reads_the_head_square_pair_its_action_id_names() -> None:
     config = _tiny_config()
     head = SourceDestinationHead(config)
     squares = torch.randn(1, 1, BOARD_SQUARE_COUNT, config.model_dim)
-    hidden = torch.randn(1, 1, config.model_dim)
+    white = torch.zeros((1, 1), dtype=torch.bool)
 
     with torch.no_grad():
-        logits = head(squares, hidden)[0, 0]
+        logits = head(squares, white)[0, 0]
         sources = head.source_projection(squares)[0, 0]
         destinations = head.destination_projection(squares)[0, 0]
         board = sources @ destinations.transpose(-1, -2) * config.model_dim**-0.5
@@ -528,7 +618,7 @@ def test_a_promotion_choice_moves_only_the_promotions_that_choose_it() -> None:
     config = _tiny_config()
     head = SourceDestinationHead(config)
     squares = torch.randn(1, 1, BOARD_SQUARE_COUNT, config.model_dim)
-    hidden = torch.randn(1, 1, config.model_dim)
+    white = torch.zeros((1, 1), dtype=torch.bool)
     queen = encode_move(chess.Move.from_uci("a7a8q"))
     knight = encode_move(chess.Move.from_uci("a7a8n"))
     # The same square pair as the promotions above, so only the zero-padded
@@ -537,27 +627,27 @@ def test_a_promotion_choice_moves_only_the_promotions_that_choose_it() -> None:
     quiet = encode_move(chess.Move.from_uci("a7a8"))
 
     with torch.no_grad():
-        before = head(squares, hidden)
+        before = head(squares, white)
         head.promotion_projection.bias[chess.QUEEN - chess.KNIGHT] += 5.0
-        after = head(squares, hidden)
+        after = head(squares, white)
 
     assert after[0, 0, queen] - before[0, 0, queen] == pytest.approx(5.0, abs=1e-4)
     assert after[0, 0, knight] == pytest.approx(before[0, 0, knight].item(), abs=1e-5)
     assert after[0, 0, quiet] == pytest.approx(before[0, 0, quiet].item(), abs=1e-5)
 
 
-def test_terminal_actions_are_scored_from_the_history_not_from_a_square_pair() -> None:
-    """Resignation and a draw claim carry no move, so they read no squares."""
+def test_terminal_actions_are_scored_from_the_whole_board_not_a_square_pair() -> None:
+    """Resignation and a draw claim carry no move, so they read no square pair."""
 
     torch.manual_seed(23)
     config = _tiny_config()
     head = SourceDestinationHead(config)
     squares = torch.randn(1, 1, BOARD_SQUARE_COUNT, config.model_dim)
-    hidden = torch.randn(1, 1, config.model_dim)
+    white = torch.zeros((1, 1), dtype=torch.bool)
 
     with torch.no_grad():
-        logits = head(squares, hidden)
-        terminal = head.terminal_projection(hidden)
+        logits = head(squares, white)
+        terminal = head.terminal_projection(squares.mean(dim=-2))
 
     assert logits.shape[-1] == ACTION_VOCABULARY_SIZE
     torch.testing.assert_close(
@@ -578,11 +668,12 @@ def test_the_geometric_bias_starts_as_no_bias_at_all() -> None:
 
     torch.manual_seed(29)
     config = _tiny_config()
-    bias = GeometricAttentionBias(config)
+    model = MoveModel(config)
+    attention = cast(ResidualBlock, model.blocks[0]).attention
     tokens = torch.randn(3, BOARD_SQUARE_COUNT, config.model_dim)
 
     with torch.no_grad():
-        generated = bias(tokens)
+        generated = attention.geometric_bias(tokens, model.bias_templates)
 
     assert generated.shape == (
         3,
@@ -599,7 +690,7 @@ def test_the_geometric_bias_starts_as_no_bias_at_all() -> None:
         ("e2e4",),
         ("e2e4", "e7e5", "g1f3"),
     ],
-    ids=["single-timestep", "short-causal-sequence"],
+    ids=["single-decision", "short-game"],
 )
 def test_ordinary_model_and_loss_path_overfits_a_fixed_tiny_sample(
     moves: tuple[str, ...],
@@ -607,7 +698,7 @@ def test_ordinary_model_and_loss_path_overfits_a_fixed_tiny_sample(
     torch.manual_seed(11)
     batch = MoveModelBatch.from_sequence_batch(_sequence_batch(moves))
     assert not torch.any(batch.inputs.target_rating.present)
-    model = CausalMoveModel(_tiny_config())
+    model = MoveModel(_tiny_config())
     optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
 
     with torch.no_grad():
@@ -644,8 +735,6 @@ def test_ordinary_model_and_loss_path_overfits_a_fixed_tiny_sample(
 def test_model_config_rejects_incompatible_attention_dimensions() -> None:
     with pytest.raises(ValueError, match="divisible"):
         MoveModelConfig(model_dim=18, attention_heads=4)
-    with pytest.raises(ValueError, match="even"):
-        MoveModelConfig(model_dim=15, attention_heads=3)
 
 
 def _sequence_batch(
@@ -711,22 +800,28 @@ def _batch_of_width(
 
 
 def _tiny_config(
-    maximum_context_plies: int = 8,
     *,
-    transformer_layers: int = 1,
+    layers: int = 1,
     dropout: float = 0.0,
+    history_positions: int = 3,
+    history_dropout: float = 0.0,
 ) -> MoveModelConfig:
+    """Return a model small enough to train in a test, and deterministic.
+
+    ``history_dropout`` is off by default so that a test comparing two forward
+    passes is comparing the model rather than two draws of the training-time
+    history truncation, which has a test of its own below.
+    """
+
     return MoveModelConfig(
         piece_embedding_dim=2,
-        action_embedding_dim=4,
         model_dim=16,
         attention_heads=2,
-        spatial_layers=1,
-        transformer_layers=transformer_layers,
-        decision_layers=1,
+        layers=layers,
         feedforward_dim=24,
+        history_positions=history_positions,
+        history_dropout=history_dropout,
         geometric_token_dim=4,
         geometric_bias_dim=8,
         dropout=dropout,
-        maximum_context_plies=maximum_context_plies,
     )

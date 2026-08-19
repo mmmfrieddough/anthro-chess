@@ -9,7 +9,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
-from anthro_chess.chess import encode_move
+from anthro_chess.chess import decode_move, encode_move
 from anthro_chess.config import load_config
 from anthro_chess.data import (
     DataLoadingError,
@@ -18,18 +18,14 @@ from anthro_chess.data import (
     SequenceDataLoader,
     SequenceDataset,
     SequenceLoaderConfig,
-    collate_sequences,
     en_passant_token,
-    maximum_position_bound,
     prepare_pgn,
-    previous_action_token,
 )
 from anthro_chess.data.schema import (
     SCHEMA_VERSION,
     derive_game_id,
     encode_clock_remaining_deltas,
 )
-from anthro_chess.models import MoveModelBatch
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -88,15 +84,12 @@ def test_loads_full_games_and_pads_targets_inputs_and_legal_actions(
     assert batch.legal_action_ids[padded][0]
     assert batch.legal_action_ids[padded][1:] == ((), ())
     assert batch.inputs.piece_ids[padded][1].tolist() == [0] * 64
-    # The padded row's two trailing timesteps have no en-passant square and no
-    # previous action either, so both read the row that names absence.
+    # The padded row's two trailing timesteps have no en-passant square, so
+    # they read the row that names its absence.
     assert (
         batch.inputs.en_passant_token[padded].tolist() == [en_passant_token(None)] * 3
     )
-    assert (
-        batch.inputs.previous_action_token[padded].tolist()
-        == [previous_action_token(None)] * 3
-    )
+    assert batch.inputs.repetition_count[padded].tolist() == [0] * 3
     assert batch.inputs.target_rating.values[full].tolist() == [1400, 1401, 1400]
     assert batch.game_ids.tolist()[full] == [_game_id(1)] * 3
     assert batch.game_ids.tolist()[padded] == [_game_id(2), 0, 0]
@@ -125,30 +118,7 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
 
     assert batch.chunk_start_plies == (0, 2, 4)
     assert batch.ply_indices.tolist() == [[0, 1], [2, 3], [4, 0]]
-    assert batch.inputs.previous_action_token[1][0] == _action_ids(("e7e5",))[0]
-
-
-@pytest.mark.parametrize("chunk_length", [None, 3, 8, 12])
-def test_maximum_position_bound_covers_the_furthest_chunk_of_a_corpus(
-    tmp_path: Path,
-    chunk_length: int | None,
-) -> None:
-    """The longest game bounds every chunk, and chunking moves that bound."""
-
-    moves = ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6")
-    path = _write_games(tmp_path, [_row(1, moves[:3]), _row(2, moves)])
-
-    dataset = SequenceDataset.from_parquet(
-        path,
-        split="train",
-        chunk_length=chunk_length,
-        legal_actions=False,
-    )
-
-    # Batching the whole corpus at once is its worst case, so the reach the
-    # model would refuse on is read from the batch rather than restated here.
-    batch = MoveModelBatch.from_sequence_batch(collate_sequences(list(dataset)))
-    assert batch.position_bound == maximum_position_bound(len(moves), chunk_length)
+    assert batch.inputs.piece_ids[1][0][chess.E5] == chess.PAWN + 6
 
 
 def test_length_buckets_keep_similarly_sized_full_games_together(
@@ -193,12 +163,12 @@ def test_length_buckets_keep_similarly_sized_full_games_together(
     assert long_batch.sequence_length == 8
 
 
-def test_each_timestep_is_handed_the_action_the_previous_one_predicted() -> None:
-    """One ply's target is the next ply's context, which is what makes it causal.
+def test_each_timestep_reads_the_board_its_own_target_has_not_touched() -> None:
+    """One ply's target produces the next ply's board, and never its own.
 
-    The mask that stops a timestep attending to its own future belongs to the
-    model, so what the batch owes is this alignment: no timestep may already
-    carry the answer it is about to be asked for.
+    Which boards a decision may look back at belongs to the model, so what the
+    batch owes is this alignment: no timestep may already carry the answer it
+    is about to be asked for.
     """
 
     dataset = _encoded_dataset()
@@ -209,9 +179,13 @@ def test_each_timestep_is_handed_the_action_the_previous_one_predicted() -> None
 
     batch = next(loader)
 
-    assert batch.inputs.previous_action_token[0][0] == previous_action_token(None)
-    assert batch.inputs.previous_action_token[0][1] == batch.action_targets[0][0]
-    assert batch.inputs.previous_action_token[0][2] == batch.action_targets[0][1]
+    board = chess.Board()
+    for index, target in enumerate(batch.action_targets[0].tolist()):
+        expected = [0] * 64
+        for square, piece in board.piece_map().items():
+            expected[square] = piece.piece_type + (0 if piece.color else 6)
+        assert batch.inputs.piece_ids[0][index].tolist() == expected
+        board.push(decode_move(int(target)))
 
 
 def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
@@ -236,7 +210,7 @@ def test_a_batch_travels_as_contiguous_columns_no_wider_than_it_needs() -> None:
         "en_passant_token": (inputs.en_passant_token, "uint8"),
         "halfmove_clock": (inputs.halfmove_clock, "int16"),
         "fullmove_number": (inputs.fullmove_number, "int16"),
-        "previous_action_token": (inputs.previous_action_token, "int16"),
+        "repetition_count": (inputs.repetition_count, "uint8"),
         "target_rating": (inputs.target_rating.values, "int16"),
         "time_initial_ms": (inputs.time_initial_ms.values, "int32"),
         "time_increment_ms": (inputs.time_increment_ms.values, "int32"),

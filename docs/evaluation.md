@@ -907,7 +907,7 @@ They should cover:
 - legal move generation;
 - model-facing encodings;
 - data parsing and preprocessing;
-- sequence construction and causal-mask behavior;
+- sequence construction and stacked-history behavior;
 - clock-state simulation;
 - runtime legal masking;
 - random-stream lifecycle and explicit-seed reproducibility;

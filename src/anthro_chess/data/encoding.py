@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from array import array
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from hashlib import sha256
@@ -12,7 +13,6 @@ from hashlib import sha256
 import chess
 
 from anthro_chess.chess import (
-    ACTION_VOCABULARY_SIZE,
     action_is_legal,
     action_vocabulary_identity,
     decode_move,
@@ -22,15 +22,16 @@ from anthro_chess.chess import (
 )
 
 ENCODING_NAME = "anthro-per-ply"
-ENCODING_VERSION = 4
+ENCODING_VERSION = 5
 BOARD_SQUARE_COUNT = 64
+#: How many repetition states a board can be in. A position is recorded with
+#: the number of times it has already occurred in this game, capped so that the
+#: top state means "a threefold claim is available now".
+REPETITION_STATE_COUNT = 3
 #: How many rows an en-passant embedding needs, absence included. Token 0 is
 #: "no en-passant square" and square ``s`` is token ``s + 1``, which is what
 #: :func:`en_passant_token` writes and what a model sizing that table reads.
 EN_PASSANT_TOKEN_COUNT = BOARD_SQUARE_COUNT + 1
-#: The same, for the action preceding a timestep. The row past the vocabulary
-#: is "no previous action", which is what :func:`previous_action_token` writes.
-PREVIOUS_ACTION_TOKEN_COUNT = ACTION_VOCABULARY_SIZE + 1
 
 _ENCODING_SCHEMA = {
     "identity": {
@@ -50,9 +51,12 @@ _ENCODING_SCHEMA = {
         "en_passant_square": "null or python-chess square index",
         "halfmove_clock": "nonnegative integer",
         "fullmove_number": "positive integer",
+        "repetition_count": (
+            "how often this position already occurred in the game before this "
+            "timestep, capped at the threefold claim"
+        ),
     },
     "trajectory": {
-        "previous_action_id": "null on the first ply, otherwise action id",
         "target_action_id": "action id; a terminal action only as the last step",
         "legal_action_ids": (
             "sorted action ids enabled before the target action: every legal "
@@ -135,6 +139,7 @@ class BoardEncoding:
     en_passant_square: int | None
     halfmove_clock: int
     fullmove_number: int
+    repetition_count: int
 
     def as_record(self) -> dict[str, object]:
         """Return a JSON-serializable board record."""
@@ -146,6 +151,7 @@ class BoardEncoding:
             "en_passant_square": self.en_passant_square,
             "halfmove_clock": self.halfmove_clock,
             "fullmove_number": self.fullmove_number,
+            "repetition_count": self.repetition_count,
         }
 
 
@@ -155,7 +161,6 @@ class PlyContext:
 
     ply_index: int
     board: BoardEncoding
-    previous_action_id: int | None
     time_initial_ms: int | None
     time_increment_ms: int | None
     player_clock_ms: int | None
@@ -167,7 +172,6 @@ class PlyContext:
         return {
             "ply_index": self.ply_index,
             "board": self.board.as_record(),
-            "previous_action_id": self.previous_action_id,
             "time_initial_ms": self.time_initial_ms,
             "time_increment_ms": self.time_increment_ms,
             "player_clock_ms": self.player_clock_ms,
@@ -208,7 +212,6 @@ class PlyEncoding(PlyContext):
         return PlyContext(
             ply_index=self.ply_index,
             board=self.board,
-            previous_action_id=self.previous_action_id,
             time_initial_ms=self.time_initial_ms,
             time_increment_ms=self.time_increment_ms,
             player_clock_ms=self.player_clock_ms,
@@ -222,7 +225,6 @@ class PlyEncoding(PlyContext):
             "game_id": self.game_id,
             "ply_index": self.ply_index,
             "board": self.board.as_record(),
-            "previous_action_id": self.previous_action_id,
             "target_action_id": self.target_action_id,
             # Through the accessor, so a ply encoded without the set refuses to
             # be recorded rather than emitting a null where the hashed schema
@@ -257,7 +259,7 @@ class DecisionColumn(IntEnum):
     EN_PASSANT_TOKEN = 3
     HALFMOVE_CLOCK = 4
     FULLMOVE_NUMBER = 5
-    PREVIOUS_ACTION_TOKEN = 6
+    REPETITION_COUNT = 6
 
 
 @dataclass(frozen=True)
@@ -296,6 +298,39 @@ class DecisionContext:
             raise ValueError("a decision context's two forms must be the same length")
 
 
+class RepetitionCounter:
+    """How often each position of one game has already been seen.
+
+    Held beside a replay rather than asked of a board, because
+    :meth:`chess.Board.is_repetition` rescans the move stack for every answer
+    and this is asked once per ply on the loader's hot path.
+    """
+
+    def __init__(self) -> None:
+        self._keys: list[Hashable] = []
+        self._counts: Counter[Hashable] = Counter()
+
+    def observe(self, board: chess.Board) -> int:
+        """Record one position and return how often it had already occurred."""
+
+        # The library's own repetition key, which is the one that decides a
+        # claim: same pieces, same side to move, same castling rights, and the
+        # en-passant square only where a capture could actually take it.
+        key = board._transposition_key()
+        seen = self._counts[key]
+        self._counts[key] = seen + 1
+        self._keys.append(key)
+        return min(seen, REPETITION_STATE_COUNT - 1)
+
+    def truncated_copy(self, plies: int) -> RepetitionCounter:
+        """Return a private counter over this one's first ``plies`` positions."""
+
+        copied = RepetitionCounter()
+        copied._keys = self._keys[:plies]
+        copied._counts = Counter(copied._keys)
+        return copied
+
+
 def en_passant_token(square: int | None) -> int:
     """Return the embedding row naming one board's en-passant square.
 
@@ -305,16 +340,6 @@ def en_passant_token(square: int | None) -> int:
     """
 
     return 0 if square is None else square + 1
-
-
-def previous_action_token(action_id: int | None) -> int:
-    """Return the embedding row naming the action before one timestep.
-
-    The row past the action vocabulary is "no previous action", which is a
-    game's first ply and every timestep padding a row out to the batch width.
-    """
-
-    return ACTION_VOCABULARY_SIZE if action_id is None else action_id
 
 
 def encoding_identity() -> dict[str, object]:
@@ -364,7 +389,7 @@ def encode_game(
         chess.BLACK: game.time_initial_ms,
     }
     encodings: list[PlyEncoding] = []
-    previous_action_id: int | None = None
+    repetitions = RepetitionCounter()
     final_index = len(game.action_ids) - 1
 
     for ply_index, target_action_id in enumerate(game.action_ids):
@@ -406,7 +431,7 @@ def encode_game(
         context = _context_for_position(
             ply_index=ply_index,
             board=board,
-            previous_action_id=previous_action_id,
+            repetition_count=repetitions.observe(board),
             time_initial_ms=game.time_initial_ms,
             time_increment_ms=game.time_increment_ms,
             player_clock_ms=clocks_by_color[player_color],
@@ -417,7 +442,6 @@ def encode_game(
                 game_id=game.game_id,
                 ply_index=context.ply_index,
                 board=context.board,
-                previous_action_id=context.previous_action_id,
                 time_initial_ms=context.time_initial_ms,
                 time_increment_ms=context.time_increment_ms,
                 player_clock_ms=context.player_clock_ms,
@@ -432,7 +456,6 @@ def encode_game(
             break
         clocks_by_color[player_color] = target_clock
         board.push(target_move)
-        previous_action_id = target_action_id
 
     return tuple(encodings)
 
@@ -451,6 +474,7 @@ class _EncodedPrefix:
         self._plies: list[PlyContext] = []
         self._piece_ids = bytearray()
         self._values: array[int] = array("q")
+        self._repetitions = RepetitionCounter()
 
     def __len__(self) -> int:
         return len(self._plies)
@@ -461,22 +485,32 @@ class _EncodedPrefix:
 
         return tuple(self._plies)
 
-    def append(self, ply: PlyContext) -> None:
-        """Encode one further timestep into both forms."""
+    def append(self, *, ply_index: int, board: chess.Board) -> None:
+        """Encode one further timestep into both forms.
 
-        board = ply.board
+        The position is encoded here rather than handed in already encoded,
+        because how often it has repeated is a fact about the history this
+        holds rather than about the board.
+        """
+
+        ply = _history_context(
+            ply_index=ply_index,
+            board=board,
+            repetition_count=self._repetitions.observe(board),
+        )
+        encoded = ply.board
         self._plies.append(ply)
-        self._piece_ids += board.piece_ids
+        self._piece_ids += encoded.piece_ids
         # In DecisionColumn order.
         self._values.extend(
             (
                 ply.ply_index,
-                board.side_to_move,
-                board.castling_rights,
-                en_passant_token(board.en_passant_square),
-                board.halfmove_clock,
-                board.fullmove_number,
-                previous_action_token(ply.previous_action_id),
+                encoded.side_to_move,
+                encoded.castling_rights,
+                en_passant_token(encoded.en_passant_square),
+                encoded.halfmove_clock,
+                encoded.fullmove_number,
+                encoded.repetition_count,
             )
         )
 
@@ -486,6 +520,7 @@ class _EncodedPrefix:
         del self._plies[plies:]
         del self._piece_ids[plies * BOARD_SQUARE_COUNT :]
         del self._values[plies * len(DecisionColumn) :]
+        self._repetitions = self._repetitions.truncated_copy(plies)
 
     def truncated_copy(self, plies: int) -> _EncodedPrefix:
         """Return a private prefix over this one's first ``plies`` timesteps."""
@@ -494,6 +529,7 @@ class _EncodedPrefix:
         copied._plies = self._plies[:plies]
         copied._piece_ids = self._piece_ids[: plies * BOARD_SQUARE_COUNT]
         copied._values = self._values[: plies * len(DecisionColumn)]
+        copied._repetitions = self._repetitions.truncated_copy(plies)
         return copied
 
     def columns(self) -> DecisionColumns:
@@ -658,7 +694,7 @@ def _fresh_root(initial_fen: str) -> tuple[chess.Board, _EncodedPrefix]:
     except ValueError as error:
         raise EncodingError(f"invalid initial position: {error}") from error
     prefix = _EncodedPrefix()
-    prefix.append(_history_context(ply_index=0, board=board, previous_action_id=None))
+    prefix.append(ply_index=0, board=board)
     return board, prefix
 
 
@@ -681,16 +717,10 @@ def _extend(
             move = moves[ply_index]
             if move not in board.legal_moves:
                 raise EncodingError(f"move history is illegal at ply {ply_index}")
-            previous_action_id = _encode_observed_move(move, ply_index)
+            _reject_unencodable_move(move, ply_index)
             board.push(move)
             applied += 1
-            prefix.append(
-                _history_context(
-                    ply_index=ply_index + 1,
-                    board=board,
-                    previous_action_id=previous_action_id,
-                )
-            )
+            prefix.append(ply_index=ply_index + 1, board=board)
     except EncodingError:
         prefix.truncate(len(prefix) - applied)
         for _ in range(applied):
@@ -702,14 +732,14 @@ def _history_context(
     *,
     ply_index: int,
     board: chess.Board,
-    previous_action_id: int | None,
+    repetition_count: int,
 ) -> PlyContext:
     """Encode one timestep of a live game, which carries no timing inputs."""
 
     return _context_for_position(
         ply_index=ply_index,
         board=board,
-        previous_action_id=previous_action_id,
+        repetition_count=repetition_count,
         time_initial_ms=None,
         time_increment_ms=None,
         player_clock_ms=None,
@@ -741,7 +771,7 @@ def _context_for_position(
     *,
     ply_index: int,
     board: chess.Board,
-    previous_action_id: int | None,
+    repetition_count: int,
     time_initial_ms: int | None,
     time_increment_ms: int | None,
     player_clock_ms: int | None,
@@ -749,8 +779,7 @@ def _context_for_position(
 ) -> PlyContext:
     return PlyContext(
         ply_index=ply_index,
-        board=_encode_board(board),
-        previous_action_id=previous_action_id,
+        board=_encode_board(board, repetition_count),
         time_initial_ms=time_initial_ms,
         time_increment_ms=time_increment_ms,
         player_clock_ms=player_clock_ms,
@@ -758,7 +787,7 @@ def _context_for_position(
     )
 
 
-def _encode_board(board: chess.Board) -> BoardEncoding:
+def _encode_board(board: chess.Board, repetition_count: int) -> BoardEncoding:
     piece_ids = _piece_id_bytes(board)
     castling_rights = 0
     if board.has_kingside_castling_rights(chess.WHITE):
@@ -776,6 +805,7 @@ def _encode_board(board: chess.Board) -> BoardEncoding:
         en_passant_square=board.ep_square,
         halfmove_clock=board.halfmove_clock,
         fullmove_number=board.fullmove_number,
+        repetition_count=repetition_count,
     )
 
 
@@ -821,9 +851,15 @@ def _rating_for_color(game: GameEncodingInput, color: chess.Color) -> int | None
     )
 
 
-def _encode_observed_move(move: chess.Move, ply_index: int) -> int:
+def _reject_unencodable_move(move: chess.Move, ply_index: int) -> None:
+    """Refuse a played move the action vocabulary cannot name.
+
+    The model can never produce such a move, so a history containing one is one
+    it could not have played and cannot be asked to continue.
+    """
+
     try:
-        return encode_move(move)
+        encode_move(move)
     except ValueError as error:
         raise EncodingError(
             f"move history at ply {ply_index} is outside the action vocabulary"

@@ -37,7 +37,7 @@ For each game:
 1. Parse the move list.
 2. Reconstruct exact board state before each ply.
 3. Generate legal moves for each position.
-4. Encode the previous move.
+4. Count how often each position has already occurred in the game.
 5. Select the side-to-move player's optional normalized rating as the decision
    target rating for that ply, without adding it to historical timestep inputs.
 6. Encode dynamic clock features when available, plus phase features.
@@ -81,9 +81,9 @@ to build a perfect chess taxonomy.
 ## Sequence Training
 
 Training should use full game sequences, or fixed-length chunks of game
-sequences, whenever practical. The transformer should receive one timestep per
-ply and attend causally so every ply prediction can be trained in a single
-parallel forward pass while still preventing access to future moves.
+sequences, whenever practical. Every ply of a game is a supervised decision, so
+a whole game trains in a single parallel forward pass; nothing travels between
+those decisions, and each reads only the boards stacked behind its own.
 
 The loader supports full games and contiguous chunks, groups sequences into
 configurable length buckets, pads only within the current batch, and emits
@@ -110,10 +110,10 @@ objective. The shared masked action objective lives in `anthro_chess.training`;
 deterministic structural and tiny-overfit checks exercise those same model and
 loss APIs.
 
-Causality is not a property of the data and no longer travels as one. The
-batch once carried a mask hiding each timestep's own future; the model now
-states causality as a flag on the attention call, so no such tensor is built
-per batch, copied to the device, or held as a buffer anywhere.
+Nothing hides a timestep's future from it, because nothing reaches forward:
+a decision reads its own board and a fixed number behind it. Right-aligned
+padding is what keeps that window real, since every column before a real one is
+itself real.
 
 Legal actions are packed only where something reads them, which is policy
 scoring and the construction-time legality check, so a training batch carries
@@ -230,9 +230,9 @@ vocabulary and its cost follows padded positions rather than model width.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input
-embedding. It is also compatible with teacher forcing: previous moves are known
-from the human game record during training, while the model predicts the current
-move and optional move time at each timestep.
+embedding. It is also compatible with teacher forcing: the boards behind each
+ply are known from the human game record during training, while the model
+predicts the current move and optional move time at each timestep.
 
 When timing is enabled, the time target should be trained conditionally on the
 observed human action for that ply:
@@ -309,9 +309,9 @@ Use this progression when establishing the first training loop:
    should be finite and plausible for the output space, padding should
    contribute no loss, and perturbing future timesteps should not affect
    earlier predictions.
-4. Overfit a fixed tiny sample. Begin with single-timestep examples when useful
-   for isolation, then repeat with short causal sequences so the attention and
-   sequence-loss path is exercised.
+4. Overfit a fixed tiny sample. Begin with single-decision examples when useful
+   for isolation, then repeat with a short game so the stacked history and the
+   sequence-loss path are exercised.
 5. Evaluate on frozen held-out examples against uniform-over-legal and other
    appropriate simple move-selection baselines. Memorizing a tiny sample is
    necessary evidence that the optimization path works, but it is not evidence
@@ -768,16 +768,14 @@ logging volume.
 When it is the bot's turn:
 
 1. Update exact game state from all moves so far.
-2. Build target-free full-history features through the shared model-facing
-   context builder, ending with the current timestep:
-   - board before the bot move;
-   - previous move;
+2. Build target-free history features through the shared model-facing context
+   builder, ending with the current timestep:
+   - board before the bot move, and the boards behind it;
+   - how often each of those has already occurred;
    - current clocks and previous move times when timing is enabled.
-3. Run the rating-neutral causal history encoder, then condition the current
-   decision feature on Anthro's one configured target rating. Add a causal KV
-   cache later only if measured runtime performance requires it. `anthro eval
-   inference` is the measurement that answers that, and it reports latency
-   against history depth, which is where recomputation shows up.
+3. Run the model on that one decision, carrying Anthro's configured target
+   rating into the square tokens it reads. `anthro eval inference` reports
+   latency against history depth, which a bounded window should leave flat.
 4. Mask illegal moves while preserving the enabled terminal actions the
    position allows.
 5. Sample a valid action using temperature.

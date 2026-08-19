@@ -19,7 +19,7 @@ from anthro_chess.chess import (
     RESIGNATION_ACTION_ID,
     encode_move,
 )
-from anthro_chess.data import DecisionContext
+from anthro_chess.data import DecisionContext, DecisionHistory
 from anthro_chess.evaluation.games import (
     DecisionRequest,
     ExternalEnginePlayer,
@@ -77,11 +77,11 @@ class DeadlineRunner:
 
     Games in one wave otherwise run to the same ply limit and end together,
     which is the case that would hide a scheduler that mishandles a finished
-    game. Keying the deadline on the game's opening move gives each game in a
-    wave its own ending ply.
+    game. Keying the deadline on the board the opening move produced gives each
+    game in a wave its own ending ply.
     """
 
-    deadlines: dict[int, int]
+    deadlines: dict[bytes, int]
     batch_sizes: list[int] = field(default_factory=list)
 
     def predict(self, context: DecisionContext) -> torch.Tensor:
@@ -96,8 +96,7 @@ class DeadlineRunner:
         return tuple(self._logits(context) for context in contexts)
 
     def _logits(self, context: DecisionContext) -> torch.Tensor:
-        opening = context.plies[1].previous_action_id
-        assert opening is not None
+        opening = context.plies[1].board.piece_ids
         if len(context.plies) >= self.deadlines[opening]:
             resigning = torch.zeros(ACTION_VOCABULARY_SIZE)
             resigning[RESIGNATION_ACTION_ID] = 10.0
@@ -237,9 +236,16 @@ def test_each_player_configuration_is_asked_for_its_own_seats_only() -> None:
     assert set(black.batch_sizes) == {4}
 
 
+def _board_after(move: str) -> bytes:
+    """Return the encoded board one opening move produces, as a deadline key."""
+
+    history = DecisionHistory(moves=(chess.Move.from_uci(move),))
+    return history.context(target_rating=None).plies[-1].board.piece_ids
+
+
 def test_games_that_end_mid_wave_leave_the_rest_of_the_wave_alone() -> None:
     deadlines = {
-        encode_move(chess.Move.from_uci(move)): plies
+        _board_after(move): plies
         for move, plies in (("e2e4", 3), ("d2d4", 5), ("c2c4", 9), ("g1f3", 9))
     }
     batched_runner = DeadlineRunner(deadlines)

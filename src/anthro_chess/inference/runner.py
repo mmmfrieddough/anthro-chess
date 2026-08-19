@@ -1,4 +1,4 @@
-"""Checkpoint-backed full-history model execution."""
+"""Checkpoint-backed model execution for one decision at a time."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from anthro_chess.inference.selection import (
     ResolvedModelSelection,
     resolve_model_selection,
 )
-from anthro_chess.models import CausalMoveModel, MoveModelBatch, MoveModelConfig
-from anthro_chess.models.causal import model_identity
+from anthro_chess.models import MoveModel, MoveModelBatch, MoveModelConfig
+from anthro_chess.models.move_model import model_identity
 from anthro_chess.training.checkpoints import (
     CheckpointError,
     load_training_checkpoint,
@@ -116,11 +116,11 @@ def detect_inference_device_capabilities() -> InferenceDeviceCapabilities:
 
 
 class CheckpointModelRunner:
-    """Run one compatible action model with full trajectory recomputation."""
+    """Run one compatible action model over a bounded window of boards."""
 
     def __init__(
         self,
-        model: CausalMoveModel,
+        model: MoveModel,
         *,
         selection: ResolvedModelSelection,
         device: torch.device,
@@ -184,7 +184,7 @@ class CheckpointModelRunner:
             model_config = _validate_artifact_contract(checkpoint, run_record)
             training_sha256 = training_identity_sha256(checkpoint["compatibility"])
             device = resolve_inference_device(config.device, capabilities=capabilities)
-            model = CausalMoveModel(model_config)
+            model = MoveModel(model_config)
             model.load_state_dict(checkpoint["model_state"], strict=True)
             model.to(device=device, dtype=torch.float32)
             model.eval()

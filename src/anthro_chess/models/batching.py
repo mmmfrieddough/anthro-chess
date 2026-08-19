@@ -14,11 +14,10 @@ from anthro_chess.chess import ACTION_VOCABULARY_SIZE
 from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EN_PASSANT_TOKEN_COUNT,
-    PREVIOUS_ACTION_TOKEN_COUNT,
+    REPETITION_STATE_COUNT,
     DecisionColumn,
     DecisionContext,
     SequenceBatch,
-    previous_action_token,
 )
 from anthro_chess.data.loading import LegalActionTensor
 
@@ -49,7 +48,7 @@ class MoveModelInputs:
     en_passant_token: Tensor
     halfmove_clock: Tensor
     fullmove_number: Tensor
-    previous_action_token: Tensor
+    repetition_count: Tensor
     target_rating: OptionalTensor
 
 
@@ -80,20 +79,6 @@ class MoveModelBatch:
     game_ids: Tensor
     ply_indices: Tensor
     chunk_start_plies: tuple[int, ...]
-
-    @property
-    def position_bound(self) -> int:
-        """Return one past the furthest ply index this batch can hold.
-
-        A row starts at its chunk's first ply and runs no further than the
-        padded width, so this is the batch's own statement of how far its
-        indices reach. :meth:`validate` holds ``ply_indices`` to it and the
-        model refuses a batch whose reach passes the context length it
-        declares. Between them a forward pass indexes a fixed position table in
-        range, having read nothing back from the device.
-        """
-
-        return _position_bound(self)
 
     @classmethod
     def from_sequence_batch(
@@ -133,7 +118,7 @@ class MoveModelBatch:
                 en_passant_token=required(inputs.en_passant_token),
                 halfmove_clock=required(inputs.halfmove_clock),
                 fullmove_number=required(inputs.fullmove_number),
-                previous_action_token=required(inputs.previous_action_token),
+                repetition_count=required(inputs.repetition_count),
                 target_rating=optional(
                     inputs.target_rating.values,
                     inputs.target_rating.present,
@@ -169,17 +154,14 @@ class MoveModelBatch:
         """Tensorize several pending decisions into one padded batch.
 
         Games in flight are at different plies, so their histories cannot be
-        stacked. Rows are padded to the longest history and the padded
-        timesteps are marked absent in the attention mask, which is what the
-        model reads to exclude them as attention keys.
+        stacked. Rows are padded to the longest history, and a caller reads each
+        decision at its own length rather than at a shared last column.
 
-        Padding goes after the history rather than before it. Every real ply
-        then keeps the index it would have had on its own, and since the
-        position encoding reads that index and the model lets a timestep attend
-        only to earlier ones, the row's last real timestep sees exactly the
-        inputs the same history would present alone. A caller reads each
-        decision at its own history length rather than at a shared last
-        column.
+        Padding goes after the history rather than before it, which is what
+        keeps the boards behind a decision real: it reaches at or before its own
+        column, and every column before a real one is itself real. So the row's
+        last real timestep sees exactly what the same history would present
+        alone.
 
         Each history arrives as the buffers it accumulated while it was played,
         so a row is a memory copy rather than a walk of the plies behind it and
@@ -196,10 +178,6 @@ class MoveModelBatch:
 
         boards = np.zeros((count, width, BOARD_SQUARE_COUNT), dtype=np.uint8)
         packed = np.zeros((len(DecisionColumn), count, width), dtype=np.int64)
-        # A padded timestep has no previous action, so it takes the row that
-        # names absence rather than the move a zero fill would point at. Every
-        # other column's absent value is already zero.
-        packed[DecisionColumn.PREVIOUS_ACTION_TOKEN] = previous_action_token(None)
         attention = np.zeros((count, width), dtype=np.bool_)
         ratings = np.zeros((count, width), dtype=np.int64)
         rated = np.zeros((count, width), dtype=np.bool_)
@@ -214,14 +192,10 @@ class MoveModelBatch:
                 .T
             )
             attention[index, :length] = True
-            # The trunk reads the rating from ply zero, so a row rated only in
-            # its last column would present a history no training game contains
-            # -- an unrated trajectory with one rated move on the end -- and the
-            # served policy would drift from the trained one for that reason
-            # alone. Rating every real timestep says the game so far was played
-            # at the requested strength, which is what a caller asking for an
-            # opponent of that strength means; decision 0066 records what that
-            # assumes about the opponent.
+            # Every column of a served row is a decision by the player who
+            # asked, so every one of them carries that player's rating. A
+            # decision reads only its own column, so this matters to whichever
+            # column a caller names rather than to the row.
             target_rating = contexts[index].target_rating
             if target_rating is not None:
                 ratings[index, :length] = target_rating
@@ -246,7 +220,7 @@ class MoveModelBatch:
                 en_passant_token=column(DecisionColumn.EN_PASSANT_TOKEN),
                 halfmove_clock=column(DecisionColumn.HALFMOVE_CLOCK),
                 fullmove_number=column(DecisionColumn.FULLMOVE_NUMBER),
-                previous_action_token=column(DecisionColumn.PREVIOUS_ACTION_TOKEN),
+                repetition_count=column(DecisionColumn.REPETITION_COUNT),
                 target_rating=OptionalTensor(
                     transferred(ratings),
                     transferred(rated),
@@ -275,12 +249,6 @@ class MoveModelBatch:
         """Hold a batch assembled any other way to what a factory guarantees."""
 
         _reject_invalid_batch(self)
-
-
-def _position_bound(batch: _Batch) -> int:
-    """Return one past the furthest ply index a batch's rows can hold."""
-
-    return max(batch.chunk_start_plies) + batch.action_targets.shape[1]
 
 
 def _read_together(columns: Sequence[Any]) -> list[Any]:
@@ -330,7 +298,7 @@ def _reject_invalid_batch(batch: _Batch) -> None:
         batch.inputs.en_passant_token,
         batch.inputs.halfmove_clock,
         batch.inputs.fullmove_number,
-        batch.inputs.previous_action_token,
+        batch.inputs.repetition_count,
     )
     if any(value.shape != expected_shape for value in aligned):
         raise ValueError("model inputs, targets, and masks must align")
@@ -361,16 +329,22 @@ def _reject_invalid_values(batch: _Batch) -> None:
     """
 
     en_passant = batch.inputs.en_passant_token
-    previous_actions = batch.inputs.previous_action_token
+    repetitions = batch.inputs.repetition_count
     ratings = batch.inputs.target_rating
-    # A negative index would gather real position features from the wrong
-    # end of the table rather than fail, so the lower bound is checked even
-    # though no factory can produce one.
-    bound = _position_bound(batch)
+    # The model reads each decision at the column its ply index names, offset
+    # from the row's first, so an index reaching past the row's own width gives
+    # a gather no bound of its own: a crash inside the forward pass on the host,
+    # and a device-side assert that kills a run on an accelerator.
+    width = batch.action_targets.shape[1]
+    columns = batch.ply_indices - batch.ply_indices[:, :1]
     checks: tuple[tuple[str, Any], ...] = (
         (
-            "ply indices must lie inside the plies the batch declares",
-            (batch.ply_indices.min() < 0) | (batch.ply_indices.max() >= bound),
+            "ply indices must be nonnegative",
+            batch.ply_indices.min() < 0,
+        ),
+        (
+            "ply indices must stay inside the width of their own row",
+            columns.max() >= width,
         ),
         (
             "action loss cannot include padded timesteps",
@@ -399,9 +373,8 @@ def _reject_invalid_values(batch: _Batch) -> None:
             (en_passant.min() < 0) | (en_passant.max() >= EN_PASSANT_TOKEN_COUNT),
         ),
         (
-            "previous action is outside the action vocabulary",
-            (previous_actions.min() < 0)
-            | (previous_actions.max() >= PREVIOUS_ACTION_TOKEN_COUNT),
+            "repetition counts are outside the board encoding",
+            (repetitions.min() < 0) | (repetitions.max() >= REPETITION_STATE_COUNT),
         ),
         (
             "active action target is outside the action vocabulary",

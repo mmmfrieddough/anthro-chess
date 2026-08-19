@@ -29,6 +29,9 @@ The architecture the vehicle freezes is designated by
 `0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`, which landed
 first for the reason this record names below: a fundamental rethink after the
 freeze leaves the vehicle a base nobody wants to compare against.
+`0070-one-decision-per-pass-and-history-in-the-token-depth.md` is the rest of
+that rethink and lands ahead of the freeze for the same reason, and it is what
+settles the layer budget the frozen configuration carries.
 
 ## Context
 

@@ -5,15 +5,15 @@ from anthro_chess.models.batching import (
     MoveModelInputs,
     OptionalTensor,
 )
-from anthro_chess.models.causal import (
-    CausalMoveModel,
+from anthro_chess.models.config import MoveModelConfig
+from anthro_chess.models.move_model import (
+    MoveModel,
     RatingEmbedding,
     SourceDestinationHead,
 )
-from anthro_chess.models.config import MoveModelConfig
 
 __all__ = [
-    "CausalMoveModel",
+    "MoveModel",
     "MoveModelBatch",
     "MoveModelConfig",
     "MoveModelInputs",

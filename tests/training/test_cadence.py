@@ -20,7 +20,7 @@ from anthro_chess.evaluation.results import (
     ResultsStore,
     series_fingerprint,
 )
-from anthro_chess.models import CausalMoveModel
+from anthro_chess.models import MoveModel
 from anthro_chess.training.cadence import (
     HEALTH_KIND,
     PREVIEW_KIND,
@@ -77,9 +77,9 @@ def _corpus(
     )
 
 
-def _model() -> CausalMoveModel:
+def _model() -> MoveModel:
     torch.manual_seed(5)
-    return CausalMoveModel(tiny_model_config())
+    return MoveModel(tiny_model_config())
 
 
 def _evaluation(

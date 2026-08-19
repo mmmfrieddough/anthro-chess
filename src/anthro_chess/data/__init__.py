@@ -19,7 +19,7 @@ from anthro_chess.data.encoding import (
     ENCODING_NAME,
     ENCODING_SCHEMA_SHA256,
     ENCODING_VERSION,
-    PREVIOUS_ACTION_TOKEN_COUNT,
+    REPETITION_STATE_COUNT,
     BoardEncoding,
     DecisionColumn,
     DecisionColumns,
@@ -33,7 +33,6 @@ from anthro_chess.data.encoding import (
     en_passant_token,
     encode_game,
     encoding_identity,
-    previous_action_token,
 )
 from anthro_chess.data.loading import (
     LOADER_STATE_VERSION,
@@ -50,7 +49,6 @@ from anthro_chess.data.loading import (
     SequenceLoaderState,
     collate_sequences,
     length_bucketed_batches,
-    maximum_position_bound,
 )
 from anthro_chess.data.prepare import (
     AcquisitionResult,
@@ -93,7 +91,7 @@ __all__ = [
     "ENCODING_SCHEMA_SHA256",
     "ENCODING_VERSION",
     "LOADER_STATE_VERSION",
-    "PREVIOUS_ACTION_TOKEN_COUNT",
+    "REPETITION_STATE_COUNT",
     "SELECTION_SPEC_VERSION",
     "STREAMING_IDENTITY_VERSION",
     "STREAMING_LOADER_NAME",
@@ -145,10 +143,8 @@ __all__ = [
     "en_passant_token",
     "encode_game",
     "encoding_identity",
-    "maximum_position_bound",
     "prepare_archives",
     "prepare_pgn",
-    "previous_action_token",
     "rating_namespace_from_event",
     "UNCLASSIFIED_SPEED",
     "speed_from_clock_ms",
