@@ -170,7 +170,7 @@ def test_a_decision_and_its_mirror_image_score_the_same_chess(position: str) -> 
     position and answering about the other.
 
     The colour input is the one thing that genuinely differs between them, so it
-    is held inert here; the test above covers that it reaches the model at all.
+    is held inert here.
     """
 
     torch.manual_seed(67)
@@ -243,7 +243,7 @@ def test_a_decision_reads_exactly_the_boards_its_stack_declares(
     history_positions: int,
     reaches: bool,
 ) -> None:
-    """History is the token depth now, so what it reaches is what it holds."""
+    """History is the token depth, so what it reaches is what it holds."""
 
     torch.manual_seed(53)
     model = MoveModel(_tiny_config(history_positions=history_positions)).eval()
@@ -820,7 +820,7 @@ def _tiny_config(
 
     ``history_dropout`` is off by default so that a test comparing two forward
     passes is comparing the model rather than two draws of the training-time
-    history truncation, which has a test of its own below.
+    history truncation.
     """
 
     return MoveModelConfig(

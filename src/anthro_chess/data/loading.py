@@ -109,9 +109,8 @@ class OptionalIntBatch:
 class SequenceInputs:
     """Framework-neutral numeric model inputs shaped batch by sequence.
 
-    ``en_passant_token`` is the embedding row
-    :mod:`anthro_chess.data.encoding` assigns, absence included, rather than a
-    value beside a presence flag.
+    ``en_passant_token`` is the embedding row :mod:`anthro_chess.data.encoding`
+    assigns, absence included, rather than a value beside a presence flag.
     """
 
     piece_ids: np.ndarray

@@ -96,8 +96,8 @@ class SquareTokenEncoder(nn.Module):
 
     Each board is oriented to whoever was to move when it was current, so the
     slots alternate between the two players' frames rather than being rotated
-    into the decision's. That is the arrangement Chessformer trains, and it is
-    consistent: an even slot is always the mover's own view.
+    into the decision's. A slot reaching before the row repeats a board and
+    breaks that alternation, which is what a game's opening plies present too.
     """
 
     mirrored_squares: Tensor
@@ -252,11 +252,8 @@ class GeometricAttentionBias(nn.Module):
     templates from it, so the geometry each head attends along is chosen per
     position.
 
-    The template bank belongs to the whole model rather than to this layer, so
-    every layer draws on one learned vocabulary of square relations and only the
-    mixing is its own. That is what Chessformer does, and at any width this
-    project will run it is the difference between the bank costing once and
-    costing once per layer.
+    The bank of templates is the model's and is passed in, so every layer mixes
+    one shared vocabulary of square relations and only the mixing is its own.
     """
 
     def __init__(self, config: MoveModelConfig) -> None:

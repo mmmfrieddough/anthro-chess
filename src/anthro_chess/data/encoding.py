@@ -311,7 +311,11 @@ class RepetitionCounter:
         self._counts: Counter[Hashable] = Counter()
 
     def observe(self, board: chess.Board) -> int:
-        """Record one position and return how often it had already occurred."""
+        """Record one position and return how often it had already occurred.
+
+        Capped at the state a threefold claim occupies, unlike
+        :attr:`maximum_occurrences`, which counts as far as a game goes.
+        """
 
         # The library's own repetition key, which is the one that decides a
         # claim: same pieces, same side to move, same castling rights, and the
@@ -494,9 +498,8 @@ class _EncodedPrefix:
     def append(self, *, ply_index: int, board: chess.Board) -> None:
         """Encode one further timestep into both forms.
 
-        The position is encoded here rather than handed in already encoded,
-        because how often it has repeated is a fact about the history this
-        holds rather than about the board.
+        Repetition is a fact about the history this holds rather than about the
+        board, so the position is encoded here.
         """
 
         ply = _history_context(

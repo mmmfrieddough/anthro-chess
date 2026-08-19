@@ -14,8 +14,8 @@ class MoveModelConfig(ConfigModel):
     model_dim: int = Field(default=64, ge=2)
     attention_heads: int = Field(default=2, ge=1)
     #: Spatial layers over the 64 square tokens of one decision. Depth is held
-    #: fixed and width is what grows, which is what every published
-    #: Chessformer size runs; `docs/scaling.md` owns the rule.
+    #: fixed and width is what grows, which is what every published Chessformer
+    #: size runs.
     layers: int = Field(default=8, ge=1)
     feedforward_dim: int = Field(default=128, ge=1)
     #: Boards stacked into each square token's depth, the decision's own
