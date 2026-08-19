@@ -22,7 +22,6 @@ from anthro_chess.evaluation.policy import (
     top_action,
     trajectory_columns,
     treatment_move_losses,
-    treatment_rows,
 )
 from anthro_chess.models import MoveModelBatch
 
@@ -214,8 +213,7 @@ def test_a_treatment_reads_the_same_move_loss_as_the_scored_pass(
     logits = torch.linspace(-2.0, 2.0, math.prod(shape)).reshape(shape)
     active = active_batch(logits, batch)
 
-    rows = treatment_rows(active, device=logits.device)
-    losses = treatment_move_losses(logits, batch, rows)
+    losses = treatment_move_losses(logits, batch, active)
 
     assert losses == pytest.approx(
         [position.move_nll for position in score_positions(active)]
@@ -243,9 +241,7 @@ def test_the_trajectory_columns_compare_the_two_anchor_policies(
     low_logits = torch.linspace(-1.0, 3.0, math.prod(shape)).reshape(shape)
     high_logits = torch.linspace(-3.0, 1.5, math.prod(shape)).reshape(shape)
     active = active_batch(true_logits, batch)
-    rows = treatment_rows(active, device=true_logits.device)
-
-    columns = trajectory_columns(true_logits, low_logits, high_logits, batch, rows)
+    columns = trajectory_columns(true_logits, low_logits, high_logits, batch, active)
 
     for offset, legal_actions in enumerate(active.legal_rows):
         actions = list(legal_actions)

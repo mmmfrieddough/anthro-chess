@@ -166,6 +166,9 @@ class ActiveBatch:
 
     logits: Tensor
     legal_mask: Tensor
+    #: Each enabled row's target, as a column to gather through. Built once
+    #: because every pass over a batch gathers through the same one.
+    target_index: Tensor
     legal_rows: tuple[tuple[int, ...], ...]
     targets: tuple[int, ...]
     game_ids: tuple[int, ...]
@@ -180,8 +183,7 @@ def score_positions(active: ActiveBatch) -> tuple[PositionPolicy, ...]:
         return ()
 
     log_probabilities = torch.log_softmax(active.logits, dim=-1)
-    target_index = torch.tensor(active.targets, dtype=torch.long).unsqueeze(1)
-    move_nll = -log_probabilities.gather(1, target_index).squeeze(1)
+    move_nll = -log_probabilities.gather(1, active.target_index).squeeze(1)
 
     masked = active.logits.masked_fill(~active.legal_mask, -torch.inf)
     log_legal_mass = torch.logsumexp(masked, dim=-1) - torch.logsumexp(
@@ -201,18 +203,33 @@ def score_positions(active: ActiveBatch) -> tuple[PositionPolicy, ...]:
     )
     legal_margin = maximum_legal - maximum_illegal
 
-    target_logits = active.logits.gather(1, target_index)
+    target_logits = active.logits.gather(1, active.target_index)
     better = (active.logits > target_logits) & active.legal_mask
     target_rank = better.sum(dim=-1) + 1
 
-    move_nll_values = move_nll.tolist()
-    legal_move_nll_values = legal_move_nll.tolist()
-    mask_penalty_values = (-log_legal_mass).tolist()
-    legal_mass_values = legal_mass.tolist()
-    legal_margin_values = legal_margin.tolist()
-    top_illegal_values = top_illegal_fraction.tolist()
-    top1_illegal_values = top1_illegal.tolist()
-    target_rank_values = target_rank.tolist()
+    # One read rather than eight: every column below is the same length and
+    # comes off the same pass, and a separate read of each is a separate
+    # round trip to the device the reduction ran on.
+    (
+        move_nll_values,
+        legal_move_nll_values,
+        mask_penalty_values,
+        legal_mass_values,
+        legal_margin_values,
+        top_illegal_values,
+    ) = torch.stack(
+        (
+            move_nll,
+            legal_move_nll,
+            -log_legal_mass,
+            legal_mass,
+            legal_margin,
+            top_illegal_fraction,
+        )
+    ).tolist()
+    top1_illegal_values, target_rank_values = torch.stack(
+        (top1_illegal.to(dtype=torch.long), target_rank)
+    ).tolist()
 
     return tuple(
         PositionPolicy(
@@ -280,16 +297,19 @@ def score_action_sets(
     if not named:
         return ()
 
-    row_index = torch.tensor(rows, dtype=torch.long)
-    member_index = torch.tensor(members, dtype=torch.long)
-    owner_index = torch.tensor(owners, dtype=torch.long)
-    mass = torch.zeros(len(named), dtype=probabilities.dtype).index_add_(
+    device = active.logits.device
+    row_index = torch.tensor(rows, dtype=torch.long, device=device)
+    member_index = torch.tensor(members, dtype=torch.long, device=device)
+    owner_index = torch.tensor(owners, dtype=torch.long, device=device)
+    mass = torch.zeros(len(named), dtype=probabilities.dtype, device=device).index_add_(
         0, owner_index, probabilities[row_index, member_index]
     )
-    best = torch.full((len(named),), -torch.inf, dtype=masked.dtype).scatter_reduce_(
-        0, owner_index, masked[row_index, member_index], reduce="amax"
+    best = torch.full(
+        (len(named),), -torch.inf, dtype=masked.dtype, device=device
+    ).scatter_reduce_(0, owner_index, masked[row_index, member_index], reduce="amax")
+    set_rows = torch.tensor(
+        [offset for offset, _, _ in named], dtype=torch.long, device=device
     )
-    set_rows = torch.tensor([offset for offset, _, _ in named], dtype=torch.long)
     ranks = (masked[set_rows] > best.unsqueeze(1)).sum(dim=-1) + 1
 
     mass_values = mass.tolist()
@@ -320,39 +340,21 @@ def score_terminal_actions(active: ActiveBatch) -> tuple[TerminalActionPolicy, .
         return ()
 
     probabilities = torch.softmax(active.logits, dim=-1)
-    scored: list[TerminalActionPolicy] = []
-    for offset, legal_actions in enumerate(active.legal_rows):
-        legal = frozenset(legal_actions)
-        scored.append(
-            TerminalActionPolicy(
-                game_id=active.game_ids[offset],
-                ply_index=active.ply_indices[offset],
-                target_action_id=active.targets[offset],
-                resignation_mass=float(
-                    probabilities[offset, RESIGNATION_ACTION_ID].item()
-                ),
-                draw_claim_mass=(
-                    float(probabilities[offset, DRAW_CLAIM_ACTION_ID].item())
-                    if DRAW_CLAIM_ACTION_ID in legal
-                    else None
-                ),
-            )
+    resignation, draw_claim = probabilities[
+        :, [RESIGNATION_ACTION_ID, DRAW_CLAIM_ACTION_ID]
+    ].T.tolist()
+    return tuple(
+        TerminalActionPolicy(
+            game_id=active.game_ids[offset],
+            ply_index=active.ply_indices[offset],
+            target_action_id=active.targets[offset],
+            resignation_mass=resignation[offset],
+            draw_claim_mass=(
+                draw_claim[offset] if DRAW_CLAIM_ACTION_ID in legal_actions else None
+            ),
         )
-    return tuple(scored)
-
-
-@dataclass(frozen=True, eq=False)
-class TreatmentRows:
-    """One batch's enabled rows, held on the device for repeated passes.
-
-    Which rows are enabled, what they target, and which actions are legal there
-    are properties of the batch rather than of a conditioning treatment, so
-    every pass over one batch reads these two tensors rather than rebuilding
-    them.
-    """
-
-    legal_mask: Tensor
-    targets: Tensor
+        for offset, legal_actions in enumerate(active.legal_rows)
+    )
 
 
 @dataclass(frozen=True)
@@ -372,19 +374,10 @@ class TrajectoryColumns:
     anchor_agreement: tuple[bool, ...]
 
 
-def treatment_rows(active: ActiveBatch, *, device: torch.device) -> TreatmentRows:
-    """Return the device-side rows every conditioning treatment reads."""
-
-    return TreatmentRows(
-        legal_mask=active.legal_mask.to(device=device),
-        targets=torch.tensor(active.targets, dtype=torch.long, device=device),
-    )
-
-
 def treatment_move_losses(
     logits: Tensor,
     batch: MoveModelBatch,
-    rows: TreatmentRows,
+    active: ActiveBatch,
 ) -> tuple[float, ...]:
     """Return each enabled position's move loss under one treatment.
 
@@ -396,9 +389,7 @@ def treatment_move_losses(
 
     enabled = _enabled_logits(logits, batch)
     losses = (
-        -torch.log_softmax(enabled, dim=-1)
-        .gather(1, rows.targets.unsqueeze(1))
-        .squeeze(1)
+        -torch.log_softmax(enabled, dim=-1).gather(1, active.target_index).squeeze(1)
     ).cpu()
     if not torch.all(torch.isfinite(losses)):
         raise ValueError("a conditioning treatment produced a non-finite move loss")
@@ -410,7 +401,7 @@ def trajectory_columns(
     low_logits: Tensor,
     high_logits: Tensor,
     batch: MoveModelBatch,
-    rows: TreatmentRows,
+    active: ActiveBatch,
 ) -> TrajectoryColumns:
     """Compare every position's policy at two anchor conditioning ratings.
 
@@ -418,21 +409,22 @@ def trajectory_columns(
     are taken on the device and only the four numbers per position come back.
     """
 
-    true = _legal_log_policy(true_logits, batch, rows)
-    low = _legal_log_policy(low_logits, batch, rows)
-    high = _legal_log_policy(high_logits, batch, rows)
-    target = rows.targets.unsqueeze(1)
+    true = _legal_log_policy(true_logits, batch, active)
+    low = _legal_log_policy(low_logits, batch, active)
+    high = _legal_log_policy(high_logits, batch, active)
+    strength, alignment, divergence = torch.stack(
+        (
+            (high - low).gather(1, active.target_index).squeeze(1),
+            _divergence(true, low, active) - _divergence(true, high, active),
+            _divergence(low, high, active),
+        )
+    ).tolist()
+    agreement = (torch.argmax(low, dim=-1) == torch.argmax(high, dim=-1)).tolist()
     return TrajectoryColumns(
-        strength_signal=tuple(
-            (high.gather(1, target) - low.gather(1, target)).squeeze(1).tolist()
-        ),
-        alignment=tuple(
-            (_divergence(true, low, rows) - _divergence(true, high, rows)).tolist()
-        ),
-        anchor_divergence=tuple(_divergence(low, high, rows).tolist()),
-        anchor_agreement=tuple(
-            (torch.argmax(low, dim=-1) == torch.argmax(high, dim=-1)).tolist()
-        ),
+        strength_signal=tuple(strength),
+        alignment=tuple(alignment),
+        anchor_divergence=tuple(divergence),
+        anchor_agreement=tuple(agreement),
     )
 
 
@@ -445,18 +437,20 @@ def _enabled_logits(logits: Tensor, batch: MoveModelBatch) -> Tensor:
 def _legal_log_policy(
     logits: Tensor,
     batch: MoveModelBatch,
-    rows: TreatmentRows,
+    active: ActiveBatch,
 ) -> Tensor:
     """Return each position's log policy over its own legal actions."""
 
     enabled = _enabled_logits(logits, batch)
-    return torch.log_softmax(enabled.masked_fill(~rows.legal_mask, -torch.inf), dim=-1)
+    return torch.log_softmax(
+        enabled.masked_fill(~active.legal_mask, -torch.inf), dim=-1
+    )
 
 
 def _divergence(
     reference: Tensor,
     candidate: Tensor,
-    rows: TreatmentRows,
+    active: ActiveBatch,
 ) -> Tensor:
     """Return each position's Kullback-Leibler divergence between two policies.
 
@@ -466,7 +460,7 @@ def _divergence(
     """
 
     terms = torch.exp(reference) * (reference - candidate)
-    return torch.where(rows.legal_mask, terms, 0.0).sum(dim=-1)
+    return torch.where(active.legal_mask, terms, 0.0).sum(dim=-1)
 
 
 def top_action(log_probabilities: Tensor, legal_actions: Sequence[int]) -> int:
@@ -562,6 +556,9 @@ def active_batch(logits: Tensor, batch: MoveModelBatch) -> ActiveBatch:
     return ActiveBatch(
         logits=active_logits,
         legal_mask=_legal_mask(legal_rows, active_logits),
+        target_index=torch.tensor(
+            targets, dtype=torch.long, device=active_logits.device
+        ).unsqueeze(1),
         legal_rows=tuple(legal_rows),
         targets=targets,
         game_ids=tuple(game_ids),
@@ -580,25 +577,35 @@ def _legal_mask(legal_rows: Sequence[Sequence[int]], active_logits: Tensor) -> T
     kernels than on the mask itself, about four times more at that shape.
     """
 
+    device = active_logits.device
     legal_mask = torch.zeros_like(active_logits, dtype=torch.bool)
     rows = torch.repeat_interleave(
-        torch.arange(len(legal_rows), dtype=torch.long),
-        torch.tensor([len(row) for row in legal_rows], dtype=torch.long),
+        torch.arange(len(legal_rows), dtype=torch.long, device=device),
+        torch.tensor([len(row) for row in legal_rows], dtype=torch.long, device=device),
     )
     columns = torch.tensor(
-        [action for row in legal_rows for action in row], dtype=torch.long
+        [action for row in legal_rows for action in row],
+        dtype=torch.long,
+        device=device,
     )
     legal_mask[rows, columns] = True
     return legal_mask
 
 
 def _active_logits(logits: Tensor, batch: MoveModelBatch) -> Tensor:
-    """Return the enabled rows on the host, checked on the copy being made."""
+    """Return the enabled rows in float64, on the device they came off.
 
-    active_logits = (
-        logits[batch.action_loss_mask].detach().cpu().to(dtype=torch.float64)
-    )
-    if not torch.all(torch.isfinite(active_logits)):
+    Every quantity read off them is a reduction over the action vocabulary, so
+    they are reduced where they already are and only the results come back. A
+    batch of held-out positions carries about two thousand logits each and
+    yields ten numbers, so moving the vocabulary instead is a thousandfold of
+    the traffic.
+    """
+
+    active_logits = logits[batch.action_loss_mask].detach().to(dtype=torch.float64)
+    # One read for the whole batch, rather than the per-position reads the
+    # quantities below are reduced on the device to avoid.
+    if not bool(torch.all(torch.isfinite(active_logits)).cpu()):
         raise ValueError("enabled action logits must all be finite")
     return active_logits
 

@@ -82,15 +82,14 @@ from anthro_chess.evaluation.opening_frequency import (
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
+    ActiveBatch,
     PositionPolicy,
     TrajectoryColumns,
-    TreatmentRows,
     active_batch,
     score_action_sets,
     score_positions,
     trajectory_columns,
     treatment_move_losses,
-    treatment_rows,
 )
 from anthro_chess.evaluation.pool import (
     EvaluationPoolError,
@@ -452,7 +451,6 @@ class _BatchSession:
         if self._shuffled is None:
             return _BatchScores(positions, adjudicated, {}, {}, None)
 
-        rows = treatment_rows(active, device=self._runner.device)
         corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
@@ -465,7 +463,7 @@ class _BatchSession:
         ):
             corrupted[conditioning.name] = (
                 conditioning,
-                self._treatment(batch, conditioning, rows),
+                self._treatment(batch, conditioning, active),
             )
 
         # The anchors' logits are held while the trajectory reads them, because
@@ -478,15 +476,15 @@ class _BatchSession:
             anchored = self._condition(batch, _constant_conditioning(rating))
             anchor_logits = self._runner.action_logits(anchored)
             anchors.append(anchor_logits)
-            conditioned[rating] = treatment_move_losses(anchor_logits, batch, rows)
+            conditioned[rating] = treatment_move_losses(anchor_logits, batch, active)
         low, high = anchors
-        trajectory = trajectory_columns(logits, low, high, batch, rows)
+        trajectory = trajectory_columns(logits, low, high, batch, active)
 
         for value in values:
             if value in conditioned:
                 continue
             conditioned[value] = self._treatment(
-                batch, _constant_conditioning(value), rows
+                batch, _constant_conditioning(value), active
             )
         return _BatchScores(positions, adjudicated, corrupted, conditioned, trajectory)
 
@@ -494,11 +492,11 @@ class _BatchSession:
         self,
         batch: MoveModelBatch,
         conditioning: Conditioning,
-        rows: TreatmentRows,
+        active: ActiveBatch,
     ) -> tuple[float, ...]:
         conditioned = self._condition(batch, conditioning)
         return treatment_move_losses(
-            self._runner.action_logits(conditioned), batch, rows
+            self._runner.action_logits(conditioned), batch, active
         )
 
     def _batch(self, inputs: ScoringInputs) -> MoveModelBatch:
