@@ -21,6 +21,7 @@ from typing import Any
 import chess
 
 from anthro_chess.chess import MOVE_ACTION_COUNT, decode_move
+from anthro_chess.data import RepetitionCounter
 from anthro_chess.evaluation.games.records import (
     GameRecord,
     GameResult,
@@ -427,34 +428,31 @@ def _repetition_diagnostics(
 ) -> RepetitionDiagnostics:
     """Count position recurrences by replaying the game once.
 
-    Positions are keyed by EPD, which is what the repetition rules compare:
-    placement, side to move, castling rights, and a legal en passant square,
-    without the move counters. Keying on the full FEN instead would report zero
-    repetitions for a game that drew by one, since the halfmove clock differs
-    at every occurrence.
+    Through the counter the encoding feeds the model, so what is reported here
+    and what a model was trained to see are the same rule rather than two
+    statements of it.
     """
 
     board = chess.Board(initial_position)
-    occurrences: dict[str, int] = {board.epd(): 1}
+    occurrences = RepetitionCounter()
+    occurrences.observe(board)
     first_repetition: int | None = None
     threefold: int | None = None
     repeated_plies = 0
     for ply_index, action_id in enumerate(moves):
         board.push(decode_move(action_id))
-        key = board.epd()
-        seen = occurrences.get(key, 0) + 1
-        occurrences[key] = seen
-        if seen > 1:
+        seen = occurrences.observe(board)
+        if seen >= 1:
             repeated_plies += 1
             if first_repetition is None:
                 first_repetition = ply_index
-        if seen > 2 and threefold is None:
+        if seen >= 2 and threefold is None:
             threefold = ply_index
     cycle_plies = 0 if first_repetition is None else len(moves) - first_repetition
     return RepetitionDiagnostics(
         first_repetition_ply=first_repetition,
         threefold_ply=threefold,
-        maximum_occurrences=max(occurrences.values()),
+        maximum_occurrences=occurrences.maximum_occurrences,
         repeated_ply_fraction=_fraction(repeated_plies, len(moves)),
         cycle_ply_fraction=_fraction(repeated_plies, cycle_plies),
     )

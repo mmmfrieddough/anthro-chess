@@ -322,6 +322,12 @@ class RepetitionCounter:
         self._keys.append(key)
         return min(seen, REPETITION_STATE_COUNT - 1)
 
+    @property
+    def maximum_occurrences(self) -> int:
+        """Return how often the most repeated position occurred."""
+
+        return max(self._counts.values(), default=0)
+
     def truncated_copy(self, plies: int) -> RepetitionCounter:
         """Return a private counter over this one's first ``plies`` positions."""
 

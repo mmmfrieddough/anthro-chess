@@ -78,7 +78,20 @@ class MoveModelBatch:
     legal_action_ids: LegalActionTensor | None
     game_ids: Tensor
     ply_indices: Tensor
-    chunk_start_plies: tuple[int, ...]
+
+    @property
+    def decision_columns(self) -> Tensor:
+        """Return the column of its own row each timestep sits at.
+
+        Read off the plies the batch carries rather than counted out, because
+        an ``arange`` built inside a compiled graph is folded into the index
+        arithmetic of the gathers that consume it and Inductor then fails to
+        simplify it. A chunk is contiguous, so the two agree. Padding subtracts
+        to a negative column and clamps back onto the row's first, which is a
+        decision no caller reads.
+        """
+
+        return (self.ply_indices - self.ply_indices[:, :1]).clamp(min=0)
 
     @classmethod
     def from_sequence_batch(
@@ -130,7 +143,6 @@ class MoveModelBatch:
             legal_action_ids=batch.legal_action_ids,
             game_ids=torch.from_numpy(batch.game_ids).to(device=tensor_device),
             ply_indices=required(batch.ply_indices),
-            chunk_start_plies=batch.chunk_start_plies,
         )
 
     @classmethod
@@ -238,9 +250,6 @@ class MoveModelBatch:
                 (count, width), dtype=torch.long, device=tensor_device
             ),
             ply_indices=column(DecisionColumn.PLY_INDEX),
-            chunk_start_plies=tuple(
-                int(start) for start in packed[DecisionColumn.PLY_INDEX, :, 0]
-            ),
         )
         result.validate()
         return result
@@ -305,8 +314,6 @@ def _reject_invalid_batch(batch: _Batch) -> None:
     rating = batch.inputs.target_rating
     if rating.values.shape != expected_shape or rating.present.shape != expected_shape:
         raise ValueError("nullable model inputs must align with targets")
-    if len(batch.chunk_start_plies) != expected_shape[0]:
-        raise ValueError("chunk start plies must name every sequence in the batch")
     _reject_invalid_values(batch)
     legal_action_ids = batch.legal_action_ids
     if legal_action_ids is None:
@@ -331,11 +338,9 @@ def _reject_invalid_values(batch: _Batch) -> None:
     en_passant = batch.inputs.en_passant_token
     repetitions = batch.inputs.repetition_count
     ratings = batch.inputs.target_rating
-    # The model reads each decision at the column its ply index names, offset
-    # from the row's first, so an index reaching past the row's own width gives
-    # a gather no bound of its own: a crash inside the forward pass on the host,
+    # An index reaching past its own row's width gives the model's decision
+    # gather no bound of its own: a crash inside the forward pass on the host,
     # and a device-side assert that kills a run on an accelerator.
-    width = batch.action_targets.shape[1]
     columns = batch.ply_indices - batch.ply_indices[:, :1]
     checks: tuple[tuple[str, Any], ...] = (
         (
@@ -344,7 +349,7 @@ def _reject_invalid_values(batch: _Batch) -> None:
         ),
         (
             "ply indices must stay inside the width of their own row",
-            columns.max() >= width,
+            columns.max() >= batch.action_targets.shape[1],
         ),
         (
             "action loss cannot include padded timesteps",

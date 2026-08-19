@@ -149,7 +149,18 @@ def test_padding_cannot_change_what_a_real_timestep_predicts() -> None:
     assert torch.count_nonzero(padded_logits[0, 1:]) > 0
 
 
-def test_a_decision_and_its_mirror_image_score_the_same_chess() -> None:
+@pytest.mark.parametrize(
+    "position",
+    [
+        "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 5 4",
+        # An en-passant square and one side's castling right already gone, so
+        # the two whole-position columns the flip has to reorder are both
+        # carrying something rather than sitting at their absent value.
+        "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQq e3 0 3",
+    ],
+    ids=["open-game", "en-passant-and-lost-castling"],
+)
+def test_a_decision_and_its_mirror_image_score_the_same_chess(position: str) -> None:
     """The flip is only sound if undoing it lands on the same move.
 
     Every board is presented from the side to move, so a position with black to
@@ -171,7 +182,6 @@ def test_a_decision_and_its_mirror_image_score_the_same_chess() -> None:
             parameter.normal_(0.0, 0.3)
         model.square_encoder.side_embedding.weight.zero_()
 
-    position = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 5 4"
     mirrored = chess.Board(position).mirror().fen()
 
     with torch.no_grad():

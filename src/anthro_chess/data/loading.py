@@ -158,7 +158,6 @@ class SequenceBatch:
     legal_action_ids: LegalActionTensor | None
     game_ids: np.ndarray
     ply_indices: np.ndarray
-    chunk_start_plies: tuple[int, ...]
 
     @property
     def batch_size(self) -> int:
@@ -730,7 +729,6 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         ),
         game_ids=required(lambda ply: ply.game_id, np.uint64),
         ply_indices=required(lambda ply: ply.ply_index, np.int16),
-        chunk_start_plies=tuple(example.start_ply for example in examples),
     )
 
 

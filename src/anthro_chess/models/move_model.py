@@ -27,6 +27,7 @@ from anthro_chess.data import (
     BOARD_SQUARE_COUNT,
     EN_PASSANT_TOKEN_COUNT,
     REPETITION_STATE_COUNT,
+    en_passant_token,
     encoding_identity,
 )
 from anthro_chess.models.batching import MoveModelBatch, OptionalTensor
@@ -137,7 +138,7 @@ class SquareTokenEncoder(nn.Module):
         # Derived constants, not state: pure functions of the encoding, so they
         # do not belong in a checkpoint.
         for name, values in (
-            ("mirrored_squares", _mirrored_squares()),
+            ("mirrored_squares", chess.SQUARES_180),
             ("flipped_piece_ids", _flipped_piece_ids()),
             ("flipped_castling_rights", _flipped_castling_rights()),
             ("flipped_en_passant_tokens", _flipped_en_passant_tokens()),
@@ -167,7 +168,8 @@ class SquareTokenEncoder(nn.Module):
         repetitions = _gather_plies(inputs.repetition_count, history)
         tokens = self.piece_projection(self.piece_embedding(stacked).flatten(-2))
 
-        decided_black = _at_decision(black, decisions)
+        decided_side = _at_decision(inputs.side_to_move, decisions)
+        decided_black = decided_side.bool()
         # A transform rather than a token vocabulary, so it stays here while the
         # two nullable inputs moved. Decision 0035 says why.
         rule_counts = torch.log1p(
@@ -181,7 +183,7 @@ class SquareTokenEncoder(nn.Module):
         )
         position = torch.cat(
             (
-                self.side_embedding(_at_decision(inputs.side_to_move, decisions)),
+                self.side_embedding(decided_side),
                 self.castling_embedding(
                     self._oriented(
                         _at_decision(inputs.castling_rights, decisions),
@@ -393,7 +395,7 @@ class SourceDestinationHead(nn.Module):
         # Derived constants, not state: pure functions of the action
         # vocabulary, so they do not belong in a checkpoint.
         for name, values in (
-            ("mirrored_squares", _mirrored_squares()),
+            ("mirrored_squares", chess.SQUARES_180),
             ("move_square_slots", square_slots),
             ("move_promotion_slots", promotion_slots),
         ):
@@ -462,14 +464,7 @@ class MoveModel(nn.Module):
         gathers by the loss mask before looking.
         """
 
-        # Read off the plies the batch carries rather than counted out here. A
-        # chunk is contiguous, so the two agree, and an ``arange`` built inside
-        # a compiled graph gets folded into the index arithmetic of the gather
-        # below, which Inductor then fails to simplify. Padding subtracts to a
-        # negative column and clamps back onto the row's first, which is a
-        # decision no caller reads.
-        columns = (batch.ply_indices - batch.ply_indices[:, :1]).clamp(min=0)
-        return self.decide(batch, columns)
+        return self.decide(batch, batch.decision_columns)
 
     def decide_at(self, batch: MoveModelBatch, decisions: Tensor) -> Tensor:
         """Return logits for one named ply per row, shaped batch by vocabulary.
@@ -562,13 +557,6 @@ def _gather_plies(values: Tensor, history: Tensor) -> Tensor:
 
 
 @cache
-def _mirrored_squares() -> tuple[int, ...]:
-    """Return where each square lands when the board changes hands."""
-
-    return tuple(square ^ 56 for square in range(BOARD_SQUARE_COUNT))
-
-
-@cache
 def _flipped_piece_ids() -> tuple[int, ...]:
     """Return each piece id with its colour swapped, and empty left alone."""
 
@@ -596,8 +584,10 @@ def _flipped_castling_rights() -> tuple[int, ...]:
 def _flipped_en_passant_tokens() -> tuple[int, ...]:
     """Return each en-passant token with its square mirrored, absence aside."""
 
-    mirrored = _mirrored_squares()
-    return (0, *(mirrored[square] + 1 for square in range(BOARD_SQUARE_COUNT)))
+    return (
+        en_passant_token(None),
+        *(en_passant_token(square) for square in chess.SQUARES_180),
+    )
 
 
 @cache

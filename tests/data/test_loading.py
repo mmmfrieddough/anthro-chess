@@ -116,7 +116,6 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
 
     batch = next(loader)
 
-    assert batch.chunk_start_plies == (0, 2, 4)
     assert batch.ply_indices.tolist() == [[0, 1], [2, 3], [4, 0]]
     assert batch.inputs.piece_ids[1][0][chess.E5] == chess.PAWN + 6
 

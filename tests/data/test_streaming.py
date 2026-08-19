@@ -108,7 +108,6 @@ def _decoded(batch: SequenceBatch) -> list[tuple[Any, ...]]:
         decoded.append(
             (
                 int(batch.game_ids[row][0]),
-                batch.chunk_start_plies[row],
                 batch.ply_indices[row][:held].tolist(),
                 inputs.piece_ids[row][:held].tolist(),
                 batch.action_targets[row][:held].tolist(),

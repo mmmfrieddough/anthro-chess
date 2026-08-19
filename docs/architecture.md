@@ -140,8 +140,10 @@ the side to move.
 The current checkpoint-backed model runner implements that correctness
 baseline. It converts one typed target-free decision trajectory into the shared
 model tensor boundary, names the ply being decided, and returns detached raw
-action logits to the decision runtime. What that costs does not grow with the
-game: the decision reads the boards stacked behind it and nothing earlier.
+action logits to the decision runtime. The model's own work does not grow with
+the game, since the decision reads the boards stacked behind it and nothing
+earlier. Building the batch still carries the whole history it was handed,
+which is a small and measured share of a decision.
 
 It also accepts several pending decisions at once, padding the shorter
 histories past their end so each reads its own decision at its own length. A
