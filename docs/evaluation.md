@@ -331,11 +331,18 @@ growing a second implementation that has to be kept consistent with this one.
 
 A **leakage check runs before any scoring**, so a checkpoint that trained on
 these games fails loudly rather than producing a plausible number nobody
-re-examines. When the checkpoint trained on the same normalized corpus the pool
-was drawn from, internal game ids are comparable and the check reads two
-columns. When the corpora differ an id means nothing, so games are compared by
-what they contain. A training corpus this machine cannot read is an error with
-a configurable override, not a skipped check.
+re-examines. It reads no games at all. A corpus gives each game exactly one
+split, so a pool cut from one split and a run that read another are disjoint by
+construction, and where both sides declare the same split recipe the pool's own
+game ids are put back through it, which checks the pool's claim about which
+split it holds rather than trusting it. A game keeps its id as a corpus grows,
+so that argument still settles a checkpoint trained on one generation against a
+pool cut from the next.
+
+Where neither holds, because the corpora are unrelated or their recipes differ,
+nothing establishes disjointness. The reading is still taken and the result
+records that it is **unverified**, with the reason on it and a warning in the
+log, rather than being refused or carrying an assurance nobody earned.
 
 Which sliced series are **committed** is a deliberate, bounded choice, because
 only a committed series can be compared over the life of the project. Overall
@@ -351,13 +358,13 @@ detail tier. Speed stays there while one corpus is one class: the slice is what
 makes a mixed pool readable, and committing a series over it is a question for
 the generation that spans speeds.
 
-Per-position records are the one part of that tier a run has to ask for. Both
-kinds — every scored decision, and every decision a predicate adjudicated — are
-one record per position over a pool that holds millions, and every reported
-quantity is computed from the summaries beside them rather than from the
-records. So they are written when the reading's detail configuration turns them
-on, for a session that means to look at the decisions themselves, and left out
-otherwise.
+Per-position records are the one part of that tier a run has to ask for. Two
+kinds qualify: every scored decision, and every decision a predicate
+adjudicated. Each is one record per position over a pool that holds millions,
+and every reported quantity is computed from the summaries beside them rather
+than from the records. So they are written when the reading's detail
+configuration turns them on, for a session that means to look at the decisions
+themselves, and left out otherwise.
 
 Rating-band series are committed only when the run uses the default bands. A
 changed band boundary is a different measurement rather than movement in an

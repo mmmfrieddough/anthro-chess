@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from anthro_chess.evaluation.adjudication import action_sets, build_adjudication_report
+from anthro_chess.evaluation.adjudication import AdjudicationAccumulator, action_sets
 from anthro_chess.evaluation.policy import ActionSetPolicy
 from anthro_chess.evaluation.scoring import build_scoring_inputs
 from anthro_chess.evaluation.slices import PositionPredicate
@@ -49,7 +49,9 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
         for predicate in inputs.labels(key).predicates
     )
 
-    report = build_adjudication_report(scores, inputs)
+    accumulator = AdjudicationAccumulator(retain_positions=True)
+    accumulator.add(scores, inputs)
+    report = accumulator.report()
 
     assert report is not None
     mate = report.predicates[PositionPredicate.MATE_AVAILABLE]
@@ -83,7 +85,9 @@ def test_no_realized_predicate_is_explicitly_unavailable(
         identity_sha256="b" * 64,
     )
 
-    assert build_adjudication_report((), inputs) is None
+    accumulator = AdjudicationAccumulator()
+    accumulator.add((), inputs)
+    assert accumulator.report() is None
 
 
 def test_action_sets_narrow_to_the_positions_a_reading_keeps(

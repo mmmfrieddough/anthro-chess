@@ -603,11 +603,8 @@ def length_bucketed_batches(
 ) -> tuple[tuple[int, ...], ...]:
     """Group sequence indices into the batches one epoch draws, by length.
 
-    Lengths rather than examples, because the checkpoint reading plans its
-    batches before it has encoded anything: it knows how many plies each game
-    holds from the pool and materializes one batch at a time. Sharing the
-    planning is what keeps the two from drifting into scoring different batch
-    shapes, which the forward pass is not reproducible across.
+    Takes lengths rather than examples, so a caller that has not encoded
+    anything yet can plan the same batches this loader would build.
 
     ``within_bucket`` orders a bucket's members before they are cut into
     batches. Only a shuffling loader passes one.

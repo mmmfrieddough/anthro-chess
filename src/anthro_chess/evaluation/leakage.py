@@ -7,15 +7,9 @@ games. Where the corpus also declares a split recipe this code can evaluate,
 the pool's own game ids are put back through it, which turns the pool's claim
 about which split it holds into something checked rather than trusted.
 
-Cost is why this replaced reading the corpus. The previous check held an
-identifier for every training game, and this project's corpus assigns
-1,878,353,187 of them to ``train`` -- about 141 GB of resident set on a 125 GB
-host, so the check could not finish on the machine it was meant to protect. A
-check that never completes protects nothing.
-
-What none of this settles is a corpus whose stored split column disagrees with
-the recipe it declares. That belongs to preparation, which writes the column
-through the same function read back here.
+Preparation writes the split column through the same function read back here,
+so a corpus whose column disagrees with its own recipe is outside what any of
+this can settle.
 
 Disjointness cannot be argued at all when the checkpoint trained on a different
 corpus than the pool was drawn from, since splits of unrelated corpora say
@@ -37,8 +31,6 @@ from anthro_chess.data.artifacts import DataLoadingError, normalized_shard_paths
 from anthro_chess.data.schema import SPLIT_ALGORITHM, split_name
 from anthro_chess.evaluation.pool import FrozenPool
 
-#: Version 2 recomputes split assignment where version 1 read the corpus, so a
-#: version 1 record's ``training_games`` counted a scan this no longer makes.
 LEAKAGE_CHECK_VERSION = 2
 
 SPLIT_DISJOINT_ALGORITHM = "split-disjoint-v1"
@@ -130,7 +122,7 @@ def check_leakage(
     paths = _training_paths(training, training_normalized)
 
     pool_source = _mapping(pool.manifest.get("source"), "evaluation pool source")
-    pool_split = _pool_split(pool)
+    pool_split = pool.split
     pool_manifest_sha256 = _optional_string(pool_source.get("manifest_sha256"))
     training_manifest_sha256 = _optional_string(training.get("manifest_sha256"))
     training_manifest = _mapping(training.get("manifest"), "training data manifest")
@@ -167,12 +159,32 @@ def check_leakage(
             training_normalized_paths=tuple(str(path) for path in paths),
         )
 
-    if not same_corpus:
-        reason = (
-            "the checkpoint trained on a different normalized corpus than this "
-            "pool was drawn from, and splits of unrelated corpora say nothing "
-            "about each other"
+    if same_corpus and split == pool_split:
+        raise LeakageError(
+            f"the checkpoint trained on the {split} split, which is the split "
+            f"this pool was cut from; every one of its {len(pool.games)} game(s) "
+            "was available to that run"
         )
+
+    # Recomputation needs the two sides to agree on the recipe rather than on
+    # the whole corpus. A game keeps its id and therefore its split as a corpus
+    # grows, so a checkpoint trained on one generation can still be shown
+    # disjoint from a pool cut from the next.
+    recipe = _recipe_for(pool_source.get("split")) if split_matches else None
+    overlapping = 0
+    if recipe is not None:
+        overlapping = sum(
+            1 for game_id in pool.game_ids if recipe.split_of(game_id) == split
+        )
+        if overlapping:
+            raise LeakageError(
+                f"{overlapping} pool game(s) belong to the checkpoint's {split} "
+                f"split under the corpus' own split recipe; this checkpoint "
+                "cannot be scored on this pool"
+            )
+
+    if recipe is None and not same_corpus:
+        reason = _unverifiable_reason(split_matches)
         logger.warning(
             "Leakage could not be verified: %s. This reading is recorded as "
             "unverified; nothing here establishes that the checkpoint did not "
@@ -186,26 +198,6 @@ def check_leakage(
             recomputed=False,
             overlapping=0,
         )
-
-    if split == pool_split:
-        raise LeakageError(
-            f"the checkpoint trained on the {split} split, which is the split "
-            f"this pool was cut from; every one of its {len(pool.games)} game(s) "
-            "was available to that run"
-        )
-
-    recipe = _recipe_for(pool_source.get("split"))
-    overlapping = 0
-    if recipe is not None:
-        overlapping = sum(
-            1 for game_id in pool.game_ids if recipe.split_of(game_id) == split
-        )
-        if overlapping:
-            raise LeakageError(
-                f"{overlapping} pool game(s) belong to the checkpoint's {split} "
-                "split under the corpus' own split recipe, so this pool does not "
-                "hold the split it claims; this checkpoint cannot be scored on it"
-            )
 
     check = build(
         algorithm=SPLIT_DISJOINT_ALGORITHM,
@@ -225,14 +217,19 @@ def check_leakage(
     return check
 
 
-def _pool_split(pool: FrozenPool) -> str:
-    """Return which split of its corpus a pool was cut from."""
+def _unverifiable_reason(split_matches: bool) -> str:
+    """Return why disjointness could not be argued for this pair."""
 
-    record = _mapping(pool.manifest.get("pool"), "evaluation pool identity")
-    split = record.get("split")
-    if not isinstance(split, str) or not split:
-        raise LeakageError("evaluation pool does not record which split it holds")
-    return split
+    if not split_matches:
+        return (
+            "the checkpoint's training corpus and this pool's declare different "
+            "split recipes, so an assignment made under one says nothing about "
+            "the other"
+        )
+    return (
+        "the checkpoint trained on a different normalized corpus than this pool "
+        "was drawn from, and its split recipe is not one this code can evaluate"
+    )
 
 
 def _recipe_for(split: object) -> SplitRecipe | None:
@@ -278,10 +275,8 @@ def _training_paths(
 ) -> tuple[Path, ...]:
     """Return where the checkpoint's training corpus is, as provenance.
 
-    Nothing here reads it. The paths are recorded on the check and consumed by
-    the opening-frequency axis, which is the one reading that still counts over
-    the training corpus, so they are resolved rather than verified: a machine
-    without the corpus can take every reading that does not ask for that axis.
+    Resolved but not checked for existence, so a machine without the corpus can
+    still take every reading that does not read it.
     """
 
     if override is not None:

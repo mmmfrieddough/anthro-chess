@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import Field, model_validator
 
@@ -50,6 +50,7 @@ from anthro_chess.data.schema import (
     NORMALIZED_COLUMNS,
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    SPLIT_NAMES,
     NormalizedColumn,
     SplitName,
     derive_game_id,
@@ -204,6 +205,18 @@ class FrozenPool:
 
         return tuple(sorted(game.game_id for game in self.games))
 
+    @property
+    def split(self) -> SplitName:
+        """Return which split of its corpus this pool was cut from."""
+
+        record = self.manifest.get("pool")
+        split = record.get("split") if isinstance(record, Mapping) else None
+        if split not in SPLIT_NAMES:
+            raise EvaluationPoolError(
+                f"evaluation pool manifest names an unknown split: {split!r}"
+            )
+        return cast(SplitName, split)
+
 
 def pool_rows(
     pool: FrozenPool,
@@ -238,12 +251,9 @@ def pool_rows(
 class PoolProjection:
     """A pool's projected columns, served one batch of games at a time.
 
-    The checkpoint reading materializes a batch of games, scores it, and drops
-    it, so it asks one artifact for rows tens of thousands of times. Holding
-    the columns makes each ask a gather rather than a re-read of the whole
-    file, and holding them *columnar* is what makes holding them affordable at
-    all: the same games as Python dictionaries are a large multiple of this,
-    and they are what the streaming reading exists to stop retaining.
+    Every row group is held columnar, so a gather costs a copy rather than a
+    re-read of the file, and the same games as Python dictionaries would be a
+    large multiple of the memory.
     """
 
     def __init__(
@@ -309,13 +319,7 @@ class PoolProjection:
         return tuple(game_id for game_ids in self._game_ids for game_id in game_ids)
 
     def column(self, name: str) -> list[Any]:
-        """Return one projected column's values, in the artifact's row order.
-
-        Aligned with :meth:`game_ids`. What a caller reads a per-game fact off
-        without materializing the games: the dependency test's dealt ratings
-        follow from two rating columns and an opening position, so asking the
-        columns is what keeps that derivation off the encoding pass.
-        """
+        """Return one projected column's values, aligned with :meth:`game_ids`."""
 
         return [
             value for table in self._tables for value in row_group_column(table, name)

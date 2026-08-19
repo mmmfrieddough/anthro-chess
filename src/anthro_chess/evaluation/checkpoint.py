@@ -23,7 +23,7 @@ from array import array
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import chess
 import torch
@@ -33,12 +33,11 @@ from torch import Tensor
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import (
     DataLoadingError,
-    SequenceDataLoader,
     SequenceLoaderConfig,
+    collate_sequences,
     length_bucketed_batches,
 )
 from anthro_chess.data.schema import (
-    SPLIT_NAMES,
     NormalizedColumn,
     SplitName,
 )
@@ -53,7 +52,7 @@ from anthro_chess.evaluation.dependency import (
     DEGRADATION_METRICS,
     Conditioning,
     ConditioningKind,
-    DependencyColumns,
+    DependencyColumnBuilder,
     DependencyError,
     DependencyTestConfig,
     DependencyTestResult,
@@ -78,6 +77,7 @@ from anthro_chess.evaluation.opening_frequency import (
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
+    ActiveBatch,
     PositionPolicy,
     active_batch,
     legal_policy_log_probabilities,
@@ -119,6 +119,7 @@ from anthro_chess.evaluation.results.noise import NoiseCharacterizationError
 from anthro_chess.evaluation.scoring import (
     SCORED_COLUMNS,
     EvaluationLoaderConfig,
+    ScoringError,
     ScoringInputs,
     accumulate_positions,
     build_scoring_inputs,
@@ -285,12 +286,9 @@ class _PoolReading:
     #: How many timesteps each selected game encodes to, after any prefix.
     encoded_plies: Mapping[int, int]
     batches: tuple[tuple[int, ...], ...]
-
-    @property
-    def scored_positions(self) -> int:
-        """Return how many decisions one pass over this view covers."""
-
-        return sum(self.encoded_plies.values())
+    #: The view record each batch's loader identity is taken against. Held
+    #: rather than rebuilt, because deriving it digests every selected game id.
+    identity_context: dict[str, object]
 
     def rows(self, game_ids: Sequence[int]) -> tuple[dict[str, Any], ...]:
         """Return one batch's games, projected onto the view's prefix."""
@@ -300,29 +298,35 @@ class _PoolReading:
         )
 
     def projected_rows(self) -> Iterator[dict[str, Any]]:
-        """Yield every selected game's projected row, one batch at a time.
-
-        The content digest reads the games rather than the scores, and it reads
-        each one once. Streaming it keeps the reading's own rule: a batch of
-        rows exists while it is being consumed and not afterwards.
-        """
+        """Yield every selected game's projected row, one batch at a time."""
 
         for game_ids in self.batches:
             yield from self.rows(game_ids)
 
     def inputs(self, game_ids: Sequence[int]) -> ScoringInputs:
-        """Encode one batch's games, and nothing else."""
+        """Encode one batch's games, and nothing else.
+
+        Length is what the plan bucketed on, so a disagreement means this is
+        not the batch the loader would have built, and the forward pass is not
+        reproducible across batch shapes.
+        """
 
         rows = self.rows(game_ids)
-        return build_scoring_inputs(
+        encoded = build_scoring_inputs(
             rows,
             split=self.split,
             batch_size=self.loader.batch_size,
             length_bucket_width=self.loader.length_bucket_width,
-            identity_sha256=rows_identity_sha256(
-                rows, context=self.selection.as_record()
-            ),
+            identity_sha256=rows_identity_sha256(rows, context=self.identity_context),
         )
+        for example in encoded.dataset:
+            planned = self.encoded_plies[example.game_id]
+            if len(example.plies) != planned:
+                raise CheckpointEvaluationError(
+                    f"game {example.game_id} encoded to {len(example.plies)} "
+                    f"timestep(s) where the batch plan counted {planned}"
+                )
+        return encoded
 
 
 class _ShuffledRatings:
@@ -336,8 +340,7 @@ class _ShuffledRatings:
 
     Derived from the pool's columns rather than from encodings: which rating a
     decision carries follows from whose turn it is, and whose turn it is
-    follows from the ply and the position the game opened in. Encoding the pool
-    to find that out is what the streaming reading exists to avoid.
+    follows from the ply and the position the game opened in.
     """
 
     def __init__(self, reading: _PoolReading, seed: str) -> None:
@@ -355,57 +358,62 @@ class _ShuffledRatings:
             )
         )
         openings: dict[str, bool] = {}
-        offsets: dict[int, int] = {}
-        ratings: list[int | None] = []
+        spans: dict[int, tuple[int, int]] = {}
+        values: array[int] = array("i")
+        # Where each rated position sits, so the deal below can be compacted
+        # rather than carrying an entry for positions it does not cover.
+        rated: array[int] = array("q")
         for game_id in reading.game_ids:
             white, black, opening = by_game[game_id]
             white_opens = openings.get(opening)
             if white_opens is None:
                 white_opens = chess.Board(opening).turn == chess.WHITE
                 openings[opening] = white_opens
-            offsets[game_id] = len(ratings)
-            ratings.extend(
-                white if white_opens == (ply % 2 == 0) else black
-                for ply in range(reading.encoded_plies[game_id])
-            )
+            plies = reading.encoded_plies[game_id]
+            spans[game_id] = (len(values), plies)
+            for ply in range(plies):
+                rating = white if white_opens == (ply % 2 == 0) else black
+                if rating is not None:
+                    rated.append(len(values))
+                values.append(int(rating or 0))
 
-        rated = [index for index, rating in enumerate(ratings) if rating is not None]
-        dealt = [ratings[index] for index in rated]
+        dealt = array("i", (values[index] for index in rated))
         random.Random(seed).shuffle(dealt)
-        self._offsets = offsets
-        self._values = array("i", bytes(4 * len(ratings)))
         for index, rating in zip(rated, dealt, strict=True):
-            self._values[index] = int(rating or 0)
+            values[index] = rating
+        self._spans = spans
+        self._values = values
 
     def value(self, game_id: int, ply_index: int) -> int:
         """Return the rating one position is dealt, zero where it has none."""
 
-        offset = self._offsets.get(game_id)
-        if offset is None:
+        span = self._spans.get(game_id)
+        if span is None:
             return 0
-        index = offset + ply_index
-        return int(self._values[index]) if index < len(self._values) else 0
+        offset, plies = span
+        if not 0 <= ply_index < plies:
+            return 0
+        return int(self._values[offset + ply_index])
 
 
 @dataclass(frozen=True)
 class _BatchScores:
-    """Everything one batch of games contributes to a reading."""
+    """Everything one batch of games contributes to a reading.
+
+    The conditioning maps are empty where the dependency family is off.
+    """
 
     positions: tuple[PositionPolicy, ...]
     action_sets: tuple[ActionSetPolicy, ...]
-    corrupted: dict[str, tuple[Conditioning, tuple[PositionPolicy, ...]]]
-    conditioned: dict[int, tuple[PositionPolicy, ...]]
-    trajectory: dict[PositionKey, TrajectorySignal]
+    corrupted: Mapping[str, tuple[Conditioning, tuple[PositionPolicy, ...]]]
+    conditioned: Mapping[int, tuple[PositionPolicy, ...]]
+    trajectory: Mapping[PositionKey, TrajectorySignal]
 
 
 class _BatchSession:
     """Every conditioning treatment, applied to one batch before the next.
 
-    The passes are nested inside the traversal rather than wrapped around it.
-    Running them as separate sweeps of the pool is what forced eight complete
-    per-position score sets to exist at once, which was the largest thing a
-    canonical reading held; here a position's eight scores live together for
-    one batch, are compared, and are dropped.
+    A position's scores exist together only while its batch does.
     """
 
     def __init__(
@@ -418,7 +426,7 @@ class _BatchSession:
         self._config = config
         self._shuffled = shuffled
 
-    def score(self, inputs: ScoringInputs, *, dependency: bool) -> _BatchScores:
+    def score(self, inputs: ScoringInputs) -> _BatchScores:
         """Score one batch under every treatment the configuration asks for."""
 
         batch = self._batch(inputs)
@@ -428,16 +436,13 @@ class _BatchSession:
             raise CheckpointEvaluationError(
                 "the configured view selected no positions to score"
             )
-        scores = _BatchScores(
-            positions=positions,
-            action_sets=score_action_sets(active, action_sets(inputs)),
-            corrupted={},
-            conditioned={},
-            trajectory={},
-        )
-        if not dependency:
-            return scores
+        adjudicated = score_action_sets(active, action_sets(inputs))
+        if self._shuffled is None:
+            return _BatchScores(positions, adjudicated, {}, {}, {})
 
+        corrupted: dict[str, tuple[Conditioning, tuple[PositionPolicy, ...]]] = {}
+        conditioned: dict[int, tuple[PositionPolicy, ...]] = {}
+        trajectory: dict[PositionKey, TrajectorySignal] = {}
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
             Conditioning(
@@ -447,26 +452,28 @@ class _BatchSession:
             ),
             Conditioning(name="absent", kind=ConditioningKind.ABSENT),
         ):
-            scores.corrupted[conditioning.name] = (
+            corrupted[conditioning.name] = (
                 conditioning,
                 self._conditioned(batch, conditioning),
             )
 
         values = self._config.conditioning_values()
-        self._trajectory(batch, inputs, scores, values[0], values[-1])
+        self._trajectory(
+            batch, active, inputs, conditioned, trajectory, values[0], values[-1]
+        )
         for value in values:
-            if value in scores.conditioned:
+            if value in conditioned:
                 continue
-            scores.conditioned[value] = self._conditioned(
-                batch, _constant_conditioning(value)
-            )
-        return scores
+            conditioned[value] = self._conditioned(batch, _constant_conditioning(value))
+        return _BatchScores(positions, adjudicated, corrupted, conditioned, trajectory)
 
     def _trajectory(
         self,
         batch: MoveModelBatch,
+        active: ActiveBatch,
         inputs: ScoringInputs,
-        scores: _BatchScores,
+        conditioned: dict[int, tuple[PositionPolicy, ...]],
+        trajectory: dict[PositionKey, TrajectorySignal],
         anchor_low: int,
         anchor_high: int,
     ) -> None:
@@ -483,23 +490,21 @@ class _BatchSession:
         without it these two conditionings run a second time.
         """
 
-        true_batch = self._condition(batch, _TRUE_CONDITIONING)
-        active = active_batch(self._runner.action_logits(true_batch), true_batch)
         true = legal_policy_log_probabilities(active)
         policies = []
         for rating in (anchor_low, anchor_high):
-            conditioned = self._condition(batch, _constant_conditioning(rating))
+            anchored = self._condition(batch, _constant_conditioning(rating))
             rescored = active.rescored(
-                self._runner.action_logits(conditioned),
-                conditioned,
+                self._runner.action_logits(anchored),
+                anchored,
             )
             policies.append(legal_policy_log_probabilities(rescored))
-            scores.conditioned[rating] = score_positions(rescored)
+            conditioned[rating] = score_positions(rescored)
         low, high = policies
         for offset, key in enumerate(
             zip(active.game_ids, active.ply_indices, strict=True)
         ):
-            scores.trajectory[key] = _trajectory_signal(
+            trajectory[key] = _trajectory_signal(
                 legal_actions=inputs.plies[key].enabled_actions(),
                 target_action_id=inputs.plies[key].target_action_id,
                 true=true[offset],
@@ -517,15 +522,8 @@ class _BatchSession:
         return score_positions(active)
 
     def _batch(self, inputs: ScoringInputs) -> MoveModelBatch:
-        loader = SequenceDataLoader(inputs.dataset, inputs.loader_config)
-        batches = list(loader)
-        if len(batches) != 1:
-            raise CheckpointEvaluationError(
-                f"a planned batch encoded to {len(batches)} loader batch(es); "
-                "the batch plan and the loader disagree about batching"
-            )
         return MoveModelBatch.from_sequence_batch(
-            batches[0],
+            collate_sequences(inputs.dataset),
             device=self._runner.device,
         )
 
@@ -566,10 +564,7 @@ class _BatchSession:
         )
 
     def _shuffled_values(self, batch: MoveModelBatch) -> list[list[int]]:
-        if self._shuffled is None:
-            raise CheckpointEvaluationError(
-                "the shuffled conditioning treatment needs the view's dealt ratings"
-            )
+        assert self._shuffled is not None
         game_ids = batch.game_ids.detach().cpu().tolist()
         ply_indices = batch.ply_indices.detach().cpu().tolist()
         present = batch.inputs.target_rating.present.detach().cpu().tolist()
@@ -588,134 +583,6 @@ class _BatchSession:
                 game_ids, ply_indices, present, strict=True
             )
         ]
-
-
-class _DependencyColumnBuilder:
-    """Fills the dependency family's columns one batch at a time.
-
-    The one thing a checkpoint reading cannot finish as it goes. Every other
-    reduction here is a running total; the within-game split takes a median of
-    each rating slice, so the values have to survive the pass that produced
-    them. They survive as typed columns rather than as scored objects, which is
-    the difference between a gigabyte and a hundred of them.
-    """
-
-    def __init__(self) -> None:
-        # Unsigned: a game id is a 64-bit hash, and a signed column wraps
-        # every id past the signed maximum onto one that matches no game.
-        self._game_ids: array[int] = array("Q")
-        self._ply_indices: array[int] = array("i")
-        self._colors = _Interner()
-        self._bands = _Interner()
-        self._rated = bytearray()
-        self._true: array[float] = array("d")
-        self._corrupted: dict[str, tuple[Conditioning, array[float]]] = {}
-        self._conditioned: dict[int, array[float]] = {}
-        self._has_signal = bytearray()
-        self._strength: array[float] = array("d")
-        self._alignment: array[float] = array("d")
-        self._divergence: array[float] = array("d")
-        self._agreement = bytearray()
-
-    def add(self, inputs: ScoringInputs, scores: _BatchScores) -> None:
-        """Append one batch's scored positions to every column."""
-
-        for position in scores.positions:
-            key = (position.game_id, position.ply_index)
-            context = inputs.contexts[key]
-            self._game_ids.append(position.game_id)
-            self._ply_indices.append(position.ply_index)
-            self._colors.append(context.color)
-            self._bands.append(context.rating_band)
-            self._rated.append(context.rating is not None)
-            self._true.append(position.move_nll)
-            signal = scores.trajectory.get(key)
-            self._has_signal.append(signal is not None)
-            self._strength.append(0.0 if signal is None else signal.strength_signal)
-            self._alignment.append(0.0 if signal is None else signal.alignment)
-            self._divergence.append(0.0 if signal is None else signal.anchor_divergence)
-            self._agreement.append(False if signal is None else signal.anchor_agreement)
-
-        for name, (conditioning, positions) in scores.corrupted.items():
-            self._extend(
-                self._corrupted.setdefault(name, (conditioning, array("d")))[1],
-                positions,
-                scores.positions,
-                f"conditioning pass {name!r}",
-            )
-        for rating, positions in scores.conditioned.items():
-            self._extend(
-                self._conditioned.setdefault(rating, array("d")),
-                positions,
-                scores.positions,
-                f"conditioning rating {rating}",
-            )
-
-    def build(self) -> DependencyColumns:
-        """Return the filled columns every dependency reduction reads."""
-
-        return DependencyColumns(
-            game_ids=self._game_ids,
-            ply_indices=self._ply_indices,
-            color_names=self._colors.names(),
-            colors=self._colors.offsets,
-            band_names=self._bands.names(),
-            bands=self._bands.offsets,
-            rated=[bool(value) for value in self._rated],
-            true_move_nll=self._true,
-            corrupted={
-                name: (conditioning, values)
-                for name, (conditioning, values) in self._corrupted.items()
-            },
-            conditioned=dict(self._conditioned),
-            has_signal=[bool(value) for value in self._has_signal],
-            strength_signal=self._strength,
-            alignment=self._alignment,
-            anchor_divergence=self._divergence,
-            anchor_agreement=[bool(value) for value in self._agreement],
-        )
-
-    def _extend(
-        self,
-        column: array[float],
-        positions: Sequence[PositionPolicy],
-        reference: Sequence[PositionPolicy],
-        what: str,
-    ) -> None:
-        # Positional rather than keyed: every treatment scores one batch
-        # through the same enabled-row mask, so row *i* is the same decision in
-        # all of them. The width check is what says that still holds.
-        if len(positions) != len(reference):
-            raise CheckpointEvaluationError(
-                f"{what} scored {len(positions)} of {len(reference)} position(s) "
-                "in one batch"
-            )
-        column.extend(position.move_nll for position in positions)
-
-
-class _Interner:
-    """A column of repeated names, kept as offsets into the names themselves."""
-
-    def __init__(self) -> None:
-        self.offsets: list[int] = []
-        self._names: dict[str, int] = {}
-
-    def append(self, name: str | None) -> None:
-        """Append one value, recording an absent one as a negative offset."""
-
-        if name is None:
-            self.offsets.append(-1)
-            return
-        offset = self._names.get(name)
-        if offset is None:
-            offset = len(self._names)
-            self._names[name] = offset
-        self.offsets.append(offset)
-
-    def names(self) -> tuple[str, ...]:
-        """Return the distinct names, in the order they were first seen."""
-
-        return tuple(self._names)
 
 
 @dataclass(frozen=True)
@@ -774,7 +641,12 @@ def evaluate_checkpoint(
         reading.selection.name,
         len(reading.batches),
     )
-    measured = _score(config, reading, runner, frequency)
+    try:
+        measured = _score(config, reading, runner, frequency)
+    except (DataLoadingError, DependencyError, ScoringError, ValueError) as error:
+        if isinstance(error, CheckpointEvaluationError):
+            raise
+        raise CheckpointEvaluationError(str(error)) from error
     opening_tail = (
         None if frequency is None else read_opening_tail(measured.slices, frequency)
     )
@@ -865,13 +737,14 @@ def _score(
     )
     aggregator = SliceAggregator()
     adjudication = AdjudicationAccumulator(retain_positions=config.detail.per_position)
-    columns = _DependencyColumnBuilder() if dependency else None
+    columns = DependencyColumnBuilder() if dependency else None
+    resampled = config.noise.enabled
     totals: list[GameTotals] = []
     retained: list[PositionPolicy] | None = [] if config.detail.per_position else None
 
     for game_ids in reading.batches:
         inputs = reading.inputs(game_ids)
-        scores = session.score(inputs, dependency=dependency)
+        scores = session.score(inputs)
         accumulate_positions(
             aggregator,
             scores.positions,
@@ -879,36 +752,44 @@ def _score(
             opening_frequency=frequency,
         )
         adjudication.add(scores.action_sets, inputs)
-        totals.extend(
-            per_game_totals(scores.positions, inputs, opening_frequency=frequency)
-        )
+        if resampled:
+            totals.extend(
+                per_game_totals(scores.positions, inputs, opening_frequency=frequency)
+            )
         if columns is not None:
-            columns.add(inputs, scores)
+            columns.add(
+                inputs.contexts,
+                scores.positions,
+                scores.corrupted,
+                scores.conditioned,
+                scores.trajectory,
+            )
         if retained is not None:
             retained.extend(scores.positions)
 
     report = adjudication.report()
     result = None
     if columns is not None:
-        try:
-            result = reduce_dependency_columns(
-                config=config.dependency,
-                columns=columns.build(),
-                maturity=MaturityContext(
-                    step=runner.global_step,
-                    processed_positions=runner.processed_positions,
-                ),
-            )
-        except DependencyError as error:
-            raise CheckpointEvaluationError(str(error)) from error
+        result = reduce_dependency_columns(
+            config=config.dependency,
+            columns=columns.build(),
+            maturity=MaturityContext(
+                step=runner.global_step,
+                processed_positions=runner.processed_positions,
+            ),
+        )
     return _Measured(
         slices=aggregator.compute(),
         adjudication=report,
         dependency=result,
-        game_totals=merge_game_totals(
-            tuple(totals),
-            () if report is None else report.per_game_totals,
-            () if result is None else result.per_game_totals,
+        game_totals=(
+            merge_game_totals(
+                tuple(totals),
+                () if report is None else report.per_game_totals,
+                () if result is None else result.per_game_totals,
+            )
+            if resampled
+            else ()
         ),
         positions=None if retained is None else tuple(retained),
     )
@@ -944,7 +825,7 @@ def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:
         for game_id in game_ids
     }
     loader = SequenceLoaderConfig(
-        split=_pool_split(pool),
+        split=pool.split,
         batch_size=config.loader.batch_size,
         length_bucket_width=config.loader.length_bucket_width,
         chunk_length=None,
@@ -965,6 +846,7 @@ def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:
         game_ids=game_ids,
         encoded_plies=encoded,
         batches=tuple(tuple(game_ids[index] for index in batch) for batch in plan),
+        identity_context=selection.as_record(),
     )
 
 
@@ -1092,16 +974,6 @@ def _dependency_measurements(
             )
         )
     return tuple(values)
-
-
-def _pool_split(pool: FrozenPool) -> SplitName:
-    record = pool.manifest.get("pool")
-    split = record.get("split") if isinstance(record, Mapping) else None
-    if split not in SPLIT_NAMES:
-        raise CheckpointEvaluationError(
-            f"evaluation pool manifest names an unknown split: {split!r}"
-        )
-    return cast(SplitName, split)
 
 
 def _truncate(row: Mapping[str, Any], prefix_plies: int | None) -> dict[str, Any]:

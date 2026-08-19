@@ -8,8 +8,9 @@ from dataclasses import dataclass
 
 from anthro_chess.evaluation.aggregation import UNRATED_SLICE
 from anthro_chess.evaluation.curves import (
-    CurveComparisonError,
+    PairedRateObservation,
     PointReferenceComparison,
+    ReferenceRateSupport,
 )
 from anthro_chess.evaluation.dependency import PositionKey
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
@@ -174,9 +175,11 @@ class AdjudicationAccumulator:
     def __init__(self, *, retain_positions: bool = False) -> None:
         self._retain_positions = retain_positions
         self._positions: list[AdjudicatedPosition] = []
-        self._overall: dict[PositionPredicate, _RateSupport] = defaultdict(_RateSupport)
-        self._bands: dict[PositionPredicate, dict[str, _RateSupport]] = defaultdict(
-            lambda: defaultdict(_RateSupport)
+        self._overall: dict[PositionPredicate, ReferenceRateSupport] = defaultdict(
+            ReferenceRateSupport
+        )
+        self._bands: dict[PositionPredicate, dict[str, ReferenceRateSupport]] = (
+            defaultdict(lambda: defaultdict(ReferenceRateSupport))
         )
         self._rank_totals: dict[PositionPredicate, int] = defaultdict(int)
         self._rank_counts: dict[PositionPredicate, int] = defaultdict(int)
@@ -192,22 +195,34 @@ class AdjudicationAccumulator:
             self._positions.extend(positions)
 
         by_game: dict[int, list[AdjudicatedPosition]] = defaultdict(list)
+        by_predicate: dict[PositionPredicate, list[PairedRateObservation]] = (
+            defaultdict(list)
+        )
+        by_band: dict[tuple[PositionPredicate, str], list[PairedRateObservation]] = (
+            defaultdict(list)
+        )
         for position in positions:
             by_game[position.game_id].append(position)
+            observation = PairedRateObservation(
+                game_id=position.game_id,
+                human_success=position.human_success,
+                model_success=position.model_success,
+                model_probability_mass=position.policy_mass,
+            )
+            by_predicate[position.predicate].append(observation)
+            by_band[(position.predicate, position.rating_band)].append(observation)
+            if position.best_rank is not None:
+                self._rank_totals[position.predicate] += position.best_rank
+                self._rank_counts[position.predicate] += 1
         for game_id, group in sorted(by_game.items()):
             self._game_totals.append(_game_totals(game_id, group))
-
-        for position in positions:
-            predicate = position.predicate
-            self._overall[predicate].add(position)
-            self._bands[predicate][position.rating_band].add(position)
-            if position.best_rank is not None:
-                self._rank_totals[predicate] += position.best_rank
-                self._rank_counts[predicate] += 1
-        for predicate, group in _grouped_by_predicate(positions).items():
-            self._overall[predicate].close_games(group)
-            for band, members in _grouped_by_band(group).items():
-                self._bands[predicate][band].close_games(members)
+        # A game's opportunities for one predicate reach the overall support in
+        # one call. Its two players can sit in different rating bands, so
+        # adding band by band would count the game once per band it touched.
+        for predicate, observations in by_predicate.items():
+            self._overall[predicate].add(observations)
+        for (predicate, band), observations in by_band.items():
+            self._bands[predicate][band].add(observations)
 
     def report(self) -> AdjudicationReport | None:
         """Return everything the folded batches measured, or nothing realized."""
@@ -235,7 +250,9 @@ class AdjudicationAccumulator:
             )
         return AdjudicationReport(
             predicates=reports,
-            per_game_totals=tuple(sorted(self._game_totals, key=_total_game_id)),
+            per_game_totals=tuple(
+                sorted(self._game_totals, key=lambda total: total.game_id)
+            ),
             positions=(
                 tuple(
                     sorted(
@@ -250,57 +267,6 @@ class AdjudicationAccumulator:
                 if self._retain_positions
                 else None
             ),
-        )
-
-
-class _RateSupport:
-    """One point human-reference comparison, summed rather than retained."""
-
-    def __init__(self) -> None:
-        self._opportunities = 0
-        self._human = 0.0
-        self._model = 0.0
-        self._mass = 0.0
-        self._games = 0
-        self._squared = 0
-
-    def add(self, position: AdjudicatedPosition) -> None:
-        """Add one opportunity's contribution to every reported rate."""
-
-        if not 0.0 <= position.policy_mass <= 1.0:
-            raise CurveComparisonError(
-                "model probability mass must be between zero and one"
-            )
-        self._opportunities += 1
-        self._human += float(position.human_success)
-        self._model += float(position.model_success)
-        self._mass += position.policy_mass
-
-    def close_games(self, positions: Sequence[AdjudicatedPosition]) -> None:
-        """Record the game clustering of one call's finished opportunities."""
-
-        counts: dict[int, int] = defaultdict(int)
-        for position in positions:
-            counts[position.game_id] += 1
-        self._games += len(counts)
-        self._squared += sum(count * count for count in counts.values())
-
-    def summary(self) -> PointReferenceComparison:
-        """Return the comparison these opportunities support."""
-
-        if not self._opportunities:
-            raise CurveComparisonError(
-                "a point human-reference comparison needs at least one opportunity"
-            )
-        return PointReferenceComparison(
-            games=self._games,
-            opportunities=self._opportunities,
-            effective_sample_size=(
-                (self._opportunities * self._opportunities) / self._squared
-            ),
-            human_rate=self._human / self._opportunities,
-            model_rate=self._model / self._opportunities,
-            model_probability_mass=self._mass / self._opportunities,
         )
 
 
@@ -339,41 +305,6 @@ def adjudicated_positions(
                 )
             )
     return tuple(positions)
-
-
-def build_adjudication_report(
-    scored: Sequence[ActionSetPolicy],
-    inputs: ScoringInputs,
-    *,
-    retain_positions: bool = False,
-) -> AdjudicationReport | None:
-    """Adjudicate one whole scored view, for a caller that holds it at once."""
-
-    accumulator = AdjudicationAccumulator(retain_positions=retain_positions)
-    accumulator.add(scored, inputs)
-    return accumulator.report()
-
-
-def _grouped_by_predicate(
-    positions: Sequence[AdjudicatedPosition],
-) -> dict[PositionPredicate, list[AdjudicatedPosition]]:
-    grouped: dict[PositionPredicate, list[AdjudicatedPosition]] = defaultdict(list)
-    for position in positions:
-        grouped[position.predicate].append(position)
-    return grouped
-
-
-def _grouped_by_band(
-    positions: Sequence[AdjudicatedPosition],
-) -> dict[str, list[AdjudicatedPosition]]:
-    grouped: dict[str, list[AdjudicatedPosition]] = defaultdict(list)
-    for position in positions:
-        grouped[position.rating_band].append(position)
-    return grouped
-
-
-def _total_game_id(total: GameTotals) -> int:
-    return total.game_id
 
 
 def _game_totals(
@@ -468,6 +399,5 @@ __all__ = [
     "PredicateReport",
     "action_sets",
     "adjudicated_positions",
-    "build_adjudication_report",
     "merge_game_totals",
 ]

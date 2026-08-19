@@ -231,6 +231,58 @@ class PointReferenceComparison:
         }
 
 
+class ReferenceRateSupport:
+    """One point human-reference comparison, summed rather than retained.
+
+    One precondition: **all of a game's opportunities arrive in one call**,
+        because the effective sample size counts a game's opportunities together
+        and a game split across two calls would count as two.
+    """
+
+    def __init__(self) -> None:
+        self._opportunities = 0
+        self._human = 0.0
+        self._model = 0.0
+        self._mass = 0.0
+        self._games = 0
+        self._squared = 0
+
+    def add(self, observations: Sequence[PairedRateObservation]) -> None:
+        """Add a batch of opportunities, with each game's arriving together."""
+
+        counts: dict[int, int] = {}
+        for observation in observations:
+            if not 0.0 <= observation.model_probability_mass <= 1.0:
+                raise CurveComparisonError(
+                    "model probability mass must be between zero and one"
+                )
+            counts[observation.game_id] = counts.get(observation.game_id, 0) + 1
+        self._opportunities += len(observations)
+        self._human += sum(float(item.human_success) for item in observations)
+        self._model += sum(float(item.model_success) for item in observations)
+        self._mass += sum(item.model_probability_mass for item in observations)
+        self._games += len(counts)
+        self._squared += sum(count * count for count in counts.values())
+
+    def summary(self) -> PointReferenceComparison:
+        """Return the comparison the added opportunities support."""
+
+        if not self._opportunities:
+            raise CurveComparisonError(
+                "a point human-reference comparison needs at least one opportunity"
+            )
+        return PointReferenceComparison(
+            games=self._games,
+            opportunities=self._opportunities,
+            effective_sample_size=(
+                (self._opportunities * self._opportunities) / self._squared
+            ),
+            human_rate=self._human / self._opportunities,
+            model_rate=self._model / self._opportunities,
+            model_probability_mass=self._mass / self._opportunities,
+        )
+
+
 def compare_reference_rate(
     observations: Sequence[PairedRateObservation],
 ) -> PointReferenceComparison:
@@ -241,33 +293,9 @@ def compare_reference_rate(
     than a curve, while retaining the same effective-support accounting.
     """
 
-    if not observations:
-        raise CurveComparisonError(
-            "a point human-reference comparison needs at least one opportunity"
-        )
-    counts: dict[int, int] = {}
-    for observation in observations:
-        if not 0.0 <= observation.model_probability_mass <= 1.0:
-            raise CurveComparisonError(
-                "model probability mass must be between zero and one"
-            )
-        counts[observation.game_id] = counts.get(observation.game_id, 0) + 1
-    opportunities = len(observations)
-    squared = sum(count * count for count in counts.values())
-    return PointReferenceComparison(
-        games=len(counts),
-        opportunities=opportunities,
-        effective_sample_size=(opportunities * opportunities) / squared,
-        human_rate=(
-            sum(float(item.human_success) for item in observations) / opportunities
-        ),
-        model_rate=(
-            sum(float(item.model_success) for item in observations) / opportunities
-        ),
-        model_probability_mass=(
-            sum(item.model_probability_mass for item in observations) / opportunities
-        ),
-    )
+    support = ReferenceRateSupport()
+    support.add(observations)
+    return support.summary()
 
 
 @dataclass(frozen=True)

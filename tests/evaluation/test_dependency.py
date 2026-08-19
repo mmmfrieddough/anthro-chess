@@ -13,6 +13,7 @@ from anthro_chess.evaluation.dependency import (
     WEAKER_PREFIX_GROUP,
     Conditioning,
     ConditioningKind,
+    DependencyColumnBuilder,
     DependencyError,
     DependencyTestConfig,
     DependencyTestResult,
@@ -20,7 +21,8 @@ from anthro_chess.evaluation.dependency import (
     PositionContext,
     PositionKey,
     TrajectorySignal,
-    build_dependency_result,
+    _require_conditioning_passes,
+    reduce_dependency_columns,
 )
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.results.metrics import (
@@ -304,17 +306,17 @@ def _build(
         )
         for key in contexts
     }
-    return build_dependency_result(
-        config=DependencyTestConfig(
-            cross_conditioning_ratings=CONDITIONING_VALUES,
-            minimum_slice_positions=minimum_slice_positions,
-            minimum_prefix_decisions=minimum_prefix_decisions,
-        ),
-        contexts=contexts,
-        true_positions=true,
-        corrupted_positions=corrupted,
-        conditioned_positions=resolved,
-        trajectory=signals,
+    config = DependencyTestConfig(
+        cross_conditioning_ratings=CONDITIONING_VALUES,
+        minimum_slice_positions=minimum_slice_positions,
+        minimum_prefix_decisions=minimum_prefix_decisions,
+    )
+    _require_conditioning_passes(config, resolved)
+    builder = DependencyColumnBuilder()
+    builder.add(contexts, true, corrupted, resolved, signals)
+    return reduce_dependency_columns(
+        config=config,
+        columns=builder.build(),
         maturity=MaturityContext(step=8000, processed_positions=640_000),
     )
 

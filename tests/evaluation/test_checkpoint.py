@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import torch
 from torch import Tensor
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
@@ -567,16 +568,17 @@ def test_the_dependency_tests_score_each_conditioning_once(
     training_run: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Nine passes over the view, not eleven.
+    """Eight passes over the view, one per distinct conditioning.
 
-    The anchor comparison scores two fixed conditionings the
-    cross-conditioning table also wants, and re-scoring them cost two of the
-    eleven passes this reading used to make. Counted rather than asserted
-    structurally, because the passes are what the reading costs: the same
-    evaluation with the dependency block off is exactly one pass, which is
-    what turns a call count into a pass count on any fixture.
+    The anchor comparison scores two fixed conditionings the cross-conditioning
+    table also wants, and the trajectory needs the true-conditioning policy the
+    primary pass already computed, so all three are carried rather than
+    re-scored. Counted rather than asserted structurally, because the passes
+    are what the reading costs: the same evaluation with the dependency block
+    off is exactly one pass, which is what turns a call count into a pass count
+    on any fixture.
 
-    That the retained scores equal a standalone pass' is
+    That the carried scores equal a standalone pass' is
     ``ActiveBatch.rescored``'s guarantee, which ``test_policy`` pins.
 
     ``configs/evaluation/checkpoint-suite.toml`` states this same count to
@@ -605,7 +607,7 @@ def test_the_dependency_tests_score_each_conditioning_once(
     _evaluate(_config(pool, checkpoint))
 
     assert batches > 0
-    assert calls == 9 * batches
+    assert calls == 8 * batches
 
 
 def test_absent_conditioning_changes_what_the_model_is_shown(
@@ -714,6 +716,60 @@ def test_leakage_check_refuses_a_pool_holding_games_the_recipe_puts_in_training(
         _evaluate(_config(pool, checkpoint))
 
 
+def test_a_grown_corpus_is_still_settled_by_the_shared_split_recipe(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """A game keeps its id as a corpus grows, so its split survives with it.
+
+    Widening the corpus and re-cutting the pool is this project's own workflow,
+    and it leaves a checkpoint trained on one generation scored against a pool
+    cut from the next. The manifests differ; the recipe does not, which is what
+    still settles the question.
+    """
+
+    # Everything recomputes to test under these fractions, so no game the pool
+    # holds is one the recipe puts in the split the checkpoint read.
+    split = {
+        "algorithm": "sha256-threshold-v2",
+        "seed": "fixture",
+        "test_fraction": 1.0,
+        "validation_fraction": 0.0,
+    }
+    earlier, earlier_manifest = write_corpus(
+        tmp_path / "earlier",
+        [
+            normalized_row(1, split="train", plies=8),
+            normalized_row(2, split="test", plies=8),
+        ],
+    )
+    _declare_split(earlier_manifest, split)
+    later, later_manifest = write_corpus(
+        tmp_path / "later",
+        [
+            normalized_row(1, split="train", plies=8),
+            normalized_row(2, split="test", plies=8),
+            normalized_row(3, split="test", plies=10),
+            normalized_row(4, split="train", plies=6),
+        ],
+    )
+    _declare_split(later_manifest, split)
+    pool = _freeze(tmp_path, later, later_manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=earlier, manifest=earlier_manifest
+    )
+
+    result = _evaluate(_config(pool, checkpoint))
+
+    assert result.leakage.same_source_corpus is False
+    assert result.leakage.split_recipe_matches is True
+    assert result.leakage.verified is True
+    assert result.leakage.recipe_recomputed is True
+    assert result.leakage.overlapping_games == 0
+
+
 def test_a_different_corpus_records_the_check_as_unverified(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -789,6 +845,83 @@ def test_the_same_corpus_verifies_without_reading_any_of_it(
     assert result.leakage.overlapping_games == 0
 
 
+def test_evaluation_rejects_an_incompatible_checkpoint(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    payload["metadata"]["encoding"] = {"name": "other-encoding"}
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(CheckpointEvaluationError, match="encoding is incompatible"):
+        _evaluate(_config(pool, checkpoint))
+
+
+def test_evaluation_refuses_a_pool_this_reading_is_not_defined_over(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """The generation a selection pins reaches the loader from here.
+
+    `test_pool` owns what the refusal compares; this owns that the canonical
+    reading asks for it at all, which is the half that fails silently.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+
+    with pytest.raises(CheckpointEvaluationError, match="expected 0{64}"):
+        _evaluate(_config(pool, checkpoint, expected_pool_game_ids_sha256="0" * 64))
+
+
+def test_cli_runs_an_evaluation_without_recording_it(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    capsys: pytest.CaptureFixture[str],
+    training_run: Callable[..., Path],
+) -> None:
+    normalized, manifest = corpus(tmp_path / "corpus")
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+    config_path = tmp_path / "evaluation.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'pool = "{pool}"',
+                "",
+                "[model]",
+                f'checkpoint_path = "{checkpoint}"',
+                'device = "cpu"',
+                "",
+                "[dependency]",
+                "enabled = false",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    status = main(["eval", "run", "--config", str(config_path), "--no-record"])
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "move_loss" in output
+    assert "Legality and move loss by phase:" in output
+    assert "Recorded: nothing" in output
+
+
 def test_cli_reports_a_leaking_checkpoint_as_a_failure(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
@@ -854,6 +987,14 @@ def _config(
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
     )
+
+
+def _declare_split(manifest: Path, split: dict[str, Any]) -> None:
+    """Give a fixture corpus a complete split recipe, as preparation writes one."""
+
+    record = json.loads(manifest.read_text())
+    record["split"] = split
+    manifest.write_text(json.dumps(record))
 
 
 def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
