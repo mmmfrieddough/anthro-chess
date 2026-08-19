@@ -49,6 +49,7 @@ from anthro_chess.data.loading import (
     SequenceInputs,
     SequenceLoaderState,
     collate_sequences,
+    length_bucketed_batches,
     maximum_position_bound,
 )
 from anthro_chess.data.prepare import (
@@ -139,6 +140,7 @@ __all__ = [
     "build_decision_context",
     "resolve_sharded_selection",
     "collate_sequences",
+    "length_bucketed_batches",
     "derive_termination",
     "en_passant_token",
     "encode_game",

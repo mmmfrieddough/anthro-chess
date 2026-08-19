@@ -6,8 +6,7 @@ import pytest
 
 from anthro_chess.config import ConfigError, load_config
 from anthro_chess.data import PrepareConfig, SplitConfig, prepare_pgn
-from anthro_chess.data.prepare import _split_name
-from anthro_chess.data.schema import SPLIT_NAMES
+from anthro_chess.data.schema import SPLIT_NAMES, split_name
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_CONFIG = REPOSITORY_ROOT / "configs/data/lichess-sample.toml"
@@ -17,7 +16,7 @@ _FRACTIONS = {"validation_fraction": 0.1, "test_fraction": 0.1}
 
 
 def _assign(game_id: int, **fractions: float) -> str:
-    return _split_name(game_id, seed=_SEED, **{**_FRACTIONS, **fractions})
+    return split_name(game_id, seed=_SEED, **{**_FRACTIONS, **fractions})
 
 
 def test_assignment_depends_only_on_seed_and_game_id() -> None:
@@ -28,7 +27,7 @@ def test_assignment_depends_only_on_seed_and_game_id() -> None:
     assert set(assignments) == set(SPLIT_NAMES)
     assert assignments == [_assign(game_id) for game_id in game_ids]
     assert [
-        _split_name(game_id, seed="other", **_FRACTIONS) for game_id in game_ids
+        split_name(game_id, seed="other", **_FRACTIONS) for game_id in game_ids
     ] != (assignments)
 
 

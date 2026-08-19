@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from anthro_chess.evaluation.aggregation import UNRATED_SLICE
 from anthro_chess.evaluation.curves import (
     PairedRateObservation,
     PointReferenceComparison,
-    compare_reference_rate,
+    ReferenceRateSupport,
 )
 from anthro_chess.evaluation.dependency import PositionKey
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
@@ -79,10 +79,20 @@ class PredicateReport:
 
 @dataclass(frozen=True)
 class AdjudicationReport:
-    """Every predicate realized by one deterministic evaluation view."""
+    """Every predicate realized by one deterministic evaluation view.
 
-    positions: tuple[AdjudicatedPosition, ...]
+    ``positions`` is ``None`` where the reading did not retain them, which is
+    the default: they are one record per realized opportunity, which the
+    canonical pool measures in millions, and the summary below is what every
+    reported metric is computed from. ``DetailConfig.per_position`` turns them
+    back on for a session that wants to look at the decisions themselves.
+    """
+
     predicates: Mapping[PositionPredicate, PredicateReport]
+    #: Per-game shares of the quantities this reading can resample, which is
+    #: what its own dispersion is estimated from.
+    per_game_totals: tuple[GameTotals, ...]
+    positions: tuple[AdjudicatedPosition, ...] | None = None
 
     def as_record(self) -> dict[str, object]:
         return {
@@ -93,20 +103,24 @@ class AdjudicationReport:
                     self.predicates.items(), key=lambda item: item[0].value
                 )
             },
-            "positions": [
-                {
-                    "game_id": position.game_id,
-                    "ply_index": position.ply_index,
-                    "predicate": position.predicate.value,
-                    "classification": position.classification.value,
-                    "rating_band": position.rating_band,
-                    "human_success": position.human_success,
-                    "model_success": position.model_success,
-                    "policy_mass": position.policy_mass,
-                    "best_rank": position.best_rank,
-                }
-                for position in self.positions
-            ],
+            "positions": (
+                None
+                if self.positions is None
+                else [
+                    {
+                        "game_id": position.game_id,
+                        "ply_index": position.ply_index,
+                        "predicate": position.predicate.value,
+                        "classification": position.classification.value,
+                        "rating_band": position.rating_band,
+                        "human_success": position.human_success,
+                        "model_success": position.model_success,
+                        "policy_mass": position.policy_mass,
+                        "best_rank": position.best_rank,
+                    }
+                    for position in self.positions
+                ]
+            ),
         }
 
     def measurements(self, component: DataComponent) -> tuple[Measurement, ...]:
@@ -143,57 +157,123 @@ class AdjudicationReport:
                 )
         return tuple(values)
 
-    def per_game_totals(self) -> tuple[GameTotals, ...]:
-        """Return game-clustered contributions for data-sampling floors."""
 
-        grouped: dict[int, list[AdjudicatedPosition]] = defaultdict(list)
-        for position in self.positions:
-            grouped[position.game_id].append(position)
+class AdjudicationAccumulator:
+    """Running support for every predicate a reading realizes.
 
-        totals: list[GameTotals] = []
-        for game_id, positions in sorted(grouped.items()):
-            metrics: dict[str, MetricTotal] = {}
-            by_predicate: dict[PositionPredicate, list[AdjudicatedPosition]] = (
-                defaultdict(list)
+    A reading scores its pool a batch at a time and folds each batch in here,
+    so the opportunities themselves live for one batch rather than for the
+    whole pass. Every reported quantity is a sum, a count, or a rate over them,
+    which is what makes that possible.
+
+    One precondition, which the batch plan satisfies by construction: **all of
+    a game's opportunities arrive in one call.** The effective sample size
+    counts a game's opportunities together, so a game split across two calls
+    would be counted as two.
+    """
+
+    def __init__(self, *, retain_positions: bool = False) -> None:
+        self._retain_positions = retain_positions
+        self._positions: list[AdjudicatedPosition] = []
+        self._overall: dict[PositionPredicate, ReferenceRateSupport] = defaultdict(
+            ReferenceRateSupport
+        )
+        self._bands: dict[PositionPredicate, dict[str, ReferenceRateSupport]] = (
+            defaultdict(lambda: defaultdict(ReferenceRateSupport))
+        )
+        self._rank_totals: dict[PositionPredicate, int] = defaultdict(int)
+        self._rank_counts: dict[PositionPredicate, int] = defaultdict(int)
+        self._game_totals: list[GameTotals] = []
+
+    def add(self, scored: Sequence[ActionSetPolicy], inputs: ScoringInputs) -> None:
+        """Fold one batch's scored predicate opportunities into the running support."""
+
+        positions = adjudicated_positions(scored, inputs)
+        if not positions:
+            return
+        if self._retain_positions:
+            self._positions.extend(positions)
+
+        by_game: dict[int, list[AdjudicatedPosition]] = defaultdict(list)
+        by_predicate: dict[PositionPredicate, list[PairedRateObservation]] = (
+            defaultdict(list)
+        )
+        by_band: dict[tuple[PositionPredicate, str], list[PairedRateObservation]] = (
+            defaultdict(list)
+        )
+        for position in positions:
+            by_game[position.game_id].append(position)
+            observation = PairedRateObservation(
+                game_id=position.game_id,
+                human_success=position.human_success,
+                model_success=position.model_success,
+                model_probability_mass=position.policy_mass,
             )
-            for position in positions:
-                by_predicate[position.predicate].append(position)
-            for predicate, group in by_predicate.items():
-                name = predicate.value
-                count = len(group)
-                human = sum(float(item.human_success) for item in group)
-                selected = sum(float(item.model_success) for item in group)
-                mass = sum(item.policy_mass for item in group)
-                metrics[ADJUDICATED_HUMAN_RATE[name].identifier] = MetricTotal(
-                    total=human,
-                    positions=count,
-                )
-                metrics[ADJUDICATED_SELECTED_RATE[name].identifier] = MetricTotal(
-                    total=selected,
-                    positions=count,
-                )
-                metrics[ADJUDICATED_POLICY_MASS[name].identifier] = MetricTotal(
-                    total=mass,
-                    positions=count,
-                )
-                metrics[ADJUDICATED_HUMAN_GAP[name].identifier] = MetricTotal(
-                    total=selected - human,
-                    positions=count,
-                )
-                ranks = [item.best_rank for item in group if item.best_rank is not None]
-                if ranks:
-                    metrics[ADJUDICATED_BEST_RANK[name].identifier] = MetricTotal(
-                        total=float(sum(ranks)),
-                        positions=len(ranks),
+            by_predicate[position.predicate].append(observation)
+            by_band[(position.predicate, position.rating_band)].append(observation)
+            if position.best_rank is not None:
+                self._rank_totals[position.predicate] += position.best_rank
+                self._rank_counts[position.predicate] += 1
+        for game_id, group in sorted(by_game.items()):
+            self._game_totals.append(_game_totals(game_id, group))
+        # A game's opportunities for one predicate reach the overall support in
+        # one call. Its two players can sit in different rating bands, so
+        # adding band by band would count the game once per band it touched.
+        for predicate, observations in by_predicate.items():
+            self._overall[predicate].add(observations)
+        for (predicate, band), observations in by_band.items():
+            self._bands[predicate][band].add(observations)
+
+    def report(self) -> AdjudicationReport | None:
+        """Return everything the folded batches measured, or nothing realized."""
+
+        if not self._overall:
+            return None
+        reports: dict[PositionPredicate, PredicateReport] = {}
+        for predicate in PREDICATE_REGISTRY:
+            support = self._overall.get(predicate)
+            if support is None:
+                continue
+            count = self._rank_counts[predicate]
+            reports[predicate] = PredicateReport(
+                predicate=predicate,
+                classification=PREDICATE_REGISTRY[predicate].classification,
+                overall=support.summary(),
+                rating_bands={
+                    band: member.summary()
+                    for band, member in sorted(self._bands[predicate].items())
+                },
+                mean_best_rank=(
+                    self._rank_totals[predicate] / count if count else None
+                ),
+                rankable_opportunities=count,
+            )
+        return AdjudicationReport(
+            predicates=reports,
+            per_game_totals=tuple(
+                sorted(self._game_totals, key=lambda total: total.game_id)
+            ),
+            positions=(
+                tuple(
+                    sorted(
+                        self._positions,
+                        key=lambda item: (
+                            item.game_id,
+                            item.ply_index,
+                            item.predicate.value,
+                        ),
                     )
-            totals.append(GameTotals(game_id=game_id, metrics=metrics))
-        return tuple(totals)
+                )
+                if self._retain_positions
+                else None
+            ),
+        )
 
 
-def build_adjudication_report(
+def adjudicated_positions(
     scored: Sequence[ActionSetPolicy],
     inputs: ScoringInputs,
-) -> AdjudicationReport | None:
+) -> tuple[AdjudicatedPosition, ...]:
     """Join action-set policy readings to exact predicates and human targets."""
 
     by_key = {(item.game_id, item.ply_index, item.name): item for item in scored}
@@ -224,40 +304,48 @@ def build_adjudication_report(
                     best_rank=score.best_rank,
                 )
             )
-    if not positions:
-        return None
+    return tuple(positions)
 
-    reports: dict[PositionPredicate, PredicateReport] = {}
-    for predicate in PREDICATE_REGISTRY:
-        matching = [item for item in positions if item.predicate is predicate]
-        if not matching:
-            continue
-        bands = {
-            band: _compare(item for item in matching if item.rating_band == band)
-            for band in sorted({item.rating_band for item in matching})
-        }
-        ranks = [item.best_rank for item in matching if item.best_rank is not None]
-        reports[predicate] = PredicateReport(
-            predicate=predicate,
-            classification=PREDICATE_REGISTRY[predicate].classification,
-            overall=_compare(matching),
-            rating_bands=bands,
-            mean_best_rank=(sum(ranks) / len(ranks) if ranks else None),
-            rankable_opportunities=len(ranks),
+
+def _game_totals(
+    game_id: int,
+    positions: Sequence[AdjudicatedPosition],
+) -> GameTotals:
+    """Return one game's clustered contribution for data-sampling floors."""
+
+    metrics: dict[str, MetricTotal] = {}
+    by_predicate: dict[PositionPredicate, list[AdjudicatedPosition]] = defaultdict(list)
+    for position in positions:
+        by_predicate[position.predicate].append(position)
+    for predicate, group in by_predicate.items():
+        name = predicate.value
+        count = len(group)
+        human = sum(float(item.human_success) for item in group)
+        selected = sum(float(item.model_success) for item in group)
+        mass = sum(item.policy_mass for item in group)
+        metrics[ADJUDICATED_HUMAN_RATE[name].identifier] = MetricTotal(
+            total=human,
+            positions=count,
         )
-    return AdjudicationReport(
-        positions=tuple(
-            sorted(
-                positions,
-                key=lambda item: (
-                    item.game_id,
-                    item.ply_index,
-                    item.predicate.value,
-                ),
+        metrics[ADJUDICATED_SELECTED_RATE[name].identifier] = MetricTotal(
+            total=selected,
+            positions=count,
+        )
+        metrics[ADJUDICATED_POLICY_MASS[name].identifier] = MetricTotal(
+            total=mass,
+            positions=count,
+        )
+        metrics[ADJUDICATED_HUMAN_GAP[name].identifier] = MetricTotal(
+            total=selected - human,
+            positions=count,
+        )
+        ranks = [item.best_rank for item in group if item.best_rank is not None]
+        if ranks:
+            metrics[ADJUDICATED_BEST_RANK[name].identifier] = MetricTotal(
+                total=float(sum(ranks)),
+                positions=len(ranks),
             )
-        ),
-        predicates=reports,
-    )
+    return GameTotals(game_id=game_id, metrics=metrics)
 
 
 def action_sets(
@@ -303,29 +391,13 @@ def merge_game_totals(
     )
 
 
-def _compare(
-    positions: Iterable[AdjudicatedPosition],
-) -> PointReferenceComparison:
-    values = tuple(positions)
-    return compare_reference_rate(
-        tuple(
-            PairedRateObservation(
-                game_id=item.game_id,
-                human_success=item.human_success,
-                model_success=item.model_success,
-                model_probability_mass=item.policy_mass,
-            )
-            for item in values
-        )
-    )
-
-
 __all__ = [
     "ADJUDICATION_VERSION",
     "AdjudicatedPosition",
+    "AdjudicationAccumulator",
     "AdjudicationReport",
     "PredicateReport",
     "action_sets",
-    "build_adjudication_report",
+    "adjudicated_positions",
     "merge_game_totals",
 ]

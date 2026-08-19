@@ -255,6 +255,26 @@ def aggregate_positions(
     """
 
     aggregator = SliceAggregator()
+    accumulate_positions(
+        aggregator, positions, inputs, opening_frequency=opening_frequency
+    )
+    return aggregator.compute()
+
+
+def accumulate_positions(
+    aggregator: SliceAggregator,
+    positions: Iterable[PositionPolicy],
+    inputs: ScoringInputs,
+    *,
+    opening_frequency: OpeningFrequency | None = None,
+) -> None:
+    """Add scored positions to a running aggregation under their slice labels.
+
+    Separate from :func:`aggregate_positions` because a reading that scores its
+    pool a batch at a time holds one aggregator across every batch, and the
+    inputs a position's labels come from live only as long as its batch does.
+    """
+
     for position in positions:
         key = (position.game_id, position.ply_index)
         family: str | None = None
@@ -269,7 +289,6 @@ def aggregate_positions(
             opening_family=family,
             opening_tier=tier,
         )
-    return aggregator.compute()
 
 
 def per_game_totals(
@@ -497,6 +516,7 @@ __all__ = [
     "EvaluationLoaderConfig",
     "ScoringError",
     "ScoringInputs",
+    "accumulate_positions",
     "aggregate_positions",
     "build_scoring_inputs",
     "encoding_input",

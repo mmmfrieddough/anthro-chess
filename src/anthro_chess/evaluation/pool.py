@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import Field, model_validator
 
@@ -32,6 +32,7 @@ from anthro_chess.data.artifacts import (
     DataLoadingError,
     file_sha256,
     game_ids_sha256,
+    list_column_lengths,
     manifest_archive_records,
     materialize_rows,
     normalized_row_group_count,
@@ -49,6 +50,7 @@ from anthro_chess.data.schema import (
     NORMALIZED_COLUMNS,
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    SPLIT_NAMES,
     NormalizedColumn,
     SplitName,
     derive_game_id,
@@ -203,6 +205,18 @@ class FrozenPool:
 
         return tuple(sorted(game.game_id for game in self.games))
 
+    @property
+    def split(self) -> SplitName:
+        """Return which split of its corpus this pool was cut from."""
+
+        record = self.manifest.get("pool")
+        split = record.get("split") if isinstance(record, Mapping) else None
+        if split not in SPLIT_NAMES:
+            raise EvaluationPoolError(
+                f"evaluation pool manifest names an unknown split: {split!r}"
+            )
+        return cast(SplitName, split)
+
 
 def pool_rows(
     pool: FrozenPool,
@@ -232,6 +246,100 @@ def pool_rows(
     if len(rows) != len(wanted):
         raise error("the evaluation pool does not contain every selected game")
     return tuple(sorted(rows, key=lambda row: row_game_id(row)))
+
+
+class PoolProjection:
+    """A pool's projected columns, served one batch of games at a time.
+
+    Every row group is held columnar, so a gather costs a copy rather than a
+    re-read of the file, and the same games as Python dictionaries would be a
+    large multiple of the memory.
+    """
+
+    def __init__(
+        self,
+        pool: FrozenPool,
+        columns: Sequence[str],
+        *,
+        error: type[Exception],
+    ) -> None:
+        projected = tuple(
+            dict.fromkeys(
+                (*columns, *(column.value for column in GAME_IDENTITY_COLUMNS))
+            )
+        )
+        try:
+            shard = open_normalized_shard(pool.games_path)
+            self._tables = tuple(
+                read_normalized_row_group(shard, index, projected)
+                for index in range(normalized_row_group_count(shard))
+            )
+        except DataLoadingError as loading_error:
+            raise error(str(loading_error)) from loading_error
+        self._error = error
+        self._game_ids = tuple(
+            tuple(
+                derive_game_id(source_id, source_key)
+                for source_id, source_key in zip(
+                    row_group_column(table, NormalizedColumn.SOURCE_ID.value),
+                    row_group_column(table, NormalizedColumn.SOURCE_GAME_KEY.value),
+                    strict=True,
+                )
+            )
+            for table in self._tables
+        )
+        self._positions = {
+            game_id: (table_index, offset)
+            for table_index, game_ids in enumerate(self._game_ids)
+            for offset, game_id in enumerate(game_ids)
+        }
+
+    def encoded_ply_counts(self) -> dict[int, int]:
+        """Return how many timesteps encoding each game will produce.
+
+        One per recorded action, which is not the pool's ``ply_count``: a game
+        that ended in a resignation or a draw claim carries that decision as an
+        action, and the count column does not include it. A batch plan built on
+        the column would put a third of the pool in the wrong length bucket.
+        """
+
+        return {
+            game_id: length
+            for table_index, table in enumerate(self._tables)
+            for game_id, length in zip(
+                self._game_ids[table_index],
+                list_column_lengths(table, NormalizedColumn.ACTION_IDS.value),
+                strict=True,
+            )
+        }
+
+    def game_ids(self) -> tuple[int, ...]:
+        """Return every pool game's id, in the artifact's own row order."""
+
+        return tuple(game_id for game_ids in self._game_ids for game_id in game_ids)
+
+    def column(self, name: str) -> list[Any]:
+        """Return one projected column's values, aligned with :meth:`game_ids`."""
+
+        return [
+            value for table in self._tables for value in row_group_column(table, name)
+        ]
+
+    def rows(self, game_ids: Sequence[int]) -> tuple[dict[str, Any], ...]:
+        """Return the named games' projected rows, in ascending game id."""
+
+        gathered: dict[int, list[int]] = {}
+        for game_id in game_ids:
+            position = self._positions.get(game_id)
+            if position is None:
+                raise self._error(
+                    "the evaluation pool does not contain every selected game"
+                )
+            gathered.setdefault(position[0], []).append(position[1])
+        rows: list[dict[str, Any]] = []
+        for table_index, offsets in gathered.items():
+            rows.extend(materialize_rows(take_rows(self._tables[table_index], offsets)))
+        return tuple(sorted(rows, key=row_game_id))
 
 
 @dataclass(frozen=True)
