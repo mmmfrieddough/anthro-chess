@@ -22,7 +22,7 @@ import random
 from array import array
 from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from multiprocessing import get_context
 from pathlib import Path
@@ -83,11 +83,13 @@ from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
     ActionSetPolicy,
     ActiveBatch,
+    PositionColumns,
     PositionPolicy,
     TrajectoryColumns,
     active_batch,
+    position_records,
     score_action_sets,
-    score_positions,
+    score_columns,
     trajectory_columns,
     treatment_move_losses,
 )
@@ -127,11 +129,11 @@ from anthro_chess.evaluation.scoring import (
     EvaluationLoaderConfig,
     ScoringError,
     ScoringInputs,
-    accumulate_positions,
     build_scoring_inputs,
     per_game_totals,
     rows_identity_sha256,
     slice_measurements,
+    slice_memberships,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION
@@ -413,7 +415,10 @@ class _BatchScores:
     The conditioning maps are empty where the dependency family is off.
     """
 
-    positions: tuple[PositionPolicy, ...]
+    #: The batch these scores are of. Carried because a reading scoring on
+    #: several devices merges what they return rather than what it sent.
+    inputs: ScoringInputs
+    positions: PositionColumns
     action_sets: tuple[ActionSetPolicy, ...]
     corrupted: Mapping[str, tuple[Conditioning, tuple[float, ...]]]
     conditioned: Mapping[int, tuple[float, ...]]
@@ -442,14 +447,14 @@ class _BatchSession:
         batch = self._batch(inputs)
         logits = self._runner.action_logits(batch)
         active = active_batch(logits, batch)
-        positions = score_positions(active)
-        if not positions:
+        if not active.legal_rows:
             raise CheckpointEvaluationError(
                 "the configured view selected no positions to score"
             )
+        positions = score_columns(active)
         adjudicated = score_action_sets(active, action_sets(inputs))
         if self._shuffled is None:
-            return _BatchScores(positions, adjudicated, {}, {}, None)
+            return _BatchScores(inputs, positions, adjudicated, {}, {}, None)
 
         corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
         for conditioning in (
@@ -486,7 +491,9 @@ class _BatchSession:
             conditioned[value] = self._treatment(
                 batch, _constant_conditioning(value), active
             )
-        return _BatchScores(positions, adjudicated, corrupted, conditioned, trajectory)
+        return _BatchScores(
+            inputs, positions, adjudicated, corrupted, conditioned, trajectory
+        )
 
     def _treatment(
         self,
@@ -706,7 +713,7 @@ def _score(
     """Score every batch of the view, keeping only what outlives its batch."""
 
     dependency = config.dependency.enabled
-    session = _BatchSession(
+    sessions = _sessions(
         runner,
         config.dependency,
         _ShuffledRatings(reading, config.dependency.shuffle_seed)
@@ -720,19 +727,15 @@ def _score(
     totals: list[GameTotals] = []
     retained: list[PositionPolicy] | None = [] if config.detail.per_position else None
 
-    for inputs in _encoded_batches(reading):
-        scores = session.score(inputs)
-        accumulate_positions(
-            aggregator,
-            scores.positions,
-            inputs,
-            opening_frequency=frequency,
+    for scores in _scored_batches(reading, sessions):
+        inputs = scores.inputs
+        memberships = slice_memberships(
+            scores.positions, inputs, opening_frequency=frequency
         )
+        aggregator.accumulate(scores.positions, memberships)
         adjudication.add(scores.action_sets, inputs)
         if resampled:
-            totals.extend(
-                per_game_totals(scores.positions, inputs, opening_frequency=frequency)
-            )
+            totals.extend(per_game_totals(scores.positions, memberships))
         if columns is not None:
             columns.add(
                 inputs.contexts,
@@ -742,7 +745,7 @@ def _score(
                 scores.trajectory,
             )
         if retained is not None:
-            retained.extend(scores.positions)
+            retained.extend(position_records(scores.positions))
 
     report = adjudication.report()
     result = None
@@ -822,6 +825,65 @@ def _encoded_batches(reading: _PoolReading) -> Iterator[ScoringInputs]:
     finally:
         pool.shutdown(cancel_futures=True)
         _encoding_reading = None
+
+
+def _sessions(
+    runner: CheckpointModelRunner,
+    config: DependencyTestConfig,
+    shuffled: _ShuffledRatings | None,
+) -> tuple[_BatchSession, ...]:
+    """Return one scoring session per accelerator this machine exposes.
+
+    The forward passes are what a reading is mostly made of, and they are the
+    part of a batch a second device can take. Replicas answer for the same
+    selection and the same digest, so which device scored a batch is not a
+    property of the reading.
+    """
+
+    if runner.device.type != "cuda":
+        return (_BatchSession(runner, config, shuffled),)
+    devices = torch.cuda.device_count()
+    if devices > 1:
+        logger.info("Scoring across %s devices", devices)
+    replicas = (
+        runner,
+        *(
+            runner.replicated(torch.device("cuda", index))
+            for index in range(1, devices)
+        ),
+    )
+    return tuple(_BatchSession(replica, config, shuffled) for replica in replicas)
+
+
+def _scored_batches(
+    reading: _PoolReading,
+    sessions: Sequence[_BatchSession],
+) -> Iterator[_BatchScores]:
+    """Yield each batch's scores in plan order, scored across every device.
+
+    A session owns one device and holds one batch at a time, so the devices
+    work at once while the reading merges what they return in the order the
+    plan named. What a batch contributes is therefore independent of how many
+    devices ran and of which one ran it.
+    """
+
+    batches = _encoded_batches(reading)
+    if len(sessions) == 1:
+        for inputs in batches:
+            yield sessions[0].score(inputs)
+        return
+
+    pool = ThreadPoolExecutor(max_workers=len(sessions))
+    inflight: deque[Future[_BatchScores]] = deque()
+    try:
+        for index, inputs in enumerate(batches):
+            if len(inflight) >= len(sessions):
+                yield inflight.popleft().result()
+            inflight.append(pool.submit(sessions[index % len(sessions)].score, inputs))
+        while inflight:
+            yield inflight.popleft().result()
+    finally:
+        pool.shutdown(cancel_futures=True)
 
 
 def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
 
+import numpy as np
 from pydantic import Field
 
 from anthro_chess.config import ConfigModel
@@ -41,7 +42,9 @@ from anthro_chess.evaluation.aggregation import (
     RATING_DIMENSION,
     RULE_CASE_DIMENSION,
     SliceAggregator,
+    SliceMembership,
     SliceTable,
+    position_memberships,
 )
 from anthro_chess.evaluation.dependency import PositionContext, PositionKey
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
@@ -50,7 +53,7 @@ from anthro_chess.evaluation.openings import (
     OpeningClassificationError,
     classify_action_ids,
 )
-from anthro_chess.evaluation.policy import PositionPolicy
+from anthro_chess.evaluation.policy import PositionColumns, PositionPolicy
 from anthro_chess.evaluation.results import (
     DataComponent,
     Measurement,
@@ -115,6 +118,14 @@ class ScoringInputs:
         default_factory=dict,
         init=False,
         repr=False,
+        compare=False,
+    )
+    #: Which slice of every dimension each encoded position falls in, derived
+    #: where the labels were rather than where the scores are. Absent for a
+    #: caller that did not supply labels, which is one that would have paid to
+    #: derive them for positions it may not score.
+    derived_memberships: Mapping[str, SliceMembership] | None = field(
+        default=None,
         compare=False,
     )
     _opening_families: dict[int, str] = field(
@@ -228,6 +239,15 @@ def build_scoring_inputs(
         shuffle=False,
         drop_last=False,
     )
+    keys = tuple(plies)
+    memberships = (
+        None
+        if labels is None
+        else position_memberships(
+            [slices[key] for key in keys],
+            [labels[key].characteristics for key in keys],
+        )
+    )
     inputs = ScoringInputs(
         rows=tuple(ordered),
         dataset=dataset,
@@ -235,6 +255,7 @@ def build_scoring_inputs(
         plies=plies,
         slices=slices,
         contexts=contexts,
+        derived_memberships=memberships,
     )
     if labels is not None:
         inputs._labels.update(labels)
@@ -277,52 +298,75 @@ def accumulate_positions(
     inputs a position's labels come from live only as long as its batch does.
     """
 
-    for position in positions:
-        key = (position.game_id, position.ply_index)
-        family: str | None = None
-        tier: str | None = None
-        if opening_frequency is not None:
-            family = inputs.opening_family(position.game_id)
-            tier = opening_frequency.tier(family)
-        aggregator.add(
-            position,
-            inputs.slices[key],
-            inputs.labels(key).characteristics,
-            opening_family=family,
-            opening_tier=tier,
-        )
+    columns = PositionColumns.from_records(tuple(positions))
+    if not len(columns):
+        return
+    aggregator.accumulate(
+        columns,
+        slice_memberships(columns, inputs, opening_frequency=opening_frequency),
+    )
 
 
-def per_game_totals(
-    positions: Iterable[PositionPolicy],
+def slice_memberships(
+    columns: PositionColumns,
     inputs: ScoringInputs,
     *,
     opening_frequency: OpeningFrequency | None = None,
+) -> dict[str, SliceMembership]:
+    """Return which slice of every dimension each scored position falls in."""
+
+    keys = list(zip(columns.game_ids, columns.ply_indices, strict=True))
+    if (
+        opening_frequency is None
+        and inputs.derived_memberships is not None
+        and keys == list(inputs.plies)
+    ):
+        return dict(inputs.derived_memberships)
+    families: list[str] | None = None
+    tiers: list[str] | None = None
+    if opening_frequency is not None:
+        families = [inputs.opening_family(game_id) for game_id in columns.game_ids]
+        tiers = [opening_frequency.tier(family) for family in families]
+    return position_memberships(
+        [inputs.slices[key] for key in keys],
+        [inputs.labels(key).characteristics for key in keys],
+        opening_families=families,
+        opening_tiers=tiers,
+    )
+
+
+def per_game_totals(
+    columns: PositionColumns,
+    memberships: Mapping[str, SliceMembership],
 ) -> tuple[GameTotals, ...]:
     """Return what each scored game contributes to every reported metric.
 
-    This is the input a bootstrap resamples. It reuses the same slice
-    aggregation and the same metric tables as the reported measurement, so a
-    floor can never be computed from a differently defined quantity than the
-    value it qualifies.
+    This is the input a bootstrap resamples. It reads the same slice tables the
+    reported measurement is computed from, so a floor can never be computed
+    from a differently defined quantity than the value it qualifies.
     """
 
-    grouped: dict[int, list[PositionPolicy]] = {}
-    for position in positions:
-        grouped.setdefault(position.game_id, []).append(position)
-    return tuple(
-        GameTotals(
-            game_id=game_id,
-            metrics=_slice_metric_totals(
-                aggregate_positions(
-                    group,
-                    inputs,
-                    opening_frequency=opening_frequency,
-                )
-            ),
+    rows: dict[int, list[int]] = {}
+    for offset, game_id in enumerate(columns.game_ids):
+        rows.setdefault(game_id, []).append(offset)
+    totals: list[GameTotals] = []
+    for game_id, offsets in sorted(rows.items()):
+        selected = np.array(offsets, dtype=np.int64)
+        aggregator = SliceAggregator()
+        aggregator.accumulate(
+            columns.select(selected),
+            {
+                dimension: membership.select(selected)
+                for dimension, membership in memberships.items()
+            },
         )
-        for game_id, group in sorted(grouped.items())
-    )
+        totals.append(
+            GameTotals(
+                game_id=game_id,
+                metrics=_slice_metric_totals(aggregator.compute()),
+            )
+        )
+    return tuple(totals)
 
 
 #: The columns :func:`encoding_input` reads. Declared beside the reader rather

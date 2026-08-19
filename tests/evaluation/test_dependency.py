@@ -23,7 +23,11 @@ from anthro_chess.evaluation.dependency import (
     _require_conditioning_passes,
     reduce_dependency_columns,
 )
-from anthro_chess.evaluation.policy import PositionPolicy, TrajectoryColumns
+from anthro_chess.evaluation.policy import (
+    PositionColumns,
+    PositionPolicy,
+    TrajectoryColumns,
+)
 from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
@@ -225,7 +229,7 @@ def test_the_anchor_quantities_are_weighted_by_the_positions_that_carry_them() -
     builder = DependencyColumnBuilder()
     builder.add(
         {(1, 0): _context(1, 0, rating=1500, band="1200_to_1599")},
-        [_policy(1, 0, 2.0)],
+        PositionColumns.from_records((_policy(1, 0, 2.0),)),
         {"shuffled": (shuffled_conditioning, [2.5])},
         {value: [2.0] for value in CONDITIONING_VALUES},
         TrajectoryColumns(
@@ -237,7 +241,7 @@ def test_the_anchor_quantities_are_weighted_by_the_positions_that_carry_them() -
     )
     builder.add(
         {(2, 0): _context(2, 0, rating=1500, band="1200_to_1599")},
-        [_policy(2, 0, 2.0)],
+        PositionColumns.from_records((_policy(2, 0, 2.0),)),
         {"shuffled": (shuffled_conditioning, [2.5])},
         {value: [2.0] for value in CONDITIONING_VALUES},
         None,
@@ -312,7 +316,13 @@ def _build(
     )
     _require_conditioning_passes(config, resolved)
     builder = DependencyColumnBuilder()
-    builder.add(contexts, true, corrupted, resolved, signals)
+    builder.add(
+        contexts,
+        PositionColumns.from_records(tuple(true)),
+        corrupted,
+        resolved,
+        signals,
+    )
     return reduce_dependency_columns(
         config=config,
         columns=builder.build(),

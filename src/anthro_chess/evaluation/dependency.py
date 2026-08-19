@@ -42,7 +42,7 @@ from pydantic import Field, StrictBool, model_validator
 from anthro_chess.config import ConfigModel
 from anthro_chess.evaluation.noise import GameTotals, MetricTotal
 from anthro_chess.evaluation.policy import (
-    PositionPolicy,
+    PositionColumns,
     TrajectoryColumns,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -473,7 +473,7 @@ class DependencyColumnBuilder:
     def add(
         self,
         contexts: Mapping[PositionKey, PositionContext],
-        true_positions: Sequence[PositionPolicy],
+        true_positions: PositionColumns,
         corrupted_losses: Mapping[str, tuple[Conditioning, Sequence[float]]],
         conditioned_losses: Mapping[int, Sequence[float]],
         trajectory: TrajectoryColumns | None,
@@ -489,8 +489,9 @@ class DependencyColumnBuilder:
         strength, alignment, divergence, agreement = _signal_columns(
             trajectory, len(true_positions)
         )
-        for offset, position in enumerate(true_positions):
-            key = (position.game_id, position.ply_index)
+        losses = true_positions.move_nll.tolist()
+        keys = zip(true_positions.game_ids, true_positions.ply_indices, strict=True)
+        for offset, key in enumerate(keys):
             context = contexts.get(key)
             if context is None:
                 raise DependencyError(
@@ -501,7 +502,7 @@ class DependencyColumnBuilder:
             self._colors.append(context.color)
             self._bands.append(context.rating_band)
             self._rated.append(context.rating is not None)
-            self._true.append(position.move_nll)
+            self._true.append(losses[offset])
             self._has_signal.append(trajectory is not None)
             self._strength.append(strength[offset])
             self._alignment.append(alignment[offset])
