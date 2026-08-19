@@ -20,7 +20,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
-from hashlib import sha256
 from io import StringIO
 from itertools import islice
 from pathlib import Path
@@ -60,6 +59,7 @@ from anthro_chess.data.rating_namespace import rating_namespace_from_event
 from anthro_chess.data.schema import (
     PREPROCESSING_VERSION,
     SCHEMA_VERSION,
+    SPLIT_ALGORITHM,
     SPLIT_NAMES,
     FieldStatus,
     NormalizedColumn,
@@ -67,6 +67,7 @@ from anthro_chess.data.schema import (
     derive_game_id,
     encode_clock_remaining_deltas,
     row_game_id,
+    split_name,
 )
 from anthro_chess.data.speed import (
     UNCLASSIFIED_SPEED,
@@ -999,7 +1000,7 @@ def _append_to_corpus(
             and corpus_games["accepted"] >= maximum_games,
         },
         "split": {
-            "algorithm": "sha256-threshold-v2",
+            "algorithm": SPLIT_ALGORITHM,
             "seed": config.split.seed,
             "validation_fraction": config.split.validation_fraction,
             "test_fraction": config.split.test_fraction,
@@ -1555,7 +1556,7 @@ def _parse_game(
         clock_values.append(None)
         clock_statuses.append(_STATUS_UNAVAILABLE)
     game_id = derive_game_id(config.source.id, source_game_key)
-    split = _split_name(
+    split = split_name(
         game_id,
         seed=config.split.seed,
         validation_fraction=config.split.validation_fraction,
@@ -1770,34 +1771,6 @@ def _requested_splits(split: SplitConfig) -> tuple[SplitName, ...]:
         "test": split.test_fraction,
     }
     return tuple(name for name in SPLIT_NAMES if fractions[name] > 0.0)
-
-
-def _split_name(
-    game_id: int,
-    *,
-    seed: str,
-    validation_fraction: float,
-    test_fraction: float,
-) -> SplitName:
-    """Assign one game to a split as a pure function of the seed and game id.
-
-    Holding the seed fixed keeps every game's assignment stable as a corpus
-    grows or its filters change, so a frozen test pool can never leak into a
-    later training selection.
-
-    ``test`` claims the lowest hash range so its membership also survives a
-    later change to ``validation_fraction``. That ordering costs a one-time
-    reassignment of games relative to the previous two-way split, which the
-    preprocessing version bump already forces.
-    """
-
-    digest = sha256(f"{seed}\0{game_id}".encode()).digest()
-    fraction = int.from_bytes(digest[:8], "big") / 2**64
-    if fraction < test_fraction:
-        return "test"
-    if fraction < test_fraction + validation_fraction:
-        return "validation"
-    return "train"
 
 
 def _write_parquet(records: list[dict[str, object]], path: Path) -> None:

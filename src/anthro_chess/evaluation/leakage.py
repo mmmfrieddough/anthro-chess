@@ -1,21 +1,27 @@
 """Verification that a checkpoint never trained on the games it is scored on.
 
-The pool records which games it holds and what they contain; a checkpoint
-records which normalized corpus and split its training loader consumed. This
-module compares the two and refuses to report a number when they intersect.
+A corpus gives every game exactly one split. So within one corpus, a pool cut
+from one split and a run that read another are disjoint by construction, and
+establishing that costs a comparison of two names rather than a read of the
+games. Where the corpus also declares a split recipe this code can evaluate,
+the pool's own game ids are put back through it, which turns the pool's claim
+about which split it holds into something checked rather than trusted.
 
-Two comparisons are possible and they are not equally cheap. When the
-checkpoint trained on the same normalized corpus the pool was drawn from,
-internal game ids mean the same thing on both sides and comparing them reads
-two small columns. When the corpora differ, an id says nothing, so the games
-are compared by what they contain, which costs a full read of both sides. The
-cheap comparison is used only when it is sound.
+Cost is why this replaced reading the corpus. The previous check held an
+identifier for every training game, and this project's corpus assigns
+1,878,353,187 of them to ``train`` -- about 141 GB of resident set on a 125 GB
+host, so the check could not finish on the machine it was meant to protect. A
+check that never completes protects nothing.
 
-The content key deliberately excludes the internal game id, unlike the pool's
-own per-game digest, which identifies a game *within* one corpus. Two distinct
-games that agree on every move, result, rating, and clock would be treated as
-one; that direction of error refuses an evaluation rather than permitting a
-contaminated one.
+What none of this settles is a corpus whose stored split column disagrees with
+the recipe it declares. That belongs to preparation, which writes the column
+through the same function read back here.
+
+Disjointness cannot be argued at all when the checkpoint trained on a different
+corpus than the pool was drawn from, since splits of unrelated corpora say
+nothing about each other. The reading is not refused there: it records that the
+check could not be established and says so loudly, so a result carries the fact
+rather than an unearned assurance.
 """
 
 from __future__ import annotations
@@ -24,70 +30,64 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from anthro_chess.data.artifacts import (
-    DataLoadingError,
-    file_sha256,
-    normalized_shard_paths,
-    read_normalized_rows,
-)
-from anthro_chess.data.schema import (
-    NormalizedColumn,
-    row_game_id,
-)
+from anthro_chess.data.artifacts import DataLoadingError, normalized_shard_paths
+from anthro_chess.data.schema import SPLIT_ALGORITHM, split_name
 from anthro_chess.evaluation.pool import FrozenPool
 
-LEAKAGE_CHECK_VERSION = 1
+#: Version 2 recomputes split assignment where version 1 read the corpus, so a
+#: version 1 record's ``training_games`` counted a scan this no longer makes.
+LEAKAGE_CHECK_VERSION = 2
 
-GAME_ID_ALGORITHM = "game-id-intersection-v1"
-CONTENT_HASH_ALGORITHM = "content-hash-intersection-v1"
+SPLIT_DISJOINT_ALGORITHM = "split-disjoint-v1"
+UNVERIFIED_ALGORITHM = "unverified-v1"
 
 logger = logging.getLogger(__name__)
 
-_IDENTITY_COLUMNS = (
-    NormalizedColumn.SOURCE_ID.value,
-    NormalizedColumn.SOURCE_GAME_KEY.value,
-    NormalizedColumn.SPLIT.value,
-)
-_CONTENT_COLUMNS = (
-    NormalizedColumn.RULESET.value,
-    NormalizedColumn.INITIAL_POSITION.value,
-    NormalizedColumn.ACTION_IDS.value,
-    NormalizedColumn.RESULT.value,
-    NormalizedColumn.WHITE_NORMALIZED_RATING.value,
-    NormalizedColumn.BLACK_NORMALIZED_RATING.value,
-    NormalizedColumn.CLOCK_REMAINING_DELTA_MS.value,
-    NormalizedColumn.SPLIT.value,
-)
-_CONTENT_KEY_COLUMNS = tuple(
-    column for column in _CONTENT_COLUMNS if column != NormalizedColumn.SPLIT.value
-)
-
-#: Scans from earlier in this process. A sweep checks one checkpoint against
-#: one pool once per benchmark, and each check re-reads every training row to
-#: re-derive the same non-overlap. Both dictionaries are keyed on the
-#: checksums of the files a scan read and on what it selected from them, so a
-#: hit is proof that the same bytes were scanned; checksumming the corpus
-#: costs 0.1 s against the 40 s read it saves, and a corpus rewritten in place
-#: is scanned again rather than remembered.
-_TRAINING_IDS: dict[tuple[str, ...], set[int]] = {}
-_CONTENT_KEYS: dict[tuple[str, ...], set[str]] = {}
-
 
 class LeakageError(ValueError):
-    """Raised when training and benchmark inputs overlap or cannot be compared."""
+    """Raised when training and benchmark inputs overlap."""
+
+
+@dataclass(frozen=True)
+class SplitRecipe:
+    """How one corpus assigns its games to splits."""
+
+    seed: str
+    test_fraction: float
+    validation_fraction: float
+
+    def split_of(self, game_id: int) -> str:
+        """Return the split this recipe puts one game in."""
+
+        return split_name(
+            game_id,
+            seed=self.seed,
+            validation_fraction=self.validation_fraction,
+            test_fraction=self.test_fraction,
+        )
 
 
 @dataclass(frozen=True)
 class LeakageCheck:
-    """The recorded outcome of one train/pool overlap comparison."""
+    """The recorded outcome of one train/pool overlap check.
+
+    ``verified`` is the field to read. The rest says how the answer was
+    reached, or why it could not be, so a stored reading stays interpretable
+    without the code that produced it.
+    """
 
     algorithm: str
+    verified: bool
+    unverified_reason: str | None
+    #: Whether the pool's game ids were put back through the corpus' declared
+    #: split recipe, which is available only where the corpus declares one this
+    #: code can evaluate. Disjointness does not rest on it.
+    recipe_recomputed: bool
     training_split: str
-    training_games: int
+    pool_split: str
     pool_games: int
     overlapping_games: int
     same_source_corpus: bool
@@ -102,8 +102,11 @@ class LeakageCheck:
         return {
             "version": LEAKAGE_CHECK_VERSION,
             "algorithm": self.algorithm,
+            "verified": self.verified,
+            "unverified_reason": self.unverified_reason,
+            "recipe_recomputed": self.recipe_recomputed,
             "training_split": self.training_split,
-            "training_games": self.training_games,
+            "pool_split": self.pool_split,
             "pool_games": self.pool_games,
             "overlapping_games": self.overlapping_games,
             "same_source_corpus": self.same_source_corpus,
@@ -120,13 +123,14 @@ def check_leakage(
     *,
     training_normalized: Path | None = None,
 ) -> LeakageCheck:
-    """Compare a checkpoint's training games against the pool it is scored on."""
+    """Establish that a checkpoint's training split excludes this pool's games."""
 
     training = _training_provenance(checkpoint_metadata)
     split = _training_split(checkpoint_metadata)
     paths = _training_paths(training, training_normalized)
 
     pool_source = _mapping(pool.manifest.get("source"), "evaluation pool source")
+    pool_split = _pool_split(pool)
     pool_manifest_sha256 = _optional_string(pool_source.get("manifest_sha256"))
     training_manifest_sha256 = _optional_string(training.get("manifest_sha256"))
     training_manifest = _mapping(training.get("manifest"), "training data manifest")
@@ -139,52 +143,117 @@ def check_leakage(
         pool_source.get("split"),
     )
 
-    if not split_matches:
+    def build(
+        *,
+        algorithm: str,
+        verified: bool,
+        reason: str | None,
+        recomputed: bool,
+        overlapping: int,
+    ) -> LeakageCheck:
+        return LeakageCheck(
+            algorithm=algorithm,
+            verified=verified,
+            unverified_reason=reason,
+            recipe_recomputed=recomputed,
+            training_split=split,
+            pool_split=pool_split,
+            pool_games=len(pool.games),
+            overlapping_games=overlapping,
+            same_source_corpus=same_corpus,
+            split_recipe_matches=split_matches,
+            training_manifest_sha256=training_manifest_sha256,
+            pool_source_manifest_sha256=pool_manifest_sha256,
+            training_normalized_paths=tuple(str(path) for path in paths),
+        )
+
+    if not same_corpus:
+        reason = (
+            "the checkpoint trained on a different normalized corpus than this "
+            "pool was drawn from, and splits of unrelated corpora say nothing "
+            "about each other"
+        )
         logger.warning(
-            "The checkpoint's training corpus and this pool were split by "
-            "different recipes; split assignment guarantees nothing here and "
-            "the comparison below is the only thing keeping them apart"
+            "Leakage could not be verified: %s. This reading is recorded as "
+            "unverified; nothing here establishes that the checkpoint did not "
+            "train on these games",
+            reason,
+        )
+        return build(
+            algorithm=UNVERIFIED_ALGORITHM,
+            verified=False,
+            reason=reason,
+            recomputed=False,
+            overlapping=0,
         )
 
-    overlapping = 0
-    if same_corpus:
-        algorithm = GAME_ID_ALGORITHM
-        training_ids, training_games = _training_game_ids(paths, split)
-        overlapping = len(training_ids & set(pool.game_ids))
-    else:
-        algorithm = CONTENT_HASH_ALGORITHM
-        logger.info(
-            "Checkpoint and pool name different normalized corpora; comparing "
-            "recorded game content instead of internal ids"
-        )
-        keys, training_games = _training_content_keys(paths, split)
-        overlapping = len(keys & _pool_content_keys(pool))
-
-    if overlapping:
+    if split == pool_split:
         raise LeakageError(
-            f"{overlapping} pool game(s) appear in the checkpoint's {split} "
-            f"split under {algorithm}; this checkpoint cannot be scored on "
-            "this pool"
+            f"the checkpoint trained on the {split} split, which is the split "
+            f"this pool was cut from; every one of its {len(pool.games)} game(s) "
+            "was available to that run"
         )
 
-    check = LeakageCheck(
-        algorithm=algorithm,
-        training_split=split,
-        training_games=training_games,
-        pool_games=len(pool.games),
-        overlapping_games=0,
-        same_source_corpus=same_corpus,
-        split_recipe_matches=split_matches,
-        training_manifest_sha256=training_manifest_sha256,
-        pool_source_manifest_sha256=pool_manifest_sha256,
-        training_normalized_paths=tuple(str(path) for path in paths),
+    recipe = _recipe_for(pool_source.get("split"))
+    overlapping = 0
+    if recipe is not None:
+        overlapping = sum(
+            1 for game_id in pool.game_ids if recipe.split_of(game_id) == split
+        )
+        if overlapping:
+            raise LeakageError(
+                f"{overlapping} pool game(s) belong to the checkpoint's {split} "
+                "split under the corpus' own split recipe, so this pool does not "
+                "hold the split it claims; this checkpoint cannot be scored on it"
+            )
+
+    check = build(
+        algorithm=SPLIT_DISJOINT_ALGORITHM,
+        verified=True,
+        reason=None,
+        recomputed=recipe is not None,
+        overlapping=0,
     )
     logger.info(
-        "Leakage check passed: %s training game(s) share no game with %s pool game(s)",
-        check.training_games,
+        "Leakage check passed: this pool holds %s %s game(s) and the checkpoint "
+        "trained on %s%s",
         check.pool_games,
+        pool_split,
+        split,
+        ", confirmed against the corpus' split recipe" if recipe else "",
     )
     return check
+
+
+def _pool_split(pool: FrozenPool) -> str:
+    """Return which split of its corpus a pool was cut from."""
+
+    record = _mapping(pool.manifest.get("pool"), "evaluation pool identity")
+    split = record.get("split")
+    if not isinstance(split, str) or not split:
+        raise LeakageError("evaluation pool does not record which split it holds")
+    return split
+
+
+def _recipe_for(split: object) -> SplitRecipe | None:
+    """Return the recipe a corpus declared, when this code can evaluate it."""
+
+    if not isinstance(split, Mapping) or split.get("algorithm") != SPLIT_ALGORITHM:
+        return None
+    seed = split.get("seed")
+    test = split.get("test_fraction")
+    validation = split.get("validation_fraction")
+    if (
+        not isinstance(seed, str)
+        or not isinstance(test, int | float)
+        or not isinstance(validation, int | float)
+    ):
+        return None
+    return SplitRecipe(
+        seed=seed,
+        test_fraction=float(test),
+        validation_fraction=float(validation),
+    )
 
 
 def _training_provenance(metadata: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -207,6 +276,14 @@ def _training_paths(
     training: Mapping[str, Any],
     override: Path | None,
 ) -> tuple[Path, ...]:
+    """Return where the checkpoint's training corpus is, as provenance.
+
+    Nothing here reads it. The paths are recorded on the check and consumed by
+    the opening-frequency axis, which is the one reading that still counts over
+    the training corpus, so they are resolved rather than verified: a machine
+    without the corpus can take every reading that does not ask for that axis.
+    """
+
     if override is not None:
         try:
             return normalized_shard_paths(override)
@@ -216,95 +293,12 @@ def _training_paths(
             ) from error
 
     recorded = training.get("normalized_paths")
-    if not isinstance(recorded, Sequence) or isinstance(recorded, (str, bytes)):
+    if not isinstance(recorded, Sequence) or isinstance(recorded, str | bytes):
         raise LeakageError("checkpoint does not record its normalized training paths")
     paths = tuple(Path(str(item)) for item in recorded)
     if not paths:
         raise LeakageError("checkpoint records no normalized training paths")
-    missing = tuple(path for path in paths if not path.is_file())
-    if missing:
-        raise LeakageError(
-            f"the checkpoint's training corpus is not readable here: {missing[0]}. "
-            "Point leakage.training_normalized at a copy of the corpus this "
-            "checkpoint trained on."
-        )
     return paths
-
-
-def _scan_key(paths: Sequence[Path], selected: str) -> tuple[str, ...]:
-    """Identify a scan by the bytes it read and what it kept from them."""
-
-    return (selected, *(file_sha256(path) for path in paths))
-
-
-def _training_game_ids(paths: Sequence[Path], split: str) -> tuple[set[int], int]:
-    key = _scan_key(paths, split)
-    identifiers = _TRAINING_IDS.get(key)
-    if identifiers is None:
-        identifiers = set()
-        for path in paths:
-            for row in _read(path, _IDENTITY_COLUMNS):
-                if row[NormalizedColumn.SPLIT.value] == split:
-                    identifiers.add(row_game_id(row))
-        if not identifiers:
-            raise LeakageError(
-                f"the checkpoint's training corpus holds no {split} split games"
-            )
-        _TRAINING_IDS[key] = identifiers
-    return identifiers, len(identifiers)
-
-
-def _training_content_keys(
-    paths: Sequence[Path],
-    split: str,
-) -> tuple[set[str], int]:
-    key = _scan_key(paths, split)
-    keys = _CONTENT_KEYS.get(key)
-    if keys is None:
-        keys = set()
-        for path in paths:
-            for row in _read(path, _CONTENT_COLUMNS):
-                if row[NormalizedColumn.SPLIT.value] == split:
-                    keys.add(_content_key(row))
-        if not keys:
-            raise LeakageError(
-                f"the checkpoint's training corpus holds no {split} split games"
-            )
-        _CONTENT_KEYS[key] = keys
-    return keys, len(keys)
-
-
-def _pool_content_keys(pool: FrozenPool) -> set[str]:
-    # An empty selection: a pool holds one split and every row of it counts.
-    # Sharing the training side's dictionary is safe because the checksums are
-    # part of the key, so a hit across the two can only be the same bytes read
-    # the same way.
-    key = _scan_key((pool.games_path,), "")
-    keys = _CONTENT_KEYS.get(key)
-    if keys is None:
-        keys = {
-            _content_key(row) for row in _read(pool.games_path, _CONTENT_KEY_COLUMNS)
-        }
-        _CONTENT_KEYS[key] = keys
-    return keys
-
-
-def _content_key(row: Mapping[str, Any]) -> str:
-    """Digest what a game contains, independently of where it is stored."""
-
-    content = {column: row[column] for column in _CONTENT_KEY_COLUMNS}
-    return sha256(
-        json.dumps(
-            content, sort_keys=True, separators=(",", ":"), default=list
-        ).encode()
-    ).hexdigest()
-
-
-def _read(path: Path, columns: Sequence[str]) -> list[dict[str, Any]]:
-    try:
-        return read_normalized_rows(path, columns)
-    except DataLoadingError as error:
-        raise LeakageError(f"cannot read training corpus {path}: {error}") from error
 
 
 def _same_split_recipe(training: object, pool: object) -> bool:
@@ -312,10 +306,10 @@ def _same_split_recipe(training: object, pool: object) -> bool:
 
     if not isinstance(training, Mapping) or not isinstance(pool, Mapping):
         return False
-    return _recipe(training) == _recipe(pool)
+    return _recipe_json(training) == _recipe_json(pool)
 
 
-def _recipe(split: Mapping[str, Any]) -> str:
+def _recipe_json(split: Mapping[str, Any]) -> str:
     return json.dumps(
         {key: value for key, value in split.items() if key != "counts"},
         sort_keys=True,

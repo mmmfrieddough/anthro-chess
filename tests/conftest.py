@@ -782,8 +782,13 @@ def write_training_run(
     normalized: Path,
     manifest: Path,
     seed: int = 23,
+    split: str = "train",
 ) -> Path:
-    """Write a retained run whose provenance names its training corpus."""
+    """Write a retained run whose provenance names its training corpus.
+
+    ``split`` is which split the run read, which is what the leakage check
+    compares against the split a pool was cut from.
+    """
 
     torch.manual_seed(seed)
     path.mkdir(parents=True, exist_ok=True)
@@ -809,7 +814,7 @@ def write_training_run(
             "train": {
                 "normalized": str(normalized),
                 "manifest": str(manifest),
-                "loader": {"split": "train", "batch_size": 2},
+                "loader": {"split": split, "batch_size": 2},
             },
         },
         "provenance": {"source": None, "overrides": []},

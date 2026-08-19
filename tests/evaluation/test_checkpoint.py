@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-import torch
 from torch import Tensor
 
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
@@ -661,39 +661,72 @@ def test_a_prefix_view_scores_fewer_plies_and_starts_its_own_series(
     assert prefix.dataset.view == "prefix"
 
 
-def test_leakage_check_refuses_a_checkpoint_trained_on_pool_games(
+def test_leakage_check_refuses_a_checkpoint_trained_on_the_pool_split(
     tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[..., tuple[Path, Path]],
+    corpus: Callable[[Path], tuple[Path, Path]],
     training_run: Callable[..., Path],
 ) -> None:
-    rows = [
-        normalized_row(1, split="train", plies=8),
-        normalized_row(2, split="test", plies=8),
-    ]
-    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
+    """Reading the split a pool was cut from puts every pool game in the run."""
+
+    normalized, manifest = corpus(tmp_path / "corpus")
     pool = _freeze(tmp_path, normalized, manifest)
-    leaked = [
-        normalized_row(1, split="train", plies=8),
-        normalized_row(2, split="train", plies=8),
-    ]
-    leaked_normalized, leaked_manifest = write_corpus(tmp_path / "leaked", leaked)
     checkpoint = training_run(
         tmp_path / "run",
-        normalized=leaked_normalized,
-        manifest=leaked_manifest,
+        normalized=normalized,
+        manifest=manifest,
+        split="test",
     )
 
-    with pytest.raises(LeakageError, match="appear in the checkpoint's train split"):
+    with pytest.raises(LeakageError, match="which is the split this pool was cut from"):
         _evaluate(_config(pool, checkpoint))
 
 
-def test_leakage_compares_content_when_the_corpora_differ(
+def test_leakage_check_refuses_a_pool_holding_games_the_recipe_puts_in_training(
+    tmp_path: Path,
+    corpus: Callable[[Path], tuple[Path, Path]],
+    training_run: Callable[..., Path],
+) -> None:
+    """A pool whose games the corpus' own recipe assigns elsewhere is refused.
+
+    Split names agreeing is what makes disjointness structural. This is the case
+    the names alone cannot see: the pool does not hold the split it claims, and
+    putting its ids back through the recipe is what notices.
+    """
+
+    normalized, manifest = corpus(tmp_path / "corpus")
+    # Declared before either side reads it, so the pool and the checkpoint agree
+    # on the corpus. Nothing lands in test under these fractions, so every game
+    # the pool holds is one the recipe puts in the training split.
+    record = json.loads(manifest.read_text())
+    record["split"] = {
+        "algorithm": "sha256-threshold-v2",
+        "seed": "fixture",
+        "test_fraction": 0.0,
+        "validation_fraction": 0.0,
+    }
+    manifest.write_text(json.dumps(record))
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
+
+    with pytest.raises(LeakageError, match="under the corpus' own split recipe"):
+        _evaluate(_config(pool, checkpoint))
+
+
+def test_a_different_corpus_records_the_check_as_unverified(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
     training_run: Callable[..., Path],
 ) -> None:
+    """Splits of unrelated corpora say nothing, so the reading says so too.
+
+    The reading still happens. What it must not do is carry an assurance it
+    never established, so the outcome is recorded as unverified with the reason
+    on it rather than refused or quietly passed.
+    """
+
     normalized, manifest = write_corpus(
         tmp_path / "corpus",
         [
@@ -702,159 +735,39 @@ def test_leakage_compares_content_when_the_corpora_differ(
         ],
     )
     pool = _freeze(tmp_path, normalized, manifest)
-    # The same games, renumbered by a separate preparation run. Ids no longer
-    # mean the same thing, so only recorded content can answer the question.
-    renumbered, renumbered_manifest = write_corpus(
-        tmp_path / "renumbered",
-        [
-            normalized_row(11, split="train", plies=8),
-            normalized_row(12, split="validation", plies=8),
-        ],
-        source_id="renumbered",
-    )
-    disjoint, disjoint_manifest = write_corpus(
-        tmp_path / "disjoint",
+    separate, separate_manifest = write_corpus(
+        tmp_path / "separate",
         [
             normalized_row(21, split="train", plies=4, result="0-1"),
             normalized_row(22, split="validation", plies=8),
         ],
-        source_id="disjoint",
+        source_id="separate",
     )
-    overlapping_checkpoint = training_run(
-        tmp_path / "overlapping",
-        normalized=renumbered,
-        manifest=renumbered_manifest,
-    )
-    clean_checkpoint = training_run(
-        tmp_path / "clean",
-        normalized=disjoint,
-        manifest=disjoint_manifest,
+    checkpoint = training_run(
+        tmp_path / "run", normalized=separate, manifest=separate_manifest
     )
 
-    result = _evaluate(_config(pool, clean_checkpoint))
+    result = _evaluate(_config(pool, checkpoint))
 
-    assert result.leakage.algorithm == "content-hash-intersection-v1"
+    assert result.leakage.verified is False
+    assert result.leakage.algorithm == "unverified-v1"
     assert result.leakage.same_source_corpus is False
-    assert result.leakage.overlapping_games == 0
-    with pytest.raises(LeakageError, match="content-hash-intersection-v1"):
-        _evaluate(_config(pool, overlapping_checkpoint))
+    assert result.leakage.unverified_reason is not None
+    assert "different normalized corpus" in result.leakage.unverified_reason
+    assert result.leakage.as_record()["verified"] is False
 
 
-def test_a_repeated_leakage_check_reuses_the_scan_it_already_made(
+def test_the_same_corpus_verifies_without_reading_any_of_it(
     tmp_path: Path,
     corpus: Callable[[Path], tuple[Path, Path]],
     training_run: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A sweep checks one checkpoint against one pool once per benchmark."""
+    """Disjointness is settled by the splits, not by the games.
 
-    normalized, manifest = corpus(tmp_path / "corpus")
-    pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = training_run(
-        tmp_path / "run", normalized=normalized, manifest=manifest
-    )
-    first = _evaluate(_config(pool, checkpoint))
-
-    def unreadable(*args: object, **kwargs: object) -> list[dict[str, Any]]:
-        raise AssertionError("a repeated leakage check re-read the corpus")
-
-    monkeypatch.setattr(leakage_module, "read_normalized_rows", unreadable)
-    second = _evaluate(_config(pool, checkpoint))
-
-    assert second.leakage.algorithm == "game-id-intersection-v1"
-    assert second.leakage.as_record() == first.leakage.as_record()
-
-
-def test_a_repeated_content_comparison_reuses_its_scans_too(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[..., tuple[Path, Path]],
-    training_run: Callable[..., Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The branch that costs a full corpus read is the one worth reusing."""
-
-    normalized, manifest = write_corpus(
-        tmp_path / "corpus",
-        [
-            normalized_row(1, split="train", plies=8),
-            normalized_row(2, split="test", plies=10, rating=1500),
-            normalized_row(3, split="test", plies=8, rating=2100),
-        ],
-    )
-    pool = _freeze(tmp_path, normalized, manifest)
-    # A separate preparation of unrelated games, so ids mean nothing across the
-    # two and the comparison has to read what each side contains.
-    disjoint, disjoint_manifest = write_corpus(
-        tmp_path / "disjoint",
-        [
-            normalized_row(21, split="train", plies=4, result="0-1"),
-            normalized_row(22, split="validation", plies=8),
-        ],
-        source_id="disjoint",
-    )
-    checkpoint = training_run(
-        tmp_path / "run", normalized=disjoint, manifest=disjoint_manifest
-    )
-    first = _evaluate(_config(pool, checkpoint))
-
-    def unreadable(*args: object, **kwargs: object) -> list[dict[str, Any]]:
-        raise AssertionError("a repeated content comparison re-read a corpus")
-
-    monkeypatch.setattr(leakage_module, "read_normalized_rows", unreadable)
-    second = _evaluate(_config(pool, checkpoint))
-
-    assert second.leakage.algorithm == "content-hash-intersection-v1"
-    assert second.leakage.as_record() == first.leakage.as_record()
-
-
-def test_leakage_check_reports_a_training_corpus_this_machine_cannot_read(
-    tmp_path: Path,
-    corpus: Callable[[Path], tuple[Path, Path]],
-    training_run: Callable[..., Path],
-) -> None:
-    normalized, manifest = corpus(tmp_path / "corpus")
-    pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = training_run(
-        tmp_path / "run", normalized=normalized, manifest=manifest
-    )
-    payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    payload["metadata"]["data"]["train"]["normalized_paths"] = [
-        str(tmp_path / "moved" / "games.parquet")
-    ]
-    torch.save(payload, checkpoint)
-
-    with pytest.raises(LeakageError, match="leakage.training_normalized"):
-        _evaluate(_config(pool, checkpoint))
-
-
-def test_evaluation_rejects_an_incompatible_checkpoint(
-    tmp_path: Path,
-    corpus: Callable[[Path], tuple[Path, Path]],
-    training_run: Callable[..., Path],
-) -> None:
-    normalized, manifest = corpus(tmp_path / "corpus")
-    pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = training_run(
-        tmp_path / "run", normalized=normalized, manifest=manifest
-    )
-    payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    payload["metadata"]["encoding"] = {"name": "other-encoding"}
-    torch.save(payload, checkpoint)
-
-    with pytest.raises(CheckpointEvaluationError, match="encoding is incompatible"):
-        _evaluate(_config(pool, checkpoint))
-
-
-def test_evaluation_refuses_a_pool_this_reading_is_not_defined_over(
-    tmp_path: Path,
-    corpus: Callable[[Path], tuple[Path, Path]],
-    training_run: Callable[..., Path],
-) -> None:
-    """The generation a selection pins reaches the loader from here.
-
-    `test_pool` owns what the refusal compares; this owns that the canonical
-    reading asks for it at all, which is the half that fails silently.
+    The corpus this project trains on holds nearly two billion games in its
+    training split, so a check that reads them cannot finish on the host it
+    protects. Refusing the read outright is what keeps that true.
     """
 
     normalized, manifest = corpus(tmp_path / "corpus")
@@ -863,46 +776,17 @@ def test_evaluation_refuses_a_pool_this_reading_is_not_defined_over(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    with pytest.raises(CheckpointEvaluationError, match="expected 0{64}"):
-        _evaluate(_config(pool, checkpoint, expected_pool_game_ids_sha256="0" * 64))
+    def unreadable(*args: object, **kwargs: object) -> list[dict[str, Any]]:
+        raise AssertionError("the leakage check read the training corpus")
 
+    monkeypatch.setattr(leakage_module, "normalized_shard_paths", unreadable)
+    result = _evaluate(_config(pool, checkpoint))
 
-def test_cli_runs_an_evaluation_without_recording_it(
-    tmp_path: Path,
-    corpus: Callable[[Path], tuple[Path, Path]],
-    capsys: pytest.CaptureFixture[str],
-    training_run: Callable[..., Path],
-) -> None:
-    normalized, manifest = corpus(tmp_path / "corpus")
-    pool = _freeze(tmp_path, normalized, manifest)
-    checkpoint = training_run(
-        tmp_path / "run", normalized=normalized, manifest=manifest
-    )
-    config_path = tmp_path / "evaluation.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                f'pool = "{pool}"',
-                "",
-                "[model]",
-                f'checkpoint_path = "{checkpoint}"',
-                'device = "cpu"',
-                "",
-                "[dependency]",
-                "enabled = false",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    status = main(["eval", "run", "--config", str(config_path), "--no-record"])
-
-    output = capsys.readouterr().out
-    assert status == 0
-    assert "move_loss" in output
-    assert "Legality and move loss by phase:" in output
-    assert "Recorded: nothing" in output
+    assert result.leakage.verified is True
+    assert result.leakage.algorithm == "split-disjoint-v1"
+    assert result.leakage.pool_split == "test"
+    assert result.leakage.training_split == "train"
+    assert result.leakage.overlapping_games == 0
 
 
 def test_cli_reports_a_leaking_checkpoint_as_a_failure(
@@ -920,17 +804,11 @@ def test_cli_reports_a_leaking_checkpoint_as_a_failure(
         ],
     )
     pool = _freeze(tmp_path, normalized, manifest)
-    leaked, leaked_manifest = write_corpus(
-        tmp_path / "leaked",
-        [
-            normalized_row(1, split="train", plies=8),
-            normalized_row(2, split="train", plies=8),
-        ],
-    )
     checkpoint = training_run(
         tmp_path / "run",
-        normalized=leaked,
-        manifest=leaked_manifest,
+        normalized=normalized,
+        manifest=manifest,
+        split="test",
     )
     config_path = tmp_path / "evaluation.toml"
     config_path.write_text(

@@ -1884,9 +1884,14 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
             f"{overall.position_count} position(s))"
         ),
         (
-            f"Leakage: no overlap with {result.leakage.training_games} "
-            f"{result.leakage.training_split} game(s) "
+            f"Leakage: none of {result.leakage.pool_games} pool game(s) fall "
+            f"in the {result.leakage.training_split} split "
             f"[{result.leakage.algorithm}]"
+            if result.leakage.verified
+            else (
+                f"Leakage: NOT VERIFIED - {result.leakage.unverified_reason} "
+                f"[{result.leakage.algorithm}]"
+            )
         ),
         "",
         f"move_loss                 {overall.move_loss:.6f}",

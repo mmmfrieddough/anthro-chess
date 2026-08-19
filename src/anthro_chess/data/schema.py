@@ -197,6 +197,43 @@ def encode_clock_remaining_deltas(
     return stored
 
 
+#: How a corpus assigns games to splits. Named in a corpus manifest, and read
+#: back by anything that has to reason about an assignment it did not make.
+SPLIT_ALGORITHM = "sha256-threshold-v2"
+
+
+def split_name(
+    game_id: int,
+    *,
+    seed: str,
+    validation_fraction: float,
+    test_fraction: float,
+) -> SplitName:
+    """Assign one game to a split as a pure function of the seed and game id.
+
+    Holding the seed fixed keeps every game's assignment stable as a corpus
+    grows or its filters change, so a frozen test pool can never leak into a
+    later training selection.
+
+    ``test`` claims the lowest hash range so its membership also survives a
+    later change to ``validation_fraction``. That ordering costs a one-time
+    reassignment of games relative to the previous two-way split, which the
+    preprocessing version bump already forces.
+
+    Being a pure function is what lets an assignment be checked rather than
+    trusted: the evaluation leakage check recomputes it for a pool's games
+    instead of reading the corpus to see where they ended up.
+    """
+
+    digest = sha256(f"{seed}\0{game_id}".encode()).digest()
+    fraction = int.from_bytes(digest[:8], "big") / 2**64
+    if fraction < test_fraction:
+        return "test"
+    if fraction < test_fraction + validation_fraction:
+        return "validation"
+    return "train"
+
+
 def derive_game_id(source_id: str, source_game_key: str) -> int:
     """Return the internal identifier for one source game.
 
