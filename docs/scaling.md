@@ -98,30 +98,39 @@ One width does not, and it belongs here because it behaves the opposite way from
 every other dial: **`geometric_bias_dim` sets how many 64-by-64 attention-bias
 templates the geometric bias mixes, and a template is 4096 values whatever the
 model width is.** Its cost is absolute rather than proportional, so one value is
-a rounding error in a large model and most of a small one — at the proof width
-it is about two thirds of the parameter count, while at the scale Chessformer
-runs the equivalent setting is a few percent.
+a rounding error in a large model and most of a small one.
 
-So it is scaled with the model rather than carried as a number: **hold it near a
-quarter of `model_dim`**, which is the ratio Chessformer runs at every size it
-publishes.
+Two rules hold it, and both are Chessformer's.
 
-The consequence worth carrying forward is that the generator's *share* of the
-parameters is not constant under that rule — it falls as the model grows, but far
-more slowly than "negligible once the model is real". Chessformer's own sizes are
-the reference: at its 23M configuration the bias generators are roughly a third
-of the parameters, and only by 79M do they fall to about a seventh. At this
-project's proof width they are about half.
+**The template bank belongs to the whole model, not to a layer.** Every layer
+mixes the same learned square relations and only the mixing is its own, so depth
+multiplies the mixing and never the bank. Held per layer instead, the bank alone
+outweighs everything else at any width this project would train at.
 
-So a parameter count at proof scale is not comparable to one at target scale for
-this architecture, and a small model's count is substantially a statement about
-the bias generator rather than about the trunk. Compare like for like, or compare
-the trunk widths instead. And do not treat the generator as a rounding error at
-any size this project is likely to reach — it is a design cost that stays
-material, which is part of what an arm removing it would be measuring.
+**Hold `geometric_bias_dim` near a quarter of `model_dim`.** That is the ratio
+Chessformer runs at 5M and 23M; at 79M it keeps the value rather than the ratio,
+which is the direction to drift if the two ever disagree.
+
+What survives both rules is that the generator is not free. The bank is paid
+once, but each layer's mixing stages are a material share of that layer, and the
+share falls with width more slowly than "negligible once the model is real". So a
+parameter count at proof scale is not comparable to one at target scale for this
+architecture: compare like for like, or compare the model widths instead.
+
+### Depth Is Fixed And Width Is The Dial
+
+**The layer count does not scale with the model.** Chessformer runs eight layers
+at every size it publishes, from its 3M ablation to 79M, widening rather than
+deepening. This project takes that answer rather than sweeping for its own, which
+leaves width as the single dial the size derivation above turns.
+
+Two shape ratios ride along and are held rather than tuned: a feed-forward twice
+the model width, and an attention head dimension of 32.
 
 `docs/decisions/0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`
-records what the bias buys and why it is carried at all.
+records what the bias buys and why it is carried at all, and
+`docs/decisions/0070-one-decision-per-pass-and-history-in-the-token-depth.md`
+records where the depth budget went once the ply axis stopped taking a share.
 
 ## The Ablation Vehicle
 

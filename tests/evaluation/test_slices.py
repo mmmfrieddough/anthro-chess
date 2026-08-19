@@ -350,6 +350,7 @@ def test_rebuilding_rejects_a_piece_id_outside_the_contract() -> None:
         en_passant_square=None,
         halfmove_clock=0,
         fullmove_number=1,
+        repetition_count=0,
     )
 
     with pytest.raises(ValueError, match="outside the encoding contract"):

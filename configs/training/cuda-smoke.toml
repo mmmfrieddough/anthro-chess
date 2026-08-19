@@ -25,13 +25,11 @@ profile_phases = true
 
 [model]
 piece_embedding_dim = 2
-action_embedding_dim = 4
 model_dim = 16
 attention_heads = 2
-spatial_layers = 1
-transformer_layers = 1
-decision_layers = 1
+layers = 1
 feedforward_dim = 24
+history_positions = 2
 geometric_token_dim = 1
 geometric_bias_dim = 2
 dropout = 0.0

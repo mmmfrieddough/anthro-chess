@@ -12,6 +12,12 @@ Lands before `0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-o
 freezes a training identity, because 0065 names a fundamental architecture
 rethink after the freeze as the vehicle's main risk.
 
+Superseded on the ply axis by
+`0070-one-decision-per-pass-and-history-in-the-token-depth.md`. The trunk this
+record kept as scope control is gone, along with the spatial decoder that served
+it, and history is the depth of each square token instead. Everything else below
+still holds.
+
 ## Context
 
 The architecture that reached a working training loop was assembled from

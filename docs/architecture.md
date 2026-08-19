@@ -12,25 +12,23 @@ For each ply `t`:
 
 ```text
 exact board before move_t = ChessRules(moves_0 ... moves_t-1)
-position_features_t       = Previous move, rule state, phase features, plus
-                            clock features when available
+history_t                 = the n boards ending at that one, each from the
+                            side to move when it was current
+position_features_t       = Rule state, repetition, phase features, the colour
+                            to move, plus clock features when available
 trajectory_settings       = Preferences and clock settings when enabled
 
 squares_t = SquareTokens(
-  exact board before move_t,
+  history_t,
   position_features_t,
   target_rating_t,
   trajectory_settings
 )                                             -> 64 tokens
 
-SpatialEncoder(squares_t) -> encoded_t        -> 64 tokens
-x_t = pool(encoded_t)
+SpatialLayers(squares_t) -> decision_t        -> 64 tokens
 
-CausalTransformer(x_0 ... x_t) -> h_t
-SpatialDecoder(encoded_t, h_t) -> decision_t  -> 64 tokens
-
-action_head(decision_t, h_t) -> action_t
-time_head(h_t, action_embedding_t) -> optional move_time_t
+action_head(decision_t) -> action_t
+time_head(decision_t, action_embedding_t) -> optional move_time_t
 ```
 
 The board state is not learned from the move sequence. It is computed exactly
@@ -97,52 +95,62 @@ The board is presented to the model as one token per square rather than as a
 single pooled vector, so board geometry survives into the network instead of
 being flattened away before the first layer. Attention between those tokens
 carries a learned geometric bias generated from the position itself, which is
-what lets the relations that matter in a given position be attended along.
+what lets the relations that matter in a given position be attended along. Its
+bank of square-relation templates belongs to the whole model rather than to any
+one layer.
 `docs/decisions/0066-the-trunk-sees-the-rating-and-the-board-keeps-its-shape.md`
-records why.
+records why the board keeps its shape, and
+`docs/decisions/0070-one-decision-per-pass-and-history-in-the-token-depth.md`
+why the model reads one decision at a time.
 
-## Sequence Model
+Every board is presented from the side to move, mirrored so the player choosing
+is always the one playing up the board. Which colour that player is survives as
+its own input, because a repertoire as white is not the mirror of a repertoire
+as black.
 
-The preferred sequence model is a causal transformer with one timestep per ply,
-reading the pooled output of the spatial encoder for each position.
+## Decision Model
 
-The transformer sees:
+One forward pass is one decision. History is the depth of each square token
+rather than an axis of its own: the last several boards are stacked into the
+token, and differencing consecutive boards recovers what moved, so no separate
+previous-move input is carried.
 
-- each position's encoded squares, pooled to one feature per ply;
-- previous move embeddings;
-- the target rating, which is already part of the representation it reads;
-- current clock and phase features when timing is enabled;
-- trajectory metadata that genuinely helps interpret the history;
-- historical context through causal attention.
+The model sees, for the decision it is asked about:
+
+- that position's 64 square tokens, each carrying its own square across the
+  stacked boards;
+- how often each of those boards had already occurred, which is what a draw
+  claim turns on;
+- castling rights, the en-passant square, and the halfmove clock;
+- the colour the deciding player is playing;
+- the target rating, which is part of the representation before layer zero;
+- current clock and phase features when timing is enabled.
 
 Target rating is embedded into the square tokens before any layer runs, so
-every stage of the network computes with it and the rating can change which
-historical detail the trunk attends to. It is placed by interpolating between a
-learned weak anchor and a learned strong anchor, which makes the representation
-monotone in the rating by construction rather than leaving the ordering to be
-discovered.
+every stage of the network computes with it. It is placed by interpolating
+between a learned weak anchor and a learned strong anchor, which makes the
+representation monotone in the rating by construction rather than leaving the
+ordering to be discovered.
 
-In training each ply carries its own mover's rating, so the trunk reads both
-players' ratings across a game. When the engine is playing, the opponent's is
-unknown and the configured target rating is broadcast across the whole
-trajectory instead, because a history rated only on its final ply is a shape no
-training game contains. Nothing is required from the caller but Anthro's own
-target rating, and no controlled-color input is needed because the exact board
-already identifies the side to move.
+Each decision reads one rating, its own mover's, in training and at runtime
+alike. Nothing is required from the caller but Anthro's own target rating, and
+no controlled-color input is needed because the exact board already identifies
+the side to move.
 
 The current checkpoint-backed model runner implements that correctness
 baseline. It converts one typed target-free decision trajectory into the shared
-model tensor boundary, applies the controlled player's rating only to the final
-decision, recomputes the complete causal history, and returns detached raw
-action logits to the decision runtime.
+model tensor boundary, names the ply being decided, and returns detached raw
+action logits to the decision runtime. The model's own work does not grow with
+the game, since the decision reads the boards stacked behind it and nothing
+earlier. Building the batch still carries the whole history it was handed,
+which is a small and measured share of a decision.
 
 It also accepts several pending decisions at once, padding the shorter
-histories past their end so each keeps the timestep indices it would have had
-alone and reads its own decision at its own length. A live game has one
-decision to make and never uses this; a caller holding many independent games,
-such as a generated-game benchmark, is the reason it exists. The batched
-surface is declared separately from the single-decision one, so a runner that
-offers only the latter stays a valid runner.
+histories past their end so each reads its own decision at its own length. A
+live game has one decision to make and never uses this; a caller holding many
+independent games, such as a generated-game benchmark, is the reason it exists.
+The batched surface is declared separately from the single-decision one, so a
+runner that offers only the latter stays a valid runner.
 
 The current game-session runtime owns the canonical board and complete observed
 move history, holds the context encoded for it, masks actions against exact
@@ -168,18 +176,14 @@ placement, and other expensive model-runner initialization should survive for
 the process lifetime. Exact board and move history should advance
 incrementally when a caller supplies an extension of the known game, while an
 unrelated position, takeback, or divergent history should invalidate only what
-can no longer be reused and fall back to atomic exact replacement. Encoded
-history and future transformer key-value caches should follow the same
-common-prefix boundary. Caching is not allowed to weaken support for arbitrary
-valid positions and should be implemented only where its correctness and
-measured value justify the complexity.
+can no longer be reused and fall back to atomic exact replacement. Caching is
+not allowed to weaken support for arbitrary valid positions and should be
+implemented only where its correctness and measured value justify the
+complexity.
 
-Encoded history reuses that boundary today. Transformer key-value caching does
-not, and is deliberately still open: once encoding is reused, the remaining
-per-decision cost is almost entirely the forward pass, so caching model state
-is the next thing worth measuring rather than something already ruled out. It
-would change shared model code that training also runs, so the case for it
-should rest on inference measurement at a chosen model capacity.
+Encoded history reuses that boundary today. Caching model state across
+decisions does not arise: a decision reads a fixed window of boards rather than
+the game so far, so there is no growing prefix to hold.
 
 The sampling generator has a game lifetime and must not be reset as a side
 effect of synchronizing a position. Greedy temperature-zero selection is
@@ -188,15 +192,15 @@ by default, while an explicit seed makes games and benchmarks reproducible.
 See
 [`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
 
-Training should make full use of causal attention. A complete game, or
-a chunk of a game, can be fed to the transformer at once so all ply predictions
-are trained in parallel while each timestep only attends to prior timesteps.
+A complete game, or a chunk of one, is still fed to the model at once, because
+every ply of it is a supervised decision and batching them costs one pass. What
+travels between those decisions is nothing: each reads its own stacked boards.
 
-The current implementation follows this shape with a square-token encoder, an
-action-only causal transformer over plies, a spatial decoder that returns the
-history feature to the squares, and a source-destination head over the shared
-action vocabulary. Its tensor boundary, hyperparameter schema, compatibility
-identity, and model definition live in `anthro_chess.models`.
+The current implementation follows this shape with a square-token encoder over
+the stacked history, a stack of spatial layers reading the geometric bias, and a
+source-destination head over the shared action vocabulary. Its tensor boundary,
+hyperparameter schema, compatibility identity, and model definition live in
+`anthro_chess.models`.
 
 ## Decision, Static, And Dynamic Metadata
 

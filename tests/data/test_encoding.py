@@ -8,9 +8,9 @@ import chess
 import pytest
 
 from anthro_chess.chess import (
-    ACTION_VOCABULARY_SIZE,
     DRAW_CLAIM_ACTION_ID,
     RESIGNATION_ACTION_ID,
+    decode_move,
     encode_move,
 )
 from anthro_chess.data import (
@@ -23,14 +23,13 @@ from anthro_chess.data import (
     en_passant_token,
     encode_game,
     encoding_identity,
-    previous_action_token,
 )
 from anthro_chess.data import encoding as encoding_module
 
 PRESENT_60_SECONDS = 60_000
 
 
-def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
+def test_encodes_exact_positions_and_legal_targets() -> None:
     game = _game(("e2e4", "e7e5", "g1f3"))
 
     plies = encode_game(game)
@@ -38,7 +37,6 @@ def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
     assert len(plies) == 3
     first, second, third = plies
     assert first.ply_index == 0
-    assert first.previous_action_id is None
     assert first.board.side_to_move == 0
     assert first.board.fullmove_number == 1
     assert first.board.castling_rights == 15
@@ -46,12 +44,10 @@ def test_encodes_exact_positions_previous_moves_and_legal_targets() -> None:
     assert first.board.piece_ids[chess.E2] == chess.PAWN
     assert first.target_action_id in first.enabled_actions()
 
-    assert second.previous_action_id == first.target_action_id
     assert second.board.side_to_move == 1
     assert second.board.en_passant_square == chess.E3
     assert second.board.piece_ids[chess.E4] == chess.PAWN
 
-    assert third.previous_action_id == second.target_action_id
     assert third.board.fullmove_number == 2
     assert third.board.piece_ids[chess.E5] == chess.PAWN + 6
 
@@ -144,9 +140,9 @@ def test_identity_and_records_are_stable_and_json_serializable() -> None:
 
     assert identity == {
         "name": "anthro-per-ply",
-        "version": 4,
+        "version": 5,
         "schema_sha256": (
-            "883b1a2bf7996f3e74d1305630b4b7a1c6f049e5454153ac3846b53911d6eeb9"
+            "dfc86ad727571972294e1582c2a9cb4b47e80eb150a98988bcea833a062f80d4"
         ),
         "board_square_count": 64,
         "action_vocabulary": {
@@ -235,7 +231,6 @@ def test_a_trailing_resignation_is_a_step_that_moves_nothing() -> None:
     # The board is the one the last move left, read by the player who resigned.
     assert resignation.board.piece_ids[chess.F3] == chess.KNIGHT
     assert resignation.board.side_to_move == 1
-    assert resignation.previous_action_id == plies[-2].target_action_id
 
 
 def test_a_trailing_draw_claim_is_enabled_only_where_the_rules_allow_it() -> None:
@@ -341,9 +336,8 @@ def test_target_free_decision_context_matches_training_history() -> None:
         context = expected.context()
         assert actual.board == context.board
         assert actual.ply_index == context.ply_index
-        assert actual.previous_action_id == context.previous_action_id
     assert decision.plies[-1].board.side_to_move == 1
-    assert decision.plies[-1].previous_action_id == training[-1].target_action_id
+    assert decision.plies[-1].board.piece_ids[chess.F3] == chess.KNIGHT
     assert decision.target_rating == 1725
     assert all("target_rating" not in ply.as_record() for ply in decision.plies)
 
@@ -436,9 +430,7 @@ def test_the_column_form_describes_the_same_timesteps_as_the_plies() -> None:
         )
         assert row[DecisionColumn.HALFMOVE_CLOCK] == board.halfmove_clock
         assert row[DecisionColumn.FULLMOVE_NUMBER] == board.fullmove_number
-        assert row[DecisionColumn.PREVIOUS_ACTION_TOKEN] == previous_action_token(
-            ply.previous_action_id
-        )
+        assert row[DecisionColumn.REPETITION_COUNT] == board.repetition_count
 
     # The en-passant square is what a shared zero would stand in for, so the
     # case the test was built around is checked to have occurred.
@@ -448,20 +440,49 @@ def test_the_column_form_describes_the_same_timesteps_as_the_plies() -> None:
 def test_a_nullable_input_travels_as_the_row_that_names_its_absence() -> None:
     """Absence is a row of the same table, so nothing reassembles it downstream.
 
-    Square a1 is index 0 and the first action id is 0, so both columns would
-    otherwise put a real value and a missing one at the same index and need a
-    presence flag beside them to be read apart.
+    Square a1 is index 0, so the column would otherwise put a real value and a
+    missing one at the same index and need a presence flag beside it to be read
+    apart.
     """
 
     assert en_passant_token(None) == 0
     assert en_passant_token(chess.A1) == 1
     assert en_passant_token(chess.H8) == BOARD_SQUARE_COUNT
 
-    assert previous_action_token(None) == ACTION_VOCABULARY_SIZE
-    assert previous_action_token(0) == 0
-    assert previous_action_token(ACTION_VOCABULARY_SIZE - 1) == (
-        ACTION_VOCABULARY_SIZE - 1
-    )
+
+def test_a_repeated_position_counts_toward_the_claim() -> None:
+    """A model blind to repetition cannot decide when to claim a draw.
+
+    Shuffling both knights out and back returns the game to its own starting
+    position, so the third occurrence is the one where the rules first allow a
+    threefold claim and the encoding has to say so.
+    """
+
+    shuffle = ("g1f3", "g8f6", "f3g1", "f6g8")
+
+    plies = encode_game(_game(shuffle * 2 + ("e2e4",)), legal_actions=False)
+
+    counts = [ply.board.repetition_count for ply in plies]
+    assert counts == [0, 0, 0, 0, 1, 1, 1, 1, 2]
+    board = chess.Board()
+    for ply in plies[:-1]:
+        board.push(decode_move(ply.target_action_id))
+    assert board.can_claim_threefold_repetition()
+
+
+def test_a_takeback_forgets_the_repetitions_it_unwound() -> None:
+    """A history rewound past a repeat is a history that has not repeated yet."""
+
+    shuffle = [chess.Move.from_uci(move) for move in ("g1f3", "g8f6", "f3g1", "f6g8")]
+    history = DecisionHistory(moves=shuffle * 2)
+    assert history.context(target_rating=None).plies[-1].board.repetition_count == 2
+
+    history.synchronize(moves=shuffle[:2])
+
+    counts = [
+        ply.board.repetition_count for ply in history.context(target_rating=None).plies
+    ]
+    assert counts == [0, 0, 0]
 
 
 def test_a_rule_counter_larger_than_play_produces_carries_through() -> None:

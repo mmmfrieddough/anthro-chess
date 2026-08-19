@@ -620,8 +620,6 @@ def _load_pool(
     # otherwise fail names the absent column rather than the stale pool behind
     # it.
     validate_manifest_compatibility(manifest, manifest_path)
-    if manifest.get("encoding") != encoding_identity():
-        raise EvaluationPoolError(f"{manifest_path} uses an incompatible encoding")
 
     output = manifest.get("output")
     if not isinstance(output, Mapping) or not isinstance(output.get("sha256"), str):

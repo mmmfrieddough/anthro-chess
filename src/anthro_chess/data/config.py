@@ -268,6 +268,11 @@ class SequenceLoaderConfig(ConfigModel):
     selection: SelectionConfig = SelectionConfig()
     batch_size: int = Field(default=8, ge=1)
     length_bucket_width: int | None = Field(default=32, ge=1)
+    #: Cut games into contiguous rows of this many plies, bounding the
+    #: positions one batch holds. Chunks do not overlap, so the first plies of
+    #: every chunk past the first reach before their row and read a repeated
+    #: board where the game has a real one. Unset, a row is a whole game and no
+    #: decision reads a repeat it did not have.
     chunk_length: int | None = Field(default=None, ge=1)
     shuffle: StrictBool = True
     seed: str = Field(default="anthro-sequence-loader-v1", min_length=1)

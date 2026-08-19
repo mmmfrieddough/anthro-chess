@@ -141,15 +141,15 @@ Preference settings should not secretly change the target rating. They should
 shape which human-like choices are favored within a rating level, not make the
 bot stronger or weaker by default.
 
-## Prefer Compact Per-Ply Context
+## Prefer Bounded Per-Decision Context
 
-The sequence model should operate one timestep per ply. Each timestep should
-receive a compact embedding of the exact board state, previous move, dynamic
-clock features when available, and static game settings.
+The model should answer one decision per forward pass, reading the exact board
+state, a bounded window of the boards behind it, dynamic clock features when
+available, and static game settings.
 
-Training should preserve efficient causal-transformer behavior: feed full game
-sequences or sequence chunks in parallel under causal attention instead of
-training one ply at a time in an autoregressive loop.
+Training should still feed full game sequences or chunks of them in parallel,
+because every ply of a game is a supervised decision and batching them costs one
+pass rather than one each.
 
-Avoid expanding every board into many sequence tokens unless testing proves that
-the compact approach is insufficient.
+Reach past that window is not free and nothing has asked for it. Widen it only
+where a reading shows the bounded one is insufficient.

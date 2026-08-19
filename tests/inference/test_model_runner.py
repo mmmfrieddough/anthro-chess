@@ -22,7 +22,6 @@ from anthro_chess.data import (
     build_decision_context,
     en_passant_token,
     encoding_identity,
-    previous_action_token,
 )
 from anthro_chess.inference import (
     MODEL_SELECTION_FILE,
@@ -36,7 +35,7 @@ from anthro_chess.inference import (
     write_model_selection,
 )
 from anthro_chess.machine import RUN_ROOT_VARIABLE
-from anthro_chess.models import CausalMoveModel, MoveModelBatch
+from anthro_chess.models import MoveModel, MoveModelBatch
 from anthro_chess.training.checkpoints import save_training_checkpoint
 
 from accelerators import inference_accelerator_parameters
@@ -88,12 +87,7 @@ def test_cpu_runner_loads_and_recomputes_complete_target_free_history(
 
 
 def test_decision_tensorization_rates_the_whole_trajectory() -> None:
-    """A served history has to be shaped like a trained one.
-
-    The trunk reads the rating from ply zero, so a row rated only in its final
-    column would present a trajectory no training game contains. Decision 0066
-    records what rating the whole row assumes instead.
-    """
+    """Every column of a served row is a decision by the player who asked."""
 
     board, moves = _position(("d2d4", "d7d5"))
     context = build_decision_context(board, moves, target_rating=1800)
@@ -102,7 +96,6 @@ def test_decision_tensorization_rates_the_whole_trajectory() -> None:
 
     assert batch.inputs.target_rating.present.tolist() == [[True, True, True]]
     assert batch.inputs.target_rating.values.tolist() == [[1800, 1800, 1800]]
-    assert batch.inputs.previous_action_token[0, 0] == previous_action_token(None)
     assert batch.ply_indices.tolist() == [[0, 1, 2]]
     assert not batch.action_loss_mask.any()
 
@@ -129,9 +122,7 @@ def test_every_tensorized_column_carries_the_input_its_plies_name() -> None:
         assert inputs.en_passant_token[0, index] == en_passant_token(
             position.en_passant_square
         )
-        assert inputs.previous_action_token[0, index] == previous_action_token(
-            ply.previous_action_id
-        )
+        assert inputs.repetition_count[0, index] == position.repetition_count
 
     # Castling and en passant both occur, so neither column is being read as a
     # constant that happens to match.
@@ -164,11 +155,6 @@ def test_batched_tensorization_pads_past_the_end_of_shorter_histories() -> None:
         [True, True, False, False],
         [True, True, True, True],
     ]
-    # A padded timestep has no previous action, so it reads the same row as a
-    # game's first ply rather than the move a zero fill would name.
-    absent = previous_action_token(None)
-    assert batch.inputs.previous_action_token[0, 2:].tolist() == [absent, absent]
-    assert batch.inputs.previous_action_token[:, 0].tolist() == [absent, absent]
     assert batch.ply_indices.tolist() == [[0, 1, 0, 0], [0, 1, 2, 3]]
 
 
@@ -396,23 +382,22 @@ def test_runner_rejects_incompatible_artifact_contracts(
         )
 
 
-def test_a_checkpoint_rebuilds_at_the_context_length_its_run_declared(
+def test_a_checkpoint_rebuilds_at_the_history_depth_its_run_declared(
     tmp_path: Path,
 ) -> None:
     """The identity is the only record the runner rebuilds from.
 
-    A value missing from it becomes that field's default, which the model then
-    enforces as its own bound — accepting histories the run never trained on,
-    or refusing ones it declared.
+    A value missing from it becomes that field's default, and the model would
+    then read a different stack of boards than the one it was trained on.
     """
 
-    checkpoint = _write_run(tmp_path / "run", seed=5, maximum_context_plies=512)
+    checkpoint = _write_run(tmp_path / "run", seed=5, history_positions=5)
 
     runner = CheckpointModelRunner.load(
         ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
     )
 
-    assert runner._model.config.maximum_context_plies == 512  # noqa: SLF001
+    assert runner._model.config.history_positions == 5  # noqa: SLF001
 
 
 def test_runner_rejects_unavailable_explicit_device(tmp_path: Path) -> None:
@@ -491,10 +476,10 @@ def test_an_exhausted_accelerator_fails_the_way_every_other_load_does(
 
     checkpoint = _write_run(tmp_path / "run", seed=31)
 
-    def refuse(self: CausalMoveModel, *args: Any, **kwargs: Any) -> CausalMoveModel:
+    def refuse(self: MoveModel, *args: Any, **kwargs: Any) -> MoveModel:
         raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
 
-    monkeypatch.setattr(CausalMoveModel, "to", refuse)
+    monkeypatch.setattr(MoveModel, "to", refuse)
 
     with pytest.raises(ModelRunnerError, match="out of memory"):
         CheckpointModelRunner.load(
@@ -533,16 +518,14 @@ def _write_run(
     path: Path,
     *,
     seed: int,
-    maximum_context_plies: int | None = None,
+    history_positions: int | None = None,
 ) -> Path:
     torch.manual_seed(seed)
     path.mkdir(parents=True)
     config = tiny_model_config()
-    if maximum_context_plies is not None:
-        config = config.model_copy(
-            update={"maximum_context_plies": maximum_context_plies}
-        )
-    model = CausalMoveModel(config)
+    if history_positions is not None:
+        config = config.model_copy(update={"history_positions": history_positions})
+    model = MoveModel(config)
     model_identity = model.identity()
     resolved_config = {
         "config": {"model": config.model_dump(mode="json")},

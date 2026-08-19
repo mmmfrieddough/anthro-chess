@@ -7,6 +7,12 @@ Date: 2026-08-08
 Accepted. Settles `#233`, and is the rule the next "should this move into the
 loader?" question is answered against.
 
+`0070-one-decision-per-pass-and-history-in-the-token-depth.md` removed the
+previous-action input, so one of the two mappings below no longer exists. The
+rule is unchanged and the surviving mapping still follows it: the repetition
+count that replaced the input is the encoding's, and the perspective flip that
+arrived with it is the model's.
+
 ## Context
 
 `#197` found three fixups the model recomputed on every forward pass, each a

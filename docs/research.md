@@ -412,9 +412,12 @@ Key information:
 - Adds geometric attention bias and an attention-based source-destination move
   head. The bias is generated per position from a compressed view of the board
   and added to the attention logits, one 64-by-64 map per head, so it is dynamic
-  rather than a fixed positional encoding. The head scores a move as a
-  source-square query against a destination-square key, and handles promotion as
-  an additive bias on last-rank destinations.
+  rather than a fixed positional encoding. Each layer generates its own mixture,
+  but the bank of 64-by-64 templates that mixture weights is **one bank shared by
+  the whole model**, which is what keeps depth from multiplying it. The head
+  scores a move as a source-square query against a destination-square key, and
+  handles promotion as an additive bias on last-rank destinations; because the
+  board is flipped, a promotion is always from rank 7 to rank 8.
 - Conditions **in the input representation**: two skill embeddings, one per
   player, are prepended to each of the 64 square tokens, so the rating is
   present before the first layer. Each is an interpolation between a learned
@@ -423,7 +426,16 @@ Key information:
 - Presents history by concatenating the previous seven positions into each
   token's input depth rather than along a sequence axis. Those stacked boards
   are also its move history: differencing consecutive snapshots recovers what
-  moved, so it carries no explicit previous-move input.
+  moved, so it carries no explicit previous-move input. Each board is flipped to
+  whoever was to move when it was current, so orientation alternates down the
+  stack rather than being rotated into the decision's frame. Where fewer than
+  seven prior positions exist the earliest is repeated, and training masks a
+  uniformly random amount of history 5% of the time so that short histories stay
+  in distribution.
+- **Ablates the history depth, and the answer is that reach past seven buys
+  nothing**: 54.0% move-matching at no history, 55.4% at seven prior positions,
+  and 55.4% again at thirty-one. This is the published reading that a bounded
+  window costs nothing against an unbounded one.
 - Splits the rule state between its two models, and the split is instructive.
   The human-emulation input is **only** the stacked piece planes plus the two
   skill embeddings, at a depth of `12 x (1 + n) + 2 x 128`; it carries no
@@ -435,11 +447,15 @@ Key information:
   does cannot.
 - Reaches 57.1% move-matching accuracy at 79M parameters, above Allie at 355M.
 - Runs 8 layers for every human-emulation size, widening rather than deepening
-  from 5M to 79M.
+  from its 3M ablation to 79M, at a fixed attention head dimension of 32 and a
+  feed-forward twice the model width.
 - Trains on Lichess blitz from 2023-01 to 2025-07, on eight A100s for about a
   week at the largest size.
-- Models no timing at all, and drops every position after a player first falls
-  under thirty seconds.
+- Models no timing at all in what it released, and drops every position after a
+  player first falls under thirty seconds. The released architecture does carry a
+  value head and a move-time head, with time inputs behind a flag its published
+  checkpoints leave off, so the heads exist even though no checkpoint predicts
+  time.
 - Ships as an AGPL-3.0 Python package with PyTorch checkpoints and a UCI
   wrapper. Released checkpoints are 5M, 23M, 79M, and a 3M ablation; none
   predicts time.
@@ -454,10 +470,12 @@ Applies to Anthro Chess:
 Different from Anthro Chess:
 
 - Chessformer is primarily a board-position encoder architecture.
-- Anthro Chess currently prefers a causal trajectory model with one timestep per
-  ply, exact board embeddings at each timestep, and optional timing output.
-- Chessformer's board encoder and move head may still be useful even if the
-  overall sequence model differs.
+- Anthro Chess takes its shape, meaning one decision per pass, stacked board
+  history, the flip, the bias, and the move head. It adds optional timing
+  output, terminal actions, and the rule state Chessformer's engine variant
+  carries but its human model drops.
+- It conditions on both players' ratings; this project conditions on the mover's
+  alone, because an engine asked to move cannot rely on knowing its opponent.
 - Being a plain PyTorch package makes it the most practical external baseline to
   score against this project's benchmarks. Its AGPL-3.0 license bears on
   distribution, not on benchmarking.
@@ -562,8 +580,8 @@ Applies to Anthro Chess:
 Different from Anthro Chess:
 
 - UniMaia uses text-conditioned control over a frozen policy network.
-- Anthro Chess currently prefers a causal trajectory model trained on per-ply
-  human-game sequences, with optional timing output and runtime action sampling.
+- Anthro Chess reads one decision at a time from a bounded window of boards,
+  with optional timing output and runtime action sampling.
 - Anthro Chess preference controls are planned around activation-space steering
   from project-owned labels, with direct input conditioning only as a fallback.
 - Anthro Chess labels openings per ply from position matching, and treats
@@ -782,8 +800,8 @@ Key information:
 
 Applies to Anthro Chess:
 
-- Causal sequence modeling over chess games.
-- Full-game or chunked training with causal attention.
+- Reading a game as a sequence of decisions.
+- Full-game or chunked training, every ply of a game supervised at once.
 - Legality evaluation.
 
 Different from Anthro Chess:
@@ -791,7 +809,7 @@ Different from Anthro Chess:
 - The paper investigates whether models can infer board state from move
   notation.
 - Anthro Chess should compute board state exactly outside the model and provide
-  an encoded state at each ply, while still using causal history for behavior.
+  an encoded state at each ply, while still reading recent history for behavior.
 
 ### Tracking World States With Language Models
 
