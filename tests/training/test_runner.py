@@ -940,6 +940,43 @@ def test_training_device_rejects_unavailable_or_strict_mps(
         )
 
 
+def test_a_cuda_device_without_bfloat16_is_refused_before_anything_is_written(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The default precision is one older CUDA cards cannot run.
+
+    `torch.autocast` refuses the same case, but only once the loop enters its
+    first forward pass, by which point the run directory and an incomplete run
+    record are on disk.
+    """
+
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=tmp_path / "missing.parquet",
+        manifest=tmp_path / "missing-manifest.json",
+        run_name="run",
+        validation=False,
+        device="cuda",
+        precision="bfloat16-mixed",
+        determinism="relaxed",
+    )
+    config = load_config(TrainingConfig, path=config_path).value
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+
+    with pytest.raises(TrainingError, match="bfloat16 mixed precision"):
+        _training_device(
+            config,
+            capabilities=DeviceCapabilities(
+                mps_built=False,
+                mps_available=False,
+                cuda_built=True,
+                cuda_available=True,
+                cuda_device_count=1,
+            ),
+        )
+
+
 def test_mixed_precision_keeps_full_precision_parameters_and_no_scaler(
     tmp_path: Path,
 ) -> None:

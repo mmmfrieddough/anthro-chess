@@ -38,7 +38,11 @@ modes are not offered.**
 ## What Was Measured
 
 One idle RTX 4090, the widened corpus, effective batch 16, 400 steps per point
-with a 200-step steady-state window, against an eager control.
+with a 200-step steady-state window, against an eager control. Every row splits
+that batch four ways except the width-256 bfloat16 one, which splits it two ways
+and reads higher for that reason as well;
+`0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+holds the same configuration at a micro-batch of 4.
 
 | width | precision | eager | compiled | gain |
 | --- | ---: | ---: | ---: | ---: |

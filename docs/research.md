@@ -506,11 +506,12 @@ Different from Anthro Chess:
 - Being a plain PyTorch package makes it the most practical external baseline to
   score against this project's benchmarks. Its AGPL-3.0 license bears on
   distribution, not on benchmarking.
-- Anthro Chess autocasts to bfloat16 rather than float16, so it takes the same
-  class of decision at a wider exponent range and with no scaler to tune or to
-  diverge. The anchor this project reads its size ladder from therefore trains
-  these models at a *lower* numeric margin than this project does, which is what
-  `docs/decisions/0074-*` leans on where it has no quality reading of its own.
+- Its mixed precision is float16 with a loss scaler, which is a narrower numeric
+  margin than a bfloat16 autocast rather than a wider one: bfloat16 carries
+  float32's exponent range and so needs no scaler, while float16's is what makes
+  one necessary. So the published ladder establishes that a chess transformer of
+  this shape reaches state of the art under reduced precision, at a margin
+  narrower than the one a project like this one would take.
 
 ### Allie: Human-Aligned Chess With A Bit Of Search
 

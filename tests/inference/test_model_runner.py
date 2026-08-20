@@ -404,7 +404,10 @@ def test_a_mixed_precision_checkpoint_loads(tmp_path: Path) -> None:
         ModelRunnerConfig(checkpoint_path=checkpoint_path, device="cpu")
     )
 
-    assert runner is not None
+    assert all(
+        parameter.dtype == torch.float32
+        for parameter in runner._model.parameters()  # noqa: SLF001
+    )
 
 
 def test_a_checkpoint_rebuilds_at_the_history_depth_its_run_declared(

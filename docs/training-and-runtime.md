@@ -183,7 +183,10 @@ checkpoint's scaler slot is empty on every supported path. **Reduced-precision
 float32 matmul** — TF32 — rounds a matrix multiplication's inputs while
 accumulating in float32.
 
-Both are on by default, and throughput is the whole of what settled that.
+Both are on by default, and throughput is the whole of what settled that. The 7%
+loss above still holds where it was read, against a step that spends itself
+issuing kernels; the defaults are set for a step that fills the device, which is
+the only kind a run against the corpus takes.
 `docs/decisions/0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
 carries the readings, the published prior art they lean on, and the quality
 reading that could not be taken before the vehicle froze. Full precision stays
@@ -195,13 +198,18 @@ they declare is the arithmetic every gradient is computed in. So both are
 settings a continuation has to match: a run that changed either partway would
 have no way to say which half produced its weights.
 
-**The memory that trade returns is headroom nothing needs.** On a 24 GiB card,
+**The memory that trade returns buys no throughput.** On a 24 GiB card,
 throughput saturates at a batch well below the memory ceiling at every width in
 the range this project trains, so activation memory a precision change gives back
-does not convert into anything.
+does not convert into a batch that runs faster.
 `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
-carries the batch scan behind that. The argument for mixed precision here is
-throughput, and fit is not a constraint to trade against.
+carries the batch scan behind that.
+
+**Fit is a separate question, and at the target width it binds.** Every float32
+configuration measured at width 512 reserves between 24.39 and 24.55 GB of a
+24.56 GB card, against 20.32 GB for bfloat16 with compilation, so there the dial
+decides whether a configuration runs before it decides how fast. At width 256 it
+does not: the returned memory is headroom nothing needs.
 
 That is a reversal of what this section used to say, and the cause is worth
 stating so the earlier reasoning is not rediscovered. Memory decided width while
@@ -229,14 +237,18 @@ effective batch 16, against an eager control:
 | --- | --- | --- | ---: | ---: |
 | 256 | float32 | 9,334 | 8,041 | +16% |
 | 256 | bf16 with TF32 | 22,621 | 15,558 | +45% |
-| 512 | float32 | 3,493 | 3,521 | none |
+| 512 | float32 | 3,878 | 3,521 | +10% |
 | 512 | bf16 with TF32 | 9,117 | 6,906 | +32% |
 
+Every row splits that batch four ways except the width-256 bfloat16 one, which
+splits it two ways, so read a row against itself rather than against its
+neighbour.
+
 **Read at float32 alone it looks marginal, and at the target width it looks like
-nothing.** Both of those readings are artifacts of an arithmetic setting no real
-run uses, and the same trap `#200` fell into: it rejected compilation against a
-model whose per-ply legal-action iteration exhausted Dynamo's recompile budget,
-and that iteration no longer exists.
+a third of what it is.** Both of those readings are artifacts of an arithmetic
+setting no real run uses, and the same trap `#200` fell into: it rejected
+compilation against a model whose per-ply legal-action iteration exhausted
+Dynamo's recompile budget, and that iteration no longer exists.
 
 Compilation also *returns* memory rather than spending it, unlike a larger batch,
 which is what makes it the cheaper of the two ways to fill a card.

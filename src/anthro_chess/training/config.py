@@ -24,6 +24,7 @@ from anthro_chess.training.schedule import LearningRateSchedule, resolve_schedul
 #: What it is worth depends entirely on whether the step is launch-bound, which
 #: is why an early reading against a host-bound step rejected it and a reading
 #: at a batch that fills the device made it the default.
+#: ``docs/training-and-runtime.md`` holds the readings on both.
 TrainingPrecision = Literal["float32", "bfloat16-mixed"]
 
 #: Whether float32 matrix multiplication may use the tensor cores' reduced
@@ -34,6 +35,7 @@ TrainingPrecision = Literal["float32", "bfloat16-mixed"]
 #: rather than assume: it returns nothing on a launch-bound step, because
 #: tensor cores accelerate arithmetic and a launch-bound step is not doing any.
 #: It costs no memory at all, which is what separates it from the dial above.
+#: ``docs/training-and-runtime.md`` holds the readings, and
 #: ``_EXECUTION_COMPATIBILITY_KEYS`` in the runner holds why a continuation has
 #: to match it.
 MatmulPrecision = Literal["highest", "high"]

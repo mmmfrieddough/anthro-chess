@@ -156,3 +156,38 @@ which is +10% rather than nothing. `0073`'s conclusion is unaffected, since
 rejected compilation if taken at float32 alone, but the number itself was
 wrong.
 
+## Consequences
+
+**Every run in flight stops resuming.** Both keys sit in the runner's execution
+compatibility set and inside the training-configuration digest, so a run started
+before this record and resumed after it is refused with the two values named. A
+run that wants to finish under the arithmetic it started in declares the old pair
+explicitly; there is no path that continues one set of weights across the change,
+and that is the point of the keys rather than a cost of this record.
+`CHECKPOINT_VERSION` does not move, because no key was added and no stored
+checkpoint changed shape.
+
+**bfloat16 autocast is refused on a CUDA device that cannot run it**, before the
+run directory exists rather than at the first forward pass. Torch raises on the
+same condition several hundred lines later, by which point an incomplete run
+record is already on disk.
+
+**Full precision stays selectable and stays exercised.** The CPU and MPS smoke
+configurations and the runner test helper pin both dials, because the readings
+here were taken on CUDA and `high` changes what a float32 matmul does on a CPU
+too, on whatever hardware happens to run the suite. The CUDA smoke takes the
+defaults, so one checked-in configuration proves the shipped arithmetic on a new
+host.
+
+**A mixed-precision checkpoint had to become loadable for any of this to mean
+anything.** The inference runner gated on the run's `precision` alongside its
+`parameter_dtype`, which reads the training autocast setting as though it were a
+property of the stored weights. It is not: master weights stay float32. Every
+bfloat16 run this project had taken reported as unloadable, and the vehicle would
+have frozen on a precision whose checkpoints nothing here could score or play.
+
+**The next revisit needs a floor, not a rerun.** Once `#488` stores the vehicle's
+seed dispersion, a float32 arm against the vehicle is readable in the ordinary
+way, and that is the only cheap route back to this question. Nothing schedules
+it, and nothing should: the throughput this buys is worth more than the answer
+unless something else gives a reason to look.
