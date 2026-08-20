@@ -33,9 +33,9 @@ values a framework default happened to leave there.
 ## Decision
 
 **The default is `bfloat16-mixed` with `high` matmul precision, and the vehicle
-freezes on it. It is chosen on throughput and on published prior art, and it is
-adopted without a quality reading, because no reading that could qualify one can
-exist before the freeze.**
+freezes on it. It is chosen on throughput, on published prior art, and on a
+numerics check that says the arithmetic is sound. It is adopted without a quality
+reading, because no reading that could qualify one can exist before the freeze.**
 
 ## Why No Quality Reading
 
@@ -193,3 +193,65 @@ seed dispersion, a float32 arm against the vehicle is readable in the ordinary
 way, and that is the only cheap route back to this question. Nothing schedules
 it, and nothing should: the throughput this buys is worth more than the answer
 unless something else gives a reason to look.
+## The Numerics Check
+
+This asks whether reduced-precision arithmetic tracks float32's on this model. It
+is a question about the arithmetic rather than about the weights, and it is not
+evidence either way about whether the model is better or worse. Nothing here
+should be read as though it were.
+
+Width 256, micro-batch 4 with four accumulation steps, 20,000 optimizer steps
+against the widened corpus, strict determinism, compilation on, one data order
+throughout. `move_loss` is logged every step and read as a 200-step rolling mean,
+because one step's loss is one micro-batch of 16 sequences and is far noisier
+than anything being compared.
+
+**Two controls establish that a divergence means something.** A second float32
+arm at the same seed, run afterwards on the same card, agrees with the first at
+every one of 20,000 steps to the last digit logged. A third, on the other card of
+the pair these arms were split across, agrees the same way over 2,000 steps. So
+the pipeline is exactly reproducible with compilation on, and the two cards
+compute alike.
+
+Neither had been established. The configuration that claims a repeated run
+reaches the same weights turns compilation off, and the compiler benchmarks some
+choices as it builds, so run-to-run variation was a live possibility rather than
+a paranoid one. It is also the check `#488` asks for before any seed is varied.
+
+**A seed change moves the curve further than either dial does.** The fourth arm
+changes only the run seed, which is initialization and dropout; the data order is
+held fixed by a separate seed, so this is a lower bound on seed dispersion rather
+than a measurement of it.
+
+| arm | smoothed loss at 20,000 | largest smoothed gap from the control |
+| --- | ---: | ---: |
+| float32, seed 17 | 1.605014 | control |
+| float32 repeated, seed 17 | 1.605014 | 0, bit-identical |
+| float32 with TF32, seed 17 | 1.603368 | 0.034 at step 228 |
+| bfloat16 with TF32, seed 17 | 1.602056 | 0.066 at step 296 |
+| float32, seed 29 | 1.606803 | 0.095 at step 424 |
+
+Every largest gap falls inside the first five hundred steps, where the loss is
+descending steeply and the arms have barely separated. By step 5,000 the two
+precision arms sit within 0.0005 of the control.
+
+**Both dials perturb the curve less than the weaker of the two seed draws, and
+they are ordered by how much rounding each does.** TF32 rounds matmul inputs to
+ten mantissa bits and moves the curve half as far as bfloat16, which autocasts to
+seven. At the end of the horizon the bfloat16 arm reads 0.0030 below the control
+and the second float32 seed reads 0.0018 above it, so the precision difference and
+a single seed draw are the same size to within a factor of two.
+
+**Training health agrees.** Gradient clipping never fires on any arm. The
+update-to-weight ratio spans 0.00174 to 0.00176 across all five. Mean gradient
+norm over the last thousand steps is 0.546 for both float32 arms at seed 17, 0.547
+with TF32, 0.540 at seed 29, and 0.526 with bfloat16, which is the one reading
+that falls outside the range the two float32 seeds span.
+
+**What this does not say.** It does not say bfloat16 trains as good a model, and
+the arm reading lower at 20,000 steps is not evidence that it trains a better one:
+two trajectories that separate will differ, and one of them has to be lower. Two
+seeds are not a dispersion. What it does say is that the arithmetic is sound, that
+nothing diverges, overflows, or destabilizes, and that the perturbation this
+change introduces is smaller than one already present in every comparison this
+project takes.
