@@ -33,6 +33,10 @@ freeze leaves the vehicle a base nobody wants to compare against.
 that rethink and lands ahead of the freeze for the same reason, and it is what
 settles the layer budget the frozen configuration carries.
 
+`0071-the-target-is-the-size-the-published-ladder-flattens-at.md` fixes the
+target this record says the vehicle is derived from, and carries the throughput
+measurements that price an arm at each candidate vehicle width.
+
 ## Context
 
 Three records converge on a gap none of them could close alone.

@@ -195,38 +195,27 @@ they declare is the arithmetic every gradient is computed in. So both are
 settings a continuation has to match: a run that changed either partway would
 have no way to say which half produced its weights.
 
-What that trade is worth was measured on a 24 GiB card, by running until the
-card refused rather than extrapolating. At batch 256 and two layers, float32
-fits width 3,072 and fails at 4,096; bfloat16-mixed fits 4,096 and fails at
-5,120. Both sit above 95% of the card, so neither is a recommendation — a real
-configuration also carries checkpointing, validation, and an evaluation cadence.
-Depth trades against width at about 0.84 GiB per layer at width 256, so a
-deeper, narrower model is available inside the same envelope. Which point in it
-to pick is capacity work's question, not this document's.
+**The memory that trade returns is headroom nothing needs.** On a 24 GiB card,
+throughput saturates at a batch well below the memory ceiling at every width in
+the range this project trains, so activation memory a precision change gives back
+does not convert into anything.
+`docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
+carries the batch scan behind that. The argument for mixed precision here is
+throughput, and fit is not a constraint to trade against.
 
-Two things make a naive reading of that envelope wrong, and both are easier to
-walk into than to notice.
+That is a reversal of what this section used to say, and the cause is worth
+stating so the earlier reasoning is not rediscovered. Memory decided width while
+width was nearly free in time, which it was when a ply cost one pooled vector.
+A decision is now 64 square tokens, so width is expensive in time and the clock
+binds first.
 
-**The sequence axis is not the longest game.** The corpus is chunked by game and
-the loader buckets by length, so the longest sequence in an epoch arrives in a
-batch of one — its bucket never fills. The batch that actually costs the most is
-a full one at a moderate length. Batch size times the longest game is therefore
-wrong in the safe direction, and the gap widens with batch: at batch 1,024 the
-naive bound overstates the real peak by 2.4x.
-
-**A shared card understates the requirement.** Peak reserved memory is otherwise
-exactly reproducible — repeated runs of one workload return the same figure to
-the byte, so the boundary is a line rather than a band. But a card held by
-another process at the same time reports a *lower* peak, because co-tenancy
-makes the allocator cache less. At the boundary that turns a fit into a spurious
-out-of-memory failure: one arm first reported OOM for float32 at width 512 and
-batch 1,024, and measured alone it fits at 21.11 GiB. Read an envelope only on
-an idle card.
-
-One assumption this section could otherwise invite is also wrong: at the width
-this project trains today, the activation memory deciding a fit is not the
-transformer's but the action head's, because the head projects to the action
-vocabulary and its cost follows padded positions rather than model width.
+One thing about reading a memory figure at all is easier to walk into than to
+notice. **A shared card understates the requirement.** Peak reserved memory is
+otherwise exactly reproducible, since repeated runs of one workload return the
+same figure to the byte. But a card held by another process at the same time
+reports a *lower* peak, because co-tenancy makes the allocator cache less. At a
+boundary that turns a fit into a spurious out-of-memory failure. Read memory only
+on an idle card.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input

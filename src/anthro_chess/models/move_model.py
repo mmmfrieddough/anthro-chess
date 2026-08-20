@@ -49,8 +49,10 @@ _PROMOTION_CHOICE_COUNT = 4
 #: one effect training cannot absorb, because it makes a stretch of the dial
 #: inert. Rating scales also differ -- Lichess blitz is not FIDE and not Lichess
 #: bullet -- so the range that must not clamp is wider than any one corpus.
-_WEAK_RATING_ANCHOR = 400.0
-_STRONG_RATING_ANCHOR = 3000.0
+#: The corpus reaches into the 3900s, so both ends sit outside any rating it
+#: carries.
+_WEAK_RATING_ANCHOR = 0.0
+_STRONG_RATING_ANCHOR = 5000.0
 
 
 class RatingEmbedding(nn.Module):

@@ -422,7 +422,10 @@ Key information:
   player, are prepended to each of the 64 square tokens, so the rating is
   present before the first layer. Each is an interpolation between a learned
   weak anchor and a learned strong anchor rather than a free map from rating to
-  vector, which makes the embedding monotone in the rating by construction.
+  vector, which makes the embedding monotone in the rating by construction. The
+  anchors stand for 0 and 5000 while the paper puts human play at roughly 500 to
+  3000, so both endpoints sit outside the population and no real rating lands on
+  one.
 - Presents history by concatenating the previous seven positions into each
   token's input depth rather than along a sequence axis. Those stacked boards
   are also its move history: differencing consecutive snapshots recovers what
@@ -449,8 +452,22 @@ Key information:
 - Runs 8 layers for every human-emulation size, widening rather than deepening
   from its 3M ablation to 79M, at a fixed attention head dimension of 32 and a
   feed-forward twice the model width.
+- Publishes the ladder those sizes sit on, at model widths 192, 256, 512 and
+  1024: **55.4% at 5M, 56.6% at 23M, 57.1% at 79M.** So 4.6x the parameters buys
+  1.2 points and the next 3.4x buys 0.5, which is the curve flattening rather
+  than a size the authors argue is optimal. They never derive a size, and every
+  rung trains for the same one million steps rather than to a compute-optimal
+  split.
 - Trains on Lichess blitz from 2023-01 to 2025-07, on eight A100s for about a
-  week at the largest size.
+  week at the largest size, and on two for about a week at 3M and 5M.
+- Trains every size for one million steps with AdamW at a peak rate of 5e-5,
+  batch 128, four accumulation steps, and 32 positions sampled per game. The
+  paper does not say whether that batch counts games or positions; reading it as
+  games gives a total near 1.6e10 positions and implies plausible utilization on
+  the stated hardware, where reading it as positions implies about 1% and is not
+  credible.
+- Down-samples toward equal representation across 22 rating bins rather than
+  training on the population's own shape.
 - Models no timing at all in what it released, and drops every position after a
   player first falls under thirty seconds. The released architecture does carry a
   value head and a move-time head, with time inputs behind a flag its published

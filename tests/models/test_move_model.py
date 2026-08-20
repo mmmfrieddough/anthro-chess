@@ -564,6 +564,27 @@ def test_the_rating_embedding_moves_monotonically_along_one_axis() -> None:
     )
 
 
+def test_the_dial_still_moves_at_the_strongest_ratings_the_corpus_holds() -> None:
+    """The anchors have to sit outside human play, not around its bulk.
+
+    The corpus reaches into the 3900s, and rating scales differ between systems
+    and time controls, so an anchor placed near the top of one population clamps
+    real ratings onto it and the dial goes inert there.
+    """
+
+    torch.manual_seed(19)
+    embedding = RatingEmbedding(_tiny_config())
+    ratings = torch.tensor([[2800, 3200, 3600, 3999]])
+
+    with torch.no_grad():
+        placed = embedding(
+            OptionalTensor(ratings, torch.ones_like(ratings, dtype=torch.bool))
+        )
+
+    steps = placed[0, 1:] - placed[0, :-1]
+    assert torch.all(steps.norm(dim=-1) > 0.0)
+
+
 def test_an_absent_rating_is_its_own_embedding_rather_than_a_rating_of_zero() -> None:
     """Missing has to stay explicit, or unrated play reads as maximally weak."""
 
