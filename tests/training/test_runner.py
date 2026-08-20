@@ -1070,6 +1070,7 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
     )
     assert accelerator_checkpoint["metadata"]["execution"] == {
         "backend": backend,
+        "compilation": "off",
         "determinism": "relaxed",
         "device": backend,
         "fused_optimizer": backend == "cuda",
