@@ -346,9 +346,8 @@ def _run_record_incompatibility(
     if run_record.get("encoding") != encoding_identity():
         return "run record model-facing encoding is incompatible"
     execution = _mapping(run_record.get("execution"), "run execution metadata")
-    # The stored dtype rather than the run's `precision`: mixed precision
-    # autocasts the forward pass and leaves master weights float32, so the
-    # weights this loads are the same tensors either way.
+    # The stored dtype rather than the run's `precision`: autocast leaves master
+    # weights float32, so the tensors this loads are the same either way.
     if execution.get("parameter_dtype") != "float32":
         return "run parameter precision is unsupported"
     return None

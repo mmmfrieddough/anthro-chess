@@ -204,8 +204,7 @@ def test_a_run_record_this_code_would_write_itself_is_loadable(
     """The question a session arrives with, answered without reading weights.
 
     Both precisions, because autocast decides how a run computed rather than
-    what its checkpoint holds, and a gate reading the wrong one of those made
-    every run at the training default unreadable.
+    what its checkpoint holds.
     """
 
     execution = loadable_run_record["execution"]

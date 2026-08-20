@@ -387,8 +387,7 @@ def test_a_mixed_precision_checkpoint_loads(tmp_path: Path) -> None:
 
     Mixed precision leaves master weights float32, so the checkpoint holds the
     same tensors a full-precision run would and the loader has nothing to
-    refuse. Gating on the run's `precision` instead made every checkpoint the
-    training default now produces unreadable here.
+    refuse.
     """
 
     checkpoint_path = _write_run(tmp_path / "mixed", seed=7)

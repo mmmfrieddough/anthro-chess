@@ -1131,9 +1131,8 @@ def _training_device(
         and device.type == "cuda"
         and not torch.cuda.is_bf16_supported()
     ):
-        # Here rather than at the first autocast scope, which is entered after
-        # the run directory and an incomplete run record are already written.
-        # `torch.autocast` raises on the same condition.
+        # `torch.autocast` raises on the same condition, but not until the first
+        # forward pass, with an incomplete run record already on disk.
         raise TrainingError(
             "bfloat16 mixed precision is not supported by the current CUDA "
             "device; select precision='float32'"

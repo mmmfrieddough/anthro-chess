@@ -944,12 +944,7 @@ def test_a_cuda_device_without_bfloat16_is_refused_before_anything_is_written(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The default precision is one older CUDA cards cannot run.
-
-    `torch.autocast` refuses the same case, but only once the loop enters its
-    first forward pass, by which point the run directory and an incomplete run
-    record are on disk.
-    """
+    """The default precision is one older CUDA cards cannot run."""
 
     config_path = _write_training_config(
         tmp_path,
@@ -2227,9 +2222,8 @@ def _write_training_config(
     shuffle: bool = False,
     device: str = "cpu",
     precision: str = "float32",
-    # Both dials at full precision unless a test is about one of them. The
-    # chosen defaults were measured on CUDA, and `high` changes what a float32
-    # matmul does on a CPU too, on whatever hardware happens to run the suite.
+    # Full precision unless a test is about the dial: `high` changes what a
+    # float32 matmul does on whatever CPU happens to run the suite.
     matmul_precision: str = "highest",
     determinism: str = "strict",
     # Off unless a test is about compilation: every run here is a handful of
