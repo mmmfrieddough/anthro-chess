@@ -8,7 +8,10 @@ Accepted. Narrows the span set by
 `0045-centisecond-clocks-from-a-closed-export.md`, which chose every month that
 carries centisecond clocks, and removes the months on which
 `0057-the-rating-namespace-is-derived-per-game.md` cannot name the pool
-correctly.
+correctly. `0072-the-clock-says-which-pool-a-rating-came-from.md` rests on this
+cut: with those months gone, the namespace and the class derived from the time
+control agree on every game, which is what lets one rating input stand without a
+pool beside it.
 
 ## Context
 

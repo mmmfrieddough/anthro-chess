@@ -555,10 +555,22 @@ pool records no namespace instead of a plausible one, and
 absence is worth more than the guess — and where an export that relabelled its
 own history leaves the evidence weaker than that.
 
-For initial training, use Lichess ratings directly as the normalized rating.
-Other sources can still contribute move, style, player, opening, evaluation, or
-general validation data even when their ratings are left out of
-rating-conditioned training.
+The normalized rating names no pool, because the time control already does. A
+source that rates per pool picks the pool by banding the control, so the two
+agree game for game once a span whose vocabulary moved is excluded, and a model
+reading the control can recover which pool a rating came from without being told
+separately. The dial therefore means the player's rating in whichever pool the
+chosen control lands in, and neither a namespace nor a rating system sits beside
+it as a model input.
+`docs/decisions/0072-the-clock-says-which-pool-a-rating-came-from.md` carries
+that measurement and what it rules out.
+
+For initial training, use Lichess ratings directly as the normalized rating. A
+source whose ratings are not already on that scale records no normalized rating
+at all, and the absence reaches the model as an explicitly unrated decision
+rather than as a converted number. Other sources can still contribute move,
+style, player, opening, evaluation, or general validation data even when their
+ratings are left out of rating-conditioned training.
 
 If non-Lichess ratings become important for rating-conditioned training, convert
 them through an explicitly versioned normalization step. Simple affine mappings
