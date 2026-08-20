@@ -1,5 +1,7 @@
 # 0074: The Vehicle Freezes On bfloat16 With TF32, Without A Quality Reading
 
+Date: 2026-08-20
+
 ## Status
 
 Accepted.
