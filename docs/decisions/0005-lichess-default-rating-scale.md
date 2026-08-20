@@ -4,7 +4,10 @@ Date: 2026-07-11
 
 ## Status
 
-Accepted as initial design direction.
+Accepted as initial design direction. Refined by
+`0072-the-clock-says-which-pool-a-rating-came-from.md`, which names the pool
+this record left unstated: a source rates in several at once, and the dial is
+denominated by whichever one the game's time control lands in.
 
 ## Context
 

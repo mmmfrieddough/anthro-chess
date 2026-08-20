@@ -8,7 +8,10 @@ Accepted. Extends `0045-centisecond-clocks-from-a-closed-export.md`, whose span
 is what makes the source's own speed label ambiguous. Extended by
 `0057-the-rating-namespace-is-derived-per-game.md`, which takes the namespace
 this record leaves on that label and derives it per game rather than declaring
-it per selection.
+it per selection. Extended by
+`0072-the-clock-says-which-pool-a-rating-came-from.md`, which measures the two
+derivations this record separates and finds them agreeing on every game of the
+corpus, once the months whose vocabulary had moved were cut.
 
 ## Context
 
