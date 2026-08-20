@@ -41,6 +41,23 @@ TrainingPrecision = Literal["float32", "bfloat16-mixed"]
 #: has to match it.
 MatmulPrecision = Literal["highest", "high"]
 
+#: Whether the forward pass is handed to `torch.compile`.
+#:
+#: Fusion acts on exactly what the precision dials cannot: a step that spends
+#: itself issuing kernels is one where the launches themselves are the cost.
+#: Unlike those dials it compounds with them rather than competing, because
+#: reduced precision makes a step faster and so makes it more launch-bound.
+#:
+#: Only the plain mode is offered. ``reduce-overhead`` and ``max-autotune``
+#: both capture CUDA graphs, both were measured, and both came in below this
+#: one; ``docs/training-and-runtime.md`` holds those readings and the rest.
+#:
+#: Dynamo specializes on shape and the loader buckets games by length, so a run
+#: presents several. ``training.compiled_graphs`` reports how many the compiler
+#: built, which is what separates a run that settled from one recompiling
+#: underneath a disappointing speedup.
+TrainingCompilation = Literal["off", "default"]
+
 
 class TrainingConfig(ConfigModel):
     """Configuration for a bounded action-model training run."""
@@ -81,6 +98,7 @@ class TrainingConfig(ConfigModel):
     device: DeviceSelection = "auto"
     precision: TrainingPrecision = "float32"
     matmul_precision: MatmulPrecision = "highest"
+    compilation: TrainingCompilation = "default"
     determinism: Literal["strict", "relaxed"] = "relaxed"
     profile_phases: StrictBool = False
     model: MoveModelConfig = MoveModelConfig()

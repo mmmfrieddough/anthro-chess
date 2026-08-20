@@ -147,9 +147,10 @@ or an explicitly selected checkpoint across supported backends.
 
 Which device-side optimizations this runner offers is decided by measurement
 rather than by what the hardware nominally supports, and the bar is that a
-setting has to be worth its own existence. Page-locked batch staging, graph
-compilation, and host-side prefetching were each implemented, measured, and
-removed: none of them returned more than noise, and most of them cost. A fused
+setting has to be worth its own existence. Page-locked batch staging and
+host-side prefetching were each implemented, measured, and removed: neither
+returned more than noise, and both cost. Graph compilation went out on that
+same pass and has since come back, which the section below explains. A fused
 optimizer update survives on backends that have one, derived from the backend
 rather than configured because there is one right answer per backend.
 
@@ -216,6 +217,46 @@ same figure to the byte. But a card held by another process at the same time
 reports a *lower* peak, because co-tenancy makes the allocator cache less. At a
 boundary that turns a fit into a spurious out-of-memory failure. Read memory only
 on an idle card.
+
+**Graph compilation is the third declared execution setting, and it is the one
+that compounds.** The precision dials trade arithmetic for speed; compilation
+fuses the kernels a step issues, so it acts on the launches rather than on the
+arithmetic. That is why it does not compete with them: reduced precision makes a
+step faster, a faster step is more launch-bound, and a more launch-bound step is
+exactly what fusion pays off on. Measured on one idle RTX 4090 at the corpus,
+effective batch 16, against an eager control:
+
+| width | precision | compiled | eager | gain |
+| --- | --- | --- | ---: | ---: |
+| 256 | float32 | 9,334 | 8,041 | +16% |
+| 256 | bf16 with TF32 | 22,621 | 15,558 | +45% |
+| 512 | float32 | 3,493 | 3,521 | none |
+| 512 | bf16 with TF32 | 9,117 | 6,906 | +32% |
+
+**Read at float32 alone it looks marginal, and at the target width it looks like
+nothing.** Both of those readings are artifacts of an arithmetic setting no real
+run uses, and the same trap `#200` fell into: it rejected compilation against a
+model whose per-ply legal-action iteration exhausted Dynamo's recompile budget,
+and that iteration no longer exists.
+
+Compilation also *returns* memory rather than spending it, unlike a larger batch,
+which is what makes it the cheaper of the two ways to fill a card.
+
+Two modes were measured and neither is offered. `reduce-overhead` and
+`max-autotune` both capture CUDA graphs, which want gradient buffers at a fixed
+address and so refuse a run using gradient accumulation until it holds its
+`.grad` tensors resident. Made to run, both came in below plain fusion at width
+256 with bf16 — 14,391 and 14,865 against 18,435 — and `max-autotune` spent
+thirteen minutes compiling to get there. Graph capture is the wrong instrument
+here because the loader buckets games by length, so a run presents several shapes
+and a captured graph re-records instead of replaying.
+
+What compilation costs is a fixed charge at the first step of a run, not at
+startup: roughly 109 seconds at width 256, inside the training clock rather than
+beside it. That is a loss below about six thousand steps and a rounding error
+above it, which is why the smoke configurations turn it off and a real arm leaves
+it on. A run reports `training.compiled_graphs` so that a step count's worth of
+graphs is visible as the mistake it is rather than as a poor speedup.
 
 This is compatible with exact board reconstruction because the board state for
 each ply can be computed before training and included in that ply's input

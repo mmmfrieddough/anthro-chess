@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from collections.abc import Callable, Mapping
 from io import StringIO
 from pathlib import Path
@@ -118,6 +119,7 @@ def test_ordinary_runner_updates_model_and_writes_reproducible_records(
         "gradient_accumulation_steps": 1,
         "fused_optimizer": False,
         "matmul_precision": "highest",
+        "compilation": "off",
         "phase_profiling": False,
     }
     # Which machine, kept apart from what was selected on it. Nothing compares
@@ -293,6 +295,7 @@ def test_resume_latest_restores_exact_training_state(tmp_path: Path) -> None:
     assert checkpoint["metadata"]["encoding"]["schema_sha256"]
     assert checkpoint["metadata"]["execution"] == {
         "backend": "cpu",
+        "compilation": "off",
         "determinism": "strict",
         "device": "cpu",
         "fused_optimizer": False,
@@ -406,7 +409,7 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
     assert set(record) == compatibility | provenance
     # Which side each arithmetic setting falls on, which is the declared
     # against derived line the two sets are documented by.
-    assert {"precision", "matmul_precision"} <= compatibility
+    assert {"precision", "matmul_precision", "compilation"} <= compatibility
     assert "fused_optimizer" in provenance
 
 
@@ -537,6 +540,69 @@ def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
     assert torch.get_float32_matmul_precision() == "highest"
     checkpoint = load_training_checkpoint(result.checkpoint_path)
     assert checkpoint["metadata"]["execution"]["matmul_precision"] == "high"
+
+
+_TRAINING_CONFIGS = Path(__file__).parents[2] / "configs/training"
+
+
+def test_compilation_is_on_unless_a_configuration_turns_it_off() -> None:
+    """The default is the setting a real arm wants, not the cheapest one.
+
+    Every checked-in smoke configuration opts out, because a run of a few steps
+    sits entirely below the fixed charge the compiler takes at the first one.
+    An arm that does not say otherwise gets it.
+    """
+
+    assert TrainingConfig.model_fields["compilation"].default == "default"
+
+    for name in ("cuda-smoke", "mps-smoke", "sample-smoke"):
+        configured = tomllib.loads(
+            (_TRAINING_CONFIGS / f"{name}.toml").read_text(encoding="utf-8")
+        )
+        assert configured["compilation"] == "off", name
+
+
+def test_a_compiled_run_trains_and_reports_the_graphs_it_built(
+    tmp_path: Path,
+) -> None:
+    """The setting has to reach the forward pass and leave the artifact alone.
+
+    ``torch.compile(model)`` would satisfy the first half and fail the second:
+    its wrapper renames every state-dict key, so a compiled run's checkpoints
+    would load in no other configuration. The graph count is what says a run
+    compiled rather than silently ran eager.
+    """
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    result = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="run",
+                validation=False,
+                compilation="default",
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    assert result.efficiency is not None
+    assert result.efficiency.compiled_graphs >= 1
+    checkpoint = load_training_checkpoint(result.checkpoint_path)
+    assert checkpoint["metadata"]["execution"]["compilation"] == "default"
+    assert all(not key.startswith("_orig_mod.") for key in checkpoint["model_state"])
+    # Loaded through the ordinary inference path, which knows nothing about
+    # compilation: a renamed key would surface here rather than at resume.
+    CheckpointModelRunner.load(
+        ModelRunnerConfig(run_path=tmp_path / "run", device="cpu")
+    )
 
 
 def test_resume_reads_execution_provenance_it_does_not_recognize(
@@ -2125,6 +2191,9 @@ def _write_training_config(
     device: str = "cpu",
     precision: str = "float32",
     determinism: str = "strict",
+    # Off unless a test is about compilation: every run here is a handful of
+    # steps, and each would otherwise pay the compiler before reaching them.
+    compilation: str = "off",
     extra: str = "",
     train_selection: str = "",
     train_streaming: str = "",
@@ -2160,6 +2229,7 @@ checkpoint_every_steps = {checkpoint_every_steps}
 device = {json.dumps(device)}
 precision = {json.dumps(precision)}
 determinism = {json.dumps(determinism)}
+compilation = {json.dumps(compilation)}
 {extra}
 
 [model]

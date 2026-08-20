@@ -61,6 +61,7 @@ def _coordinates(**overrides: object) -> dict[str, object]:
         "gradient_accumulation_steps": 2,
         "determinism": "relaxed",
         "matmul_precision": "highest",
+        "compilation": "off",
         "profile_phases": False,
     }
     record.update(overrides)
@@ -92,6 +93,7 @@ def _summary(**overrides: object) -> TrainingEfficiencySummary:
         "peak_driver_memory_bytes": 4096,
         "probe_steps": 2,
         "probe_seconds": 1.4,
+        "compiled_graphs": 0,
     }
     values.update(overrides)
     return TrainingEfficiencySummary(**values)  # type: ignore[arg-type]
@@ -498,6 +500,7 @@ def test_measurements_carry_the_workload_fingerprint() -> None:
         "training.overhead_fraction",
         "training.peak_device_memory_bytes",
         "training.step_sync_cost_seconds",
+        "training.compiled_graphs",
     }
     # A different model, batch, and corpus stay on the same series, because
     # subtracting across them is the comparison this family exists for.
@@ -548,6 +551,10 @@ def test_a_run_too_short_to_reach_steady_state_still_records_its_budget() -> Non
         "training.processed_positions",
         "training.training_seconds",
         "training.overhead_fraction",
+        # Compilation off is a measured zero rather than a quantity the thin
+        # run could not reach, so it is recorded where the window figures are
+        # omitted.
+        "training.compiled_graphs",
     }
 
 

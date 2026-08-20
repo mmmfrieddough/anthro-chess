@@ -2267,6 +2267,22 @@ BENCHMARK_WALL_CLOCK_SECONDS = register_metric(
     )
 )
 
+TRAINING_COMPILED_GRAPHS = _training_efficiency_metric(
+    "training.compiled_graphs",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Graphs the compiler built during the run. Zero when compilation is "
+        "off. A handful means the shapes the loader presents settled into a "
+        "few specializations; a count that tracks the step count means the run "
+        "recompiled instead of reusing, which reads as a poor speedup rather "
+        "than as the fixable mistake it is."
+    ),
+    (
+        "a run compiles the graphs it compiles, so the reading holds no units "
+        "to resample and a replicate of it is a second training run"
+    ),
+)
+
 TRAINING_STEP_SYNC_COST_SECONDS = _training_efficiency_metric(
     "training.step_sync_cost_seconds",
     MetricDirection.INFORMATIONAL,

@@ -345,6 +345,13 @@ def run_training(
             device=device,
             dtype=_training_dtype(config),
         )
+        if config.compilation != "off":
+            # In place rather than `torch.compile(model)`, whose wrapper
+            # prefixes every state-dict key with `_orig_mod.` and would make a
+            # compiled run's checkpoints load nowhere else. `fullgraph` keeps a
+            # graph break an error: the whole gain is fusion across the step,
+            # and a break silently returns most of it.
+            model.compile(fullgraph=True, mode=config.compilation)
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config.learning_rate,
@@ -457,6 +464,7 @@ def run_training(
                     gradient_accumulation_steps=config.gradient_accumulation_steps,
                     determinism=config.determinism,
                     matmul_precision=config.matmul_precision,
+                    compilation=config.compilation,
                     profile_phases=config.profile_phases,
                 ),
                 device=device,
@@ -1184,6 +1192,7 @@ _EXECUTION_COMPATIBILITY_KEYS = (
     "precision",
     "parameter_dtype",
     "matmul_precision",
+    "compilation",
     "determinism",
 )
 
@@ -1224,6 +1233,7 @@ def _execution_record(
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
         "fused_optimizer": _fused_optimizer(device),
         "matmul_precision": config.matmul_precision,
+        "compilation": config.compilation,
         "phase_profiling": config.profile_phases,
     }
 

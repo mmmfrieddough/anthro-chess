@@ -24,6 +24,10 @@ record: adopting Chessformer's shape is what makes that project's published size
 ladder a reading of this architecture rather than an analogy, and the target is
 taken from where that ladder flattens.
 
+`0073-compilation-is-on-by-default-and-plain-fusion-beats-graph-capture.md`
+rests on this record too: removing the ply axis removed the ragged per-ply
+iteration that had made the step impossible to compile.
+
 ## Context
 
 0066 left the model in three stages: a spatial encoder over each position's 64
