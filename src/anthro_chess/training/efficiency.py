@@ -74,6 +74,7 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import (
     TRAINING_ACTIVE_POSITION_FRACTION,
     TRAINING_ACTIVE_POSITIONS_PER_SECOND,
+    TRAINING_COMPILED_GRAPHS,
     TRAINING_OVERHEAD_FRACTION,
     TRAINING_PEAK_DEVICE_MEMORY_BYTES,
     TRAINING_PROCESSED_POSITIONS,
@@ -304,6 +305,10 @@ class TrainingEfficiencySummary:
     peak_driver_memory_bytes: int | None
     probe_steps: int
     probe_seconds: float
+    #: Graphs the compiler built while this run held the process. A delta
+    #: rather than the process total, so a run measured after another one in
+    #: the same interpreter reports its own.
+    compiled_graphs: int
 
     @property
     def active_positions_per_second(self) -> float | None:
@@ -436,6 +441,7 @@ class TrainingEfficiencyMonitor:
         self._config = config
         self._device = device
         self._run_started = time.perf_counter() if started is None else started
+        self._compiled_graphs_at_start = _compiled_graph_count()
         self._startup_seconds = 0.0
         self._validation_seconds = 0.0
         self._checkpoint_seconds = 0.0
@@ -643,6 +649,7 @@ class TrainingEfficiencyMonitor:
             peak_driver_memory_bytes=self._peak_driver,
             probe_steps=self._probe_steps,
             probe_seconds=self._probe_seconds,
+            compiled_graphs=_compiled_graph_count() - self._compiled_graphs_at_start,
         )
 
     def _sample_memory(self) -> None:
@@ -654,6 +661,18 @@ class TrainingEfficiencyMonitor:
             self._peak_driver,
             maximum_driver_memory_bytes(self._device),
         )
+
+
+def _compiled_graph_count() -> int:
+    """Return how many graphs Dynamo has compiled in this process so far.
+
+    Dynamo publishes this nowhere public. The counter is a `Counter`, so a
+    Torch that stops keeping the key reads as zero rather than raising, which
+    is the right failure for a number reported beside a throughput rather than
+    one anything gates on.
+    """
+
+    return int(torch._dynamo.utils.counters["stats"]["unique_graphs"])
 
 
 def allocated_memory_bytes(device: torch.device) -> int | None:
@@ -760,6 +779,7 @@ def coordinate_record(
     gradient_accumulation_steps: int,
     determinism: str,
     matmul_precision: str,
+    compilation: str,
     profile_phases: bool,
 ) -> dict[str, Any]:
     """Return the conditions a run was measured under, for attribution.
@@ -779,6 +799,7 @@ def coordinate_record(
         "effective_batch_size": batch_size * gradient_accumulation_steps,
         "determinism": determinism,
         "matmul_precision": matmul_precision,
+        "compilation": compilation,
         "phase_profiling": profile_phases,
     }
 
@@ -872,6 +893,7 @@ def efficiency_measurements(
             summary.step_synchronization_cost_seconds,
             summary.probe_steps or None,
         ),
+        (TRAINING_COMPILED_GRAPHS.identifier, float(summary.compiled_graphs), None),
     )
     for identifier, value, sample_size in pairs:
         if value is None:
@@ -1006,6 +1028,8 @@ def render_efficiency(summary: TrainingEfficiencySummary) -> str:
             f"  per-step sync:  {cost:+.6f}s per step over "
             f"{summary.probe_steps} probe step(s)"
         )
+    if summary.compiled_graphs:
+        lines.append(f"  compilation:    {summary.compiled_graphs} graph(s) built")
     return "\n".join(lines) + "\n"
 
 

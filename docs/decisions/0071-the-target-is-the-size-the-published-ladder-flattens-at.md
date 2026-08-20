@@ -15,6 +15,11 @@ have priced in an inefficiency 0070 removed.
 `0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md` sizes
 the vehicle from this figure.
 
+Refined by
+`0073-compilation-is-on-by-default-and-plain-fusion-beats-graph-capture.md`,
+which measured graph compilation rather than inferring it from this batch scan
+and found it worth a third at the target width.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and
@@ -60,8 +65,8 @@ card at most widths, which reads as a constraint and is not one. At the target
 width throughput saturates at batch 4, holding 14.3 GiB, and is flat through
 batch 10 while reserved memory climbs to 22.9 GiB. Width 384 behaves the same
 way. Everything above the saturation point is the allocator caching rather than
-work the model needs, so activation checkpointing and graph compilation, both
-absent, would buy no throughput at these sizes.
+work the model needs, so activation checkpointing would buy no throughput at
+these sizes.
 
 ## The Anchor
 

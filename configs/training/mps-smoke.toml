@@ -9,6 +9,10 @@ precision = "float32"
 determinism = "relaxed"
 profile_phases = true
 
+# Compilation off: it costs a fixed charge at the first step that a run this
+# short exists entirely below, and proving the device path does not need it.
+compilation = "off"
+
 [model]
 piece_embedding_dim = 2
 model_dim = 16
