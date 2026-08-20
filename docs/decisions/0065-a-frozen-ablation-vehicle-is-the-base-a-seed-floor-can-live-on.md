@@ -37,6 +37,11 @@ settles the layer budget the frozen configuration carries.
 target this record says the vehicle is derived from, and carries the throughput
 measurements that price an arm at each candidate vehicle width.
 
+`0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+fixes the arithmetic the freeze carries into every arm read against the vehicle,
+and records that it was adopted without the seed-floored quality reading this
+record's own base is what would have made possible.
+
 ## Context
 
 Three records converge on a gap none of them could close alone.

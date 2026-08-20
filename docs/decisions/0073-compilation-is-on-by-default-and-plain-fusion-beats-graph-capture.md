@@ -12,6 +12,10 @@ not, and this record carries the measurement that settles it.
 Rests on `0070-one-decision-per-pass-and-history-in-the-token-depth.md`, which
 removed the per-ply legal-action iteration that made compilation impossible.
 
+`0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+settles the precision default this record deliberately left open, and its
+readings are taken with compilation on because the two compound.
+
 ## Context
 
 Compilation was implemented, measured, and removed once already. The reason it
@@ -23,8 +27,8 @@ iteration, so the reason expired without anyone rereading the conclusion.
 Two things then kept the conclusion alive longer than the reason. `0071` scanned
 batch against throughput, found the memory ceiling did not bind, and inferred
 from that that compilation would buy nothing. And a first re-measurement here was
-taken at `float32` with `highest` matmul precision, which are the defaults and
-are not what any real run uses.
+taken at `float32` with `highest` matmul precision, which were the defaults then
+and are not what any real run uses.
 
 ## Decision
 
@@ -40,7 +44,7 @@ with a 200-step steady-state window, against an eager control.
 | --- | ---: | ---: | ---: | ---: |
 | 256 | float32 | 8,041 | 9,334 | +16% |
 | 256 | bf16 with TF32 | 15,558 | 22,621 | +45% |
-| 512 | float32 | 3,521 | 3,493 | none |
+| 512 | float32 | 3,521 | 3,878 | +10% |
 | 512 | bf16 with TF32 | 6,906 | 9,117 | +32% |
 
 **Compilation compounds with the precision dials rather than competing with
@@ -49,10 +53,16 @@ issues. Reduced precision makes a step faster, a faster step is more
 launch-bound, and a launch-bound step is what fusion acts on. So the two
 multiply, and the float32 rows above understate compilation by about a third.
 
+The width-512 float32 figure is a correction. This record first read 3,493 there
+and called the row no gain at all, from a run whose stored record carries neither
+an efficiency measurement nor a checkpoint pointer;
+`0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+re-measured it cleanly at 3,878.
+
 **Either float32 row alone would have rejected it**, and the width-512 row would
-have rejected it decisively. That is the same shape of error `0071` made and the
-same one the original removal made: a reading taken at an operating point nothing
-ships at, generalized to one that does.
+have come closest to rejecting it. That is the same shape of error `0071` made
+and the same one the original removal made: a reading taken at an operating point
+nothing ships at, generalized to one that does.
 
 ## Why Graph Capture Is Not Offered
 
@@ -85,6 +95,7 @@ compiler built, so a run that recompiles per step reads as the fixable mistake i
 is rather than as a disappointing speedup.
 
 What this does not settle is the precision default, which is the larger of the
-two effects and still sits at `float32` with `highest`. Compilation's value is
-stated above at both settings so that the precision decision does not have to be
-retaken alongside it.
+two effects.
+`0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+settles it. Compilation's value is stated above at both settings so that the
+precision decision did not have to be retaken alongside it.

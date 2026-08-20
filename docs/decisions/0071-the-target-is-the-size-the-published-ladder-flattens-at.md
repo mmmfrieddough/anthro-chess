@@ -20,6 +20,11 @@ Refined by
 which measured graph compilation rather than inferring it from this batch scan
 and found it worth a third at the target width.
 
+`0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+uses the saturation this scan found: it is why the activation memory reduced
+precision returns is worth nothing at width 256, and why at width 512 it is a
+fit question rather than only a speed one.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and

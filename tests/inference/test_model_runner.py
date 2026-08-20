@@ -382,6 +382,31 @@ def test_runner_rejects_incompatible_artifact_contracts(
         )
 
 
+def test_a_mixed_precision_checkpoint_loads(tmp_path: Path) -> None:
+    """A run's autocast setting is not a property of the weights it wrote.
+
+    Mixed precision leaves master weights float32, so the checkpoint holds the
+    same tensors a full-precision run would and the loader has nothing to
+    refuse. Gating on the run's `precision` instead made every checkpoint the
+    training default now produces unreadable here.
+    """
+
+    checkpoint_path = _write_run(tmp_path / "mixed", seed=7)
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    run_path = checkpoint_path.parents[1] / "run.json"
+    run_record = json.loads(run_path.read_text(encoding="utf-8"))
+    payload["metadata"]["execution"]["precision"] = "bfloat16-mixed"
+    run_record["execution"]["precision"] = "bfloat16-mixed"
+    torch.save(payload, checkpoint_path)
+    run_path.write_text(json.dumps(run_record), encoding="utf-8")
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(checkpoint_path=checkpoint_path, device="cpu")
+    )
+
+    assert runner is not None
+
+
 def test_a_checkpoint_rebuilds_at_the_history_depth_its_run_declared(
     tmp_path: Path,
 ) -> None:

@@ -210,6 +210,32 @@ def test_a_run_record_this_code_would_write_itself_is_loadable(
     assert run.blocker is None
 
 
+def test_a_mixed_precision_run_is_loadable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    loadable_run_record: dict[str, object],
+) -> None:
+    """Autocast decides how a run computed, not what its checkpoint holds."""
+
+    execution = loadable_run_record["execution"]
+    assert isinstance(execution, dict)
+    _write_run(
+        tmp_path,
+        "mixed",
+        steps=(8000,),
+        record={
+            **loadable_run_record,
+            "execution": {**execution, "precision": "bfloat16-mixed"},
+        },
+    )
+    monkeypatch.setenv(RUN_ROOT_VARIABLE, str(tmp_path))
+
+    run = inspect_machine().runs[0]
+
+    assert run.loadable is True
+    assert run.blocker is None
+
+
 @pytest.mark.parametrize(
     ("field", "value", "expected"),
     [
@@ -231,7 +257,7 @@ def test_a_run_record_this_code_would_write_itself_is_loadable(
         ),
         (
             "execution",
-            {"precision": "bfloat16-mixed", "parameter_dtype": "float32"},
+            {"precision": "bfloat16-mixed", "parameter_dtype": "bfloat16"},
             "run parameter precision is unsupported",
         ),
     ],

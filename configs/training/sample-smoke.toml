@@ -5,7 +5,11 @@ learning_rate = 0.003
 log_every_steps = 1
 checkpoint_every_steps = 2
 device = "cpu"
+# Both dials at full precision rather than the decided defaults: they were
+# measured on CUDA, and a smoke run exists to prove a device path rather than to
+# exercise arithmetic nothing has measured on this backend.
 precision = "float32"
+matmul_precision = "highest"
 determinism = "strict"
 
 # Compilation off: it costs a fixed charge at the first step that a run this

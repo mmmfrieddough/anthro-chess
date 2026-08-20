@@ -518,7 +518,7 @@ def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
         manifest=prepared.manifest_path,
         run_name="run",
         validation=False,
-        extra='matmul_precision = "high"\n',
+        matmul_precision="high",
     )
     # What the forward pass actually ran under, sampled from inside the loop.
     # Asserting only the restored value would pass against a runner that never
@@ -2190,6 +2190,10 @@ def _write_training_config(
     shuffle: bool = False,
     device: str = "cpu",
     precision: str = "float32",
+    # Both dials at full precision unless a test is about one of them. The
+    # chosen defaults were measured on CUDA, and `high` changes what a float32
+    # matmul does on a CPU too, on whatever hardware happens to run the suite.
+    matmul_precision: str = "highest",
     determinism: str = "strict",
     # Off unless a test is about compilation: every run here is a handful of
     # steps, and each would otherwise pay the compiler before reaching them.
@@ -2228,6 +2232,7 @@ checkpoint_every_steps = {checkpoint_every_steps}
 {resume_selection}
 device = {json.dumps(device)}
 precision = {json.dumps(precision)}
+matmul_precision = {json.dumps(matmul_precision)}
 determinism = {json.dumps(determinism)}
 compilation = {json.dumps(compilation)}
 {extra}

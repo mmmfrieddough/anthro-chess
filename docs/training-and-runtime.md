@@ -174,22 +174,21 @@ batch 256, inside that arm's own spread. So a reading taken at the wrong batch
 does not merely understate a setting, it can reverse the ordering between two of
 them.
 
-Two precision settings therefore stay available and stay off by default.
-**Mixed precision** autocasts the forward pass while parameters and optimizer
-state stay float32, so a checkpoint is identical in shape to a full-precision
-one and loads anywhere one does. bfloat16 rather than float16 because its
-exponent range matches float32, which is why no gradient scaler exists anywhere
-in this system and why the checkpoint's scaler slot is empty on every supported
-path. **Reduced-precision float32 matmul** — TF32 — rounds a matrix
-multiplication's inputs while accumulating in float32.
+Two precision settings therefore ship on. **Mixed precision** autocasts the
+forward pass while parameters and optimizer state stay float32, so a checkpoint
+is identical in shape to a full-precision one and loads anywhere one does.
+bfloat16 rather than float16 because its exponent range matches float32, which
+is why no gradient scaler exists anywhere in this system and why the
+checkpoint's scaler slot is empty on every supported path. **Reduced-precision
+float32 matmul** — TF32 — rounds a matrix multiplication's inputs while
+accumulating in float32.
 
-Both are off by default because the default batch is the one where they return
-nothing, and neither default is a claim that they are not worth turning on.
-Mixed precision also returns activation memory, which is what decides whether a
-larger model fits on a fixed card, so it has a second argument the matmul
-setting does not. Which default is right at the batch capacity selection lands
-on is a question for that work, because throughput is not the only thing a
-precision change moves.
+Both are on by default, and throughput is the whole of what settled that.
+`docs/decisions/0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+carries the readings, the published prior art they lean on, and the quality
+reading that could not be taken before the vehicle froze. Full precision stays
+selectable, and the CPU and MPS smoke runs take it, because neither dial was
+measured on a backend this project does not train on.
 
 Unlike the fused optimizer, both are declared rather than derived, and what
 they declare is the arithmetic every gradient is computed in. So both are
