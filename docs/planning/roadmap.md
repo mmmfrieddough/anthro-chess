@@ -173,8 +173,10 @@ frame, and all of them share one property: each is carried inside the vehicle's
 identity, so none can follow the vehicle without invalidating it.
 
 - **The target model scale**, which follows from the compute budget and the
-  deployment envelope rather than from any measurement, and which sizes
-  everything below it.
+  deployment envelope rather than from any measurement, which sizes everything
+  below it, and which
+  `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
+  settles.
 - **The learning-rate schedule family**, which decides for the life of the
   project whether extending a run is a branch or a restart, and which
   `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` settles as a
@@ -234,9 +236,11 @@ size, the warmup length, and the weight-decay timescale — validated at one siz
 not used in fitting it.
 
 **The size-versus-data question is one decision, not several.** Total training
-compute is about six times the parameter count times the positions processed, so
-a fixed budget leaves the ratio between them as the only free quantity, and
-positions processed is steps times batch rather than a separate axis. A ladder of
+compute is about six times the parameter count times the tokens processed, so a
+fixed budget leaves the ratio between them as the only free quantity, and
+positions processed is steps times batch rather than a separate axis. A decision
+here is 64 square tokens rather than one, which `docs/scaling.md` owns and which
+is why the same rule stated over positions is wrong by about 60x. A ladder of
 several small sizes answers it once and the target's size and horizon follow
 arithmetically. The absolute size is not tuned here: it was derived in stage 4
 from budget and envelope, and outside work puts a sizing error within roughly 1.5x

@@ -69,9 +69,18 @@ Compute is an input: the hardware, multiplied by the wall-clock the project will
 spend, multiplied by realized utilization. `docs/vision.md` bounds the second
 term — iterations in days, a final run in weeks, on high-end consumer hardware.
 Total training compute is approximately six times the parameter count times the
-number of training positions processed, which leaves the ratio between those two
-as the only free quantity once the budget is fixed. That ratio is what a ladder
+number of **tokens** processed, which leaves the ratio between those two as the
+only free quantity once the budget is fixed. That ratio is what a ladder
 measures. The absolute size is arithmetic.
+
+**A decision is 64 tokens, and the difference is not a detail.** The usual form
+of that rule counts one token per supervised prediction, which is what a language
+model does. Here one decision is supervised and 64 square tokens are computed to
+reach it, so the rule stated over positions undercounts the real work by a factor
+this project measured at 57 to 61 across widths 256 to 768. Two quantities that
+coincide in the literature therefore come apart here: **compute scales with
+tokens, supervision scales with decisions.** Any ratio taken from outside work has
+to say which unit it is in before it can be compared against a figure from here.
 
 Two consequences worth stating because they are counter-intuitive:
 
@@ -90,6 +99,13 @@ This project serves far more inference than it spends training, and its serving
 constraint is loose — a model this size answers in milliseconds. That argues for
 the smaller-and-longer end of the band rather than the compute-optimal point,
 which is chosen for a run that is never served.
+
+### The Target
+
+**The target is `model_dim` 512, about 20.6M parameters, trained on roughly
+1.6e10 positions.** The confident band is 10M to 50M, which is widths 384 to 768.
+`docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
+records how it was derived, what it rests on, and what would reopen it.
 
 ### Widths That Do Not Follow The Model Width
 

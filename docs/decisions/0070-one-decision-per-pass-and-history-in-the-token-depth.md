@@ -19,6 +19,11 @@ Removes one of the two mappings
 `0038-the-encoding-owns-token-vocabularies-the-model-owns-transforms.md` placed,
 the previous-action token, without reopening the rule that placed it.
 
+`0071-the-target-is-the-size-the-published-ladder-flattens-at.md` rests on this
+record: adopting Chessformer's shape is what makes that project's published size
+ladder a reading of this architecture rather than an analogy, and the target is
+taken from where that ladder flattens.
+
 ## Context
 
 0066 left the model in three stages: a spatial encoder over each position's 64
