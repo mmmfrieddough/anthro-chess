@@ -4,7 +4,22 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted as initial design direction. Refined by
+Superseded. Every load-bearing part of this record now lives somewhere else:
+the rule it established is stated in `AGENTS.md` and `docs/issue-workflow.md`,
+the base it asked for is designated by
+`0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`, and
+the scope it withheld is given by the two records named next. The reasoning
+below is not refuted, but nothing reads it for a rule.
+
+**Its seed measurement does not transfer and should not be quoted as a
+quantity.** It was taken on a 276,002-parameter model at 8,000 steps, and this
+record's own conclusion is why the numbers do not carry: a dispersion belongs to
+a configuration rather than to a change. What survives is the direction, that
+seed variance is large enough to fake a narrow result. A usable figure comes
+from characterizing the vehicle 0065 designates, against that vehicle's own
+digest.
+
+Refined by
 `0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,
 which gives a stored training floor the scope this record withheld one for.
 Extended by `0061-a-training-cost-reading-has-no-replicate-to-resample.md`,
