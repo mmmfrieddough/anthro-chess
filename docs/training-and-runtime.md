@@ -206,10 +206,10 @@ does not convert into a batch that runs faster.
 carries the batch scan behind that.
 
 **Fit is a separate question, and at the target width it binds.** Every float32
-configuration measured at width 512 reserves between 24.39 and 24.55 GB of a
-24.56 GB card, against 20.32 GB for bfloat16 with compilation, so there the dial
-decides whether a configuration runs before it decides how fast. At width 256 it
-does not: the returned memory is headroom nothing needs.
+configuration measured at width 512 reserves at least 96% of what the runtime
+reports usable on a 24 GiB card, against 80% for bfloat16 with compilation, so
+there the dial decides whether a configuration runs before it decides how fast.
+At width 256 it does not: the returned memory is headroom nothing needs.
 
 That is a reversal of what this section used to say, and the cause is worth
 stating so the earlier reasoning is not rediscovered. Memory decided width while

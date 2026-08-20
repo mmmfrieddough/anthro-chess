@@ -142,12 +142,12 @@ sides. Read against the setting the vehicle would otherwise have frozen at,
 eager float32 with `highest`, the shipped configuration is 2.28x at width 256
 and 2.59x at 512.
 
-**At width 512 every float32 configuration sits against the ceiling.** The card
-holds 24.56 GB and the four float32 rows reserve between 24.39 and 24.55 GB of
-it, the compiled ones within 60 MB. bfloat16 compiled reserves 20.32 GB. At the
-target width the dial is deciding fit before it decides speed, which is not true
-at 256, where `0071`'s saturation finding holds and the returned memory converts
-into nothing.
+**At width 512 every float32 configuration sits against the ceiling.** The
+runtime reports 25.24 GB usable on this card. The four float32 rows reserve
+between 96.6% and 97.3% of that, leaving 690 MB at worst; bfloat16 with
+compilation reserves 80.5% and leaves 4.9 GB. At the target width the dial is
+deciding fit before it decides speed, which is not true at 256, where `0071`'s
+saturation finding holds and the returned memory converts into nothing.
 
 **The `512 / float32 / highest / on` row is a correction.** `0073` recorded 3,493
 for it and read the row as no gain at all. That figure came from a run whose
