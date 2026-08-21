@@ -16,7 +16,10 @@ regenerated on demand, since account status is a live judgement and a corpus
 that re-asked for it would shrink on every run.
 `training/` contains the strict CPU and explicitly selected MPS and CUDA smoke
 paths against the prepared sample artifact, including step-keyed checkpoint and
-resume coverage. The accelerator smoke selections enable synchronized phase
+resume coverage. It also holds the ablation vehicle, which is the one selection
+here that is frozen rather than merely checked in: a test asserts the training
+identity it produces, so editing it fails there instead of silently invalidating
+every comparison read against it. The accelerator smoke selections enable synchronized phase
 profiling for bounded device verification; larger-corpus batch and accumulation
 choices belong in resolved run configuration and measured artifacts.
 

@@ -23,6 +23,11 @@ landed before it: packing changes which decisions share a batch, so it is a
 change to what a model learns rather than an execution setting, and after the
 freeze it would have to be an arm rather than an adoption.
 
+`0076-the-vehicle-is-width-128-at-the-target-regime.md` is that freeze. The
+micro-batch it fixes is a throughput optimum rather than a ceiling, which is a
+measurement this record's shape is what made available: a padded batch's width
+belonged to its tail, so there was nothing stable to scan.
+
 ## Context
 
 A game-shaped batch pads its rows to the longest game in them. That padding is

@@ -367,7 +367,7 @@ def run_training(
         }
         model_identity = model.identity()
         execution_record = _execution_record(config, device)
-        compatibility = _compatibility_record(
+        compatibility = compatibility_record(
             config,
             data=data_record,
             model=model_identity,
@@ -1067,7 +1067,7 @@ def _prepare_metrics(path: Path, *, through_step: int) -> None:
     )
 
 
-def _compatibility_record(
+def compatibility_record(
     config: TrainingConfig,
     *,
     data: Mapping[str, object],
@@ -1290,7 +1290,7 @@ def _data_compatibility(value: object) -> dict[str, object]:
 
 #: How each compatibility identity is named in a resume failure. An identity
 #: absent from here is still compared, under its own key, so adding one to
-#: `_compatibility_record` cannot leave it silently unchecked.
+#: `compatibility_record` cannot leave it silently unchecked.
 _COMPATIBILITY_LABELS = {
     "training_config": "training configuration",
     "data": "data",

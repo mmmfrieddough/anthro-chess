@@ -13,6 +13,11 @@ today and an invalidated instrument afterwards.
 `docs/scaling.md` states the resulting rule and owns the program it serves.
 `#493` is what makes the rule expressible in configuration and in the runner.
 
+`0076-the-vehicle-is-width-128-at-the-target-regime.md` instantiates this
+family in the frozen configuration, and inherits the qualification below that the
+horizon sits outside the digest: an edit to the step budget alone leaves the
+identity intact, so a test asserts the horizon separately.
+
 ## Context
 
 Two schedule families are available, and the evidence in
