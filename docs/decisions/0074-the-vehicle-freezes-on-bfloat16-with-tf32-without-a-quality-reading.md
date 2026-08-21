@@ -52,14 +52,13 @@ re-read as an ordinary candidate afterwards.
 
 What an unfloored single-seed pair is worth here is already recorded, in
 direction rather than in magnitude. `0029-model-change-control-arm.md` ran that
-measurement once, and `#488` deliberately declines to repeat its figures because
-they were taken on a model three orders of magnitude smaller and quoting them
-invites reading them as a size. What transfers is that seed variance was large
-enough to push a substantial share of floored metrics past their floor on its
-own, and that one pair read better on every held-out and legality metric at once
-from nothing but initialization. A control-versus-treatment pair at one seed is
-exactly that shape, so it can produce a clean sweep in either direction and mean
-nothing by it.
+measurement once and is now superseded; its Status says the figures do not
+transfer, having been taken on a 276,002-parameter model at 8,000 steps, and that
+quoting them invites reading them as a size. What survives is the direction: seed
+alone moved a substantial share of the floored metrics past their floor, and
+produced one arm pair that read better on every held-out and legality metric at
+once. A control-versus-treatment pair at one seed is exactly that shape, so it
+can produce a clean sweep in either direction and mean nothing by it.
 
 ## The Residual Risk
 
