@@ -24,6 +24,7 @@ from anthro_chess.data import (
     SequenceBatchSource,
     SequenceDataConfig,
     SequenceDataLoader,
+    SequenceLoaderConfig,
     StreamingSequenceDataLoader,
     encoding_identity,
     resolve_sharded_selection,
@@ -460,7 +461,8 @@ def run_training(
                         train.provenance["loader_configuration_sha256"]
                     ),
                     model_identity=model_identity,
-                    batch_size=train.loader.config.batch_size,
+                    batch_size=train.loader.config.batch_extent,
+                    batch_unit=train.loader.config.batch_unit,
                     gradient_accumulation_steps=config.gradient_accumulation_steps,
                     determinism=config.determinism,
                     matmul_precision=config.matmul_precision,
@@ -610,12 +612,7 @@ def run_training(
         )
     except torch.OutOfMemoryError as error:  # pragma: no cover - needs a real device
         raise TrainingError(
-            _out_of_memory_message(
-                config,
-                device,
-                train.loader.config.batch_size,
-                error,
-            )
+            _out_of_memory_message(config, device, train.loader.config, error)
         ) from error
     except (
         CadenceError,
@@ -999,7 +996,7 @@ def _charge_instrumentation(
 def _out_of_memory_message(  # pragma: no cover - needs a real device to raise
     config: TrainingConfig,
     device: torch.device,
-    batch_size: int,
+    loader: SequenceLoaderConfig,
     error: BaseException,
 ) -> str:
     """Explain an exhausted accelerator in terms of the dials that fix it.
@@ -1011,6 +1008,8 @@ def _out_of_memory_message(  # pragma: no cover - needs a real device to raise
     """
 
     accumulation = config.gradient_accumulation_steps
+    batch_size = loader.batch_extent
+    dial = "batch_size" if loader.positions_per_batch is None else "positions_per_batch"
     reserved = driver_allocated_memory_bytes(device)
     held = (
         "an unmeasurable amount"
@@ -1019,10 +1018,11 @@ def _out_of_memory_message(  # pragma: no cover - needs a real device to raise
     )
     return (
         f"training ran out of memory on {device.type} with batch {batch_size} "
-        f"by {accumulation} accumulation step(s), an effective batch of "
-        f"{batch_size * accumulation}, while holding {held}: {error}. Lower "
-        f"the loader batch_size, raising gradient_accumulation_steps by the "
-        f"same factor to keep the effective batch unchanged"
+        f"{loader.batch_unit} by {accumulation} accumulation step(s), an "
+        f"effective batch of {batch_size * accumulation}, while holding "
+        f"{held}: {error}. Lower the loader {dial}, raising "
+        f"gradient_accumulation_steps by the same factor to keep the effective "
+        f"batch unchanged"
     )
 
 

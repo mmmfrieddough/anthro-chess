@@ -58,6 +58,7 @@ def _coordinates(**overrides: object) -> dict[str, object]:
         "loader_configuration_sha256": "b" * 64,
         "model_identity": MODEL_IDENTITY,
         "batch_size": 4,
+        "batch_unit": "sequences",
         "gradient_accumulation_steps": 2,
         "determinism": "relaxed",
         "matmul_precision": "highest",

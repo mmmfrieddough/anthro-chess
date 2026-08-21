@@ -11,7 +11,7 @@ from functools import partial
 from hashlib import sha256
 from heapq import nsmallest
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias, overload
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar, overload
 
 from anthro_chess.data.accounts import marks_a_player
 from anthro_chess.data.artifacts import (
@@ -74,6 +74,10 @@ _LOADER_COLUMNS = (
 )
 
 LegalActionTensor: TypeAlias = tuple[tuple[tuple[int, ...], ...], ...]
+#: One planned cut of one example: its index, where in it the cut starts, and
+#: how many plies it takes. A game-shaped plan cuts every example whole.
+PackedSlice: TypeAlias = tuple[int, int, int]
+_Packed = TypeVar("_Packed")
 
 
 @dataclass(frozen=True)
@@ -143,6 +147,11 @@ class SequenceBatch:
     decision reads real: it reaches only at or before its own column, and every
     column before a real one is itself real.
 
+    A row holds either one game or several laid end to end, and a decision's
+    history stops at the first column of its own game either way. Which column
+    that is falls out of the two indices the batch already carries, so nothing
+    here records a game boundary separately.
+
     ``legal_action_ids`` is absent when nothing downstream will read it. Policy
     scoring and the batch's own legality check are its only consumers and
     training is neither, so a training batch carries none and the encoding that
@@ -160,7 +169,12 @@ class SequenceBatch:
 
     @property
     def batch_size(self) -> int:
-        """Return the number of sequences in the batch."""
+        """Return the number of rows in the batch.
+
+        A row is one sequence where the batch is game-shaped, and every game
+        the batch holds where it is packed, so this counts sequences only in
+        the first case.
+        """
 
         return int(self.action_targets.shape[0])
 
@@ -480,9 +494,28 @@ class SequenceDataLoader(SequenceBatchSource):
     def __next__(self) -> SequenceBatch:
         if self._position >= len(self._batches):
             raise StopIteration
-        indices = self._batches[self._position]
+        batch = self._batches[self._position]
         self._position += 1
-        return collate_sequences(tuple(self.dataset[index] for index in indices))
+        examples = tuple(self._sliced(cut) for cut in batch)
+        width = self.config.positions_per_batch
+        if width is None:
+            return collate_sequences(examples)
+        return collate_packed(examples, width)
+
+    def _sliced(self, cut: PackedSlice) -> SequenceExample:
+        """Return the part of one dataset example a planned cut names."""
+
+        index, start, length = cut
+        example = self.dataset[index]
+        if start == 0 and length == len(example.plies):
+            return example
+        plies = example.plies[start : start + length]
+        return SequenceExample(
+            shard_index=example.shard_index,
+            game_id=example.game_id,
+            start_ply=plies[0].ply_index,
+            plies=plies,
+        )
 
     @property
     def identity_sha256(self) -> str:
@@ -568,20 +601,33 @@ class SequenceDataLoader(SequenceBatchSource):
         self._position = 0
         self._batches = self._batches_for_epoch(epoch)
 
-    def _batches_for_epoch(self, epoch: int) -> tuple[tuple[int, ...], ...]:
-        batches = length_bucketed_batches(
-            [len(example.plies) for example in self.dataset],
-            self.config,
-            within_bucket=(
-                (
-                    lambda index: _shuffle_key(
-                        self.config.seed, epoch, self.dataset[index]
-                    )
-                )
-                if self.config.shuffle
-                else None
-            ),
+    def _batches_for_epoch(self, epoch: int) -> tuple[tuple[PackedSlice, ...], ...]:
+        lengths = [len(example.plies) for example in self.dataset]
+        order: Callable[[int], Any] | None = (
+            (lambda index: _shuffle_key(self.config.seed, epoch, self.dataset[index]))
+            if self.config.shuffle
+            else None
         )
+        width = self.config.positions_per_batch
+        if width is None:
+            batches = tuple(
+                tuple((index, 0, lengths[index]) for index in bucketed)
+                for bucketed in length_bucketed_batches(
+                    lengths, self.config, within_bucket=order
+                )
+            )
+        else:
+            indices = list(range(len(lengths)))
+            if order is not None:
+                indices.sort(key=order)
+            batches = tuple(
+                tuple(cuts)
+                for cuts in packed_cuts(
+                    [(index, lengths[index]) for index in indices],
+                    width,
+                    drop_last=self.config.drop_last,
+                )
+            )
         if not self.config.shuffle:
             return batches
         return tuple(
@@ -618,15 +664,78 @@ def length_bucketed_batches(
         if within_bucket is not None:
             indices.sort(key=within_bucket)
         for start in range(0, len(indices), config.batch_size):
-            batch = tuple(indices[start : start + config.batch_size])
-            if config.drop_last and len(batch) < config.batch_size:
+            members = tuple(indices[start : start + config.batch_size])
+            if config.drop_last and len(members) < config.batch_size:
                 continue
-            batches.append(batch)
+            batches.append(members)
     return tuple(batches)
 
 
+def packed_cuts(
+    items: Sequence[tuple[_Packed, int]],
+    width: int,
+    *,
+    drop_last: bool,
+) -> Iterator[list[tuple[_Packed, int, int]]]:
+    """Cut a stream of sized items into batches holding ``width`` of them.
+
+    Both loaders cut one corpus into the same batches, so the rule lives here
+    and each maps it onto its own example type.
+    """
+
+    current: list[tuple[_Packed, int, int]] = []
+    filled = 0
+    for item, length in items:
+        start = 0
+        remaining = length
+        while remaining > 0:
+            taken = min(remaining, width - filled)
+            current.append((item, start, taken))
+            start += taken
+            remaining -= taken
+            filled += taken
+            if filled == width:
+                yield current
+                current = []
+                filled = 0
+    if current and not drop_last:
+        yield current
+
+
 def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
-    """Pad and pack sequence examples into arrays, inventing no targets.
+    """Pad and pack one sequence example per row, inventing no targets."""
+
+    if not examples:
+        raise ValueError("cannot collate an empty sequence collection")
+    rows = [example.plies for example in examples]
+    return _collate_rows(rows, max(len(row) for row in rows))
+
+
+def collate_packed(
+    examples: Sequence[SequenceExample],
+    width: int,
+) -> SequenceBatch:
+    """Lay sequence examples end to end in one row of a fixed width.
+
+    The caller cuts games to fit, so a full batch is every column a decision
+    and a short one arrives only where the caller ran out of stream to cut.
+    Padding it out to the same width is what keeps a compiled step from
+    recompiling for it.
+    """
+
+    if not examples:
+        raise ValueError("cannot collate an empty sequence collection")
+    plies = tuple(ply for example in examples for ply in example.plies)
+    if len(plies) > width:
+        raise ValueError("packed examples do not fit the batch width")
+    return _collate_rows([plies], width)
+
+
+def _collate_rows(
+    rows: Sequence[Sequence[PlyEncoding]],
+    width: int,
+) -> SequenceBatch:
+    """Write rows of already-laid-out plies into the batch's arrays.
 
     Every column is written into a prefilled array of its own width, so a
     padded timestep costs a memset rather than a Python object and the result
@@ -644,10 +753,8 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     # it on an install carrying no extras.
     import numpy as np
 
-    if not examples:
-        raise ValueError("cannot collate an empty sequence collection")
-    lengths = [len(example.plies) for example in examples]
-    shape = (len(examples), max(lengths))
+    lengths = [len(row) for row in rows]
+    shape = (len(rows), width)
 
     def required(
         getter: Callable[[PlyEncoding], int],
@@ -656,8 +763,8 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         padding: int = 0,
     ) -> np.ndarray:
         values = np.full(shape, padding, dtype=dtype)
-        for index, example in enumerate(examples):
-            values[index, : lengths[index]] = [getter(ply) for ply in example.plies]
+        for index, row in enumerate(rows):
+            values[index, : lengths[index]] = [getter(ply) for ply in row]
         return values
 
     def optional(
@@ -666,10 +773,10 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     ) -> OptionalIntBatch:
         values = np.zeros(shape, dtype=dtype)
         present = np.zeros(shape, dtype=np.bool_)
-        for index, example in enumerate(examples):
+        for index, row in enumerate(rows):
             observed: list[int] = []
             seen: list[bool] = []
-            for ply in example.plies:
+            for ply in row:
                 value = getter(ply)
                 observed.append(0 if value is None else value)
                 seen.append(value is not None)
@@ -679,10 +786,10 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
 
     piece_ids = np.zeros((*shape, BOARD_SQUARE_COUNT), dtype=np.uint8)
     attention_mask = np.zeros(shape, dtype=np.bool_)
-    for index, example in enumerate(examples):
+    for index, row in enumerate(rows):
         length = lengths[index]
         piece_ids[index, :length] = np.frombuffer(
-            b"".join([ply.board.piece_ids for ply in example.plies]),
+            b"".join([ply.board.piece_ids for ply in row]),
             dtype=np.uint8,
         ).reshape(length, BOARD_SQUARE_COUNT)
         attention_mask[index, :length] = True
@@ -690,7 +797,7 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
     # One ply decides for the batch. A collection is encoded by one caller, so
     # its plies agree; a hand-built one that does not raises from the accessor
     # below rather than being reconciled here.
-    packs_legal_actions = examples[0].plies[0].legal_action_ids is not None
+    packs_legal_actions = rows[0][0].legal_action_ids is not None
     inputs = SequenceInputs(
         piece_ids=piece_ids,
         side_to_move=required(lambda ply: ply.board.side_to_move, np.uint8),
@@ -719,9 +826,9 @@ def collate_sequences(examples: Sequence[SequenceExample]) -> SequenceBatch:
         attention_mask=attention_mask,
         legal_action_ids=(
             tuple(
-                tuple(ply.enabled_actions() for ply in example.plies)
-                + ((),) * (shape[1] - lengths[index])
-                for index, example in enumerate(examples)
+                tuple(ply.enabled_actions() for ply in row)
+                + ((),) * (width - lengths[index])
+                for index, row in enumerate(rows)
             )
             if packs_legal_actions
             else None
@@ -1032,9 +1139,14 @@ def _shuffle_key(seed: str, epoch: int, example: SequenceExample) -> bytes:
     ).digest()
 
 
-def _batch_shuffle_key(seed: str, epoch: int, batch: tuple[int, ...]) -> bytes:
-    indices = ",".join(str(index) for index in batch)
-    return sha256(f"{seed}\0{epoch}\0batch\0{indices}".encode()).digest()
+def _batch_shuffle_key(seed: str, epoch: int, batch: tuple[PackedSlice, ...]) -> bytes:
+    # This key fixes an epoch's batch order at a seed, so a cut taking a whole
+    # example renders as its index alone rather than letting how a cut is
+    # written move an order nothing else changed.
+    members = ",".join(
+        str(index) if start == 0 else f"{index}:{start}" for index, start, _ in batch
+    )
+    return sha256(f"{seed}\0{epoch}\0batch\0{members}".encode()).digest()
 
 
 def _length_bucket(sequence_length: int, bucket_width: int | None) -> int:

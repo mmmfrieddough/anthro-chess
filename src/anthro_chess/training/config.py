@@ -51,10 +51,11 @@ MatmulPrecision = Literal["highest", "high"]
 #: both capture CUDA graphs, both were measured, and both came in below this
 #: one; ``docs/training-and-runtime.md`` holds those readings and the rest.
 #:
-#: Dynamo specializes on shape and the loader buckets games by length, so a run
-#: presents several. ``training.compiled_graphs`` reports how many the compiler
-#: built, which is what separates a run that settled from one recompiling
-#: underneath a disappointing speedup.
+#: Dynamo specializes on shape, and a packed training batch has one while a
+#: game-shaped one is as wide as its longest game.
+#: ``training.compiled_graphs`` reports how many the compiler built, which is
+#: what separates a run that settled from one recompiling underneath a
+#: disappointing speedup.
 TrainingCompilation = Literal["off", "default"]
 
 
@@ -74,9 +75,11 @@ class TrainingConfig(ConfigModel):
     #: How much training data warmup spans, converted to steps by this run's own
     #: batch and accumulation. Declared as data rather than as steps or as a
     #: share of the run so that a branch and the trunk it resumes warm up over
-    #: the same prefix; sequences rather than positions because games vary in
-    #: length, so only the first is known before a run starts.
+    #: the same prefix. Which of the two a run declares follows its batch shape,
+    #: because a game-shaped batch fixes only how many games it holds and a
+    #: packed one only how many decisions.
     warmup_sequences: int = Field(default=0, ge=0)
+    warmup_positions: int = Field(default=0, ge=0)
     #: The share of the horizon the cooldown occupies. A step count would
     #: survive a horizon change syntactically and reshape the curve silently.
     cooldown_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
@@ -109,15 +112,36 @@ class TrainingConfig(ConfigModel):
     def learning_rate_schedule(self) -> LearningRateSchedule:
         """Resolve the rate curve this run's steps are taken at."""
 
+        loader = self.train.loader
+        unit = loader.batch_unit
         return resolve_schedule(
             peak=self.learning_rate,
             steps=self.steps,
-            warmup_sequences=self.warmup_sequences,
-            cooldown_fraction=self.cooldown_fraction,
-            sequences_per_step=(
-                self.train.loader.batch_size * self.gradient_accumulation_steps
+            warmup_data=(
+                self.warmup_sequences if unit == "sequences" else self.warmup_positions
             ),
+            cooldown_fraction=self.cooldown_fraction,
+            data_per_step=loader.batch_extent * self.gradient_accumulation_steps,
+            unit=unit,
         )
+
+    @model_validator(mode="after")
+    def _reject_warmup_in_the_other_unit(self) -> TrainingConfig:
+        """Refuse a warmup counted in a unit this run's batch does not fix."""
+
+        unit = self.train.loader.batch_unit
+        unused, dial = (
+            ("warmup_positions", self.warmup_positions)
+            if unit == "sequences"
+            else ("warmup_sequences", self.warmup_sequences)
+        )
+        if dial:
+            raise ValueError(
+                f"this run's batches are sized in {unit}, so warmup spans "
+                f"{unused.replace('warmup_', '')} it cannot convert; declare "
+                f"warmup_{unit} instead"
+            )
+        return self
 
     @model_validator(mode="after")
     def _resolve_schedule(self) -> TrainingConfig:

@@ -120,6 +120,30 @@ def _decoded(batch: SequenceBatch) -> list[tuple[Any, ...]]:
     return decoded
 
 
+def _packed_keys(batch: SequenceBatch) -> list[tuple[int, int]]:
+    """Return the game and ply each decision of a one-row batch carries."""
+
+    return [
+        (int(game_id), int(ply_index))
+        for game_id, ply_index, occupied in zip(
+            batch.game_ids[0],
+            batch.ply_indices[0],
+            batch.attention_mask[0],
+            strict=True,
+        )
+        if occupied
+    ]
+
+
+def _drain_packed(loader: StreamingSequenceDataLoader) -> list[tuple[int, int]]:
+    """Return every decision one epoch packed, in the order it produced them."""
+
+    try:
+        return [key for batch in loader for key in _packed_keys(batch)]
+    finally:
+        loader.close()
+
+
 def _drain(loader: StreamingSequenceDataLoader) -> list[tuple[int, tuple[int, ...]]]:
     """Return every sequence one epoch produced, in the order it produced them."""
 
@@ -376,6 +400,61 @@ def test_drop_last_drops_only_the_batches_a_window_left_short(
     assert len(kept) == 30
     assert len(dropped) == 28
     assert set(dropped) < set(kept)
+
+
+def test_packed_streaming_holds_every_ply_once_and_pads_only_a_window_tail(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    rows = _rows(normalized_row, 16, vary_ratings=True)
+    corpus = _corpus(write_corpus, tmp_path, rows, games_per_shard=16)
+    config = SequenceLoaderConfig(split="train", positions_per_batch=12)
+
+    loader = _loader(corpus, config, legal_actions=False)
+    try:
+        batches = list(loader)
+    finally:
+        loader.close()
+    eager = SequenceDataLoader.from_parquet(
+        [shard.path for shard in corpus[0]],
+        config,
+        legal_actions=False,
+    )
+
+    decisions = [key for batch in batches for key in _packed_keys(batch)]
+    assert sorted(decisions) == sorted(
+        key for batch in eager for key in _packed_keys(batch)
+    )
+    assert len(decisions) == len(set(decisions))
+    assert all(batch.sequence_length == 12 for batch in batches)
+    # One window, so one batch comes up short; a shuffle decides where in the
+    # epoch it lands, so the count is what the shape owes rather than a place.
+    held = sorted(len(_packed_keys(batch)) for batch in batches)
+    assert held[1:] == [12] * (len(batches) - 1)
+    assert held[0] < 12
+
+
+def test_packed_streaming_resume_continues_from_the_saved_cursor(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 32), games_per_shard=8
+    )
+    config = SequenceLoaderConfig(split="train", positions_per_batch=10)
+
+    complete = _drain_packed(_loader(corpus, config))
+    interrupted = _loader(corpus, config)
+    consumed = [key for _ in range(3) for key in _packed_keys(next(interrupted))]
+    saved = interrupted.state().as_record()
+    interrupted.close()
+
+    resumed = _loader(corpus, config)
+    resumed.load_state(saved)
+
+    assert consumed + _drain_packed(resumed) == complete
 
 
 def test_resume_continues_the_epoch_from_the_saved_cursor(

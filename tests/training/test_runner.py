@@ -14,7 +14,7 @@ from tensorboard.backend.event_processing.event_accumulator import (  # type: ig
 )
 
 from anthro_chess.application_logging import configure_application_logging
-from anthro_chess.config import load_config
+from anthro_chess.config import ConfigError, load_config
 from anthro_chess.data import PrepareConfig, prepare_pgn
 from anthro_chess.data.accounts import MarkedAccounts, account_digest
 from anthro_chess.data.artifacts import file_sha256, manifest_archive_records
@@ -1923,6 +1923,71 @@ def test_a_run_warms_up_holds_the_peak_and_cools_over_its_own_tail(
     assert 0.0 < rates[-1] < 0.001
 
 
+def test_a_packed_run_converts_its_warmup_from_the_positions_it_declares(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    result = run_training(
+        load_config(
+            TrainingConfig,
+            path=_write_training_config(
+                tmp_path / "config",
+                normalized=prepared.normalized_path,
+                manifest=prepared.manifest_path,
+                run_name="packed-schedule",
+                validation=False,
+                steps=40,
+                learning_rate=0.004,
+                train_batch="positions_per_batch = 4",
+                extra="warmup_positions = 8",
+            ),
+        ),
+        output_directory=tmp_path / "run",
+    )
+
+    rates = [
+        record["learning_rate"]
+        for record in _metric_records(result.metrics_path)
+        if record["record"] == "step"
+    ]
+
+    # Two warmup steps, because a packed batch of four decisions delivers four
+    # of the eight declared positions a step.
+    assert rates[0] == pytest.approx(0.002)
+    assert rates[1] == pytest.approx(0.004)
+
+
+@pytest.mark.parametrize(
+    ("train_batch", "extra", "message"),
+    [
+        ("batch_size = 1", "warmup_positions = 4", "sized in sequences"),
+        ("positions_per_batch = 4", "warmup_sequences = 4", "sized in positions"),
+    ],
+)
+def test_a_warmup_counted_in_the_other_unit_is_refused(
+    tmp_path: Path,
+    train_batch: str,
+    extra: str,
+    message: str,
+) -> None:
+    path = _write_training_config(
+        tmp_path / "config",
+        normalized=tmp_path / "normalized",
+        manifest=tmp_path / "manifest.json",
+        run_name="mismatched-warmup",
+        validation=False,
+        train_batch=train_batch,
+        extra=extra,
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(TrainingConfig, path=path)
+
+
 def test_a_branch_recomputes_the_rate_from_the_horizon_it_declares(
     tmp_path: Path,
 ) -> None:
@@ -2231,6 +2296,7 @@ def _write_training_config(
     # steps, and each would otherwise pay the compiler before reaching them.
     compilation: str = "off",
     extra: str = "",
+    train_batch: str = "batch_size = 1",
     train_selection: str = "",
     train_streaming: str = "",
 ) -> Path:
@@ -2284,7 +2350,7 @@ manifest = {json.dumps(str(manifest))}
 
 [train.loader]
 split = "train"
-batch_size = 1
+{train_batch}
 shuffle = {str(shuffle).lower()}
 {train_selection}{train_streaming}{validation_selection}
 """,
