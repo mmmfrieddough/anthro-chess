@@ -289,8 +289,8 @@ Key information:
   single configuration.
 - **States no precision, and its source sets none**, so its float32 matmuls take
   JAX's default. On TPU that default is a bfloat16 multiply with float32
-  accumulation, which is TF32's arrangement at a narrower mantissa: 7 bits
-  against 10. Reduced-precision matmul is what this model trains under whether
+  accumulation, which is TF32's arrangement at a narrower mantissa: 7 explicit
+  bits against 10. Reduced-precision matmul is what this model trains under whether
   or not its authors framed it as a choice.
 
 Applies to Anthro Chess:

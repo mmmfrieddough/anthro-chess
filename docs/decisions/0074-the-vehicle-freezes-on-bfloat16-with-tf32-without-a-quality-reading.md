@@ -83,8 +83,8 @@ an assertion into a citation, and the two points that matter are these:
   published model it is shaped after.
 - **The DeepMind chess transformer sets no precision at all**, so its float32
   matmuls take JAX's TPU default, which is a bfloat16 multiply with float32
-  accumulation. That is TF32's arrangement at a narrower mantissa, 7 bits against
-  10, and it is what that model trains under whether or not its authors framed it
+  accumulation. That is TF32's arrangement at a narrower mantissa, 7 explicit
+  bits against 10, and it is what that model trains under whether or not its authors framed it
   as a choice.
 
 Neither is evidence about this architecture on this data. Both are evidence that
@@ -237,8 +237,8 @@ precision arms sit within 0.0005 of the control.
 
 **Both dials perturb the curve less than the weaker of the two seed draws, and
 they are ordered by how much rounding each does.** TF32 rounds matmul inputs to
-ten mantissa bits and moves the curve half as far as bfloat16, which autocasts to
-seven. At the end of the horizon the bfloat16 arm reads 0.0030 below the control
+ten explicit mantissa bits and moves the curve half as far as bfloat16, which
+autocasts to seven. At the end of the horizon the bfloat16 arm reads 0.0030 below the control
 and the second float32 seed reads 0.0018 above it, so the precision difference and
 a single seed draw are the same size to within a factor of two.
 
