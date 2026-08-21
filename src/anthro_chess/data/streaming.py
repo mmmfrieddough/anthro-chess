@@ -788,8 +788,7 @@ def _packed_window_batches(
     """Lay one window's examples end to end and cut fixed-width batches out.
 
     A window is where a cut game's two halves can still meet, so the tail of a
-    window is the only place a batch comes up short. Windows are large next to
-    a batch, so that is one padded batch per window rather than a share of each.
+    window is the only place a batch comes up short.
     """
 
     return [

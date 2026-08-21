@@ -131,8 +131,11 @@ A cut game costs the shard-backed loader a second decode. Its two halves land in
 consecutive batches, each batch is one job, and a job decodes the games it needs
 from scratch, so the straddling game is replayed twice. That is
 `mean_game_length / positions_per_batch` extra decoding, measured at 22% of the
-loader's decode work at the width above and rising as the width falls. The
-worker pool absorbed it at the configuration measured here, which is why the
-throughput reading is what it is, but the term belongs to whoever picks the
-vehicle's width: it is the one cost of this shape that a narrower batch makes
-worse rather than better.
+loader's decode work at the width above.
+
+It does not bind. Profiled at that width, the step spends 2.6% of itself waiting
+for data against 94.2% computing, so the pool absorbs the duplicate and the
+ceiling on removing it is a fraction of that 2.6%. The term also shrinks as the
+width grows, and this shape freed enough memory that a width moves up rather
+than down. It is recorded because it is the one cost here that a narrower batch
+makes worse rather than better, not because a choice waits on it.

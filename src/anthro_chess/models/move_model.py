@@ -220,9 +220,9 @@ class SquareTokenEncoder(nn.Module):
 
         Reaching before the decision's own game is not an error: the earliest
         board available is repeated, which is what a game's opening plies
-        present anyway and what Chessformer trains against. ``floor`` is where
-        that game starts, so a row holding several of them never lets one
-        decision read the game in front of it.
+        present anyway and what Chessformer trains against. ``floor`` is what
+        stops a row holding several games letting one decision read the game in
+        front of it.
         """
 
         offsets = torch.arange(self.history, device=decisions.device)

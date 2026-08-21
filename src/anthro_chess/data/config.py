@@ -268,17 +268,9 @@ BatchUnit: TypeAlias = Literal["sequences", "positions"]
 class SequenceLoaderConfig(ConfigModel):
     """Deterministic batching choices for normalized game sequences.
 
-    Two batch shapes, and setting ``positions_per_batch`` chooses the second:
-
-    - **game-shaped**, where a row is one game and ``batch_size`` rows are
-      padded to their longest, with ``length_bucket_width`` holding that
-      padding down by grouping rows of similar length; and
-    - **decision-shaped**, where games are laid end to end and cut into
-      batches of exactly ``positions_per_batch`` decisions, so only the batch
-      that ends a pass or a planning window has padding in it at all.
-
-    The two cannot be mixed, so a game-shaped dial carrying a value alongside
-    ``positions_per_batch`` is rejected rather than quietly ignored.
+    Setting ``positions_per_batch`` swaps a padded row per game for games laid
+    end to end and cut at a fixed decision count. The two shapes cannot be
+    mixed.
     """
 
     split: SplitName = "train"
@@ -303,11 +295,7 @@ class SequenceLoaderConfig(ConfigModel):
 
     @property
     def batch_unit(self) -> BatchUnit:
-        """Return the unit this shape fixes a batch's size in.
-
-        A game-shaped batch holds a fixed number of games and a variable number
-        of decisions; a packed one is the other way round. Nothing knows both.
-        """
+        """Return the unit this shape fixes a batch's size in."""
 
         return "sequences" if self.positions_per_batch is None else "positions"
 
@@ -315,11 +303,9 @@ class SequenceLoaderConfig(ConfigModel):
     def batch_extent(self) -> int:
         """Return the batch's size in :attr:`batch_unit`."""
 
-        return (
-            self.batch_size
-            if self.positions_per_batch is None
-            else (self.positions_per_batch)
-        )
+        if self.positions_per_batch is None:
+            return self.batch_size
+        return self.positions_per_batch
 
     @model_validator(mode="after")
     def _validate_batch_shape(self) -> SequenceLoaderConfig:

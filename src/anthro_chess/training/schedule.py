@@ -60,9 +60,7 @@ def resolve_schedule(
     """Convert one run's declared schedule into the step counts it applies.
 
     The conversion uses the batch and accumulation the run declares, so the
-    step count is known before the first batch is read. Which unit that data is
-    counted in is the batch shape's business rather than this function's, and a
-    caller passes the pair its own shape fixes.
+    step count is known before the first batch is read.
     """
 
     warmup_steps = -(-warmup_data // data_per_step)

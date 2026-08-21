@@ -147,10 +147,9 @@ class SequenceBatch:
     decision reads real: it reaches only at or before its own column, and every
     column before a real one is itself real.
 
-    A row holds either one game or several laid end to end, and a decision's
-    history stops at the first column of its own game either way. Which column
-    that is falls out of the two indices the batch already carries, so nothing
-    here records a game boundary separately.
+    A row holds either one game or several laid end to end, and within a row a
+    game's plies stay contiguous and in ply order, so a decision's column runs
+    ahead of its ply index by a constant for as long as its own game lasts.
 
     ``legal_action_ids`` is absent when nothing downstream will read it. Policy
     scoring and the batch's own legality check are its only consumers and
@@ -171,9 +170,8 @@ class SequenceBatch:
     def batch_size(self) -> int:
         """Return the number of rows in the batch.
 
-        A row is one sequence where the batch is game-shaped, and every game
-        the batch holds where it is packed, so this counts sequences only in
-        the first case.
+        A packed batch is one row holding many games, so this is not a count of
+        the games in it.
         """
 
         return int(self.action_targets.shape[0])
@@ -677,11 +675,7 @@ def packed_cuts(
     *,
     drop_last: bool,
 ) -> Iterator[list[tuple[_Packed, int, int]]]:
-    """Cut a stream of sized items into batches holding ``width`` of them.
-
-    Both loaders cut one corpus into the same batches, so the rule lives here
-    and each maps it onto its own example type.
-    """
+    """Cut a stream of sized items into batches holding ``width`` of them."""
 
     current: list[tuple[_Packed, int, int]] = []
     filled = 0
@@ -1140,9 +1134,8 @@ def _shuffle_key(seed: str, epoch: int, example: SequenceExample) -> bytes:
 
 
 def _batch_shuffle_key(seed: str, epoch: int, batch: tuple[PackedSlice, ...]) -> bytes:
-    # This key fixes an epoch's batch order at a seed, so a cut taking a whole
-    # example renders as its index alone rather than letting how a cut is
-    # written move an order nothing else changed.
+    # A whole-example cut renders as its bare index, so an epoch's batch order
+    # turns on which examples a batch holds rather than on how a cut is spelled.
     members = ",".join(
         str(index) if start == 0 else f"{index}:{start}" for index, start, _ in batch
     )

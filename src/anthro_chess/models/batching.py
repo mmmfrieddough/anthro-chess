@@ -68,9 +68,7 @@ class MoveModelBatch:
     ``decision_columns`` names the column each timestep sits at in its own row.
     Counted here rather than inside the model, because an ``arange`` built
     inside a compiled graph is folded into the index arithmetic of the gathers
-    that consume it and Inductor then fails to simplify it, and rather than by
-    the loader, because it says nothing about the batch's contents and would be
-    a buffer to pack, pickle, and copy for that.
+    that consume it and Inductor then fails to simplify it.
 
     ``legal_action_ids`` is ``None`` when the batch came from a loader that was
     not asked for them. Legality checking and policy scoring are the only
@@ -97,10 +95,6 @@ class MoveModelBatch:
         the row inherited from the batch before it, or a chunk that starts
         partway through one, subtracts to a negative column and clamps onto the
         row's first, which is the repeat a game's own opening plies read anyway.
-
-        Every gather the model makes is bounded below by this and above by the
-        decision column, so nonnegative ply indices are the whole of what a
-        batch has to prove for those gathers to stay inside their own row.
         """
 
         return (self.decision_columns - self.ply_indices).clamp(min=0)
@@ -273,9 +267,8 @@ class MoveModelBatch:
     def validate(self) -> None:
         """Hold a batch assembled any other way to what a factory guarantees.
 
-        The decision columns are counted from a shape rather than read off the
-        loader, so a batch given a different one owes them again: the gathers
-        below are bounded by a column, and a stale one reaches past its row.
+        A batch given a new shape owes new decision columns; a stale one
+        indexes past its own row.
         """
 
         if self.decision_columns.shape != self.action_targets.shape:

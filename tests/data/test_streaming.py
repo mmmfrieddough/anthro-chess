@@ -428,8 +428,8 @@ def test_packed_streaming_holds_every_ply_once_and_pads_only_a_window_tail(
     )
     assert len(decisions) == len(set(decisions))
     assert all(batch.sequence_length == 12 for batch in batches)
-    # One window, so one batch comes up short; a shuffle decides where in the
-    # epoch it lands, so the count is what the shape owes rather than a place.
+    # One window, so exactly one batch comes up short; the shuffle decides
+    # where it lands, so assert the count and not the position.
     held = sorted(len(_packed_keys(batch)) for batch in batches)
     assert held[1:] == [12] * (len(batches) - 1)
     assert held[0] < 12

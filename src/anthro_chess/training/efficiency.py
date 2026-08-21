@@ -797,9 +797,8 @@ def coordinate_record(
         "loader_configuration_sha256": loader_configuration_sha256,
         "model_sha256": sha256(canonical_json(dict(model_identity))).hexdigest(),
         "batch_size": batch_size,
-        # Which unit the two batch counts are in. A batch of four games and a
-        # batch of four decisions are not the same coordinate, and nothing else
-        # in this record tells them apart.
+        # A batch of four games and a batch of four decisions are not the same
+        # coordinate, and nothing else in this record tells them apart.
         "batch_unit": batch_unit,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "effective_batch_size": batch_size * gradient_accumulation_steps,
