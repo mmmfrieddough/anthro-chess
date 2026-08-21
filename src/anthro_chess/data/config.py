@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import Field, StrictBool, model_validator
 
@@ -261,13 +261,28 @@ class SelectionConfig(ConfigModel):
         return self
 
 
+#: The unit a batch shape fixes a size in.
+BatchUnit: TypeAlias = Literal["sequences", "positions"]
+
+
 class SequenceLoaderConfig(ConfigModel):
-    """Deterministic batching choices for normalized game sequences."""
+    """Deterministic batching choices for normalized game sequences.
+
+    Setting ``positions_per_batch`` swaps a padded row per game for games laid
+    end to end and cut at a fixed decision count. The two shapes cannot be
+    mixed.
+    """
 
     split: SplitName = "train"
     selection: SelectionConfig = SelectionConfig()
     batch_size: int = Field(default=8, ge=1)
     length_bucket_width: int | None = Field(default=32, ge=1)
+    #: Decisions in one packed batch, and the field that selects the packed
+    #: shape at all. A game longer than what is left of a batch is cut, and its
+    #: remainder opens the next one reading a repeated board until its own
+    #: history is behind it again. One decision in this many pays that per
+    #: ``history_positions``, so a width near the history is mostly repeats.
+    positions_per_batch: int | None = Field(default=None, ge=1)
     #: Cut games into contiguous rows of this many plies, bounding the
     #: positions one batch holds. Chunks do not overlap, so the first plies of
     #: every chunk past the first reach before their row and read a repeated
@@ -277,6 +292,45 @@ class SequenceLoaderConfig(ConfigModel):
     shuffle: StrictBool = True
     seed: str = Field(default="anthro-sequence-loader-v1", min_length=1)
     drop_last: StrictBool = False
+
+    @property
+    def batch_unit(self) -> BatchUnit:
+        """Return the unit this shape fixes a batch's size in."""
+
+        return "sequences" if self.positions_per_batch is None else "positions"
+
+    @property
+    def batch_extent(self) -> int:
+        """Return the batch's size in :attr:`batch_unit`."""
+
+        if self.positions_per_batch is None:
+            return self.batch_size
+        return self.positions_per_batch
+
+    @model_validator(mode="after")
+    def _validate_batch_shape(self) -> SequenceLoaderConfig:
+        """Refuse a game-shaped dial carrying a value a packed batch ignores.
+
+        Read off the resolved values rather than off which fields were named,
+        so that dumping a packed configuration and validating it back produces
+        the configuration it came from instead of a rejection.
+        """
+
+        if self.positions_per_batch is None:
+            return self
+        defaults = type(self).model_fields
+        conflicting = sorted(
+            name
+            for name in ("batch_size", "length_bucket_width", "chunk_length")
+            if getattr(self, name) != defaults[name].default
+        )
+        if conflicting:
+            named = ", ".join(conflicting)
+            raise ValueError(
+                f"positions_per_batch packs decisions densely, so {named} "
+                "cannot also be set"
+            )
+        return self
 
 
 class StreamingLoaderConfig(ConfigModel):

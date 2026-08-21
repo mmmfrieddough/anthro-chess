@@ -65,6 +65,11 @@ class MoveModelBatch:
     shape and range is safe, and changing a shape, a ply index, or the padding
     layout owns calling :meth:`validate` again.
 
+    ``decision_columns`` names the column each timestep sits at in its own row.
+    Counted here rather than inside the model, because an ``arange`` built
+    inside a compiled graph is folded into the index arithmetic of the gathers
+    that consume it and Inductor then fails to simplify it.
+
     ``legal_action_ids`` is ``None`` when the batch came from a loader that was
     not asked for them. Legality checking and policy scoring are the only
     readers, so a training batch omits them and :meth:`validate` skips the
@@ -78,20 +83,21 @@ class MoveModelBatch:
     legal_action_ids: LegalActionTensor | None
     game_ids: Tensor
     ply_indices: Tensor
+    decision_columns: Tensor
 
     @property
-    def decision_columns(self) -> Tensor:
-        """Return the column of its own row each timestep sits at.
+    def history_floor(self) -> Tensor:
+        """Return the earliest column of its own row each timestep may read.
 
-        Read off the plies the batch carries rather than counted out, because
-        an ``arange`` built inside a compiled graph is folded into the index
-        arithmetic of the gathers that consume it and Inductor then fails to
-        simplify it. A chunk is contiguous, so the two agree. Padding subtracts
-        to a negative column and clamps back onto the row's first, which is a
-        decision no caller reads.
+        A timestep's own game starts where its column runs as far ahead of its
+        ply index as it ever will, so the difference of the two indices names
+        that column without a row having to carry its game boundaries. A game
+        the row inherited from the batch before it, or a chunk that starts
+        partway through one, subtracts to a negative column and clamps onto the
+        row's first, which is the repeat a game's own opening plies read anyway.
         """
 
-        return (self.ply_indices - self.ply_indices[:, :1]).clamp(min=0)
+        return (self.decision_columns - self.ply_indices).clamp(min=0)
 
     @classmethod
     def from_sequence_batch(
@@ -143,6 +149,9 @@ class MoveModelBatch:
             legal_action_ids=batch.legal_action_ids,
             game_ids=torch.from_numpy(batch.game_ids).to(device=tensor_device),
             ply_indices=required(batch.ply_indices),
+            decision_columns=_decision_columns(
+                batch.action_targets.shape, tensor_device
+            ),
         )
 
     @classmethod
@@ -250,14 +259,30 @@ class MoveModelBatch:
                 (count, width), dtype=torch.long, device=tensor_device
             ),
             ply_indices=column(DecisionColumn.PLY_INDEX),
+            decision_columns=_decision_columns((count, width), tensor_device),
         )
         result.validate()
         return result
 
     def validate(self) -> None:
-        """Hold a batch assembled any other way to what a factory guarantees."""
+        """Hold a batch assembled any other way to what a factory guarantees.
 
+        A batch given a new shape owes new decision columns; a stale one
+        indexes past its own row.
+        """
+
+        if self.decision_columns.shape != self.action_targets.shape:
+            raise ValueError("decision columns must align with targets")
         _reject_invalid_batch(self)
+
+
+def _decision_columns(
+    shape: tuple[int, ...],
+    device: torch.device | None,
+) -> Tensor:
+    """Return the column each timestep of a batch of ``shape`` sits at."""
+
+    return torch.arange(shape[1], device=device).expand(shape[0], shape[1])
 
 
 def _read_together(columns: Sequence[Any]) -> list[Any]:
@@ -338,18 +363,13 @@ def _reject_invalid_values(batch: _Batch) -> None:
     en_passant = batch.inputs.en_passant_token
     repetitions = batch.inputs.repetition_count
     ratings = batch.inputs.target_rating
-    # An index reaching past its own row's width gives the model's decision
-    # gather no bound of its own: a crash inside the forward pass on the host,
-    # and a device-side assert that kills a run on an accelerator.
-    columns = batch.ply_indices - batch.ply_indices[:, :1]
     checks: tuple[tuple[str, Any], ...] = (
         (
+            # A negative one lifts the history floor above its decision
+            # column, and the gather reaches past its own row: a crash in the
+            # forward pass, or a device-side assert that kills a run.
             "ply indices must be nonnegative",
             batch.ply_indices.min() < 0,
-        ),
-        (
-            "ply indices must stay inside the width of their own row",
-            columns.max() >= batch.action_targets.shape[1],
         ),
         (
             "action loss cannot include padded timesteps",

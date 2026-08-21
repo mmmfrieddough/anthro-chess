@@ -17,6 +17,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from anthro_chess.data import BatchUnit
+
 #: The share of a run its warmup may occupy. Past it a run spends enough of
 #: itself warming up that its readings are partly about the warmup rather than
 #: about what the run set out to measure.
@@ -50,9 +52,10 @@ def resolve_schedule(
     *,
     peak: float,
     steps: int,
-    warmup_sequences: int,
+    warmup_data: int,
     cooldown_fraction: float,
-    sequences_per_step: int,
+    data_per_step: int,
+    unit: BatchUnit,
 ) -> LearningRateSchedule:
     """Convert one run's declared schedule into the step counts it applies.
 
@@ -60,7 +63,7 @@ def resolve_schedule(
     step count is known before the first batch is read.
     """
 
-    warmup_steps = -(-warmup_sequences // sequences_per_step)
+    warmup_steps = -(-warmup_data // data_per_step)
     cooldown_steps = round(cooldown_fraction * steps)
     if cooldown_fraction > 0.0 and cooldown_steps < 2:
         raise ValueError(
@@ -70,8 +73,8 @@ def resolve_schedule(
         )
     if warmup_steps > MAXIMUM_WARMUP_FRACTION * steps:
         raise ValueError(
-            f"warmup of {warmup_sequences} sequence(s) is {warmup_steps} step(s) "
-            f"at {sequences_per_step} sequence(s) per step, more than "
+            f"warmup of {warmup_data} {unit} is {warmup_steps} step(s) "
+            f"at {data_per_step} {unit} per step, more than "
             f"{MAXIMUM_WARMUP_FRACTION:.0%} of the {steps}-step horizon and "
             f"outside the range the warmup rule holds over"
         )

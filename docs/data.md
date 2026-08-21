@@ -746,10 +746,20 @@ retained without a concrete downstream purpose.
 The sequence loading layer reads those normalized games into either full-game
 sequences or contiguous fixed-length chunks. It packs framework-neutral numeric
 batches, keeps nullable context behind explicit presence masks, and pads
-variable lengths behind attention and loss masks. Length buckets keep similarly
-sized sequences together, reducing padding without changing the examples. A
-deterministic epoch plan and an explicit next-batch cursor are the restart
-boundary for training checkpoints.
+variable lengths behind attention and loss masks. A deterministic epoch plan and
+an explicit next-batch cursor are the restart boundary for training checkpoints.
+
+A batch takes one of two shapes and the loader configuration picks it. A
+**game-shaped** batch gives each game its own row and pads the rows to the
+longest of them, with length buckets grouping similarly sized games so that
+there is less to pad. A **decision-shaped** batch lays games end to end in one
+row and cuts a fixed number of decisions out of that stream, so every timestep
+of a full batch is a decision and a game longer than what is left of a batch is
+cut across the boundary. Each row carries the column its timesteps sit at, and a
+decision's stacked history stops at the first column of its own game, so a row
+holding several games never lets one decision read the game in front of it.
+[`0075-a-training-batch-is-decisions-not-games.md`](decisions/0075-a-training-batch-is-decisions-not-games.md)
+says why training takes the second shape and evaluation keeps the first.
 
 A batch is contiguous columns, each no wider than the values it carries, and
 the per-ply encoding hands over its board as bytes so that a run of boards
@@ -795,10 +805,12 @@ and reaches neither the memory nor the startup time a corpus needs.
 The **shard-backed** loader decodes a batch at a time and holds nothing per
 game. An epoch orders row groups, orders the games inside each one, and cuts
 that stream into planning windows. A window is where length buckets fill and
-flush, so every example in a batch comes from one row group and a batch is read
-with a single columnar take. Flushing at a window boundary rather than an epoch
-boundary is the one visible cost: each window ends with a short batch per
-occupied bucket, which `drop_last` drops and otherwise leaves slightly small.
+flush, and where a cut game's two halves can still meet, so every example in a
+batch comes from one row group and a batch is read with a single columnar take.
+Flushing at a window boundary rather than an epoch boundary is the one visible
+cost: a window ends with a short batch per occupied bucket, or with one short
+batch where it packs decisions, which `drop_last` drops and otherwise leaves
+slightly small.
 
 Because a batch never spans row groups, which rows a row group contributes and
 how long each one decodes to are derived from that row group when the plan
@@ -914,8 +926,8 @@ distribution over them and the model does not condition on them:
 - game length or ply-count bucket;
 - result, termination, and repetition pattern.
 
-Length-bucketed batching is not resampling and remains available: grouping
-similar lengths within a batch serves the efficiency goal without changing how
+Neither batch shape is resampling: grouping similar lengths within a batch and
+laying games end to end both serve the efficiency goal without changing how
 often any game is seen.
 
 Balancing should avoid the full cross product becoming too sparse. For example,
@@ -1026,9 +1038,9 @@ The safest initial training setup is to train sequences from move one so
 training matches live inference, where the game normally begins at move one and
 the runtime accumulates history.
 
-Use length bucketing to reduce padding waste and to make phase-aware evaluation
-easy. Evaluation should report metrics by phase or ply bucket so good opening
-performance does not hide weak late-game behavior.
+Padding waste is what the batch shape addresses, and evaluation should report
+metrics by phase or ply bucket so good opening performance does not hide weak
+late-game behavior.
 
 Sampled midgame or endgame windows may be useful later for efficiency or
 late-game coverage, but they introduce a train/inference mismatch if live

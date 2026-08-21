@@ -28,6 +28,10 @@ taken from where that ladder flattens.
 rests on this record too: removing the ply axis removed the ragged per-ply
 iteration that had made the step impossible to compile.
 
+`0075-a-training-batch-is-decisions-not-games.md` refines the sequence batching
+this record kept as a loader convenience, and rests on the independence it
+established: a batch is now decisions rather than games.
+
 ## Context
 
 0066 left the model in three stages: a spatial encoder over each position's 64

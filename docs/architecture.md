@@ -192,9 +192,10 @@ by default, while an explicit seed makes games and benchmarks reproducible.
 See
 [`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
 
-A complete game, or a chunk of one, is still fed to the model at once, because
-every ply of it is a supervised decision and batching them costs one pass. What
-travels between those decisions is nothing: each reads its own stacked boards.
+Many decisions are still fed to the model at once, because each is a supervised
+decision and batching them costs one pass. What travels between them is nothing:
+each reads its own stacked boards, so a batch is free to hold a run of decisions
+from several games rather than one game's worth.
 
 The current implementation follows this shape with a square-token encoder over
 the stacked history, a stack of spatial layers reading the geometric bias, and a

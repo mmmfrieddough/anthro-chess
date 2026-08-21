@@ -17,6 +17,10 @@ Uses the batch scan in `0071-the-target-is-the-size-the-published-ladder-flatten
 which is what makes the memory this trade returns worth nothing at width 256 and
 worth something at width 512.
 
+`0075-a-training-batch-is-decisions-not-games.md` lands ahead of the same freeze
+and for the same reason, and its readings are taken at the precision this record
+settles.
+
 ## Context
 
 `precision` and `matmul_precision` are execution-compatibility keys. A run

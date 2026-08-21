@@ -42,6 +42,10 @@ fixes the arithmetic the freeze carries into every arm read against the vehicle,
 and records that it was adopted without the seed-floored quality reading this
 record's own base is what would have made possible.
 
+`0075-a-training-batch-is-decisions-not-games.md` lands ahead of the freeze for
+the reason this record names below, and fixes the shape of the batches the frozen
+configuration draws.
+
 ## Context
 
 Three records converge on a gap none of them could close alone.

@@ -2,6 +2,7 @@
 
 from anthro_chess.data.config import (
     ArchiveConfig,
+    BatchUnit,
     FilterConfig,
     OutputConfig,
     PrepareConfig,
@@ -48,6 +49,7 @@ from anthro_chess.data.loading import (
     SequenceExample,
     SequenceInputs,
     SequenceLoaderState,
+    collate_packed,
     collate_sequences,
     length_bucketed_batches,
 )
@@ -125,6 +127,7 @@ __all__ = [
     "SequenceDataset",
     "SequenceExample",
     "SequenceInputs",
+    "BatchUnit",
     "SequenceLoaderConfig",
     "SequenceLoaderState",
     "ShardedSelection",
@@ -139,6 +142,7 @@ __all__ = [
     "acquire_configured_archive",
     "build_decision_context",
     "resolve_sharded_selection",
+    "collate_packed",
     "collate_sequences",
     "length_bucketed_batches",
     "derive_termination",

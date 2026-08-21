@@ -34,7 +34,7 @@ import logging
 from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
@@ -68,8 +68,10 @@ from anthro_chess.data.loading import (
     _game_from_row,
     _length_bucket,
     _state_from_record,
+    collate_packed,
     collate_sequences,
     loader_configuration_sha256,
+    packed_cuts,
     require_resolved_snapshot,
     subsample_threshold,
     within_subsample,
@@ -166,6 +168,9 @@ class _BatchJob:
     lengths: tuple[int, ...]
     entries: tuple[tuple[int, int, int], ...]
     legal_actions: bool
+    #: Set when the entries are laid end to end in one row of this width
+    #: rather than given a padded row each.
+    packed_width: int | None
 
 
 @dataclass(frozen=True)
@@ -641,6 +646,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 for example in planned.examples
             ),
             legal_actions=self.legal_actions,
+            packed_width=self.config.positions_per_batch,
         )
 
     def _shard_reader(self, shard: int) -> Any:
@@ -700,7 +706,9 @@ def _materialize_batch(job: _BatchJob) -> SequenceBatch:
                 plies=chunk,
             )
         )
-    return collate_sequences(examples)
+    if job.packed_width is None:
+        return collate_sequences(examples)
+    return collate_packed(examples, job.packed_width)
 
 
 def _examples_for(
@@ -731,6 +739,23 @@ def _window_batches(
     config: SequenceLoaderConfig,
     epoch: int,
 ) -> Iterator[tuple[_Example, ...]]:
+    """Cut one window into the batches it contributes, in the configured shape."""
+
+    width = config.positions_per_batch
+    batches = (
+        _bucketed_window_batches(window, config)
+        if width is None
+        else _packed_window_batches(window, width, drop_last=config.drop_last)
+    )
+    if config.shuffle:
+        batches.sort(key=partial(_batch_key, config.seed, epoch))
+    yield from batches
+
+
+def _bucketed_window_batches(
+    window: Sequence[_Example],
+    config: SequenceLoaderConfig,
+) -> list[tuple[_Example, ...]]:
     """Fill length buckets across one window and flush what is left of it."""
 
     buckets: dict[int, list[_Example]] = {}
@@ -751,9 +776,32 @@ def _window_batches(
         if config.drop_last and len(remainder) < config.batch_size:
             continue
         batches.append(tuple(remainder))
-    if config.shuffle:
-        batches.sort(key=partial(_batch_key, config.seed, epoch))
-    yield from batches
+    return batches
+
+
+def _packed_window_batches(
+    window: Sequence[_Example],
+    width: int,
+    *,
+    drop_last: bool,
+) -> list[tuple[_Example, ...]]:
+    """Lay one window's examples end to end and cut fixed-width batches out.
+
+    A window is where a cut game's two halves can still meet, so the tail of a
+    window is the only place a batch comes up short.
+    """
+
+    return [
+        tuple(
+            replace(example, start_ply=example.start_ply + start, length=taken)
+            for example, start, taken in cuts
+        )
+        for cuts in packed_cuts(
+            [(example, example.length) for example in window],
+            width,
+            drop_last=drop_last,
+        )
+    ]
 
 
 def _group_key(seed: str, epoch: int, group: _RowGroup) -> bytes:

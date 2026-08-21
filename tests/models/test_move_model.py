@@ -25,6 +25,7 @@ from anthro_chess.data import (
     GameEncodingInput,
     SequenceBatch,
     SequenceExample,
+    collate_packed,
     collate_sequences,
     en_passant_token,
     encode_game,
@@ -763,6 +764,27 @@ def test_ordinary_model_and_loss_path_overfits_a_fixed_tiny_sample(
     assert final_loss < initial_loss * 0.2
 
 
+def test_a_packed_decision_scores_as_if_its_game_were_alone_in_the_row() -> None:
+    first = ("e2e4", "e7e5", "g1f3", "b8c6")
+    second = ("d2d4", "d7d5", "c2c4", "e7e6", "b1c3")
+    packed = MoveModelBatch.from_sequence_batch(
+        _packed_batch(first, second),
+    )
+    alone = MoveModelBatch.from_sequence_batch(_sequence_batch(second))
+    model = MoveModel(MoveModelConfig(model_dim=32, attention_heads=2, layers=2))
+    model.eval()
+
+    with torch.no_grad():
+        packed_logits = model(packed)
+        alone_logits = model(alone)
+
+    assert torch.allclose(
+        packed_logits[0, len(first) :],
+        alone_logits[0],
+        atol=1e-5,
+    )
+
+
 def test_model_config_rejects_incompatible_attention_dimensions() -> None:
     with pytest.raises(ValueError, match="divisible"):
         MoveModelConfig(model_dim=18, attention_heads=4)
@@ -775,6 +797,24 @@ def _sequence_batch(
     game_id_base: int = 100,
     start_ply: int = 0,
 ) -> SequenceBatch:
+    return collate_sequences(
+        _sequence_examples(
+            *move_lines,
+            white_rating=white_rating,
+            black_rating=black_rating,
+            game_id_base=game_id_base,
+            start_ply=start_ply,
+        )
+    )
+
+
+def _sequence_examples(
+    *move_lines: tuple[str, ...],
+    white_rating: int | None = None,
+    black_rating: int | None = None,
+    game_id_base: int = 100,
+    start_ply: int = 0,
+) -> list[SequenceExample]:
     examples = []
     for game_offset, moves in enumerate(move_lines):
         board = chess.Board()
@@ -805,7 +845,14 @@ def _sequence_batch(
                 plies=plies[start_ply:],
             )
         )
-    return collate_sequences(examples)
+    return examples
+
+
+def _packed_batch(*move_lines: tuple[str, ...]) -> SequenceBatch:
+    """Return one row holding every game laid end to end, with no padding."""
+
+    plies = _sequence_examples(*move_lines)
+    return collate_packed(plies, sum(len(example.plies) for example in plies))
 
 
 def _batch_of_width(

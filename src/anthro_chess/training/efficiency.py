@@ -55,6 +55,7 @@ from pydantic import Field, StrictBool, StrictInt
 from torch import Tensor
 
 from anthro_chess.config import ConfigModel
+from anthro_chess.data import BatchUnit
 from anthro_chess.evaluation.results import (
     BenchmarkReference,
     CheckpointReference,
@@ -776,6 +777,7 @@ def coordinate_record(
     loader_configuration_sha256: str,
     model_identity: Mapping[str, Any],
     batch_size: int,
+    batch_unit: BatchUnit,
     gradient_accumulation_steps: int,
     determinism: str,
     matmul_precision: str,
@@ -795,6 +797,9 @@ def coordinate_record(
         "loader_configuration_sha256": loader_configuration_sha256,
         "model_sha256": sha256(canonical_json(dict(model_identity))).hexdigest(),
         "batch_size": batch_size,
+        # A batch of four games and a batch of four decisions are not the same
+        # coordinate, and nothing else in this record tells them apart.
+        "batch_unit": batch_unit,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "effective_batch_size": batch_size * gradient_accumulation_steps,
         "determinism": determinism,

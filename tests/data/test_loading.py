@@ -26,6 +26,7 @@ from anthro_chess.data.schema import (
     derive_game_id,
     encode_clock_remaining_deltas,
 )
+from anthro_chess.models import MoveModelBatch
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SAMPLE_PGN = REPOSITORY_ROOT / "samples/lichess/standard-export-sample.pgn"
@@ -118,6 +119,96 @@ def test_fixed_chunks_remain_contiguous_and_tail_padding_is_masked(
 
     assert batch.ply_indices.tolist() == [[0, 1], [2, 3], [4, 0]]
     assert batch.inputs.piece_ids[1][0][chess.E5] == chess.PAWN + 6
+
+
+def test_packed_batches_are_all_decisions_and_cut_a_game_at_the_boundary(
+    tmp_path: Path,
+) -> None:
+    moves = ("e2e4", "e7e5", "g1f3", "b8c6", "f1b5")
+    path = _write_games(
+        tmp_path,
+        [_row(1, moves[:5]), _row(2, moves[:4])],
+    )
+    dataset = SequenceDataset.from_parquet(path, split="train")
+    laid_down = [
+        (example.game_id, ply.ply_index) for example in dataset for ply in example.plies
+    ]
+    loader = SequenceDataLoader(
+        dataset,
+        SequenceLoaderConfig(positions_per_batch=6, shuffle=False),
+    )
+
+    first, second = list(loader)
+
+    assert first.attention_mask.tolist() == [[True] * 6]
+    # The batch boundary cuts the second game, whose remainder opens the next.
+    assert _packed_keys(first) == tuple(laid_down[:6])
+    assert _packed_keys(second) == tuple(laid_down[6:])
+    assert second.attention_mask.tolist() == [[True] * 3 + [False] * 3]
+    assert first.sequence_length == second.sequence_length == 6
+
+
+def test_a_packed_decision_reads_history_back_only_to_its_own_game(
+    tmp_path: Path,
+) -> None:
+    path = _write_games(
+        tmp_path,
+        [_row(1, ("e2e4", "e7e5")), _row(2, ("d2d4", "d7d5"))],
+    )
+    loader = SequenceDataLoader.from_parquet(
+        path,
+        SequenceLoaderConfig(positions_per_batch=4, shuffle=False),
+    )
+
+    batch = MoveModelBatch.from_sequence_batch(next(loader))
+
+    assert batch.decision_columns.tolist() == [[0, 1, 2, 3]]
+    assert batch.history_floor.tolist() == [[0, 0, 2, 2]]
+
+
+def test_packed_order_changes_by_epoch_and_restores_exact_cursor(
+    tmp_path: Path,
+) -> None:
+    path = _write_games(
+        tmp_path,
+        [_row(game_id, ("e2e4", "e7e5")) for game_id in range(1, 9)],
+    )
+    dataset = SequenceDataset.from_parquet(path, split="train")
+    config = SequenceLoaderConfig(positions_per_batch=5, seed="repeatable")
+    loader = SequenceDataLoader(dataset, config)
+
+    first_batch = next(loader)
+    saved = loader.state()
+    expected_remainder = [_packed_keys(batch) for batch in loader]
+
+    restored = SequenceDataLoader(dataset, config)
+    restored.load_state(json.loads(json.dumps(saved.as_record())))
+    assert [_packed_keys(batch) for batch in restored] == expected_remainder
+
+    replay = SequenceDataLoader(dataset, config)
+    assert _packed_keys(next(replay)) == _packed_keys(first_batch)
+    replay.start_epoch(1)
+    assert [_packed_keys(batch) for batch in replay] != [
+        _packed_keys(first_batch),
+        *expected_remainder,
+    ]
+
+
+def test_a_loader_names_its_batch_in_the_unit_its_own_shape_fixes() -> None:
+    games = SequenceLoaderConfig(batch_size=4, length_bucket_width=16)
+    decisions = SequenceLoaderConfig(positions_per_batch=287)
+
+    assert (games.batch_unit, games.batch_extent) == ("sequences", 4)
+    assert (decisions.batch_unit, decisions.batch_extent) == ("positions", 287)
+
+
+def test_a_packed_loader_config_rejects_the_game_shaped_dials() -> None:
+    with pytest.raises(ValueError, match="batch_size, length_bucket_width"):
+        SequenceLoaderConfig(
+            positions_per_batch=64,
+            batch_size=4,
+            length_bucket_width=16,
+        )
 
 
 def test_length_buckets_keep_similarly_sized_full_games_together(
@@ -415,6 +506,19 @@ def _game_id(index: int) -> int:
 
 def _action_ids(moves: tuple[str, ...]) -> tuple[int, ...]:
     return tuple(encode_move(chess.Move.from_uci(move)) for move in moves)
+
+
+def _packed_keys(batch: SequenceBatch) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (int(game_id), int(ply_index))
+        for game_id, ply_index, present in zip(
+            batch.game_ids[0],
+            batch.ply_indices[0],
+            batch.attention_mask[0],
+            strict=True,
+        )
+        if present
+    )
 
 
 def _batch_game_ids(batch: object) -> tuple[int, ...]:

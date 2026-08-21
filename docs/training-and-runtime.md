@@ -85,9 +85,9 @@ sequences, whenever practical. Every ply of a game is a supervised decision, so
 a whole game trains in a single parallel forward pass; nothing travels between
 those decisions, and each reads only the boards stacked behind its own.
 
-The loader supports full games and contiguous chunks, groups sequences into
-configurable length buckets, pads only within the current batch, and emits
-separate padding, action-loss, and nullable-context masks.
+The loader supports full games and contiguous chunks, batches them by game or
+by decision, pads only within the current batch, and emits separate padding,
+action-loss, and nullable-context masks.
 Deterministic ordering is derived from an explicit seed and epoch. A
 serializable dataset identity plus next-batch cursor permits exact continuation
 without preserving opaque worker state.
@@ -258,9 +258,11 @@ Two modes were measured and neither is offered. `reduce-overhead` and
 address and so refuse a run using gradient accumulation until it holds its
 `.grad` tensors resident. Made to run, both came in below plain fusion at width
 256 with bf16 — 14,391 and 14,865 against 18,435 — and `max-autotune` spent
-thirteen minutes compiling to get there. Graph capture is the wrong instrument
-here because the loader buckets games by length, so a run presents several shapes
-and a captured graph re-records instead of replaying.
+thirteen minutes compiling to get there. Those readings were taken against a
+game-shaped loader, whose batch is as wide as the longest game in it, so a run
+presented several shapes and a captured graph re-recorded instead of replaying.
+A packed training batch has one width, which removes that objection without
+touching the measured ordering above it.
 
 What compilation costs is a fixed charge at the first step of a run, not at
 startup: roughly 109 seconds at width 256, inside the training clock rather than

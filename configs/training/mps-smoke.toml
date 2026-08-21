@@ -31,8 +31,7 @@ manifest = "artifacts/lichess-sample/manifests/manifest.json"
 
 [train.loader]
 split = "train"
-batch_size = 1
-length_bucket_width = 32
+positions_per_batch = 32
 shuffle = false
 seed = "anthro-training-mps-smoke-v1"
 drop_last = false

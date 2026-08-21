@@ -162,7 +162,9 @@ class SquareTokenEncoder(nn.Module):
             self.flipped_piece_ids[inputs.piece_ids[..., self.mirrored_squares]],
             inputs.piece_ids,
         )
-        history = self._history_index(decisions)
+        history = self._history_index(
+            decisions, _at_decision(batch.history_floor, decisions)
+        )
         # Squares before slots, so the embedding that follows leaves the stack
         # in the last dimension and the projection reads it as one contiguous
         # depth rather than transposing a five-dimensional tensor to get there.
@@ -213,12 +215,14 @@ class SquareTokenEncoder(nn.Module):
         tokens = tokens + self.rating_embedding(rating).unsqueeze(-2)
         return cast(Tensor, self.normalization(tokens))
 
-    def _history_index(self, decisions: Tensor) -> Tensor:
+    def _history_index(self, decisions: Tensor, floor: Tensor) -> Tensor:
         """Return the ply each history slot of each decision reads.
 
-        Reaching before a row's first column is not an error: the earliest
+        Reaching before the decision's own game is not an error: the earliest
         board available is repeated, which is what a game's opening plies
-        present anyway and what Chessformer trains against.
+        present anyway and what Chessformer trains against. ``floor`` is what
+        stops a row holding several games letting one decision read the game in
+        front of it.
         """
 
         offsets = torch.arange(self.history, device=decisions.device)
@@ -235,7 +239,7 @@ class SquareTokenEncoder(nn.Module):
             )
             limit = torch.where(truncated, kept, self.history - 1)
             reach = torch.minimum(reach, limit.unsqueeze(-1))
-        return (decisions.unsqueeze(-1) - reach).clamp(min=0)
+        return torch.maximum(decisions.unsqueeze(-1) - reach, floor.unsqueeze(-1))
 
     def _oriented(self, values: Tensor, black: Tensor, flipped: Tensor) -> Tensor:
         """Return one whole-position column read from the mover's own side."""
