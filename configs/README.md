@@ -26,6 +26,12 @@ pass has a deterministic implementation for every operation this model needs
 and the MPS one does not. A selection asking for strict determinism where the
 backend cannot supply it fails before the first optimizer step.
 
+They differ in precision for the same kind of reason. The CUDA selection takes
+the shipped defaults, so it proves the arithmetic a real run takes; the CPU and
+MPS ones pin both dials at full precision, because the readings that chose those
+defaults were taken on CUDA and neither dial has been measured on a backend this
+project does not train on.
+
 A training selection may also declare in-training evaluation cadences: when an
 entry runs, which registered metrics it computes, and the explicitly sized
 validation subsample it computes them over. The schedule is resolved before the

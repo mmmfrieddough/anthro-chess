@@ -194,14 +194,30 @@ def test_a_run_directory_without_a_record_or_checkpoints_is_not_a_run(
     assert report.runs[0].blocker == "no checkpoints"
 
 
+@pytest.mark.parametrize("precision", ["float32", "bfloat16-mixed"])
 def test_a_run_record_this_code_would_write_itself_is_loadable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     loadable_run_record: dict[str, object],
+    precision: str,
 ) -> None:
-    """The question a session arrives with, answered without reading weights."""
+    """The question a session arrives with, answered without reading weights.
 
-    _write_run(tmp_path, "current", steps=(8000,), record=loadable_run_record)
+    Both precisions, because autocast decides how a run computed rather than
+    what its checkpoint holds.
+    """
+
+    execution = loadable_run_record["execution"]
+    assert isinstance(execution, dict)
+    _write_run(
+        tmp_path,
+        "current",
+        steps=(8000,),
+        record={
+            **loadable_run_record,
+            "execution": {**execution, "precision": precision},
+        },
+    )
     monkeypatch.setenv(RUN_ROOT_VARIABLE, str(tmp_path))
 
     run = inspect_machine().runs[0]
@@ -231,7 +247,7 @@ def test_a_run_record_this_code_would_write_itself_is_loadable(
         ),
         (
             "execution",
-            {"precision": "bfloat16-mixed", "parameter_dtype": "float32"},
+            {"precision": "bfloat16-mixed", "parameter_dtype": "bfloat16"},
             "run parameter precision is unsupported",
         ),
     ],

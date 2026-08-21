@@ -287,6 +287,11 @@ Key information:
   playing at a strong club level.
 - Includes a scale ablation over model and data size rather than reporting a
   single configuration.
+- **States no precision, and its source sets none**, so its float32 matmuls take
+  JAX's default. On TPU that default is a bfloat16 multiply with float32
+  accumulation, which is TF32's arrangement at a narrower mantissa: 7 explicit
+  bits against 10. Reduced-precision matmul is what this model trains under whether
+  or not its authors framed it as a choice.
 
 Applies to Anthro Chess:
 
@@ -466,6 +471,11 @@ Key information:
   games gives a total near 1.6e10 positions and implies plausible utilization on
   the stated hardware, where reading it as positions implies about 1% and is not
   credible.
+- **Trains in mixed precision, and the reproducibility table gives a loss
+  scaler**: `use_amp` true, `amp_init_scale` 256, `amp_max_scale` 8,192. A
+  scaler is only needed for float16, whose exponent range cannot hold a
+  gradient distribution unshifted; bfloat16 needs none. The released inference
+  path agrees, calling `autocast('cuda')` with no dtype, which is float16.
 - Down-samples toward equal representation across 22 rating bins rather than
   training on the population's own shape.
 - Models no timing at all in what it released, and drops every position after a
@@ -496,6 +506,12 @@ Different from Anthro Chess:
 - Being a plain PyTorch package makes it the most practical external baseline to
   score against this project's benchmarks. Its AGPL-3.0 license bears on
   distribution, not on benchmarking.
+- Its mixed precision is float16 with a loss scaler, which is a narrower numeric
+  margin than a bfloat16 autocast rather than a wider one: bfloat16 carries
+  float32's exponent range and so needs no scaler, while float16's is what makes
+  one necessary. So the published ladder establishes that a chess transformer of
+  this shape reaches state of the art under reduced precision, at a margin
+  narrower than the one a project like this one would take.
 
 ### Allie: Human-Aligned Chess With A Bit Of Search
 
@@ -512,6 +528,7 @@ Key information:
   alongside move and value from the same argument:
   `-log p(m_i | m_<i) + (t(m_<i) - t_i)^2 + (v(m_<i) - v)^2`.
 - Omits moves made with under thirty seconds remaining from evaluation.
+- States no training precision anywhere in the paper.
 
 Applies to Anthro Chess:
 

@@ -518,7 +518,7 @@ def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
         manifest=prepared.manifest_path,
         run_name="run",
         validation=False,
-        extra='matmul_precision = "high"\n',
+        matmul_precision="high",
     )
     # What the forward pass actually ran under, sampled from inside the loop.
     # Asserting only the restored value would pass against a runner that never
@@ -940,6 +940,38 @@ def test_training_device_rejects_unavailable_or_strict_mps(
         )
 
 
+def test_a_cuda_device_without_bfloat16_is_refused_before_anything_is_written(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The default precision is one older CUDA cards cannot run."""
+
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=tmp_path / "missing.parquet",
+        manifest=tmp_path / "missing-manifest.json",
+        run_name="run",
+        validation=False,
+        device="cuda",
+        precision="bfloat16-mixed",
+        determinism="relaxed",
+    )
+    config = load_config(TrainingConfig, path=config_path).value
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+
+    with pytest.raises(TrainingError, match="bfloat16 mixed precision"):
+        _training_device(
+            config,
+            capabilities=DeviceCapabilities(
+                mps_built=False,
+                mps_available=False,
+                cuda_built=True,
+                cuda_available=True,
+                cuda_device_count=1,
+            ),
+        )
+
+
 def test_mixed_precision_keeps_full_precision_parameters_and_no_scaler(
     tmp_path: Path,
 ) -> None:
@@ -1038,6 +1070,7 @@ def test_accelerator_checkpoint_cross_backend_and_original_device_resume(
     )
     assert accelerator_checkpoint["metadata"]["execution"] == {
         "backend": backend,
+        "compilation": "off",
         "determinism": "relaxed",
         "device": backend,
         "fused_optimizer": backend == "cuda",
@@ -2190,6 +2223,9 @@ def _write_training_config(
     shuffle: bool = False,
     device: str = "cpu",
     precision: str = "float32",
+    # Full precision unless a test is about the dial: `high` changes what a
+    # float32 matmul does on whatever CPU happens to run the suite.
+    matmul_precision: str = "highest",
     determinism: str = "strict",
     # Off unless a test is about compilation: every run here is a handful of
     # steps, and each would otherwise pay the compiler before reaching them.
@@ -2228,6 +2264,7 @@ checkpoint_every_steps = {checkpoint_every_steps}
 {resume_selection}
 device = {json.dumps(device)}
 precision = {json.dumps(precision)}
+matmul_precision = {json.dumps(matmul_precision)}
 determinism = {json.dumps(determinism)}
 compilation = {json.dumps(compilation)}
 {extra}

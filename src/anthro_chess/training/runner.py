@@ -1126,6 +1126,17 @@ def _training_device(
             f"strict determinism is not supported for the current "
             f"{device.type.upper()} training path; select determinism='relaxed'"
         )
+    if (
+        config.precision == "bfloat16-mixed"
+        and device.type == "cuda"
+        and not torch.cuda.is_bf16_supported()
+    ):
+        # `torch.autocast` raises on the same condition, but not until the first
+        # forward pass, with an incomplete run record already on disk.
+        raise TrainingError(
+            "bfloat16 mixed precision is not supported by the current CUDA "
+            "device; select precision='float32'"
+        )
     return device
 
 

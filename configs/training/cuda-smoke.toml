@@ -19,7 +19,6 @@ learning_rate = 0.003
 log_every_steps = 1
 gradient_accumulation_steps = 4
 device = "cuda"
-precision = "float32"
 determinism = "strict"
 profile_phases = true
 

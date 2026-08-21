@@ -6,6 +6,7 @@ log_every_steps = 1
 checkpoint_every_steps = 2
 device = "cpu"
 precision = "float32"
+matmul_precision = "highest"
 determinism = "strict"
 
 # Compilation off: it costs a fixed charge at the first step that a run this

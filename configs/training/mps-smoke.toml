@@ -6,6 +6,7 @@ log_every_steps = 1
 gradient_accumulation_steps = 4
 device = "mps"
 precision = "float32"
+matmul_precision = "highest"
 determinism = "relaxed"
 profile_phases = true
 

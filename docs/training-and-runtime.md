@@ -174,35 +174,42 @@ batch 256, inside that arm's own spread. So a reading taken at the wrong batch
 does not merely understate a setting, it can reverse the ordering between two of
 them.
 
-Two precision settings therefore stay available and stay off by default.
-**Mixed precision** autocasts the forward pass while parameters and optimizer
-state stay float32, so a checkpoint is identical in shape to a full-precision
-one and loads anywhere one does. bfloat16 rather than float16 because its
-exponent range matches float32, which is why no gradient scaler exists anywhere
-in this system and why the checkpoint's scaler slot is empty on every supported
-path. **Reduced-precision float32 matmul** — TF32 — rounds a matrix
-multiplication's inputs while accumulating in float32.
+Two precision settings therefore ship on. **Mixed precision** autocasts the
+forward pass while parameters and optimizer state stay float32, so a checkpoint
+is identical in shape to a full-precision one and loads anywhere one does.
+bfloat16 rather than float16 because its exponent range matches float32, which
+is why no gradient scaler exists anywhere in this system and why the
+checkpoint's scaler slot is empty on every supported path. **Reduced-precision
+float32 matmul** — TF32 — rounds a matrix multiplication's inputs while
+accumulating in float32.
 
-Both are off by default because the default batch is the one where they return
-nothing, and neither default is a claim that they are not worth turning on.
-Mixed precision also returns activation memory, which is what decides whether a
-larger model fits on a fixed card, so it has a second argument the matmul
-setting does not. Which default is right at the batch capacity selection lands
-on is a question for that work, because throughput is not the only thing a
-precision change moves.
+Both are on by default, and throughput is the whole of what settled that. The 7%
+loss above still holds where it was read, against a step that spends itself
+issuing kernels; the defaults are set for a step that fills the device, which is
+the only kind a run against the corpus takes.
+`docs/decisions/0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+carries the readings, the published prior art they lean on, and the quality
+reading that could not be taken before the vehicle froze. Full precision stays
+selectable, and the CPU and MPS smoke runs take it, because neither dial was
+measured on a backend this project does not train on.
 
 Unlike the fused optimizer, both are declared rather than derived, and what
 they declare is the arithmetic every gradient is computed in. So both are
 settings a continuation has to match: a run that changed either partway would
 have no way to say which half produced its weights.
 
-**The memory that trade returns is headroom nothing needs.** On a 24 GiB card,
+**The memory that trade returns buys no throughput.** On a 24 GiB card,
 throughput saturates at a batch well below the memory ceiling at every width in
 the range this project trains, so activation memory a precision change gives back
-does not convert into anything.
+does not convert into a batch that runs faster.
 `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
-carries the batch scan behind that. The argument for mixed precision here is
-throughput, and fit is not a constraint to trade against.
+carries the batch scan behind that.
+
+**Fit is a separate question, and at the target width it binds.** Every float32
+configuration measured at width 512 reserves at least 96% of what the runtime
+reports usable on a 24 GiB card, against 80% for bfloat16 with compilation, so
+there the dial decides whether a configuration runs before it decides how fast.
+At width 256 it does not: the returned memory is headroom nothing needs.
 
 That is a reversal of what this section used to say, and the cause is worth
 stating so the earlier reasoning is not rediscovered. Memory decided width while
@@ -230,14 +237,18 @@ effective batch 16, against an eager control:
 | --- | --- | --- | ---: | ---: |
 | 256 | float32 | 9,334 | 8,041 | +16% |
 | 256 | bf16 with TF32 | 22,621 | 15,558 | +45% |
-| 512 | float32 | 3,493 | 3,521 | none |
+| 512 | float32 | 3,878 | 3,521 | +10% |
 | 512 | bf16 with TF32 | 9,117 | 6,906 | +32% |
 
+Every row splits that batch four ways except the width-256 bfloat16 one, which
+splits it two ways, so read a row against itself rather than against its
+neighbour.
+
 **Read at float32 alone it looks marginal, and at the target width it looks like
-nothing.** Both of those readings are artifacts of an arithmetic setting no real
-run uses, and the same trap `#200` fell into: it rejected compilation against a
-model whose per-ply legal-action iteration exhausted Dynamo's recompile budget,
-and that iteration no longer exists.
+a third of what it is.** Both of those readings are artifacts of an arithmetic
+setting no real run uses, and the same trap `#200` fell into: it rejected
+compilation against a model whose per-ply legal-action iteration exhausted
+Dynamo's recompile budget, and that iteration no longer exists.
 
 Compilation also *returns* memory rather than spending it, unlike a larger batch,
 which is what makes it the cheaper of the two ways to fill a card.
