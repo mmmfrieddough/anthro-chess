@@ -129,8 +129,60 @@ of its coupling table, so a vehicle frozen at an untuned rate would make a
 candidate that happens to suit that rate look good for the wrong reason, and the
 digest would make it permanent.
 
-The sweep and its result are recorded below. It is one sweep at one size, and it
-does not pretend to be the cross-scale rule `#489` fits.
+It is one sweep at one size, and it does not pretend to be the cross-scale rule
+`#489` fits. It is a rung of that fit, though, so it is recorded in full rather
+than reduced to the value it chose.
+
+Every point below is the mean training loss over the final logged intervals.
+Training loss rather than validation, because an end-of-run validation over this
+corpus streams the whole 104,360,891 game validation split before its subsample
+applies, and because at 1.138e9 positions against 138.7e9 plies nothing repeats,
+so a training position is a held-out position.
+
+At an eighth of the horizon, 142.3e6 positions:
+
+| peak rate | batch 1024 | batch 4096 | batch 16384 |
+| ---: | ---: | ---: | ---: |
+| 3e-5 | 1.6864 | 2.0510 | 2.4390 |
+| 1e-4 | 1.4885 | 1.6859 | 1.9603 |
+| 3e-4 | 1.4315 | 1.5495 | 1.6518 |
+| 1e-3 | 1.4258 | 1.5107 | 1.5162 |
+| 3e-3 | 1.4225 | 1.4991 | 1.4794 |
+| 1e-2 | not run | 1.5075 | 1.4696 |
+
+**The untuned end costs 18% of the loss**, which is the measurement that says
+this sweep had to happen before the freeze rather than after it.
+
+At half the horizon, 569.1e6 positions:
+
+| peak rate | batch | loss |
+| ---: | ---: | ---: |
+| 3e-3 | 16384 | 1.4460 |
+| 1e-3 | 1024 | 1.4552 |
+| 3e-3 | 1024 | 1.4627 |
+| 3e-4 | 1024 | 1.4634 |
+
+**The batch ordering reverses between the two horizons.** At an eighth, the small
+batch wins at every rate; at a half, the large one does. The optimal rate also
+falls with the horizon at fixed batch, from 3e-3 to 1e-3 at batch 1024. Neither
+short reading transfers, which is why the freeze is read at the full horizon.
+
+### The Floor Is Found By The Control, Not By Both Arms
+
+`0065` says the floor is found for "the digest both its readings carry", and
+`docs/evaluation.md` repeated it. Read literally that is impossible, and it would
+send `#488` to build a lookup that can never fire: a candidate change moves the
+digest, because moving it is what makes it a change, so the two arms of a vehicle
+comparison never share one.
+
+**The floor is keyed to the control's digest and describes the control.** That is
+what `0065` means two sections later when it says the floor "describes the
+vehicle, not the arm", and that the treatment's own dispersion is assumed to
+match. The two statements cannot both be read literally and the second is the one
+that survives. `docs/evaluation.md` is corrected here to say so.
+
+Nothing about the design changes. What changes is that a reader can no longer
+conclude the floor applies to nothing.
 
 ## What This Gives Up, Deliberately
 

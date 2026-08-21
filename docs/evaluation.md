@@ -540,8 +540,12 @@ change, and clearing a floor does not establish it: the two arms differ by their
 initialization seeds as well as by the change, and no floor built from a
 reading's own units can see that. One configuration is the exception, and it is
 the exception by construction: the ablation vehicle carries a seed dispersion
-stored against its identity digest, so a comparison whose two readings both carry
-that digest can be qualified on seed as well.
+stored against its identity digest, so a comparison whose **control** carries
+that digest can be qualified on seed as well. The treatment carries a different
+one, necessarily: a candidate that left the digest where it was would not be a
+candidate. The floor is found by the base it was measured on and describes that
+base, which is what **Regression Comparisons** below means by its describing
+baseline arms rather than the arm.
 `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
 owns why that is affordable there and nowhere else. **Regression Comparisons**
 below holds what a claim rests on, and decision 0029 holds the measurement that
