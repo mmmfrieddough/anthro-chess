@@ -21,7 +21,10 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
-from anthro_chess.data.artifacts import read_normalized_rows
+from anthro_chess.data.artifacts import (
+    normalized_shard_paths,
+    read_normalized_rows,
+)
 from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.evaluation.curves import (
     CurveComparison,
@@ -827,9 +830,9 @@ def _band_results(
 
 
 def _training_overlap(puzzles: Sequence[Puzzle], path: Path) -> tuple[int, int]:
-    # The membership test runs against the puzzle keys rather than the training
-    # keys. The two sides differ by five orders of magnitude, and holding the
-    # training side costs more host memory than the machine has.
+    # A shard at a time, holding the puzzle keys rather than the corpus ones:
+    # read_normalized_rows materializes every row it is handed, and this corpus
+    # is billions of games across tens of thousands of shards.
     wanted = {puzzle.source_game_key for puzzle in puzzles}
     matched: set[str] = set()
     games = 0
@@ -838,15 +841,16 @@ def _training_overlap(puzzles: Sequence[Puzzle], path: Path) -> tuple[int, int]:
         NormalizedColumn.SOURCE_ID.value,
         NormalizedColumn.SPLIT.value,
     )
-    for row in read_normalized_rows(path, columns=columns):
-        if (
-            row[NormalizedColumn.SOURCE_ID] == "lichess"
-            and row[NormalizedColumn.SPLIT] != "test"
-        ):
-            games += 1
-            key = str(row[NormalizedColumn.SOURCE_GAME_KEY])
-            if key in wanted:
-                matched.add(key)
+    for shard in normalized_shard_paths(path):
+        for row in read_normalized_rows(shard, columns=columns):
+            if (
+                row[NormalizedColumn.SOURCE_ID] == "lichess"
+                and row[NormalizedColumn.SPLIT] != "test"
+            ):
+                games += 1
+                key = str(row[NormalizedColumn.SOURCE_GAME_KEY])
+                if key in wanted:
+                    matched.add(key)
     if games == 0:
         raise PuzzleBenchmarkError(
             "training selection contains no non-test Lichess games"
