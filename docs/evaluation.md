@@ -1274,7 +1274,7 @@ already pushes probability toward legal moves because the target move is legal.
 
 Some decisions have an answer the deterministic chess layer supplies outright:
 mate available to the side to move, mate threatened against it on the reply,
-stalemate available to either side, and positions with one legal move. These are
+stalemate available to the side to move, and positions with one legal move. These are
 a tiny fraction of any pool, so a model that never converts a forced mate looks
 unremarkable in an aggregate move loss. Measuring them separately is the only
 way the failure becomes visible.
@@ -1311,8 +1311,8 @@ The implemented predicate registry lives in
 `anthro_chess.evaluation.slices`. It records whether a predicate is decidable or
 heuristic and owns the `only move` derivation that legality slicing also reads.
 Immediate threats use the conventional null-move question: if the side to move
-passed, could the opponent mate or create stalemate on the reply? The label is
-derived only for evaluation; null is never exposed as a model action. The
+passed, could the opponent mate on the reply? The label is derived only for
+evaluation; null is never exposed as a model action. The
 checkpoint runner scores each realized predicate during its existing policy
 pass and writes human rate, legal-greedy model rate, raw policy mass, their
 signed gap, the best successful action's rank, rating-band drill-down, and
