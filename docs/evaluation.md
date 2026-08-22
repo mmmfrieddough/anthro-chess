@@ -315,8 +315,9 @@ and a generation cut would otherwise fracture every cost line.
 
 **A cost reading carries no spread**, so a cost delta is reported as unknown
 noise and nothing in a record says the machine was busy. It is the one recorded
-family with no producer: #218 owns closing that, and until it does, decision
-0031 carries the measurements and what a cost reading is worth without one.
+family with no dispersion producer, and no open issue owns closing that;
+decision 0031 carries the measurements and what a cost reading is worth without
+one.
 
 `anthro_chess.evaluation.cost` owns the record and the workload normalization;
 `docs/decisions/0031-committed-benchmark-cost.md` owns the reasoning.
