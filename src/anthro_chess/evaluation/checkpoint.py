@@ -142,9 +142,10 @@ from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch, OptionalTensor
 
-#: Version 2 carries each series' own dispersion where version 1 carried the
-#: characterization the run recorded beside the reading.
-CHECKPOINT_EVALUATION_VERSION = 2
+#: Version 3 drops the rating-dependency tables, which the benchmark of that
+#: name now records against its own view; version 2 carried each series' own
+#: dispersion where version 1 carried a stored characterization.
+CHECKPOINT_EVALUATION_VERSION = 3
 
 HELD_OUT_KIND = "held-out-prediction"
 DEPENDENCY_KIND = "rating-dependency"
@@ -152,9 +153,9 @@ ADJUDICATION_KIND = "adjudicated-decisions"
 HELD_OUT_BENCHMARK = BenchmarkReference(name="held-out-prediction", version=1)
 DEPENDENCY_BENCHMARK = BenchmarkReference(name="rating-dependency", version=1)
 ADJUDICATION_BENCHMARK = BenchmarkReference(name="adjudicated-decisions", version=1)
-#: One invocation produces three readings, and its cost belongs to none of
-#: them: the scoring pass, the dependency treatments, and the adjudication all
-#: happen once. The cost record names the whole evaluation instead.
+#: One invocation produces two readings, and its cost belongs to neither: the
+#: scoring pass and the adjudication both happen once. The cost record names
+#: the whole evaluation instead.
 CHECKPOINT_COST_BENCHMARK = BenchmarkReference(
     name="checkpoint-evaluation",
     version=CHECKPOINT_EVALUATION_VERSION,
@@ -208,17 +209,40 @@ class OpeningConfig(ConfigModel):
     training_frequency: StrictBool = False
 
 
-class CheckpointEvaluationConfig(CheckpointSelection, PoolGenerationPin):
-    """Code-owned schema for ``anthro eval run``."""
+class PoolPassConfig(CheckpointSelection, PoolGenerationPin):
+    """What any single scoring pass over a frozen pool view declares.
+
+    Two benchmarks make such a pass and they size their views against
+    different questions, so the view lives here rather than being shared.
+    """
 
     pool: Path
-    view: ViewConfig = ViewConfig(name="canonical")
+    view: ViewConfig
     loader: EvaluationLoaderConfig = EvaluationLoaderConfig()
-    dependency: DependencyTestConfig = DependencyTestConfig()
     leakage: LeakageConfig = LeakageConfig()
-    detail: DetailConfig = DetailConfig()
     noise: NoiseConfig = NoiseConfig()
+
+
+class CheckpointEvaluationConfig(PoolPassConfig):
+    """Code-owned schema for ``anthro eval run``."""
+
+    view: ViewConfig = ViewConfig(name="canonical")
+    detail: DetailConfig = DetailConfig()
     openings: OpeningConfig = OpeningConfig()
+
+
+class DependencyBenchmarkConfig(PoolPassConfig):
+    """Code-owned schema for ``anthro eval dependency``.
+
+    The conditioning treatments cost seven forward passes per batch on top of
+    the one every reading pays, and what they answer is whether the model
+    reads its rating input at all rather than how well it predicts. That is a
+    coarser question than held-out prediction asks, so it is asked over its
+    own view.
+    """
+
+    view: ViewConfig = ViewConfig(name="rating-dependency")
+    dependency: DependencyTestConfig = DependencyTestConfig()
 
 
 @dataclass(frozen=True)
@@ -231,7 +255,6 @@ class CheckpointEvaluationResult:
     leakage: LeakageCheck
     slices: SliceTable
     adjudication: AdjudicationReport | None
-    dependency: DependencyTestResult | None
     dispersions: Mapping[str, MetricDispersion]
     opening_frequency: OpeningFrequency | None = None
     opening_tail: OpeningTailReading | None = None
@@ -253,9 +276,6 @@ class CheckpointEvaluationResult:
             "slices": self.slices.as_record(),
             "adjudication": (
                 self.adjudication.as_record() if self.adjudication is not None else None
-            ),
-            "dependency": (
-                self.dependency.as_record() if self.dependency is not None else None
             ),
             "dispersions": {
                 fingerprint: dispersion.model_dump(mode="json")
@@ -434,7 +454,7 @@ class _BatchSession:
     def __init__(
         self,
         runner: CheckpointModelRunner,
-        config: DependencyTestConfig,
+        config: DependencyTestConfig | None,
         shuffled: _ShuffledRatings | None,
     ) -> None:
         self._runner = runner
@@ -453,7 +473,7 @@ class _BatchSession:
             )
         positions = score_columns(active)
         adjudicated = score_action_sets(active, action_sets(inputs))
-        if self._shuffled is None:
+        if self._shuffled is None or self._config is None:
             return _BatchScores(inputs, positions, adjudicated, {}, {}, None)
 
         corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
@@ -581,20 +601,18 @@ class _Measured:
     positions: tuple[PositionPolicy, ...] | None
 
 
-def evaluate_checkpoint(
-    resolved_config: ResolvedConfig[CheckpointEvaluationConfig],
+def _open_pass(
+    config: PoolPassConfig,
     *,
-    run_root: Path | None = None,
-    recording: ResultRecording,
-) -> CheckpointEvaluationResult:
-    """Evaluate one checkpoint over a frozen pool and record the result.
+    run_root: Path | None,
+) -> tuple[_PoolReading, CheckpointModelRunner, LeakageCheck]:
+    """Open the pool view, load the checkpoint, and settle disjointness.
 
-    A recording opened without a store computes everything and records nothing,
-    which is what an exploratory reading wants: the committed tier should hold
-    results somebody meant to keep.
+    The leakage check runs before any scoring for the reason it always has: a
+    checkpoint that trained on these games should fail loudly rather than
+    produce a plausible number nobody re-examines.
     """
 
-    config = resolved_config.value
     try:
         reading = _open_reading(config)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
@@ -614,6 +632,24 @@ def evaluate_checkpoint(
         runner.metadata,
         training_normalized=config.leakage.training_normalized,
     )
+    return reading, runner, leakage
+
+
+def evaluate_checkpoint(
+    resolved_config: ResolvedConfig[CheckpointEvaluationConfig],
+    *,
+    run_root: Path | None = None,
+    recording: ResultRecording,
+) -> CheckpointEvaluationResult:
+    """Evaluate one checkpoint over a frozen pool and record the result.
+
+    A recording opened without a store computes everything and records nothing,
+    which is what an exploratory reading wants: the committed tier should hold
+    results somebody meant to keep.
+    """
+
+    config = resolved_config.value
+    reading, runner, leakage = _open_pass(config, run_root=run_root)
 
     # Before the scoring pass rather than after it, for the reason the leakage
     # check runs where it does: this reads the same corpus and can fail on it,
@@ -627,7 +663,15 @@ def evaluate_checkpoint(
         len(reading.batches),
     )
     try:
-        measured = _score(config, reading, runner, frequency)
+        measured = _score(
+            config,
+            reading,
+            runner,
+            frequency,
+            conditioning=None,
+            adjudicate=True,
+            per_position=config.detail.per_position,
+        )
     except (DataLoadingError, DependencyError, ScoringError, ValueError) as error:
         if isinstance(error, CheckpointEvaluationError):
             raise
@@ -662,7 +706,6 @@ def evaluate_checkpoint(
         leakage=leakage,
         slices=measured.slices,
         adjudication=measured.adjudication,
-        dependency=measured.dependency,
         dispersions=dispersions,
         opening_frequency=frequency,
         opening_tail=opening_tail,
@@ -692,40 +735,140 @@ def evaluate_checkpoint(
             ),
             data=data,
         )
-    if measured.dependency is not None:
-        recorder.add(
-            _dependency_measurements(measured.dependency, component),
-            kind=DEPENDENCY_KIND,
-            benchmark=DEPENDENCY_BENCHMARK,
-            payload=measured.dependency.as_record,
-            description="Cross-conditioning and within-game dependency tables.",
-            data=data,
-        )
     return result
 
 
+@dataclass(frozen=True)
+class DependencyBenchmarkResult:
+    """What one rating-dependency reading measured, plus where it was written."""
+
+    checkpoint: CheckpointReference
+    dataset: DatasetReference
+    view: ViewSelection
+    leakage: LeakageCheck
+    dependency: DependencyTestResult
+    dispersions: Mapping[str, MetricDispersion]
+    envelopes: tuple[ResultEnvelope, ...] = ()
+    recorded_paths: tuple[Path, ...] = ()
+    detail_paths: tuple[Path, ...] = ()
+
+    def as_record(self) -> dict[str, object]:
+        """Return the full structured result, detail tier included."""
+
+        return {
+            "version": CHECKPOINT_EVALUATION_VERSION,
+            "policy_scoring_version": POLICY_SCORING_VERSION,
+            "checkpoint": self.checkpoint.model_dump(mode="json"),
+            "dataset": self.dataset.model_dump(mode="json"),
+            "view": self.view.as_record(),
+            "leakage": self.leakage.as_record(),
+            "dependency": self.dependency.as_record(),
+        }
+
+
+def benchmark_dependency(
+    resolved_config: ResolvedConfig[DependencyBenchmarkConfig],
+    *,
+    run_root: Path | None = None,
+    recording: ResultRecording,
+) -> DependencyBenchmarkResult:
+    """Measure whether a checkpoint reads its rating conditioning."""
+
+    config = resolved_config.value
+    reading, runner, leakage = _open_pass(config, run_root=run_root)
+
+    logger.info(
+        "Scoring %s game(s) from pool view %r in %s batch(es) under every "
+        "conditioning treatment",
+        reading.selection.selected_games,
+        reading.selection.name,
+        len(reading.batches),
+    )
+    try:
+        measured = _score(
+            config,
+            reading,
+            runner,
+            None,
+            conditioning=config.dependency,
+            adjudicate=False,
+            per_position=False,
+        )
+    except (DataLoadingError, DependencyError, ScoringError, ValueError) as error:
+        if isinstance(error, CheckpointEvaluationError):
+            raise
+        raise CheckpointEvaluationError(str(error)) from error
+    if measured.dependency is None:
+        raise CheckpointEvaluationError("the dependency reading produced no result")
+
+    component = projection_content_digest(
+        reading.projected_rows(),
+        MOVE_PREDICTION_PROJECTION,
+    )
+    checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
+    data = pool_dataset_reference(
+        reading.pool,
+        reading.selection,
+        component,
+        error=CheckpointEvaluationError,
+    )
+
+    recorder = recording.measuring(
+        checkpoint,
+        kind=DEPENDENCY_KIND,
+        benchmark=DEPENDENCY_BENCHMARK,
+    )
+    dispersions = _estimate_dispersions(config, reading, measured, component)
+    recorder.disperse(dispersions)
+    recorder.add(
+        _dependency_measurements(measured.dependency, component),
+        payload=measured.dependency.as_record,
+        description="Cross-conditioning and within-game dependency tables.",
+        data=data,
+    )
+    return DependencyBenchmarkResult(
+        checkpoint=checkpoint,
+        dataset=data,
+        view=reading.selection,
+        leakage=leakage,
+        dependency=measured.dependency,
+        dispersions=dispersions,
+    )
+
+
 def _score(
-    config: CheckpointEvaluationConfig,
+    config: PoolPassConfig,
     reading: _PoolReading,
     runner: CheckpointModelRunner,
     frequency: OpeningFrequency | None,
+    *,
+    conditioning: DependencyTestConfig | None,
+    adjudicate: bool,
+    per_position: bool,
 ) -> _Measured:
-    """Score every batch of the view, keeping only what outlives its batch."""
+    """Score every batch of the view, keeping only what outlives its batch.
 
-    dependency = config.dependency.enabled
+    Which families a pass produces is the caller's rather than the
+    configuration's: each is a benchmark with its own view, so a pass that
+    quietly produced a second family would put it on this view instead of the
+    one that family declared.
+    """
+
     sessions = _sessions(
         runner,
-        config.dependency,
-        _ShuffledRatings(reading, config.dependency.shuffle_seed)
-        if dependency
+        conditioning,
+        _ShuffledRatings(reading, conditioning.shuffle_seed)
+        if conditioning is not None
         else None,
     )
     aggregator = SliceAggregator()
-    adjudication = AdjudicationAccumulator(retain_positions=config.detail.per_position)
-    columns = DependencyColumnBuilder() if dependency else None
+    adjudication = (
+        AdjudicationAccumulator(retain_positions=per_position) if adjudicate else None
+    )
+    columns = DependencyColumnBuilder() if conditioning is not None else None
     resampled = config.noise.enabled
     totals: list[GameTotals] = []
-    retained: list[PositionPolicy] | None = [] if config.detail.per_position else None
+    retained: list[PositionPolicy] | None = [] if per_position else None
 
     for scores in _scored_batches(reading, sessions):
         inputs = scores.inputs
@@ -733,7 +876,8 @@ def _score(
             scores.positions, inputs, opening_frequency=frequency
         )
         aggregator.accumulate(scores.positions, memberships)
-        adjudication.add(scores.action_sets, inputs)
+        if adjudication is not None:
+            adjudication.add(scores.action_sets, inputs)
         if resampled:
             totals.extend(per_game_totals(scores.positions, memberships))
         if columns is not None:
@@ -747,11 +891,11 @@ def _score(
         if retained is not None:
             retained.extend(position_records(scores.positions))
 
-    report = adjudication.report()
+    report = None if adjudication is None else adjudication.report()
     result = None
-    if columns is not None:
+    if columns is not None and conditioning is not None:
         result = reduce_dependency_columns(
-            config=config.dependency,
+            config=conditioning,
             columns=columns.build(),
             maturity=MaturityContext(
                 step=runner.global_step,
@@ -829,7 +973,7 @@ def _encoded_batches(reading: _PoolReading) -> Iterator[ScoringInputs]:
 
 def _sessions(
     runner: CheckpointModelRunner,
-    config: DependencyTestConfig,
+    config: DependencyTestConfig | None,
     shuffled: _ShuffledRatings | None,
 ) -> tuple[_BatchSession, ...]:
     """Return one scoring session per accelerator this machine exposes.
@@ -886,7 +1030,7 @@ def _scored_batches(
         pool.shutdown(cancel_futures=True)
 
 
-def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:
+def _open_reading(config: PoolPassConfig) -> _PoolReading:
     """Resolve the pool, the view, and the batches a reading will score."""
 
     pool = load_pool(
@@ -943,7 +1087,7 @@ def _open_reading(config: CheckpointEvaluationConfig) -> _PoolReading:
 
 
 def _estimate_dispersions(
-    config: CheckpointEvaluationConfig,
+    config: PoolPassConfig,
     reading: _PoolReading,
     measured: _Measured,
     component: DataComponent,
@@ -1097,9 +1241,13 @@ __all__ = [
     "CheckpointEvaluationConfig",
     "CheckpointEvaluationError",
     "CheckpointEvaluationResult",
+    "DependencyBenchmarkConfig",
+    "DependencyBenchmarkResult",
     "DetailConfig",
     "EvaluationLoaderConfig",
     "LeakageConfig",
     "LeakageError",
+    "PoolPassConfig",
+    "benchmark_dependency",
     "evaluate_checkpoint",
 ]

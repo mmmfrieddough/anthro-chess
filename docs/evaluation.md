@@ -325,7 +325,8 @@ one.
 ### The Checkpoint Evaluation Runner
 
 `anthro eval run` scores one compatible checkpoint over a deterministic view of
-the frozen pool and appends the result. It is the canonical end-of-run reading,
+the frozen pool and appends the held-out prediction, legality and adjudicated
+decision readings. It is the canonical end-of-run reading,
 and it is a library before it is a command, so in-training evaluation at
 declared cadences calls the same entry point over a smaller view instead of
 growing a second implementation that has to be kept consistent with this one.
@@ -1103,6 +1104,14 @@ Dependency results are recorded in the correctness family with the training
 maturity they were measured at. Nothing in them returns a pass or a fail: weak
 dependency on an undertrained checkpoint means the conditioning has not been
 learned yet, which is not the same finding as a miswired input.
+
+`anthro eval dependency` is the reading surface, and it declares its own view
+rather than sharing the checkpoint reading's. Every batch is scored once under
+the true conditioning and again under each corrupted and each fixed one, so the
+reading pays eight forward passes where a held-out reading pays one, and a
+degradation large enough to say the model reads its input at all does not need
+the resolution a move-loss delta does. Sharing one view made the family that
+tolerates the smaller sample set the cost of the family that does not.
 
 Two reported quantities are not means over positions and can carry no sampling
 floor: the cross-conditioning match rate counts rating slices, and the

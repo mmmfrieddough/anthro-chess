@@ -97,6 +97,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
     from anthro_chess.evaluation import (
         CheckpointEvaluationConfig,
         CheckpointEvaluationError,
+        DependencyBenchmarkConfig,
         InferenceBenchmarkConfig,
         InferenceBenchmarkError,
         LadderBenchmarkConfig,
@@ -110,6 +111,7 @@ def benchmark_registry() -> dict[str, Benchmark]:
         RolloutBenchmarkError,
         TerminationBenchmarkConfig,
         TerminationBenchmarkError,
+        benchmark_dependency,
         benchmark_inference,
         benchmark_ladder,
         benchmark_novelty,
@@ -118,7 +120,10 @@ def benchmark_registry() -> dict[str, Benchmark]:
         benchmark_termination,
         evaluate_checkpoint,
     )
-    from anthro_chess.evaluation.checkpoint import CHECKPOINT_COST_BENCHMARK
+    from anthro_chess.evaluation.checkpoint import (
+        CHECKPOINT_COST_BENCHMARK,
+        DEPENDENCY_BENCHMARK,
+    )
     from anthro_chess.evaluation.decisions import DecisionDecompositionError
     from anthro_chess.evaluation.inference import INFERENCE_BENCHMARK
     from anthro_chess.evaluation.ladder import LADDER_BENCHMARK
@@ -149,6 +154,15 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 error=CheckpointEvaluationError,
                 invoke=evaluate_checkpoint,
                 cost=CHECKPOINT_COST_BENCHMARK,
+            ),
+            Benchmark(
+                name="dependency",
+                schema=DependencyBenchmarkConfig,
+                artifact_fields=roots.CHECKPOINT_ARTIFACT_FIELDS,
+                errors=(CheckpointEvaluationError, LeakageError, *store_errors),
+                error=CheckpointEvaluationError,
+                invoke=benchmark_dependency,
+                cost=DEPENDENCY_BENCHMARK,
             ),
             Benchmark(
                 name="novelty",

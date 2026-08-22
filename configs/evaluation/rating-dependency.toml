@@ -1,0 +1,29 @@
+# Whether a checkpoint reads the rating it is conditioned on.
+#
+# This is a correctness reading rather than a quality one. Nothing in it
+# returns a pass or a fail: weak dependency on an undertrained checkpoint means
+# the conditioning has not been learned yet, which is a different finding from
+# a miswired input.
+#
+# The model selection is deliberately absent, so the reading uses the same
+# machine-local default checkpoint the playable engine reads. Override it for
+# one run with, for example:
+#
+#   anthro eval dependency --config <this file> --set model.run_path='"blitz-v3"'
+pool = "artifacts/lichess-univ-2018-01-2021-06-test"
+# The generation this reading is defined over. A superseded pool left at that
+# path is refused rather than scored.
+expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
+
+[view]
+# Its own view, and a small one, because this reading asks a coarser question
+# than held-out prediction does and pays far more per game to ask it: every
+# batch is scored once under the true conditioning and then again under each
+# corrupted and each fixed one, which is eight forward passes where the
+# checkpoint reading pays one. A degradation large enough to say the model
+# reads its input at all does not need the resolution a move-loss delta does.
+name = "rating-dependency"
+maximum_games = 2000
+
+[loader]
+batch_size = 8

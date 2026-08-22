@@ -18,6 +18,3 @@ name = "canonical"
 
 [loader]
 batch_size = 8
-
-[dependency]
-enabled = true

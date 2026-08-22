@@ -20,10 +20,12 @@ that.
   store — `anthro eval bridge add --store results` — since the commands default
   to the machine's own store like everything else.
 
-`anthro eval run` is what produces the records here: it scores one checkpoint
-over a deterministic view of the frozen pool, records the held-out prediction,
-legality, and rating-dependency results for it, and bootstraps each
-measurement's own sampling dispersion from the same pass. A delta between
+`anthro eval run` is what produces most of the records here: it scores one
+checkpoint over a deterministic view of the frozen pool, records the held-out
+prediction, legality, and adjudicated decision results for it, and bootstraps
+each measurement's own sampling dispersion from the same pass.
+`anthro eval dependency` records the correctness family the same way, over a
+view of its own. A delta between
 two such readings is floored by combining the two dispersions in front of it.
 Every recording benchmark also writes one `benchmark-cost` record saying what
 the invocation
