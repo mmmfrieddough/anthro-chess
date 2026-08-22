@@ -28,31 +28,10 @@
 # size is the declared bandwidth's radius, so shrinking it re-smooths the curve
 # rather than sampling it. Both benchmarks declare it themselves.
 #
-# Per-step cost figures are deliberately absent from this file. The ones that
-# used to be here were written before generated-game cost fell by more than an
-# order of magnitude, nothing in the repository could contradict them, and by
-# the time anyone re-measured they were between six and thirty-five times the
-# real cost — while still deciding which benchmarks a reduced sweep includes.
-# Each step now commits what its invocation cost beside its reading, so the
-# numbers live where a diff contradicts them; see
+# What a step costs is not written down here. Every recording step commits its
+# own invocation cost beside its reading, so `anthro eval report` answers it
+# from measurement rather than from a comment nothing can contradict; see
 # `docs/decisions/0031-committed-benchmark-cost.md`.
-#
-# What stays is the ordering, because that is what the reductions below are
-# argued from, and it carries where and when it was taken so a reader can tell
-# a stale figure from a current one. Measured on one Linux CUDA host on
-# 2026-08-02 against training-blitz-1m step 500, over three reduced sweeps: the
-# longest step was the rollout, then the checkpoint reading, then termination
-# and novelty within a few percent of each other, with the inference and
-# decision steps together under one percent of the total. The inference share
-# is six times that ordering's figure since #374, which made every inference
-# reading measure its own spread across six processes. The puzzle step is
-# absent from that ordering because the pinned puzzle artifact was not on the
-# host.
-#
-# A cost figure is the machine's rather than the model's, and a busy host moves
-# it much further than any model change does: a fourth sweep taken while two
-# other sessions ran benchmarks on the same host cost the checkpoint reading
-# six times what the other three did.
 name = "checkpoint"
 
 # Cheapest first, so a broken checkpoint selection fails in seconds rather than
@@ -72,8 +51,7 @@ reduced = [
 ]
 
 [benchmarks.run]
-# The canonical held-out reading, and the second most expensive step of the
-# reduced sweep. The view is not the whole story: the rating dependency test
+# The canonical held-out reading. The view is not the whole story: the rating dependency test
 # scores the same games again under each corrupted and each fixed conditioning,
 # so at the default conditioning grid this step pays eight passes over whatever
 # the view selects. The passes stay, since dropping one would drop a
@@ -104,17 +82,17 @@ config = "configs/evaluation/puzzle-rating-response.toml"
 reduced = ["puzzles_per_rating=2"]
 
 [benchmarks.rollout]
-# The first generating step, the one whose games the decomposition below reads,
-# and the reduced sweep's longest. Seeds and games per position are sample
-# counts; the rating and temperature grids are not and are left alone.
+# The first generating step, and the one whose games the decomposition below
+# reads. Seeds and games per position are sample counts; the rating and
+# temperature grids are not and are left alone.
 #
 # Neither is the human reference, which is why it is absent here. The declared
 # bandwidth is a neighbour count, so the reference size is that bandwidth's
 # radius rather than a sample size: shrinking it widens every neighbourhood
 # until the whole rating grid is estimated from one set of games, and the
 # reading would be a differently smoothed quantity rather than the same one
-# less precisely. It costs about seventy seconds of trajectory replay, which is
-# what a reduced curve reading pays to be smoothed the way a full one is.
+# less precisely. A reduced curve reading pays the same replay a full one does,
+# which is what being smoothed the same way costs.
 #
 # Games per position is the count that decides how many *streams* this step
 # plays, and the stream is what a curve comparison resamples: a game's seed is
@@ -162,8 +140,7 @@ reduced = [
 ]
 
 [benchmarks.ladder]
-# The only head-to-head strength reading, and by a wide margin the most
-# expensive step at either scale.
+# The only head-to-head strength reading.
 #
 # Its cost is quadratic in its seat count, and the seat count is the
 # measurement, so the seat grid is not a dial: a ladder fitted on a different

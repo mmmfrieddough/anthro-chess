@@ -827,7 +827,11 @@ def _band_results(
 
 
 def _training_overlap(puzzles: Sequence[Puzzle], path: Path) -> tuple[int, int]:
-    keys: set[str] = set()
+    # The membership test runs against the puzzle keys rather than the training
+    # keys. The two sides differ by five orders of magnitude, and holding the
+    # training side costs more host memory than the machine has.
+    wanted = {puzzle.source_game_key for puzzle in puzzles}
+    matched: set[str] = set()
     games = 0
     columns = (
         NormalizedColumn.SOURCE_GAME_KEY.value,
@@ -840,12 +844,14 @@ def _training_overlap(puzzles: Sequence[Puzzle], path: Path) -> tuple[int, int]:
             and row[NormalizedColumn.SPLIT] != "test"
         ):
             games += 1
-            keys.add(str(row[NormalizedColumn.SOURCE_GAME_KEY]))
+            key = str(row[NormalizedColumn.SOURCE_GAME_KEY])
+            if key in wanted:
+                matched.add(key)
     if games == 0:
         raise PuzzleBenchmarkError(
             "training selection contains no non-test Lichess games"
         )
-    overlapping = sum(puzzle.source_game_key in keys for puzzle in puzzles)
+    overlapping = sum(puzzle.source_game_key in matched for puzzle in puzzles)
     return games, overlapping
 
 

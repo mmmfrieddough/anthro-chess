@@ -52,20 +52,9 @@ Bulk diagnostics — per-position tables, slice breakdowns, generated games — 
 not belong here. They stay in the machine-local detail tier and are referenced
 from a record by path and digest.
 
-## Pre-Core Records
-
-The records currently here come from the two `anthro eval run` readings taken by
-the first full suite reading, on steps 100 and 8000 of `training-blitz-30k-v4`,
-at a reduced 400-game view rather than the canonical pool view. Each reading
-appends one record per family it covers — held-out prediction, rating
-dependency, and adjudicated decisions — each measurement carrying the spread
-bootstrapped for it, so two readings produce six records. They exist to
-demonstrate that metric movement shows up as a reviewable Git diff, which had
-not been exercised with real data.
-
-They are **pre-core**: nothing is protected before the evaluation core is
-designated, so they are deleted at #90 rather than bridged or carried forward.
-`#146` records what they were for.
+This directory holds no records yet. The pre-core ones it used to describe were
+deleted with the corpus generation they were read against, and nothing has been
+promoted since.
 
 `docs/evaluation.md` and `docs/decisions/0014-evaluation-result-storage.md`
 explain the layering; `docs/decisions/0013-benchmark-result-comparability.md`
