@@ -16,6 +16,8 @@ from anthro_chess.evaluation import (
     CheckpointEvaluationConfig,
     CheckpointEvaluationError,
     CheckpointEvaluationResult,
+    DependencyBenchmarkConfig,
+    DependencyBenchmarkResult,
     LeakageError,
     PoolConfig,
     freeze_pool,
@@ -144,11 +146,11 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     # Material gain is the one predicate common enough to fire on ordinary
     # play, so an adjudication record appears where no forced outcome would
     # have produced one.
-    # Three readings from one invocation, and one record of what that
-    # invocation cost, which belongs to none of them.
+    # Two readings from one invocation, and one record of what that invocation
+    # cost, which belongs to neither. Rating dependency is absent because it is
+    # its own benchmark over its own view.
     assert kinds == {
         HELD_OUT_KIND,
-        DEPENDENCY_KIND,
         ADJUDICATION_KIND,
         BENCHMARK_COST_KIND,
     }
@@ -160,8 +162,8 @@ def test_evaluation_records_sliced_results_over_the_frozen_pool(
     }
     assert result.adjudication is not None
     assert PositionPredicate.MATERIAL_GAIN in result.adjudication.predicates
-    # Three result envelopes and what the invocation cost.
-    assert len(result.recorded_paths) == 4
+    # Two result envelopes and what the invocation cost.
+    assert len(result.recorded_paths) == 3
     assert result.checkpoint.step == 1
     assert result.checkpoint.parameter_sha256 is not None
     assert result.dataset.pool_id == "fixture-test"
@@ -326,11 +328,14 @@ def test_repeated_evaluation_reproduces_every_measurement(
 
     first = _evaluate(_config(pool, checkpoint))
     second = _evaluate(_config(pool, checkpoint))
+    first_dependency = _measure_dependency(_dependency_config(pool, checkpoint))
+    second_dependency = _measure_dependency(_dependency_config(pool, checkpoint))
 
     assert first.slices.as_record() == second.slices.as_record()
-    assert first.dependency is not None
-    assert second.dependency is not None
-    assert first.dependency.as_record() == second.dependency.as_record()
+    assert (
+        first_dependency.dependency.as_record()
+        == second_dependency.dependency.as_record()
+    )
     assert [item.fingerprint for item in first.envelopes[0].measurements] == [
         item.fingerprint for item in second.envelopes[0].measurements
     ]
@@ -470,10 +475,9 @@ def test_dependency_tests_report_degradation_without_a_verdict(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    result = _evaluate(_config(pool, checkpoint))
+    result = _measure_dependency(_dependency_config(pool, checkpoint))
 
     dependency = result.dependency
-    assert dependency is not None
     assert {item.conditioning.name for item in dependency.corruptions} == {
         "shuffled",
         "constant",
@@ -530,7 +534,7 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    result = _evaluate(_config(pool, checkpoint))
+    result = _measure_dependency(_dependency_config(pool, checkpoint))
 
     reported = {
         item.metric: item
@@ -558,7 +562,6 @@ def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
         assert dispersion.value > 0.0
     divergence = reported["dependency.rating_anchor_policy_divergence"].dispersion
     assert divergence is not None
-    assert result.dependency is not None
     assert divergence.units == len(result.dependency.per_game_totals)
 
 
@@ -574,16 +577,16 @@ def test_the_dependency_tests_score_each_conditioning_once(
     table also wants, and the trajectory needs the true-conditioning policy the
     primary pass already computed, so all three are carried rather than
     re-scored. Counted rather than asserted structurally, because the passes
-    are what the reading costs: the same evaluation with the dependency block
-    off is exactly one pass, which is what turns a call count into a pass count
-    on any fixture.
+    are what the reading costs: the checkpoint reading over the same view is
+    exactly one pass, which is what turns a call count into a pass count on any
+    fixture.
 
     That the carried scores equal a standalone pass' is
     ``ActiveBatch.rescored``'s guarantee, which ``test_policy`` pins.
 
-    ``configs/evaluation/checkpoint-suite.toml`` states this same count to
-    argue what a reduced sweep shrinks, and nothing else here would catch it
-    going stale, so a change that moves this number belongs there too.
+    ``configs/evaluation/rating-dependency.toml`` states this same count to
+    argue what the benchmark costs, and nothing else here would catch it going
+    stale, so a change that moves this number belongs there too.
     """
 
     normalized, manifest = corpus(tmp_path / "corpus")
@@ -601,10 +604,11 @@ def test_the_dependency_tests_score_each_conditioning_once(
 
     monkeypatch.setattr(CheckpointModelRunner, "action_logits", counted)
 
-    _evaluate(_config(pool, checkpoint, dependency={"enabled": False}))
+    view = {"name": "canonical"}
+    _evaluate(_config(pool, checkpoint, view=view))
     batches = calls
     calls = 0
-    _evaluate(_config(pool, checkpoint))
+    _measure_dependency(_dependency_config(pool, checkpoint, view=view))
 
     assert batches > 0
     assert calls == 8 * batches
@@ -621,10 +625,9 @@ def test_absent_conditioning_changes_what_the_model_is_shown(
         tmp_path / "run", normalized=normalized, manifest=manifest
     )
 
-    result = _evaluate(_config(pool, checkpoint))
+    result = _measure_dependency(_dependency_config(pool, checkpoint))
 
     dependency = result.dependency
-    assert dependency is not None
     absent = dependency.corruption(ConditioningKind.ABSENT)
     assert absent is not None
     # An untrained fixture model need not degrade, but the treatments must be
@@ -904,9 +907,6 @@ def test_cli_runs_an_evaluation_without_recording_it(
                 "[model]",
                 f'checkpoint_path = "{checkpoint}"',
                 'device = "cpu"',
-                "",
-                "[dependency]",
-                "enabled = false",
             ]
         )
         + "\n",
@@ -962,7 +962,6 @@ def _config(
     *,
     view: dict[str, Any] | None = None,
     noise: dict[str, Any] | None = None,
-    dependency: dict[str, Any] | None = None,
     openings: dict[str, Any] | None = None,
     detail: dict[str, Any] | None = None,
     expected_pool_game_ids_sha256: str | None = None,
@@ -975,17 +974,58 @@ def _config(
                 "view": view or {"name": "canonical"},
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "loader": {"batch_size": 4},
-                "dependency": {
-                    "minimum_slice_positions": 1,
-                    "minimum_prefix_decisions": 1,
-                    **(dependency or {}),
-                },
                 "noise": noise or {"resamples": 100},
                 "openings": openings or {},
                 "detail": detail or {},
             }
         ),
         provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+
+def _dependency_config(
+    pool: Path,
+    checkpoint: Path,
+    *,
+    view: dict[str, Any] | None = None,
+    noise: dict[str, Any] | None = None,
+    dependency: dict[str, Any] | None = None,
+) -> ResolvedConfig[DependencyBenchmarkConfig]:
+    return ResolvedConfig(
+        value=DependencyBenchmarkConfig.model_validate(
+            {
+                "pool": str(pool),
+                "view": view or {"name": "rating-dependency"},
+                "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
+                "loader": {"batch_size": 4},
+                "dependency": {
+                    "minimum_slice_positions": 1,
+                    "minimum_prefix_decisions": 1,
+                    **(dependency or {}),
+                },
+                "noise": noise or {"resamples": 100},
+            }
+        ),
+        provenance=ConfigProvenance(source=None, overrides=()),
+    )
+
+
+def _measure_dependency(
+    resolved_config: ResolvedConfig[DependencyBenchmarkConfig],
+    *,
+    store: ResultsStore | None = None,
+    detail: DetailStore | None = None,
+) -> DependencyBenchmarkResult:
+    """Read the dependency benchmark the way both callers do, through the driver."""
+
+    return cast(
+        DependencyBenchmarkResult,
+        run_benchmark(
+            benchmark_registry()["dependency"],
+            resolved_config,
+            store=store,
+            detail=detail,
+        ),
     )
 
 

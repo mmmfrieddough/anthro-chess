@@ -963,7 +963,6 @@ ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
     "material_gain",
     "only_move",
     "stalemate_available",
-    "stalemate_reply",
 )
 
 

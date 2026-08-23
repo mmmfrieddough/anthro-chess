@@ -1152,6 +1152,7 @@ def _record_fixture_results(
 #: Every `anthro eval` subcommand that runs one benchmark from a selection file.
 _BENCHMARK_SUBCOMMANDS = (
     "run",
+    "dependency",
     "puzzles",
     "novelty",
     "inference",
@@ -2260,6 +2261,7 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
     assert set(names) == {
         "inference",
         "run",
+        "dependency",
         "novelty",
         "puzzles",
         "rollout",

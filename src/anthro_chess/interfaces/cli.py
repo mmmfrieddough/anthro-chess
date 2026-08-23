@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation import (
         CheckpointEvaluationResult,
         DecisionDecomposition,
+        DependencyBenchmarkResult,
         InferenceBenchmarkResult,
         LadderBenchmarkResult,
         NoveltyBenchmarkResult,
@@ -516,6 +517,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compute and print results without writing them to the store.",
     )
     run_parser.set_defaults(handler=partial(_run_eval_benchmark, name="run"))
+
+    dependency_parser = eval_commands.add_parser(
+        "dependency",
+        help="Measure whether a checkpoint reads its rating conditioning.",
+        parents=[_SET_FLAG, _STORE_FLAG, _DETAIL_ROOT_FLAG, _FORMAT_FLAG],
+    )
+    dependency_parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit TOML rating-dependency selection.",
+    )
+    dependency_parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Compute and print results without writing them to the store.",
+    )
+    dependency_parser.set_defaults(
+        handler=partial(_run_eval_benchmark, name="dependency")
+    )
 
     puzzles_parser = eval_commands.add_parser(
         "puzzles",
@@ -1911,29 +1932,57 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
             f"  {name:<12} mask_penalty={summary.mask_penalty:.6f} "
             f"move_loss={summary.move_loss:.6f} n={summary.position_count}"
         )
-    dependency = result.dependency
-    if dependency is not None:
-        match_rate = dependency.cross_conditioning.match_rate
-        response = dependency.within_game.response
+    if result.dispersions:
         lines.extend(
             [
                 "",
                 (
-                    "Rating dependency (a degradation to interpret against "
-                    f"training maturity, at step {dependency.maturity.step}):"
+                    f"Noise: data-sampling dispersions for "
+                    f"{len(result.dispersions)} metric(s), bootstrapped over "
+                    f"{result.view.selected_games} game(s). A delta against "
+                    "another reading is floored by combining the two."
                 ),
-                *(
-                    f"  {item.conditioning.name:<10} "
-                    f"degradation={item.degradation:+.6f}"
-                    for item in dependency.corruptions
-                ),
-                f"  cross-conditioning match rate: {_optional(match_rate)}",
-                f"  within-game response:          {_optional(response)}",
-                f"  anchor policy divergence:      {dependency.anchor_divergence:.6f}",
-                f"  anchor top-1 agreement:        "
-                f"{dependency.anchor_agreement_rate:.6f}",
             ]
         )
+    lines.extend(_recorded_lines(result.recorded_paths))
+    return "\n".join(lines) + "\n"
+
+
+def _render_dependency(result: DependencyBenchmarkResult) -> str:
+    dependency = result.dependency
+    match_rate = dependency.cross_conditioning.match_rate
+    response = dependency.within_game.response
+    lines = [
+        f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
+        (
+            f"Pool: {result.dataset.pool_id} v{result.dataset.pool_version} "
+            f"view {result.dataset.view} "
+            f"({result.view.selected_games} game(s))"
+        ),
+        (
+            f"Leakage: none of {result.leakage.pool_games} pool game(s) fall "
+            f"in the {result.leakage.training_split} split "
+            f"[{result.leakage.algorithm}]"
+            if result.leakage.verified
+            else (
+                f"Leakage: NOT VERIFIED - {result.leakage.unverified_reason} "
+                f"[{result.leakage.algorithm}]"
+            )
+        ),
+        "",
+        (
+            "Rating dependency (a degradation to interpret against training "
+            f"maturity, at step {dependency.maturity.step}):"
+        ),
+        *(
+            f"  {item.conditioning.name:<10} degradation={item.degradation:+.6f}"
+            for item in dependency.corruptions
+        ),
+        f"  cross-conditioning match rate: {_optional(match_rate)}",
+        f"  within-game response:          {_optional(response)}",
+        f"  anchor policy divergence:      {dependency.anchor_divergence:.6f}",
+        f"  anchor top-1 agreement:        {dependency.anchor_agreement_rate:.6f}",
+    ]
     if result.dispersions:
         lines.extend(
             [
@@ -3974,6 +4023,7 @@ def _rooted_artifact_path(root: Path, configured_path: Path) -> Path:
 _STEP_RENDERERS: Mapping[str, Callable[[Any], str]] = {
     "inference": _render_inference,
     "run": _render_evaluation,
+    "dependency": _render_dependency,
     "novelty": _render_novelty,
     "puzzles": _render_puzzles,
     "rollout": _render_rollout,

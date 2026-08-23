@@ -215,7 +215,6 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
             PositionPredicate.MATE_THREATENED: 10,
         },
         "8/8/8/r7/8/8/Q7/5k1K w - - 0 1": {
-            PositionPredicate.STALEMATE_REPLY: 19,
             # Qxa5 wins the undefended rook, so the heuristic predicate fires
             # here too. It is far more common than the decidable ones, which is
             # why it exists.
