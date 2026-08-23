@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC
 from hashlib import sha256
@@ -113,7 +113,13 @@ class ResultsStore:
         )
         return written[0]
 
-    def promote(self, checkpoint: str, *, into: ResultsStore) -> tuple[Path, ...]:
+    def promote(
+        self,
+        checkpoint: str,
+        *,
+        into: ResultsStore,
+        refusing: Collection[str] = (),
+    ) -> tuple[Path, ...]:
         """Copy one checkpoint's records into another store.
 
         A copy rather than a move, so this store keeps every reading it has
@@ -124,6 +130,10 @@ class ResultsStore:
         is self-contained and was verified when it was written, and a metric
         that has since left the registry leaves a record the committed tier is
         meant to keep readable rather than one promotion should refuse.
+
+        ``refusing`` names training identities that may never reach the
+        committed line. A frozen base is worth something only because no
+        success advances it, and this is the path a success would take.
         """
 
         results = self.results()
@@ -133,6 +143,21 @@ class ResultsStore:
             raise ResultsStoreError(
                 f"no result in {self._root} was recorded against {checkpoint}; "
                 f"this store holds {held}"
+            )
+        frozen = sorted(
+            {
+                identity
+                for envelope in selected
+                if (identity := envelope.checkpoint.training_sha256) is not None
+                and identity in refusing
+            }
+        )
+        if frozen:
+            raise ResultsStoreError(
+                f"the records for {checkpoint} carry training identity "
+                f"{frozen[0]}, which is frozen and stays off the committed "
+                "line: what makes that base usable is that no promotion "
+                "advances it"
             )
         records: list[tuple[str, bytes]] = []
         for envelope in selected:

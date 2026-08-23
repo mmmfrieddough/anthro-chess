@@ -340,6 +340,23 @@ seed dispersion. A change to the canonical line itself is read against the prior
 checkpoint whose training identity matches, which is what `0063` settles. Neither
 substitutes for the other, and the pull request says which it took.
 
+An arm is the vehicle's own configuration with the one change applied and its
+own run name, so what separates the two arms is visible in the command:
+
+```console
+uv run anthro train --config configs/training/ablation-vehicle.toml \
+  --set 'run_name="arm-<issue>-control"'
+
+uv run anthro train --config configs/training/ablation-vehicle.toml \
+  --set 'run_name="arm-<issue>-treatment"' --set <the one change>
+```
+
+The control arm is only trained where no reading of the vehicle at this horizon
+is already on the machine. `training_sha256` is what settles that: a recorded
+arm whose identity matches the treatment's in everything but the change is a
+control, and `0063` owns why a second run buys nothing the identity check does
+not. Both arms are then scored the same way, which is the block below.
+
 Arms against a frozen base give main effects and no interaction terms, so a set
 of separately accepted candidates runs together as one further arm before any of
 it reaches the canonical line. That arm is what says the set composes; without

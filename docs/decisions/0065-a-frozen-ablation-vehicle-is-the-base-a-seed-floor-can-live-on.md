@@ -46,6 +46,11 @@ record's own base is what would have made possible.
 the reason this record names below, and fixes the shape of the batches the frozen
 configuration draws.
 
+`0076-the-vehicle-is-width-128-at-the-target-regime.md` is the
+designation this record calls for. It fixes the width, horizon, selection, and
+peak rate the frozen configuration carries, and pins the digest by the test this
+record requires.
+
 ## Context
 
 Three records converge on a gap none of them could close alone.

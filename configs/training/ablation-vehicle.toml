@@ -1,0 +1,91 @@
+# The ablation vehicle: the frozen configuration every candidate change is read
+# against. `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
+# owns why it exists, and the record beside it owns how this size was derived.
+#
+# Editing this file changes `training_sha256` and invalidates every comparison
+# ever read against it. A test asserts the digest, so an edit fails there rather
+# than in a reading months later that looks fine.
+#
+# An arm applies its one change on top of this and changes nothing else:
+#
+#   uv run anthro train --config configs/training/ablation-vehicle.toml \
+#     --set 'run_name="arm-<issue>-treatment"' --set <the one change>
+run_name = "ablation-vehicle"
+
+# The axis #488 varies to characterize the dispersion, and the one
+# `training_sha256` drops so that every replicate shares one key.
+seed = 17
+
+# 800 positions per parameter over 1,422,662 parameters, which is the regime
+# `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
+# puts the target in. The horizon is outside the digest, so it is stated here and
+# in the decision record rather than pinned by machine.
+steps = 69465
+gradient_accumulation_steps = 16
+
+# Swept at this size and this horizon rather than inherited. 3e-3 is an
+# interior optimum: 1e-3 reads 1.4235, this reads 1.4181, 1e-2 reads 1.4253.
+# The decision record beside this file carries the whole sweep.
+learning_rate = 0.003
+
+# Held absolute at 1% of the horizon rather than as a share, so a branch and the
+# trunk it resumes warm up over the same prefix.
+warmup_positions = 11381296
+cooldown_fraction = 0.2
+
+# Nothing repeats at this horizon: the corpus holds 138.7e9 plies against the
+# 1.14e9 positions an arm reads, so decay has no overfitting to prevent here.
+# `#489` owns the timescale it would be set from.
+weight_decay = 0.0
+
+# Relaxed rather than strict. Strict costs 3.24x on this shape, measured, and
+# what it buys is a reproducible weight sequence that no comparison here reads.
+determinism = "relaxed"
+
+log_every_steps = 1000
+checkpoint_every_steps = 25000
+
+# `precision`, `matmul_precision` and `compilation` are deliberately absent so
+# that the vehicle takes the decided defaults rather than a copy of them that
+# could drift. See `docs/decisions/0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
+# and `docs/decisions/0073-compilation-is-on-by-default-and-plain-fusion-beats-graph-capture.md`.
+
+[model]
+# Width is the dial and everything else follows the shape rules in
+# `docs/scaling.md`: eight layers, feed-forward twice the width, head dimension
+# 32, and a template bank at a quarter of the width.
+piece_embedding_dim = 8
+model_dim = 128
+attention_heads = 4
+layers = 8
+feedforward_dim = 256
+history_positions = 8
+geometric_token_dim = 8
+geometric_bias_dim = 32
+dropout = 0.0
+
+[train]
+normalized = "artifacts/lichess-univ-2018-01-2021-06/normalized"
+manifest = "artifacts/lichess-univ-2018-01-2021-06/manifests/manifest.json"
+
+[train.loader]
+split = "train"
+
+# The measured throughput peak at this width. Below it the step is launch bound
+# and above it there is nothing to gain, so the effective batch is set by
+# accumulation instead.
+positions_per_batch = 1024
+
+shuffle = true
+seed = "anthro-ablation-vehicle-v1"
+
+[train.loader.selection]
+# Empty by decision. The vehicle trains on every speed and every rating the
+# corpus holds, which is what lets it serve as the unconditioned control for
+# clock conditioning rather than requiring that arm to be trained separately.
+# The marked-account snapshot is deliberately not named: applying it is an
+# experiment to read against this vehicle, not part of it.
+
+[train.streaming]
+workers = 8
+prefetch_batches = 8

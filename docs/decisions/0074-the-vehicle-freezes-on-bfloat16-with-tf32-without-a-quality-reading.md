@@ -21,6 +21,11 @@ worth something at width 512.
 and for the same reason, and its readings are taken at the precision this record
 settles.
 
+`0076-the-vehicle-is-width-128-at-the-target-regime.md` is
+the freeze this record's arithmetic is carried into. It takes both dials as
+shipped defaults rather than restating them in the configuration, which is what
+this record's own note on the issue asked for.
+
 ## Context
 
 `precision` and `matmul_precision` are execution-compatibility keys. A run

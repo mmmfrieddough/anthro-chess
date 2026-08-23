@@ -3407,11 +3407,16 @@ def _run_eval_promote(arguments: argparse.Namespace) -> int:
         ResultsStoreError,
         resolve_store_root,
     )
+    from anthro_chess.training.vehicle import VEHICLE_TRAINING_SHA256
 
     try:
         source = ResultsStore(resolve_store_root(arguments.store))
         destination = ResultsStore(arguments.into or Path(COMMITTED_STORE_DIRECTORY))
-        promoted = source.promote(arguments.checkpoint, into=destination)
+        promoted = source.promote(
+            arguments.checkpoint,
+            into=destination,
+            refusing=(VEHICLE_TRAINING_SHA256,),
+        )
     except ResultsStoreError as error:
         print(f"anthro eval promote: {error}", file=sys.stderr)
         return 2

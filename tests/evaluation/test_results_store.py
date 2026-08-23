@@ -205,6 +205,47 @@ def test_a_conflicting_promotion_lands_none_of_the_checkpoint(
     assert [item.kind for item in committed.results()] == ["benchmark-cost"]
 
 
+def test_a_frozen_training_identity_cannot_be_promoted(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    training_scope: str,
+) -> None:
+    """The ablation vehicle is worth having only while no success advances it.
+
+    Promotion is how a reading joins the canonical line, so refusing it here is
+    what keeps the frozen base off that line by construction rather than by
+    everyone remembering not to.
+    """
+
+    scratch = ResultsStore(tmp_path / "scratch")
+    committed = ResultsStore(tmp_path / "results")
+    scratch.append(recorded_result(label="vehicle-arm"))
+
+    with pytest.raises(ResultsStoreError, match="stays off the committed line"):
+        scratch.promote("vehicle-arm", into=committed, refusing=(training_scope,))
+
+    assert committed.results() == ()
+
+
+def test_promotion_refuses_only_the_identities_it_was_given(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+) -> None:
+    """An ordinary candidate is promoted with the guard in place."""
+
+    scratch = ResultsStore(tmp_path / "scratch")
+    committed = ResultsStore(tmp_path / "results")
+    scratch.append(recorded_result(label="checkpoint-a"))
+
+    promoted = scratch.promote(
+        "checkpoint-a",
+        into=committed,
+        refusing=("0" * 64,),
+    )
+
+    assert len(promoted) == 1
+
+
 def test_promoting_an_unrecorded_checkpoint_says_what_the_store_holds(
     tmp_path: Path,
     recorded_result: ResultFactory,

@@ -43,9 +43,9 @@ from anthro_chess.training.devices import (
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
-    _compatibility_record,
     _execution_record,
     _training_device,
+    compatibility_record,
 )
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
@@ -445,18 +445,18 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     }
     data = {"train": provenance, "validation": None}
     identity = training_identity_sha256(
-        _compatibility_record(config, data=data, model={"parameters": 276_002})
+        compatibility_record(config, data=data, model={"parameters": 276_002})
     )
 
     reseeded = training_identity_sha256(
-        _compatibility_record(
+        compatibility_record(
             config.model_copy(update={"seed": config.seed + 1}),
             data=data,
             model={"parameters": 276_002},
         )
     )
     branched = training_identity_sha256(
-        _compatibility_record(
+        compatibility_record(
             config.model_copy(
                 update={"steps": config.steps * 2, "resume_from": "latest"}
             ),
@@ -465,17 +465,17 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
         )
     )
     rescheduled = training_identity_sha256(
-        _compatibility_record(
+        compatibility_record(
             config.model_copy(update={"cooldown_fraction": 0.25}),
             data=data,
             model={"parameters": 276_002},
         )
     )
     resized = training_identity_sha256(
-        _compatibility_record(config, data=data, model={"parameters": 9_000_000})
+        compatibility_record(config, data=data, model={"parameters": 9_000_000})
     )
     retrained = training_identity_sha256(
-        _compatibility_record(
+        compatibility_record(
             config,
             data={
                 "train": {**provenance, "dataset_sha256": "e" * 64},

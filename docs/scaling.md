@@ -162,6 +162,14 @@ nothing, close enough that its readings sit in the regime the target occupies.
 The binding criterion in practice is that an arm finishes fast enough to run
 several in a day.
 
+`configs/training/ablation-vehicle.toml` is the designated configuration and
+`docs/decisions/0076-the-vehicle-is-width-128-at-the-target-regime.md` records
+how its width, horizon, selection, and rate were derived. What "the regime the
+target occupies" resolved to is positions per parameter rather than parameter
+count: the vehicle is a small model trained the way the target will be trained,
+which removes one of the two ways a vehicle-scale reading misleads and leaves the
+other to the section below on what transfers.
+
 **Adopting a change does not advance the vehicle.** Promotions go to the
 canonical line, which is what
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`

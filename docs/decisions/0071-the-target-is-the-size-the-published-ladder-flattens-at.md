@@ -25,6 +25,11 @@ uses the saturation this scan found: it is why the activation memory reduced
 precision returns is worth nothing at width 256, and why at width 512 it is a
 fit question rather than only a speed one.
 
+`0076-the-vehicle-is-width-128-at-the-target-regime.md` designates
+the vehicle this record priced, at width 128. It retakes the throughput scan
+first, because compilation, packed batches, and a corpus that opens in seconds
+all landed after this one and all three move what an arm costs.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and
