@@ -96,7 +96,6 @@ class PositionPredicate(StrEnum):
     MATE_AVAILABLE = "mate_available"
     MATE_THREATENED = "mate_threatened"
     STALEMATE_AVAILABLE = "stalemate_available"
-    STALEMATE_REPLY = "stalemate_reply"
     ONLY_MOVE = "only_move"
     MATERIAL_GAIN = "material_gain"
 
@@ -133,14 +132,6 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
         predicate=PositionPredicate.STALEMATE_AVAILABLE,
         classification=PredicateClass.DECIDABLE,
         summary="The side to move can end the game by stalemate immediately.",
-    ),
-    PositionPredicate.STALEMATE_REPLY: PredicateDefinition(
-        predicate=PositionPredicate.STALEMATE_REPLY,
-        classification=PredicateClass.DECIDABLE,
-        summary=(
-            "A materially ahead side faces an immediate stalemate resource; "
-            "successful moves remove it."
-        ),
     ),
     PositionPredicate.ONLY_MOVE: PredicateDefinition(
         predicate=PositionPredicate.ONLY_MOVE,
@@ -464,20 +455,6 @@ def match_position_predicates(
             predicate=PositionPredicate.MATE_THREATENED,
             successful_action_ids=frozenset(action_ids[move] for move in safe),
         )
-
-    # The material test gates the stalemate resource and costs a piece count,
-    # while resolving whether the opponent has a stalemate at all costs a
-    # legal-move generation per reply. Asking the cheap question first leaves
-    # the expensive one unasked wherever its answer could not matter.
-    if _material_balance_for_side_to_move(board) > 0 and _has_terminal_reply(
-        passed,
-        checkmate=False,
-    ):
-        safe = _moves_avoiding_reply(board, moves, checkmate=False)
-        matches[PositionPredicate.STALEMATE_REPLY] = PredicateMatch(
-            predicate=PositionPredicate.STALEMATE_REPLY,
-            successful_action_ids=frozenset(action_ids[move] for move in safe),
-        )
     return matches
 
 
@@ -660,10 +637,6 @@ def material_balance(board: chess.Board, color: chess.Color) -> int:
         for piece_type, value in MATERIAL_VALUES.items()
     )
     return own - opponent
-
-
-def _material_balance_for_side_to_move(board: chess.Board) -> int:
-    return material_balance(board, board.turn)
 
 
 def _move_action_id(move: chess.Move) -> int:

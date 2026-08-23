@@ -315,8 +315,9 @@ and a generation cut would otherwise fracture every cost line.
 
 **A cost reading carries no spread**, so a cost delta is reported as unknown
 noise and nothing in a record says the machine was busy. It is the one recorded
-family with no producer: #218 owns closing that, and until it does, decision
-0031 carries the measurements and what a cost reading is worth without one.
+family with no dispersion producer, and no open issue owns closing that;
+decision 0031 carries the measurements and what a cost reading is worth without
+one.
 
 `anthro_chess.evaluation.cost` owns the record and the workload normalization;
 `docs/decisions/0031-committed-benchmark-cost.md` owns the reasoning.
@@ -324,7 +325,8 @@ family with no producer: #218 owns closing that, and until it does, decision
 ### The Checkpoint Evaluation Runner
 
 `anthro eval run` scores one compatible checkpoint over a deterministic view of
-the frozen pool and appends the result. It is the canonical end-of-run reading,
+the frozen pool and appends the held-out prediction, legality and adjudicated
+decision readings. It is the canonical end-of-run reading,
 and it is a library before it is a command, so in-training evaluation at
 declared cadences calls the same entry point over a smaller view instead of
 growing a second implementation that has to be kept consistent with this one.
@@ -1103,6 +1105,14 @@ maturity they were measured at. Nothing in them returns a pass or a fail: weak
 dependency on an undertrained checkpoint means the conditioning has not been
 learned yet, which is not the same finding as a miswired input.
 
+`anthro eval dependency` is the reading surface, and it declares its own view
+rather than sharing the checkpoint reading's. Every batch is scored once under
+the true conditioning and again under each corrupted and each fixed one, so the
+reading pays eight forward passes where a held-out reading pays one, and a
+degradation large enough to say the model reads its input at all does not need
+the resolution a move-loss delta does. Sharing one view made the family that
+tolerates the smaller sample set the cost of the family that does not.
+
 Two reported quantities are not means over positions and can carry no sampling
 floor: the cross-conditioning match rate counts rating slices, and the
 within-game response splits each slice at that slice's own median. A report
@@ -1273,7 +1283,7 @@ already pushes probability toward legal moves because the target move is legal.
 
 Some decisions have an answer the deterministic chess layer supplies outright:
 mate available to the side to move, mate threatened against it on the reply,
-stalemate available to either side, and positions with one legal move. These are
+stalemate available to the side to move, and positions with one legal move. These are
 a tiny fraction of any pool, so a model that never converts a forced mate looks
 unremarkable in an aggregate move loss. Measuring them separately is the only
 way the failure becomes visible.
@@ -1310,8 +1320,8 @@ The implemented predicate registry lives in
 `anthro_chess.evaluation.slices`. It records whether a predicate is decidable or
 heuristic and owns the `only move` derivation that legality slicing also reads.
 Immediate threats use the conventional null-move question: if the side to move
-passed, could the opponent mate or create stalemate on the reply? The label is
-derived only for evaluation; null is never exposed as a model action. The
+passed, could the opponent mate on the reply? The label is derived only for
+evaluation; null is never exposed as a model action. The
 checkpoint runner scores each realized predicate during its existing policy
 pass and writes human rate, legal-greedy model rate, raw policy mass, their
 signed gap, the best successful action's rank, rating-band drill-down, and
