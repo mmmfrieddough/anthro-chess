@@ -38,7 +38,7 @@ VEHICLE_CORPUS_DATASET_SHA256 = (
 #: A comparison finds the vehicle's seed dispersion by this exact value or
 #: reports that it has none.
 VEHICLE_TRAINING_SHA256 = (
-    "77c6fbd110069a8df2d9029187992386464d7ad8759158980568cba6cab9385e"
+    "256493d34f48f0b2db561e6d4867614c5855e7f6e7f6b2d106380855d4136ac4"
 )
 
 

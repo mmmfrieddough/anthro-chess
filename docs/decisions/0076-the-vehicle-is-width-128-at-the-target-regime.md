@@ -64,13 +64,18 @@ target's regime at:
 | 192 | 3,006,790 | 35,122 | 19.02 |
 | 256 | 5,205,830 | 25,784 | 44.85 |
 
+Those hours are at one accumulation step. Accumulation is not free, costing 6%
+at width 128 (57,608 positions per second at one step against 54,258 at sixteen),
+so the frozen configuration's arm is 5.83 hours rather than the 5.55 the table
+prices. The comparison between widths is unaffected, since every row pays it.
+
 Strict determinism was measured on the same shape: 17,609 positions per second
 at width 128 against 56,993, a factor of 3.24, and 2.78 at width 160.
 
 ## Decision
 
 **The vehicle is `model_dim` 128, 1,422,662 parameters, trained on 1.138e9
-positions, which is 800 positions per parameter and a 5.55 hour arm on one card.
+positions, which is 800 positions per parameter and a 5.83 hour arm on one card.
 `configs/training/ablation-vehicle.toml` is the designation and
 `anthro_chess.training.vehicle` pins its identity.**
 
@@ -165,7 +170,24 @@ At half the horizon, 569.1e6 positions:
 **The batch ordering reverses between the two horizons.** At an eighth, the small
 batch wins at every rate; at a half, the large one does. The optimal rate also
 falls with the horizon at fixed batch, from 3e-3 to 1e-3 at batch 1024. Neither
-short reading transfers, which is why the freeze is read at the full horizon.
+short reading transfers, which is why the freeze is read at the full horizon:
+
+| peak rate | batch 16384, full horizon |
+| ---: | ---: |
+| 1e-3 | 1.4235 |
+| **3e-3** | **1.4181** |
+| 1e-2 | 1.4253 |
+
+**3e-3 is an interior optimum with a measured point on each side**, and the
+bracket spans 0.5%. The flatness is the useful part: it says a later session
+re-deriving this rate has nothing to gain, and that a candidate arm choosing its
+own rate anywhere in this region is not thereby advantaged.
+
+One reading here is worth more than the value it produced. At 85% of the run
+1e-3 and 3e-3 stood 3.3% apart; at the end they stood 0.38% apart, the cooldown
+having closed nine tenths of the gap in the final eighth. A mid-run comparison at
+this schedule does not merely lack precision, it can order two arms wrongly. That
+applies to every arm read against this vehicle, not only to this sweep.
 
 ### The Floor Is Found By The Control, Not By Both Arms
 

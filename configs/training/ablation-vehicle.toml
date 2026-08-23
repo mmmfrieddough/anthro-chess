@@ -20,10 +20,13 @@ seed = 17
 # `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
 # puts the target in. The horizon is outside the digest, so it is stated here and
 # in the decision record rather than pinned by machine.
-steps = 277863
-gradient_accumulation_steps = 4
+steps = 69465
+gradient_accumulation_steps = 16
 
-learning_rate = 0.0003
+# Swept at this size and this horizon rather than inherited. 3e-3 is an
+# interior optimum: 1e-3 reads 1.4235, this reads 1.4181, 1e-2 reads 1.4253.
+# The decision record beside this file carries the whole sweep.
+learning_rate = 0.003
 
 # Held absolute at 1% of the horizon rather than as a share, so a branch and the
 # trunk it resumes warm up over the same prefix.
