@@ -27,7 +27,7 @@ from anthro_chess.machine import DATA_ROOT_VARIABLE, optional_root
 CHECKPOINT_ARTIFACT_FIELDS = ("pool", "leakage.training_normalized")
 #: ``anthro eval novelty``: the pool every arm derives its continuations from.
 NOVELTY_ARTIFACT_FIELDS = ("pool", "leakage.training_normalized")
-#: ``anthro eval puzzles``: the owned puzzle artifact and the overlap corpus.
+#: ``anthro eval puzzles``: the owned puzzle artifact, and nothing else.
 PUZZLE_ARTIFACT_FIELDS = ("puzzle_set",)
 #: ``anthro eval rollout``: optional, since a pool-free suite records the
 #: rollout scalars alone.

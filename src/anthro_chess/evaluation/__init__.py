@@ -183,8 +183,8 @@ if TYPE_CHECKING:
         PuzzleBenchmarkConfig,
         PuzzleBenchmarkError,
         PuzzleBenchmarkResult,
-        PuzzleCurvePoint,
         PuzzleRatingResult,
+        PuzzleSpread,
         benchmark_puzzles,
     )
     from anthro_chess.evaluation.reconstruction import (
@@ -389,8 +389,8 @@ _LAZY_EXPORTS = {
     "PuzzleBenchmarkConfig": "puzzles",
     "PuzzleBenchmarkError": "puzzles",
     "PuzzleBenchmarkResult": "puzzles",
-    "PuzzleCurvePoint": "puzzles",
     "PuzzleRatingResult": "puzzles",
+    "PuzzleSpread": "puzzles",
     "benchmark_puzzles": "puzzles",
 }
 
@@ -506,8 +506,8 @@ __all__ = [
     "PuzzleBenchmarkConfig",
     "PuzzleBenchmarkError",
     "PuzzleBenchmarkResult",
-    "PuzzleCurvePoint",
     "PuzzleRatingResult",
+    "PuzzleSpread",
     "PuzzleSelectionConfig",
     "PuzzleSetBuildConfig",
     "PuzzleSetBuildResult",

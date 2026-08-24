@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         PoolConfig,
         PoolResult,
         PuzzleBenchmarkResult,
+        PuzzleSpread,
         RolloutBenchmarkResult,
         TerminationBenchmarkResult,
     )
@@ -2130,7 +2131,15 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             ),
         ]
     )
-    if resolution is not None:
+    if resolution is None:
+        lines.append(
+            "Response resolution: not estimated; this run switched noise "
+            "estimation off, or the scored puzzles are too thin to redraw"
+        )
+    else:
+        # The widest of the configured grid rather than all of them, because
+        # the line has to hold at any grid size and the detail payload keeps
+        # each one. They differ by a few percent on a real reading.
         lines.extend(
             [
                 (
@@ -2143,19 +2152,6 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
                     f"first={_spread(resolution.sampled_first_move_solve_rate, 4)} "
                     f"line={_spread(resolution.sampled_line_completion, 4)}"
                 ),
-            ]
-        )
-    if resolution is None:
-        lines.append(
-            "Response resolution: not estimated; this run switched noise "
-            "estimation off, or the scored puzzles are too thin to redraw"
-        )
-    else:
-        # The widest of the configured grid rather than all of them, because
-        # the line has to hold at any grid size and the detail payload keeps
-        # each one. They differ by a few percent on a real reading.
-        lines.extend(
-            [
                 (
                     f"Response resolution: {resolution.resamples} stratified "
                     f"refits of {resolution.puzzles} redrawn puzzle(s), "
@@ -2174,17 +2170,10 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _spread(spread: object, digits: int) -> str:
-    """Render a resampled spread, naming an unmoved quantity rather than zero.
+def _spread(spread: PuzzleSpread | None, digits: int) -> str:
+    """Render a resampled spread, naming an unmoved quantity rather than zero."""
 
-    Takes either a stored spread or the bare bound the widest-of accessors
-    reduce a grid to, since both reach this the same way in the output.
-    """
-
-    bound = getattr(spread, "bound", spread)
-    if bound is None:
-        return "spread unknown"
-    return f"±{bound:.{digits}f}"
+    return "spread unknown" if spread is None else f"±{spread.bound:.{digits}f}"
 
 
 def _render_inference(result: InferenceBenchmarkResult) -> str:

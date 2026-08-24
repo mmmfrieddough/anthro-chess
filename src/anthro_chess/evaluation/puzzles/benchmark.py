@@ -9,6 +9,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
+from operator import attrgetter
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
@@ -56,7 +57,10 @@ from anthro_chess.evaluation.results.metrics import (
     PUZZLE_SAMPLED_RATING_ORDER_ACCURACY,
     PUZZLE_SAMPLED_RATING_SLOPE,
 )
-from anthro_chess.evaluation.results.noise import bounded_spread
+from anthro_chess.evaluation.results.noise import (
+    bounded_spread,
+    measured_dispersion,
+)
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import (
     CheckpointModelRunner,
@@ -181,7 +185,7 @@ class PuzzleRatingResult:
         }
 
 
-class _Spread(NamedTuple):
+class PuzzleSpread(NamedTuple):
     """One resampled quantity's own spread and the conservative bound on it.
 
     A stored reading keeps both, because a floor combined from two readings
@@ -201,8 +205,8 @@ class PuzzleRatingResolution:
     """
 
     target_rating: int
-    greedy_fitted_puzzle_rating: _Spread | None
-    sampled_fitted_puzzle_rating: _Spread | None
+    greedy_fitted_puzzle_rating: PuzzleSpread | None
+    sampled_fitted_puzzle_rating: PuzzleSpread | None
 
     def as_record(self) -> dict[str, object]:
         return {
@@ -229,21 +233,21 @@ class PuzzleResponseResolution:
     coverage: float
     confidence: float
     ratings: tuple[PuzzleRatingResolution, ...]
-    greedy_first_move_accuracy: _Spread | None
-    greedy_line_completion: _Spread | None
-    sampled_first_move_solve_rate: _Spread | None
-    sampled_line_completion: _Spread | None
-    greedy_rating_slope: _Spread | None
-    sampled_rating_slope: _Spread | None
-    greedy_order_accuracy: _Spread | None
-    sampled_order_accuracy: _Spread | None
+    greedy_first_move_accuracy: PuzzleSpread | None
+    greedy_line_completion: PuzzleSpread | None
+    sampled_first_move_solve_rate: PuzzleSpread | None
+    sampled_line_completion: PuzzleSpread | None
+    greedy_rating_slope: PuzzleSpread | None
+    sampled_rating_slope: PuzzleSpread | None
+    greedy_order_accuracy: PuzzleSpread | None
+    sampled_order_accuracy: PuzzleSpread | None
 
     @property
-    def widest_greedy_fit(self) -> float | None:
+    def widest_greedy_fit(self) -> PuzzleSpread | None:
         return _widest(rating.greedy_fitted_puzzle_rating for rating in self.ratings)
 
     @property
-    def widest_sampled_fit(self) -> float | None:
+    def widest_sampled_fit(self) -> PuzzleSpread | None:
         return _widest(rating.sampled_fitted_puzzle_rating for rating in self.ratings)
 
     def as_record(self) -> dict[str, object]:
@@ -312,6 +316,8 @@ class _DecisionTask:
     ``candidates`` gathers the legal actions out of a full logit vector and
     ``accepted`` positions the solution moves within that gather, so the
     coordinates every configured rating rescores are built once here.
+    ``accepted_indices`` holds those same positions as a tuple, because the
+    greedy answer is one membership test and a tensor would allocate for it.
     """
 
     puzzle_id: str
@@ -739,29 +745,37 @@ def _measurements(
             None if resolution is None else resolution.sampled_order_accuracy,
         ),
     )
-    puzzles = None if resolution is None else resolution.puzzles
     return tuple(
         measurement(
             definition.identifier,
             value,
             data=component,
             sample_size=measurement_size,
-            dispersion=_dispersion(spread, puzzles),
+            dispersion=_dispersion(spread, resolution),
         )
         for definition, value, measurement_size, spread in values
     )
 
 
-def _dispersion(spread: _Spread | None, puzzles: int | None) -> MetricDispersion | None:
-    """Return the stored dispersion for one metric, where a redraw moved it."""
+def _dispersion(
+    spread: PuzzleSpread | None,
+    resolution: PuzzleResponseResolution | None,
+) -> MetricDispersion | None:
+    """Return the stored dispersion for one metric, where a redraw moved it.
 
-    if spread is None or puzzles is None:
+    Stored without coverage, which a delta floor applies once at comparison
+    time; ``PuzzleSpread.bound`` carries it because the printed spread qualifies
+    this reading alone and has no second reading to be combined with.
+    """
+
+    if spread is None or resolution is None:
         return None
-    return MetricDispersion(
-        value=spread.dispersion,
-        bound=spread.bound,
-        units=puzzles,
-        source=f"stratified bootstrap over {puzzles} scored puzzle(s)",
+    return measured_dispersion(
+        spread.dispersion,
+        degrees_of_freedom=resolution.puzzles - 1,
+        confidence=resolution.confidence,
+        units=resolution.puzzles,
+        source=f"stratified bootstrap over {resolution.puzzles} scored puzzle(s)",
         estimator=PUZZLE_NOISE_ESTIMATOR,
     )
 
@@ -938,7 +952,7 @@ def _bounded_spread(
     *,
     units: int,
     config: NoiseConfig,
-) -> _Spread | None:
+) -> PuzzleSpread | None:
     """Return the spread of one resampled quantity and its conservative bound.
 
     The matched puzzles are the independent replicates rather than the draws
@@ -950,7 +964,7 @@ def _bounded_spread(
     dispersion = float(np.std(replicates, ddof=1))
     if dispersion == 0.0:
         return None
-    return _Spread(
+    return PuzzleSpread(
         dispersion=dispersion,
         bound=bounded_spread(
             dispersion,
@@ -961,21 +975,19 @@ def _bounded_spread(
     )
 
 
-def _bound_of(spread: _Spread | None) -> float | None:
-    """Return a spread's stored bound, or ``None`` where none was estimated."""
-
+def _bound_of(spread: PuzzleSpread | None) -> float | None:
     return None if spread is None else spread.bound
 
 
-def _widest(spreads: Iterable[_Spread | None]) -> float | None:
+def _widest(spreads: Iterable[PuzzleSpread | None]) -> PuzzleSpread | None:
     """Return the widest estimated spread, or ``None`` if none was estimated.
 
     An unmoved quantity is narrower than any estimate rather than wider, so it
     cannot be the widest and only decides the answer when it is the only one.
     """
 
-    estimated = [spread.bound for spread in spreads if spread is not None]
-    return max(estimated) if estimated else None
+    estimated = [spread for spread in spreads if spread is not None]
+    return max(estimated, key=attrgetter("bound")) if estimated else None
 
 
 class _Reduction(NamedTuple):

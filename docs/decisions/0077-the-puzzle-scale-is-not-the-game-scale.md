@@ -78,10 +78,17 @@ gives them nothing that says otherwise.
 
 ## Consequences
 
-**The registry loses two metrics**, and the family drops from eleven to eight.
+**The registry loses two metrics**, leaving nine; the join
+`0078-puzzle-training-overlap-is-measured-and-not-corrected.md` removes takes
+the benchmark to eight.
 
-**The benchmark version becomes 2**, so readings on either side are separate
-series rather than a history with a seam in it.
+**The benchmark version becomes 2**, matching what a ladder bump already
+records: the detail payload's keys changed. It does not separate the series.
+A quality metric's fingerprint is its identifier, its definition version, and
+its data component, so readings on either side of this bump sit on one history.
+That is correct here, because the surviving eight are computed exactly as
+before, and it is worth stating plainly because a bump is easy to mistake for a
+seam that nothing in the fingerprint would produce.
 
 **`_continuous_curve` and `PuzzleCurvePoint` are removed.** The rating bands
 were already a second, independent drill-down and remain the only one.

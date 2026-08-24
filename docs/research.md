@@ -938,9 +938,11 @@ Key information:
 
 Applies to Anthro Chess:
 
-- Solve rate against puzzle rating gives a response curve whose human reference
-  is derivable from the puzzle ratings themselves, so no separate human baseline
-  has to be collected.
+- Solve rate against puzzle rating gives a response curve needing no collected
+  human baseline, because the ordering it reads is against the puzzle scale
+  itself. Deriving a human solve rate from that scale is what
+  `docs/decisions/0077-the-puzzle-scale-is-not-the-game-scale.md` withdrew, for
+  the reason the next section gives.
 - The cheapest external rating instrument available, needing only forward
   passes.
 - A benchmark input immune to evaluation pool regeneration, so its scale stays
