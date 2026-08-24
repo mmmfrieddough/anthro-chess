@@ -1647,8 +1647,6 @@ def test_eval_decisions_reads_a_stored_payload_and_writes_the_detail(
 def test_eval_puzzles_reports_the_resolution_it_bought(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     write_puzzle_artifact: Callable[..., Path],
     inference_run: Callable[..., Path],
 ) -> None:
@@ -1663,15 +1661,10 @@ def test_eval_puzzles_reports_the_resolution_it_bought(
         ratings=(1200, 1400),
         puzzles_per_rating=4,
     )
-    normalized, _ = write_corpus(
-        tmp_path / "corpus",
-        [{**normalized_row(1, split="train"), "source_id": "lichess"}],
-    )
     checkpoint = inference_run(tmp_path / "run")
     config = tmp_path / "puzzles.toml"
     config.write_text(
         f'puzzle_set = "{artifact}"\n'
-        f'training_normalized = "{normalized}"\n'
         "target_ratings = [1000, 1800]\n"
         "puzzles_per_rating = 2\n"
         "\n[model]\n"
@@ -2612,8 +2605,6 @@ def test_a_missing_data_root_says_what_it_would_have_to_hold(
 def test_eval_puzzles_says_when_it_estimated_no_response_resolution(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    normalized_row: Callable[..., dict[str, Any]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     write_puzzle_artifact: Callable[..., Path],
     inference_run: Callable[..., Path],
 ) -> None:
@@ -2624,15 +2615,10 @@ def test_eval_puzzles_says_when_it_estimated_no_response_resolution(
         ratings=(1200, 1400),
         puzzles_per_rating=4,
     )
-    normalized, _ = write_corpus(
-        tmp_path / "corpus",
-        [{**normalized_row(1, split="train"), "source_id": "lichess"}],
-    )
     checkpoint = inference_run(tmp_path / "run")
     config = tmp_path / "puzzles.toml"
     config.write_text(
         f'puzzle_set = "{artifact}"\n'
-        f'training_normalized = "{normalized}"\n'
         "target_ratings = [1000, 1800]\n"
         "\n[noise]\n"
         "enabled = false\n"

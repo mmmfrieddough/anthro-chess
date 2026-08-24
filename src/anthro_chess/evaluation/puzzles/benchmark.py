@@ -9,6 +9,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from hashlib import sha256
+from operator import attrgetter
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
@@ -21,18 +22,6 @@ from torch import Tensor
 from anthro_chess.chess import ACTION_VOCABULARY_SIZE, encode_move, legal_action_ids
 from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import DecisionContext, DecisionHistory
-from anthro_chess.data.artifacts import (
-    normalized_shard_paths,
-    read_normalized_rows,
-)
-from anthro_chess.data.schema import NormalizedColumn
-from anthro_chess.evaluation.curves import (
-    CurveComparison,
-    CurveQuantity,
-    CurveSpec,
-    Observation,
-    compare_curves,
-)
 from anthro_chess.evaluation.noise import NoiseConfig
 from anthro_chess.evaluation.puzzles.dataset import (
     Puzzle,
@@ -49,6 +38,7 @@ from anthro_chess.evaluation.results import (
     DataComponent,
     DatasetReference,
     Measurement,
+    MetricDispersion,
     ResultEnvelope,
     ResultRecordError,
     ResultsStoreError,
@@ -57,20 +47,20 @@ from anthro_chess.evaluation.results import (
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
-    PUZZLE_GREEDY_CURVE_DISTANCE,
     PUZZLE_GREEDY_FIRST_MOVE_ACCURACY,
     PUZZLE_GREEDY_LINE_COMPLETION,
     PUZZLE_GREEDY_RATING_ORDER_ACCURACY,
     PUZZLE_GREEDY_RATING_SLOPE,
     PUZZLE_RESPONSE_PROJECTION,
-    PUZZLE_SAMPLED_CURVE_DISTANCE,
     PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE,
     PUZZLE_SAMPLED_LINE_COMPLETION,
     PUZZLE_SAMPLED_RATING_ORDER_ACCURACY,
     PUZZLE_SAMPLED_RATING_SLOPE,
-    PUZZLE_TRAINING_OVERLAP_RATE,
 )
-from anthro_chess.evaluation.results.noise import bounded_spread
+from anthro_chess.evaluation.results.noise import (
+    bounded_spread,
+    measured_dispersion,
+)
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.inference import (
     CheckpointModelRunner,
@@ -79,11 +69,11 @@ from anthro_chess.inference import (
 
 logger = logging.getLogger(__name__)
 
-PUZZLE_BENCHMARK_VERSION = 1
-PUZZLE_CURVE_VERSION = 1
-PUZZLE_CURVE_NEIGHBOURS = 4000
-PUZZLE_CURVE_GRID = tuple(float(rating) for rating in range(850, 2800, 100))
+PUZZLE_BENCHMARK_VERSION = 2
 PUZZLE_KIND = "puzzle-rating-response"
+#: Names the redraw every puzzle spread is read from, so a floor combined
+#: across two readings says what produced it.
+PUZZLE_NOISE_ESTIMATOR = "bootstrap-over-puzzles"
 #: How far past the scored puzzle ratings a fitted rating may land, in rating
 #: points. Shared so the tabulated inverse the resolution reads covers exactly
 #: the range the fit searches.
@@ -115,7 +105,6 @@ class PuzzleBenchmarkConfig(CheckpointSelection):
     """Code-owned schema for ``anthro eval puzzles``."""
 
     puzzle_set: Path
-    training_normalized: Path
     target_ratings: tuple[StrictInt, ...] = (1000, 1400, 1800, 2200)
     #: How many puzzles to score at each exact puzzle rating, or every one of
     #: them. Two rather than one is the floor because the response redraw
@@ -129,7 +118,7 @@ class PuzzleBenchmarkConfig(CheckpointSelection):
         le=3.0,
         allow_inf_nan=False,
     )
-    inference_batch_size: StrictInt = Field(default=32, ge=1)
+    inference_batch_size: StrictInt = Field(default=1024, ge=1)
     noise: NoiseConfig = NoiseConfig()
 
     @model_validator(mode="after")
@@ -152,7 +141,6 @@ class PuzzleBandResult:
     lower: int
     upper: int
     puzzles: int
-    human_expected_score: float
     greedy_first_move_accuracy: float
     greedy_line_completion: float
     sampled_first_move_solve_rate: float
@@ -164,33 +152,6 @@ class PuzzleBandResult:
             "lower": self.lower,
             "upper": self.upper,
             "puzzles": self.puzzles,
-            "human_expected_score": self.human_expected_score,
-            "greedy_first_move_accuracy": self.greedy_first_move_accuracy,
-            "greedy_line_completion": self.greedy_line_completion,
-            "sampled_first_move_solve_rate": self.sampled_first_move_solve_rate,
-            "sampled_line_completion": self.sampled_line_completion,
-        }
-
-
-@dataclass(frozen=True)
-class PuzzleCurvePoint:
-    """One continuous local estimate over exact puzzle ratings."""
-
-    puzzle_rating: float
-    bandwidth: float
-    effective_sample_size: float
-    human_expected_score: float
-    greedy_first_move_accuracy: float
-    greedy_line_completion: float
-    sampled_first_move_solve_rate: float
-    sampled_line_completion: float
-
-    def as_record(self) -> dict[str, object]:
-        return {
-            "puzzle_rating": self.puzzle_rating,
-            "bandwidth": self.bandwidth,
-            "effective_sample_size": self.effective_sample_size,
-            "human_expected_score": self.human_expected_score,
             "greedy_first_move_accuracy": self.greedy_first_move_accuracy,
             "greedy_line_completion": self.greedy_line_completion,
             "sampled_first_move_solve_rate": self.sampled_first_move_solve_rate,
@@ -203,33 +164,36 @@ class PuzzleRatingResult:
     """The response at one configured model rating."""
 
     target_rating: int
-    human_expected_score: float
     greedy_first_move_accuracy: float
     greedy_line_completion: float
     greedy_fitted_puzzle_rating: float
     sampled_first_move_solve_rate: float
     sampled_line_completion: float
     sampled_fitted_puzzle_rating: float
-    greedy_curve_distance: float
-    sampled_curve_distance: float
-    curve: tuple[PuzzleCurvePoint, ...]
     bands: tuple[PuzzleBandResult, ...]
 
     def as_record(self) -> dict[str, object]:
         return {
             "target_rating": self.target_rating,
-            "human_expected_score": self.human_expected_score,
             "greedy_first_move_accuracy": self.greedy_first_move_accuracy,
             "greedy_line_completion": self.greedy_line_completion,
             "greedy_fitted_puzzle_rating": self.greedy_fitted_puzzle_rating,
             "sampled_first_move_solve_rate": self.sampled_first_move_solve_rate,
             "sampled_line_completion": self.sampled_line_completion,
             "sampled_fitted_puzzle_rating": self.sampled_fitted_puzzle_rating,
-            "greedy_curve_distance": self.greedy_curve_distance,
-            "sampled_curve_distance": self.sampled_curve_distance,
-            "curve": [point.as_record() for point in self.curve],
             "bands": [band.as_record() for band in self.bands],
         }
+
+
+class PuzzleSpread(NamedTuple):
+    """One resampled quantity's own spread and the conservative bound on it.
+
+    A stored reading keeps both, because a floor combined from two readings
+    needs the estimate and how much of its width is ignorance about it.
+    """
+
+    dispersion: float
+    bound: float
 
 
 @dataclass(frozen=True)
@@ -241,14 +205,16 @@ class PuzzleRatingResolution:
     """
 
     target_rating: int
-    greedy_fitted_puzzle_rating: float | None
-    sampled_fitted_puzzle_rating: float | None
+    greedy_fitted_puzzle_rating: PuzzleSpread | None
+    sampled_fitted_puzzle_rating: PuzzleSpread | None
 
     def as_record(self) -> dict[str, object]:
         return {
             "target_rating": self.target_rating,
-            "greedy_fitted_puzzle_rating": self.greedy_fitted_puzzle_rating,
-            "sampled_fitted_puzzle_rating": self.sampled_fitted_puzzle_rating,
+            "greedy_fitted_puzzle_rating": _bound_of(self.greedy_fitted_puzzle_rating),
+            "sampled_fitted_puzzle_rating": _bound_of(
+                self.sampled_fitted_puzzle_rating
+            ),
         }
 
 
@@ -267,17 +233,21 @@ class PuzzleResponseResolution:
     coverage: float
     confidence: float
     ratings: tuple[PuzzleRatingResolution, ...]
-    greedy_rating_slope: float | None
-    sampled_rating_slope: float | None
-    greedy_order_accuracy: float | None
-    sampled_order_accuracy: float | None
+    greedy_first_move_accuracy: PuzzleSpread | None
+    greedy_line_completion: PuzzleSpread | None
+    sampled_first_move_solve_rate: PuzzleSpread | None
+    sampled_line_completion: PuzzleSpread | None
+    greedy_rating_slope: PuzzleSpread | None
+    sampled_rating_slope: PuzzleSpread | None
+    greedy_order_accuracy: PuzzleSpread | None
+    sampled_order_accuracy: PuzzleSpread | None
 
     @property
-    def widest_greedy_fit(self) -> float | None:
+    def widest_greedy_fit(self) -> PuzzleSpread | None:
         return _widest(rating.greedy_fitted_puzzle_rating for rating in self.ratings)
 
     @property
-    def widest_sampled_fit(self) -> float | None:
+    def widest_sampled_fit(self) -> PuzzleSpread | None:
         return _widest(rating.sampled_fitted_puzzle_rating for rating in self.ratings)
 
     def as_record(self) -> dict[str, object]:
@@ -287,16 +257,22 @@ class PuzzleResponseResolution:
             "coverage": self.coverage,
             "confidence": self.confidence,
             "ratings": [rating.as_record() for rating in self.ratings],
-            "greedy_rating_slope": self.greedy_rating_slope,
-            "sampled_rating_slope": self.sampled_rating_slope,
-            "greedy_order_accuracy": self.greedy_order_accuracy,
-            "sampled_order_accuracy": self.sampled_order_accuracy,
+            "greedy_first_move_accuracy": _bound_of(self.greedy_first_move_accuracy),
+            "greedy_line_completion": _bound_of(self.greedy_line_completion),
+            "sampled_first_move_solve_rate": _bound_of(
+                self.sampled_first_move_solve_rate
+            ),
+            "sampled_line_completion": _bound_of(self.sampled_line_completion),
+            "greedy_rating_slope": _bound_of(self.greedy_rating_slope),
+            "sampled_rating_slope": _bound_of(self.sampled_rating_slope),
+            "greedy_order_accuracy": _bound_of(self.greedy_order_accuracy),
+            "sampled_order_accuracy": _bound_of(self.sampled_order_accuracy),
         }
 
 
 @dataclass(frozen=True)
 class PuzzleBenchmarkResult:
-    """The response grid, provenance, and durable result envelope."""
+    """The response grid and its durable result envelope."""
 
     checkpoint: CheckpointReference
     dataset: DatasetReference
@@ -308,9 +284,6 @@ class PuzzleBenchmarkResult:
     sampled_rating_slope: float
     greedy_order_accuracy: float
     sampled_order_accuracy: float
-    training_games: int
-    overlapping_puzzles: int
-    overlap_rate: float
     resolution: PuzzleResponseResolution | None = None
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
@@ -332,11 +305,6 @@ class PuzzleBenchmarkResult:
             "response_resolution": (
                 None if self.resolution is None else self.resolution.as_record()
             ),
-            "training_overlap": {
-                "training_games": self.training_games,
-                "overlapping_puzzles": self.overlapping_puzzles,
-                "rate": self.overlap_rate,
-            },
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -345,13 +313,17 @@ class PuzzleBenchmarkResult:
 class _DecisionTask:
     """One puzzle decision, derived once and scored at every target rating.
 
-    ``accepted_indices`` positions the accepted actions within
-    ``legal_action_ids``, which is the coordinate the scored logits arrive in.
+    ``candidates`` gathers the legal actions out of a full logit vector and
+    ``accepted`` positions the solution moves within that gather, so the
+    coordinates every configured rating rescores are built once here.
+    ``accepted_indices`` holds those same positions as a tuple, because the
+    greedy answer is one membership test and a tensor would allocate for it.
     """
 
     puzzle_id: str
     accepted_indices: tuple[int, ...]
-    legal_action_ids: tuple[int, ...]
+    candidates: Tensor
+    accepted: Tensor
     rating_free_context: DecisionContext
 
 
@@ -389,10 +361,6 @@ def benchmark_puzzles(
         puzzle_set = load_puzzle_set(config.puzzle_set)
         selection = select_puzzles(puzzle_set, config.puzzles_per_rating)
         runner = CheckpointModelRunner.load(config.model, run_root=run_root)
-        training_games, overlapping = _training_overlap(
-            selection.puzzles,
-            config.training_normalized,
-        )
         tasks = _decision_tasks(selection.puzzles)
         scored_ratings = tuple(
             _score_rating(
@@ -431,7 +399,6 @@ def benchmark_puzzles(
     sampled_slope = _slope(config.target_ratings, sampled_fitted)
     greedy_order = _order_accuracy(greedy_fitted)
     sampled_order = _order_accuracy(sampled_fitted)
-    overlap_rate = overlapping / selection.selected_puzzles
     resolution = _response_resolution(scored_ratings, config.noise)
     result = PuzzleBenchmarkResult(
         checkpoint=checkpoint,
@@ -444,9 +411,6 @@ def benchmark_puzzles(
         sampled_rating_slope=sampled_slope,
         greedy_order_accuracy=greedy_order,
         sampled_order_accuracy=sampled_order,
-        training_games=training_games,
-        overlapping_puzzles=overlapping,
-        overlap_rate=overlap_rate,
         resolution=resolution,
     )
     recorder = recording.measuring(
@@ -457,10 +421,7 @@ def benchmark_puzzles(
     recorder.add(
         _measurements(result, component),
         payload=result.as_record,
-        description=(
-            "Puzzle-rating grid, human reference curve, rating-band "
-            "response, and source-game overlap provenance."
-        ),
+        description="Puzzle-rating grid and rating-band response.",
         data=data,
     )
     return result
@@ -563,17 +524,9 @@ def _score_rating(
     puzzle_ratings = [score.puzzle.rating for score in scores]
     greedy_lines = [score.greedy_line for score in scores]
     sampled_lines = [score.sampled_line for score in scores]
-    curve, greedy_curve_distance, sampled_curve_distance = _continuous_curve(
-        puzzle_set.puzzles,
-        scores,
-        target_rating,
-    )
     return _ScoredRating(
         result=PuzzleRatingResult(
             target_rating=target_rating,
-            human_expected_score=_mean(
-                [expected_score(target_rating, rating) for rating in puzzle_ratings]
-            ),
             greedy_first_move_accuracy=_mean([score.greedy_first for score in scores]),
             greedy_line_completion=_mean(greedy_lines),
             greedy_fitted_puzzle_rating=fitted_rating(puzzle_ratings, greedy_lines),
@@ -582,117 +535,10 @@ def _score_rating(
             ),
             sampled_line_completion=_mean(sampled_lines),
             sampled_fitted_puzzle_rating=fitted_rating(puzzle_ratings, sampled_lines),
-            greedy_curve_distance=greedy_curve_distance,
-            sampled_curve_distance=sampled_curve_distance,
-            curve=curve,
-            bands=_band_results(puzzle_set, scores, target_rating),
+            bands=_band_results(puzzle_set, scores),
         ),
         scores=scores,
     )
-
-
-def _continuous_curve(
-    puzzles: Sequence[Puzzle],
-    scores: Sequence[_PuzzleScore],
-    target_rating: int,
-) -> tuple[tuple[PuzzleCurvePoint, ...], float, float]:
-    """Estimate continuous response with the shared frozen curve machinery.
-
-    The reference is the whole set rather than the puzzles scored, which is the
-    rule the generated-play and termination curves already follow: at a
-    neighbour-count bandwidth the reference's size is a smoothing radius rather
-    than a sample size, so shrinking it would re-smooth the curve instead of
-    sampling it. Holding it costs nothing here, because this reference is
-    analytic rather than played, and it leaves a subsampled reading estimated
-    at exactly the radii a full one uses.
-    """
-
-    neighbours = min(PUZZLE_CURVE_NEIGHBOURS, len(puzzles))
-    if neighbours < 2:
-        raise PuzzleBenchmarkError("a puzzle response curve needs at least two puzzles")
-    ratings = [puzzle.rating for puzzle in puzzles]
-    low = min(ratings)
-    high = max(ratings)
-    grid = tuple(rating for rating in PUZZLE_CURVE_GRID if low <= rating <= high)
-    if len(grid) < 2:
-        grid = (
-            (float(low), float(high))
-            if low < high
-            else (float(low) - 0.5, float(high) + 0.5)
-        )
-    spec = CurveSpec(
-        name="puzzle-solve-response",
-        version=PUZZLE_CURVE_VERSION,
-        quantity=CurveQuantity.SCALAR,
-        neighbours=neighbours,
-        grid=grid,
-    )
-    human = [
-        Observation(
-            rating=float(puzzle.rating),
-            value=expected_score(target_rating, puzzle.rating),
-        )
-        for puzzle in puzzles
-    ]
-
-    def comparison(values: Sequence[float]) -> CurveComparison:
-        return compare_curves(
-            spec=spec,
-            human=human,
-            model=[
-                Observation(rating=float(score.puzzle.rating), value=value)
-                for score, value in zip(scores, values, strict=True)
-            ],
-            # The human curve is analytic rather than a sampled corpus. The
-            # shared curve estimator is useful here, but its two-sample
-            # bootstrap would invent uncertainty on the human side.
-            resamples=0,
-        )
-
-    greedy_first = comparison([score.greedy_first for score in scores])
-    greedy_line = comparison([score.greedy_line for score in scores])
-    sampled_first = comparison([score.sampled_first for score in scores])
-    sampled_line = comparison([score.sampled_line for score in scores])
-    points: list[PuzzleCurvePoint] = []
-    for (
-        human_point,
-        greedy_first_point,
-        greedy_line_point,
-        sampled_first_point,
-        sampled_line_point,
-    ) in zip(
-        greedy_line.points,
-        greedy_first.points,
-        greedy_line.points,
-        sampled_first.points,
-        sampled_line.points,
-        strict=True,
-    ):
-        points.append(
-            PuzzleCurvePoint(
-                puzzle_rating=human_point.rating,
-                bandwidth=human_point.bandwidth,
-                effective_sample_size=greedy_line_point.model.effective_sample_size,
-                human_expected_score=_curve_value(human_point.human.value),
-                greedy_first_move_accuracy=_curve_value(greedy_first_point.model.value),
-                greedy_line_completion=_curve_value(greedy_line_point.model.value),
-                sampled_first_move_solve_rate=_curve_value(
-                    sampled_first_point.model.value
-                ),
-                sampled_line_completion=_curve_value(sampled_line_point.model.value),
-            )
-        )
-    return (
-        tuple(points),
-        greedy_line.conditional_distance,
-        sampled_line.conditional_distance,
-    )
-
-
-def _curve_value(value: float | None) -> float:
-    if value is None:
-        raise PuzzleBenchmarkError("puzzle response curve has an unsupported point")
-    return value
 
 
 def _decision_tasks(puzzles: Sequence[Puzzle]) -> tuple[_DecisionTask, ...]:
@@ -705,13 +551,13 @@ def _decision_tasks(puzzles: Sequence[Puzzle]) -> tuple[_DecisionTask, ...]:
                 continue
             accepted = _accepted_actions(history.board, puzzle.moves[ply + 1])
             legal = legal_action_ids(history.board)
+            accepted_indices = tuple(legal.index(action_id) for action_id in accepted)
             tasks.append(
                 _DecisionTask(
                     puzzle_id=puzzle.puzzle_id,
-                    accepted_indices=tuple(
-                        legal.index(action_id) for action_id in accepted
-                    ),
-                    legal_action_ids=legal,
+                    accepted_indices=accepted_indices,
+                    candidates=torch.as_tensor(legal, dtype=torch.long),
+                    accepted=torch.as_tensor(accepted_indices, dtype=torch.long),
                     rating_free_context=history.context(target_rating=None),
                 )
             )
@@ -723,24 +569,22 @@ def _score_decision(
     logits: Tensor,
     temperature: float,
 ) -> _DecisionScore:
-    observed = logits.detach().to(device="cpu", dtype=torch.float64)
-    if (
-        observed.shape != (ACTION_VOCABULARY_SIZE,)
-        or not torch.isfinite(observed).all()
-    ):
+    if logits.shape != (ACTION_VOCABULARY_SIZE,):
         raise PuzzleBenchmarkError(
             f"model returned invalid logits for puzzle {task.puzzle_id}"
         )
-    candidates = torch.as_tensor(task.legal_action_ids, dtype=torch.long)
-    candidate_logits = observed[candidates]
+    # Only the legal actions are ever read, so the widening the fit needs is
+    # bought for a few dozen of them rather than the whole vocabulary.
+    candidate_logits = logits[task.candidates].to(dtype=torch.float64)
     greedy_index = int(torch.argmax(candidate_logits).item())
     greedy_correct = float(greedy_index in task.accepted_indices)
     if temperature == 0.0:
         probability = greedy_correct
     else:
-        accepted = torch.as_tensor(task.accepted_indices, dtype=torch.long)
         probability = float(
-            torch.softmax(candidate_logits / temperature, dim=0)[accepted].sum().item()
+            torch.softmax(candidate_logits / temperature, dim=0)[task.accepted]
+            .sum()
+            .item()
         )
     return _DecisionScore(
         greedy_correct=greedy_correct,
@@ -787,7 +631,6 @@ def _puzzle_score(
 def _band_results(
     puzzle_set: PuzzleSet,
     scores: Sequence[_PuzzleScore],
-    target_rating: int,
 ) -> tuple[PuzzleBandResult, ...]:
     selection = puzzle_set.selection
     try:
@@ -810,12 +653,6 @@ def _band_results(
                 lower=lower,
                 upper=upper,
                 puzzles=len(band),
-                human_expected_score=_mean(
-                    [
-                        expected_score(target_rating, score.puzzle.rating)
-                        for score in band
-                    ]
-                ),
                 greedy_first_move_accuracy=_mean(
                     [score.greedy_first for score in band]
                 ),
@@ -827,36 +664,6 @@ def _band_results(
             )
         )
     return tuple(results)
-
-
-def _training_overlap(puzzles: Sequence[Puzzle], path: Path) -> tuple[int, int]:
-    # A shard at a time, holding the puzzle keys rather than the corpus ones:
-    # read_normalized_rows materializes every row it is handed, and this corpus
-    # is billions of games across tens of thousands of shards.
-    wanted = {puzzle.source_game_key for puzzle in puzzles}
-    matched: set[str] = set()
-    games = 0
-    columns = (
-        NormalizedColumn.SOURCE_GAME_KEY.value,
-        NormalizedColumn.SOURCE_ID.value,
-        NormalizedColumn.SPLIT.value,
-    )
-    for shard in normalized_shard_paths(path):
-        for row in read_normalized_rows(shard, columns=columns):
-            if (
-                row[NormalizedColumn.SOURCE_ID] == "lichess"
-                and row[NormalizedColumn.SPLIT] != "test"
-            ):
-                games += 1
-                key = str(row[NormalizedColumn.SOURCE_GAME_KEY])
-                if key in wanted:
-                    matched.add(key)
-    if games == 0:
-        raise PuzzleBenchmarkError(
-            "training selection contains no non-test Lichess games"
-        )
-    overlapping = sum(puzzle.source_game_key in matched for puzzle in puzzles)
-    return games, overlapping
 
 
 def _dataset_reference(
@@ -886,62 +693,56 @@ def _measurements(
     component: DataComponent,
 ) -> tuple[Measurement, ...]:
     ratings = result.ratings
+    resolution = result.resolution
     sample_size = len(ratings) * result.dataset.selected_games
     values = (
         (
             PUZZLE_GREEDY_FIRST_MOVE_ACCURACY,
             _mean([item.greedy_first_move_accuracy for item in ratings]),
             sample_size,
+            None if resolution is None else resolution.greedy_first_move_accuracy,
         ),
         (
             PUZZLE_GREEDY_LINE_COMPLETION,
             _mean([item.greedy_line_completion for item in ratings]),
             sample_size,
+            None if resolution is None else resolution.greedy_line_completion,
         ),
         (
             PUZZLE_SAMPLED_FIRST_MOVE_SOLVE_RATE,
             _mean([item.sampled_first_move_solve_rate for item in ratings]),
             sample_size,
+            None if resolution is None else resolution.sampled_first_move_solve_rate,
         ),
         (
             PUZZLE_SAMPLED_LINE_COMPLETION,
             _mean([item.sampled_line_completion for item in ratings]),
             sample_size,
+            None if resolution is None else resolution.sampled_line_completion,
         ),
         (
             PUZZLE_GREEDY_RATING_SLOPE,
             result.greedy_rating_slope,
             len(ratings),
+            None if resolution is None else resolution.greedy_rating_slope,
         ),
         (
             PUZZLE_SAMPLED_RATING_SLOPE,
             result.sampled_rating_slope,
             len(ratings),
+            None if resolution is None else resolution.sampled_rating_slope,
         ),
         (
             PUZZLE_GREEDY_RATING_ORDER_ACCURACY,
             result.greedy_order_accuracy,
             len(ratings),
+            None if resolution is None else resolution.greedy_order_accuracy,
         ),
         (
             PUZZLE_SAMPLED_RATING_ORDER_ACCURACY,
             result.sampled_order_accuracy,
             len(ratings),
-        ),
-        (
-            PUZZLE_GREEDY_CURVE_DISTANCE,
-            _mean([item.greedy_curve_distance for item in ratings]),
-            sample_size,
-        ),
-        (
-            PUZZLE_SAMPLED_CURVE_DISTANCE,
-            _mean([item.sampled_curve_distance for item in ratings]),
-            sample_size,
-        ),
-        (
-            PUZZLE_TRAINING_OVERLAP_RATE,
-            result.overlap_rate,
-            result.dataset.selected_games,
+            None if resolution is None else resolution.sampled_order_accuracy,
         ),
     )
     return tuple(
@@ -950,8 +751,32 @@ def _measurements(
             value,
             data=component,
             sample_size=measurement_size,
+            dispersion=_dispersion(spread, resolution),
         )
-        for definition, value, measurement_size in values
+        for definition, value, measurement_size, spread in values
+    )
+
+
+def _dispersion(
+    spread: PuzzleSpread | None,
+    resolution: PuzzleResponseResolution | None,
+) -> MetricDispersion | None:
+    """Return the stored dispersion for one metric, where a redraw moved it.
+
+    Stored without coverage, which a delta floor applies once at comparison
+    time; ``PuzzleSpread.bound`` carries it because the printed spread qualifies
+    this reading alone and has no second reading to be combined with.
+    """
+
+    if spread is None or resolution is None:
+        return None
+    return measured_dispersion(
+        spread.dispersion,
+        degrees_of_freedom=resolution.puzzles - 1,
+        confidence=resolution.confidence,
+        units=resolution.puzzles,
+        source=f"stratified bootstrap over {resolution.puzzles} scored puzzle(s)",
+        estimator=PUZZLE_NOISE_ESTIMATOR,
     )
 
 
@@ -1032,26 +857,39 @@ def _response_resolution(
             thinnest,
         )
         return None
-    greedy = np.array(
-        [[score.greedy_line for score in scored.scores] for scored in scored_ratings],
-        dtype=np.float64,
-    ).T
-    sampled = np.array(
-        [[score.sampled_line for score in scored.scores] for scored in scored_ratings],
-        dtype=np.float64,
-    ).T
+    rates = {
+        field: np.array(
+            [
+                [getattr(score, field) for score in scored.scores]
+                for scored in scored_ratings
+            ],
+            dtype=np.float64,
+        ).T
+        for field in ("greedy_first", "greedy_line", "sampled_first", "sampled_line")
+    }
     fitted, totals = _fit_curve(puzzle_ratings)
     generator = np.random.default_rng(config.seed)
     greedy_fits = np.empty((config.resamples, len(scored_ratings)), dtype=np.float64)
     sampled_fits = np.empty_like(greedy_fits)
+    rate_draws = {
+        field: np.empty(config.resamples, dtype=np.float64) for field in rates
+    }
     for index in range(config.resamples):
         multiplicity = _draw_multiplicity(
             generator,
             units=len(scores),
             buckets=buckets,
         )
-        greedy_fits[index] = np.interp(multiplicity @ greedy, totals, fitted)
-        sampled_fits[index] = np.interp(multiplicity @ sampled, totals, fitted)
+        greedy_fits[index] = np.interp(
+            multiplicity @ rates["greedy_line"], totals, fitted
+        )
+        sampled_fits[index] = np.interp(
+            multiplicity @ rates["sampled_line"], totals, fitted
+        )
+        for field, matrix in rates.items():
+            # The reported rate averages the configured grid, so the replicate
+            # of it does too rather than qualifying one rating of it.
+            rate_draws[field][index] = (multiplicity @ matrix).mean() / len(scores)
 
     spread = partial(_bounded_spread, units=len(scores), config=config)
     greedy_response = [_reductions(target_ratings, row) for row in greedy_fits]
@@ -1069,6 +907,10 @@ def _response_resolution(
             )
             for column, target_rating in enumerate(target_ratings)
         ),
+        greedy_first_move_accuracy=spread(rate_draws["greedy_first"]),
+        greedy_line_completion=spread(rate_draws["greedy_line"]),
+        sampled_first_move_solve_rate=spread(rate_draws["sampled_first"]),
+        sampled_line_completion=spread(rate_draws["sampled_line"]),
         greedy_rating_slope=spread(_column(item.slope for item in greedy_response)),
         sampled_rating_slope=spread(_column(item.slope for item in sampled_response)),
         greedy_order_accuracy=spread(
@@ -1110,8 +952,8 @@ def _bounded_spread(
     *,
     units: int,
     config: NoiseConfig,
-) -> float | None:
-    """Return the conservative spread of one resampled quantity.
+) -> PuzzleSpread | None:
+    """Return the spread of one resampled quantity and its conservative bound.
 
     The matched puzzles are the independent replicates rather than the draws
     taken from them, which is what the dispersion bound's degrees of freedom
@@ -1122,15 +964,22 @@ def _bounded_spread(
     dispersion = float(np.std(replicates, ddof=1))
     if dispersion == 0.0:
         return None
-    return bounded_spread(
-        dispersion,
-        degrees_of_freedom=units - 1,
-        coverage=config.coverage,
-        confidence=config.confidence,
+    return PuzzleSpread(
+        dispersion=dispersion,
+        bound=bounded_spread(
+            dispersion,
+            degrees_of_freedom=units - 1,
+            coverage=config.coverage,
+            confidence=config.confidence,
+        ),
     )
 
 
-def _widest(spreads: Iterable[float | None]) -> float | None:
+def _bound_of(spread: PuzzleSpread | None) -> float | None:
+    return None if spread is None else spread.bound
+
+
+def _widest(spreads: Iterable[PuzzleSpread | None]) -> PuzzleSpread | None:
     """Return the widest estimated spread, or ``None`` if none was estimated.
 
     An unmoved quantity is narrower than any estimate rather than wider, so it
@@ -1138,7 +987,7 @@ def _widest(spreads: Iterable[float | None]) -> float | None:
     """
 
     estimated = [spread for spread in spreads if spread is not None]
-    return max(estimated) if estimated else None
+    return max(estimated, key=attrgetter("bound")) if estimated else None
 
 
 class _Reduction(NamedTuple):

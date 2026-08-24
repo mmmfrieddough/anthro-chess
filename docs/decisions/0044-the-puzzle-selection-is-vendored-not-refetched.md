@@ -9,6 +9,12 @@ Accepted. Replaces the artifact-boundary consequence of
 of the repository, and leaves the rest of that record — the uniform exact-rating
 design, the sizing calculation, and the identity a reading carries — untouched.
 
+Refined by `0078-puzzle-training-overlap-is-measured-and-not-corrected.md`, which
+rests on the no-network, no-archive build below to refuse a selection filtered
+against the corpus. The two megabytes this record weighed are now twenty: the
+selection was re-derived at a hundred puzzles per rating, and the reasoning
+about what may be committed is unchanged by the size.
+
 ## Context
 
 Decision 0019 committed the recipe and the expected identity and left the

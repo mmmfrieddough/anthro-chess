@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         PoolConfig,
         PoolResult,
         PuzzleBenchmarkResult,
+        PuzzleSpread,
         RolloutBenchmarkResult,
         TerminationBenchmarkResult,
     )
@@ -2104,9 +2105,7 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             f"fit={rating.greedy_fitted_puzzle_rating:7.1f}  "
             f"sampled first={rating.sampled_first_move_solve_rate:.3f} "
             f"line={rating.sampled_line_completion:.3f} "
-            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}  "
-            f"curve gap={rating.greedy_curve_distance:.3f}/"
-            f"{rating.sampled_curve_distance:.3f}"
+            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}"
         )
     resolution = result.resolution
 
@@ -2144,6 +2143,16 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
         lines.extend(
             [
                 (
+                    "Solve-rate spread: greedy "
+                    f"first={_spread(resolution.greedy_first_move_accuracy, 4)} "
+                    f"line={_spread(resolution.greedy_line_completion, 4)}"
+                ),
+                (
+                    "                   sampled "
+                    f"first={_spread(resolution.sampled_first_move_solve_rate, 4)} "
+                    f"line={_spread(resolution.sampled_line_completion, 4)}"
+                ),
+                (
                     f"Response resolution: {resolution.resamples} stratified "
                     f"refits of {resolution.puzzles} redrawn puzzle(s), "
                     f"{resolution.coverage:.3g}x coverage at "
@@ -2157,20 +2166,14 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
                 ),
             ]
         )
-    lines.append(
-        f"Training overlap: {result.overlapping_puzzles}/"
-        f"{result.dataset.selected_games} puzzle source games "
-        f"({result.overlap_rate:.3%}) across "
-        f"{result.training_games} training/validation games"
-    )
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
 
 
-def _spread(value: float | None, digits: int) -> str:
+def _spread(spread: PuzzleSpread | None, digits: int) -> str:
     """Render a resampled spread, naming an unmoved quantity rather than zero."""
 
-    return "spread unknown" if value is None else f"±{value:.{digits}f}"
+    return "spread unknown" if spread is None else f"±{spread.bound:.{digits}f}"
 
 
 def _render_inference(result: InferenceBenchmarkResult) -> str:

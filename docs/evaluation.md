@@ -1771,10 +1771,17 @@ A published puzzle set whose puzzles carry difficulty ratings supports a third
 rating diagnostic, and it is the cheapest of the three: solve rate as a
 continuous function of puzzle rating across a configured-rating grid, from
 forward passes alone, with no matches, no external engine process, and no
-sampling noise at temperature zero. The human reference curve needs no
-empirical solve-rate bins, because a puzzle rating is itself a difficulty
-calibrated from human attempts, so expected human solve rate follows from the
-same expected-score formula used above.
+sampling noise at temperature zero.
+
+**The reading is ordering and level on the puzzle scale, never agreement with
+the configured one.** A Lichess puzzle rating and a Lichess game rating are
+separate Glicko pools, so an expected-score formula fed one of each states a
+difference between scales rather than between a player and a puzzle. The
+benchmark reported such a reference and two distances from it until
+`docs/decisions/0077-the-puzzle-scale-is-not-the-game-scale.md` withdrew them.
+What survives is scale-free or stated in puzzle points: solve rates, the fitted
+puzzle rating each configured rating produces, the slope through those fits,
+and their pairwise ordering.
 
 What this measures is calibration, not tactical strength. The quantity of
 interest is whether solve rate tracks configured rating the way human solve rate
@@ -1821,12 +1828,11 @@ The puzzle set is an external dependency with its own identity and license
 record because a set version change alters what a number means. The selection
 recipe, expected identity, and selected rows are all committed; the generated
 artifact and the raw archive stay under the data root. Puzzle positions derive
-from real games on the same platform the corpus is drawn from, so a
-source-game-key join against the training selection reports the overlap rate as
-provenance. The measured risk is small, since one exposure among millions does
-not produce recall and worst-case inflation is bounded by the overlap fraction.
-It is worth reporting anyway because it grows silently as the corpus expands,
-and the join is cheap enough that there is no reason to carry the uncertainty.
+from real games on the same platform the corpus is drawn from, so a fifth of
+the set is cut from games the corpus holds outside its test partition. That
+overlap was measured against the solve rates and does not move them:
+`docs/decisions/0078-puzzle-training-overlap-is-measured-and-not-corrected.md`
+carries the comparison and why no filter is applied.
 
 `anthro eval prepare-puzzles` builds the artifact from the vendored selection
 and the pin in `configs/evaluation/lichess-puzzles-v1.toml`, refusing when the
@@ -1853,12 +1859,12 @@ refitted quantity is printed with its own spread. A quantity no redraw moved
 says so rather than reporting a spread of zero, which would license every delta;
 that is not a corner case here, since an ordering saturates as soon as the fit
 separates two configured ratings and a fit pinned at the bottom of its search
-range cannot move at all. Those spreads are what this family contributes to a
-delta floor under
-`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`;
-until they are attached to the stored measurements they stay in the output and
-the detail payload, and a delta between two puzzle readings reports its noise as
-unknown.
+range cannot move at all. The solve rates are read off that same draw rather
+than a separate one, since a redraw of the scored puzzles moves every quantity
+the reading reports together. Every stored puzzle measurement carries its own
+spread, so a delta between two puzzle readings is floored under
+`docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`
+like any other.
 
 Selection is uniform over every exact integer puzzle rating in the declared
 range, with deterministic hash ranking only among eligible puzzles at that
@@ -1880,17 +1886,7 @@ is recorded in the artifact and its resolution is printed beside the reading,
 and because the puzzles scored are the data component, a subsampled run is its
 own series rather than a partial full one.
 
-The primary drill-down uses the shared nearest-neighbour curve machinery with a
-frozen bandwidth and grid. The analytic human reference and model response are
-smoothed at the same local bandwidth, preserving the bias-cancellation rule
-used by other human-reference comparisons. The reference is the whole set even
-when fewer puzzles are scored, which is the same rule the generated-play and
-termination curves follow — at a neighbour-count bandwidth the reference's size
-is a smoothing radius rather than a sample size. It costs nothing to hold here,
-because this reference is analytic rather than played, so a subsampled reading
-is estimated at exactly the radii a full one uses rather than on a differently
-smoothed curve. Wide rating bands remain as a readable secondary table, not as
-the estimator. The generated manifest records
+Wide rating bands are the drill-down. The generated manifest records
 the power assumptions, source candidate coverage, quality filters, exact source
 and selected-content digests, license, and rating-design identity. Tests use
 small generated fixtures rather than the canonical records.
@@ -1905,13 +1901,9 @@ product of those probabilities for a line, under the declared temperature.
 That is the infinite-sample solve rate without Monte Carlo noise and remains
 directly comparable with the greedy reading at temperature zero.
 
-The detail artifact carries the configured-rating grid, continuous human and
-model curves with effective local sample sizes, the rating-band drill-down, and
-the resampled response resolution. The summary tier carries overall solve
-rates, continuous curve distance, fitted-rating slope and pairwise ordering,
-plus the source-game overlap rate.
-The overlap join reads only Lichess train and validation keys; test-only games
-remain excluded because training never consumes that partition.
+The detail artifact carries the configured-rating grid, the rating-band
+drill-down, and the resampled response resolution. The summary tier carries
+overall solve rates, fitted-rating slope, and pairwise ordering.
 
 ## Timing Evaluation
 

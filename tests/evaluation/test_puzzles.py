@@ -52,7 +52,6 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     _score_rating,
     _ScoredRating,
     _stratum_buckets,
-    _training_overlap,
     score_puzzle_set,
 )
 from anthro_chess.evaluation.puzzles.dataset import (
@@ -68,6 +67,7 @@ from anthro_chess.evaluation.results import (
     DetailStore,
     ResultsStore,
 )
+from anthro_chess.evaluation.results.noise import dispersion_bound
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 PUZZLE_SET_CONFIG = REPOSITORY_ROOT / "configs/evaluation/lichess-puzzles-v1.toml"
@@ -322,7 +322,6 @@ def test_a_dial_that_leaves_one_puzzle_per_rating_is_refused() -> None:
         PuzzleBenchmarkConfig.model_validate(
             {
                 "puzzle_set": "puzzles",
-                "training_normalized": "corpus",
                 "puzzles_per_rating": 1,
             }
         )
@@ -666,9 +665,9 @@ def test_the_response_resolution_refits_puzzles_redrawn_within_rating_strata(
     # the opposite of what was observed.
     assert low.greedy_fitted_puzzle_rating is None
     assert high.greedy_fitted_puzzle_rating is not None
-    assert high.greedy_fitted_puzzle_rating > 0.0
+    assert high.greedy_fitted_puzzle_rating.bound > 0.0
     assert resolution.greedy_rating_slope is not None
-    assert resolution.greedy_rating_slope > 0.0
+    assert resolution.greedy_rating_slope.bound > 0.0
 
 
 def test_a_reading_that_estimates_no_noise_reports_no_response_resolution(
@@ -708,55 +707,15 @@ def test_the_tabulated_fit_inverse_reproduces_the_bisected_one(
         )
 
 
-def test_training_overlap_joins_source_keys_and_excludes_test_games(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
-) -> None:
-    puzzle_set = _fixture_set()
-    matching = puzzle_set.puzzles[0].source_game_key
-    test_only = puzzle_set.puzzles[1].source_game_key
-    rows = [
-        {
-            **normalized_row(1, split="train"),
-            "source_id": "lichess",
-            "source_game_key": matching,
-        },
-        {
-            **normalized_row(2, split="validation"),
-            "source_id": "lichess",
-            "source_game_key": "not-a-puzzle",
-        },
-        {
-            **normalized_row(3, split="test"),
-            "source_id": "lichess",
-            "source_game_key": test_only,
-        },
-        {
-            **normalized_row(4, split="train"),
-            "source_id": "other",
-            "source_game_key": test_only,
-        },
-    ]
-    normalized, _ = write_corpus(tmp_path, rows)
-
-    training_games, overlapping = _training_overlap(puzzle_set.puzzles, normalized)
-
-    assert training_games == 2
-    assert overlapping == 1
-
-
 def test_the_benchmark_records_every_envelope_and_payload_it_produced(
     tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     inference_run: Callable[..., Path],
 ) -> None:
     # The only end-to-end reading of this benchmark. Its result carried a
     # single envelope and a relative detail path where every other benchmark
     # carried tuples of absolute ones, and nothing here noticed for as long as
     # the drift existed.
-    config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
+    config = _benchmark_config(tmp_path, inference_run)
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
 
@@ -781,11 +740,9 @@ def test_the_benchmark_records_every_envelope_and_payload_it_produced(
 
 def test_the_benchmark_measures_without_recording_anything(
     tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     inference_run: Callable[..., Path],
 ) -> None:
-    config = _benchmark_config(tmp_path, normalized_row, write_corpus, inference_run)
+    config = _benchmark_config(tmp_path, inference_run)
 
     result = _measure(config)
 
@@ -794,19 +751,16 @@ def test_the_benchmark_measures_without_recording_anything(
     assert result.detail_paths == ()
 
 
-def test_a_configured_subsample_measures_and_records_only_what_it_selected(
+def test_every_solve_rate_stores_a_floor_the_comparison_can_cover(
     tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     write_puzzle_artifact: Callable[..., Path],
     inference_run: Callable[..., Path],
 ) -> None:
-    """A smaller reading is its own series, not a partial full one.
+    """A stored bound carries no coverage, because a delta floor applies it.
 
-    The puzzles scored are the data component, so a subsample has to carry a
-    different component and view from the full reading; sharing either would
-    let a reduced sweep continue a full one's line. What it must *not* change
-    is the curve it is read on, which is why the bandwidths are compared here.
+    Storing the printed spread instead would cover the reading once here and
+    again in ``combined_floor``, and the two factors are invisible in the
+    output: the floor is simply wider, and real movement reads as noise.
     """
 
     artifact = write_puzzle_artifact(
@@ -814,7 +768,69 @@ def test_a_configured_subsample_measures_and_records_only_what_it_selected(
         ratings=(1200, 1400),
         puzzles_per_rating=4,
     )
-    arguments = (tmp_path, normalized_row, write_corpus, inference_run)
+    result = _measure(
+        _benchmark_config(
+            tmp_path,
+            inference_run,
+            puzzle_set=artifact,
+        )
+    )
+    resolution = result.resolution
+    assert resolution is not None
+    stored = {
+        measurement.metric: measurement
+        for envelope in result.envelopes
+        for measurement in envelope.measurements
+    }
+
+    rates = {
+        "puzzle.greedy_first_move_accuracy": resolution.greedy_first_move_accuracy,
+        "puzzle.greedy_line_completion": resolution.greedy_line_completion,
+        "puzzle.sampled_first_move_solve_rate": (
+            resolution.sampled_first_move_solve_rate
+        ),
+        "puzzle.sampled_line_completion": resolution.sampled_line_completion,
+    }
+    # A fixture runner answers every puzzle identically, so a rate no redraw
+    # moves stores no dispersion at all; the ones that move carry the relation.
+    moved = {metric: spread for metric, spread in rates.items() if spread is not None}
+    assert moved
+    for metric, spread in moved.items():
+        dispersion = stored[metric].dispersion
+        assert dispersion is not None, metric
+        assert dispersion.value == pytest.approx(spread.dispersion)
+        assert dispersion.units == resolution.puzzles
+        assert dispersion.bound == pytest.approx(
+            dispersion_bound(
+                spread.dispersion,
+                degrees_of_freedom=resolution.puzzles - 1,
+                confidence=resolution.confidence,
+            )
+        )
+        # The printed spread is the covered one, and the stored bound is not.
+        assert spread.bound > dispersion.bound
+    for metric in rates.keys() - moved.keys():
+        assert stored[metric].dispersion is None, metric
+
+
+def test_a_configured_subsample_measures_and_records_only_what_it_selected(
+    tmp_path: Path,
+    write_puzzle_artifact: Callable[..., Path],
+    inference_run: Callable[..., Path],
+) -> None:
+    """A smaller reading is its own series, not a partial full one.
+
+    The puzzles scored are the data component, so a subsample has to carry a
+    different component and view from the full reading; sharing either would
+    let a reduced sweep continue a full one's line.
+    """
+
+    artifact = write_puzzle_artifact(
+        tmp_path / "puzzles",
+        ratings=(1200, 1400),
+        puzzles_per_rating=4,
+    )
+    arguments = (tmp_path, inference_run)
 
     full = _measure(_benchmark_config(*arguments, puzzle_set=artifact))
     reduced = _measure(
@@ -836,23 +852,15 @@ def test_a_configured_subsample_measures_and_records_only_what_it_selected(
     assert reduced.dataset.components != full.dataset.components
     assert reduced.dataset.game_ids_sha256 != full.dataset.game_ids_sha256
     assert reduced.as_record()["selection"] == reduced.selection.as_record()
-    # The reference the response is smoothed against is the whole set at both
-    # sizes, so the reduced reading sits on the full one's curve rather than a
-    # differently smoothed one.
-    assert [point.bandwidth for point in reduced.ratings[0].curve] == [
-        point.bandwidth for point in full.ratings[0].curve
-    ]
     # The puzzle count every measurement reports is the realized one, not the
     # artifact's, or a reduced reading would claim a resolution it never had.
     (reading,) = [item for item in reduced.envelopes if item.kind == PUZZLE_KIND]
     sizes = {item.sample_size for item in reading.measurements}
-    assert sizes == {4, len(reduced.ratings), 4 * len(reduced.ratings)}
+    assert sizes == {len(reduced.ratings), 4 * len(reduced.ratings)}
 
 
 def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
     tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     inference_run: Callable[..., Path],
 ) -> None:
     # A host without the pinned artifact is the ordinary partial failure the
@@ -860,8 +868,6 @@ def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
     # for this step ends the whole sweep and discards the readings before it.
     config = _benchmark_config(
         tmp_path,
-        normalized_row,
-        write_corpus,
         inference_run,
         puzzle_set=tmp_path / "absent",
     )
@@ -877,30 +883,19 @@ def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
 
 def _benchmark_config(
     tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
     inference_run: Callable[..., Path],
     *,
     puzzle_set: Path | None = None,
     puzzles_per_rating: int | None = None,
 ) -> ResolvedConfig[PuzzleBenchmarkConfig]:
-    """Write a puzzle artifact, a training corpus and a checkpoint, and select them."""
+    """Write a puzzle artifact and a checkpoint, and select them."""
 
     artifact = puzzle_set or _write_fixture_artifact(tmp_path / "puzzles")
-    rows = [
-        {
-            **normalized_row(1, split="train"),
-            "source_id": "lichess",
-            "source_game_key": _fixture_set().puzzles[0].source_game_key,
-        }
-    ]
-    normalized, _ = write_corpus(tmp_path / "corpus", rows)
     checkpoint = inference_run(tmp_path / "run")
     return ResolvedConfig(
         value=PuzzleBenchmarkConfig.model_validate(
             {
                 "puzzle_set": str(artifact),
-                "training_normalized": str(normalized),
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "target_ratings": [1000, 1800],
                 "inference_batch_size": 4,
