@@ -765,9 +765,8 @@ def test_record_only_cannot_ask_for_a_step_with_no_result_kind(
         )
 
 
-@pytest.mark.parametrize("field", ["overrides"])
 def test_overrides_on_a_step_with_no_selection_are_refused(
-    tmp_path: Path, field: str
+    tmp_path: Path,
 ) -> None:
     """There is no schema behind them, so nothing would ever read or check them."""
 
@@ -776,7 +775,7 @@ def test_overrides_on_a_step_with_no_selection_are_refused(
             _suite(
                 benchmarks={
                     "alpha": {"config": str(_selection(tmp_path))},
-                    "gamma": {"record": False, field: ["nothing=1"]},
+                    "gamma": {"record": False, "overrides": ["nothing=1"]},
                 }
             ),
             registry=_registry(Recorder()),

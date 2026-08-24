@@ -91,7 +91,7 @@ class SuiteBenchmarkConfig(ConfigModel):
 
     Everything about *how* the benchmark measures stays in its own selection
     file. What lives here is only what the file cannot know: where it sits in
-    the order, whether this sweep commits its reading, and how it shrinks.
+    the order and whether this sweep commits its reading.
     """
 
     #: The benchmark's existing selection file. Absent only for a benchmark
@@ -306,7 +306,10 @@ def resolve_suite(
                 resolved=resolved,
                 record=record,
                 source=entry.config,
-                overrides=_applied_overrides(entry, config),
+                overrides=(
+                    *entry.overrides,
+                    *_checkpoint_overrides(config),
+                ),
             )
         )
     _validate_game_dependencies(steps, entries)
@@ -699,13 +702,6 @@ def _checkpoint_overrides(suite: SuiteConfig) -> tuple[str, ...]:
     if suite.checkpoint_label is not None:
         applied.append(f"checkpoint_label={_toml(suite.checkpoint_label)}")
     return tuple(applied)
-
-
-def _applied_overrides(
-    entry: SuiteBenchmarkConfig,
-    suite: SuiteConfig,
-) -> tuple[str, ...]:
-    return (*entry.overrides, *_checkpoint_overrides(suite))
 
 
 def _validate_game_dependencies(
