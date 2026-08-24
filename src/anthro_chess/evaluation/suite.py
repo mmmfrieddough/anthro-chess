@@ -26,13 +26,10 @@ script cannot:
 - **Resume.** Each step's outcome is written to a machine-local ledger as it
   finishes, so a sweep that dies late keeps what it already read.
 
-The reduced sweep is the default and the full sweep is opt-in, because a sweep
-measured in hours is not a default anyone will run on a new checkpoint. Both
-shrink only sample counts — view sizes, seeds, games per position, resamples —
-never the grids that decide *what* is measured. Even so a reduced view is a
-different data component and therefore a different series, so a reduced sweep
-is not a partial down payment on a full one, and the scale is named in the
-output and in the ledger for exactly that reason.
+Every step runs at the one size its own selection declares. A cheaper reading
+is a command-line override on the run that wants it, not a shipped second size:
+views at one seed are nested prefixes, so a smaller reading is a truncation of
+the larger rather than a second measurement of anything.
 """
 
 from __future__ import annotations
@@ -80,20 +77,6 @@ class SuiteError(ValueError):
     """Raised when a sweep cannot be planned or carried out as configured."""
 
 
-class SuiteScale(StrEnum):
-    """How much data one sweep reads.
-
-    A scale is a sample size rather than a measurement setting, but a smaller
-    view still produces its own fingerprint, so the two scales are named and
-    never silently mixed within one ledger.
-    """
-
-    #: Sample counts shrunk so a new checkpoint can be swept in minutes.
-    REDUCED = "reduced"
-    #: Every benchmark at its own declared size.
-    FULL = "full"
-
-
 class StepStatus(StrEnum):
     """How one benchmark of a sweep ended."""
 
@@ -122,39 +105,8 @@ class SuiteBenchmarkConfig(ConfigModel):
     #: some readings and leave the rest unrecorded, which is what a shakedown
     #: over most of the suite plus one kept baseline looks like.
     record: StrictBool = True
-    #: Dotted TOML overrides applied to the selection at every scale.
+    #: Dotted TOML overrides applied to the selection.
     overrides: tuple[str, ...] = ()
-    #: Further overrides applied only to the reduced sweep. Sample counts, not
-    #: grids: a reduced sweep measures the same quantities less precisely
-    #: rather than measuring fewer of them.
-    reduced: tuple[str, ...] = ()
-    #: Which sweeps include this step. A benchmark with no reduction that says
-    #: anything declares the full sweep alone, instead of being nominally
-    #: reduced and read at a size nobody argued for. Empty is refused rather
-    #: than read as a step that runs nowhere: ``enabled`` is how a sweep says
-    #: that, and a step no scale reaches would put ``overrides`` out of every
-    #: schema's sight the way the check below keeps ``reduced`` from being.
-    scales: tuple[SuiteScale, ...] = Field(
-        default=(SuiteScale.REDUCED, SuiteScale.FULL), min_length=1
-    )
-
-    @model_validator(mode="after")
-    def _reduction_is_reachable(self) -> SuiteBenchmarkConfig:
-        """Refuse a reduction no sweep can apply.
-
-        Every override that reaches a selection is checked against its schema
-        when the plan resolves, so a typo fails in the first second. One that
-        reaches nothing is checked by nothing, and a step excluded from the
-        reduced sweep is exactly where such a list survives being wrong.
-        """
-
-        if self.reduced and SuiteScale.REDUCED not in self.scales:
-            raise ValueError(
-                "reduced overrides are applied only by a reduced sweep, which "
-                f"scales {', '.join(self.scales)} excludes; add the reduced "
-                "scale or drop the overrides"
-            )
-        return self
 
 
 class SuiteConfig(CheckpointSelection):
@@ -203,7 +155,6 @@ class SuitePlan:
     """Everything one sweep will do, resolved before any of it runs."""
 
     suite: str
-    scale: SuiteScale
     steps: tuple[PlannedBenchmark, ...]
     checkpoint_label: str | None
     #: Digest over the plan, so a resumed sweep cannot continue a different one.
@@ -221,7 +172,6 @@ class SuitePlan:
         return {
             "version": SUITE_VERSION,
             "suite": self.suite,
-            "scale": self.scale.value,
             "checkpoint_label": self.checkpoint_label,
             "plan_sha256": self.sha256,
             "steps": [step.describe() for step in self.steps],
@@ -288,7 +238,6 @@ class SuiteRun:
         return {
             "version": SUITE_VERSION,
             "suite": self.plan.suite,
-            "scale": self.plan.scale.value,
             "checkpoint_label": self.plan.checkpoint_label,
             "plan_sha256": self.plan.sha256,
             "sweep_root": str(self.sweep_root),
@@ -300,7 +249,6 @@ class SuiteRun:
 def resolve_suite(
     resolved_config: ResolvedConfig[SuiteConfig],
     *,
-    scale: SuiteScale = SuiteScale.REDUCED,
     no_record: bool = False,
     record_only: Sequence[str] | None = None,
     registry: Mapping[str, Benchmark] | None = None,
@@ -322,12 +270,8 @@ def resolve_suite(
     known = dict(registry) if registry is not None else benchmark_registry()
     config = resolved_config.value
     entries = {
-        name: entry
-        for name, entry in config.benchmarks.items()
-        if entry.enabled and scale in entry.scales
+        name: entry for name, entry in config.benchmarks.items() if entry.enabled
     }
-    if not entries:
-        raise SuiteError(f"no benchmark in this suite runs at the {scale} scale")
     unknown = sorted(set(entries) - set(known))
     if unknown:
         raise SuiteError(
@@ -354,7 +298,7 @@ def resolve_suite(
             no_record=no_record,
             record_only=record_only,
         )
-        resolved = _resolve_benchmark(name, entry, benchmark, config, scale=scale)
+        resolved = _resolve_benchmark(name, entry, benchmark, config)
         steps.append(
             PlannedBenchmark(
                 name=name,
@@ -362,17 +306,16 @@ def resolve_suite(
                 resolved=resolved,
                 record=record,
                 source=entry.config,
-                overrides=_applied_overrides(entry, config, scale=scale),
+                overrides=_applied_overrides(entry, config),
             )
         )
     _validate_game_dependencies(steps, entries)
 
     return SuitePlan(
         suite=config.name,
-        scale=scale,
         steps=tuple(steps),
         checkpoint_label=config.checkpoint_label,
-        sha256=_plan_digest(config, scale, steps),
+        sha256=_plan_digest(config, steps),
     )
 
 
@@ -471,7 +414,7 @@ def sweep_directory(root: Path, plan: SuitePlan) -> Path:
     checkpoints swept side by side never share a directory.
     """
 
-    return root / f"{plan.suite}-{plan.scale.value}-{plan.sha256[:12]}"
+    return root / f"{plan.suite}-{plan.sha256[:12]}"
 
 
 def _run_step(
@@ -679,13 +622,11 @@ def _resolve_benchmark(
     entry: SuiteBenchmarkConfig,
     benchmark: Benchmark,
     suite: SuiteConfig,
-    *,
-    scale: SuiteScale,
 ) -> ResolvedConfig[Any] | None:
     """Load one benchmark's own selection and point it at this checkpoint."""
 
     if benchmark.schema is None:
-        if entry.config is not None or entry.overrides or entry.reduced:
+        if entry.config is not None or entry.overrides:
             raise SuiteError(
                 f"the {name} step reads another step's output, so it takes no "
                 "configuration file and no overrides of its own"
@@ -698,7 +639,7 @@ def _resolve_benchmark(
         resolved = resolve_benchmark(
             benchmark,
             path=entry.config,
-            overrides=_scaled_overrides(entry, scale=scale),
+            overrides=entry.overrides,
         )
     except ConfigError as error:
         raise SuiteError(f"the {name} step: {error}") from error
@@ -760,23 +701,11 @@ def _checkpoint_overrides(suite: SuiteConfig) -> tuple[str, ...]:
     return tuple(applied)
 
 
-def _scaled_overrides(
-    entry: SuiteBenchmarkConfig,
-    *,
-    scale: SuiteScale,
-) -> tuple[str, ...]:
-    if scale is SuiteScale.REDUCED:
-        return (*entry.overrides, *entry.reduced)
-    return tuple(entry.overrides)
-
-
 def _applied_overrides(
     entry: SuiteBenchmarkConfig,
     suite: SuiteConfig,
-    *,
-    scale: SuiteScale,
 ) -> tuple[str, ...]:
-    return (*_scaled_overrides(entry, scale=scale), *_checkpoint_overrides(suite))
+    return (*entry.overrides, *_checkpoint_overrides(suite))
 
 
 def _validate_game_dependencies(
@@ -811,7 +740,6 @@ def _validate_game_dependencies(
 
 def _plan_digest(
     suite: SuiteConfig,
-    scale: SuiteScale,
     steps: Sequence[PlannedBenchmark],
 ) -> str:
     """Digest what a resumed sweep must still be doing to be the same sweep."""
@@ -819,7 +747,6 @@ def _plan_digest(
     payload = {
         "version": SUITE_VERSION,
         "suite": suite.name,
-        "scale": scale.value,
         "checkpoint_label": suite.checkpoint_label,
         "model": suite.model.model_dump(mode="json"),
         "steps": [step.describe() for step in steps],

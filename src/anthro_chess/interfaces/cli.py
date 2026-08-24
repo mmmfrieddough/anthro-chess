@@ -449,16 +449,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit TOML suite selection.",
     )
     suite_parser.add_argument(
-        "--full",
-        action="store_true",
-        help=(
-            "Run every benchmark at its own declared size. The default is the "
-            "reduced sweep, because a sweep measured in hours is not a default "
-            "anyone will run on a new checkpoint. A reduced view is its own "
-            "series, so the two do not accumulate into one history."
-        ),
-    )
-    suite_parser.add_argument(
         "--sweep-root",
         type=Path,
         help=(
@@ -1653,17 +1643,14 @@ def _run_eval_suite(arguments: argparse.Namespace) -> int:
     from anthro_chess.evaluation.suite import (
         SuiteConfig,
         SuiteError,
-        SuiteScale,
         resolve_suite,
         run_suite,
         sweep_directory,
     )
 
-    scale = SuiteScale.FULL if arguments.full else SuiteScale.REDUCED
     try:
         plan = resolve_suite(
             load_config(SuiteConfig, path=arguments.config, overrides=arguments.set),
-            scale=scale,
             no_record=arguments.no_record,
             record_only=arguments.record or None,
         )
@@ -1754,7 +1741,7 @@ def _render_plan(plan: SuitePlan) -> str:
 
     committing = ", ".join(plan.recording) or "nothing"
     lines = [
-        f"Suite: {plan.suite} ({plan.scale.value})",
+        f"Suite: {plan.suite}",
         f"Checkpoint: {plan.checkpoint_label or 'the machine-local default'}",
         f"Plan: {plan.sha256[:12]}, {len(plan.steps)} step(s), committing {committing}",
         "",
@@ -1779,8 +1766,7 @@ def _render_sweep(run: SuiteRun) -> str:
 
     plan = run.plan
     lines = [
-        f"Suite: {plan.suite} ({plan.scale.value}), {len(run.outcomes)} step(s) "
-        f"in {run.seconds:.1f}s",
+        f"Suite: {plan.suite}, {len(run.outcomes)} step(s) in {run.seconds:.1f}s",
         f"Sweep: {run.sweep_root}",
         "",
         f"  {'benchmark':<12} {'status':<10} {'seconds':>9} {'results':>8} "
