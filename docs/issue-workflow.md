@@ -298,7 +298,7 @@ change whose whole effect is on the store's layering is verified against the
 store instead.
 
 Run the benchmark on two checkpoints far apart in one training run, with a
-reduced view and `--no-record`, and report in the pull request what was
+capped view and `--no-record`, and report in the pull request what was
 expected, what was read, and whether they agreed. A disagreement is a finding to
 write up rather than a run to repeat until it looks better.
 
@@ -436,10 +436,11 @@ nothing to unwind. The control arm is not promoted: it is the checkpoint the
 comparison was read against, and either it is already in the store or it is a
 reading of something nobody adopted.
 
-Promote the reading the comparison was decided on, which is the full sweep
+Promote the reading the comparison was decided on, which is the sweep at its
+declared sizes,
 `docs/decisions/0063-the-full-sweep-decides-a-change-and-the-canonical-line-is-its-byproduct.md`
-requires for that decision. Where the pull request carries something else — a
-reduced reading, a change adopted for a reason no benchmark measured — say so
+requires for that decision. Where the pull request carries something else, a
+capped reading or a change adopted for a reason no benchmark measured, say so
 beside the copy and leave it to review; a capped view names its realized size in
 the record, so the diff already shows which it is.
 

@@ -241,11 +241,13 @@ another checkpoint's.
 
 **The sweep has one size, and each step's own selection declares it.**
 `docs/decisions/0079-one-declared-size-per-benchmark.md` withdraws the reduced
-scale the suite used to carry. Views at one seed are nested prefixes of one
-hash-rank ordering, so a smaller reading is a truncation of the larger rather
-than a second measurement: running both is one reading and a prefix of it, and
-the prefix lands in a series of its own that nothing accumulates. A cheaper
-reading is `--set` on the invocation that wants it.
+scale the suite used to carry. The scored units are the data component, so a
+smaller reading carries its own fingerprint and answers only against other
+smaller readings, a history nothing consumes. Where the dial is a view size the
+smaller reading is a strict prefix of the larger as well, since one hash-rank
+ordering is sliced at both. A cheaper reading is `--set` on the invocation that
+wants it, against the benchmark's own schema directly or through
+`benchmarks.<step>.overrides` on a sweep.
 
 The suite adds no measurement of its own and registers no metric. Decision
 decomposition is the one step it cannot commit, because that family has no
@@ -270,8 +272,9 @@ repeated by each schema.
 
 Every benchmark that records a reading also records what the invocation cost,
 as a single wall-clock measurement in its own committed record. This exists
-because scope decisions are made on these numbers — which benchmarks a reduced
-sweep can include, whether a step has an affordable reduction — and before it
+because scope decisions are made on these numbers, such as what a step's
+declared size costs and whether the sweep as a whole stays affordable, and
+before it
 existed the numbers lived only in comments that nothing could contradict, by
 which point they had drifted by an order of magnitude or more.
 
@@ -1693,8 +1696,8 @@ that population's rating scale.
 **The ladder is the routine cost of deciding a change.** The declared grid
 plays thousands of games per checkpoint, and a sweep is what an adopt-or-drop
 comparison is read at, so that cost is paid per accepted change rather than per
-milestone, and it is the majority of what a sweep costs. Seats and
-their sample are the two things not to confuse when that cost is under
+milestone, and it is the majority of what a sweep costs. Seats and their
+sample are the two things not to confuse when that cost is under
 discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
 linearly, because a round robin gives each seat one pairing per opponent — so a
@@ -1851,8 +1854,8 @@ creating arbitrary selection discontinuities at a handful of wide band
 boundaries.
 
 A reading may score fewer puzzles than the artifact holds. The dial counts
-puzzles per exact rating
-rather than puzzles outright, and keeps the lowest-ranked of them under the
+puzzles per exact rating rather than puzzles outright, and keeps the
+lowest-ranked of them under the
 same hash the build ranks by, so a subsample is precisely the artifact a build
 at that setting would have written: uniform over exact ratings, nested inside
 every larger reading, and identical on any machine. A flat count would sample
@@ -2888,8 +2891,8 @@ told nothing here: the arithmetic a machine does is inside the identity, so an
 upgrade moves it, and naming that as a caveat would refuse the comparison the
 pivot exists for.
 
-Both arms are read the same way — the full sweep at the same checkpoint step, on
-one machine — and the claim is written down before either arm runs: which metric
+Both arms are read the same way: the sweep at its declared sizes, at the same
+checkpoint step, on one machine — and the claim is written down before either arm runs: which metric
 moves, in which direction. Stating it first is what makes the reading
 falsifiable, for the same reason a shakedown states its expectation first.
 

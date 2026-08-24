@@ -282,7 +282,7 @@ class TerminationReferenceConfig(ReferenceConfig):
     Its size is not a sample count. The mix bandwidth is a neighbour count, so
     the reference size decides the rating span every neighbourhood covers:
     shrinking it widens them until the grid points are estimated from the same
-    games. That is why a reduced sweep leaves this view alone.
+    games. That is why the size is not a dial to shrink.
     """
 
     view: ViewConfig = ViewConfig(name="termination-reference", require_ratings=True)

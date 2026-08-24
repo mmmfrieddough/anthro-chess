@@ -308,7 +308,7 @@ class RolloutReferenceConfig(ReferenceConfig):
     Its size is not a sample count. The bandwidth is a neighbour count, so the
     reference size decides the rating span those neighbours occupy: shrinking it
     widens every neighbourhood until the grid points are estimated from the same
-    games. That is why a reduced sweep leaves this view alone, and why the size
+    games. That is why the size is not a dial to shrink, and why the size
     belongs in the declared workload rather than in provenance.
     """
 

@@ -255,8 +255,8 @@ metric movement visible as a diff and readable with ordinary file tools; bulk
 diagnostics stay machine-local.
 
 `anthro eval suite` reads one checkpoint across every benchmark from one
-command, composing the per-benchmark selections beside it. The reduced sweep is
-the default and `--full` is opt-in; `--plan` resolves and prints what would run
+command, composing the per-benchmark selections beside it. Every step runs at
+the size its own selection declares; `--plan` resolves and prints what would run
 without running any of it.
 
 ```console

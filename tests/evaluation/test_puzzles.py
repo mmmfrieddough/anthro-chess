@@ -822,7 +822,7 @@ def test_a_configured_subsample_measures_and_records_only_what_it_selected(
 
     The puzzles scored are the data component, so a subsample has to carry a
     different component and view from the full reading; sharing either would
-    let a reduced sweep continue a full one's line.
+    let a smaller reading continue a larger one's line.
     """
 
     artifact = write_puzzle_artifact(
@@ -853,7 +853,7 @@ def test_a_configured_subsample_measures_and_records_only_what_it_selected(
     assert reduced.dataset.game_ids_sha256 != full.dataset.game_ids_sha256
     assert reduced.as_record()["selection"] == reduced.selection.as_record()
     # The puzzle count every measurement reports is the realized one, not the
-    # artifact's, or a reduced reading would claim a resolution it never had.
+    # artifact's, or a smaller reading would claim a resolution it never had.
     (reading,) = [item for item in reduced.envelopes if item.kind == PUZZLE_KIND]
     sizes = {item.sample_size for item in reading.measurements}
     assert sizes == {len(reduced.ratings), 4 * len(reduced.ratings)}

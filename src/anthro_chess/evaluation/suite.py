@@ -26,10 +26,9 @@ script cannot:
 - **Resume.** Each step's outcome is written to a machine-local ledger as it
   finishes, so a sweep that dies late keeps what it already read.
 
-Every step runs at the one size its own selection declares. A cheaper reading
-is a command-line override on the run that wants it, not a shipped second size:
-views at one seed are nested prefixes, so a smaller reading is a truncation of
-the larger rather than a second measurement of anything.
+Every step runs at the one size its own selection declares. A step is read
+smaller through ``benchmarks.<step>.overrides``, which reaches that step's own
+schema; the sweep holds no size of its own to shrink.
 """
 
 from __future__ import annotations
@@ -60,9 +59,13 @@ from anthro_chess.inference.config import LATEST_CHECKPOINT
 if TYPE_CHECKING:
     from anthro_chess.evaluation.results import DetailStore, ResultsStore
 
-SUITE_VERSION = 1
+#: Bumped when a record written by an older build no longer describes the same
+#: shape. Version 2 dropped the sweep scale, which every field below outlived.
+SUITE_VERSION = 2
 #: Bumped when a ledger written by an older build can no longer be resumed.
-SWEEP_LEDGER_VERSION = 1
+#: Version 2 also renamed the sweep directory, so an older ledger is no longer
+#: reachable by name and a resume starts over rather than refusing.
+SWEEP_LEDGER_VERSION = 2
 LEDGER_FILE_NAME = "sweep.json"
 #: Where a step's generated games are handed to the step that reads them. It is
 #: sweep state rather than a benchmark artifact: the committed tier never holds
@@ -233,8 +236,14 @@ class SuiteRun:
         return sum(item.seconds for item in self.outcomes if not item.from_ledger)
 
     def as_record(self) -> dict[str, Any]:
-        """Return the machine-readable sweep summary."""
+        """Return the machine-readable sweep summary.
 
+        Each step carries the overrides it was resolved under, because the sizes
+        live in the selections rather than in this file and a capped reading
+        would otherwise be indistinguishable here from a declared one.
+        """
+
+        sized_by = {step.name: list(step.overrides) for step in self.plan.steps}
         return {
             "version": SUITE_VERSION,
             "suite": self.plan.suite,
@@ -242,7 +251,10 @@ class SuiteRun:
             "plan_sha256": self.plan.sha256,
             "sweep_root": str(self.sweep_root),
             "seconds": round(self.seconds, 3),
-            "steps": [item.as_record() for item in self.outcomes],
+            "steps": [
+                {**item.as_record(), "overrides": sized_by.get(item.name, [])}
+                for item in self.outcomes
+            ],
         }
 
 

@@ -13,9 +13,11 @@
 #     --set model.run_path='"training-blitz-30k-v4"' \
 #     --set model.checkpoint='"step-00008000.pt"'
 #
-# Every step runs at the one size its own selection declares. A cheaper reading
-# is `--set` on the invocation that wants it, and it records under whatever
-# series that size names.
+# Every step runs at the one size its own selection declares. To read one step
+# smaller, override its selection through this file's own schema:
+#
+#   anthro eval suite --config <this file> \
+#     --set 'benchmarks.run.overrides=["view.maximum_games=2000"]'
 #
 # What a step costs is not written down here. Every recording step commits its
 # own invocation cost beside its reading, so `anthro eval report` answers it
@@ -51,7 +53,6 @@ config = "configs/evaluation/novelty-dose-response.toml"
 
 [benchmarks.puzzles]
 # Rating response against the owned calibrated puzzle set.
-#
 config = "configs/evaluation/puzzle-rating-response.toml"
 
 [benchmarks.rollout]

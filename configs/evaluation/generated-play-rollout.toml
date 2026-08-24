@@ -101,7 +101,7 @@ resamples = 200
 # human play past this narrows nothing the estimator can use, and it is not
 # free: every reference game is replayed and classified, so the whole pool costs
 # almost five minutes against seventy seconds here. Reading less silently
-# re-smooths every curve, which is why a reduced sweep leaves this alone.
+# re-smooths every curve, which is why this size is not a dial to shrink.
 name = "rollout-reference"
 maximum_games = 12000
 require_ratings = true

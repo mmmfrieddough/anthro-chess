@@ -370,6 +370,41 @@ def test_a_step_with_no_result_kind_cannot_be_asked_to_record(
         )
 
 
+def test_a_steps_overrides_reach_its_selection_and_the_plan(
+    tmp_path: Path,
+) -> None:
+    """The only way to read a step smaller, so nothing else proves it works.
+
+    A regression that dropped the overrides on the way to ``resolve_benchmark``
+    would leave the shipped sweep green, because no shipped step sets any.
+    """
+
+    plan = resolve_suite(
+        _suite(
+            benchmarks={
+                "alpha": {
+                    "config": str(_selection(tmp_path)),
+                    "overrides": ["games_per_position=1"],
+                }
+            }
+        ),
+        registry=_registry(Recorder()),
+    )
+
+    step = plan.steps[0]
+    assert step.resolved is not None
+    assert step.resolved.value.games_per_position == 1
+    assert "games_per_position=1" in step.describe()["overrides"]
+    # A different size is a different sweep, so a resume cannot cross them.
+    unset = resolve_suite(
+        _suite(benchmarks={"alpha": {"config": str(_selection(tmp_path))}}),
+        registry=_registry(Recorder()),
+    )
+    assert unset.steps[0].resolved is not None
+    assert unset.steps[0].resolved.value.games_per_position == 4
+    assert plan.sha256 != unset.sha256
+
+
 def test_the_sweeps_checkpoint_replaces_what_a_selection_carries(
     tmp_path: Path,
 ) -> None:
