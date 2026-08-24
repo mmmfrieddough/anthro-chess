@@ -60,11 +60,9 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation.results import DetailStore, ResultsStore
 
 #: Bumped when a record written by an older build no longer describes the same
-#: shape. Version 2 dropped the sweep scale, which every field below outlived.
+#: shape.
 SUITE_VERSION = 2
 #: Bumped when a ledger written by an older build can no longer be resumed.
-#: Version 2 also renamed the sweep directory, so an older ledger is no longer
-#: reachable by name and a resume starts over rather than refusing.
 SWEEP_LEDGER_VERSION = 2
 LEDGER_FILE_NAME = "sweep.json"
 #: Where a step's generated games are handed to the step that reads them. It is
@@ -427,6 +425,11 @@ def sweep_directory(root: Path, plan: SuitePlan) -> Path:
     Derived from the plan rather than from a timestamp, so re-running the same
     command with ``--resume`` finds the sweep it is continuing, and two
     checkpoints swept side by side never share a directory.
+
+    A ledger this name cannot reach is invisible rather than refused, so
+    changing what goes into the name strands earlier sweeps and a resume starts
+    over. ``SWEEP_LEDGER_VERSION`` records that the older ones are gone;
+    nothing reports it at the moment of resuming.
     """
 
     return root / f"{plan.suite}-{plan.sha256[:12]}"
