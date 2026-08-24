@@ -2104,9 +2104,7 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             f"fit={rating.greedy_fitted_puzzle_rating:7.1f}  "
             f"sampled first={rating.sampled_first_move_solve_rate:.3f} "
             f"line={rating.sampled_line_completion:.3f} "
-            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}  "
-            f"curve gap={rating.greedy_curve_distance:.3f}/"
-            f"{rating.sampled_curve_distance:.3f}"
+            f"fit={rating.sampled_fitted_puzzle_rating:7.1f}"
         )
     resolution = result.resolution
 
@@ -2132,6 +2130,21 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
             ),
         ]
     )
+    if resolution is not None:
+        lines.extend(
+            [
+                (
+                    "Solve-rate spread: greedy "
+                    f"first={_spread(resolution.greedy_first_move_accuracy, 4)} "
+                    f"line={_spread(resolution.greedy_line_completion, 4)}"
+                ),
+                (
+                    "                   sampled "
+                    f"first={_spread(resolution.sampled_first_move_solve_rate, 4)} "
+                    f"line={_spread(resolution.sampled_line_completion, 4)}"
+                ),
+            ]
+        )
     if resolution is None:
         lines.append(
             "Response resolution: not estimated; this run switched noise "
@@ -2157,20 +2170,21 @@ def _render_puzzles(result: PuzzleBenchmarkResult) -> str:
                 ),
             ]
         )
-    lines.append(
-        f"Training overlap: {result.overlapping_puzzles}/"
-        f"{result.dataset.selected_games} puzzle source games "
-        f"({result.overlap_rate:.3%}) across "
-        f"{result.training_games} training/validation games"
-    )
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
 
 
-def _spread(value: float | None, digits: int) -> str:
-    """Render a resampled spread, naming an unmoved quantity rather than zero."""
+def _spread(spread: object, digits: int) -> str:
+    """Render a resampled spread, naming an unmoved quantity rather than zero.
 
-    return "spread unknown" if value is None else f"±{value:.{digits}f}"
+    Takes either a stored spread or the bare bound the widest-of accessors
+    reduce a grid to, since both reach this the same way in the output.
+    """
+
+    bound = getattr(spread, "bound", spread)
+    if bound is None:
+        return "spread unknown"
+    return f"±{bound:.{digits}f}"
 
 
 def _render_inference(result: InferenceBenchmarkResult) -> str:

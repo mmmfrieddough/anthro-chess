@@ -79,12 +79,10 @@ reduced = ["view.maximum_games=100"]
 # The configured rating grid is the measurement rather than a sample size and
 # is left alone; how many puzzles each of those ratings is scored against is
 # the sample count, and that is what shrinks. The dial counts puzzles per exact
-# puzzle rating because the set's whole design is uniform over exact ratings:
-# keeping two of the ten at each one reads the same design at a fifth of the
-# size, where a flat count would read a rating-biased slice of it. At the
-# shipped set that is 4,000 puzzles, resolving a 3.1-point solve-rate
-# difference where the full 20,000 resolve 1.4; the command prints the realized
-# figure beside the reading rather than leaving it to be inferred here.
+# puzzle rating because the set's whole design is uniform over exact ratings,
+# where a flat count would read a rating-biased slice of it. The command prints
+# what the realized size resolves beside the reading rather than leaving that
+# to be inferred here.
 config = "configs/evaluation/puzzle-rating-response.toml"
 reduced = ["puzzles_per_rating=2"]
 

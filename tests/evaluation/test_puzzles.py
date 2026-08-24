@@ -52,7 +52,6 @@ from anthro_chess.evaluation.puzzles.benchmark import (
     _score_rating,
     _ScoredRating,
     _stratum_buckets,
-    _training_overlap,
     score_puzzle_set,
 )
 from anthro_chess.evaluation.puzzles.dataset import (
@@ -322,7 +321,6 @@ def test_a_dial_that_leaves_one_puzzle_per_rating_is_refused() -> None:
         PuzzleBenchmarkConfig.model_validate(
             {
                 "puzzle_set": "puzzles",
-                "training_normalized": "corpus",
                 "puzzles_per_rating": 1,
             }
         )
@@ -666,9 +664,9 @@ def test_the_response_resolution_refits_puzzles_redrawn_within_rating_strata(
     # the opposite of what was observed.
     assert low.greedy_fitted_puzzle_rating is None
     assert high.greedy_fitted_puzzle_rating is not None
-    assert high.greedy_fitted_puzzle_rating > 0.0
+    assert high.greedy_fitted_puzzle_rating.bound > 0.0
     assert resolution.greedy_rating_slope is not None
-    assert resolution.greedy_rating_slope > 0.0
+    assert resolution.greedy_rating_slope.bound > 0.0
 
 
 def test_a_reading_that_estimates_no_noise_reports_no_response_resolution(
@@ -706,44 +704,6 @@ def test_the_tabulated_fit_inverse_reproduces_the_bisected_one(
             scored_rating.result.greedy_fitted_puzzle_rating,
             abs=1e-2,
         )
-
-
-def test_training_overlap_joins_source_keys_and_excludes_test_games(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, object]],
-    write_corpus: Callable[..., tuple[Path, Path]],
-) -> None:
-    puzzle_set = _fixture_set()
-    matching = puzzle_set.puzzles[0].source_game_key
-    test_only = puzzle_set.puzzles[1].source_game_key
-    rows = [
-        {
-            **normalized_row(1, split="train"),
-            "source_id": "lichess",
-            "source_game_key": matching,
-        },
-        {
-            **normalized_row(2, split="validation"),
-            "source_id": "lichess",
-            "source_game_key": "not-a-puzzle",
-        },
-        {
-            **normalized_row(3, split="test"),
-            "source_id": "lichess",
-            "source_game_key": test_only,
-        },
-        {
-            **normalized_row(4, split="train"),
-            "source_id": "other",
-            "source_game_key": test_only,
-        },
-    ]
-    normalized, _ = write_corpus(tmp_path, rows)
-
-    training_games, overlapping = _training_overlap(puzzle_set.puzzles, normalized)
-
-    assert training_games == 2
-    assert overlapping == 1
 
 
 def test_the_benchmark_records_every_envelope_and_payload_it_produced(
@@ -836,17 +796,11 @@ def test_a_configured_subsample_measures_and_records_only_what_it_selected(
     assert reduced.dataset.components != full.dataset.components
     assert reduced.dataset.game_ids_sha256 != full.dataset.game_ids_sha256
     assert reduced.as_record()["selection"] == reduced.selection.as_record()
-    # The reference the response is smoothed against is the whole set at both
-    # sizes, so the reduced reading sits on the full one's curve rather than a
-    # differently smoothed one.
-    assert [point.bandwidth for point in reduced.ratings[0].curve] == [
-        point.bandwidth for point in full.ratings[0].curve
-    ]
     # The puzzle count every measurement reports is the realized one, not the
     # artifact's, or a reduced reading would claim a resolution it never had.
     (reading,) = [item for item in reduced.envelopes if item.kind == PUZZLE_KIND]
     sizes = {item.sample_size for item in reading.measurements}
-    assert sizes == {4, len(reduced.ratings), 4 * len(reduced.ratings)}
+    assert sizes == {len(reduced.ratings), 4 * len(reduced.ratings)}
 
 
 def test_a_missing_puzzle_artifact_raises_the_error_the_suite_declares(
@@ -900,7 +854,6 @@ def _benchmark_config(
         value=PuzzleBenchmarkConfig.model_validate(
             {
                 "puzzle_set": str(artifact),
-                "training_normalized": str(normalized),
                 "model": {"checkpoint_path": str(checkpoint), "device": "cpu"},
                 "target_ratings": [1000, 1800],
                 "inference_batch_size": 4,

@@ -1671,7 +1671,6 @@ def test_eval_puzzles_reports_the_resolution_it_bought(
     config = tmp_path / "puzzles.toml"
     config.write_text(
         f'puzzle_set = "{artifact}"\n'
-        f'training_normalized = "{normalized}"\n'
         "target_ratings = [1000, 1800]\n"
         "puzzles_per_rating = 2\n"
         "\n[model]\n"
@@ -2632,7 +2631,6 @@ def test_eval_puzzles_says_when_it_estimated_no_response_resolution(
     config = tmp_path / "puzzles.toml"
     config.write_text(
         f'puzzle_set = "{artifact}"\n'
-        f'training_normalized = "{normalized}"\n'
         "target_ratings = [1000, 1800]\n"
         "\n[noise]\n"
         "enabled = false\n"

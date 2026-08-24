@@ -9,6 +9,13 @@ Accepted. Its paired-floor consequence is superseded by
 artifact-boundary consequence by
 `0044-the-puzzle-selection-is-vendored-not-refetched.md`, which vendors the
 selected records once the pinned source proved unfetchable.
+`0077-the-puzzle-scale-is-not-the-game-scale.md` withdraws the human reference
+this record gave the benchmark, since the puzzle and game ratings it compared
+belong to different pools, and
+`0078-puzzle-training-overlap-is-measured-and-not-corrected.md` removes the
+provenance join, having measured that the overlap it reported does not move a
+solve rate. The uniform exact-rating design and the sizing calculation below are
+untouched by both.
 
 ## Context
 

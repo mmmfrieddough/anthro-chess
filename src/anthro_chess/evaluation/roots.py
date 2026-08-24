@@ -28,7 +28,7 @@ CHECKPOINT_ARTIFACT_FIELDS = ("pool", "leakage.training_normalized")
 #: ``anthro eval novelty``: the pool every arm derives its continuations from.
 NOVELTY_ARTIFACT_FIELDS = ("pool", "leakage.training_normalized")
 #: ``anthro eval puzzles``: the owned puzzle artifact and the overlap corpus.
-PUZZLE_ARTIFACT_FIELDS = ("puzzle_set", "training_normalized")
+PUZZLE_ARTIFACT_FIELDS = ("puzzle_set",)
 #: ``anthro eval rollout``: optional, since a pool-free suite records the
 #: rollout scalars alone.
 ROLLOUT_ARTIFACT_FIELDS = ("pool",)
