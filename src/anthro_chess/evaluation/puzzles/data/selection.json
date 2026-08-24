@@ -3,16 +3,16 @@
     "eligible_candidates": 4074747,
     "eligible_ratings": 2000,
     "maximum_candidates_per_rating": 4422,
-    "maximum_selected_per_rating": 10,
+    "maximum_selected_per_rating": 100,
     "median_candidates_per_rating": 2179.0,
     "minimum_candidates_per_rating": 177,
-    "minimum_selected_per_rating": 10,
+    "minimum_selected_per_rating": 100,
     "selected_ratings": 2000,
-    "selected_source_games": 20000
+    "selected_source_games": 200000
   },
-  "entries": 20000,
+  "entries": 200000,
   "name": "anthro-lichess-puzzles",
-  "puzzles_sha256": "a5386d7764b771637f2687d53988d3fcd2b302ef386628d4e6af6879fbcf8e92",
+  "puzzles_sha256": "bf20b5fc9b0fad6f196125e776a1e3b6d70d63fa6784ac5fa71e9fbeaa9b9966",
   "selection": {
     "algorithm": "sha256-rank-per-exact-rating-v1",
     "local_precision_span": 400,
@@ -21,7 +21,7 @@
     "minimum_plays": 100,
     "minimum_popularity": 0,
     "minimum_rating": 800,
-    "puzzles_per_rating": 10
+    "puzzles_per_rating": 100
   },
   "source": {
     "file_name": "lichess_db_puzzle_2026-08-02.csv.zst",

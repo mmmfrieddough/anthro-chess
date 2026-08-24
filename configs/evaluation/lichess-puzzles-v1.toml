@@ -8,9 +8,9 @@ name = "anthro-lichess-puzzles"
 version = 1
 source_retrieved = "2026-08-08"
 source_last_modified = 2026-08-02T07:23:55Z
-expected_entries = 20000
+expected_entries = 200000
 # Filled from the deterministic selection and verified on every build.
-expected_puzzles_sha256 = "a5386d7764b771637f2687d53988d3fcd2b302ef386628d4e6af6879fbcf8e92"
+expected_puzzles_sha256 = "bf20b5fc9b0fad6f196125e776a1e3b6d70d63fa6784ac5fa71e9fbeaa9b9966"
 
 # Provenance for the vendored selection, and the input the vendoring script
 # re-derives it from. Ordinary builds never fetch this.
@@ -25,7 +25,7 @@ compression = "zstd"
 [selection]
 minimum_rating = 800
 maximum_rating_exclusive = 2800
-puzzles_per_rating = 10
+puzzles_per_rating = 100
 minimum_plays = 100
 minimum_popularity = 0
 maximum_rating_deviation = 100
