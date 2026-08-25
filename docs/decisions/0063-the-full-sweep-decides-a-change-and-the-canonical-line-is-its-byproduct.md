@@ -7,6 +7,11 @@ Date: 2026-08-15
 Accepted. Refines `0029-model-change-control-arm.md`, which required a freshly
 trained control and ruled out every prior reading as a baseline.
 
+Refined by `0079-one-declared-size-per-benchmark.md`, which withdraws the
+reduced sweep the three-way separation below names. What survives is the
+separation between a recorded sweep and a shakedown, and the rule that a claim
+is decided on the sweep at its declared sizes.
+
 The comparability, storage, and generated-workload records are read here rather
 than changed. Nothing below relaxes one of them; the fingerprint rule in
 particular is re-examined and kept, and the section that does so says why.
@@ -92,8 +97,8 @@ Three activities were sharing two scales. They are separated:
 
 - The **full sweep** is the instrument a change is judged on. Both sides of the
   comparison are read at it, and its result is what decides whether a change is
-  adopted.
-- The **reduced sweep** is a coarse view during iteration. It is never the
+  adopted. Under `0079` that is the sweep, since it has no other size.
+- A **capped reading** is a coarse view during iteration. It is never the
   evidence for a claim, and per `#475` it does not write to the committed store.
 - A **shakedown** sets its own values when a benchmark lands. It records
   nothing, so it needs no permanent scale and does not get one.

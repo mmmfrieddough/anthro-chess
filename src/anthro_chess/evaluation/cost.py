@@ -5,7 +5,7 @@ a per-step duration, printed it, wrote it to a machine-local ledger for resume,
 and discarded it, so nothing in the repository ever contradicted a comment that
 had gone stale — and by the time this module was written every figure in
 ``configs/evaluation/`` had drifted by an order of magnitude or more. Those
-figures decided which benchmarks a reduced sweep could include.
+figures decided which benchmarks a sweep could afford to include.
 
 So cost is recorded the way a metric is: one committed envelope per invocation,
 assembled by the driver that ran it rather than by the suite. That is what

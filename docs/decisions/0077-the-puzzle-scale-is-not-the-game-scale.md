@@ -101,5 +101,5 @@ was correct for all along.
 
 - `docs/decisions/0019-external-puzzle-calibration-set.md`
 - `docs/decisions/0078-puzzle-training-overlap-is-measured-and-not-corrected.md`
-- `#329` — the suite walkthrough that read the reference against the fits
-- `docs/evaluation.md` — "Puzzle Rating Response"
+- `#329`, the suite walkthrough that read the reference against the fits
+- `docs/evaluation.md`, "Puzzle Rating Response"

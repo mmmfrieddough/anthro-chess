@@ -36,7 +36,6 @@ from anthro_chess.evaluation.suite import (
     StepStatus,
     SuiteConfig,
     SuiteError,
-    SuiteScale,
     resolve_suite,
     run_suite,
     sweep_directory,
@@ -371,32 +370,39 @@ def test_a_step_with_no_result_kind_cannot_be_asked_to_record(
         )
 
 
-def test_the_reduced_sweep_shrinks_and_the_full_one_does_not(
+def test_a_steps_overrides_reach_its_selection_and_the_plan(
     tmp_path: Path,
 ) -> None:
-    """Both scales read the same selection; only the sample counts differ."""
+    """The only way to read a step smaller, so nothing else proves it works.
 
-    entry = {
-        "config": str(_selection(tmp_path)),
-        "reduced": ["games_per_position=1"],
-    }
-    reduced = resolve_suite(
-        _suite(benchmarks={"alpha": entry}),
-        scale=SuiteScale.REDUCED,
+    A regression that dropped the overrides on the way to ``resolve_benchmark``
+    would leave the shipped sweep green, because no shipped step sets any.
+    """
+
+    plan = resolve_suite(
+        _suite(
+            benchmarks={
+                "alpha": {
+                    "config": str(_selection(tmp_path)),
+                    "overrides": ["games_per_position=1"],
+                }
+            }
+        ),
         registry=_registry(Recorder()),
     )
-    full = resolve_suite(
-        _suite(benchmarks={"alpha": entry}),
-        scale=SuiteScale.FULL,
+
+    step = plan.steps[0]
+    assert step.resolved is not None
+    assert step.resolved.value.games_per_position == 1
+    assert "games_per_position=1" in step.describe()["overrides"]
+    # A different size is a different sweep, so a resume cannot cross them.
+    unset = resolve_suite(
+        _suite(benchmarks={"alpha": {"config": str(_selection(tmp_path))}}),
         registry=_registry(Recorder()),
     )
-
-    assert reduced.steps[0].resolved is not None
-    assert reduced.steps[0].resolved.value.games_per_position == 1
-    assert full.steps[0].resolved is not None
-    assert full.steps[0].resolved.value.games_per_position == 4
-    # Two scales are two series, so they must never resume into each other.
-    assert reduced.sha256 != full.sha256
+    assert unset.steps[0].resolved is not None
+    assert unset.steps[0].resolved.value.games_per_position == 4
+    assert plan.sha256 != unset.sha256
 
 
 def test_the_sweeps_checkpoint_replaces_what_a_selection_carries(
@@ -696,7 +702,7 @@ def test_a_resumed_sweep_does_not_repeat_what_it_already_read(
 def test_a_resumed_sweep_refuses_a_ledger_from_a_different_sweep(
     tmp_path: Path,
 ) -> None:
-    """A reduced sweep must not continue a full one, or another checkpoint's."""
+    """A resumed sweep must not continue another plan's, or another checkpoint's."""
 
     recorder = Recorder()
     payload = {"benchmarks": {"alpha": {"config": str(_selection(tmp_path))}}}
@@ -736,7 +742,6 @@ def test_the_ledger_is_written_after_every_step(tmp_path: Path) -> None:
 
     ledger = json.loads((sweep_root / "sweep.json").read_text(encoding="utf-8"))
     assert ledger["plan_sha256"] == plan.sha256
-    assert ledger["scale"] == "reduced"
     statuses = {entry["benchmark"]: entry["status"] for entry in ledger["steps"]}
     assert statuses == {"alpha": "completed", "beta": "failed"}
 
@@ -771,7 +776,6 @@ def test_a_sweep_summary_says_what_ran_and_what_it_cost(tmp_path: Path) -> None:
 
     record = run_suite(plan, sweep_root=tmp_path / "sweep").as_record()
 
-    assert record["scale"] == "reduced"
     assert [entry["benchmark"] for entry in record["steps"]] == ["alpha", "beta"]
     assert record["steps"][0]["measurements"] == 2
     assert record["steps"][1]["note"] is not None
@@ -796,54 +800,8 @@ def test_record_only_cannot_ask_for_a_step_with_no_result_kind(
         )
 
 
-def test_a_step_can_declare_the_full_sweep_alone(tmp_path: Path) -> None:
-    """A benchmark with no reduction worth reading is left out rather than shrunk."""
-
-    payload = {
-        "benchmarks": {
-            "alpha": {"config": str(_selection(tmp_path))},
-            "beta": {
-                "config": str(_selection(tmp_path, "beta.toml")),
-                "scales": ["full"],
-            },
-        }
-    }
-    registry = _registry(Recorder())
-
-    reduced = resolve_suite(
-        _suite(**payload), scale=SuiteScale.REDUCED, registry=registry
-    )
-    full = resolve_suite(_suite(**payload), scale=SuiteScale.FULL, registry=registry)
-
-    assert [step.name for step in reduced.steps] == ["alpha"]
-    assert [step.name for step in full.steps] == ["alpha", "beta"]
-
-
-def test_a_reduction_no_sweep_would_apply_is_refused() -> None:
-    """The refusal is the schema's, so no selection is read before it fires."""
-
-    with pytest.raises(ValidationError, match="add the reduced scale"):
-        _suite(
-            benchmarks={
-                "alpha": {
-                    "config": "alpha.toml",
-                    "scales": ["full"],
-                    "reduced": ["games_per_position=1"],
-                }
-            }
-        )
-
-
-def test_a_step_that_runs_at_no_scale_is_refused() -> None:
-    """An emptied scale list drops the step from every sweep and says nothing."""
-
-    with pytest.raises(ValidationError, match="at least 1 item"):
-        _suite(benchmarks={"alpha": {"config": "alpha.toml", "scales": []}})
-
-
-@pytest.mark.parametrize("field", ["overrides", "reduced"])
 def test_overrides_on_a_step_with_no_selection_are_refused(
-    tmp_path: Path, field: str
+    tmp_path: Path,
 ) -> None:
     """There is no schema behind them, so nothing would ever read or check them."""
 
@@ -852,26 +810,21 @@ def test_overrides_on_a_step_with_no_selection_are_refused(
             _suite(
                 benchmarks={
                     "alpha": {"config": str(_selection(tmp_path))},
-                    "gamma": {"record": False, field: ["nothing=1"]},
+                    "gamma": {"record": False, "overrides": ["nothing=1"]},
                 }
             ),
             registry=_registry(Recorder()),
         )
 
 
-def test_a_scale_that_excludes_every_step_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(SuiteError, match="runs at the reduced scale"):
-        resolve_suite(
-            _suite(
-                benchmarks={
-                    "alpha": {
-                        "config": str(_selection(tmp_path)),
-                        "scales": ["full"],
-                    }
-                }
-            ),
-            scale=SuiteScale.REDUCED,
-            registry=_registry(Recorder()),
+def test_a_sweep_with_every_step_disabled_is_refused(tmp_path: Path) -> None:
+    """The schema refuses it, so no selection is read before the failure."""
+
+    with pytest.raises(ValidationError, match="at least one enabled benchmark"):
+        _suite(
+            benchmarks={
+                "alpha": {"config": str(_selection(tmp_path)), "enabled": False}
+            }
         )
 
 
@@ -886,12 +839,11 @@ def test_a_dependent_step_excluded_with_its_producer_is_refused(
                 benchmarks={
                     "alpha": {
                         "config": str(_selection(tmp_path)),
-                        "scales": ["full"],
+                        "enabled": False,
                     },
                     "beta": {"config": str(_selection(tmp_path, "beta.toml"))},
                     "gamma": {"record": False},
                 }
             ),
-            scale=SuiteScale.REDUCED,
             registry=_registry(Recorder()),
         )

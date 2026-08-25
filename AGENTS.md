@@ -111,7 +111,7 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   and is never reconfigured per issue.
 - When a change adds or alters a benchmark, take a shakedown reading on two real
   checkpoints from one training run before the pull request is ready, using
-  `--no-record` and the default reduced sweep rather than `--full`. Fixtures
+  `--no-record` and a capped view rather than the declared size. Fixtures
   cannot show that a benchmark measures anything. `docs/evaluation.md` says what
   the reading is and is not.
 - A change under `src/anthro_chess/models/`, `src/anthro_chess/training/`,

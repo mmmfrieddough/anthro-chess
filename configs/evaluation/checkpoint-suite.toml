@@ -3,8 +3,7 @@
 # This is the default way a new checkpoint is evaluated. It composes the
 # per-benchmark selections beside it rather than restating any of their
 # settings: each step names a file, and the sweep supplies only the checkpoint,
-# the order, whether the reading is committed, and how much data a reduced
-# sweep reads.
+# the order, and whether the reading is committed.
 #
 # The model selection is deliberately absent, so the sweep uses the same
 # machine-local default checkpoint the playable engine reads. Override it for
@@ -14,19 +13,11 @@
 #     --set model.run_path='"training-blitz-30k-v4"' \
 #     --set model.checkpoint='"step-00008000.pt"'
 #
-# The reduced sweep is the default and the full sweep is `--full`. Reductions
-# below touch sample counts only — scored view sizes, seeds, games per position,
-# resamples, puzzles per rating, and measured decisions. None of them moves a
-# grid, a dose, a temperature, or a ply limit, because those decide *what* is
-# measured and a sweep that changed them would report a different quantity
-# rather than the same one less precisely. A smaller view is still its own data
-# component and therefore its own series, so a reduced sweep is not a partial
-# down payment on a full one.
+# Every step runs at the one size its own selection declares. To read one step
+# smaller, override its selection through this file's own schema:
 #
-# One view is not a sample count and is therefore never reduced: the human
-# reference the generated-play and termination curves are smoothed against. Its
-# size is the declared bandwidth's radius, so shrinking it re-smooths the curve
-# rather than sampling it. Both benchmarks declare it themselves.
+#   anthro eval suite --config <this file> \
+#     --set 'benchmarks.run.overrides=["view.maximum_games=2000"]'
 #
 # What a step costs is not written down here. Every recording step commits its
 # own invocation cost beside its reading, so `anthro eval report` answers it
@@ -43,80 +34,31 @@ name = "checkpoint"
 # reading wants a process that has not already loaded the model, which is why
 # it runs before anything else.
 config = "configs/evaluation/inference-efficiency.toml"
-reduced = [
-  "latency.decisions=10",
-  "latency.sweep_plies=[0, 40, 80]",
-  "throughput.batches=4",
-  "throughput.sweep_batch_sizes=[1, 8]",
-]
 
 [benchmarks.run]
 # The canonical held-out reading, plus legality and the adjudicated decisions.
-# One scoring pass over the view, so the view is the whole of what a reduction
-# can shrink here.
 config = "configs/evaluation/lichess-univ-2018-01-2021-06-checkpoint.toml"
-reduced = ["view.maximum_games=400"]
 
 [benchmarks.dependency]
 # Whether the model reads its rating conditioning, which is a correctness
 # question rather than a quality one. It declares its own view because it pays
 # eight forward passes per batch where the reading above pays one, and what it
-# asks does not need the resolution a move-loss delta does. Its own file
-# carries that argument; the reduction here is the sample count, as everywhere.
+# asks does not need the resolution a move-loss delta does; its own file
+# carries that argument.
 config = "configs/evaluation/rating-dependency.toml"
-reduced = ["view.maximum_games=200"]
 
 [benchmarks.novelty]
-# Capability retention across the dose axis. Every dose is kept: a dose is a
-# declared workload, so dropping one drops a measurement rather than shrinking
-# it. The view behind every arm is what shrinks.
+# Capability retention across the dose axis.
 config = "configs/evaluation/novelty-dose-response.toml"
-reduced = ["view.maximum_games=100"]
 
 [benchmarks.puzzles]
 # Rating response against the owned calibrated puzzle set.
-#
-# The configured rating grid is the measurement rather than a sample size and
-# is left alone; how many puzzles each of those ratings is scored against is
-# the sample count, and that is what shrinks. The dial counts puzzles per exact
-# puzzle rating because the set's whole design is uniform over exact ratings,
-# where a flat count would read a rating-biased slice of it. The command prints
-# what the realized size resolves beside the reading rather than leaving that
-# to be inferred here.
 config = "configs/evaluation/puzzle-rating-response.toml"
-reduced = ["puzzles_per_rating=2"]
 
 [benchmarks.rollout]
 # The first generating step, and the one whose games the decomposition below
-# reads. Seeds and games per position are sample counts; the rating and
-# temperature grids are not and are left alone.
-#
-# Neither is the human reference, which is why it is absent here. The declared
-# bandwidth is a neighbour count, so the reference size is that bandwidth's
-# radius rather than a sample size: shrinking it widens every neighbourhood
-# until the whole rating grid is estimated from one set of games, and the
-# reading would be a differently smoothed quantity rather than the same one
-# less precisely. A reduced curve reading pays the same replay a full one does,
-# which is what being smoothed the same way costs.
-#
-# Games per position is the count that decides how many *streams* this step
-# plays, and the stream is what a curve comparison resamples: a game's seed is
-# derived without the rating it was played at, so one stream plays every point
-# of the grid and the six ratings buy no replicates at all. Four is eight
-# streams once colours are swapped, which is where decision 0060 measured the
-# estimator landing on the spread a re-run shows; below three no spread can be
-# read at all, and the row reports its distances unqualified.
-#
-# Eight is enough to qualify a reading and not enough to rank two checkpoints
-# with it, and it is close to free against what the human reference costs this
-# step either way. Decision 0060 has both figures; where the count should sit is
-# a budgeting question rather than a settled one.
+# reads.
 config = "configs/evaluation/generated-play-rollout.toml"
-reduced = [
-  "grid.seeds=[0]",
-  "generation.games_per_position=4",
-  "reference.resamples=50",
-]
 
 [benchmarks.decisions]
 # Model error against sampling error, over the games the rollout just played.
@@ -130,19 +72,8 @@ reduced = [
 record = false
 
 [benchmarks.termination]
-# How the checkpoint ends games, against the human termination mix. The
-# held-out half is one pass over frozen games and shrinks by its own view; the
-# generated half plays the rating grid, so seeds and games per position are what
-# shrink there. The reference view is absent for the reason the rollout step
-# gives, and here it is nearly free anyway: endings are read from the row rather
-# than replayed.
+# How the checkpoint ends games, against the human termination mix.
 config = "configs/evaluation/game-termination.toml"
-reduced = [
-  "grid.seeds=[0]",
-  "generation.games_per_position=2",
-  "held_out.view.maximum_games=128",
-  "reference.resamples=50",
-]
 
 [benchmarks.ladder]
 # The only head-to-head strength reading.
@@ -150,15 +81,5 @@ reduced = [
 # Its cost is quadratic in its seat count, and the seat count is the
 # measurement, so the seat grid is not a dial: a ladder fitted on a different
 # set of seats cannot be read against this one at all, since the fit places
-# every seat on one internal scale. Seeds and openings are the only sample
-# sizes it has, and both are below.
-#
-# The reduction is deliberately at the thin end, and it is the one reduction in
-# this file whose reading is not yet known to resolve anything: at eight games a
-# pairing the widths #328 measured cover their own estimates. It is shipped
-# qualified rather than withheld — decision 0034 puts a floor beside every
-# ladder quantity, so a reading that cannot discriminate says so — and
-# `docs/decisions/0051-every-suite-step-declares-both-scales.md` owns why that
-# is preferred to a reduced sweep with no strength reading in it at all.
+# every seat on one internal scale.
 config = "configs/evaluation/rating-ladder.toml"
-reduced = ["grid.seeds=[0]", "openings.view.maximum_games=4"]

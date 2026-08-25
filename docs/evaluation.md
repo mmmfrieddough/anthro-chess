@@ -236,36 +236,18 @@ than to the sweep.
 written to a machine-local ledger as it finishes, and a failed step does not
 end the sweep: the independent benchmarks after it still run, and only the
 steps that read its output are skipped. A resumed sweep refuses a ledger
-belonging to a different plan, so a reduced sweep can never continue a full one
-or another checkpoint's.
+belonging to a different plan, so it can never continue another sweep's or
+another checkpoint's.
 
-The **reduced sweep is the default and the full sweep is opt-in**, because a
-sweep measured in hours is not a default anyone will run on a new checkpoint.
-Reductions are confined to sample counts — scored view sizes, seeds, games per
-position, resamples, puzzles per rating, measured decisions — and never touch a
-grid, a dose, a temperature, or a ply limit, since those decide *what* is
-measured and shrinking one would report a different quantity rather than the
-same one less precisely. A smaller view is still its own data component, so a
-reduced sweep is a separate series rather than a partial down payment on a full
-one, and the scale is named in the output and in the ledger for that reason.
-
-Not every view is a sample count, and the exception is the human reference the
-curve comparisons are smoothed against: at a neighbour-count bandwidth its size
-is the smoothing radius rather than a sample size, so it is declared by the
-benchmarks that read it and left alone by both scales.
-
-**Every step runs at both scales**, so a reduced sweep answers the same
-questions a full one does and answers them less precisely. The rating ladder is
-the step that makes this cost something: it is the only head-to-head strength
-reading, its cost is quadratic in a seat count that is the measurement rather
-than a dial, and its reduction is thin enough that what it resolves is not yet
-established.
-`docs/decisions/0051-every-suite-step-declares-both-scales.md` owns why it is
-shipped qualified rather than withheld, and where that is reassessed.
-
-A step may still declare a narrower `scales` list, and a reduction no sweep
-would apply is refused rather than left standing: an override no scale applies
-reaches no schema, and a plan validates only what it applies.
+**The sweep has one size, and each step's own selection declares it.**
+`docs/decisions/0079-one-declared-size-per-benchmark.md` withdraws the reduced
+scale the suite used to carry. The scored units are the data component, so a
+smaller reading carries its own fingerprint and answers only against other
+smaller readings, a history nothing consumes. Where the dial is a view size the
+smaller reading is a strict prefix of the larger as well, since one hash-rank
+ordering is sliced at both. A cheaper reading is `--set` on the invocation that
+wants it, against the benchmark's own schema directly or through
+`benchmarks.<step>.overrides` on a sweep.
 
 The suite adds no measurement of its own and registers no metric. Decision
 decomposition is the one step it cannot commit, because that family has no
@@ -290,8 +272,9 @@ repeated by each schema.
 
 Every benchmark that records a reading also records what the invocation cost,
 as a single wall-clock measurement in its own committed record. This exists
-because scope decisions are made on these numbers — which benchmarks a reduced
-sweep can include, whether a step has an affordable reduction — and before it
+because scope decisions are made on these numbers, such as what a step's
+declared size costs and whether the sweep as a whole stays affordable, and
+before it
 existed the numbers lived only in comments that nothing could contradict, by
 which point they had drifted by an order of magnitude or more.
 
@@ -443,9 +426,8 @@ bump.
 Because the bandwidth is a neighbour count, **the reference size is part of
 it**: shrinking the reference smooths the curve more heavily rather than
 sampling it more coarsely. The reference is therefore declared at a size the
-grid can resolve, is neither shrunk by a reduced sweep nor left uncapped at full
-scale, and joins the declared workload so two readings smoothed differently
-cannot share a series.
+grid can resolve rather than left uncapped, and joins the declared workload so
+two readings smoothed differently cannot share a series.
 `docs/decisions/0037-the-human-reference-is-bandwidth-not-sample-size.md` owns
 that rule and the measurements behind it.
 
@@ -1711,12 +1693,11 @@ nothing in this benchmark can check that the two name one pool. A ladder read
 over one population is therefore still a ladder about the dial rather than about
 that population's rating scale.
 
-**A full ladder is the routine cost of deciding a change.** The declared grid
-plays thousands of games per checkpoint, and a full sweep is what an
-adopt-or-drop comparison is read at, so that cost is paid per accepted change
-rather than per milestone; a reduced sweep reads the same ladder at a fraction of
-the seeds and openings, and is the majority of what that sweep costs. Seats and
-their sample are the two things not to confuse when that cost is under
+**The ladder is the routine cost of deciding a change.** The declared grid
+plays thousands of games per checkpoint, and a sweep is what an adopt-or-drop
+comparison is read at, so that cost is paid per accepted change rather than per
+milestone, and it is the majority of what a sweep costs. Seats and their
+sample are the two things not to confuse when that cost is under
 discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
 linearly, because a round robin gives each seat one pairing per opponent — so a
@@ -1872,9 +1853,9 @@ rating. This removes the source population's rating-density bias without
 creating arbitrary selection discontinuities at a handful of wide band
 boundaries.
 
-A reading may score fewer puzzles than the artifact holds, which is how a
-reduced sweep affords this benchmark. The dial counts puzzles per exact rating
-rather than puzzles outright, and keeps the lowest-ranked of them under the
+A reading may score fewer puzzles than the artifact holds. The dial counts
+puzzles per exact rating rather than puzzles outright, and keeps the
+lowest-ranked of them under the
 same hash the build ranks by, so a subsample is precisely the artifact a build
 at that setting would have written: uniform over exact ratings, nested inside
 every larger reading, and identical on any machine. A flat count would sample
@@ -2405,7 +2386,7 @@ of the seed count too narrow.
 Read like for like — each seed's own reading against the spread of that reading
 across thirty-two seeds — the draw over streams reproduces the true spread from
 four streams upward, while a draw over games reports about two thirds of it at
-any size and about half at the size a reduced sweep reads.
+any size, and about half of it at four streams.
 `docs/decisions/0060-a-curve-resamples-the-stream-not-the-game.md` owns that
 measurement, and the floor a reading below three streams states instead: none,
 because two streams leave three resamples and their agreeing is not a zero.
@@ -2910,26 +2891,24 @@ told nothing here: the arithmetic a machine does is inside the identity, so an
 upgrade moves it, and naming that as a caveat would refuse the comparison the
 pivot exists for.
 
-Both arms are read the same way — the full sweep at the same checkpoint step, on
-one machine — and the claim is written down before either arm runs: which metric
+Both arms are read the same way: the sweep at its declared sizes, at the same
+checkpoint step, on one machine — and the claim is written down before either arm runs: which metric
 moves, in which direction. Stating it first is what makes the reading
 falsifiable, for the same reason a shakedown states its expectation first.
 
-The full sweep is what a claim is read at, because this comparison decides
-whether a change is adopted. A reduction only widens floors, which protects
-against admitting a weak claim and does nothing about discarding a real
-improvement the reading was too coarse to resolve — and under a comparison that
-decides adopt-or-drop, those cost the same. The reduced sweep is a coarse view
-during iteration rather than evidence for a claim.
+The declared size is what a claim is read at. A smaller reading only widens
+floors, which protects against admitting a weak claim and does nothing about
+discarding a real improvement the reading was too coarse to resolve; under a
+comparison that decides adopt-or-drop, those cost the same.
 
-The scale is therefore part of the claim rather than a response to it. It is
-chosen before the arms run, and a delta inside its floor at the chosen scale is
-a null result, not a reason to re-read at a larger view: a reading widened
-because its answer was unwelcome is the same failure as an arm retrained for a
-better number, and reduced and full are separate series in any case rather than
-two precisions of one. Where a small effect is expected, `uv run anthro eval
-noise plan` reports how many games an axis needs to resolve an effect of a given
-size, which is a question for before the reading.
+A size chosen with `--set` is therefore part of the claim rather than a response
+to it. It is chosen before the arms run, and a delta inside its floor is a null
+result rather than a reason to re-read larger: a reading widened because its
+answer was unwelcome is the same failure as an arm retrained for a better
+number, and two sizes are separate series in any case rather than two precisions
+of one. Where a small effect is expected, `uv run anthro eval noise plan`
+reports how many games an axis needs to resolve an effect of a given size, which
+is a question for before the reading.
 
 The comparison itself needs nothing new. A training run is a coordinate rather
 than a component of series identity, so two arms of one configuration land in
@@ -2942,8 +2921,8 @@ nobody adopted would otherwise become some later report's baseline.
 So the reading resolves once, runs per arm, and compares once:
 
 ```console
-uv run anthro eval suite --config <suite> --full --plan
-uv run anthro eval suite --config <suite> --full
+uv run anthro eval suite --config <suite> --plan
+uv run anthro eval suite --config <suite>
 uv run anthro eval report --current <treatment> --baseline <control>
 ```
 

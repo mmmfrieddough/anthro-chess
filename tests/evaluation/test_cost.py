@@ -85,7 +85,7 @@ def test_a_reduction_measures_a_different_amount_of_work() -> None:
     """The sample count is identity here, unlike in every other workload.
 
     Measuring twice as many games estimates move loss more precisely and costs
-    twice as much, so a reduced reading and a full one are two cost series.
+    twice as much, so two sizes of one reading are two cost series.
     """
 
     full = _workload(_config())

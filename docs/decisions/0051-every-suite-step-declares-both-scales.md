@@ -4,6 +4,9 @@ Date: 2026-08-10
 
 ## Status
 
+Superseded by `0079-one-declared-size-per-benchmark.md`, which withdraws the
+reduced scale rather than sizing it, at the review this record nominated.
+
 Accepted. Withdraws a consequence of `0027-settled-rating-ladder-grid.md`,
 rests on `0034-qualifying-a-rating-ladder-reading.md` for what makes a thin
 reading legible, and composes with `0031-committed-benchmark-cost.md`.

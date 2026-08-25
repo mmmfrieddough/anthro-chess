@@ -102,5 +102,5 @@ one either.
 - `docs/decisions/0019-external-puzzle-calibration-set.md`
 - `docs/decisions/0044-the-puzzle-selection-is-vendored-not-refetched.md`
 - `docs/decisions/0077-the-puzzle-scale-is-not-the-game-scale.md`
-- `#329` — the suite walkthrough the measurement was taken under
-- `docs/evaluation.md` — "Puzzle Rating Response"
+- `#329`, the suite walkthrough the measurement was taken under
+- `docs/evaluation.md`, "Puzzle Rating Response"

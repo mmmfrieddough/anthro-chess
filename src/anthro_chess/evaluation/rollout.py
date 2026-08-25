@@ -308,8 +308,8 @@ class RolloutReferenceConfig(ReferenceConfig):
     Its size is not a sample count. The bandwidth is a neighbour count, so the
     reference size decides the rating span those neighbours occupy: shrinking it
     widens every neighbourhood until the grid points are estimated from the same
-    games. That is why a reduced sweep leaves this view alone, and why the size
-    belongs in the declared workload rather than in provenance.
+    games. That is why it is not a dial to shrink, and why it belongs in the
+    declared workload rather than in provenance.
     """
 
     view: ViewConfig = ViewConfig(name="rollout-reference", require_ratings=True)
