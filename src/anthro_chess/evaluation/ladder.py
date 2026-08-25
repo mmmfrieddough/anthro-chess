@@ -62,6 +62,7 @@ import math
 import statistics
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
@@ -1223,10 +1224,6 @@ def _start_worker(
     """
 
     global _setup
-    # One intra-op thread per worker. The tensors outside the forward pass are
-    # small, and every worker helping itself to the machine's cores would
-    # contend for them rather than use them.
-    torch.set_num_threads(1)
     try:
         loaded = CheckpointModelRunner.load(config.model)
     except ModelRunnerError as failure:
@@ -1297,15 +1294,22 @@ def _play_round_robin(
                 )
             }
         )
-    with ProcessPoolExecutor(
-        max_workers=min(workers, len(pairs)),
-        # Spawn rather than fork: a forked process inherits a CUDA context it
-        # cannot use.
-        mp_context=get_context("spawn"),
-        initializer=_start_worker,
-        initargs=(pinned, source, seats, identity),
-    ) as pool:
-        return tuple(pool.map(_play_assigned_pairing, pairs))
+    try:
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(pairs)),
+            # Spawn rather than fork: a forked process inherits a CUDA context
+            # it cannot use.
+            mp_context=get_context("spawn"),
+            initializer=_start_worker,
+            initargs=(pinned, source, seats, identity),
+        ) as pool:
+            return tuple(pool.map(_play_assigned_pairing, pairs))
+    except BrokenProcessPool as failure:
+        # An initializer's own error never reaches here, so a worker that could
+        # not start is indistinguishable from one that died playing.
+        raise LadderBenchmarkError(
+            f"a ladder worker stopped before its pairing finished: {failure}"
+        ) from failure
 
 
 def _play_pairing(

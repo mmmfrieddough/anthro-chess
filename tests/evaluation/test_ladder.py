@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +21,7 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext, Speed
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation import ladder as ladder_module
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
@@ -655,6 +657,44 @@ def test_a_parallel_ladder_reads_the_same_as_a_serial_one(
     assert [record.as_record() for record in parallel.records] == [
         record.as_record() for record in serial.records
     ]
+
+
+def test_a_worker_that_stops_fails_this_reading_rather_than_the_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inference_run: Callable[..., Path],
+) -> None:
+    """A broken pool raises `RuntimeError`, which no sweep converts to a step failure.
+
+    An initializer's own exception never reaches the caller either, so a worker
+    that could not load its checkpoint arrives here the same way.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=13)
+
+    class _BrokenPool:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _BrokenPool:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def map(self, *args: Any, **kwargs: Any) -> Any:
+            raise BrokenProcessPool("a worker exited unexpectedly")
+
+    monkeypatch.setattr(ladder_module, "ProcessPoolExecutor", _BrokenPool)
+
+    with pytest.raises(LadderBenchmarkError, match="worker stopped"):
+        run_benchmark(
+            benchmark_registry()["ladder"],
+            _config(
+                model=ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu"),
+                workers=2,
+            ),
+        )
 
 
 def test_a_supplied_runner_keeps_the_ladder_in_one_process() -> None:
