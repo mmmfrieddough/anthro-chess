@@ -8,7 +8,10 @@ Accepted. Extended by `0027-settled-rating-ladder-grid.md`, and by
 `0064-the-complete-round-robin-is-the-optimal-ladder-design.md`, which replaces
 the reason the consequences below give for not adopting a scheduled subset: the
 round robin is the optimal design at a fixed game budget rather than the
-cheapest way to guarantee connectivity.
+cheapest way to guarantee connectivity. Extended again by
+`0080-the-ladder-widens-and-openings-replace-seeds.md`, which chooses the grid
+this record declined to and narrows the precision lever it left open, leaving
+the shape here unchanged.
 
 ## Context
 

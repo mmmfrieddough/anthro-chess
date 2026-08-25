@@ -61,9 +61,12 @@ import logging
 import math
 import statistics
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -79,7 +82,6 @@ from anthro_chess.data.schema import (
 from anthro_chess.evaluation.decisions import (
     DecisionCell,
     DecisionDecompositionError,
-    DecisionSample,
     DecisionSet,
     DecisionSetting,
     collect_decisions,
@@ -156,6 +158,8 @@ from anthro_chess.evaluation.views import (
     apply_view,
     excluded_summary,
 )
+from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 
 #: Version 2 stores each quantity's own dispersion where version 1 stored the
@@ -427,6 +431,9 @@ class LadderBenchmarkConfig(CheckpointSelection):
     #: seeds and the games per pairing.
     noise: NoiseConfig = NoiseConfig()
     detail: LadderDetailConfig = LadderDetailConfig()
+    #: Processes playing pairings at once. One plays everything in this
+    #: process, which is what a supplied runner forces.
+    workers: Annotated[StrictInt, Field(ge=1)] = 8
 
 
 @dataclass(frozen=True)
@@ -891,41 +898,22 @@ def benchmark_ladder(
     )
     source, view, dataset = _position_source(config)
     seats = seat_keys(config)
-    labels = {seat: f"{identity.label}-{seat.label}" for seat in seats}
-    players = {
-        seat: ModelPlayer(
-            loaded,
-            label=labels[seat],
-            config=_seat_runtime(config, seat),
-            checkpoint=identity,
+    if runner is not None and config.workers > 1:
+        logger.info(
+            "Playing in this process: a supplied runner cannot cross to a worker"
         )
-        for seat in seats
-    }
-    by_label = {label: seat for seat, label in labels.items()}
-
-    pairings: list[LadderPairing] = []
-    records: list[GameRecord] = []
-    samples: list[DecisionSample] = []
-    unscored = 0
-    for first, second in _pairings(seats):
-        seeds, generation = collapse_replicates(
-            config.grid.seeds,
-            config.generation,
-            temperatures=(first.temperature, second.temperature),
-        )
-        played = _play_pairing(
-            players[first],
-            players[second],
-            source,
-            seeds=seeds,
-            generation=generation,
-        )
-        decisions = collect_decisions(played)
-        samples.extend(decisions.samples)
-        unscored += decisions.unscored_decisions
-        pairings.append(_score_pairing(first, second, by_label, played, seeds=seeds))
-        if config.detail.retain_games:
-            records.extend(played)
+    outcomes = _play_round_robin(
+        config,
+        seats,
+        source,
+        identity,
+        loaded=loaded,
+        workers=1 if runner is not None else config.workers,
+    )
+    pairings = [outcome.pairing for outcome in outcomes]
+    records = [record for outcome in outcomes for record in outcome.records]
+    samples = [sample for outcome in outcomes for sample in outcome.decisions.samples]
+    unscored = sum(outcome.decisions.unscored_decisions for outcome in outcomes)
 
     fit = _fit(config, seats, pairings)
     profiles = _error_profiles(DecisionSet(tuple(samples), unscored))
@@ -1169,6 +1157,163 @@ def _seat_runtime(config: LadderBenchmarkConfig, seat: SeatKey) -> RuntimeConfig
             "temperature": seat.temperature,
         }
     )
+
+
+@dataclass(frozen=True)
+class _PairingOutcome:
+    """One pairing's games, reduced to what everything downstream reads."""
+
+    pairing: LadderPairing
+    decisions: DecisionSet
+    records: tuple[GameRecord, ...]
+
+
+@dataclass(frozen=True)
+class _Setup:
+    """Everything one process needs to play any pairing it is handed."""
+
+    config: LadderBenchmarkConfig
+    source: _PositionSource
+    players: dict[SeatKey, ModelPlayer]
+    by_label: dict[str, SeatKey]
+
+
+#: This process's own setup, established by the pool's initializer. Held here
+#: rather than sent with each pairing because a runner is what makes a worker
+#: expensive to start, and every pairing that worker plays reuses it.
+_setup: _Setup | None = None
+
+
+def _seat_everyone(
+    loaded: ActionModelRunner,
+    config: LadderBenchmarkConfig,
+    source: _PositionSource,
+    seats: Sequence[SeatKey],
+    identity: CheckpointReference,
+) -> _Setup:
+    """Open one seat per competitor, and the reverse map a result is read by."""
+
+    labels = {seat: f"{identity.label}-{seat.label}" for seat in seats}
+    return _Setup(
+        config=config,
+        source=source,
+        players={
+            seat: ModelPlayer(
+                loaded,
+                label=labels[seat],
+                config=_seat_runtime(config, seat),
+                checkpoint=identity,
+            )
+            for seat in seats
+        },
+        by_label={label: seat for seat, label in labels.items()},
+    )
+
+
+def _start_worker(
+    config: LadderBenchmarkConfig,
+    source: _PositionSource,
+    seats: tuple[SeatKey, ...],
+    identity: CheckpointReference,
+) -> None:
+    """Load this process's own copy of the pinned checkpoint and seat everyone.
+
+    The selection names a resolved path rather than a run, so a checkpoint
+    written while the ladder is playing cannot leave two workers on different
+    weights under one recorded identity.
+    """
+
+    global _setup
+    # One intra-op thread. Every worker helping itself to the whole machine
+    # oversubscribes it several times over: eight workers left this host at a
+    # load average near ninety-four with the accelerator at ten percent.
+    torch.set_num_threads(1)
+    try:
+        loaded = CheckpointModelRunner.load(config.model)
+    except ModelRunnerError as failure:
+        raise LadderBenchmarkError(str(failure)) from failure
+    _setup = _seat_everyone(loaded, config, source, seats, identity)
+
+
+def _play_assigned_pairing(pair: tuple[SeatKey, SeatKey]) -> _PairingOutcome:
+    """Play one pairing against the seats this process already opened."""
+
+    if _setup is None:  # pragma: no cover - the initializer sets it
+        raise LadderBenchmarkError("a ladder worker was asked to play before it loaded")
+    return _play_one(_setup, pair)
+
+
+def _play_one(setup: _Setup, pair: tuple[SeatKey, SeatKey]) -> _PairingOutcome:
+    """Play every game two seats owe each other and reduce them."""
+
+    first, second = pair
+    seeds, generation = collapse_replicates(
+        setup.config.grid.seeds,
+        setup.config.generation,
+        temperatures=(first.temperature, second.temperature),
+    )
+    played = _play_pairing(
+        setup.players[first],
+        setup.players[second],
+        setup.source,
+        seeds=seeds,
+        generation=generation,
+    )
+    return _PairingOutcome(
+        pairing=_score_pairing(first, second, setup.by_label, played, seeds=seeds),
+        decisions=collect_decisions(played),
+        records=played if setup.config.detail.retain_games else (),
+    )
+
+
+def _play_round_robin(
+    config: LadderBenchmarkConfig,
+    seats: tuple[SeatKey, ...],
+    source: _PositionSource,
+    identity: CheckpointReference,
+    *,
+    loaded: ActionModelRunner,
+    workers: int,
+) -> tuple[_PairingOutcome, ...]:
+    """Play every pairing, in this process or across several.
+
+    A seed is derived from the game rather than from the schedule, and outcomes
+    come back in the declared order, so which worker played a pairing reaches
+    neither the fit nor any sum taken over what it returned.
+    """
+
+    pairs = _pairings(seats)
+    if workers <= 1:
+        setup = _seat_everyone(loaded, config, source, seats, identity)
+        return tuple(_play_one(setup, pair) for pair in pairs)
+    pinned = config
+    if isinstance(loaded, CheckpointModelRunner):
+        # The file the parent loaded rather than the selection that found it:
+        # `latest` re-resolved in a worker can name a checkpoint written since.
+        pinned = config.model_copy(
+            update={
+                "model": ModelRunnerConfig(
+                    checkpoint_path=loaded.selection.checkpoint_path,
+                    device=config.model.device,
+                )
+            }
+        )
+    try:
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(pairs)),
+            # Spawn rather than fork: a forked process inherits a CUDA context
+            # it cannot use.
+            mp_context=get_context("spawn"),
+            initializer=_start_worker,
+            initargs=(pinned, source, seats, identity),
+        ) as pool:
+            return tuple(pool.map(_play_assigned_pairing, pairs))
+    except BrokenProcessPool as failure:
+        # An initializer's own error never reaches here, so a worker that could
+        # not start is indistinguishable from one that died playing.
+        raise LadderBenchmarkError(
+            f"a ladder worker stopped before its pairing finished: {failure}"
+        ) from failure
 
 
 def _play_pairing(

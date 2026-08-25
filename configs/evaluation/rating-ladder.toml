@@ -17,7 +17,7 @@
 # `generation.maximum_generated_plies`, `generation.swap_colors`,
 # `generation.claim_draws`, and `runtime.resignation_enabled`. Values that
 # decide only how precisely are not: `grid.seeds`,
-# `generation.games_per_position`, `generation.concurrency`, and the
+# `generation.games_per_position`, `generation.concurrency`, `workers`, and the
 # `noise.*` settings can all be raised without ending a series.
 #
 # What the reading can resolve is estimated by redrawing each pairing's games
@@ -26,19 +26,16 @@
 # through. The schema owns the resample count and the rest of `noise.*`,
 # and `docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns why.
 #
-# Cost scales with the square of the seat count. Four ratings at three
-# temperatures plus three ablated seats is fifteen seats and one hundred and
-# five pairings, so raise the grid deliberately rather than by habit. Playing
-# only some of them is not the saving it looks like:
+# Cost scales with the square of the seat count. Eight ratings at three
+# temperatures plus three ablated seats is twenty-seven seats and three hundred
+# and fifty-one pairings, so raise the grid deliberately rather than by habit.
+# Playing only some of them is not the saving it looks like:
 # `docs/decisions/0064-the-complete-round-robin-is-the-optimal-ladder-design.md`
 # measures what a subset costs.
 #
-# This grid is settled rather than provisional: see
-# `docs/decisions/0027-settled-rating-ladder-grid.md`. Cutting it would buy time
-# the ladder no longer needs and spend per-seat sample it does need, because a
-# round robin gives each seat one pairing per opponent — halve the seats and
-# every survivor plays fewer games too. Precision comes from the dials above
-# that stay out of series identity.
+# This grid is settled rather than provisional, and openings rather than seeds
+# are what buy precision on it:
+# `docs/decisions/0080-the-ladder-widens-and-openings-replace-seeds.md`.
 
 [runtime]
 # Rating, temperature, and seed are supplied per seat and per game, so setting
@@ -48,9 +45,12 @@
 resignation_enabled = false
 
 [grid]
-# Ratings spanning the range the corpus actually covers, so a transfer function
-# has somewhere to show up.
-target_ratings = [1200, 1500, 1800, 2100]
+# Even steps across the range the corpus actually covers, from its sixth
+# percentile to its ninetieth. Spacing is what the ordering metrics resolve:
+# neighbours far enough apart to separate on any model tell a reader nothing,
+# and a round robin carries the scale through the chain of adjacent pairs even
+# where the distant ones become shutouts.
+target_ratings = [1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100]
 # Three points is the fewest that shows a temperature response as a shape
 # rather than as a line through two points. Zero is included deliberately: it
 # is the degenerate sampling case, and the openings below are what keep its
@@ -59,10 +59,11 @@ temperatures = [0.0, 0.7, 1.0]
 # Every calibration figure is declared against this temperature, and the joint
 # fit is anchored on its conditioned row.
 reference_temperature = 1.0
-# Replicates of the round robin, and precision alone. A pairing of two
-# temperature-zero seats plays the first seed by itself and records that it did:
-# the same result entered three times is not three results for the joint fit.
-seeds = [0, 1, 2]
+# One replicate. A seed redraws the sampling in a game the openings already
+# chose, so it narrows one of the two things that move a reading and leaves the
+# other alone; the opening count below narrows both, because more openings are
+# also more games.
+seeds = [0]
 
 [ablation]
 # One seat per temperature with no rating conditioning at all, fielded in the
@@ -83,9 +84,11 @@ plies = 8
 
 [openings.view]
 name = "ladder-openings"
-# Sixteen openings, played from both sides by every pairing. More openings buy
-# precision; they are a sample size rather than a measurement setting.
-maximum_games = 16
+# Openings, played from both sides by every pairing. This is the precision
+# dial: raising it narrows both the sampling spread and the spread across which
+# openings were drawn, and it is the only one of the two that reaches a pairing
+# of greedy seats, which replays whatever it is given.
+maximum_games = 48
 # One human population rather than whatever mixture the pool happens to hold.
 # Every pairing plays the same roots, so a mixed draw reaches every seat's
 # fitted rating. Blitz is the plurality class of the corpus by games and by
@@ -113,7 +116,11 @@ swap_colors = true
 # The model has no draw-claim action, so claiming for it would report the
 # harness's policy as the seats' behavior.
 claim_draws = false
-concurrency = 8
+# Games one worker keeps in flight, which is what decides how many decisions
+# reach the model in one pass. A wave never exceeds the plans one replicate
+# offers, which is the opening count above times the colour assignments, so
+# this is that product rather than a free dial.
+concurrency = 96
 
 [fit]
 # How far a seat may sit from the anchor. A seat that won or lost every game
