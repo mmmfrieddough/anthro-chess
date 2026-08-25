@@ -17,7 +17,7 @@
 # `generation.maximum_generated_plies`, `generation.swap_colors`,
 # `generation.claim_draws`, and `runtime.resignation_enabled`. Values that
 # decide only how precisely are not: `grid.seeds`,
-# `generation.games_per_position`, `generation.concurrency`, and the
+# `generation.games_per_position`, `generation.concurrency`, `workers`, and the
 # `noise.*` settings can all be raised without ending a series.
 #
 # What the reading can resolve is estimated by redrawing each pairing's games
@@ -113,7 +113,10 @@ swap_colors = true
 # The model has no draw-claim action, so claiming for it would report the
 # harness's policy as the seats' behavior.
 claim_draws = false
-concurrency = 8
+# Games one worker keeps in flight, which is what decides how many decisions
+# reach the model in one pass. A ceiling rather than a count: a replicate offers
+# openings times colours plans, and a wave never exceeds what it was given.
+concurrency = 96
 
 [fit]
 # How far a seat may sit from the anchor. A seat that won or lost every game

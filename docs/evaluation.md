@@ -1695,9 +1695,12 @@ that population's rating scale.
 **The ladder is the routine cost of deciding a change.** The declared grid
 plays thousands of games per checkpoint, and a sweep is what an adopt-or-drop
 comparison is read at, so that cost is paid per accepted change rather than per
-milestone, and it is the majority of what a sweep costs. Seats and their
-sample are the two things not to confuse when that cost is under
-discussion.
+milestone. Pairings share nothing until the fit, so they are played across
+worker processes rather than one after another; a decision costs more Python
+outside the model call than inside it, and spreading them is what reaches that
+half. `workers` sets how many play at once and changes no number, so it stays
+out of series identity beside the seeds. Seats and their sample are the two
+things not to confuse when that cost is under discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
 linearly, because a round robin gives each seat one pairing per opponent — so a
 cheaper ladder is also a noisier one, on the axis the benchmark exists to

@@ -65,6 +65,7 @@ from anthro_chess.evaluation.results.metrics import (
     MetricDefinition,
     registered_metrics,
 )
+from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import RuntimeConfig
 
 CHECKPOINT = CheckpointReference(label="fixture-checkpoint", step=1)
@@ -621,6 +622,69 @@ def test_a_suite_reproduces_from_its_seeds() -> None:
     assert [seat.fitted_rating for seat in first.seats] == [
         seat.fitted_rating for seat in second.seats
     ]
+
+
+def test_a_parallel_ladder_reads_the_same_as_a_serial_one(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """Which process played a pairing must not reach anything the fit takes.
+
+    Every other test here supplies a runner, which holds the benchmark to one
+    process, so this is the only place the worker path runs at all. It loads a
+    real checkpoint because that is what a worker resolves for itself.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=11)
+    model = ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+
+    def read(workers: int) -> LadderBenchmarkResult:
+        return cast(
+            LadderBenchmarkResult,
+            run_benchmark(
+                benchmark_registry()["ladder"],
+                _config(model=model, workers=workers),
+            ),
+        )
+
+    serial = read(1)
+    parallel = read(2)
+
+    assert serial.games > 0
+    assert parallel.as_record() == serial.as_record()
+    assert [record.as_record() for record in parallel.records] == [
+        record.as_record() for record in serial.records
+    ]
+
+
+def test_a_supplied_runner_keeps_the_ladder_in_one_process() -> None:
+    """A loaded runner is what the reading is of, and it cannot be sent to a worker.
+
+    The selection here names no checkpoint, so a run that reached for workers
+    would fail resolving one rather than quietly measuring something else.
+    """
+
+    result = _run(_config(workers=4))
+
+    assert result.games > 0
+
+
+def test_worker_count_stays_out_of_what_a_reading_declares(tmp_path: Path) -> None:
+    """Spreading the round robin changes no number, so it ends no series."""
+
+    result = _run(_config(workers=1), store=ResultsStore(tmp_path / "store"))
+    spread = _run(_config(workers=3), store=ResultsStore(tmp_path / "spread"))
+
+    for envelope, other in zip(_readings(result), _readings(spread), strict=True):
+        assert envelope.execution is not None
+        assert other.execution is not None
+        assert "workers" not in envelope.execution.workload
+        assert envelope.execution.workload_sha256 == other.execution.workload_sha256
+
+
+def test_a_ladder_needs_at_least_one_worker() -> None:
+    with pytest.raises(ValidationError):
+        _config(workers=0)
 
 
 def test_recorded_results_carry_one_series_per_unit(tmp_path: Path) -> None:
