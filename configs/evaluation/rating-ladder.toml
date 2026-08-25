@@ -104,8 +104,8 @@ rating_namespace = "lichess_blitz"
 # longest game in the corpus the model trained on is 301 plies. Raising it would
 # score games from ply indices the model has no training signal at, and lowering
 # it buys no throughput. A game that hits the limit has no result and informs no
-# pairwise comparison; it is counted rather than adjudicated into a draw, and
-# about half of them do — a reading about the seats rather than about this value.
+# pairwise comparison; it is counted rather than adjudicated into a draw, which
+# makes the count a reading about the seats rather than about this value.
 # Settled in `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md`.
 maximum_generated_plies = 300
 games_per_position = 1
