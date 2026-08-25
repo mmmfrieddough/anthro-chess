@@ -1388,11 +1388,11 @@ committed measurements come from suites that declare their inputs.
 
 ## Novelty
 
-The model degrades on positions unlike those it trained on. The observed form is
-specific: the same material win was found when it arose from an ordinary
-recapture and missed in a position humans never reach, while raw-logit legality
-at the second position was unremarkable. The distinguishing property was neither
-difficulty nor legality but distance from training data.
+Whether the model degrades on positions unlike those it trained on is the
+question this benchmark exists to answer, and distance from training data is
+what it has to isolate. Difficulty and legality vary across a human pool on
+their own, so a reading that does not hold them apart from novelty reports
+whichever of the three moved.
 
 Measuring this by slicing the pool with a familiarity proxy does not work, and
 the reason is worth recording so it is not attempted again. The pool is human
@@ -1662,16 +1662,15 @@ floor narrower than the true run-to-run spread rather than wider.
 holds that measurement, why the openings' own contribution is not there to
 remove, what it says for the curve family, and what would reopen it.
 
-**Read the unfinished count as a reading, not as overhead.** About half a
-full-size ladder's games reach the limit, and they are its most expensive games,
-but the limit sits past the longest game in the corpus the model trained on — a
-model that finished games the way its corpus does would reach it essentially
-never. The count is therefore a statement about the seats, and it is the ladder
-quantity that has discriminated most sharply between checkpoints so far. It is
-concentrated in the sampling seats, which is where the temperature response is
-read. It is reported per seat as the share of that seat's games that reached a
-result, which is one of the three ladder quantities carrying a direction the
-project is willing to name.
+**Read the unfinished count as a reading, not as overhead.** An unfinished game
+is the most expensive kind the benchmark plays, since it runs the full limit by
+definition, but the limit sits past the longest game in the corpus the model
+trained on, so a model that finished games the way its corpus does would reach
+it essentially never. The count is therefore a statement about the seats rather
+than a cost to tune away, and it is reported per seat as the share of that
+seat's games that reached a result, which is one of the three ladder quantities
+carrying a direction the project is willing to name. What that share currently
+is belongs to a reading rather than to this document.
 
 Each seat's own error profile is recorded beside its strength, computed through
 the shared decision decomposition rather than a private one, since that layer
@@ -1721,7 +1720,7 @@ why the ablated arm sits inside it, and what the round robin costs.
 `docs/decisions/0027-settled-rating-ladder-grid.md` settles the grid at its
 declared size and records what that is worth against what it costs.
 `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md` settles the ply
-limit against the corpus's longest game and owns why the unfinished half is a
+limit against the corpus's longest game and owns why an unfinished game is a
 reading rather than a dial to move.
 `docs/decisions/0034-qualifying-a-rating-ladder-reading.md` owns how a reading
 is qualified and what the two degenerate fits are qualified as.
@@ -2725,9 +2724,8 @@ that separately, by running itself again in fresh processes and reporting the
 spread across them beside each value.
 
 The depth sweep reaches the 300-ply cap the generated benchmarks play to, since
-around half a full-size ladder's games reach that cap and they are its most
-expensive ones, so a sweep stopping at 80 leaves a reader extrapolating across
-exactly the band whose cost it was asked about.
+a sweep stopping at 80 leaves a reader extrapolating across most of the band
+those benchmarks actually decide in.
 Reaching that depth requires the synthetic history to arrive somewhere a session
 can still decide from: random play thins the board down, so a walk that never
 ran out of legal moves still lands on a position that is over by rule often
