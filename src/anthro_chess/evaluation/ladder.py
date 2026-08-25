@@ -1224,6 +1224,10 @@ def _start_worker(
     """
 
     global _setup
+    # One intra-op thread. Every worker helping itself to the whole machine
+    # oversubscribes it several times over: eight workers left this host at a
+    # load average near ninety-four with the accelerator at ten percent.
+    torch.set_num_threads(1)
     try:
         loaded = CheckpointModelRunner.load(config.model)
     except ModelRunnerError as failure:

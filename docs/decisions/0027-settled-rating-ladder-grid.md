@@ -18,6 +18,12 @@ lever the section below points at, and narrows it: openings are a sample size as
 that section says, but they reach the workload fingerprint through their game-id
 digest, so raising them does end a series where raising seeds does not.
 
+Superseded by `0080-the-ladder-widens-and-openings-replace-seeds.md`. Both
+halves of this record are replaced: the grid widens to eight ratings, because
+four at three-hundred-point spacing saturated both ordering metrics, and
+openings alone carry precision, because a seed narrows only one of the two
+spreads that move a reading.
+
 ## Context
 
 Decision 0022 fixed the ladder's shape — one round robin, one joint fit — and

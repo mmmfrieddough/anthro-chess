@@ -634,7 +634,12 @@ def test_a_parallel_ladder_reads_the_same_as_a_serial_one(
 
     Every other test here supplies a runner, which holds the benchmark to one
     process, so this is the only place the worker path runs at all. It loads a
-    real checkpoint because that is what a worker resolves for itself.
+    real checkpoint because that is what a worker loads for itself.
+
+    Exact equality is available because this model is too small for the intra-op
+    thread count to reach a result, and a worker pins that to one where this
+    process does not. A model large enough to be reduced in parallel can differ
+    in the last bits between the two.
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=11)

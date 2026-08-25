@@ -17,6 +17,10 @@ The qualification and sweep-membership records are read rather than changed:
 nothing here alters what a ladder reading is qualified by or which sweeps run
 one.
 
+Extended by `0080-the-ladder-widens-and-openings-replace-seeds.md`, which
+resizes the grid this pairing structure is complete over and acts on the
+opening lever measured here, leaving the structure itself unchanged.
+
 ## Context
 
 The ladder is the most expensive step of the suite at both scales, and its cost

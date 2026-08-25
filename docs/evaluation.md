@@ -1698,30 +1698,32 @@ comparison is read at, so that cost is paid per accepted change rather than per
 milestone. Pairings share nothing until the fit, so they are played across
 worker processes rather than one after another; a decision costs more Python
 outside the model call than inside it, and spreading them is what reaches that
-half. `workers` sets how many play at once and changes no number, so it stays
-out of series identity beside the seeds. Seats and their sample are the two
+half. `workers` sets how many play at once, and it decides scheduling rather than
+workload, so it stays out of series identity beside the seeds. Seats and their sample are the two
 things not to confuse when that cost is under discussion.
 Cutting seats cuts cost quadratically and cuts every surviving seat's own sample
-linearly, because a round robin gives each seat one pairing per opponent — so a
-cheaper ladder is also a noisier one, on the axis the benchmark exists to
-measure. Raising seeds or games per position is the lever that buys precision
-instead, at linear cost and without ending a series. Raising openings buys it
-too, but not freely: decision 0020 puts the opening selection in the declared
-workload, so a wider set of openings continues no series a narrower one started.
+linearly, because a round robin gives each seat one pairing per opponent, so a
+cheaper ladder is also a noisier one on the axis the benchmark exists to
+measure. **Openings are the lever that buys precision instead.** Two things move
+a reading: the sampling inside the games that were played, and which games those
+were. A seed redraws the first and leaves the second alone; openings narrow
+both, because more openings are also more games. Decision 0080 measures how far
+apart the second one puts four disjoint draws, and 0020 records that a wider set
+of openings continues no series a narrower one started.
 Cutting *pairings* while keeping the seats is not a third option at all: at a
 fixed game budget the complete round robin is the design that resolves the fit
 best, so a subset spends the same games for a worse reading.
 
-That lever is inert on the pairings whose seats are both greedy, and a ladder
-does not pull it there: those pairings play one replicate and record the seeds
-they played, so a smaller game count beside one of them is the sample it
-realized rather than an omission. Decision 0027 carries what that leaves the
-declared grid playing.
+Openings are also the only lever that reaches a pairing of two greedy seats,
+which replays whatever it is given: a second replicate there would enter one
+result into the fit twice, so such a pairing plays one and records the seed it
+played. Decision 0080 carries what that leaves the declared grid playing.
 
 `docs/decisions/0022-one-joint-rating-ladder-fit.md` owns the joint-fit rule,
 why the ablated arm sits inside it, and what the round robin costs.
-`docs/decisions/0027-settled-rating-ladder-grid.md` settles the grid at its
-declared size and records what that is worth against what it costs.
+`docs/decisions/0080-the-ladder-widens-and-openings-replace-seeds.md` settles
+the grid at its declared size, and owns why openings rather than seeds are what
+make a reading of it finer.
 `docs/decisions/0030-ladder-ply-limit-at-the-trained-bound.md` settles the ply
 limit against the corpus's longest game and owns why an unfinished game is a
 reading rather than a dial to move.
