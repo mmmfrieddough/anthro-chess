@@ -114,9 +114,10 @@ swap_colors = true
 # harness's policy as the seats' behavior.
 claim_draws = false
 # Games one worker keeps in flight, which is what decides how many decisions
-# reach the model in one pass. A ceiling rather than a count: a replicate offers
-# openings times colours plans, and a wave never exceeds what it was given.
-concurrency = 96
+# reach the model in one pass. A wave never exceeds the plans one replicate
+# offers, which is the opening count above times the colour assignments, so
+# this is that product rather than a free dial.
+concurrency = 32
 
 [fit]
 # How far a seat may sit from the anchor. A seat that won or lost every game
