@@ -73,13 +73,12 @@ class RepertoireWalk:
     #: destination cannot: a destination is a position with one reachable label
     #: at this level, so playing on keeps the label it already has.
     #:
-    #: This is far tighter than ``pruned_mass`` and it matters. Measured on a
-    #: real checkpoint, the assumption-free bound sits near one: probability
+    #: This is far tighter than ``pruned_mass`` and it matters. Probability
     #: disperses across dozens of legal moves per ply, so most individual lines
     #: fall below any affordable threshold even while the dominant ones reach
-    #: full depth. Most of that pruned mass has already picked a family, which
-    #: is why the two numbers are so far apart — 0.96 against 0.38 at one
-    #: measured setting.
+    #: full depth, which drives the assumption-free bound toward one and
+    #: declares an informative reading unusable. Most of that pruned mass has
+    #: already picked a family, which is what separates the two numbers.
     #:
     #: Reachability here is the book's own canonical-path notion, the same one
     #: that separates a waypoint from a destination. A game that transposed out

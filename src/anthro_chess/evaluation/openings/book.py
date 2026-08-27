@@ -116,6 +116,13 @@ class OpeningBook:
     #: be labeled with, and therefore the only ones a depth or waypoint
     #: reading is ever taken at.
     continuations: Mapping[str, OpeningContinuation]
+    #: The same named positions under a key that costs nothing to take. An EPD
+    #: is a string built by scanning all sixty-four squares, and classification
+    #: takes one per ply of every game it reads, which made rendering positions
+    #: the largest cost in the evaluation suite. Built by keying the book's own
+    #: positions through the same function, so the two indexes cannot disagree
+    #: about which position an entry names.
+    keyed: Mapping[tuple[object, ...], str]
 
     def identity(self) -> dict[str, object]:
         """Return the record artifacts carry alongside opening labels."""
@@ -131,6 +138,16 @@ class OpeningBook:
         """Return the book entry naming a position, if the book names it."""
 
         return self.positions.get(epd)
+
+    def named_epd(self, board: chess.Board) -> str | None:
+        """Return the position string this board matches, when the book names it.
+
+        The lookup classification runs at every ply, which is why it takes the
+        board rather than a rendering of it: a caller that never reaches a named
+        position never builds a string at all.
+        """
+
+        return self.keyed.get(position_key(board))
 
     def continuation_for(self, epd: str) -> OpeningContinuation | None:
         """Return what the book still offers from a named position."""
@@ -183,7 +200,50 @@ class OpeningBook:
             positions=positions,
             maximum_ply=max(entry.ply for entry in entries),
             continuations=_continuations(entries, resolved, positions),
+            keyed=_keyed(positions),
         )
+
+
+def position_key(board: chess.Board) -> tuple[object, ...]:
+    """Return what identifies a position for book matching, without rendering it.
+
+    Carries exactly what an EPD carries and nothing more: the piece placement,
+    the side to move, the castling rights the position actually has, and an en
+    passant square only where it could be taken. Keeping that last condition is
+    what makes the two agree, since an EPD omits a square no move can use.
+    """
+
+    return (
+        board.pawns,
+        board.knights,
+        board.bishops,
+        board.rooks,
+        board.queens,
+        board.kings,
+        board.occupied_co[chess.WHITE],
+        board.occupied_co[chess.BLACK],
+        board.turn,
+        board.clean_castling_rights(),
+        board.ep_square if board.has_legal_en_passant() else None,
+    )
+
+
+def _keyed(positions: Mapping[str, OpeningEntry]) -> dict[tuple[object, ...], str]:
+    """Key every named position through the function classification will use."""
+
+    keyed: dict[tuple[object, ...], str] = {}
+    for epd in positions:
+        board = chess.Board()
+        board.set_epd(epd)
+        key = position_key(board)
+        previous = keyed.get(key)
+        if previous is not None and previous != epd:
+            raise OpeningBookError(
+                "two named positions share one key, so the book cannot be "
+                f"matched against: {previous!r} and {epd!r}"
+            )
+        keyed[key] = epd
+    return keyed
 
 
 @cache

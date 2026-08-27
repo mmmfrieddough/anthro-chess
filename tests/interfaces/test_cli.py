@@ -2247,9 +2247,6 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
 
     plan = json.loads(capsys.readouterr().out)
     names = [step["benchmark"] for step in plan["steps"]]
-    # Decision decomposition reads the games the rollout played, so it can
-    # never be planned ahead of it.
-    assert names.index("decisions") > names.index("rollout")
     assert set(names) == {
         "inference",
         "run",
@@ -2257,13 +2254,12 @@ def test_eval_suite_plans_the_shipped_selection_without_running_it(
         "novelty",
         "puzzles",
         "rollout",
-        "decisions",
         "termination",
         "ladder",
     }
-    decisions = next(step for step in plan["steps"] if step["benchmark"] == "decisions")
-    assert decisions["record"] is False
-    assert decisions["reads_games_from"] == "rollout"
+    # The decomposition is the rollout's own reading over the games it just
+    # played, so nothing waits on a payload to reach it.
+    assert all(step["reads_games_from"] is None for step in plan["steps"])
 
 
 def test_eval_suite_threads_one_checkpoint_through_every_benchmark(

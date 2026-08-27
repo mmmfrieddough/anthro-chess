@@ -2395,14 +2395,17 @@ any size, and about half of it at four streams.
 measurement, and the floor a reading below three streams states instead: none,
 because two streams leave three resamples and their agreeing is not a zero.
 
-The temperature-zero row is the exception, and it states its floor rather than
-bootstrapping one. Its seats are greedy, so another run of it replays the same
-games and the distances do not move at all; resampling games that cannot be
-redrawn reports the sample size the suite happened to play instead of anything
-the reading has. Every one of that row's floors is therefore exactly zero, and
-the artifact records which of the two ways it arrived there, since a bootstrap
-over plentiful games also lands near zero and the values alone cannot tell them
-apart.
+The temperature-zero row is not compared against human play at all. Its seats
+are greedy, so it plays one game per position and the model side is a point mass
+where the human side is a distribution. A distributional distance against a point
+mass reads one minus the human mass of whichever single category the model landed
+on, whatever the model plays, which is a statement about how popular an opening
+is rather than about how well it was chosen. No sample size repairs that, since
+the row plays one game per position by construction. Its cells are still
+measured, because a collapsed distinct-game fraction is what the sampled rows'
+fraction is read against, and the question the row wants to ask belongs to the
+prefix arm, where many distinct starting positions give greedy play a
+distribution of its own.
 
 The declared bandwidth is one value for every quantity rather than one each.
 Selected over thousands of matched-rating games of the frozen blitz pool, only
@@ -2422,16 +2425,14 @@ the count of unsupported points is reported, because a distance averaged over a
 third of the grid should not read like one averaged over all of it.
 
 **The unfinished rate gates two of the quantities.** Game length and result are
-only about the model when the model's games actually end. Measured on the proof
-run, 72% of generated games hit the ply limit while 0.075% of human games in the
-same pool exceed it, which makes the result distance mostly a statement that the
-model does not finish, and makes the mean length a censored lower bound rather
-than an estimate. Neither is a defect in the comparison — the ply limit is in
-the declared workload and the unfinished rate is reported beside the distances —
-but the two should be read together, and a high unfinished rate means those two
-distances are measuring the ply limit rather than the checkpoint. Repetition,
-cycle, opening, and move diversity are computed from the play itself and stay
-interpretable regardless.
+only about the model when the model's games actually end. A game the ply limit
+stopped contributes a result humans essentially never produce, so a high
+unfinished rate makes the result distance partly a statement that the model does
+not finish, and makes the mean length a censored lower bound rather than an
+estimate. Neither is a defect in the comparison, since the ply limit is in the
+declared workload and the unfinished rate is reported beside the distances, but
+the two are read together. Repetition, cycle, opening, and move diversity are
+computed from the play itself and stay interpretable regardless.
 
 The two arms are not interchangeable for every reading. On the prefix arm the
 opening distribution belongs to the view rather than to the model, because the

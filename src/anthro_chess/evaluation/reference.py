@@ -80,9 +80,7 @@ class ComparedQuantity(StrEnum):
     #: humans of its rating is not playing like them, whichever way it errs.
     #: Also gated by the unfinished rate: an adjudicated game contributes a
     #: result humans essentially never produce, so a suite that does not finish
-    #: its games measures the ply limit here rather than the model. Measured on
-    #: the proof run, 72% of generated games hit the limit against 0.075% of
-    #: human games in the same pool.
+    #: its games measures the ply limit here rather than the model.
     RESULT = "result"
     #: Share of plies that revisited a position. Humans repeat, so the target
     #: is the human rate rather than zero.

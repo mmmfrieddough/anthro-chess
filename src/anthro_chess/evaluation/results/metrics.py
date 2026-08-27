@@ -1223,7 +1223,11 @@ def _decision_metric(identifier: str, summary: str) -> MetricDefinition:
     down.
 
     They are also generated-play readings rather than view passes, so none can
-    be scheduled into a training cadence as though it were a cheap scoring pass.
+    be scheduled into a training cadence as though it were a cheap scoring pass,
+    and none consumes a data projection: the decisions come from games the model
+    played rather than from any pass over a corpus. Batching moves the recorded
+    probabilities in their last bits, so the concurrency they were played at is
+    part of what they were measured on.
     """
 
     return register_metric(
@@ -1234,7 +1238,7 @@ def _decision_metric(identifier: str, summary: str) -> MetricDefinition:
             definition_version=1,
             summary=summary,
             cost=MetricCost.GENERATED,
-            projection=MOVE_PREDICTION_PROJECTION.name,
+            execution_sensitive=True,
         )
     )
 
@@ -2293,6 +2297,21 @@ GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE = _curve_metric(
     (
         "Distance between the rating-free exact repertoire and the human one, "
         "each averaged over the rating grid."
+    ),
+)
+
+#: Where the opening divergence accumulates, rather than how large it is. The
+#: exact walk beside this already reports the size; a model that is unlike
+#: humans from the first move and one that follows theory and then leaves it
+#: reach the same size and are different faults. Interpolated between plies, so
+#: it is continuous rather than quantized to the truncations it was read at.
+GENERATED_PLAY_DIVERGENCE_HALF_DEPTH = _curve_metric(
+    "generated_play.divergence_half_depth",
+    MetricDirection.HIGHER_IS_BETTER,
+    (
+        "Book ply by which half of the opening divergence against human play "
+        "has accumulated, over the null each depth was judged against. Later "
+        "means the model stays human-like deeper into theory."
     ),
 )
 

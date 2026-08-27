@@ -58,13 +58,16 @@ seeds = [0, 1, 2, 3, 4]
 # Long enough for a real game to finish and short enough that a checkpoint
 # shuffling in a drawn endgame does not run the suite for hours.
 maximum_generated_plies = 300
-games_per_position = 4
+games_per_position = 256
 swap_colors = true
 # The seats have a draw-claim action of their own, so claiming for them would
 # report the harness's policy as the model's behavior. Games still end on their
 # own through the fivefold and seventy-five-move rules.
 claim_draws = false
-concurrency = 8
+# Games in flight at once, which is also the model's batch size. One call
+# offers as many plans as the colour swap and the games per position make, so
+# raising this past that product widens nothing.
+concurrency = 512
 
 [prefix.view]
 # Declared even though `arms` leaves the human-prefix arm out: the roots it
@@ -99,9 +102,9 @@ resamples = 200
 #
 # So it is neither a sample count nor a ceiling to raise later. Reading more
 # human play past this narrows nothing the estimator can use, and it is not
-# free: every reference game is replayed and classified, so the whole pool costs
-# almost five minutes against seventy seconds here. Reading less silently
-# re-smooths every curve, which is why this size is not a dial to shrink.
+# free: every reference game is replayed and classified, so the cost is linear
+# in this number. Reading less silently re-smooths every curve, which is why
+# this size is not a dial to shrink.
 name = "rollout-reference"
 maximum_games = 12000
 require_ratings = true
