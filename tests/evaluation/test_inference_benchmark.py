@@ -257,7 +257,6 @@ def test_the_committed_value_is_pooled_over_the_processes_that_read_it(
     """The extra processes pay for themselves twice, and this is the half that
     would otherwise be thrown away.
 
-
     Where a process lands is nearly the whole of the noise, so a reading is only
     improved by taking it in more of them. Committing the parent's own value and
     keeping the replicates for the floor alone would leave the number as noisy
@@ -858,7 +857,6 @@ def test_a_two_device_reading_splits_its_series_and_counts_once(
     counted = {INFERENCE_PARAMETERS.identifier, INFERENCE_DECISION_GFLOPS.identifier}
     assert counted <= {value.metric for value in units["cuda"].values}
     assert not counted & {value.metric for value in units["cpu"].values}
-    # Cold start is paid once, by the process that loaded the checkpoint.
     assert INFERENCE_MODEL_LOAD_SECONDS.identifier not in {
         value.metric for value in units["cpu"].values
     }

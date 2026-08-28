@@ -1,27 +1,9 @@
 """What a checkpoint costs to play with, and what a model change costs it.
 
-Two jobs, and they want different instruments.
-
-**What it costs to play with** is a wall clock on the device that serves: how
-long one move takes with a person waiting for it, how many decisions a batch of
-players resolves per second, and how long a process takes to become useful.
-Measured end to end through :class:`GameSession`, spanning encoding, batch
-construction, model execution, legal masking and sampling, because that is what
-a decision actually costs.
-
-**What a model change costs** is counted rather than timed. One 64-token
-forward is too little work to register against kernel-launch overhead on an
-accelerator, so batch-one latency there is nearly independent of model size and
-stays that way even once the launches are collapsed into a graph replay. The
-parameters and the operations one decision performs are therefore counted from
-the loaded module, where they carry no noise and need no floor, and the clock
-is read where it can still separate two models: at a batch large enough to
-leave the launch-bound regime, and on the host, which has no launch floor to
-hide the arithmetic under.
-
-The host reading earns its place twice over. It is the only place a single
-decision's timing tracks the model at all, and it answers whether the engine
-needs an accelerator to be playable, which at these sizes it does not.
+Two jobs wanting different instruments. What it costs to play with is a wall
+clock on the device that serves. What a model change costs is counted, because
+one decision reads a fixed set of square tokens and that is too little work to
+register against launch overhead on an accelerator.
 
 The workload is synthetic and self-contained: positions come from a seeded
 random-legal-move walk rather than from the evaluation pool. Latency depends on
@@ -102,20 +84,9 @@ INFERENCE_BENCHMARK = BenchmarkReference(
 
 #: Processes one reading is taken in, including the one taking it.
 #:
-#: The noise in a timing reading is almost entirely *which process took it*:
-#: repeating a measurement inside one reproduces it several times more closely
-#: than a fresh one does. Measuring more decisions therefore buys nothing, and
-#: processes are the only lever. Each costs a whole reading, and pays for it
-#: twice: the committed value is their mean, whose own spread falls as the
-#: square root of this count, and that spread is the floor a later delta is
-#: read against.
-#:
-#: **This is a dial, and every step costs a whole reading.** Both halves move
-#: with it, but the floor moves faster than the square root, because the bound
-#: on an estimated spread is a chi-square limit at one fewer degree of freedom
-#: than there are processes and that limit is punishing when there are few.
-#: Below four the limit costs more than the pooling wins, and a reading resolves
-#: less than one taken without pooling at all.
+#: Where a process lands is almost the whole of a timing reading's noise, so
+#: measuring more decisions inside one buys nothing and this is the only lever.
+#: `docs/evaluation.md` owns what raising it trades against what.
 DEFAULT_PROCESSES = 6
 
 logger = logging.getLogger(__name__)
@@ -332,10 +303,8 @@ class ModelCost:
 class ComputeSample:
     """The forward pass alone, where the device is no longer launch bound.
 
-    Its own execution record, and so its own series, because it is measured on
-    a different axis from everything else this device reports. Sharing one
-    would end the product timings' history whenever the instrument's batch
-    size moved, and nothing else here is measured at that width.
+    Carries its own execution record, and so its own series: nothing else here
+    is measured at this width.
     """
 
     execution: ExecutionRecord
@@ -365,14 +334,7 @@ class ComputeSample:
 
 @dataclass(frozen=True)
 class InferenceDeviceReading:
-    """Everything timed on one device, and the conditions it declared.
-
-    A run on an accelerator produces two of these. The host is measured as
-    well as the accelerator because a single decision is too small to occupy
-    the accelerator, so the host is where a model change shows in a clock, and
-    because whether the engine is playable without an accelerator is a question
-    nothing else here answers.
-    """
+    """Everything timed on one device, and the conditions it declared."""
 
     execution: ExecutionRecord
     latency: LatencySample
@@ -430,16 +392,10 @@ class _MeasuredUnit:
 class InferenceBenchmarkResult:
     """Everything one inference benchmark measured, and where it was written.
 
-    ``serving`` and ``host`` are named rather than indexed because the counted
-    quantities ride with the serving device and nothing else should decide
-    that: a positional rule would move them silently if the readings were ever
-    reordered.
-
     Every timing on ``serving`` and ``host`` is what *this* process measured.
     The committed values are in ``pooled``, which is what a later delta is read
-    against; the two differ by where this process happened to land, and the
-    diagnostics a reading carries beyond its committed metrics, its extremes
-    and its stage attribution, are only this process's.
+    against; the diagnostics beyond those, the extremes and the stage
+    attribution, are only this process's.
     """
 
     checkpoint: CheckpointReference
@@ -597,12 +553,7 @@ def _unit_payload(
     unit: _MeasuredUnit,
     result: InferenceBenchmarkResult,
 ) -> dict[str, Any]:
-    """Return one unit's bulk payload: what it measured, and what was committed.
-
-    The header is assembled here rather than by each unit so two payloads
-    written by one reading cannot disagree about the checkpoint they describe or
-    about how many processes stood behind them.
-    """
+    """Return one unit's bulk payload: what it measured, and what was committed."""
 
     labels = unit.labels()
     return {
@@ -725,9 +676,7 @@ def _dispersions(
 ) -> dict[str, MetricDispersion]:
     """Return each series' spread, keyed the way the recorder carries one.
 
-    Sourced against the machine each series was measured on rather than against
-    the serving one, since a reading covering two devices would otherwise cite
-    the wrong hardware for half of its floors.
+    Each floor cites the machine its own series was measured on.
 
     A metric the processes read identically is left bare rather than qualified
     by a floor of zero, which would clear every later delta on it. For a counted
@@ -990,13 +939,10 @@ def _time_forward(
     than an oversight: it isolates the model call from the construction around
     it.
 
-    ``resolve`` is what to time, and the two callers hand in different calls
-    deliberately. The serving figure times the seam a decision goes through,
-    because it is subtracted from a whole decision and both sides have to pay
-    the same host costs for the difference to be that decision's own work. The
-    instrument times the module, because the host copy and the finite check are
-    fixed costs that do not grow with the model and would dilute the one figure
-    whose job is to grow with it, by more the wider the instrument gets.
+    ``resolve`` differs between the callers deliberately: one times the seam a
+    decision goes through and one times the module, and `docs/evaluation.md`
+    owns why. ``between`` runs after the warmup and before the timed loop, the
+    only window a second pass can be taken in without landing in a measurement.
     """
 
     with _measured_decision():
@@ -1188,11 +1134,9 @@ def _measure_compute(
         throughput,
         histories,
         batch_size,
-        # Cycling the serving reading's own histories rather than walking
-        # hundreds more. The forward pass is timed on a padded batch of one
-        # shape and reads no legality, so which positions filled it does not
-        # reach the measurement, and walking them dominated this step's wall
-        # clock several times over.
+        # The forward pass is timed on a padded batch of one shape and reads no
+        # legality, so which positions filled it cannot reach the measurement,
+        # and walking fresh ones for it dominates this step's wall clock.
         distinct=throughput.serving_batch_size,
     )
     peak = _PeakMemory(runner, batch, decisions)
@@ -1241,7 +1185,12 @@ class _PeakMemory:
         self.megabytes: float | None = None
 
     def measure(self) -> None:
-        """Run one pass under a fresh high-water mark and record what it held."""
+        """Run one pass under a fresh high-water mark and record what it held.
+
+        Through the serving seam rather than the module the caller times: the
+        host copy that seam adds allocates off the device, so the high-water
+        mark is the same either way and this keeps the finite check covered.
+        """
 
         begin_peak_memory_measurement(self._runner.device)
         self._runner.decision_logits(self._batch, self._decisions)
@@ -1336,8 +1285,6 @@ def _play_unit(
             ]
         )
     if counted:
-        # No workload: these read the same on every device, so a workload-scoped
-        # series would split one number across the devices it was counted beside.
         values.extend(
             [
                 measurement(

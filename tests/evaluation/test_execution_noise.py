@@ -110,8 +110,7 @@ def _spreads(
     *,
     processes: int,
 ) -> dict[str, float]:
-    """Return each series' spread, which is the pooled value's rather than one
-    process's."""
+    """Return each series' spread, which is the pooled value's own."""
 
     readings = measure_pooled_readings((own,), _sampler(others), processes=processes)
     return {fingerprint: spread for fingerprint, (_, spread) in readings.items()}

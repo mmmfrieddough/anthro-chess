@@ -144,8 +144,7 @@ class CheckpointModelRunner:
         Both serving paths run under inference mode. Torch's operator counter
         installs module hooks that read each input's grad node, which inference
         mode does not create, so counting through either path raises rather than
-        counting. The same seam serves a timed window that has to exclude the
-        host copy serving pays for.
+        counting.
         """
 
         return self._model

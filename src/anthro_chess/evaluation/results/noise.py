@@ -357,16 +357,10 @@ def replicate_dispersion(values: Sequence[float]) -> float:
 def pooled_process_reading(values: Sequence[float]) -> tuple[float, float]:
     """Return the mean of one metric across processes, and that mean's spread.
 
-    The pair rather than either alone, because a reading pooled over processes
-    and a floor built from one process's spread do not describe the same
-    number: the floor would price the reading as though the extra processes had
-    not been paid for. Whoever commits the mean takes the spread that goes with
-    it.
-
-    That spread is the standard error, which is why the mean is committed
-    rather than the median. A median resists one descheduled process, but its
-    own spread is only known asymptotically, and the counts here are small
-    enough that the constant would be doing more work than the robustness buys.
+    Returned together because a floor built from one process's spread would
+    price the reading as though the others had not been paid for. The mean
+    rather than the median, because a median's own spread is known only
+    asymptotically and these counts are too small for that constant.
     """
 
     return statistics.fmean(values), process_dispersion(values) / math.sqrt(len(values))

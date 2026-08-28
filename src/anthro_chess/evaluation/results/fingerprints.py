@@ -25,12 +25,9 @@ thing is getting slower. Whether two numbers are safe to subtract is a question
 for a report, which can answer it from the environment each result records. See
 ``docs/decisions/0018-workload-scoped-efficiency-series.md``.
 
-One benchmark declares the *kind* of device it ran on as workload, and it is the
-exception that shows the rule rather than a softening of it. Inference
-efficiency measures the host and the accelerator in one invocation, so those are
-two declared conditions of one reading rather than one quantity measured on two
-machines; which accelerator remains a coordinate, and the history it carries
-still runs across a hardware change. See
+One benchmark measures two devices in a single invocation and declares which
+one each reading is for, so that they do not land on one series. Which
+accelerator remains a coordinate. See
 ``docs/decisions/0082-inference-cost-is-counted-where-a-clock-cannot-see-it.md``.
 """
 

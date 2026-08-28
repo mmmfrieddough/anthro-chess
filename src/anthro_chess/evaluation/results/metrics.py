@@ -1514,11 +1514,9 @@ def _inference_metric(
 ) -> MetricDefinition:
     """Register one inference-efficiency metric.
 
-    Most of this family is a timing taken on one device, so those defaults
-    declare a machine-sensitive series once rather than at each metric. A
-    counted quantity overrides both: it reads the same on every machine, and a
-    workload-scoped series would split one number across the devices it was
-    counted beside.
+    A counted quantity overrides the timing defaults: it reads the same on
+    every machine, and a workload-scoped series would split one number across
+    the devices it was counted beside.
     """
 
     return register_metric(
@@ -1535,9 +1533,7 @@ def _inference_metric(
     )
 
 
-#: Why a counted quantity carries no floor. Shared, because both counts are the
-#: same kind of thing and a report renders this reason rather than sending a
-#: reader off to measure a spread that does not exist.
+#: Why a counted quantity carries no floor.
 _COUNTED_NOT_SAMPLED = (
     "the value is counted from the loaded module rather than sampled, so it is "
     "identical in every process and there is nothing for a spread to be over"
@@ -1562,8 +1558,8 @@ INFERENCE_DECISION_GFLOPS = _inference_metric(
         "Billions of floating-point operations one decision costs the model, "
         "counted from an instrumented forward pass. This is the arithmetic a "
         "model change alters, and it is counted rather than timed because a "
-        "wall clock understates it whenever the device is launch or bandwidth "
-        "bound, which is where this model sits at every batch size it serves."
+        "wall clock understates it wherever the device is launch or bandwidth "
+        "bound."
     ),
     cost=MetricCost.FREE,
     execution_sensitive=False,

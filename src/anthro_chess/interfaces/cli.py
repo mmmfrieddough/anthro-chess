@@ -2179,8 +2179,6 @@ def _render_inference(result: InferenceBenchmarkResult) -> str:
 
 
 def _device_lines(reading: InferenceDeviceReading) -> list[str]:
-    """Render everything one device was timed for."""
-
     execution = reading.execution
     latency = reading.latency
     serving = reading.serving
