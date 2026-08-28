@@ -16,7 +16,7 @@ from anthro_chess.evaluation.execution_noise import (
     ExecutionNoiseError,
     ProcessSample,
     execution_dispersion_record,
-    measure_execution_dispersions,
+    measure_process_readings,
     sample_execution_noise,
     subprocess_sampler,
 )
@@ -31,6 +31,8 @@ from anthro_chess.evaluation.results import (
     ExecutionRecord,
     dispersion_bound,
     execution_reference,
+    measurement,
+    process_dispersion,
     replicate_dispersion,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -65,26 +67,56 @@ def _sample(
     device_name: str = "fixture-laptop",
     weights: str = "a" * 64,
 ) -> ProcessSample:
+    execution = _execution(device_name=device_name)
     return ProcessSample(
-        execution=_execution(device_name=device_name),
+        execution=execution,
         checkpoint=CheckpointReference(
             label="fixture-step-00000001",
             step=1,
             parameter_sha256=weights,
         ),
-        reading=reading,
+        values=tuple(
+            measurement(metric, value, workload=execution.workload_component())
+            for metric, value in reading.items()
+        ),
     )
 
 
-def _sampler(samples: Sequence[ProcessSample]) -> Callable[[], ProcessSample]:
-    """Return a sampler that hands back prepared samples in order."""
+def _series(metric: str) -> str:
+    """Return the fingerprint the fixture execution gives one metric."""
+
+    (found,) = (
+        value for value in _sample({metric: 0.0}).values if value.metric == metric
+    )
+    return found.fingerprint
+
+
+def _sampler(
+    samples: Sequence[ProcessSample],
+) -> Callable[[], tuple[ProcessSample, ...]]:
+    """Return a sampler that hands back one prepared sample per process."""
 
     remaining = list(samples)
 
-    def sample() -> ProcessSample:
-        return remaining.pop(0)
+    def sample() -> tuple[ProcessSample, ...]:
+        return (remaining.pop(0),)
 
     return sample
+
+
+def _spreads(
+    own: ProcessSample,
+    others: Sequence[ProcessSample],
+    *,
+    processes: int,
+) -> dict[str, float]:
+    """Return each series' spread the way the benchmark derives it."""
+
+    readings = measure_process_readings((own,), _sampler(others), processes=processes)
+    return {
+        fingerprint: process_dispersion(values)
+        for fingerprint, values in readings.items()
+    }
 
 
 def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
@@ -97,9 +129,11 @@ def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
     own = _sample({LATENCY: 10.0})
     others = [_sample({LATENCY: 12.0}), _sample({LATENCY: 14.0})]
 
-    spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
+    spreads = _spreads(own, others, processes=3)
 
-    assert spreads == {LATENCY: pytest.approx(replicate_dispersion([10.0, 12.0, 14.0]))}
+    assert spreads == {
+        _series(LATENCY): pytest.approx(replicate_dispersion([10.0, 12.0, 14.0]))
+    }
 
 
 def test_a_metric_the_processes_did_not_separate_is_measured_at_zero() -> None:
@@ -116,12 +150,12 @@ def test_a_metric_the_processes_did_not_separate_is_measured_at_zero() -> None:
         _sample({LATENCY: 14.0, THROUGHPUT: 40.0}),
     ]
 
-    spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
+    spreads = _spreads(own, others, processes=3)
 
-    assert spreads[THROUGHPUT] == 0.0
+    assert spreads[_series(THROUGHPUT)] == 0.0
     with pytest.raises(ExecutionNoiseError, match="no bound to compute"):
         execution_dispersion_record(
-            spreads[THROUGHPUT], processes=3, source="fixture replicates"
+            spreads[_series(THROUGHPUT)], processes=3, source="fixture replicates"
         )
 
 
@@ -129,9 +163,9 @@ def test_the_bound_counts_the_processes_behind_the_spread() -> None:
     own = _sample({LATENCY: 10.0})
     others = [_sample({LATENCY: 12.0}), _sample({LATENCY: 14.0})]
 
-    spreads = measure_execution_dispersions(own, _sampler(others), processes=3)
+    spreads = _spreads(own, others, processes=3)
     record = execution_dispersion_record(
-        spreads[LATENCY],
+        spreads[_series(LATENCY)],
         processes=3,
         source="fixture replicates",
     )
@@ -155,14 +189,10 @@ def test_more_processes_narrow_the_floor_a_thin_estimate_widens() -> None:
     bounds = []
     for processes in (3, 6):
         samples = [_sample({LATENCY: readings[index]}) for index in range(processes)]
-        spreads = measure_execution_dispersions(
-            samples[0],
-            _sampler(samples[1:]),
-            processes=processes,
-        )
+        spreads = _spreads(samples[0], samples[1:], processes=processes)
         bounds.append(
             execution_dispersion_record(
-                spreads[LATENCY],
+                spreads[_series(LATENCY)],
                 processes=processes,
                 source="fixture replicates",
             ).bound
@@ -173,11 +203,7 @@ def test_more_processes_narrow_the_floor_a_thin_estimate_widens() -> None:
 
 def test_one_process_cannot_measure_execution_noise() -> None:
     with pytest.raises(ExecutionNoiseError, match="at least two processes"):
-        measure_execution_dispersions(
-            _sample({LATENCY: 10.0}),
-            _sampler([]),
-            processes=1,
-        )
+        _spreads(_sample({LATENCY: 10.0}), [], processes=1)
 
 
 def test_replicates_from_two_machines_are_not_one_machines_noise() -> None:
@@ -187,11 +213,7 @@ def test_replicates_from_two_machines_are_not_one_machines_noise() -> None:
     ]
 
     with pytest.raises(ExecutionNoiseError, match="different environments"):
-        measure_execution_dispersions(
-            samples[0],
-            _sampler(samples[1:]),
-            processes=2,
-        )
+        _spreads(samples[0], samples[1:], processes=2)
 
 
 def test_replicates_of_two_checkpoints_include_a_model_difference() -> None:
@@ -201,11 +223,7 @@ def test_replicates_of_two_checkpoints_include_a_model_difference() -> None:
     ]
 
     with pytest.raises(ExecutionNoiseError, match="different checkpoints"):
-        measure_execution_dispersions(
-            samples[0],
-            _sampler(samples[1:]),
-            processes=2,
-        )
+        _spreads(samples[0], samples[1:], processes=2)
 
 
 def test_a_metric_missing_from_one_replicate_is_refused() -> None:
@@ -214,12 +232,8 @@ def test_a_metric_missing_from_one_replicate_is_refused() -> None:
         _sample({LATENCY: 11.0}),
     ]
 
-    with pytest.raises(ExecutionNoiseError, match="not every replicate reported"):
-        measure_execution_dispersions(
-            samples[0],
-            _sampler(samples[1:]),
-            processes=2,
-        )
+    with pytest.raises(ExecutionNoiseError, match="different series"):
+        _spreads(samples[0], samples[1:], processes=2)
 
 
 def test_a_sample_survives_the_round_trip_a_worker_process_makes() -> None:
@@ -232,7 +246,7 @@ def test_a_sample_survives_the_round_trip_a_worker_process_makes() -> None:
 
 def test_an_unreadable_sample_is_an_error_rather_than_a_crash() -> None:
     with pytest.raises(ExecutionNoiseError, match="unreadable sample"):
-        ProcessSample.from_record({"reading": {}})
+        ProcessSample.from_record({"values": []})
 
 
 def test_the_subprocess_sampler_measures_in_a_fresh_interpreter(
@@ -256,19 +270,19 @@ def test_the_subprocess_sampler_measures_in_a_fresh_interpreter(
         return subprocess.CompletedProcess(
             command,
             returncode=0,
-            stdout=json.dumps(sample.as_record()),
+            stdout=json.dumps([sample.as_record()]),
             stderr="",
         )
 
     monkeypatch.setattr(execution_noise_module.subprocess, "run", fake_run)
     selection = InferenceBenchmarkConfig(
         model=ModelRunnerConfig(checkpoint_path=Path("/pinned/step-00000200.pt")),
-        replicates=1,
+        processes=1,
     )
 
     measured = subprocess_sampler(selection)()
 
-    assert measured == sample
+    assert measured == (sample,)
     ((command, piped),) = seen
     assert command[:2] == [sys.executable, "-m"]
     assert command[2:8] == [
@@ -317,14 +331,13 @@ def test_sampling_measures_repeatedly_and_records_nothing(
             runtime=RuntimeConfig(seed=7),
             latency=LatencyWorkloadConfig(
                 reference_plies=4,
-                sweep_plies=(4,),
                 decisions=2,
                 warmup_decisions=0,
                 seed="test-latency",
             ),
             throughput=ThroughputWorkloadConfig(
-                reference_batch_size=2,
-                sweep_batch_sizes=(2,),
+                serving_batch_size=2,
+                compute_batch_size=4,
                 history_plies=4,
                 batches=1,
                 warmup_batches=0,
@@ -335,8 +348,8 @@ def test_sampling_measures_repeatedly_and_records_nothing(
     )
     monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "results"))
 
-    sample = sample_execution_noise(resolved)
+    (sample,) = sample_execution_noise(resolved)
 
-    assert LATENCY in sample.reading
-    assert sample.reading[LATENCY] > 0.0
+    reading = {value.metric: value.value for value in sample.values}
+    assert reading[LATENCY] > 0.0
     assert not (tmp_path / "results").exists()

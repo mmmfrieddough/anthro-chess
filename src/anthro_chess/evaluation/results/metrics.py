@@ -1507,12 +1507,17 @@ def _inference_metric(
     direction: MetricDirection,
     summary: str,
     definition_version: int = 1,
+    *,
+    cost: MetricCost = MetricCost.MEASURED_EXECUTION,
+    execution_sensitive: bool = True,
 ) -> MetricDefinition:
     """Register one inference-efficiency metric.
 
-    Every metric in this family shares a cost and a sensitivity, so declaring
-    them once keeps a later addition from quietly landing as a machine-blind
-    series.
+    Most of this family is a timing taken on one device, so those defaults
+    declare a machine-sensitive series once rather than at each metric. A
+    counted quantity overrides both: it reads the same on every machine, and a
+    workload-scoped series would split one number across the devices it was
+    counted beside.
     """
 
     return register_metric(
@@ -1522,10 +1527,57 @@ def _inference_metric(
             direction=direction,
             definition_version=definition_version,
             summary=summary,
-            cost=MetricCost.MEASURED_EXECUTION,
-            execution_sensitive=True,
+            cost=cost,
+            execution_sensitive=execution_sensitive,
         )
     )
+
+
+INFERENCE_PARAMETERS = _inference_metric(
+    "inference.parameters",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Trainable parameters in the loaded checkpoint. Counted rather than "
+        "timed, so it carries no noise and needs no floor."
+    ),
+    cost=MetricCost.FREE,
+    execution_sensitive=False,
+)
+
+INFERENCE_DECISION_GFLOPS = _inference_metric(
+    "inference.decision_gflops",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Billions of floating-point operations one decision costs the model, "
+        "counted from an instrumented forward pass. This is the arithmetic a "
+        "model change alters, and it is counted rather than timed because a "
+        "wall clock understates it whenever the device is launch or bandwidth "
+        "bound, which is where this model sits at every batch size it serves."
+    ),
+    cost=MetricCost.FREE,
+    execution_sensitive=False,
+)
+
+INFERENCE_PEAK_MEMORY_MB = _inference_metric(
+    "inference.peak_memory_mb",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Peak device memory one forward pass allocates at the declared compute "
+        "batch size, in megabytes. Bounds the batch a device can serve."
+    ),
+)
+
+INFERENCE_DECISION_OVERHEAD_MS = _inference_metric(
+    "inference.decision_overhead_ms",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Milliseconds one batched decision spends outside the model: context "
+        "assembly, batch construction, the host copy, legal masking and "
+        "sampling. Does not amortize with batch size, so it is the floor under "
+        "any decision, and it is where an encoding or action-vocabulary change "
+        "lands rather than in the forward pass."
+    ),
+)
 
 
 #: Percentiles reported for batch-one move latency. The median says what play
@@ -1574,13 +1626,11 @@ INFERENCE_FORWARD_THROUGHPUT = _inference_metric(
     "inference.forward_throughput_per_second",
     MetricDirection.HIGHER_IS_BETTER,
     (
-        "Decisions per second through the forward pass alone, on a batch built "
-        "once and re-run, taken from the median batch. Excludes batch "
-        "construction, so it isolates launch cost for a kernel or precision "
-        "change rather than saying what playing a move costs. It scores the "
-        "whole padded sequence rather than the one row per game a decision "
-        "reads, so it is a companion to the batched figure rather than a "
-        "component of it."
+        "Decisions per second through the forward pass alone, at the declared "
+        "compute batch size, on a batch built once and re-run and taken from "
+        "the median batch. Measured where the device stops being launch bound, "
+        "which is the only batch size at which a wall clock separates two "
+        "model sizes at all."
     ),
 )
 

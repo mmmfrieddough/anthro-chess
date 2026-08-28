@@ -137,6 +137,17 @@ class CheckpointModelRunner:
         self.metadata = dict(metadata)
         self.training_sha256 = training_sha256
 
+    @property
+    def model(self) -> MoveModel:
+        """Return the loaded module, for counting what a decision costs.
+
+        Every serving path here runs under inference mode, which strips the
+        autograd metadata the operator counters read, so a caller that has to
+        count operations instead of timing them cannot go through one.
+        """
+
+        return self._model
+
     def parameter_sha256(self) -> str:
         """Return the digest identifying the loaded parameters."""
 

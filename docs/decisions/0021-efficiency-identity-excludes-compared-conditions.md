@@ -4,7 +4,8 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted. Refines `0018-workload-scoped-efficiency-series.md`.
+Accepted. Refines `0018-workload-scoped-efficiency-series.md`. Refined by
+`0082-inference-cost-is-counted-where-a-clock-cannot-see-it.md`.
 
 ## Context
 

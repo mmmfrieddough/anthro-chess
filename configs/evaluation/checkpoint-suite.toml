@@ -30,9 +30,10 @@ name = "checkpoint"
 # except where a step's inputs force it.
 
 [benchmarks.inference]
-# What the checkpoint costs to play with. Reads no pool, and its cold-start
-# reading wants a process that has not already loaded the model, which is why
-# it runs before anything else.
+# What a decision costs the model, counted, and what the checkpoint costs to
+# play with, timed. Reads no pool, and its cold-start reading wants a process
+# that has not already loaded the model, which is why it runs before anything
+# else.
 config = "configs/evaluation/inference-efficiency.toml"
 
 [benchmarks.run]

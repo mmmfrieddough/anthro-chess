@@ -2,20 +2,17 @@
 
 Every other dispersion this project reports is estimated from numbers a run
 already computed. This one cannot be. The noise in an efficiency metric comes
-from the machine — scheduler contention, thermal state, other processes,
-allocator and kernel warmth — and no amount of resampling an already-measured
+from the machine: scheduler contention, thermal state, other processes,
+allocator and kernel warmth. No amount of resampling an already-measured
 latency will reveal it. It has to be measured by measuring again.
 
-So the inference benchmark *runs itself again*, in several processes, and
-reports the spread across them beside its own value. That is the whole reason
-this module exists as something other than a bootstrap.
-
-**Across processes, because that is what a report compares.** Two efficiency
-readings in the store were taken by two invocations of ``anthro eval
-inference``, days apart. Each paid its own model load, its own lazy kernel
-compilation, and its own allocator growth. A dispersion built from repeats
-inside one process would omit exactly those and license a difference that is
-only process luck.
+**And the process is what to measure again.** Repeating a measurement inside one
+process reproduces it several times more closely than a fresh process does, so
+where a process happens to land is nearly the whole of the noise, and measuring
+more decisions inside one buys nothing. The inference benchmark therefore *runs
+itself again*, in several processes, and those processes pay for themselves
+twice: the committed value is their median, which narrows as their square root,
+and their spread is the floor a later delta is read against.
 
 **In the same session as the reading it qualifies.** A dispersion measured now
 describes the machine now, and a machine drifts: #161 measured a floor taken on
@@ -25,7 +22,7 @@ hot, which is further than any arithmetic on the replicates moves anything.
 One reading per process, and no repeats inside one. A second reading is cheap
 and would widen the estimate rather than firm it up: it shares an allocator, a
 warm file cache and a compiled kernel with the first, and #369 measured the
-pooled estimator under-weighting the between-process term — the only term here —
+pooled estimator under-weighting the between-process term, the only term here,
 whenever a process contributes more than one.
 """
 
@@ -57,7 +54,6 @@ from anthro_chess.evaluation.results import (
     MetricDispersion,
     NoiseCharacterizationError,
     measured_dispersion,
-    process_dispersion,
 )
 from anthro_chess.evaluation.results.noise import DEFAULT_CONFIDENCE
 
@@ -68,11 +64,16 @@ class ExecutionNoiseError(ValueError):
 
 @dataclass(frozen=True)
 class ProcessSample:
-    """Everything one process measured, and the conditions it measured under."""
+    """What one process measured on one device, and the conditions it used.
+
+    A reading taken on more than one device produces one of these per device,
+    because a device is a declared condition of every timing here and two
+    devices do not pool.
+    """
 
     execution: ExecutionRecord
     checkpoint: CheckpointReference
-    reading: Mapping[str, float]
+    values: tuple[Measurement, ...]
 
     @classmethod
     def from_measurements(
@@ -81,18 +82,20 @@ class ProcessSample:
         checkpoint: CheckpointReference,
         values: Sequence[Measurement],
     ) -> ProcessSample:
-        """Return the sample one process's measurements amount to.
+        """Return the sample one device's measurements amount to."""
 
-        Built here rather than at each call site because the process taking the
-        reading and the processes qualifying it have to reduce their
-        measurements the same way, or their values are not poolable.
+        return cls(execution=execution, checkpoint=checkpoint, values=tuple(values))
+
+    @property
+    def reading(self) -> dict[str, float]:
+        """Return each series' value, keyed by the fingerprint naming it.
+
+        Keyed by fingerprint rather than by metric identifier because one
+        reading commits the same metric on the host and on the accelerator, and
+        pooling those together would average two quantities.
         """
 
-        return cls(
-            execution=execution,
-            checkpoint=checkpoint,
-            reading={value.metric: value.value for value in values},
-        )
+        return {value.fingerprint: value.value for value in self.values}
 
     def as_record(self) -> dict[str, Any]:
         """Return the JSON-compatible record a worker process prints."""
@@ -100,7 +103,7 @@ class ProcessSample:
         return {
             "execution": self.execution.model_dump(mode="json"),
             "checkpoint": self.checkpoint.model_dump(mode="json"),
-            "reading": dict(self.reading),
+            "values": [value.model_dump(mode="json") for value in self.values],
         }
 
     @classmethod
@@ -111,10 +114,9 @@ class ProcessSample:
             return cls(
                 execution=ExecutionRecord.model_validate(payload["execution"]),
                 checkpoint=CheckpointReference.model_validate(payload["checkpoint"]),
-                reading={
-                    str(metric): float(value)
-                    for metric, value in payload["reading"].items()
-                },
+                values=tuple(
+                    Measurement.model_validate(value) for value in payload["values"]
+                ),
             )
         except (AttributeError, KeyError, TypeError, ValueError) as error:
             raise ExecutionNoiseError(
@@ -126,20 +128,20 @@ def sample_execution_noise(
     resolved_config: ResolvedConfig[InferenceBenchmarkConfig],
     *,
     run_root: Path | None = None,
-) -> ProcessSample:
+) -> tuple[ProcessSample, ...]:
     """Measure one checkpoint's efficiency once in this process.
 
     Nothing is recorded. The reading is evidence about the machine rather than
     about the model, and committing it would put a checkpoint's history at the
     mercy of how many times its noise was measured.
 
-    Pinning the selection to one replicate is what stops the recursion: the
+    Pinning the selection to one process is what stops the recursion: the
     benchmark spawns this sampler, so a sampled run that spawned its own
     replicates would never terminate.
     """
 
     pinned = ResolvedConfig(
-        value=resolved_config.value.model_copy(update={"replicates": 1}),
+        value=resolved_config.value.model_copy(update={"processes": 1}),
         provenance=resolved_config.provenance,
     )
     try:
@@ -155,11 +157,14 @@ def sample_execution_noise(
     # The invocation also records what it cost, on its own workload. A
     # dispersion covers one workload, so folding that reading in here would
     # produce one keyed to neither.
-    (envelope,) = (item for item in result.envelopes if item.kind == INFERENCE_KIND)
-    return ProcessSample.from_measurements(
-        result.execution,
-        result.checkpoint,
-        envelope.measurements,
+    return tuple(
+        ProcessSample.from_measurements(
+            envelope.execution,
+            envelope.checkpoint,
+            envelope.measurements,
+        )
+        for envelope in result.envelopes
+        if envelope.kind == INFERENCE_KIND and envelope.execution is not None
     )
 
 
@@ -167,13 +172,13 @@ def subprocess_sampler(
     selection: InferenceBenchmarkConfig,
     *,
     timeout_seconds: float | None = None,
-) -> Callable[[], ProcessSample]:
+) -> Callable[[], tuple[ProcessSample, ...]]:
     """Return a sampler that measures ``selection`` in a fresh interpreter.
 
     A separate process is the whole point rather than an implementation
-    detail: the state that makes the first reading in a process different —
-    an unwarmed allocator, uncompiled kernels, an unread checkpoint file — is
-    only reset by leaving the process.
+    detail: the state that makes the first reading in a process different, an
+    unwarmed allocator, uncompiled kernels, an unread checkpoint file, is only
+    reset by leaving the process.
 
     The already-resolved selection is handed over rather than the file and
     overrides it came from. A replicate has to measure what the parent
@@ -196,12 +201,12 @@ def subprocess_sampler(
     ]
     payload = json.dumps(selection.model_dump(mode="json"))
     # A fresh interpreter picks its own intra-op thread count, and the count is
-    # part of the environment a reading declares — so a parent that pinned one
+    # part of the environment a reading declares, so a parent that pinned one
     # would refuse its own replicates for measuring a different machine. It also
-    # changes what a CPU reading measures, which is the substantive half.
+    # changes what a host reading measures, which is the substantive half.
     environment = dict(os.environ, OMP_NUM_THREADS=str(torch.get_num_threads()))
 
-    def sample() -> ProcessSample:
+    def sample() -> tuple[ProcessSample, ...]:
         try:
             completed = subprocess.run(  # noqa: S603 - fixed command, no shell
                 command,
@@ -227,49 +232,42 @@ def subprocess_sampler(
             raise ExecutionNoiseError(
                 f"a replicate process printed no readable sample: {error}"
             ) from error
-        return ProcessSample.from_record(sampled)
+        return tuple(ProcessSample.from_record(item) for item in sampled)
 
     return sample
 
 
-def measure_execution_dispersions(
-    own: ProcessSample,
-    sampler: Callable[[], ProcessSample],
+def measure_process_readings(
+    own: Sequence[ProcessSample],
+    sampler: Callable[[], tuple[ProcessSample, ...]],
     *,
     processes: int,
-) -> dict[str, float]:
-    """Return one dispersion per metric, spread across ``processes`` processes.
+) -> dict[str, tuple[float, ...]]:
+    """Return each series' one value per process, in process order.
 
-    ``own`` is the reading being qualified, and it counts as one of them: the
-    dispersion has to describe the reading it travels with, not a neighbouring
-    measurement of the same thing.
+    ``own`` is the reading being pooled and qualified, and it counts as one of
+    them: both the median and the dispersion have to describe the reading they
+    travel with, not a neighbouring measurement of the same thing.
 
-    Fewer processes do not produce a narrower dispersion here, only a less
-    certain one: the bound widens as the degrees of freedom fall, so cutting the
-    count trades measurement time for a floor that resolves less. Two processes
-    are permitted because a coarse floor beats none, but they leave one degree
-    of freedom and a floor an order of magnitude above the spread.
+    Fewer processes give a wider dispersion and a noisier median, so cutting the
+    count trades measurement time for a reading that resolves less. Two are
+    permitted because a coarse floor beats none, but they leave one degree of
+    freedom and a floor an order of magnitude above the spread.
     """
 
     if processes < 2:
         raise ExecutionNoiseError(
-            "an execution dispersion needs at least two processes; one process "
+            "an execution reading needs at least two processes; one process "
             "cannot observe what a second one would pay for again"
         )
-    samples = [own]
+    rounds = [tuple(own)]
     for _ in range(processes - 1):
-        samples.append(sampler())
-        # Checked as each arrives rather than at the end: a replicate that fell
-        # back to another device makes every later one wasted work, and each is
+        rounds.append(sampler())
+        # Checked as each arrives rather than at the end: a replicate that
+        # measured something else makes every later one wasted work, and each is
         # a whole benchmark run.
-        _require_one_execution(samples)
-    try:
-        return {
-            metric: process_dispersion(values)
-            for metric, values in _readings_by_metric(samples).items()
-        }
-    except NoiseCharacterizationError as error:
-        raise ExecutionNoiseError(str(error)) from error
+        _require_one_measurement(rounds)
+    return _readings_by_fingerprint(rounds)
 
 
 def execution_dispersion_record(
@@ -297,27 +295,30 @@ def execution_dispersion_record(
         raise ExecutionNoiseError(str(error)) from error
 
 
-def _require_one_execution(samples: Sequence[ProcessSample]) -> None:
-    """Reject replicates that did not measure one quantity on one machine.
+def _require_one_measurement(rounds: Sequence[Sequence[ProcessSample]]) -> None:
+    """Reject replicates that did not measure one quantity on one model.
 
-    A floor covering two workloads or two devices would describe neither. This
-    is reachable in practice: a device requested but unavailable falls back,
-    and the reading is real but belongs to a different machine.
+    The fingerprint set covers the workload and the device together, since a
+    device requested but unavailable falls back and is recorded as the device
+    that actually ran. The parameter digest is what a mis-resolved checkpoint
+    would move, and the environment is what is left once both agree.
     """
 
-    workloads = {sample.execution.workload_sha256 for sample in samples}
-    if len(workloads) > 1:
+    series = [frozenset(_readings(round_)) for round_ in rounds]
+    if any(found != series[0] for found in series):
         raise ExecutionNoiseError(
-            "the replicate processes measured different declared workloads, so "
-            "their spread is not one measurement's noise"
+            "the replicate processes measured different series, so their "
+            "spread is not one measurement's noise"
         )
-    environments = [sample.execution.environment() for sample in samples]
-    if any(environment != environments[0] for environment in environments):
+    conditions = [_conditions(round_) for round_ in rounds]
+    if any(found != conditions[0] for found in conditions):
         raise ExecutionNoiseError(
             "the replicate processes ran in different environments, so their "
             "spread is not one machine's noise"
         )
-    parameters = {sample.checkpoint.parameter_sha256 for sample in samples}
+    parameters = {
+        sample.checkpoint.parameter_sha256 for round_ in rounds for sample in round_
+    }
     if len(parameters) > 1:
         raise ExecutionNoiseError(
             "the replicate processes measured different checkpoints, so their "
@@ -325,25 +326,37 @@ def _require_one_execution(samples: Sequence[ProcessSample]) -> None:
         )
 
 
-def _readings_by_metric(
-    samples: Sequence[ProcessSample],
-) -> dict[str, tuple[float, ...]]:
-    """Return each metric's one value per process, in process order."""
+def _conditions(samples: Sequence[ProcessSample]) -> list[tuple[str, str]]:
+    """Return each device's machine coordinates, ordered so rounds compare.
 
-    metrics = {metric for sample in samples for metric in sample.reading}
-    missing = [
-        metric
-        for metric in sorted(metrics)
-        if any(metric not in sample.reading for sample in samples)
-    ]
-    if missing:
-        raise ExecutionNoiseError(
-            f"not every replicate reported {', '.join(missing)}; the replicates "
-            "do not describe one measurement"
-        )
+    The declared workload already separates two devices, so this is what is
+    left: a host with unlike accelerators can hand two processes the same
+    declared device and a different piece of silicon.
+    """
+
+    return sorted(
+        (sample.execution.workload_sha256, repr(sample.execution.environment()))
+        for sample in samples
+    )
+
+
+def _readings(samples: Sequence[ProcessSample]) -> dict[str, float]:
+    """Return one process's whole reading, across every device it measured."""
+
     return {
-        metric: tuple(sample.reading[metric] for sample in samples)
-        for metric in sorted(metrics)
+        fingerprint: value
+        for sample in samples
+        for fingerprint, value in sample.reading.items()
+    }
+
+
+def _readings_by_fingerprint(
+    rounds: Sequence[Sequence[ProcessSample]],
+) -> dict[str, tuple[float, ...]]:
+    readings = [_readings(round_) for round_ in rounds]
+    return {
+        fingerprint: tuple(reading[fingerprint] for reading in readings)
+        for fingerprint in sorted(readings[0])
     }
 
 
@@ -351,7 +364,7 @@ __all__ = [
     "ExecutionNoiseError",
     "ProcessSample",
     "execution_dispersion_record",
-    "measure_execution_dispersions",
+    "measure_process_readings",
     "sample_execution_noise",
     "subprocess_sampler",
 ]

@@ -107,12 +107,20 @@ architecture, batch, and corpus are coordinates for exactly that reason. A
 delta across them is interpretable rather than meaningless, so a report
 attributes it instead of ending a series.
 
+One benchmark declares the device it ran on as workload rather than leaving it
+a coordinate, and it is the exception that shows the rule: the inference
+benchmark measures the host and the accelerator in one invocation, so those are
+two declared conditions rather than one measurement taken on two machines. Which
+accelerator remains a coordinate.
+
 `docs/decisions/0018-workload-scoped-efficiency-series.md` owns the rule,
 `0020-declared-settings-scope-generated-series.md` extends it to generated
 play, including why a rollout's human prefixes are provenance rather than a
-data component, and
+data component,
 `0021-efficiency-identity-excludes-compared-conditions.md` draws the line
-between identity and coordinates.
+between identity and coordinates, and
+`0082-inference-cost-is-counted-where-a-clock-cannot-see-it.md` records the
+exception.
 
 ### Where The Store Lives
 
@@ -169,8 +177,9 @@ it move, and there the most recent reading is shown together with how many
 series stand behind it. `anthro eval bridge` records, lists, and revokes bridges.
 `anthro eval noise plan` answers how many games an axis needs to resolve an
 effect of a given size, read off the newest reading that measured its own
-spread. `anthro eval inference` measures what a checkpoint costs
-to play with; see inference efficiency below. `anthro eval decisions` separates
+spread. `anthro eval inference` counts what a
+decision costs the model and times what the checkpoint costs to play with; see
+inference efficiency below. `anthro eval decisions` separates
 model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
 the external puzzle-rating response described in the rating section, and
@@ -506,7 +515,7 @@ prediction scores four hundred games, so it holds four hundred numbers to
 resample and one run yields the value and its spread together. A latency
 percentile is a single number with nothing inside it to resample, and the spread
 that matters is the one *between processes*, so the inference benchmark measures
-its own by running itself again — **Execution Noise** below.
+its own by running itself again. **Execution Noise** below.
 
 A floor is that dispersion expressed as a delta, because a delta is what a
 report shows and a standard deviation is not directly comparable to one.
@@ -619,23 +628,22 @@ apply. Two readings of one checkpoint taken minutes apart differ, and nothing
 about the model, the data, or the seed moved; a report with no floor can only
 say the number changed, so sub-percent jitter renders as a regression.
 
-The noise source here is the machine — scheduler contention, thermal state,
-other processes, allocator and kernel warmth — so it cannot be bootstrapped out
-of an already-measured latency. It is measured by **measuring again**, in a
-fresh process each time. A reading a report compares was produced by its own
-invocation, which paid its own model load and its own lazy kernel compilation,
-so a second reading inside one process shares an allocator, a warm file cache
-and a compiled kernel with the first and cannot see the component most likely to
-dominate. One reading per process, and the process count is what the estimate
-rests on.
+The noise source here is the machine: scheduler contention, thermal state, other
+processes, allocator and kernel warmth. It cannot be bootstrapped out of an
+already-measured latency, and it is measured by **measuring again**, in a fresh
+process each time. The process is the unit because it is where nearly all of the
+noise lives: repeating a measurement inside one process reproduces it several
+times more closely than a fresh process does, so measuring more decisions buys
+no resolution and only the process count does. One reading per process.
 
-**The inference benchmark does this during its own run**, and the reading it
-records carries the result as its dispersion, exactly as every other benchmark
-does. The reading being qualified is itself one of the processes. The rest run
-one after another rather than together, since they would otherwise contend for
-the device they are timing, and each is a complete run of the benchmark; they
-record nothing, because they are evidence about the machine rather than about
-the model.
+**The inference benchmark does this during its own run**, and those processes pay
+for themselves twice. The committed value is their median, which narrows as the
+square root of their count, and their spread is the dispersion the reading
+carries, exactly as every other benchmark carries one. The reading being
+qualified is itself one of the processes. The rest run one after another rather
+than together, since they would otherwise contend for the device they are
+timing, and each is a complete run of the benchmark; they record nothing,
+because they are evidence about the machine rather than about the model.
 `anthro eval noise sample` is the single-process entry point the benchmark
 spawns, and `anthro_chess.evaluation.execution_noise` owns the procedure.
 
@@ -647,11 +655,11 @@ bound moves anything. A dispersion measured beside the reading it qualifies
 cannot be applied across that drift, because it is never applied to a second
 reading at all.
 
-The process count is what the dispersion bound rests on, and it is the one
-setting that trades measurement time for resolving power. Cutting it does not
-produce a narrower floor, only a less certain one. It is now paid on every
-inference reading rather than once per machine, so it is a live cost rather than
-a fixed one; the code owns the default and the configuration overrides it.
+The process count is the one setting that trades measurement time for resolving
+power, and it moves both halves: cutting it widens the floor and leaves the
+committed value as noisy as a single process. It is paid on every inference
+reading rather than once per machine, so it is a live cost; the code owns the
+default and the configuration overrides it.
 
 ### What A Missing Floor Means
 
@@ -2702,12 +2710,39 @@ the join and its comparability rules.
 
 ## Inference Efficiency
 
-What a checkpoint costs to play with. An opponent too slow to play against is a
-product failure regardless of how it scores on move loss, so this is part of the
+Two questions, and they want different instruments. What does this checkpoint
+cost to play with? And what did a model change cost it?
+
+The first is a wall clock. An opponent too slow to play against is a product
+failure regardless of how it scores on move loss, so this is part of the
 checkpoint suite rather than an operational aside.
 
-Three quantities are kept apart, because folding them together lets a win in one
-hide a regression in another:
+The second is a count. One decision reads a fixed number of square tokens, which
+is far too little work to occupy an accelerator: nearly all of a single forward
+pass there is kernel-launch overhead, so batch-one latency is close to
+independent of model size, and collapsing the launches into a graph replay
+leaves it that way. A benchmark that reported only wall clocks would therefore
+say a substantially larger model costs nothing, which is the blindsiding this
+exists to prevent.
+
+### What A Decision Costs The Model
+
+**Parameters and floating-point operations per decision**, counted from the
+loaded module rather than timed. They carry no noise, need no floor, and no
+process count buys resolution on them.
+
+They are not a proxy for the timings and the timings are not a proxy for them.
+Wall clock understates an arithmetic increase whenever the device is launch or
+bandwidth bound, which is where this model sits at every batch size it serves,
+so a larger model reads as cheaper than its operation count says. Both are
+reported because that gap is the answer to what a size tradeoff actually costs:
+the count says how much more work, and the clock says how much of it is paid for
+on this hardware.
+
+**Peak device memory** at the declared compute batch, which bounds the batch a
+device can serve.
+
+### What It Costs To Play With
 
 **Batch-one move latency**, reported as percentiles rather than a mean. This is
 what a person waiting for a move experiences. It is measured end to end through
@@ -2722,66 +2757,76 @@ A stage attribution accompanies that mean, cut from the measured decisions
 rather than taken beside them: the benchmark times the context assembly, then
 the prediction call, then everything that follows, inside the single window it
 reports. Timing the stages separately is what let the parts sum past the whole,
-and what let a from-scratch re-encode — work the engine never does, and two
-orders of magnitude above what it does do — render as a leading term.
+and what let a from-scratch re-encode, work the engine never does, render as a
+leading term.
 
 There is deliberately no encode stage, and that is the substantive finding
 rather than an omission. A session encodes one ply as it advances rather than
 encoding a history per decision, so the only encode a decision pays for is that
 single ply; it is flat in history length and falls inside the remainder
-alongside masking and sampling. Prediction — batch construction, the forward
-pass, and the host copy — is the overwhelming majority of a decision, and
-assembling the context is around one percent of it.
+alongside masking and sampling.
 
-**Declared-batch throughput**, in decisions per second at one declared batch
-size. Batching trades latency for throughput, so quoting a serving figure as an
-interactive one is the usual way that trade gets hidden.
+Latency is measured at one depth rather than swept across several. The model
+folds history into the channels of a fixed set of square tokens rather than into
+a sequence, so a decision costs one position whatever its ply count, and one
+depth says what every depth says.
 
-Two figures are reported here and they are not interchangeable. The headline
-resolves **whole batched decisions** through the same loop the generated
-benchmarks run — collect every pending context, resolve them in one padded
-forward pass, mask and sample each result — so it carries the batch construction
-and the masking and sampling a generated decision pays for. The **forward pass
-alone** is measured on a batch built once and re-run, which isolates launch cost
-for a kernel or precision change; that is the right number for that question and
-the wrong one for sizing a run, since it exceeds the whole-decision figure by
-over an order of magnitude at larger batches. It also scores the whole padded
-sequence rather than the one row per game a decision reads, which makes it a
-companion to the batched figure rather than a component of it. Each declares
-which it is, in the rendered output and in the metric registry, because the
-failure worth splitting them over was the isolated figure being read —
-including by the author of the reading — as the cost of playing a move.
+**Serving throughput**, in whole batched decisions per second at the declared
+serving batch size, through the same loop the generated benchmarks run: collect
+every pending context, resolve them in one forward pass, then mask and sample
+each result. Batching trades latency for throughput, so quoting a serving figure
+as an interactive one is the usual way that trade gets hidden.
 
-Both are taken from the median batch rather than the mean, so one descheduled
-batch cannot carry the reported rate. That does not narrow run-to-run spread,
-which is a property of the machine between invocations; the benchmark measures
-that separately, by running itself again in fresh processes and reporting the
-spread across them beside each value.
+**The non-model share of a batched decision**, taken as the difference between
+that loop and the forward pass alone. It does not amortize with batch size,
+because it is one decision's own host work, and it is most of a batched decision
+at the sizes that matter. It is also where a change to the encoding or the action
+vocabulary lands, rather than in the forward pass, which is why it is reported
+rather than left implicit in the throughput figure.
 
-The depth sweep reaches the 300-ply cap the generated benchmarks play to, since
-a sweep stopping at 80 leaves a reader extrapolating across most of the band
-those benchmarks actually decide in.
-Reaching that depth requires the synthetic history to arrive somewhere a session
-can still decide from: random play thins the board down, so a walk that never
-ran out of legal moves still lands on a position that is over by rule often
-enough to abort a run.
+**The forward pass alone**, at a compute batch size wide enough that the device
+is no longer launch bound. Nothing serves that wide; it is an instrument, and it
+is the only wall clock here that separates two model sizes at all. It is a clean
+component of the whole-decision figure rather than a companion to it: both call
+the same seam, which reads one row per game rather than scoring every historical
+ply.
 
 **Cold start**, split into model-load time and the first decision after loading.
 Lazy kernel compilation and allocator warmup land in the first decision rather
 than inflating the steady-state percentiles, which is why warmup is excluded
 there and measured here.
 
+### The Host Reading
+
+A run on an accelerator measures the host as well, and the two do not pool: the
+device is part of each reading's declared workload rather than an environment
+coordinate, so a report cannot read one line moving when it is looking at two
+devices.
+
+It answers two things nothing else here does. Whether the engine is playable
+without an accelerator, which is a product question the accelerator reading
+cannot address. And what a model change costs in a wall clock at a single
+decision, since the host has no launch floor for the arithmetic to hide under
+and its batch-one latency tracks the operation count where the accelerator's
+does not. It is also the quieter of the two readings from process to process.
+
+### Reading The Numbers
+
 The workload is synthetic and self-contained rather than drawn from the
 evaluation pool. Latency depends on history length and legal-move count, not on
 which human played the game, so binding this benchmark to the pool would break
 its series at every pool generation without changing what it measures. Positions
 come from a seeded legal-move walk, so the same declared workload replays the
-same positions on every machine.
+same positions on every machine. Reaching a deep position requires that walk to
+arrive somewhere a session can still decide from: random play thins the board
+down, so a walk that never ran out of legal moves still lands on a position that
+is over by rule often enough to abort a run.
 
-Headline metrics are taken at one declared reference point: one ply depth for
-latency and one batch size for throughput. Sweeps over depth and batch size are
-retained as drill-down and are deliberately outside series identity, so
-extending a sweep does not end the headline series.
+Every batch is timed on its own so the reported rates come from the median
+rather than the mean, which stops one descheduled batch carrying either. That
+does not narrow run-to-run spread, which is a property of the process a reading
+was taken in; the benchmark handles that by taking the reading in several
+processes, as **Execution Noise** above describes.
 
 Accelerator work is asynchronous, so every measured window synchronizes queued
 device work before stopping its timer. Without that, a benchmark would time the
@@ -2795,11 +2840,11 @@ any? And what is the net effect on the thing we actually ship? A report
 therefore declares a **pivot** rather than assuming one.
 
 The default pivot varies the checkpoint. When the environment moved as well,
-the delta is still shown — it is a real, interpretable number — but the verdict
-is reported as `confounded` rather than better or worse, with an attribution
-naming which of model, environment, and workload changed. The honesty lives in
-the verdict rather than in a withheld delta, because any reader holding both
-values can subtract them, and automation reads the verdict.
+the delta is still shown, since it is a real and interpretable number, but the
+verdict is reported as `confounded` rather than better or worse, with an
+attribution naming which of model, environment, and workload changed. The
+honesty lives in the verdict rather than in a withheld delta, because any reader
+holding both values can subtract them, and automation reads the verdict.
 
 The environment pivot is the mirror image: the model is pinned by parameter
 digest and the machine, precision, or software version varies. That is the
@@ -2813,9 +2858,11 @@ measurement.
 
 Whether a delta between two of these readings means anything is a separate
 question from whether it is comparable, and it is answered by the spread each
-reading measured across its own replicate processes. A reading taken at one
-replicate carries none, and a report then says the noise is unknown rather than
-calling ordinary run-to-run jitter an improvement.
+reading measured across its own processes. A reading taken in one process
+carries none, and a report then says the noise is unknown rather than calling
+ordinary run-to-run jitter an improvement. The counted quantities need none of
+this: they read identically in every process, so a difference in one is a
+difference in the model.
 
 `anthro eval inference` records; `anthro eval report --pivot` reads.
 `anthro_chess.evaluation.inference` owns the exact metrics, defaults, and

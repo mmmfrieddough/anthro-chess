@@ -1,4 +1,4 @@
-# What a checkpoint costs to play with: move latency, throughput, cold start.
+# What a checkpoint costs to play with, and what a model change costs it.
 #
 # The model selection is deliberately absent: with no explicit checkpoint or
 # run, `anthro eval inference` uses the machine-local default selection beneath
@@ -7,28 +7,29 @@
 #
 #   anthro eval inference --config <this file> --set model.run_path='"blitz-v3"'
 #
-# This benchmark reads no evaluation pool. Latency depends on history length
-# and legal-move count rather than on which human played the game, so the
-# workload is a seeded synthetic walk and the series survives a pool cut.
+# This benchmark reads no evaluation pool. Latency depends on history length and
+# legal-move count rather than on which human played the game, so the workload
+# is a seeded synthetic walk and the series survives a pool cut.
 #
-# Every value below that decides *what* is timed is part of the series
-# identity. Changing `latency.reference_plies`, `throughput.reference_batch_size`,
-# `throughput.history_plies`, either seed, or the runtime dials starts a new
-# series rather than continuing the existing one. Sample counts and the sweeps
-# are not: raising them measures the same quantity more precisely.
+# A run on an accelerator also measures the host, and the two do not pool: the
+# device is part of each reading's declared workload. That reading answers two
+# things nothing else here does. Whether the engine is playable without an
+# accelerator, and what a model change costs in a wall clock at all, since one
+# 64-token forward is too small to occupy an accelerator and its batch-one
+# latency barely moves between model sizes.
 #
-# Both throughput figures are reported and they are not interchangeable. The
-# headline resolves whole batched decisions the way the generated benchmarks do,
-# including the batch construction, masking and sampling a decision pays for;
-# the forward figure re-runs a batch built once, which isolates launch cost and
-# is the wrong number for sizing a generated run.
+# Every value below that decides *what* is measured is part of series identity:
+# `latency.reference_plies`, both batch sizes, `throughput.history_plies`,
+# either seed, and the runtime dials. Sample counts are not, and neither is
+# `processes`: raising them measures the same quantity more precisely.
 
-# Processes this reading's spread is measured over, itself included. Nothing
-# inside a timing reading can be resampled into a spread, so the benchmark
-# measures its own by running again — and the whole command costs this many
-# readings. Lower it where a reading is wanted sooner than it is wanted
-# precisely; set it to 1 for an exploratory reading with no floor at all.
-replicates = 6
+# Processes this reading is taken in, itself included, each one a whole reading.
+# Where a process lands is nearly all of the run-to-run noise, so measuring more
+# decisions inside one buys nothing and this is the only lever. The committed
+# value is their median, which narrows as the square root of this number, and
+# their spread is the floor a later delta is read against. Set it to 1 for an
+# exploratory reading with no floor and no pooling.
+processes = 3
 
 [runtime]
 # Fixed so the measured decisions are reproducible. Temperature is recorded in
@@ -39,20 +40,21 @@ target_rating = 1500
 
 [latency]
 # Move twenty: a real midgame decision rather than an opening position whose
-# short history would flatter a full-history model.
+# short history would flatter a full-history model. One depth rather than a
+# sweep, because the model reads a fixed number of square tokens and folds
+# history into their channels rather than into the sequence.
 reference_plies = 40
-# Reaches the 300-ply cap the generated benchmarks play their games to.
-sweep_plies = [0, 20, 40, 60, 80, 120, 160, 200, 250, 300]
-# Sample counts buy resolution rather than a different quantity, which is why
-# they are outside series identity. One reading is around 15 s on one CUDA
-# device at these counts, and the command pays that once per replicate: about
-# 90 s at the default of six, measured on an RTX 4090 on 2026-08-10.
 decisions = 100
 warmup_decisions = 5
 
 [throughput]
-reference_batch_size = 8
-sweep_batch_sizes = [1, 4, 8, 16, 32, 64]
+# Concurrent players, at the point where the throughput curve has flattened but
+# a move still comes back in tens of milliseconds rather than a visible pause.
+serving_batch_size = 64
+# An instrument rather than an operating point: nothing serves this wide, and it
+# is where the accelerator stops being launch bound and the forward pass starts
+# reflecting how much arithmetic the model does.
+compute_batch_size = 256
 history_plies = 40
 batches = 30
 warmup_batches = 3
