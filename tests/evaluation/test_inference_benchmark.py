@@ -297,12 +297,13 @@ def test_a_metric_the_replicates_read_identically_is_left_unqualified(
     result = _measure(_config(checkpoint, processes=1))
     values = result.envelopes[0].measurements
     unseparated = INFERENCE_MODEL_LOAD_SECONDS.identifier
-    spreads = {
-        item.fingerprint: 0.0 if item.metric == unseparated else 0.5 for item in values
+    readings = {
+        item.fingerprint: (item.value, 0.0 if item.metric == unseparated else 0.5)
+        for item in values
     }
 
     records = inference_module._dispersions(
-        inference_module._measurement_units(result), spreads, 3
+        inference_module._measurement_units(result), readings, 3
     )
 
     qualified = {item.metric for item in values if item.fingerprint in records}
@@ -324,7 +325,7 @@ def test_a_single_replicate_reads_without_measuring_a_spread(
     result = _measure(_config(checkpoint, processes=1))
 
     assert result.processes == 1
-    assert result.dispersions == {}
+    assert result.pooled == {}
     assert all(item.dispersion is None for item in result.envelopes[0].measurements)
 
 
@@ -349,8 +350,9 @@ def test_a_replicate_process_measures_the_checkpoint_it_was_handed(
     result = _measure(_config(checkpoint, processes=2))
 
     assert result.processes == 2
-    assert set(result.dispersions) <= set(result.pooled)
     assert {label for label in result.pooled if label.startswith("cpu ")}
+    # The floor a delta faces is the pooled value's own, not one process's.
+    assert all(spread >= 0.0 for _, spread in result.pooled.values())
 
 
 def test_the_stage_attribution_never_claims_more_than_the_whole(

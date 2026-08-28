@@ -2256,28 +2256,25 @@ def _process_lines(result: InferenceBenchmarkResult) -> list[str]:
 
     from anthro_chess.evaluation.results import metric_column_width
 
-    if not result.dispersions:
+    if not result.pooled:
         return [
             "",
             "Taken in one process: the value is that process's reading and a delta "
             "against it reports unknown noise.",
         ]
-    floored = {
-        label: spread for label, spread in result.dispersions.items() if spread > 0.0
-    }
     lines = [
         "",
         f"Committed, pooled over {result.processes} processes. Each value is their "
         "mean, beside the spread of that mean, which floors a delta against it:",
     ]
     width = metric_column_width(result.pooled)
-    for label, value in sorted(result.pooled.items()):
-        spread = floored.get(label)
-        floor = "no floor; every process read it identically"
-        lines.append(
-            f"  {label:<{width}} {value:.6g}"
-            + (f"  +-{spread:.6g}" if spread is not None else f"  ({floor})")
+    for label, (value, spread) in sorted(result.pooled.items()):
+        qualified = (
+            f"±{spread:.6g}"
+            if spread > 0.0
+            else "(no floor; every process read it identically)"
         )
+        lines.append(f"  {label:<{width}} {value:.6g}  {qualified}")
     return lines
 
 

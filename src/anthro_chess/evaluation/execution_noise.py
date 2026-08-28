@@ -11,8 +11,8 @@ process reproduces it several times more closely than a fresh process does, so
 where a process happens to land is nearly the whole of the noise, and measuring
 more decisions inside one buys nothing. The inference benchmark therefore *runs
 itself again*, in several processes, and those processes pay for themselves
-twice: the committed value is their median, which narrows as their square root,
-and their spread is the floor a later delta is read against.
+twice: the committed value is their mean, and the floor a later delta is read
+against is that mean's own spread rather than one process's.
 
 **In the same session as the reading it qualifies.** A dispersion measured now
 describes the machine now, and a machine drifts: #161 measured a floor taken on
@@ -54,6 +54,7 @@ from anthro_chess.evaluation.results import (
     MetricDispersion,
     NoiseCharacterizationError,
     measured_dispersion,
+    pooled_process_reading,
 )
 from anthro_chess.evaluation.results.noise import DEFAULT_CONFIDENCE
 
@@ -85,17 +86,6 @@ class ProcessSample:
         """Return the sample one device's measurements amount to."""
 
         return cls(execution=execution, checkpoint=checkpoint, values=tuple(values))
-
-    @property
-    def reading(self) -> dict[str, float]:
-        """Return each series' value, keyed by the fingerprint naming it.
-
-        Keyed by fingerprint rather than by metric identifier because one
-        reading commits the same metric on the host and on the accelerator, and
-        pooling those together would average two quantities.
-        """
-
-        return {value.fingerprint: value.value for value in self.values}
 
     def as_record(self) -> dict[str, Any]:
         """Return the JSON-compatible record a worker process prints."""
@@ -237,22 +227,22 @@ def subprocess_sampler(
     return sample
 
 
-def measure_process_readings(
+def measure_pooled_readings(
     own: Sequence[ProcessSample],
     sampler: Callable[[], tuple[ProcessSample, ...]],
     *,
     processes: int,
-) -> dict[str, tuple[float, ...]]:
-    """Return each series' one value per process, in process order.
+) -> dict[str, tuple[float, float]]:
+    """Return each series' pooled value and that value's own spread.
 
     ``own`` is the reading being pooled and qualified, and it counts as one of
-    them: both the median and the dispersion have to describe the reading they
-    travel with, not a neighbouring measurement of the same thing.
+    them: both halves have to describe the reading they travel with, not a
+    neighbouring measurement of the same thing.
 
-    Fewer processes give a wider dispersion and a noisier median, so cutting the
-    count trades measurement time for a reading that resolves less. Two are
-    permitted because a coarse floor beats none, but they leave one degree of
-    freedom and a floor an order of magnitude above the spread.
+    Fewer processes give a wider floor and a noisier value, so cutting the count
+    trades measurement time for a reading that resolves less. Two are permitted
+    because a coarse floor beats none, but they leave one degree of freedom and
+    a floor an order of magnitude above the spread.
     """
 
     if processes < 2:
@@ -267,7 +257,16 @@ def measure_process_readings(
         # measured something else makes every later one wasted work, and each is
         # a whole benchmark run.
         _require_one_measurement(rounds)
-    return _readings_by_fingerprint(rounds)
+    readings = [_readings(round_) for round_ in rounds]
+    try:
+        return {
+            fingerprint: pooled_process_reading(
+                [reading[fingerprint] for reading in readings]
+            )
+            for fingerprint in sorted(readings[0])
+        }
+    except NoiseCharacterizationError as error:
+        raise ExecutionNoiseError(str(error)) from error
 
 
 def execution_dispersion_record(
@@ -344,19 +343,7 @@ def _readings(samples: Sequence[ProcessSample]) -> dict[str, float]:
     """Return one process's whole reading, across every device it measured."""
 
     return {
-        fingerprint: value
-        for sample in samples
-        for fingerprint, value in sample.reading.items()
-    }
-
-
-def _readings_by_fingerprint(
-    rounds: Sequence[Sequence[ProcessSample]],
-) -> dict[str, tuple[float, ...]]:
-    readings = [_readings(round_) for round_ in rounds]
-    return {
-        fingerprint: tuple(reading[fingerprint] for reading in readings)
-        for fingerprint in sorted(readings[0])
+        value.fingerprint: value.value for sample in samples for value in sample.values
     }
 
 
@@ -364,7 +351,7 @@ __all__ = [
     "ExecutionNoiseError",
     "ProcessSample",
     "execution_dispersion_record",
-    "measure_process_readings",
+    "measure_pooled_readings",
     "sample_execution_noise",
     "subprocess_sampler",
 ]

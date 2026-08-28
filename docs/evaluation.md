@@ -2794,13 +2794,20 @@ most of a batched decision at the sizes that matter. It is also where a change
 to the encoding or the action vocabulary lands, rather than in the forward pass,
 which is why it is reported rather than left implicit in the throughput figure.
 
-**The forward pass alone**, at a compute batch size wide enough that the device
-is no longer launch bound. Nothing serves that wide; it is an instrument, and it
-is the only wall clock here that separates two model sizes at all. It is a clean
-component of the whole-decision figure rather than a companion to it: both call
-the same seam, which reads one row per game rather than scoring every historical
-ply. It is declared on its own workload, so moving the instrument does not end
-the product timings' history and moving the serving batch does not end its own.
+**The model call alone**, at a compute batch size wide enough that the device is
+no longer launch bound. Nothing serves that wide; it is an instrument, and it is
+the only wall clock here that separates two model sizes at all. It reads one row
+per game rather than scoring every historical ply, which is what serving does,
+and it stops at the module: the host copy and the finite check a served decision
+pays are fixed costs that do not grow with the model, and leaving them in would
+dilute this figure by more the wider the instrument got. It is declared on its
+own workload, so moving the instrument does not end the product timings' history
+and moving the serving batch does not end its own.
+
+The serving figure's forward half is the other way round, and deliberately: it
+times the seam a decision actually goes through, because it is subtracted from a
+whole decision and both sides have to pay the same host costs for the difference
+to be that decision's own work.
 
 **Cold start**, split into model-load time and the first decision after loading.
 Lazy kernel compilation and allocator warmup land in the first decision rather

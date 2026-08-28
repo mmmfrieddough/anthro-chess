@@ -251,9 +251,12 @@ class ExecutionRecord(ResultModel):
     so it must stay subtractable. Coordinates are recorded and diffed, never
     digested.
 
-    The **environment** — device, precision, Torch version, platform — is
-    coordinates too, kept as named fields because every efficiency benchmark
-    has the same ones.
+    The **environment** of device, precision, Torch version and platform is
+    coordinates too, kept as named fields because every efficiency benchmark has
+    the same ones. A benchmark that measures two devices on purpose declares
+    which one a reading is for in its workload as well, so the two do not land
+    on one series; that is a declared condition rather than a promotion of the
+    machine into identity.
 
     Both mappings are kept in full beside the digest, because "why is this
     slower" is unanswerable from a hash, and because they are a handful of

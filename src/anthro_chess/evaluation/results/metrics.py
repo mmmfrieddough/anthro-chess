@@ -1639,11 +1639,13 @@ INFERENCE_FORWARD_THROUGHPUT = _inference_metric(
     "inference.forward_throughput_per_second",
     MetricDirection.HIGHER_IS_BETTER,
     (
-        "Decisions per second through the forward pass alone, at the declared "
+        "Decisions per second through the model call alone, at the declared "
         "compute batch size, on a batch built once and re-run and taken from "
         "the median batch. Measured where the device stops being launch bound, "
-        "which is the only batch size at which a wall clock separates two "
-        "model sizes at all."
+        "which is the only batch size at which a wall clock separates two model "
+        "sizes at all, and excluding the host copy and finite check a served "
+        "decision pays, which are fixed costs that would dilute it by more the "
+        "wider the batch."
     ),
 )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -16,7 +17,7 @@ from anthro_chess.evaluation.execution_noise import (
     ExecutionNoiseError,
     ProcessSample,
     execution_dispersion_record,
-    measure_process_readings,
+    measure_pooled_readings,
     sample_execution_noise,
     subprocess_sampler,
 )
@@ -32,7 +33,6 @@ from anthro_chess.evaluation.results import (
     dispersion_bound,
     execution_reference,
     measurement,
-    process_dispersion,
     replicate_dispersion,
 )
 from anthro_chess.evaluation.results.metrics import (
@@ -110,13 +110,11 @@ def _spreads(
     *,
     processes: int,
 ) -> dict[str, float]:
-    """Return each series' spread the way the benchmark derives it."""
+    """Return each series' spread, which is the pooled value's rather than one
+    process's."""
 
-    readings = measure_process_readings((own,), _sampler(others), processes=processes)
-    return {
-        fingerprint: process_dispersion(values)
-        for fingerprint, values in readings.items()
-    }
+    readings = measure_pooled_readings((own,), _sampler(others), processes=processes)
+    return {fingerprint: spread for fingerprint, (_, spread) in readings.items()}
 
 
 def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
@@ -131,8 +129,12 @@ def test_the_reading_being_qualified_is_one_of_the_replicates() -> None:
 
     spreads = _spreads(own, others, processes=3)
 
+    # The spread of their mean rather than of one of them, which is what the
+    # committed value's own noise is.
     assert spreads == {
-        _series(LATENCY): pytest.approx(replicate_dispersion([10.0, 12.0, 14.0]))
+        _series(LATENCY): pytest.approx(
+            replicate_dispersion([10.0, 12.0, 14.0]) / math.sqrt(3)
+        )
     }
 
 

@@ -18,13 +18,20 @@ do rollouts played at two temperatures, so the workload digest belongs in
 identity and those metrics carry a :class:`WorkloadComponent`.
 
 The machine deliberately does not. A cross-machine latency delta is not
-meaningless — it is perfectly interpretable, just attributable to the
-environment rather than to the model — and ending a series for it would
-fragment efficiency history at every hardware change, Torch bump, and cloud
-session, leaving no way to ask whether the shipped thing is getting slower.
-Whether two numbers are safe to subtract is a question for a report, which can
-answer it from the environment each result records. See
+meaningless, only attributable to the environment rather than to the model, and
+ending a series for it would fragment efficiency history at every hardware
+change, Torch bump, and cloud session, leaving no way to ask whether the shipped
+thing is getting slower. Whether two numbers are safe to subtract is a question
+for a report, which can answer it from the environment each result records. See
 ``docs/decisions/0018-workload-scoped-efficiency-series.md``.
+
+One benchmark declares the *kind* of device it ran on as workload, and it is the
+exception that shows the rule rather than a softening of it. Inference
+efficiency measures the host and the accelerator in one invocation, so those are
+two declared conditions of one reading rather than one quantity measured on two
+machines; which accelerator remains a coordinate, and the history it carries
+still runs across a hardware change. See
+``docs/decisions/0082-inference-cost-is-counted-where-a-clock-cannot-see-it.md``.
 """
 
 from __future__ import annotations
