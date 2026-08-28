@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import csv
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Hashable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from hashlib import sha256
@@ -116,13 +116,13 @@ class OpeningBook:
     #: be labeled with, and therefore the only ones a depth or waypoint
     #: reading is ever taken at.
     continuations: Mapping[str, OpeningContinuation]
-    #: The same named positions under a key that costs nothing to take. An EPD
-    #: is a string built by scanning all sixty-four squares, and classification
+    #: The same named positions under the library's own position key. An EPD is
+    #: a string built by scanning all sixty-four squares, and classification
     #: takes one per ply of every game it reads, which made rendering positions
-    #: the largest cost in the evaluation suite. Built by keying the book's own
-    #: positions through the same function, so the two indexes cannot disagree
-    #: about which position an entry names.
-    keyed: Mapping[tuple[object, ...], str]
+    #: the largest cost in the evaluation suite. The repetition counter keys
+    #: positions the same way, so a board identical for a threefold claim is
+    #: identical here.
+    keyed: Mapping[Hashable, OpeningEntry]
 
     def identity(self) -> dict[str, object]:
         """Return the record artifacts carry alongside opening labels."""
@@ -134,20 +134,15 @@ class OpeningBook:
             "sha256": self.content_sha256,
         }
 
-    def entry_for(self, epd: str) -> OpeningEntry | None:
-        """Return the book entry naming a position, if the book names it."""
-
-        return self.positions.get(epd)
-
-    def named_epd(self, board: chess.Board) -> str | None:
-        """Return the position string this board matches, when the book names it.
+    def named_entry(self, board: chess.Board) -> OpeningEntry | None:
+        """Return the entry naming this board, when the book names it.
 
         The lookup classification runs at every ply, which is why it takes the
         board rather than a rendering of it: a caller that never reaches a named
         position never builds a string at all.
         """
 
-        return self.keyed.get(position_key(board))
+        return self.keyed.get(board._transposition_key())
 
     def continuation_for(self, epd: str) -> OpeningContinuation | None:
         """Return what the book still offers from a named position."""
@@ -204,45 +199,31 @@ class OpeningBook:
         )
 
 
-def position_key(board: chess.Board) -> tuple[object, ...]:
-    """Return what identifies a position for book matching, without rendering it.
+def _keyed(
+    positions: Mapping[str, OpeningEntry],
+) -> dict[Hashable, OpeningEntry]:
+    """Key every named position the way classification will look one up.
 
-    Carries exactly what an EPD carries and nothing more: the piece placement,
-    the side to move, the castling rights the position actually has, and an en
-    passant square only where it could be taken. Keeping that last condition is
-    what makes the two agree, since an EPD omits a square no move can use.
+    Through the same function on both sides, so the index cannot disagree with
+    the position strings it stands for about which entry names a board.
+
+    The collision this refuses is the one that makes the second index unsafe:
+    two positions the book names separately reaching one key would silently give
+    a game the other one's opening.
     """
 
-    return (
-        board.pawns,
-        board.knights,
-        board.bishops,
-        board.rooks,
-        board.queens,
-        board.kings,
-        board.occupied_co[chess.WHITE],
-        board.occupied_co[chess.BLACK],
-        board.turn,
-        board.clean_castling_rights(),
-        board.ep_square if board.has_legal_en_passant() else None,
-    )
-
-
-def _keyed(positions: Mapping[str, OpeningEntry]) -> dict[tuple[object, ...], str]:
-    """Key every named position through the function classification will use."""
-
-    keyed: dict[tuple[object, ...], str] = {}
-    for epd in positions:
+    keyed: dict[Hashable, OpeningEntry] = {}
+    for epd, entry in positions.items():
         board = chess.Board()
         board.set_epd(epd)
-        key = position_key(board)
+        key = board._transposition_key()
         previous = keyed.get(key)
-        if previous is not None and previous != epd:
+        if previous is not None:
             raise OpeningBookError(
                 "two named positions share one key, so the book cannot be "
-                f"matched against: {previous!r} and {epd!r}"
+                f"matched against: {previous.epd!r} and {epd!r}"
             )
-        keyed[key] = epd
+        keyed[key] = entry
     return keyed
 
 

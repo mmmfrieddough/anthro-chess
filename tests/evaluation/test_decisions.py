@@ -32,10 +32,6 @@ from anthro_chess.evaluation.games import (
     SeatRecord,
     build_game_record,
 )
-from anthro_chess.evaluation.results import DataComponent
-from anthro_chess.evaluation.results.metrics import (
-    MOVE_PREDICTION_PROJECTION,
-)
 from anthro_chess.runtime import RuntimeConfig
 
 PLAYED = ("e2e4", "e7e5", "g1f3")
@@ -159,15 +155,6 @@ def _sample(
         selected_rank=selected_rank,
         preferred_action_id=100 if selected_rank == 1 else 101,
         preferred_probability=preferred_probability,
-    )
-
-
-def _data_component() -> DataComponent:
-    return DataComponent(
-        projection=MOVE_PREDICTION_PROJECTION.name,
-        projection_version=MOVE_PREDICTION_PROJECTION.version,
-        content_sha256="a" * 64,
-        games=3,
     )
 
 

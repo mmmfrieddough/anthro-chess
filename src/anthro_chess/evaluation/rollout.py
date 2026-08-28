@@ -63,7 +63,7 @@ a narrow reading is not mistaken for a complete one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
@@ -747,6 +747,9 @@ class RolloutReading:
     human_games: int
     comparisons: dict[ComparedQuantity, CurveComparison]
     execution: ExecutionRecord
+    #: What the depth sweep was measured under, which is not what the distances
+    #: beside it were measured under.
+    divergence_execution: ExecutionRecord
     #: Each seed's own conditional distance per quantity, and the floor that
     #: spread implies. Where a measurement carries a bootstrap floor it is an
     #: estimate of this quantity; recording both is what makes it checkable
@@ -760,9 +763,6 @@ class RolloutReading:
     unavailable: dict[ComparedQuantity, str] = field(default_factory=dict)
     #: The repertoire distance recomputed at each book ply. Detail tier only.
     divergence: tuple[DepthDivergence, ...] = ()
-    #: What the sweep above was measured under, which is not what the distances
-    #: beside it were measured under.
-    divergence_execution: ExecutionRecord | None = None
     #: The shallow repertoire enumerated exactly, when the walk ran.
     exact: ExactRepertoire | None = None
 
@@ -1440,7 +1440,7 @@ def _curve_readings(
 
 
 def _compare_each(
-    calls: Sequence[Mapping[str, Any]],
+    calls: Sequence[Callable[[], CurveComparison]],
     *,
     workers: int,
 ) -> list[CurveComparison | CurveComparisonError]:
@@ -1458,9 +1458,11 @@ def _compare_each(
     fewer points, and a pool that raised would take the whole map with it.
     """
 
-    def run(call: Mapping[str, Any]) -> CurveComparison | CurveComparisonError:
+    def run(
+        call: Callable[[], CurveComparison],
+    ) -> CurveComparison | CurveComparisonError:
         try:
-            return compare_curves(**call)
+            return call()
         except CurveComparisonError as error:
             return error
 
@@ -1498,7 +1500,7 @@ def _curve_reading(
     comparisons: dict[ComparedQuantity, CurveComparison] = {}
     unavailable: dict[ComparedQuantity, str] = {}
     asked: list[ComparedQuantity] = []
-    calls: list[dict[str, Any]] = []
+    calls: list[Callable[[], CurveComparison]] = []
     for quantity in iter_quantities():
         try:
             spec = curve_spec(quantity, ratings)
@@ -1516,14 +1518,15 @@ def _curve_reading(
             continue
         asked.append(quantity)
         calls.append(
-            {
-                "spec": spec,
-                "human": human,
-                "model": generated,
-                "resamples": config.reference.resamples,
-                "seed": config.reference.seed,
-                "model_varies": varies,
-            }
+            partial(
+                compare_curves,
+                spec=spec,
+                human=human,
+                model=generated,
+                resamples=config.reference.resamples,
+                seed=config.reference.seed,
+                model_varies=varies,
+            )
         )
     for quantity, outcome in zip(
         asked, _compare_each(calls, workers=config.workers), strict=True
@@ -1623,7 +1626,7 @@ def _divergence_by_depth(
 
     plies: list[int] = []
     counts: list[int] = []
-    calls: list[dict[str, Any]] = []
+    calls: list[Callable[[], CurveComparison]] = []
     for ply in range(1, deepest + 1):
         human = _depth_observations(human_games, human_labels, ply, level)
         model = _depth_observations(model_games, model_labels, ply, level)
@@ -1632,14 +1635,15 @@ def _divergence_by_depth(
         plies.append(ply)
         counts.append(len({observation.value for observation in (*human, *model)}))
         calls.append(
-            {
-                "spec": spec,
-                "human": human,
-                "model": model,
-                "resamples": config.divergence.resamples,
-                "seed": config.reference.seed,
-                "model_varies": model_varies,
-            }
+            partial(
+                compare_curves,
+                spec=spec,
+                human=human,
+                model=model,
+                resamples=config.divergence.resamples,
+                seed=config.reference.seed,
+                model_varies=model_varies,
+            )
         )
 
     points: list[DepthDivergence] = []
@@ -2230,7 +2234,7 @@ def _record(
             execution=reading.execution,
         )
         divergence = _divergence_measurements(reading)
-        if divergence and reading.divergence_execution is not None:
+        if divergence:
             recorder.add(
                 divergence,
                 payload=partial(_divergence_payload, reading),
@@ -2509,7 +2513,7 @@ def _divergence_measurements(reading: RolloutReading) -> tuple[Measurement, ...]
     """
 
     half_depth = divergence_half_depth(reading.divergence)
-    if half_depth is None or reading.divergence_execution is None:
+    if half_depth is None:
         return ()
     return (
         measurement(
@@ -2593,11 +2597,7 @@ def _divergence_payload(reading: RolloutReading) -> dict[str, Any]:
     return {
         "arm": reading.arm.value,
         "temperature": reading.temperature,
-        "workload_sha256": (
-            None
-            if reading.divergence_execution is None
-            else reading.divergence_execution.workload_sha256
-        ),
+        "workload_sha256": reading.divergence_execution.workload_sha256,
         "points": [point.as_record() for point in reading.divergence],
     }
 

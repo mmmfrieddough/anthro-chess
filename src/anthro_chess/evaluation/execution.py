@@ -46,6 +46,7 @@ def execution_record(
     parallel reading incomparable with a serial one over a scheduling choice.
     """
 
+    host_threads = torch.get_num_threads() if cpu_threads is None else cpu_threads
     return execution_reference(
         device=device.type,
         device_name=device_name(device),
@@ -53,11 +54,7 @@ def execution_record(
         torch_version=torch.__version__,
         platform_key=platform_key(),
         platform=platform.platform(),
-        cpu_threads=(
-            (torch.get_num_threads() if cpu_threads is None else cpu_threads)
-            if device.type == "cpu"
-            else None
-        ),
+        cpu_threads=host_threads if device.type == "cpu" else None,
         workload=dict(workload),
     )
 
