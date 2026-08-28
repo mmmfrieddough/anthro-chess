@@ -1510,6 +1510,7 @@ def _inference_metric(
     *,
     cost: MetricCost = MetricCost.MEASURED_EXECUTION,
     execution_sensitive: bool = True,
+    no_sampling_floor_reason: str | None = None,
 ) -> MetricDefinition:
     """Register one inference-efficiency metric.
 
@@ -1529,9 +1530,18 @@ def _inference_metric(
             summary=summary,
             cost=cost,
             execution_sensitive=execution_sensitive,
+            no_sampling_floor_reason=no_sampling_floor_reason,
         )
     )
 
+
+#: Why a counted quantity carries no floor. Shared, because both counts are the
+#: same kind of thing and a report renders this reason rather than sending a
+#: reader off to measure a spread that does not exist.
+_COUNTED_NOT_SAMPLED = (
+    "the value is counted from the loaded module rather than sampled, so it is "
+    "identical in every process and there is nothing for a spread to be over"
+)
 
 INFERENCE_PARAMETERS = _inference_metric(
     "inference.parameters",
@@ -1542,6 +1552,7 @@ INFERENCE_PARAMETERS = _inference_metric(
     ),
     cost=MetricCost.FREE,
     execution_sensitive=False,
+    no_sampling_floor_reason=_COUNTED_NOT_SAMPLED,
 )
 
 INFERENCE_DECISION_GFLOPS = _inference_metric(
@@ -1556,6 +1567,7 @@ INFERENCE_DECISION_GFLOPS = _inference_metric(
     ),
     cost=MetricCost.FREE,
     execution_sensitive=False,
+    no_sampling_floor_reason=_COUNTED_NOT_SAMPLED,
 )
 
 INFERENCE_PEAK_MEMORY_MB = _inference_metric(

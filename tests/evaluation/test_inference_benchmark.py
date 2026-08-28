@@ -819,6 +819,10 @@ def test_what_a_decision_costs_the_model_is_counted_rather_than_timed(
     counted = first.envelopes[0].measurement(INFERENCE_DECISION_GFLOPS.identifier)
     assert counted is not None
     assert counted.value == pytest.approx(first.cost.decision_gflops)
+    # Declared unqualifiable rather than left unknown, so a report says there is
+    # no spread to measure instead of pointing a reader at work to do.
+    for definition in (INFERENCE_PARAMETERS, INFERENCE_DECISION_GFLOPS):
+        assert definition.no_sampling_floor_reason is not None
 
 
 def test_a_two_device_reading_splits_its_series_and_counts_once(
