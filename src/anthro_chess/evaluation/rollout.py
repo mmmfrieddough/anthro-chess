@@ -389,10 +389,7 @@ class RolloutDetailConfig(ConfigModel):
 
     #: Whole game records, for looking at what was actually played. Off by
     #: default: the payload tracks ``generation.games_per_position`` and reaches
-    #: a gigabyte a checkpoint at a size the curves want, while nothing reads it
-    #: any more. The decomposition that used to is computed from the games in
-    #: hand, and regenerating a suite to recompute a new distribution feature is
-    #: minutes rather than the hours it was before cells played in parallel.
+    #: a gigabyte a checkpoint at the size the curves want.
     retain_games: StrictBool = False
     #: Games kept per cell when they are retained at all, so that turning this
     #: on does not scale with a dial that only buys curve precision.
@@ -504,9 +501,8 @@ class RolloutCell:
         default=(), repr=False
     )
     #: The games behind the reading, retained only when the detail tier is
-    #: asked for them. Bulk diagnostics that never reach the committed summary,
-    #: and a sample rather than the cell: what reads them is a session looking
-    #: at play, since regenerating a suite is now minutes.
+    #: asked for them, and a sample of the cell rather than all of it. Bulk
+    #: diagnostics that never reach the committed summary.
     records: tuple[GameRecord, ...] = field(default=(), repr=False)
     #: How this cell's own decisions split between the model preferring an
     #: action and the draw overriding it. Computed here rather than from a
@@ -982,10 +978,7 @@ class _Setup:
     identity: CheckpointReference
     sources: tuple[_PositionSource, ...]
     book: OpeningBook | None
-    #: The host's intra-op threads, not the worker's. A worker pins itself to
-    #: one so the pool does not oversubscribe the machine, and reporting that as
-    #: the environment would make a parallel reading incomparable with a serial
-    #: one over a scheduling choice.
+    #: The host's intra-op threads rather than this process's.
     cpu_threads: int
 
 
@@ -1400,9 +1393,8 @@ def _curve_readings(
 
     A greedy temperature is left out. Its seats replay one game per position, so
     the model side is a point mass where the human side is a distribution, and
-    the distance between them is pinned at one minus the human mass of whichever
-    single category the model lands on however well it plays. The cells are still
-    measured; it is the comparison against human play that cannot mean anything.
+    that distance is one minus the human mass of whichever single category the
+    model lands on however well it plays.
     """
 
     readings: list[RolloutReading] = []
@@ -1446,11 +1438,11 @@ def _compare_each(
 ) -> list[CurveComparison | CurveComparisonError]:
     """Run independent curve comparisons at once, keeping the order asked for.
 
-    Threads rather than processes. The resampling is numpy work that gives the
+    Threads rather than processes: the resampling is numpy work that gives the
     interpreter up while it runs, and a comparison shipped to another process
-    costs more in pickled observations than the comparison itself takes:
-    measured on the shipped reference, eight threads read one and a half times
-    faster than eight processes and one and eight tenths times faster than one.
+    costs more in pickled observations than the comparison itself takes. Safe in
+    threads because concurrent calls share no mutable state, each building its
+    own generator from the seed it was passed.
 
     A failure is returned rather than raised, because callers differ on what one
     means. A headline quantity that cannot be compared fails the benchmark,
@@ -2164,9 +2156,7 @@ def _execution_record(
     cannot. Seed count, games per position, and concurrency are deliberately
     absent. More games estimate the same distribution more precisely, and
     concurrency only changes which kernels resolve a decision, so putting
-    either in identity would end a series for a throughput change. The thread
-    count is passed in for the same reason: a worker pins its own to one, and
-    the environment a reading is compared under is the host's.
+    either in identity would end a series for a throughput change.
     """
 
     return execution_record(
@@ -2438,8 +2428,12 @@ def divergence_half_depth(points: Sequence[DepthDivergence]) -> float | None:
     two checkpoints unlike humans by the same amount can arrive there from the
     first move or from the middle of theory, which are different faults.
 
+    Half is taken over the deepest truncation's excess, and the first crossing
+    of it is reported, so a curve that dipped and rose would read earlier than
+    half of its total.
+
     ``None`` where there is nothing to locate: fewer than two depths, or a
-    plateau no further above the level a matching model reads at than the
+    deepest excess no further above the level a matching model reads at than the
     reading moves between runs. Half of an excess that is itself noise is a
     depth drawn from noise, and it reads like a measurement.
     """
@@ -2447,8 +2441,8 @@ def divergence_half_depth(points: Sequence[DepthDivergence]) -> float | None:
     if len(points) < 2:
         return None
     excesses = [point.excess for point in points]
-    plateau = points[-1]
-    if excesses[-1] <= (plateau.conditional_floor or 0.0):
+    deepest = points[-1]
+    if excesses[-1] <= (deepest.conditional_floor or 0.0):
         return None
     target = excesses[-1] / 2.0
     if target <= 0.0:  # pragma: no cover - a floor of zero still bars this
@@ -2576,9 +2570,6 @@ def _cell_payload(cell: RolloutCell) -> dict[str, Any]:
     payload = cell.as_record()
     payload["games_detail"] = [record.as_record() for record in cell.records]
     payload["features"] = [feature.as_record() for feature in cell.features]
-    # The individual decisions behind the committed decomposition. A checkpoint's
-    # interesting decisions are individual ones, and they survive here at a
-    # fraction of what the games they came from would cost.
     payload["decision_samples"] = [
         sample.as_record() for sample in cell.decision_samples
     ]

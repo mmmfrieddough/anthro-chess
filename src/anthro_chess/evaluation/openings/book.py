@@ -117,11 +117,10 @@ class OpeningBook:
     #: reading is ever taken at.
     continuations: Mapping[str, OpeningContinuation]
     #: The same named positions under the library's own position key. An EPD is
-    #: a string built by scanning all sixty-four squares, and classification
-    #: takes one per ply of every game it reads, which made rendering positions
-    #: the largest cost in the evaluation suite. The repetition counter keys
-    #: positions the same way, so a board identical for a threefold claim is
-    #: identical here.
+    #: a string built by scanning all sixty-four squares and classification takes
+    #: one per ply of every game it reads, where this costs a tuple of the
+    #: board's own fields. The repetition counter keys positions the same way, so
+    #: a board identical for a threefold claim is identical here.
     keyed: Mapping[Hashable, OpeningEntry]
 
     def identity(self) -> dict[str, object]:
@@ -204,12 +203,13 @@ def _keyed(
 ) -> dict[Hashable, OpeningEntry]:
     """Key every named position the way classification will look one up.
 
-    Through the same function on both sides, so the index cannot disagree with
-    the position strings it stands for about which entry names a board.
+    ``_transposition_key`` is private to python-chess, and the repetition
+    counter in ``anthro_chess.data.encoding`` depends on it for the same reason:
+    it is the library's own answer to when two boards are the same position.
 
-    The collision this refuses is the one that makes the second index unsafe:
-    two positions the book names separately reaching one key would silently give
-    a game the other one's opening.
+    The collision this refuses is the one that makes a second index unsafe. Two
+    positions the book names separately reaching one key would silently give a
+    game the other one's opening.
     """
 
     keyed: dict[Hashable, OpeningEntry] = {}

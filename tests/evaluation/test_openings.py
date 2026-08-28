@@ -454,10 +454,8 @@ def test_the_repertoire_distribution_leaves_waypoints_out() -> None:
 def test_the_position_key_names_exactly_what_the_position_string_names() -> None:
     """The two indexes must agree, because only one of them is ever consulted.
 
-    Classification looks a position up by key rather than by rendering it, which
-    is what keeps a scan over every ply of every game off the string builder.
-    A key that disagreed with the string it stands for would not fail: it would
-    quietly name a different opening, or none.
+    A key that disagreed with the position string it stands for would not fail:
+    it would quietly name a different opening, or none.
     """
 
     book = load_book()

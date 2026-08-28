@@ -2601,12 +2601,7 @@ def _render_repertoire_drilldown(reading: RolloutReading) -> list[str]:
 
 
 def _render_divergence_depth(reading: RolloutReading) -> list[str]:
-    """Show where the opening divergence accumulates, beside how large it is.
-
-    A location rather than a size. Two checkpoints unlike humans by the same
-    amount can arrive there from the first move or from the middle of theory,
-    and the walk below reports only the amount.
-    """
+    """Show where the opening divergence accumulates, beside how large it is."""
 
     from anthro_chess.evaluation.rollout import divergence_half_depth
 

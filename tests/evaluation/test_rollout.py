@@ -1725,8 +1725,6 @@ def test_the_depth_sweep_commits_a_depth_and_keeps_its_curve_in_detail(
             for item in envelope.measurements
         )
     ]
-    # Its own series, because the depth it ran to and the resamples behind its
-    # null both decide what a half of it means.
     curves = _curve_envelope(result)
     assert sweep.execution is not None
     assert curves.execution is not None
