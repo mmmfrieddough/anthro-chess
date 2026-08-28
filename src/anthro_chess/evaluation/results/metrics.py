@@ -1537,8 +1537,8 @@ INFERENCE_PARAMETERS = _inference_metric(
     "inference.parameters",
     MetricDirection.INFORMATIONAL,
     (
-        "Trainable parameters in the loaded checkpoint. Counted rather than "
-        "timed, so it carries no noise and needs no floor."
+        "Parameters in the loaded checkpoint, frozen ones included. Counted "
+        "rather than timed, so it carries no noise and needs no floor."
     ),
     cost=MetricCost.FREE,
     execution_sensitive=False,
@@ -1571,9 +1571,10 @@ INFERENCE_DECISION_OVERHEAD_MS = _inference_metric(
     "inference.decision_overhead_ms",
     MetricDirection.LOWER_IS_BETTER,
     (
-        "Milliseconds one batched decision spends outside the model: context "
-        "assembly, batch construction, the host copy, legal masking and "
-        "sampling. Does not amortize with batch size, so it is the floor under "
+        "Milliseconds one batched decision spends around the model: context "
+        "assembly, batch construction, legal masking and sampling. The host "
+        "copy is inside both timed windows and cancels, so it is not here. "
+        "Does not amortize with batch size, so it is the floor under "
         "any decision, and it is where an encoding or action-vocabulary change "
         "lands rather than in the forward pass."
     ),

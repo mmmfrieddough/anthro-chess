@@ -2191,8 +2191,8 @@ def _device_lines(reading: InferenceDeviceReading) -> list[str]:
         "",
         (
             f"On {execution.device} ({execution.device_name}) "
-            f"{execution.precision}{threads}, workload "
-            f"{execution.workload_sha256[:12]}:"
+            f"{execution.precision}{threads}, as this process measured it "
+            f"(workload {execution.workload_sha256[:12]}):"
         ),
         (
             f"  Batch-one move latency at {latency.history_plies} plies "
@@ -2221,7 +2221,7 @@ def _device_lines(reading: InferenceDeviceReading) -> list[str]:
             ),
             (
                 f"    {serving.decision_overhead_ms:.3f} ms of each is host work "
-                "outside the model, which does not amortize."
+                "around the model, which does not amortize."
             ),
         ]
     )
@@ -2267,18 +2267,16 @@ def _process_lines(result: InferenceBenchmarkResult) -> list[str]:
     }
     lines = [
         "",
-        f"Pooled over {result.processes} process(es). Each value is their median, "
-        "and their spread floors a delta against it:",
+        f"Committed, pooled over {result.processes} processes. Each value is their "
+        "mean, beside the spread of that mean, which floors a delta against it:",
     ]
-    width = metric_column_width(floored)
-    lines.extend(
-        f"  {label:<{width}} {spread:.6g}" for label, spread in sorted(floored.items())
-    )
-    unmoved = sorted(set(result.dispersions) - set(floored))
-    if unmoved:
+    width = metric_column_width(result.pooled)
+    for label, value in sorted(result.pooled.items()):
+        spread = floored.get(label)
+        floor = "no floor; every process read it identically"
         lines.append(
-            f"  every process read {', '.join(unmoved)} identically, so none of "
-            "them carries a floor."
+            f"  {label:<{width}} {value:.6g}"
+            + (f"  +-{spread:.6g}" if spread is not None else f"  ({floor})")
         )
     return lines
 

@@ -78,7 +78,15 @@ fresh process does, so where a process lands is nearly the whole of the noise
 and measuring more decisions inside one buys nothing. Committing the parent's
 own reading and keeping the replicates for the dispersion alone left the number
 as noisy as a single process while paying for several; the committed value is
-now their median.
+now their mean, and the floor is that mean's own spread.
+
+That arithmetic decides the process count rather than wall clock alone. The
+mean's spread falls as the square root of the count, but the stored bound is a
+chi-square limit at one fewer degree of freedom, and the limit dominates when
+there are few: three processes resolve less than one unpooled reading at six,
+four are roughly break-even against it, and six are about two and a half times
+better. Six is kept, and the reading is smaller enough that it costs a little
+over half what the previous six did.
 
 ## Consequences
 

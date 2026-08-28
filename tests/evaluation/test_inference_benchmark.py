@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -138,7 +139,8 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
 
     result = _measure(_config(checkpoint), store=store, detail=detail)
 
-    (reading,) = result.readings
+    reading = result.serving
+    assert result.host is None
     latency = reading.latency
     assert latency.history_plies == FAST_LATENCY.reference_plies
     assert latency.decisions == FAST_LATENCY.decisions
@@ -153,22 +155,29 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
     assert result.cost.parameters > 0
     assert result.cost.decision_gflops > 0.0
 
-    envelope, cost = result.envelopes
-    assert envelope.kind == INFERENCE_KIND
+    play, compute, cost = result.envelopes
+    assert play.kind == INFERENCE_KIND
+    assert compute.kind == INFERENCE_KIND
     assert cost.kind == BENCHMARK_COST_KIND
-    assert {item.metric for item in envelope.measurements} == {
+    assert {item.metric for item in play.measurements} == {
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier,
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[90].identifier,
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[99].identifier,
         INFERENCE_MOVE_LATENCY_MEAN.identifier,
         INFERENCE_BATCH_THROUGHPUT.identifier,
         INFERENCE_DECISION_OVERHEAD_MS.identifier,
-        INFERENCE_FORWARD_THROUGHPUT.identifier,
         INFERENCE_PARAMETERS.identifier,
         INFERENCE_DECISION_GFLOPS.identifier,
         INFERENCE_MODEL_LOAD_SECONDS.identifier,
         INFERENCE_FIRST_DECISION_SECONDS.identifier,
     }
+    # The instrument is declared apart, so moving it ends only its own series.
+    assert {item.metric for item in compute.measurements} == {
+        INFERENCE_FORWARD_THROUGHPUT.identifier
+    }
+    assert play.execution is not None
+    assert compute.execution is not None
+    assert play.execution.workload_sha256 != compute.execution.workload_sha256
     assert result.recorded_paths and result.recorded_paths[0].exists()
     assert result.detail_paths and result.detail_paths[0].exists()
 
@@ -240,13 +249,14 @@ def test_a_reading_carries_the_spread_its_own_replicate_processes_measured(
         assert item.dispersion.units is None
 
 
-def test_the_committed_value_is_the_median_of_the_processes_that_read_it(
+def test_the_committed_value_is_pooled_over_the_processes_that_read_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     inference_run: Callable[..., Path],
 ) -> None:
     """The extra processes pay for themselves twice, and this is the half that
     would otherwise be thrown away.
+
 
     Where a process lands is nearly the whole of the noise, so a reading is only
     improved by taking it in more of them. Committing the parent's own value and
@@ -256,7 +266,7 @@ def test_the_committed_value_is_the_median_of_the_processes_that_read_it(
 
     checkpoint = inference_run(tmp_path / "run", seed=29)
     parent = _measure(_config(checkpoint, processes=1))
-    offsets = {1: 1.0, 2: 10.0}
+    offsets = {1: 2000.0, 2: 10000.0}
     _stub_sampler(monkeypatch, parent, lambda round_: offsets[round_])
 
     result = _measure(_config(checkpoint, processes=3))
@@ -266,9 +276,10 @@ def test_the_committed_value_is_the_median_of_the_processes_that_read_it(
     pooled = result.envelopes[0].measurement(latency)
     assert own is not None
     assert pooled is not None
-    # Three processes reading x, x+1 and x+10: the median is the middle one,
-    # which is neither this process's own reading nor their mean.
-    assert pooled.value == pytest.approx(own.value + 1.0)
+    # The offsets dwarf any real spread between two readings of this fixture, so
+    # the live process contributes a value indistinguishable from the parent's
+    # at this scale and the mean is theirs plus a third of the two offsets.
+    assert pooled.value == pytest.approx(own.value + 4000.0, rel=1e-3)
 
 
 def test_a_metric_the_replicates_read_identically_is_left_unqualified(
@@ -290,7 +301,9 @@ def test_a_metric_the_replicates_read_identically_is_left_unqualified(
         item.fingerprint: 0.0 if item.metric == unseparated else 0.5 for item in values
     }
 
-    records = inference_module._dispersions(spreads, 3, result.execution)
+    records = inference_module._dispersions(
+        inference_module._measurement_units(result), spreads, 3
+    )
 
     qualified = {item.metric for item in values if item.fingerprint in records}
     assert qualified == {item.metric for item in values} - {unseparated}
@@ -336,9 +349,8 @@ def test_a_replicate_process_measures_the_checkpoint_it_was_handed(
     result = _measure(_config(checkpoint, processes=2))
 
     assert result.processes == 2
-    assert set(result.dispersions) == {
-        f"cpu {item.metric}" for item in result.envelopes[0].measurements
-    }
+    assert set(result.dispersions) <= set(result.pooled)
+    assert {label for label in result.pooled if label.startswith("cpu ")}
 
 
 def test_the_stage_attribution_never_claims_more_than_the_whole(
@@ -702,7 +714,7 @@ def test_the_recorded_execution_reproduces_its_own_series_identity(
 ) -> None:
     checkpoint = inference_run(tmp_path / "run", seed=10)
 
-    envelope, _ = _measure(_config(checkpoint)).envelopes
+    envelope, _, _ = _measure(_config(checkpoint)).envelopes
 
     assert envelope.execution is not None
     assert envelope.execution.device == "cpu"
@@ -773,14 +785,17 @@ def test_the_host_and_the_accelerator_do_not_land_on_one_series(
     checkpoint = inference_run(tmp_path / "run", seed=31)
     config = _config(checkpoint).value
 
-    host = inference_module._execution_record(
-        config, torch.device("cpu"), compute_batch_size=None
-    )
-    accelerator = inference_module._execution_record(
-        config, torch.device("cuda"), compute_batch_size=4
-    )
+    host = inference_module._play_execution(config, torch.device("cpu"))
+    accelerator = inference_module._play_execution(config, torch.device("cuda"))
 
     assert host.workload_sha256 != accelerator.workload_sha256
+    # And moving the instrument leaves the product timings' series alone.
+    assert (
+        accelerator.workload_sha256
+        != inference_module._compute_execution(
+            config, torch.device("cuda"), 4
+        ).workload_sha256
+    )
 
 
 def test_what_a_decision_costs_the_model_is_counted_rather_than_timed(
@@ -804,6 +819,85 @@ def test_what_a_decision_costs_the_model_is_counted_rather_than_timed(
     counted = first.envelopes[0].measurement(INFERENCE_DECISION_GFLOPS.identifier)
     assert counted is not None
     assert counted.value == pytest.approx(first.cost.decision_gflops)
+
+
+def test_a_two_device_reading_splits_its_series_and_counts_once(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The grouping a run on an accelerator produces, without needing one.
+
+    The host reading is grafted onto a real result rather than measured, so this
+    runs anywhere. What it pins is the part a device cannot change: which
+    envelope each metric lands in, and that the counted quantities are entered
+    once rather than once per device.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=33)
+    measured = _measure(_config(checkpoint))
+    accelerator = replace(
+        measured.serving,
+        execution=inference_module._play_execution(
+            _config(checkpoint).value, torch.device("cuda")
+        ),
+    )
+    # The host reading carries no compute instrument and no cold start, which
+    # are both paid once by the process that loaded the checkpoint.
+    host = replace(measured.serving, compute=None, cold_start=None)
+    result = replace(measured, serving=accelerator, host=host)
+
+    units = {unit.slug: unit for unit in inference_module._measurement_units(result)}
+
+    assert set(units) == {"cuda", "cuda-compute", "cpu"}
+    counted = {INFERENCE_PARAMETERS.identifier, INFERENCE_DECISION_GFLOPS.identifier}
+    assert counted <= {value.metric for value in units["cuda"].values}
+    assert not counted & {value.metric for value in units["cpu"].values}
+    # Cold start is paid once, by the process that loaded the checkpoint.
+    assert INFERENCE_MODEL_LOAD_SECONDS.identifier not in {
+        value.metric for value in units["cpu"].values
+    }
+    # The same metric on two devices is two series rather than one read twice.
+    latency = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    fingerprints = {
+        slug: next(v.fingerprint for v in unit.values if v.metric == latency)
+        for slug, unit in units.items()
+        if any(v.metric == latency for v in unit.values)
+    }
+    assert len(set(fingerprints.values())) == len(fingerprints) == 2
+
+
+@pytest.mark.gpu
+def test_an_accelerator_run_also_measures_the_host(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The half of the two-device path a host without an accelerator cannot run.
+
+    Everything downstream of the second reading is pinned on a grafted result,
+    which cannot catch the graft itself being wrong: that the replica loads,
+    decides, and reports as the host rather than as the device it was copied
+    from.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=34)
+    store = ResultsStore(tmp_path / "results")
+
+    result = _measure(
+        _config(checkpoint, model=ModelRunnerConfig(checkpoint_path=checkpoint)),
+        store=store,
+    )
+
+    assert result.serving.device == "cuda"
+    assert result.host is not None
+    assert result.host.device == "cpu"
+    # The replica really decided, rather than reporting the accelerator's work.
+    assert result.host.latency.mean_ms > 0.0
+    assert result.host.serving.decisions_per_second > 0.0
+    # The instrument and the cold start are the serving device's alone.
+    assert result.host.compute is None
+    assert result.host.cold_start is None
+    kinds = [envelope.kind for envelope in result.envelopes]
+    assert kinds.count(INFERENCE_KIND) == 3
 
 
 def test_a_walk_that_ends_early_restarts_rather_than_returning_a_short_history(

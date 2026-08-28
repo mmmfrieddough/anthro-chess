@@ -637,9 +637,10 @@ times more closely than a fresh process does, so measuring more decisions buys
 no resolution and only the process count does. One reading per process.
 
 **The inference benchmark does this during its own run**, and those processes pay
-for themselves twice. The committed value is their median, which narrows as the
-square root of their count, and their spread is the dispersion the reading
-carries, exactly as every other benchmark carries one. The reading being
+for themselves twice. The committed value is their mean, and the dispersion the
+reading carries is that mean's own spread rather than one process's, since a
+floor built from the per-process spread would price the reading as though the
+extra processes had not been paid for. The reading being
 qualified is itself one of the processes. The rest run one after another rather
 than together, since they would otherwise contend for the device they are
 timing, and each is a complete run of the benchmark; they record nothing,
@@ -657,9 +658,14 @@ reading at all.
 
 The process count is the one setting that trades measurement time for resolving
 power, and it moves both halves: cutting it widens the floor and leaves the
-committed value as noisy as a single process. It is paid on every inference
-reading rather than once per machine, so it is a live cost; the code owns the
-default and the configuration overrides it.
+committed value nearer to a single process's. The two do not move at the same
+rate. The mean's spread falls as the square root of the count, but the bound on
+an estimated spread is a chi-square limit at one fewer degree of freedom than
+there are processes, and that limit is punishing when there are few. Below four
+processes it costs more than the pooling wins, and the reading resolves less than
+one taken without pooling at all. The count is paid on every inference reading
+rather than once per machine, so it is a live cost; the code owns the default and
+the configuration overrides it.
 
 ### What A Missing Floor Means
 
@@ -2739,8 +2745,10 @@ reported because that gap is the answer to what a size tradeoff actually costs:
 the count says how much more work, and the clock says how much of it is paid for
 on this hardware.
 
-**Peak device memory** at the declared compute batch, which bounds the batch a
-device can serve.
+**Peak device memory** at the declared compute batch. An absolute figure that
+includes the resident weights and the batch itself rather than the forward
+pass's increment over them, because what it answers is whether a device can hold
+this batch at all.
 
 ### What It Costs To Play With
 
@@ -2778,18 +2786,21 @@ each result. Batching trades latency for throughput, so quoting a serving figure
 as an interactive one is the usual way that trade gets hidden.
 
 **The non-model share of a batched decision**, taken as the difference between
-that loop and the forward pass alone. It does not amortize with batch size,
-because it is one decision's own host work, and it is most of a batched decision
-at the sizes that matter. It is also where a change to the encoding or the action
-vocabulary lands, rather than in the forward pass, which is why it is reported
-rather than left implicit in the throughput figure.
+that loop and the forward pass alone: context assembly, batch construction,
+legal masking and sampling. The device-to-host copy is inside both timed windows
+and cancels out of the difference rather than appearing here. It does not
+amortize with batch size, because it is one decision's own host work, and it is
+most of a batched decision at the sizes that matter. It is also where a change
+to the encoding or the action vocabulary lands, rather than in the forward pass,
+which is why it is reported rather than left implicit in the throughput figure.
 
 **The forward pass alone**, at a compute batch size wide enough that the device
 is no longer launch bound. Nothing serves that wide; it is an instrument, and it
 is the only wall clock here that separates two model sizes at all. It is a clean
 component of the whole-decision figure rather than a companion to it: both call
 the same seam, which reads one row per game rather than scoring every historical
-ply.
+ply. It is declared on its own workload, so moving the instrument does not end
+the product timings' history and moving the serving batch does not end its own.
 
 **Cold start**, split into model-load time and the first decision after loading.
 Lazy kernel compilation and allocator warmup land in the first decision rather

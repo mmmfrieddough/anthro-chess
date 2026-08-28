@@ -18,18 +18,21 @@
 # 64-token forward is too small to occupy an accelerator and its batch-one
 # latency barely moves between model sizes.
 #
-# Every value below that decides *what* is measured is part of series identity:
-# `latency.reference_plies`, both batch sizes, `throughput.history_plies`,
-# either seed, and the runtime dials. Sample counts are not, and neither is
-# `processes`: raising them measures the same quantity more precisely.
+# Every value below that decides *what* is measured is part of series identity,
+# but not all of one series: the product timings are declared on the serving
+# batch and the latency depth, and the compute instrument on its own batch, so
+# moving the instrument does not end their history. Sample counts are outside
+# identity, and so is `processes`: raising them measures the same quantity more
+# precisely.
 
 # Processes this reading is taken in, itself included, each one a whole reading.
 # Where a process lands is nearly all of the run-to-run noise, so measuring more
 # decisions inside one buys nothing and this is the only lever. The committed
-# value is their median, which narrows as the square root of this number, and
-# their spread is the floor a later delta is read against. Set it to 1 for an
-# exploratory reading with no floor and no pooling.
-processes = 3
+# value is their mean and the floor is that mean's own spread, so both halves
+# move with this number. Below four the chi-square limit on an estimated spread
+# costs more than the pooling wins. Set it to 1 for an exploratory reading with
+# no floor and no pooling.
+processes = 6
 
 [runtime]
 # Fixed so the measured decisions are reproducible. Temperature is recorded in

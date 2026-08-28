@@ -348,8 +348,10 @@ def test_sampling_measures_repeatedly_and_records_nothing(
     )
     monkeypatch.setenv("ANTHRO_CHESS_RESULTS_ROOT", str(tmp_path / "results"))
 
-    (sample,) = sample_execution_noise(resolved)
+    samples = sample_execution_noise(resolved)
 
-    reading = {value.metric: value.value for value in sample.values}
+    reading = {
+        value.metric: value.value for sample in samples for value in sample.values
+    }
     assert reading[LATENCY] > 0.0
     assert not (tmp_path / "results").exists()
