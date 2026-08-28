@@ -2512,6 +2512,7 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
         lines.extend(_render_comparison_table(reading, width))
         lines.extend(_render_unavailable(reading))
         lines.extend(_render_repertoire_drilldown(reading))
+        lines.extend(_render_divergence_depth(reading))
         lines.extend(_render_exact_repertoire(reading))
     if result.recorded_paths:
         lines.extend(
@@ -2599,6 +2600,24 @@ def _render_repertoire_drilldown(reading: RolloutReading) -> list[str]:
     return lines
 
 
+def _render_divergence_depth(reading: RolloutReading) -> list[str]:
+    """Show where the opening divergence accumulates, beside how large it is."""
+
+    from anthro_chess.evaluation.rollout import divergence_half_depth
+
+    half = divergence_half_depth(reading.divergence)
+    if half is None:
+        return []
+    deepest = reading.divergence[-1]
+    return [
+        (
+            f"  divergence     half by book ply {half:.2f}, "
+            f"{deepest.conditional_distance:.4f} by ply {deepest.ply}"
+            f"{_against_null(deepest.conditional_null)}"
+        )
+    ]
+
+
 def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
     """Report the exactly enumerated repertoire beside its pruning bound.
 
@@ -2617,8 +2636,10 @@ def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
             f"{exact.execution.workload_sha256[:12]})"
         ),
         (
-            f"    conditional {exact.conditional_distance:.4f}  "
-            f"pooled {exact.pooled_distance:.4f}  "
+            f"    conditional {exact.conditional_distance:.4f}"
+            f"{_against_null(exact.conditional_null)}  "
+            f"pooled {exact.pooled_distance:.4f}"
+            f"{_against_null(exact.pooled_null)}  "
             f"waypoints {exact.waypoint_mass:.3f}"
         ),
         (
@@ -2627,6 +2648,16 @@ def _render_exact_repertoire(reading: RolloutReading) -> list[str]:
             f"({exact.pruned_mass:.3f} pruned in all)"
         ),
     ]
+
+
+def _against_null(null: float | None) -> str:
+    """Return the level a matching policy would read at, where one was estimated.
+
+    Beside the distance rather than on a line of its own: an exact reading with
+    no null next to it is read as a distance from zero, which it is not.
+    """
+
+    return "" if null is None else f" (null {null:.4f})"
 
 
 def _termination_arm(
@@ -3022,10 +3053,9 @@ def _render_ladder_seats(result: LadderBenchmarkResult) -> list[str]:
     invisible in either column alone.
 
     The scored share sits between them because it is neither: it is what the
-    seat's own play did to the ply limit, and on the readings taken so far it
-    has discriminated between checkpoints more sharply than the strength column
-    beside it. Both it and the fitted rating carry their own resolution, since
-    each is estimated from a different amount of this seat's play.
+    seat's own play did to the ply limit. Both it and the fitted rating carry
+    their own resolution, since each is estimated from a different amount of
+    this seat's play.
     """
 
     from anthro_chess.evaluation.results.metrics import (

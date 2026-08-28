@@ -124,7 +124,6 @@ def benchmark_registry() -> dict[str, Benchmark]:
         CHECKPOINT_COST_BENCHMARK,
         DEPENDENCY_BENCHMARK,
     )
-    from anthro_chess.evaluation.decisions import DecisionDecompositionError
     from anthro_chess.evaluation.inference import INFERENCE_BENCHMARK
     from anthro_chess.evaluation.ladder import LADDER_BENCHMARK
     from anthro_chess.evaluation.novelty import NOVELTY_BENCHMARK
@@ -192,16 +191,6 @@ def benchmark_registry() -> dict[str, Benchmark]:
                 cost=ROLLOUT_BENCHMARK,
                 games=_rollout_games,
                 retains_games=lambda config: bool(config.detail.retain_games),
-            ),
-            Benchmark(
-                name="decisions",
-                schema=None,
-                artifact_fields=(),
-                errors=(DecisionDecompositionError, OSError),
-                error=DecisionDecompositionError,
-                invoke=_invoke_decisions,
-                records_results=False,
-                games_from="rollout",
             ),
             Benchmark(
                 name="termination",
@@ -307,12 +296,6 @@ def _rollout_games(result: Any) -> tuple[GameRecord, ...]:
     """Return every game a rollout retained, across its whole matrix."""
 
     return tuple(record for cell in result.cells for record in cell.records)
-
-
-def _invoke_decisions(path: Path) -> Any:
-    from anthro_chess.evaluation.decisions import decompose_game_records
-
-    return decompose_game_records(path)
 
 
 __all__ = [

@@ -40,14 +40,6 @@ from anthro_chess.evaluation.games.records import (
     SeatRecord,
     parse_game_records,
 )
-from anthro_chess.evaluation.results import DataComponent, Measurement, measurement
-from anthro_chess.evaluation.results.metrics import (
-    DECISION_DEPARTURE_POLICY_REGRET,
-    DECISION_POLICY_REGRET,
-    DECISION_PREFERRED_PROBABILITY,
-    DECISION_PREFERRED_SELECTION_RATE,
-    DECISION_SELECTED_RANK,
-)
 from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import (
     ActionModelRunner,
@@ -380,61 +372,6 @@ def summarize_decisions(decisions: DecisionSet) -> DecisionDecomposition:
     )
 
 
-def decision_measurements(
-    cell: DecisionCell,
-    *,
-    data: DataComponent,
-) -> tuple[Measurement, ...]:
-    """Return the committed measurements for one cell of a decomposition.
-
-    One cell rather than a whole decomposition, because a result reports each
-    metric once and a pooled figure over a rating or temperature grid would
-    move with the grid. A suite passes the cell for its declared reference
-    setting.
-
-    The regret over departures is omitted when there were none. A run at
-    temperature zero has no departures at all, and reporting zero would read as
-    a measured near tie rather than as a quantity that does not exist.
-    """
-
-    values = [
-        measurement(
-            DECISION_PREFERRED_SELECTION_RATE.identifier,
-            cell.preferred_selection_rate,
-            data=data,
-            sample_size=cell.decisions,
-        ),
-        measurement(
-            DECISION_POLICY_REGRET.identifier,
-            cell.policy_regret,
-            data=data,
-            sample_size=cell.decisions,
-        ),
-        measurement(
-            DECISION_PREFERRED_PROBABILITY.identifier,
-            cell.preferred_probability,
-            data=data,
-            sample_size=cell.decisions,
-        ),
-        measurement(
-            DECISION_SELECTED_RANK.identifier,
-            cell.selected_rank,
-            data=data,
-            sample_size=cell.decisions,
-        ),
-    ]
-    if cell.departures:
-        values.append(
-            measurement(
-                DECISION_DEPARTURE_POLICY_REGRET.identifier,
-                cell.departure_policy_regret,
-                data=data,
-                sample_size=cell.departures,
-            )
-        )
-    return tuple(sorted(values, key=lambda value: value.metric))
-
-
 @dataclass(frozen=True)
 class PlayedDecision:
     """One decision to re-score, with the exact history it was made from.
@@ -622,7 +559,6 @@ __all__ = [
     "DecisionSetting",
     "PlayedDecision",
     "collect_decisions",
-    "decision_measurements",
     "decompose_game_records",
     "score_played_decisions",
     "summarize_decisions",

@@ -8,6 +8,8 @@ Accepted. Refines `0026-conservative-dispersion-bounds.md`.
 `0034-qualifying-a-rating-ladder-reading.md` composes with it.
 `0060-a-curve-resamples-the-stream-not-the-game.md` settles what this record
 left open, and answers it differently from the way the question was framed here.
+`0081-a-greedy-row-is-a-point-mass-and-has-no-human-comparison.md` withdraws the
+rollout reading this one states a floor for, without disturbing the floor.
 
 ## Context
 

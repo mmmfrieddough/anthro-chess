@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import csv
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Hashable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from hashlib import sha256
@@ -116,6 +116,12 @@ class OpeningBook:
     #: be labeled with, and therefore the only ones a depth or waypoint
     #: reading is ever taken at.
     continuations: Mapping[str, OpeningContinuation]
+    #: The same named positions under the library's own position key. An EPD is
+    #: a string built by scanning all sixty-four squares and classification takes
+    #: one per ply of every game it reads, where this costs a tuple of the
+    #: board's own fields. The repetition counter keys positions the same way, so
+    #: a board identical for a threefold claim is identical here.
+    keyed: Mapping[Hashable, OpeningEntry]
 
     def identity(self) -> dict[str, object]:
         """Return the record artifacts carry alongside opening labels."""
@@ -127,10 +133,15 @@ class OpeningBook:
             "sha256": self.content_sha256,
         }
 
-    def entry_for(self, epd: str) -> OpeningEntry | None:
-        """Return the book entry naming a position, if the book names it."""
+    def named_entry(self, board: chess.Board) -> OpeningEntry | None:
+        """Return the entry naming this board, when the book names it.
 
-        return self.positions.get(epd)
+        The lookup classification runs at every ply, which is why it takes the
+        board rather than a rendering of it: a caller that never reaches a named
+        position never builds a string at all.
+        """
+
+        return self.keyed.get(board._transposition_key())
 
     def continuation_for(self, epd: str) -> OpeningContinuation | None:
         """Return what the book still offers from a named position."""
@@ -183,7 +194,37 @@ class OpeningBook:
             positions=positions,
             maximum_ply=max(entry.ply for entry in entries),
             continuations=_continuations(entries, resolved, positions),
+            keyed=_keyed(positions),
         )
+
+
+def _keyed(
+    positions: Mapping[str, OpeningEntry],
+) -> dict[Hashable, OpeningEntry]:
+    """Key every named position the way classification will look one up.
+
+    ``_transposition_key`` is private to python-chess, and the repetition
+    counter in ``anthro_chess.data.encoding`` depends on it for the same reason:
+    it is the library's own answer to when two boards are the same position.
+
+    The collision this refuses is the one that makes a second index unsafe. Two
+    positions the book names separately reaching one key would silently give a
+    game the other one's opening.
+    """
+
+    keyed: dict[Hashable, OpeningEntry] = {}
+    for epd, entry in positions.items():
+        board = chess.Board()
+        board.set_epd(epd)
+        key = board._transposition_key()
+        previous = keyed.get(key)
+        if previous is not None:
+            raise OpeningBookError(
+                "two named positions share one key, so the book cannot be "
+                f"matched against: {previous.epd!r} and {epd!r}"
+            )
+        keyed[key] = entry
+    return keyed
 
 
 @cache

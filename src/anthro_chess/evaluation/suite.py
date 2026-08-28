@@ -546,10 +546,9 @@ def _step_reading(
     """Return one result's envelopes and the paths it wrote.
 
     Driven by the registry's ``records_results`` declaration rather than by
-    inspecting the result: a benchmark that records carries all three fields,
-    and one that does not — decision decomposition, which has no result kind —
-    carries none of them. Reading them defensively is what let the puzzle
-    result drift to a different shape without a single test failing.
+    inspecting the result: a benchmark that records carries all three fields and
+    one that does not carries none of them. Reading them defensively is what let
+    the puzzle result drift to a different shape without a single test failing.
     """
 
     if not step.benchmark.records_results:

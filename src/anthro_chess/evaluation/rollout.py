@@ -20,9 +20,9 @@ asked what it does with a real opening.
 
 The arms are not interchangeable for every reading. On the prefix arm the
 opening distribution is a property of the *view*, since the prefix already
-decided the opening before the model moved: measured on a real checkpoint, the
-prefix arm reported the identical opening counts at every rating. Repertoire is
-therefore only a statement about the model on the standard-start arm. The prefix
+decided the opening before the model moved, which is why that arm reports the
+same opening counts at every rating. Repertoire is therefore only a statement
+about the model on the standard-start arm. The prefix
 arm's opening labels are there to slice its other readings by opening, not to be
 read as the model's choices.
 
@@ -63,15 +63,19 @@ a narrow reading is not mistaken for a complete one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import partial
+from multiprocessing import get_context
 from pathlib import Path
 from statistics import stdev
 from typing import Annotated, Any
 
 import chess
+import numpy as np
 import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
@@ -85,10 +89,20 @@ from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveComparisonError,
     CurveMetrics,
+    CurveSpec,
     Observation,
+    ReferenceCurve,
     compare_curves,
     distribution_distance,
     estimate_curve,
+)
+from anthro_chess.evaluation.decisions import (
+    DecisionCell,
+    DecisionDecomposition,
+    DecisionDecompositionError,
+    DecisionSample,
+    collect_decisions,
+    summarize_decisions,
 )
 from anthro_chess.evaluation.execution import execution_record, runner_device
 from anthro_chess.evaluation.games import (
@@ -164,12 +178,19 @@ from anthro_chess.evaluation.results import (
 )
 from anthro_chess.evaluation.results.fingerprints import (
     FingerprintError,
+    WorkloadComponent,
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
+    DECISION_DEPARTURE_POLICY_REGRET,
+    DECISION_POLICY_REGRET,
+    DECISION_PREFERRED_PROBABILITY,
+    DECISION_PREFERRED_SELECTION_RATE,
+    DECISION_SELECTED_RANK,
     GENERATED_PLAY_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
+    GENERATED_PLAY_DIVERGENCE_HALF_DEPTH,
     GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE,
     GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS,
@@ -201,6 +222,8 @@ from anthro_chess.evaluation.views import (
     apply_view,
     excluded_summary,
 )
+from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.runtime import ActionModelRunner, RuntimeConfig
 from anthro_chess.runtime.session import (
     BatchedActionModelRunner,
@@ -334,12 +357,10 @@ class RepertoireWalkConfig(ConfigModel):
     #: Its reciprocal bounds the positions evaluated per ply, and the mass it
     #: leaves uncommitted is reported as the reading's error bound.
     #:
-    #: Chosen by measurement rather than by feel. On a real checkpoint the
-    #: leading family share reads 0.281 at 1e-2, 0.260 at 1e-3, and 0.258 at
-    #: 1e-4: the distribution has converged by 1e-3, and the order of magnitude
-    #: past it buys 0.002 of movement for roughly nine times the work. Cost at
-    #: this value is a few seconds per rating, against a suite that spends
-    #: minutes generating games.
+    #: Chosen where the distribution stops moving rather than where the cost
+    #: stops falling: each order of magnitude below this multiplies the work by
+    #: roughly nine and leaves the leading family shares where they already
+    #: were.
     threshold: Annotated[float, Field(gt=0.0, le=1.0)] = 0.001
 
 
@@ -353,9 +374,9 @@ class DivergenceDepthConfig(ConfigModel):
     """
 
     enabled: StrictBool = True
-    #: Resamples behind each depth's floor. Lower than a headline comparison's,
-    #: because this runs once per ply and only the floor is read from it — the
-    #: null levels are skipped entirely.
+    #: Resamples behind each depth's floor and null. Lower than a headline
+    #: comparison's, because the reading taken from these is a depth rather
+    #: than a distance and a depth moves in whole plies.
     resamples: Annotated[StrictInt, Field(ge=2)] = 64
     #: Deepest ply to recompute at. Defaults to the deepest match either side
     #: actually reached, so a shallow suite does not pay for plies no game got
@@ -366,10 +387,18 @@ class DivergenceDepthConfig(ConfigModel):
 class RolloutDetailConfig(ConfigModel):
     """What the machine-local detail tier keeps beside a committed summary."""
 
-    #: Whole game records. Large, and the input to every later distribution
-    #: feature: recomputing a feature over retained games is seconds where
-    #: regenerating them is hours. Retained by default for that reason.
-    retain_games: StrictBool = True
+    #: Whole game records, for looking at what was actually played. Off by
+    #: default: the payload tracks ``generation.games_per_position`` and reaches
+    #: a gigabyte a checkpoint at the size the curves want.
+    retain_games: StrictBool = False
+    #: Games kept per cell when they are retained at all, so that turning this
+    #: on does not scale with a dial that only buys curve precision.
+    retained_games_per_cell: Annotated[StrictInt, Field(ge=1)] = 64
+    #: One record per decision behind the committed decomposition. Off by
+    #: default like every other per-position record here: the reported
+    #: quantities come from the summary rather than from these, so they are for
+    #: a session that means to look at individual decisions.
+    retain_decision_samples: StrictBool = False
 
 
 class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
@@ -396,6 +425,17 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     walk: RepertoireWalkConfig = RepertoireWalkConfig()
     divergence: DivergenceDepthConfig = DivergenceDepthConfig()
     detail: RolloutDetailConfig = RolloutDetailConfig()
+    #: Games per cell the decision decomposition reads. Its own sample size
+    #: rather than the cell's, because it is flat in this well below the count
+    #: the curves need: the spread it leaves is an order of magnitude under the
+    #: rating effect it has to resolve, and every decision it reads is retained
+    #: individually. Drawn evenly across the seeds so it spans them all.
+    decision_games_per_cell: Annotated[StrictInt, Field(ge=1)] = 128
+    #: Processes playing cells at once. One plays everything in this process,
+    #: which is what a supplied runner forces. Scheduling only: a cell's games
+    #: are seeded from the cell rather than from the schedule, so which process
+    #: played it reaches nothing that is measured.
+    workers: Annotated[StrictInt, Field(ge=1)] = 8
 
     @model_validator(mode="after")
     def _validate_arms(self) -> RolloutBenchmarkConfig:
@@ -461,10 +501,17 @@ class RolloutCell:
         default=(), repr=False
     )
     #: The games behind the reading, retained only when the detail tier is
-    #: keeping them. Bulk diagnostics: they never reach the committed summary,
-    #: and every later distribution feature is recomputed from them rather than
-    #: by regenerating the suite.
+    #: asked for them, and a sample of the cell rather than all of it. Bulk
+    #: diagnostics that never reach the committed summary.
     records: tuple[GameRecord, ...] = field(default=(), repr=False)
+    #: How this cell's own decisions split between the model preferring an
+    #: action and the draw overriding it. Computed here rather than from a
+    #: stored payload, so it reads the games this cell played rather than
+    #: whichever of them were kept.
+    decisions: DecisionCell | None = field(default=None, repr=False)
+    #: The decisions behind it, one record each. A checkpoint's interesting
+    #: decisions are individual ones and no mean recovers them.
+    decision_samples: tuple[DecisionSample, ...] = field(default=(), repr=False)
 
     @property
     def label(self) -> str:
@@ -491,6 +538,7 @@ class RolloutCell:
                 {"seed": seed, "distribution": distribution.as_record()}
                 for seed, distribution in self.per_seed
             ],
+            "decisions": None if self.decisions is None else self.decisions.as_record(),
         }
 
 
@@ -574,18 +622,27 @@ class DepthDivergence:
     every line is still en route: the waypoint distinction is a statement about
     where a game *stopped*, which has no meaning at a depth the reading imposed.
 
-    The floor travels with the point and is not optional. Category count grows
-    with depth, so the distance a model with nothing wrong would still show
-    grows with it, and the raw number read alone says that the model diverges
-    more deeply than it does.
+    The null travels with the point and is not optional. Category count grows
+    with depth, and a distance read without the level a matching model would
+    show at that many categories says the model diverges more deeply than it
+    does. The floor beside it answers the other question, of whether two
+    checkpoints differ here at all.
     """
 
     ply: int
     categories: int
     conditional_distance: float
     conditional_floor: float | None
+    conditional_null: float | None
     pooled_distance: float
     pooled_floor: float | None
+    pooled_null: float | None
+
+    @property
+    def excess(self) -> float:
+        """Return how far past its null this depth's distance reads."""
+
+        return max(self.conditional_distance - (self.conditional_null or 0.0), 0.0)
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one depth point."""
@@ -595,8 +652,10 @@ class DepthDivergence:
             "categories": self.categories,
             "conditional_distance": self.conditional_distance,
             "conditional_floor": self.conditional_floor,
+            "conditional_null": self.conditional_null,
             "pooled_distance": self.pooled_distance,
             "pooled_floor": self.pooled_floor,
+            "pooled_null": self.pooled_null,
         }
 
 
@@ -617,6 +676,12 @@ class ExactRepertoire:
     distances: tuple[tuple[int, float], ...]
     conditional_distance: float
     pooled_distance: float
+    #: What these distances would read at if the enumerated policy already
+    #: matched human play. Not zero: the model side is exact but the human side
+    #: is a finite sample smoothed at a bandwidth, and a distance read without
+    #: this says the policy diverges where the reference is merely thin.
+    conditional_null: float | None
+    pooled_null: float | None
     #: Worst pruned mass across the ratings, which is the bound that applies to
     #: the reading as a whole rather than to its most favorable point.
     pruned_mass: float
@@ -638,6 +703,8 @@ class ExactRepertoire:
             "threshold": self.threshold,
             "conditional_distance": self.conditional_distance,
             "pooled_distance": self.pooled_distance,
+            "conditional_null": self.conditional_null,
+            "pooled_null": self.pooled_null,
             "pruned_mass": self.pruned_mass,
             "unsettled_mass": self.unsettled_mass,
             "waypoint_mass": self.waypoint_mass,
@@ -676,6 +743,9 @@ class RolloutReading:
     human_games: int
     comparisons: dict[ComparedQuantity, CurveComparison]
     execution: ExecutionRecord
+    #: What the depth sweep was measured under, which is not what the distances
+    #: beside it were measured under.
+    divergence_execution: ExecutionRecord
     #: Each seed's own conditional distance per quantity, and the floor that
     #: spread implies. Where a measurement carries a bootstrap floor it is an
     #: estimate of this quantity; recording both is what makes it checkable
@@ -717,7 +787,6 @@ class RolloutReading:
                 quantity.value: reason
                 for quantity, reason in sorted(self.unavailable.items())
             },
-            "divergence_by_depth": [point.as_record() for point in self.divergence],
             "comparisons": {
                 quantity.value: comparison.as_detail_record()
                 for quantity, comparison in self.comparisons.items()
@@ -853,21 +922,18 @@ def benchmark_rollout(
     if config.reference.enabled:
         reference, reference_view = _load_reference(config, book=book)
 
-    cells: list[RolloutCell] = []
-    for source in sources:
-        for target_rating in config.grid.target_ratings:
-            for temperature in config.grid.temperatures:
-                cells.append(
-                    _measure_cell(
-                        config,
-                        loaded,
-                        identity,
-                        source,
-                        book=book,
-                        target_rating=target_rating,
-                        temperature=temperature,
-                    )
-                )
+    if runner is not None and config.workers > 1:
+        logger.info(
+            "Playing in this process: a supplied runner cannot cross to a worker"
+        )
+    cells = _measure_cells(
+        config,
+        sources,
+        loaded,
+        identity,
+        book=book,
+        workers=1 if runner is not None else config.workers,
+    )
 
     readings: tuple[RolloutReading, ...] = ()
     if reference is not None and reference_view is not None:
@@ -894,6 +960,155 @@ def benchmark_rollout(
     return result
 
 
+@dataclass(frozen=True)
+class _CellKey:
+    """Which cell a worker was handed, in terms it can resolve on its own."""
+
+    source_index: int
+    target_rating: int
+    temperature: float
+
+
+@dataclass(frozen=True)
+class _Setup:
+    """Everything a process needs to play any cell it is given."""
+
+    config: RolloutBenchmarkConfig
+    runner: ActionModelRunner
+    identity: CheckpointReference
+    sources: tuple[_PositionSource, ...]
+    book: OpeningBook | None
+    #: The host's intra-op threads rather than this process's.
+    cpu_threads: int
+
+
+_setup: _Setup | None = None
+
+
+def _measure_cells(
+    config: RolloutBenchmarkConfig,
+    sources: Sequence[_PositionSource],
+    loaded: ActionModelRunner,
+    identity: CheckpointReference,
+    *,
+    book: OpeningBook | None,
+    workers: int,
+) -> list[RolloutCell]:
+    """Play every cell of the matrix, in this process or across several.
+
+    Cells come back in the declared order and every game's seed is derived from
+    the cell rather than from the schedule, so which process played a cell
+    reaches neither a curve nor any sum taken over what it returned.
+    """
+
+    keys = tuple(
+        _CellKey(index, target_rating, temperature)
+        for index in range(len(sources))
+        for target_rating in config.grid.target_ratings
+        for temperature in config.grid.temperatures
+    )
+    if workers <= 1:
+        setup = _Setup(
+            config,
+            loaded,
+            identity,
+            tuple(sources),
+            book,
+            torch.get_num_threads(),
+        )
+        return [_played(_measure_keyed_cell(setup, key)) for key in keys]
+    pinned = config
+    if isinstance(loaded, CheckpointModelRunner):
+        # The file the parent loaded rather than the selection that found it:
+        # `latest` re-resolved in a worker can name a checkpoint written since.
+        pinned = config.model_copy(
+            update={
+                "model": ModelRunnerConfig(
+                    checkpoint_path=loaded.selection.checkpoint_path,
+                    device=config.model.device,
+                )
+            }
+        )
+    try:
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(keys)),
+            # Spawn rather than fork: a forked process inherits a CUDA context
+            # it cannot use.
+            mp_context=get_context("spawn"),
+            initializer=_start_worker,
+            initargs=(pinned, tuple(sources), identity, torch.get_num_threads()),
+        ) as pool:
+            return [_played(cell) for cell in pool.map(_measure_assigned_cell, keys)]
+    except BrokenProcessPool as failure:
+        # An initializer's own error never reaches here, so a worker that could
+        # not start is indistinguishable from one that died playing.
+        raise RolloutBenchmarkError(
+            f"a rollout worker stopped before its cell finished: {failure}"
+        ) from failure
+
+
+def _played(cell: RolloutCell) -> RolloutCell:
+    """Report a finished cell from whichever process is collecting them.
+
+    A worker's own logging reaches no handler the caller configured, so a matrix
+    played in parallel would run silently for as long as it takes.
+    """
+
+    logger.info(
+        "Rollout cell %s: %s game(s), mean %.1f plies, %s unfinished",
+        cell.label,
+        cell.distribution.games,
+        cell.distribution.mean_ply_count,
+        _termination_count(cell.distribution, GameTermination.PLY_LIMIT),
+    )
+    return cell
+
+
+def _start_worker(
+    config: RolloutBenchmarkConfig,
+    sources: tuple[_PositionSource, ...],
+    identity: CheckpointReference,
+    cpu_threads: int,
+) -> None:
+    """Load this process's own copy of the pinned checkpoint and book."""
+
+    global _setup
+    # One intra-op thread. Every worker helping itself to the whole machine
+    # oversubscribes it several times over, which starves the accelerator the
+    # workers exist to keep fed.
+    torch.set_num_threads(1)
+    try:
+        loaded = CheckpointModelRunner.load(config.model)
+    except ModelRunnerError as failure:
+        raise RolloutBenchmarkError(str(failure)) from failure
+    _setup = _Setup(config, loaded, identity, sources, _load_book(), cpu_threads)
+
+
+def _measure_assigned_cell(key: _CellKey) -> RolloutCell:
+    """Play one cell against the checkpoint this process already loaded."""
+
+    if _setup is None:  # pragma: no cover - the initializer sets it
+        raise RolloutBenchmarkError(
+            "a rollout worker was asked to play before it loaded"
+        )
+    return _measure_keyed_cell(_setup, key)
+
+
+def _measure_keyed_cell(setup: _Setup, key: _CellKey) -> RolloutCell:
+    """Resolve one cell key against a process's own setup and play it."""
+
+    return _measure_cell(
+        setup.config,
+        setup.runner,
+        setup.identity,
+        setup.sources[key.source_index],
+        book=setup.book,
+        target_rating=key.target_rating,
+        temperature=key.temperature,
+        cpu_threads=setup.cpu_threads,
+    )
+
+
 def _measure_cell(
     config: RolloutBenchmarkConfig,
     runner: ActionModelRunner,
@@ -903,6 +1118,7 @@ def _measure_cell(
     book: OpeningBook | None,
     target_rating: int,
     temperature: float,
+    cpu_threads: int,
 ) -> RolloutCell:
     """Play every replicate of one cell and pool them into its reading."""
 
@@ -924,6 +1140,11 @@ def _measure_cell(
     per_seed: list[tuple[int, GameDistribution]] = []
     by_seed: list[tuple[int, tuple[GameFeatures, ...]]] = []
     records: list[GameRecord] = []
+    read: list[GameRecord] = []
+    # Ceilings, so every seed contributes and a cap below the seed count still
+    # reads one game from each rather than none from most of them.
+    decision_share = -(-config.decision_games_per_cell // len(seeds))
+    retained_share = -(-config.detail.retained_games_per_cell // len(seeds))
     for seed in seeds:
         played = _generate(
             player, source.positions, generation.model_copy(update={"seed": seed})
@@ -934,8 +1155,12 @@ def _measure_cell(
         )
         by_seed.append((seed, seed_features))
         features.extend(seed_features)
+        read.extend(_spread(played, decision_share))
         if config.detail.retain_games:
-            records.extend(played)
+            remaining = config.detail.retained_games_per_cell - len(records)
+            if remaining > 0:
+                records.extend(_spread(played, min(remaining, retained_share)))
+    decomposition = _decompose(read)
     cell = RolloutCell(
         arm=source.arm,
         target_rating=target_rating,
@@ -944,19 +1169,49 @@ def _measure_cell(
         seeds=seeds,
         per_seed=tuple(per_seed),
         distribution=summarize_games(features, level=config.opening_level),
-        execution=_execution_record(config, runner, source, target_rating, temperature),
+        execution=_execution_record(
+            config, runner, source, target_rating, temperature, cpu_threads
+        ),
         features=tuple(features),
         features_by_seed=tuple(by_seed),
         records=tuple(records),
-    )
-    logger.info(
-        "Rollout cell %s: %s game(s), mean %.1f plies, %s unfinished",
-        cell.label,
-        cell.distribution.games,
-        cell.distribution.mean_ply_count,
-        _termination_count(cell.distribution, GameTermination.PLY_LIMIT),
+        decisions=decomposition.overall if decomposition else None,
+        decision_samples=(
+            decomposition.samples
+            if decomposition and config.detail.retain_decision_samples
+            else ()
+        ),
     )
     return cell
+
+
+def _spread(records: Sequence[GameRecord], count: int) -> tuple[GameRecord, ...]:
+    """Return an evenly spaced sample of one seed's games.
+
+    Games are planned one position at a time and one colour at a time, so a
+    prefix of them is a few openings played from one side rather than a sample
+    of the suite. Every reading taken from these is scoped to a cell, and a cell
+    sampled from one of its openings is not describing the cell.
+    """
+
+    if count >= len(records):
+        return tuple(records)
+    stride = len(records) / count
+    return tuple(records[int(index * stride)] for index in range(count))
+
+
+def _decompose(records: Sequence[GameRecord]) -> DecisionDecomposition | None:
+    """Split one cell's decisions into model preference against sampling.
+
+    ``None`` where there is nothing to split. A seat with no policy behind it
+    leaves no classifiable decision, and a cell whose games were all decided
+    before a seat moved leaves no decision at all.
+    """
+
+    try:
+        return summarize_decisions(collect_decisions(records))
+    except DecisionDecompositionError:
+        return None
 
 
 def _generate(
@@ -1135,11 +1390,24 @@ def _curve_readings(
 
     One reading per arm and temperature, because the curve's axis is the rating
     and temperature is a separate dial rather than a point on it.
+
+    A greedy temperature is left out. Its seats replay one game per position, so
+    the model side is a point mass where the human side is a distribution, and
+    that distance is one minus the human mass of whichever single category the
+    model lands on however well it plays.
     """
 
     readings: list[RolloutReading] = []
     for arm in config.arms:
         for temperature in config.grid.temperatures:
+            if not replicates_vary((temperature,)):
+                logger.info(
+                    "No human comparison at temperature %g: greedy seats play "
+                    "one game per position, which is a point mass rather than a "
+                    "distribution",
+                    temperature,
+                )
+                continue
             selected = [
                 cell
                 for cell in cells
@@ -1161,6 +1429,39 @@ def _curve_readings(
                 )
             )
     return tuple(readings)
+
+
+def _compare_each(
+    calls: Sequence[Callable[[], CurveComparison]],
+    *,
+    workers: int,
+) -> list[CurveComparison | CurveComparisonError]:
+    """Run independent curve comparisons at once, keeping the order asked for.
+
+    Threads rather than processes: the resampling is numpy work that gives the
+    interpreter up while it runs, and a comparison shipped to another process
+    costs more in pickled observations than the comparison itself takes. Safe in
+    threads because concurrent calls share no mutable state, each building its
+    own generator from the seed it was passed.
+
+    A failure is returned rather than raised, because callers differ on what one
+    means. A headline quantity that cannot be compared fails the benchmark,
+    while one depth of a sweep the rest of it supports is a reason to report
+    fewer points, and a pool that raised would take the whole map with it.
+    """
+
+    def run(
+        call: Callable[[], CurveComparison],
+    ) -> CurveComparison | CurveComparisonError:
+        try:
+            return call()
+        except CurveComparisonError as error:
+            return error
+
+    if workers <= 1 or len(calls) < 2:
+        return [run(call) for call in calls]
+    with ThreadPoolExecutor(max_workers=min(workers, len(calls))) as pool:
+        return list(pool.map(run, calls))
 
 
 def _curve_reading(
@@ -1185,8 +1486,13 @@ def _curve_reading(
     # what decides whether another run of it would produce different games —
     # and therefore whether it has any evaluation noise for a floor to bound.
     varies = replicates_vary((temperature,))
+    reading_execution = _reading_execution_record(
+        config, cells, temperature, ratings, reference_view, device=device
+    )
     comparisons: dict[ComparedQuantity, CurveComparison] = {}
     unavailable: dict[ComparedQuantity, str] = {}
+    asked: list[ComparedQuantity] = []
+    calls: list[Callable[[], CurveComparison]] = []
     for quantity in iter_quantities():
         try:
             spec = curve_spec(quantity, ratings)
@@ -1202,8 +1508,10 @@ def _curve_reading(
             side = "generated" if not generated else "human"
             unavailable[quantity] = f"no {side} game carries this quantity"
             continue
-        try:
-            comparisons[quantity] = compare_curves(
+        asked.append(quantity)
+        calls.append(
+            partial(
+                compare_curves,
                 spec=spec,
                 human=human,
                 model=generated,
@@ -1211,10 +1519,15 @@ def _curve_reading(
                 seed=config.reference.seed,
                 model_varies=varies,
             )
-        except CurveComparisonError as error:
+        )
+    for quantity, outcome in zip(
+        asked, _compare_each(calls, workers=config.workers), strict=True
+    ):
+        if isinstance(outcome, CurveComparisonError):
             raise RolloutBenchmarkError(
-                f"cannot compare {quantity.value} against human play: {error}"
-            ) from error
+                f"cannot compare {quantity.value} against human play: {outcome}"
+            ) from outcome
+        comparisons[quantity] = outcome
     return RolloutReading(
         arm=arm,
         temperature=temperature,
@@ -1239,8 +1552,9 @@ def _curve_reading(
             runner=runner,
             device=device,
         ),
-        execution=_reading_execution_record(
-            config, cells, temperature, ratings, reference_view, device=device
+        execution=reading_execution,
+        divergence_execution=_divergence_execution_record(
+            config, reading_execution, device=device
         ),
     )
 
@@ -1292,38 +1606,60 @@ def _divergence_by_depth(
 
     human_labels = _label_progressions(human_games, deepest, book=book)
     model_labels = _label_progressions(model_games, deepest, book=book)
+    # Past the ply where the last label on either side stops changing, every
+    # deeper truncation classifies both sides identically and recomputes one
+    # number. The bound is the reported level's own rather than the book match
+    # depth, because a family is decided long before the line carrying it is.
+    if config.divergence.maximum_ply is None:
+        deepest = max(
+            _settled_depth(human_labels, level),
+            _settled_depth(model_labels, level),
+        )
 
-    points: list[DepthDivergence] = []
+    plies: list[int] = []
+    counts: list[int] = []
+    calls: list[Callable[[], CurveComparison]] = []
     for ply in range(1, deepest + 1):
         human = _depth_observations(human_games, human_labels, ply, level)
         model = _depth_observations(model_games, model_labels, ply, level)
         if not human or not model:  # pragma: no cover - both sides start named
             continue
-        try:
-            comparison = compare_curves(
+        plies.append(ply)
+        counts.append(len({observation.value for observation in (*human, *model)}))
+        calls.append(
+            partial(
+                compare_curves,
                 spec=spec,
                 human=human,
                 model=model,
                 resamples=config.divergence.resamples,
                 seed=config.reference.seed,
                 model_varies=model_varies,
-                references=False,
             )
-        except CurveComparisonError:
+        )
+
+    points: list[DepthDivergence] = []
+    for ply, categories, comparison in zip(
+        plies, counts, _compare_each(calls, workers=config.workers), strict=True
+    ):
+        if isinstance(comparison, CurveComparisonError):
             # One depth the reference cannot support is a reason to report
             # fewer points, not to fail a diagnostic the rest of them support.
             continue
         spreads = comparison.dispersions
+        levels = comparison.references
         points.append(
             DepthDivergence(
                 ply=ply,
-                categories=len({observation.value for observation in (*human, *model)}),
+                categories=categories,
                 conditional_distance=comparison.conditional_distance,
                 conditional_floor=(
                     None if spreads is None else spreads.conditional_floor
                 ),
+                conditional_null=(None if levels is None else levels.conditional),
                 pooled_distance=comparison.pooled_distance,
                 pooled_floor=None if spreads is None else spreads.pooled_floor,
+                pooled_null=None if levels is None else levels.pooled,
             )
         )
     return tuple(points)
@@ -1353,6 +1689,24 @@ def _label_progressions(
     )
 
 
+def _settled_depth(
+    progressions: Sequence[tuple[OpeningLabel, ...]],
+    level: OpeningLevel,
+) -> int:
+    """Return the deepest ply at which any of these games' labels still moves."""
+
+    deepest = 1
+    for progression in progressions:
+        final = progression[-1].label(level)
+        settled = len(progression)
+        for index in range(len(progression) - 1, -1, -1):
+            if progression[index].label(level) != final:
+                break
+            settled = index + 1
+        deepest = max(deepest, settled)
+    return deepest
+
+
 def _depth_observations(
     games: Sequence[ComparableGame],
     progressions: Sequence[tuple[OpeningLabel, ...]],
@@ -1369,6 +1723,56 @@ def _depth_observations(
         )
         for game, progression in zip(games, progressions, strict=True)
     )
+
+
+def _repertoire_null(
+    spec: CurveSpec,
+    observations: Sequence[Observation],
+    curve: ReferenceCurve,
+    ratings: Sequence[int],
+    *,
+    resamples: int,
+    seed: int,
+) -> tuple[float, float] | None:
+    """Estimate what an exactly matching policy would still read at.
+
+    The walk enumerates the model side rather than drawing it, so that half
+    contributes no sampling error. The human half is a finite sample smoothed at
+    a bandwidth, and it does: the plug-in rule approximates how far the sample
+    sits from the population by how far a resample of it sits from the sample.
+
+    Depends on the reference and the grid alone, so it is the same number for
+    every temperature and every checkpoint read against this pool.
+    """
+
+    if resamples < 2:
+        return None
+    generator = np.random.default_rng(seed)
+    conditional: list[float] = []
+    pooled: list[float] = []
+    size = len(observations)
+    for _ in range(resamples):
+        drawn = [observations[index] for index in generator.integers(0, size, size)]
+        try:
+            resampled = estimate_curve(spec, drawn, categories=curve.categories)
+        except (CurveComparisonError, ReferenceError):  # pragma: no cover
+            return None
+        points = [
+            distribution_distance(left, right)
+            for rating in ratings
+            if (left := curve.distribution_at(float(rating))) is not None
+            and (right := resampled.distribution_at(float(rating))) is not None
+        ]
+        if points:
+            conditional.append(sum(points) / len(points))
+        pooled.append(
+            distribution_distance(
+                curve.pooled.distribution or {}, resampled.pooled.distribution or {}
+            )
+        )
+    if not conditional or not pooled:  # pragma: no cover - the grid is the curve's
+        return None
+    return sum(conditional) / len(conditional), sum(pooled) / len(pooled)
 
 
 def _exact_repertoire(
@@ -1462,6 +1866,14 @@ def _exact_repertoire(
         distances.append((rating, distribution_distance(walk.repertoire(), human)))
     if not distances:  # pragma: no cover - the grid is the reference's own
         return None
+    nulls = _repertoire_null(
+        curve_spec(ComparedQuantity.REPERTOIRE, ratings),
+        observations,
+        curve,
+        ratings,
+        resamples=config.reference.resamples,
+        seed=config.reference.seed,
+    )
 
     pooled_model: dict[str, float] = {}
     for _, walk in walks:
@@ -1476,6 +1888,8 @@ def _exact_repertoire(
         pooled_distance=distribution_distance(
             pooled_model, curve.pooled.distribution or {}
         ),
+        conditional_null=None if nulls is None else nulls[0],
+        pooled_null=None if nulls is None else nulls[1],
         pruned_mass=max(walk.pruned_mass for _, walk in walks),
         unsettled_mass=max(walk.unsettled_mass for _, walk in walks),
         waypoint_mass=sum(walk.waypoint_mass for _, walk in walks) / len(walks),
@@ -1625,6 +2039,32 @@ def _seed_spread(
     }
 
 
+def _divergence_execution_record(
+    config: RolloutBenchmarkConfig,
+    reading: ExecutionRecord,
+    *,
+    device: torch.device,
+) -> ExecutionRecord:
+    """Declare what the depth sweep measured, apart from the reading it truncates.
+
+    Its own workload for the reason the walk keeps one. The depth the sweep runs
+    to decides what a half of it means, and the resample count decides the null
+    the half is taken over, so a reading taken under either of them is not the
+    same quantity as one taken under the other. Left on the reading's workload,
+    changing a diagnostic's settings would silently continue this series and end
+    none of the distances recorded beside it.
+    """
+
+    workload = dict(reading.workload)
+    workload.update(
+        {
+            "divergence_resamples": config.divergence.resamples,
+            "divergence_maximum_ply": config.divergence.maximum_ply,
+        }
+    )
+    return execution_record(device, workload=workload)
+
+
 def _reading_execution_record(
     config: RolloutBenchmarkConfig,
     cells: Sequence[RolloutCell],
@@ -1707,6 +2147,7 @@ def _execution_record(
     source: _PositionSource,
     target_rating: int,
     temperature: float,
+    cpu_threads: int,
 ) -> ExecutionRecord:
     """Declare what this cell measured, and record where it ran.
 
@@ -1732,6 +2173,7 @@ def _execution_record(
             "draw_claim_enabled": config.runtime.draw_claim_enabled,
             "opening_level": config.opening_level.value,
         },
+        cpu_threads=cpu_threads,
     )
 
 
@@ -1739,15 +2181,16 @@ def _record(
     result: RolloutBenchmarkResult,
     recording: ResultRecording,
 ) -> None:
-    """Write one envelope per cell, per curve reading, and per exact walk.
+    """Write one envelope per cell, curve reading, depth sweep, and exact walk.
 
-    Three kinds of record from one run, because they are three units. A cell is
+    Four kinds of record from one run, because they are four units. A cell is
     one point of the matrix and carries the raw rollout scalars; a reading spans
-    one arm's whole rating grid and carries the distances against human play; an
+    one arm's whole rating grid and carries the distances against human play; a
+    depth sweep says where along the opening those distances accumulate; an
     exact walk enumerates the shallow repertoire instead of playing it. Each has
     its own declared workload and so its own series, which is why none can stand
-    in for another — and why changing the walk's depth cannot end the curve
-    series recorded beside it.
+    in for another, and why changing the walk's depth or the sweep's settings
+    cannot end the curve series recorded beside them.
     """
 
     recorder = recording.measuring(
@@ -1780,6 +2223,16 @@ def _record(
             data=result.dataset,
             execution=reading.execution,
         )
+        divergence = _divergence_measurements(reading)
+        if divergence:
+            recorder.add(
+                divergence,
+                payload=partial(_divergence_payload, reading),
+                description=f"Opening divergence by depth: {reading.label}",
+                slug=(f"{reading.arm.value}-divergence-t{_slug(reading.temperature)}"),
+                data=result.dataset,
+                execution=reading.divergence_execution,
+            )
         if reading.exact is None:
             continue
         recorder.add(
@@ -1910,25 +2363,116 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
             sample_size=sample_size if sample_size > 0 else None,
         )
         for identifier, value, sample_size in values
+    ) + _decision_measurements(cell, workload=workload)
+
+
+def _decision_measurements(
+    cell: RolloutCell,
+    *,
+    workload: WorkloadComponent,
+) -> tuple[Measurement, ...]:
+    """Return one cell's decision decomposition, where it has one to report.
+
+    Per cell rather than pooled over the grid. Pooling would average away the
+    rating axis, and a series that averaged it away cannot be un-averaged later
+    when the model starts answering the dial.
+
+    A greedy cell reports nothing. Its seats follow their own policy every time
+    and give up nothing by construction, so both quantities are pinned by the
+    temperature rather than measured on the model.
+    """
+
+    decisions = cell.decisions
+    if decisions is None or not replicates_vary((cell.temperature,)):
+        return ()
+    values: list[tuple[str, float, int]] = [
+        (
+            DECISION_PREFERRED_SELECTION_RATE.identifier,
+            decisions.preferred_selection_rate,
+            decisions.decisions,
+        ),
+        (
+            DECISION_POLICY_REGRET.identifier,
+            decisions.policy_regret,
+            decisions.decisions,
+        ),
+        (
+            DECISION_PREFERRED_PROBABILITY.identifier,
+            decisions.preferred_probability,
+            decisions.decisions,
+        ),
+        (
+            DECISION_SELECTED_RANK.identifier,
+            decisions.selected_rank,
+            decisions.decisions,
+        ),
+    ]
+    if decisions.departures:
+        values.append(
+            (
+                DECISION_DEPARTURE_POLICY_REGRET.identifier,
+                decisions.departure_policy_regret,
+                decisions.departures,
+            )
+        )
+    return tuple(
+        measurement(identifier, value, workload=workload, sample_size=sample_size)
+        for identifier, value, sample_size in values
     )
+
+
+def divergence_half_depth(points: Sequence[DepthDivergence]) -> float | None:
+    """Return the ply by which half the divergence past the null is present.
+
+    A location rather than a size. The size is what the exact walk reports, and
+    two checkpoints unlike humans by the same amount can arrive there from the
+    first move or from the middle of theory, which are different faults.
+
+    Half is taken over the deepest truncation's excess, and the first crossing
+    of it is reported, so a curve that dipped and rose would read earlier than
+    half of its total.
+
+    ``None`` where there is nothing to locate: fewer than two depths, or a
+    deepest excess no further above the level a matching model reads at than the
+    reading moves between runs. Half of an excess that is itself noise is a
+    depth drawn from noise, and it reads like a measurement.
+    """
+
+    if len(points) < 2:
+        return None
+    excesses = [point.excess for point in points]
+    deepest = points[-1]
+    if excesses[-1] <= (deepest.conditional_floor or 0.0):
+        return None
+    target = excesses[-1] / 2.0
+    if target <= 0.0:  # pragma: no cover - a floor of zero still bars this
+        return None
+    for index, value in enumerate(excesses):
+        if value < target:
+            continue
+        if index == 0:
+            return float(points[0].ply)
+        previous = excesses[index - 1]
+        span = value - previous
+        if span <= 0.0:  # pragma: no cover - a crossing has a rising step
+            return float(points[index].ply)
+        share = (target - previous) / span
+        return points[index - 1].ply + share * (
+            points[index].ply - points[index - 1].ply
+        )
+    return None  # pragma: no cover - the last point meets its own half
 
 
 def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
     """Return one reading's committed distances, each with the floor to beat.
 
     The floor is the comparison's own bootstrap over the games this reading
-    generated, and deliberately not the spread across
-    seeds. Both estimate evaluation noise, but only the bootstrap estimates it
-    *at the sample size the reading was taken at*: each seed plays a fraction of
-    the games, so the spread across seeds measures the noise of a much smaller
-    reading and runs roughly the square root of the seed count too wide.
-    Measured against forty independent draws, the bootstrap reproduces the true
-    spread to within a few percent at fixed size, so the seeds stay a diagnostic
-    rather than a floor.
-
-    A temperature-zero reading has no draw to estimate from at all. Its floors
-    are stated at zero rather than bootstrapped, per decision 0032, and neither
-    estimator applies.
+    generated, and deliberately not the spread across seeds. Both estimate
+    evaluation noise, but only the bootstrap estimates it *at the sample size
+    the reading was taken at*: each seed plays a fraction of the games, so the
+    spread across seeds measures the noise of a much smaller reading and runs
+    roughly the square root of the seed count too wide. The seeds stay a
+    diagnostic rather than a floor for that reason.
     """
 
     workload = reading.execution.workload_component()
@@ -1949,6 +2493,30 @@ def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
             )
         )
     return tuple(measurements)
+
+
+def _divergence_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
+    """Return where this reading's opening divergence accumulates.
+
+    Its own workload rather than the reading's, for the reason the walk keeps
+    one: the depth the sweep ran to and the resamples behind its null both
+    decide what a half of it means.
+
+    Nothing where there is nothing to locate, which a sweep that was switched
+    off and a model that already matches both reach.
+    """
+
+    half_depth = divergence_half_depth(reading.divergence)
+    if half_depth is None:
+        return ()
+    return (
+        measurement(
+            GENERATED_PLAY_DIVERGENCE_HALF_DEPTH.identifier,
+            half_depth,
+            workload=reading.divergence_execution.workload_component(),
+            sample_size=reading.model_games,
+        ),
+    )
 
 
 def _exact_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
@@ -2002,7 +2570,27 @@ def _cell_payload(cell: RolloutCell) -> dict[str, Any]:
     payload = cell.as_record()
     payload["games_detail"] = [record.as_record() for record in cell.records]
     payload["features"] = [feature.as_record() for feature in cell.features]
+    payload["decision_samples"] = [
+        sample.as_record() for sample in cell.decision_samples
+    ]
     return payload
+
+
+def _divergence_payload(reading: RolloutReading) -> dict[str, Any]:
+    """Return the depth curve behind the committed depth.
+
+    Detail tier, and read with the null and floor each point carries. Category
+    count grows with depth, so a per-ply distance compared against another
+    checkpoint's compares two different numbers of categories; the depth taken
+    from the curve is what travels instead.
+    """
+
+    return {
+        "arm": reading.arm.value,
+        "temperature": reading.temperature,
+        "workload_sha256": reading.divergence_execution.workload_sha256,
+        "points": [point.as_record() for point in reading.divergence],
+    }
 
 
 def _reading_payload(

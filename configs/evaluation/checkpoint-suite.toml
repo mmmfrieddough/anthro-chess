@@ -56,20 +56,12 @@ config = "configs/evaluation/novelty-dose-response.toml"
 config = "configs/evaluation/puzzle-rating-response.toml"
 
 [benchmarks.rollout]
-# The first generating step, and the one whose games the decomposition below
-# reads.
+# Whole generated games, and the decision decomposition over them: the model
+# preferring a bad action and the draw overriding a good one are opposite
+# faults, and every aggregate that reports only the result hides which of them
+# a checkpoint has. Reported per cell of the rating and temperature grid, since
+# a decomposition pooled over dials it was made under moves with the grid.
 config = "configs/evaluation/generated-play-rollout.toml"
-
-[benchmarks.decisions]
-# Model error against sampling error, over the games the rollout just played.
-# It runs after the rollout because it reads that payload, which the sweep
-# enforces rather than trusting to declaration order.
-#
-# Not recorded, and not by choice of this file: decision decomposition has no
-# result kind, because a decomposition is read per cell of the dials it was
-# made under and the project has not designated which cell a committed series
-# would follow.
-record = false
 
 [benchmarks.termination]
 # How the checkpoint ends games, against the human termination mix.

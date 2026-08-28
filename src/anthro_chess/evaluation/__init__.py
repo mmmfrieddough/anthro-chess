@@ -107,7 +107,6 @@ if TYPE_CHECKING:
         DecisionSetting,
         PlayedDecision,
         collect_decisions,
-        decision_measurements,
         score_played_decisions,
         summarize_decisions,
     )
@@ -252,7 +251,6 @@ _LAZY_EXPORTS = {
     "DecisionSetting": "decisions",
     "PlayedDecision": "decisions",
     "collect_decisions": "decisions",
-    "decision_measurements": "decisions",
     "score_played_decisions": "decisions",
     "summarize_decisions": "decisions",
     "CURVE_SPEC_VERSION": "reference",
@@ -582,7 +580,6 @@ __all__ = [
     "curve_spec",
     "human_reference",
     "select_bandwidths",
-    "decision_measurements",
     "reconstruct_uci_games",
     "score_played_decisions",
     "summarize_decisions",

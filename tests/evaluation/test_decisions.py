@@ -18,7 +18,6 @@ from anthro_chess.evaluation.decisions import (
     DecisionSetting,
     PlayedDecision,
     collect_decisions,
-    decision_measurements,
     decompose_game_records,
     score_played_decisions,
     summarize_decisions,
@@ -32,15 +31,6 @@ from anthro_chess.evaluation.games import (
     GameTermination,
     SeatRecord,
     build_game_record,
-)
-from anthro_chess.evaluation.results import DataComponent
-from anthro_chess.evaluation.results.metrics import (
-    DECISION_DEPARTURE_POLICY_REGRET,
-    DECISION_POLICY_REGRET,
-    DECISION_PREFERRED_PROBABILITY,
-    DECISION_PREFERRED_SELECTION_RATE,
-    DECISION_SELECTED_RANK,
-    MOVE_PREDICTION_PROJECTION,
 )
 from anthro_chess.runtime import RuntimeConfig
 
@@ -165,15 +155,6 @@ def _sample(
         selected_rank=selected_rank,
         preferred_action_id=100 if selected_rank == 1 else 101,
         preferred_probability=preferred_probability,
-    )
-
-
-def _data_component() -> DataComponent:
-    return DataComponent(
-        projection=MOVE_PREDICTION_PROJECTION.name,
-        projection_version=MOVE_PREDICTION_PROJECTION.version,
-        content_sha256="a" * 64,
-        games=3,
     )
 
 
@@ -372,47 +353,6 @@ def test_one_setting_reports_a_reference_cell() -> None:
     decomposition = summarize_decisions(DecisionSet(samples=samples))
 
     assert decomposition.reference_cell().setting == setting
-
-
-def test_measurements_carry_registry_fingerprints_in_identifier_order() -> None:
-    samples = (
-        _sample(selected_rank=1, selected_probability=0.6, preferred_probability=0.6),
-        _sample(selected_rank=4, selected_probability=0.1, preferred_probability=0.5),
-    )
-    cell = summarize_decisions(DecisionSet(samples=samples)).reference_cell()
-
-    measurements = decision_measurements(cell, data=_data_component())
-
-    assert [value.metric for value in measurements] == sorted(
-        (
-            DECISION_DEPARTURE_POLICY_REGRET.identifier,
-            DECISION_POLICY_REGRET.identifier,
-            DECISION_PREFERRED_PROBABILITY.identifier,
-            DECISION_PREFERRED_SELECTION_RATE.identifier,
-            DECISION_SELECTED_RANK.identifier,
-        )
-    )
-    assert all(len(value.fingerprint) == 64 for value in measurements)
-    by_metric = {value.metric: value for value in measurements}
-    assert by_metric[
-        DECISION_PREFERRED_SELECTION_RATE.identifier
-    ].value == pytest.approx(0.5)
-    assert by_metric[DECISION_DEPARTURE_POLICY_REGRET.identifier].sample_size == 1
-
-
-def test_a_pass_with_no_departures_reports_no_departure_regret() -> None:
-    """A greedy run has no such decisions, and zero would read as a near tie."""
-
-    samples = (
-        _sample(selected_rank=1, selected_probability=0.6, preferred_probability=0.6),
-    )
-    cell = summarize_decisions(DecisionSet(samples=samples)).reference_cell()
-
-    measurements = decision_measurements(cell, data=_data_component())
-
-    assert DECISION_DEPARTURE_POLICY_REGRET.identifier not in {
-        value.metric for value in measurements
-    }
 
 
 def test_a_decomposition_needs_at_least_one_classifiable_decision() -> None:

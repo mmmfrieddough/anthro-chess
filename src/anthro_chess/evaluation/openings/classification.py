@@ -182,9 +182,9 @@ def classify_moves(
                 "played from; the moves and the initial position disagree"
             )
         board.push(move)
-        epd = board.epd()
-        if resolved.entry_for(epd) is not None:
-            deepest = (ply, epd)
+        entry = resolved.named_entry(board)
+        if entry is not None:
+            deepest = (ply, entry.epd)
 
     if deepest is None:
         return UNCLASSIFIED_LABEL
@@ -244,10 +244,9 @@ def classify_progression(
                 "played from; the moves and the initial position disagree"
             )
         board.push(move)
-        epd = board.epd()
-        entry = resolved.entry_for(epd)
+        entry = resolved.named_entry(board)
         if entry is not None:
-            current = _label(entry, epd, ply, resolved)
+            current = _label(entry, entry.epd, ply, resolved)
         labels.append(current)
     labels.extend([current] * (limit - len(labels)))
     return tuple(labels)

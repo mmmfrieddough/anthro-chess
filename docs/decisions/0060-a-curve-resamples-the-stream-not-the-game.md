@@ -9,6 +9,8 @@ Accepted. Settles what
 `0026-conservative-dispersion-bounds.md` on what counts as a replicate here.
 Takes the rescaled draw `0039-stratifying-the-ladder-redraw-costs-more-than-it-removes.md`
 named as the one a reopening has to use.
+`0081-a-greedy-row-is-a-point-mass-and-has-no-human-comparison.md` withdraws the
+temperature-zero rollout reading this record leaves standing.
 
 ## Context
 
@@ -180,9 +182,11 @@ The measurement above is on the rollout family; what carries to termination is
 the mechanism — a seed derived without the rating — rather than a second
 reading.
 
-**The temperature-zero row is unaffected.** It states a zero under 0032 and goes
-on stating it, and a greedy row's two colour assignments are two streams, so its
-null levels survive as 0032 said they should.
+**The temperature-zero row is unaffected by the change this record makes.** It
+states a zero under 0032 and goes on stating it, and a greedy row's two colour
+assignments are two streams, so its null levels survive as 0032 said they should.
+The rollout no longer takes that reading at all, for a reason unrelated to its
+floor: see 0081.
 
 ## What This Leaves, And Why It Is Not A Measurement
 

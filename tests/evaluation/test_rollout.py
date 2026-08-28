@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -22,11 +23,10 @@ from anthro_chess.chess import (
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation import rollout as rollout_module
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.curves import (
-    CURVE_BOOTSTRAP_METHOD,
-    CURVE_DETERMINISTIC_METHOD,
     CurveQuantity,
 )
 from anthro_chess.evaluation.games import GameTermination
@@ -43,9 +43,11 @@ from anthro_chess.evaluation.results import (
     ResultsStore,
 )
 from anthro_chess.evaluation.results.metrics import (
+    DECISION_DECOMPOSITION_FAMILY,
     GENERATED_PLAY_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_DECISIVE_GAME_RATE,
     GENERATED_PLAY_DISTINCT_GAME_FRACTION,
+    GENERATED_PLAY_DIVERGENCE_HALF_DEPTH,
     GENERATED_PLAY_EXACT_REPERTOIRE_CONDITIONAL_DISTANCE,
     GENERATED_PLAY_EXACT_REPERTOIRE_POOLED_DISTANCE,
     GENERATED_PLAY_EXACT_REPERTOIRE_PRUNED_MASS,
@@ -69,6 +71,7 @@ from anthro_chess.evaluation.rollout import (
     RolloutBenchmarkError,
     RolloutBenchmarkResult,
 )
+from anthro_chess.inference import ModelRunnerConfig
 from anthro_chess.runtime import RuntimeConfig
 
 CHECKPOINT = CheckpointReference(label="fixture-checkpoint", step=1)
@@ -579,6 +582,9 @@ def test_every_generated_play_metric_is_reported_by_the_benchmark(
     registered = {
         metric.identifier
         for metric in registered_metrics(GENERATED_PLAY_FAMILY.identifier)
+    } | {
+        metric.identifier
+        for metric in registered_metrics(DECISION_DECOMPOSITION_FAMILY.identifier)
     }
     assert reported == registered
 
@@ -714,20 +720,17 @@ def test_a_distance_carries_the_floor_it_has_to_clear(
         assert conditional.dispersion.bound >= conditional.dispersion.value
 
 
-def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
+def test_a_greedy_temperature_is_measured_but_not_compared_to_humans(
     reference_pool: Path,
     small_bandwidth: None,
 ) -> None:
-    """Both seats greedy means another run replays the reading exactly.
+    """Greedy play is a point mass, and a distance against one says nothing.
 
-    A bootstrap over those games reports how far a different draw would have
-    landed instead, and issue #257 measured what that costs: identical
-    distances carried floors fourteen orders of magnitude apart depending only
-    on how many copies of each forced game the suite had played.
-
-    Colours are swapped here because a greedy row plays one game per position by
-    construction, so the two colour assignments are the only streams it has and
-    a row with one stream has nothing to resample for its null levels either.
+    Both seats greedy means one game per position, so the model side carries a
+    single category per rating while the human side carries a distribution. The
+    distance between them is one minus the human mass of that category whatever
+    the model plays, which moves with how popular an opening is rather than with
+    how well it was chosen. The cells still record what greedy played.
     """
 
     result = _run(
@@ -738,30 +741,12 @@ def test_a_greedy_reading_states_a_zero_floor_instead_of_bootstrapping_one(
         )
     )
 
-    greedy = result.reading(RolloutArm.STANDARD_START, 0.0)
-    sampled = result.reading(RolloutArm.STANDARD_START, 1.0)
-    assert greedy.comparisons
-    for comparison in greedy.comparisons.values():
-        assert comparison.dispersions is not None
-        assert comparison.dispersions.method == CURVE_DETERMINISTIC_METHOD
-        assert comparison.dispersions.conditional.value == 0.0
-        assert comparison.dispersions.pooled.value == 0.0
-    # The null levels answer a different question and survive: a finite sample
-    # still fails to match the reference exactly, whether or not another run
-    # would redraw it.
-    assert any(
-        comparison.references is not None for comparison in greedy.comparisons.values()
-    )
-    assert sampled.comparisons
-    for comparison in sampled.comparisons.values():
-        assert comparison.dispersions is not None
-        assert comparison.dispersions.method == CURVE_BOOTSTRAP_METHOD
-    # The per-ply divergence sweep is the same reading truncated, so it reaches
-    # the same answer rather than bootstrapping the identical games twenty times.
-    assert greedy.divergence
-    for point in greedy.divergence:
-        assert point.conditional_floor == 0.0
-        assert point.pooled_floor == 0.0
+    assert [reading.temperature for reading in result.readings] == [1.0]
+    with pytest.raises(RolloutBenchmarkError, match="no curve reading"):
+        result.reading(RolloutArm.STANDARD_START, 0.0)
+    greedy_cells = [cell for cell in result.cells if cell.temperature == 0.0]
+    assert len(greedy_cells) == 2
+    assert all(cell.distribution.games for cell in greedy_cells)
 
 
 def test_the_seeds_re_measure_each_distance_independently(
@@ -1164,8 +1149,8 @@ def test_explicit_seeds_reproduce_the_same_games() -> None:
 def test_a_different_seed_produces_a_different_suite() -> None:
     """Reproducibility must not come from the seed being ignored."""
 
-    baseline = _run(_config(grid={"seeds": (0,)}))
-    other = _run(_config(grid={"seeds": (7,)}))
+    baseline = _run(_config(grid={"seeds": (0,)}, detail={"retain_games": True}))
+    other = _run(_config(grid={"seeds": (7,)}, detail={"retain_games": True}))
 
     assert [record.game_id for record in baseline.cells[0].records] != [
         record.game_id for record in other.cells[0].records
@@ -1542,7 +1527,10 @@ def test_games_stay_in_the_detail_tier(tmp_path: Path) -> None:
     detail = DetailStore(tmp_path / "detail")
 
     result = _run(
-        _config(generation={"games_per_position": 2, "maximum_generated_plies": 6}),
+        _config(
+            generation={"games_per_position": 2, "maximum_generated_plies": 6},
+            detail={"retain_games": True},
+        ),
         store=store,
         detail=detail,
     )
@@ -1707,12 +1695,18 @@ def test_divergence_by_depth_never_arrives_without_its_floor(
         assert point.categories >= 1
 
 
-def test_divergence_by_depth_stays_in_the_detail_tier(
+def test_the_depth_sweep_commits_a_depth_and_keeps_its_curve_in_detail(
     reference_pool: Path,
     small_bandwidth: None,
     tmp_path: Path,
 ) -> None:
-    """A diagnostic that became a headline would be the signal it was a mistake."""
+    """One location is committed; the curve behind it stays a diagnostic.
+
+    Category count grows with depth, so a per-ply distance read against another
+    checkpoint's compares two different numbers of categories. The depth the
+    curve reaches half its excess at does not, which is why that is the half
+    that travels.
+    """
 
     store = ResultsStore(tmp_path / "results")
     detail = DetailStore(tmp_path / "detail")
@@ -1723,15 +1717,25 @@ def test_divergence_by_depth_stays_in_the_detail_tier(
         detail=detail,
     )
 
-    envelope = _curve_envelope(result)
-    assert all(
-        "divergence" not in measurement.metric for measurement in envelope.measurements
-    )
-    assert envelope.detail is not None
-    payload = json.loads(
-        (detail.root / envelope.detail.path).read_text(encoding="utf-8")
-    )
-    assert payload["divergence_by_depth"]
+    (sweep,) = [
+        envelope
+        for envelope in _readings(result)
+        if any(
+            item.metric == GENERATED_PLAY_DIVERGENCE_HALF_DEPTH.identifier
+            for item in envelope.measurements
+        )
+    ]
+    curves = _curve_envelope(result)
+    assert sweep.execution is not None
+    assert curves.execution is not None
+    assert sweep.execution.workload_sha256 != curves.execution.workload_sha256
+    assert [item.metric for item in sweep.measurements] == [
+        GENERATED_PLAY_DIVERGENCE_HALF_DEPTH.identifier
+    ]
+    assert sweep.detail is not None
+    payload = json.loads((detail.root / sweep.detail.path).read_text(encoding="utf-8"))
+    assert payload["points"]
+    assert all(point["conditional_null"] is not None for point in payload["points"])
 
 
 def test_the_depth_sweep_can_be_switched_off(
@@ -1874,3 +1878,80 @@ def test_the_rendered_walk_names_the_bound_that_matters(
     assert "pruned in all" in rendered
     assert "reached ply" in rendered
     assert max(len(line) for line in rendered.splitlines()) <= 120
+
+
+def test_a_parallel_matrix_reads_the_same_as_a_serial_one(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """Which process played a cell must not reach anything the reading takes.
+
+    Every other test here supplies a runner, which holds the matrix to one
+    process, so this is the only place the worker path runs at all. It loads a
+    real checkpoint because that is what a worker loads for itself.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=11)
+    model = ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu")
+
+    def read(workers: int) -> RolloutBenchmarkResult:
+        return cast(
+            RolloutBenchmarkResult,
+            run_benchmark(
+                benchmark_registry()["rollout"],
+                _config(
+                    model=model,
+                    workers=workers,
+                    grid={"target_ratings": (1200, 1800), "temperatures": (1.0,)},
+                ),
+                runner=None,
+                checkpoint=None,
+            ),
+        )
+
+    serial = read(1)
+    parallel = read(2)
+
+    assert [cell.as_record() for cell in parallel.cells] == [
+        cell.as_record() for cell in serial.cells
+    ]
+
+
+def test_a_worker_that_stops_fails_this_reading_rather_than_the_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inference_run: Callable[..., Path],
+) -> None:
+    """A broken pool raises `RuntimeError`, which no sweep converts to a failure.
+
+    An initializer's own exception never reaches the caller either, so a worker
+    that could not load its checkpoint arrives here the same way.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=13)
+
+    class _BrokenPool:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _BrokenPool:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def map(self, *args: Any, **kwargs: Any) -> Any:
+            raise BrokenProcessPool("a worker exited unexpectedly")
+
+    monkeypatch.setattr(rollout_module, "ProcessPoolExecutor", _BrokenPool)
+
+    with pytest.raises(RolloutBenchmarkError, match="worker stopped"):
+        run_benchmark(
+            benchmark_registry()["rollout"],
+            _config(
+                model=ModelRunnerConfig(checkpoint_path=checkpoint, device="cpu"),
+                workers=2,
+            ),
+            runner=None,
+            checkpoint=None,
+        )

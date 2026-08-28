@@ -306,8 +306,8 @@ class ArmReading:
         reply stopped being legal, so it scores a subset of the control's
         positions, and comparing its mean against the control's mean over
         everything reports that composition difference as a novelty effect.
-        Measured on a real checkpoint the artifact was large enough to invert
-        the reading, making legality look *better* under perturbation.
+        That artifact can be large enough to invert the reading, making
+        legality look *better* under perturbation.
         """
 
         kept = [

@@ -114,7 +114,7 @@ def test_book_lines_replay_to_their_indexed_positions() -> None:
             board.push(chess.Move.from_uci(uci))
         assert board.epd() == entry.epd
         assert entry.ply == len(entry.uci.split())
-        assert book.entry_for(entry.epd) is entry
+        assert book.positions[entry.epd] is entry
 
 
 def test_book_never_names_an_opening_unclassified() -> None:
@@ -449,3 +449,27 @@ def test_the_repertoire_distribution_leaves_waypoints_out() -> None:
         "Waypoint Test": 1,
     }
     assert repertoire_distribution(labels) == {"Open Test": 1, "Sicilian Test": 1}
+
+
+def test_the_position_key_names_exactly_what_the_position_string_names() -> None:
+    """The two indexes must agree, because only one of them is ever consulted.
+
+    A key that disagreed with the position string it stands for would not fail:
+    it would quietly name a different opening, or none.
+    """
+
+    book = load_book()
+
+    for epd, entry in book.positions.items():
+        board = chess.Board()
+        board.set_epd(epd)
+        assert book.named_entry(board) is entry
+
+    # And on play rather than on the book's own positions, through a line that
+    # leaves an en passant square, which a position string carries only where
+    # the capture is available.
+    board = chess.Board()
+    for san in ("e4", "c5", "e5", "d5"):
+        board.push_san(san)
+        assert book.named_entry(board) == book.positions.get(board.epd())
+    assert board.ep_square is not None
