@@ -71,10 +71,19 @@ from anthro_chess.evaluation.results.metrics import (
     INFERENCE_PARAMETERS,
 )
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.inference.config import InferenceDevice
 from anthro_chess.runtime import GameSession, RuntimeConfig
+
+from accelerators import inference_accelerator_parameters
 
 #: A workload small enough for the CPU suite. The measured quantities are
 #: unchanged; only the number of samples behind them is.
+#: Devices named for a workload digest without asking a driver for one. Both
+#: are types the project targets, so neither is a fiction, and constructing one
+#: is inert on a host that has no such device.
+_STANDIN_HOST = torch.device("cpu")
+_STANDIN_ACCELERATOR = torch.device("mps")
+
 FAST_LATENCY = LatencyWorkloadConfig(
     reference_plies=4,
     decisions=3,
@@ -786,15 +795,15 @@ def test_the_host_and_the_accelerator_do_not_land_on_one_series(
     checkpoint = inference_run(tmp_path / "run", seed=31)
     config = _config(checkpoint).value
 
-    host = inference_module._play_execution(config, torch.device("cpu"))
-    accelerator = inference_module._play_execution(config, torch.device("cuda"))
+    host = inference_module._play_execution(config, _STANDIN_HOST)
+    accelerator = inference_module._play_execution(config, _STANDIN_ACCELERATOR)
 
     assert host.workload_sha256 != accelerator.workload_sha256
     # And moving the instrument leaves the product timings' series alone.
     assert (
         accelerator.workload_sha256
         != inference_module._compute_execution(
-            config, torch.device("cuda"), 4
+            config, _STANDIN_ACCELERATOR, 4
         ).workload_sha256
     )
 
@@ -843,7 +852,7 @@ def test_a_two_device_reading_splits_its_series_and_counts_once(
     accelerator = replace(
         measured.serving,
         execution=inference_module._play_execution(
-            _config(checkpoint).value, torch.device("cuda")
+            _config(checkpoint).value, _STANDIN_ACCELERATOR
         ),
     )
     # The host reading carries no compute instrument and no cold start, which
@@ -853,9 +862,10 @@ def test_a_two_device_reading_splits_its_series_and_counts_once(
 
     units = {unit.slug: unit for unit in inference_module._measurement_units(result)}
 
-    assert set(units) == {"cuda", "cuda-compute", "cpu"}
+    device = _STANDIN_ACCELERATOR.type
+    assert set(units) == {device, f"{device}-compute", "cpu"}
     counted = {INFERENCE_PARAMETERS.identifier, INFERENCE_DECISION_GFLOPS.identifier}
-    assert counted <= {value.metric for value in units["cuda"].values}
+    assert counted <= {value.metric for value in units[device].values}
     assert not counted & {value.metric for value in units["cpu"].values}
     assert INFERENCE_MODEL_LOAD_SECONDS.identifier not in {
         value.metric for value in units["cpu"].values
@@ -871,7 +881,9 @@ def test_a_two_device_reading_splits_its_series_and_counts_once(
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("accelerator", inference_accelerator_parameters())
 def test_an_accelerator_run_also_measures_the_host(
+    accelerator: InferenceDevice,
     tmp_path: Path,
     inference_run: Callable[..., Path],
 ) -> None:
@@ -887,11 +899,14 @@ def test_an_accelerator_run_also_measures_the_host(
     store = ResultsStore(tmp_path / "results")
 
     result = _measure(
-        _config(checkpoint, model=ModelRunnerConfig(checkpoint_path=checkpoint)),
+        _config(
+            checkpoint,
+            model=ModelRunnerConfig(checkpoint_path=checkpoint, device=accelerator),
+        ),
         store=store,
     )
 
-    assert result.serving.device == "cuda"
+    assert result.serving.device == accelerator
     assert result.host is not None
     assert result.host.device == "cpu"
     # The replica really decided, rather than reporting the accelerator's work.
