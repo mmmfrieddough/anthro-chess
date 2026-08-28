@@ -119,6 +119,10 @@ speed = "blitz"
 rating_namespace = "lichess_blitz"
 
 [detail]
-# Whole games, machine-local. Every later distribution feature is recomputed
-# from these rather than by regenerating the suite.
-retain_games = true
+# Declared empty so a dotted override can reach it, the way `prefix.view` is:
+# whole games and per-decision records are both off by default, since the
+# payload tracks the games played per cell and nothing in the suite reads it now
+# that the decomposition is computed where the games are. Turn one on for a
+# session that means to look at what was played:
+#
+#   --set detail.retain_games=true

@@ -1361,8 +1361,13 @@ carried beside them rather than applied to them, so a reading describes the mode
 and not the dial. Readings are cell-scoped by target rating and temperature: the
 balance between the two classes depends on both, and a pooled figure over a grid
 would move with grid composition rather than with the model. A pass that varied
-either dial therefore has no single committed reading; the caller names the cell
-it means.
+either dial therefore commits one reading per cell rather than a blend of them.
+That way round on purpose: a pooled series cannot be split later, while a
+per-cell one can always be averaged, and the rating axis is the one a model that
+starts answering its conditioning would move first. A greedy cell reports
+nothing, since its seats follow their own policy every time and give up nothing
+by construction, so both quantities there are pinned by the temperature rather
+than measured on the model.
 
 Nothing in the family declares a direction of improvement. Each metric moves
 with temperature by construction — a greedy run follows its policy every time
@@ -1380,11 +1385,22 @@ reconstructed session is deliberately not turned into a game record: a log can
 end mid-game, and an invented termination would corrupt the one format the
 termination benchmarks read.
 
-Per-decision records are retained rather than summarized away, in the
-machine-local detail tier. A checkpoint's interesting decisions are individual
-ones, and no mean recovers them. A decomposition over one manually played game is
-a diagnostic rather than a series, so it is not appended to the results store;
-committed measurements come from suites that declare their inputs.
+A generating benchmark decomposes the games it just played rather than writing
+them out and reading them back. The games are already in hand, and a payload
+written for this reason alone tracks the games per cell, which buys curve
+precision and buys a decomposition nothing: its spread is an order of magnitude
+below the rating effect it has to resolve at a small fraction of that count. It
+therefore reads its own declared sample of each cell, drawn evenly across the
+seeds and across the plan order so it spans the positions and both colours,
+rather than whatever games happened to be kept.
+
+Per-decision records can be retained beside it in the machine-local detail tier,
+which a session that means to look at individual decisions turns on. They are off
+otherwise, like every other per-position record here, because every reported
+quantity comes from the summary rather than from them. A decomposition over one
+manually played game is a diagnostic rather than a series, so it is not appended
+to the results store; committed measurements come from suites that declare their
+inputs.
 
 ## Novelty
 
@@ -2243,12 +2259,26 @@ Depth is a property of the pair, not of one player, since either side leaving
 book ends it. Matched-rating games control this on the human side and a
 self-play grid controls it on the model side.
 
-Divergence as a function of book depth — the same distance recomputed with the
-classification truncated at each ply — says where the model departs from human
-play rather than whether it does. It is a diagnostic and belongs in the detail
-tier: category count grows with depth, so its noise floor grows too, and it must
-never be shown without that floor. If it ever becomes the number people quote,
-that is the signal it was a mistake.
+Divergence as a function of book depth, the same distance recomputed with the
+classification truncated at each ply, says *where* the model departs from human
+play rather than whether it does. The size is the exact walk's to report, and
+two checkpoints unlike humans by the same amount can arrive there from the first
+move or from the middle of theory.
+
+The curve itself stays a diagnostic in the detail tier. Category count grows
+with depth, so a per-ply distance read against another checkpoint's compares two
+different numbers of categories, and no point of it may be shown without the
+null and floor it carries. What is committed is one location taken from it: the
+book ply by which half the distance past its null has accumulated, interpolated
+so it is continuous rather than quantized to the truncations it was read at, and
+reported only where that excess clears the floor. A half of an excess that is
+itself noise is a depth drawn from noise.
+
+The sweep runs to the deepest ply at which a label on either side still changes
+rather than to the deepest book match, since past that point every truncation
+classifies both sides identically. It carries its own workload for the reason
+the walk does: the depth it ran to and the resamples behind its null both decide
+what a half of it means.
 
 That sweep reads raw labels rather than destinations. The waypoint distinction
 is about where a game *stopped*, and at a truncation the reading imposed every
@@ -2275,15 +2305,14 @@ its floor. But the obvious bound is the wrong one to report. Probability
 disperses across dozens of legal moves per ply, so on a real policy nearly every
 individual line falls below any affordable threshold even while the dominant
 ones reach full depth, and a bound that assumes pruned mass could go anywhere
-saturates near one — declaring an informative reading unusable. Measured on a
-proof-scale checkpoint it read 0.96.
+saturates near one, which declares an informative reading unusable.
 
 What rescues it is the same structure that separates a waypoint from a
 destination. A destination has one reachable label at the reported level, so a
 line pruned there keeps the label it already has however it continues. Only mass
 pruned while still uncommitted — sitting on a waypoint, or off book — can move
 the distribution. Report that as the bound and the assumption-free number beside
-it; on the same reading they were 0.38 against 0.96. The tighter bound inherits
+it. The tighter bound inherits
 the book's canonical-path notion of reachability, so a game transposing out of a
 destination into another family by a route no book entry takes would escape it.
 That is narrow, and the alternative is two definitions of reachability in one

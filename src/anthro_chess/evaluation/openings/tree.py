@@ -76,9 +76,9 @@ class RepertoireWalk:
     #: This is far tighter than ``pruned_mass`` and it matters. Probability
     #: disperses across dozens of legal moves per ply, so most individual lines
     #: fall below any affordable threshold even while the dominant ones reach
-    #: full depth, which drives the assumption-free bound toward one and
-    #: declares an informative reading unusable. Most of that pruned mass has
-    #: already picked a family, which is what separates the two numbers.
+    #: full depth, which drives ``pruned_mass`` toward one and declares an
+    #: informative reading unusable. Most of that mass has already picked a
+    #: family, which is what this one discounts and that one cannot.
     #:
     #: Reachability here is the book's own canonical-path notion, the same one
     #: that separates a waypoint from a destination. A game that transposed out

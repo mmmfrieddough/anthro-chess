@@ -1225,9 +1225,7 @@ def _decision_metric(identifier: str, summary: str) -> MetricDefinition:
     They are also generated-play readings rather than view passes, so none can
     be scheduled into a training cadence as though it were a cheap scoring pass,
     and none consumes a data projection: the decisions come from games the model
-    played rather than from any pass over a corpus. Batching moves the recorded
-    probabilities in their last bits, so the concurrency they were played at is
-    part of what they were measured on.
+    played rather than from any pass over a corpus.
     """
 
     return register_metric(

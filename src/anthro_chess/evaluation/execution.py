@@ -36,8 +36,15 @@ MEASURED_PRECISION = "float32"
 def execution_record(
     device: torch.device,
     workload: Mapping[str, Any],
+    cpu_threads: int | None = None,
 ) -> ExecutionRecord:
-    """Return one measurement's declared workload and where it ran."""
+    """Return one measurement's declared workload and where it ran.
+
+    ``cpu_threads`` names the host's intra-op threads for a caller that pinned
+    its own. A benchmark spreading work over processes gives each one thread so
+    the pool does not oversubscribe the machine, and recording that would make a
+    parallel reading incomparable with a serial one over a scheduling choice.
+    """
 
     return execution_reference(
         device=device.type,
@@ -46,7 +53,11 @@ def execution_record(
         torch_version=torch.__version__,
         platform_key=platform_key(),
         platform=platform.platform(),
-        cpu_threads=torch.get_num_threads() if device.type == "cpu" else None,
+        cpu_threads=(
+            (torch.get_num_threads() if cpu_threads is None else cpu_threads)
+            if device.type == "cpu"
+            else None
+        ),
         workload=dict(workload),
     )
 

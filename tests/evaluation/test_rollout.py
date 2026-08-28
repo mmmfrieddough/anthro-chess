@@ -1717,21 +1717,27 @@ def test_the_depth_sweep_commits_a_depth_and_keeps_its_curve_in_detail(
         detail=detail,
     )
 
-    envelope = _curve_envelope(result)
-    committed = {measurement.metric for measurement in envelope.measurements}
-    assert GENERATED_PLAY_DIVERGENCE_HALF_DEPTH.identifier in committed
-    assert {metric for metric in committed if "divergence" in metric} == {
+    (sweep,) = [
+        envelope
+        for envelope in _readings(result)
+        if any(
+            item.metric == GENERATED_PLAY_DIVERGENCE_HALF_DEPTH.identifier
+            for item in envelope.measurements
+        )
+    ]
+    # Its own series, because the depth it ran to and the resamples behind its
+    # null both decide what a half of it means.
+    curves = _curve_envelope(result)
+    assert sweep.execution is not None
+    assert curves.execution is not None
+    assert sweep.execution.workload_sha256 != curves.execution.workload_sha256
+    assert [item.metric for item in sweep.measurements] == [
         GENERATED_PLAY_DIVERGENCE_HALF_DEPTH.identifier
-    }
-    assert envelope.detail is not None
-    payload = json.loads(
-        (detail.root / envelope.detail.path).read_text(encoding="utf-8")
-    )
-    assert payload["divergence_by_depth"]
-    assert all(
-        point["conditional_null"] is not None
-        for point in payload["divergence_by_depth"]
-    )
+    ]
+    assert sweep.detail is not None
+    payload = json.loads((detail.root / sweep.detail.path).read_text(encoding="utf-8"))
+    assert payload["points"]
+    assert all(point["conditional_null"] is not None for point in payload["points"])
 
 
 def test_the_depth_sweep_can_be_switched_off(
