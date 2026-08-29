@@ -216,6 +216,12 @@ class ResignationCalibration:
         return sum(bucket.plies for bucket in self.buckets)
 
     @property
+    def human_resignations(self) -> int:
+        """Return how many of those plies a human resigned at."""
+
+        return sum(bucket.human_resignations for bucket in self.buckets)
+
+    @property
     def error(self) -> float | None:
         """Return the ply-weighted absolute gap between the two sides.
 
@@ -234,8 +240,16 @@ class ResignationCalibration:
         return self._weighted(lambda bucket: bucket.gap)
 
     def _weighted(self, value: Callable[[CalibrationBucket], float]) -> float | None:
+        """Return one ply-weighted reduction, or nothing to weight it against.
+
+        A view holding no human resignation gives every band a rate of zero,
+        against which any mass the policy spends reads as spending more than
+        humans did. That is a missing reference rather than a measured excess,
+        and it is the condition that withholds the mass at resignation too.
+        """
+
         plies = self.plies
-        if not plies:
+        if not plies or not self.human_resignations:
             return None
         return sum(value(bucket) * bucket.plies for bucket in self.buckets) / plies
 
@@ -387,10 +401,14 @@ def _held_out_resignation(
             "has no human resignation to be scored against"
         )
     calibration = _calibration(decisions, rows)
-    if not calibration.plies:
+    if calibration.error is None:
         unavailable["resignation_calibration"] = (
             "no scored decision could be matched to the position it was taken "
             "at, so there is no material to read the mass against"
+            if not calibration.plies
+            else "no game in the view carries a resignation action, so every "
+            "band's human rate is zero and the policy has nothing to be "
+            "calibrated against"
         )
     logger.info(
         "Resignation prediction: %s game(s), %s resignation ply/plies of %s",

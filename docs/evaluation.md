@@ -186,9 +186,10 @@ the external puzzle-rating response described in the rating section, and
 `anthro eval ladder` measures the self-play rating ladder and its temperature
 response described beside it. `anthro eval termination` measures what the policy
 says about resigning at positions humans reached; see game termination below,
-where how a checkpoint's own games end is read by the rollout instead. `anthro eval budget` reports held-out quality
-against the training budget that bought it, joining two families rather than
-defining a third; see training efficiency below. Training efficiency itself has no command, because it is
+where how a checkpoint's own games end is read by the rollout instead.
+`anthro eval budget` reports held-out quality against the training budget that
+bought it, joining two families rather than defining a third; see training
+efficiency below. Training efficiency itself has no command, because it is
 measured by `anthro train` while the run happens. `anthro eval suite` runs all
 of the checkpoint-scoped benchmarks above in one sweep; see the benchmark suite
 below.
@@ -2108,9 +2109,10 @@ because rating is this comparison's own axis: every reference game is placed at
 the mean of its two players' ratings, and numbers drawn from two pools are two
 scales plotted as one. **One class per reading**, so a population the pool holds
 no game of is not a distance over nothing but a suite with nothing to compare:
-it fails in the pool pass, before the games it would have measured are played. The same class selects the human-prefix arm's
-roots, since a mixed set of openings compared against one class's reference
-would put that difference into every distance.
+it fails in the pool pass, before the games it would have measured are played.
+The same class selects the human-prefix arm's roots, since a mixed set of
+openings compared against one class's reference would put that difference into
+every distance.
 
 ### Shared Generation Machinery
 

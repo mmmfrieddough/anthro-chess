@@ -29,6 +29,8 @@ name = "termination-held-out"
 maximum_games = 4096
 
 [detail]
-# Per-decision resignation mass, machine-local. The largest payload here and
-# the one that makes an unexpected reading explainable.
+# Per-decision resignation mass, machine-local. The one payload that makes an
+# unexpected reading explainable, and one row per scored ply: at the view size
+# above that is around 275,000 rows per checkpoint, in a tier nothing prunes.
+# Turn it off for a cadence that reads more often than it looks.
 retain_decisions = true

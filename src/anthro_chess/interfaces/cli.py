@@ -2696,22 +2696,6 @@ def _against_null(null: float | None) -> str:
     return "" if null is None else f" (null {null:.4f})"
 
 
-def _termination_arm(
-    name: str,
-    distance: float,
-    *,
-    null: float | None,
-    floor: float | None,
-) -> str:
-    """Render one arm of the termination mix beside its own qualifiers."""
-
-    return (
-        f"  {name:<11} {distance:.4f}  "
-        f"null {_optional_value(null, '.4f')}  "
-        f"floor {_optional_value(floor, '.4f')}"
-    )
-
-
 def _render_termination(result: TerminationBenchmarkResult) -> str:
     held_out = result.held_out
     calibration = held_out.calibration

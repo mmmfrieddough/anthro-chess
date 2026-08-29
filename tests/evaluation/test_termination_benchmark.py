@@ -338,6 +338,16 @@ def test_a_view_without_a_resignation_reports_unavailable(
     }
     assert TERMINATION_RESIGNATION_MASS_AT_RESIGNATION.identifier not in reported
     assert TERMINATION_RESIGNATION_MASS_SEPARATION.identifier not in reported
+    # And the calibration with it. Every band's human rate is zero here, so any
+    # mass the policy spends would be committed as spending more than humans
+    # did, against a rate no human supplied.
+    assert held_out.calibration.plies > 0
+    assert held_out.calibration.human_resignations == 0
+    assert held_out.calibration.error is None
+    assert held_out.calibration.gap is None
+    assert "resignation_calibration" in held_out.unavailable
+    assert TERMINATION_RESIGNATION_CALIBRATION_ERROR.identifier not in reported
+    assert TERMINATION_RESIGNATION_CALIBRATION_GAP.identifier not in reported
     # The half that does have a population is still reported, so one missing
     # reading does not take the rest of the family down with it.
     assert TERMINATION_RESIGNATION_MASS_AT_MOVES.identifier in reported
@@ -386,6 +396,27 @@ def test_the_calibration_reaches_the_committed_tier(pool: Path) -> None:
         ).sample_size
         == result.held_out.calibration.plies
     )
+
+
+def test_a_calibration_with_no_human_resignation_reports_nothing() -> None:
+    """Zero on both sides of every band is a missing reference, not agreement."""
+
+    calibration = ResignationCalibration(
+        buckets=(
+            CalibrationBucket(
+                bucket="9-and-above",
+                plies=400,
+                human_resignations=0,
+                human_rate=0.0,
+                model_mass=0.02,
+            ),
+        )
+    )
+
+    assert calibration.plies == 400
+    assert calibration.human_resignations == 0
+    assert calibration.error is None
+    assert calibration.gap is None
 
 
 def test_every_registered_metric_of_the_family_is_reported(pool: Path) -> None:

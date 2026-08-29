@@ -845,6 +845,9 @@ class RolloutReading:
     #: reference rather than of the checkpoint, which is why it sits with the
     #: comparison rather than on a cell.
     human_premature_rate: float | None = None
+    #: The resignations that rate is a share of, which is a fraction of the
+    #: reference rather than all of it.
+    human_premature_resignations: int = 0
     #: The repertoire distance recomputed at each book ply. Detail tier only.
     divergence: tuple[DepthDivergence, ...] = ()
     #: The shallow repertoire enumerated exactly, when the walk ran.
@@ -1277,8 +1280,8 @@ def _measure_cell(
 def _human_premature_rate(
     config: RolloutBenchmarkConfig,
     reference: HumanReference,
-) -> float | None:
-    """Return the share of human resignations the material proxy calls early.
+) -> tuple[float | None, int]:
+    """Return the share of human resignations called early, and of how many.
 
     The losing player rather than the one holding the move: a human platform
     accepts a resignation on either turn, so the seat that gave up is read off
@@ -1294,8 +1297,9 @@ def _human_premature_rate(
         if loser is not None
     ]
     if not balances:
-        return None
-    return sum(1 for balance in balances if balance >= threshold) / len(balances)
+        return None, 0
+    premature = sum(1 for balance in balances if balance >= threshold)
+    return premature / len(balances), len(balances)
 
 
 def _loser(result: str) -> chess.Color | None:
@@ -1662,6 +1666,7 @@ def _curve_reading(
     # what decides whether another run of it would produce different games —
     # and therefore whether it has any evaluation noise for a floor to bound.
     varies = replicates_vary((temperature,))
+    premature_rate, premature_resignations = _human_premature_rate(config, reference)
     reading_execution = _reading_execution_record(
         config, cells, temperature, ratings, reference_view, device=device
     )
@@ -1712,7 +1717,8 @@ def _curve_reading(
         human_games=len(reference.games),
         comparisons=comparisons,
         seed_spread=_seed_spread(config, cells, reference, ratings),
-        human_premature_rate=_human_premature_rate(config, reference),
+        human_premature_rate=premature_rate,
+        human_premature_resignations=premature_resignations,
         unavailable=unavailable,
         divergence=_divergence_by_depth(
             config, cells, reference, ratings, book=book, model_varies=varies
@@ -2149,6 +2155,10 @@ def _walk_execution_record(
 
     workload = dict(cells[0].execution.workload)
     workload.pop("target_rating", None)
+    # The guardrail threshold decides which of a cell's resignations counted as
+    # premature and reaches nothing derived here. Left in, moving it would end
+    # every series on this record over a quantity none of them reads.
+    workload.pop("premature_material_balance", None)
     workload.update(
         {
             "target_ratings": list(ratings),
@@ -2264,6 +2274,10 @@ def _reading_execution_record(
 
     workload = dict(cells[0].execution.workload)
     workload.pop("target_rating", None)
+    # The guardrail threshold decides which of a cell's resignations counted as
+    # premature and reaches nothing derived here. Left in, moving it would end
+    # every series on this record over a quantity none of them reads.
+    workload.pop("premature_material_balance", None)
     workload.update(
         {
             "target_ratings": list(ratings),
@@ -2560,11 +2574,13 @@ def _guardrail_measurements(
 ) -> tuple[Measurement, ...]:
     """Return one cell's terminal-action guardrails.
 
-    Sample sizes differ per metric and are not the cell's game count: a
-    premature rate is a share of the resignations that happened, while the
-    non-termination rate is a share of every game played. Reporting the larger
-    for both would overstate the first to every reader, the noise-floor layer
-    included.
+    Sample sizes differ per metric. A premature rate is a share of the
+    resignations that happened, while the non-termination rate is a share of
+    every game played and the silent count rests on all of them too: the
+    evidence that an action was never selected is how many games could have
+    selected it, not how many actions were offered. Reporting the game count
+    for the premature rate would overstate it to every reader, the noise-floor
+    layer included.
 
     A cell that offered no terminal action reports the silent count as nothing
     rather than as a passing zero, which would read as an action used.
@@ -2591,7 +2607,7 @@ def _guardrail_measurements(
             (
                 GENERATED_PLAY_SILENT_TERMINAL_ACTIONS.identifier,
                 float(len(guardrails.silent_terminal_actions)),
-                len(guardrails.enabled_terminal_actions),
+                games,
             )
         )
     return tuple(
@@ -2741,7 +2757,7 @@ def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
                 GENERATED_PLAY_PREMATURE_RESIGNATION_HUMAN_RATE.identifier,
                 reading.human_premature_rate,
                 workload=workload,
-                sample_size=reading.human_games,
+                sample_size=reading.human_premature_resignations,
             )
         )
     return tuple(measurements)

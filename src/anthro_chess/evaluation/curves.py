@@ -680,8 +680,11 @@ class CurveComparison:
         averaged over the grid, so the shares are on the same rating mixture the
         pooled distance is computed from and sum to that distance.
 
-        Ordered by mass, because that is the order the rows matter in: a delta
-        on a family nobody plays is noise wearing the shape of a finding.
+        Ordered by the larger of the two sides, because that is the order the
+        rows matter in: a delta on a category neither side reaches is noise
+        wearing the shape of a finding, while one only the model produces is
+        the whole of its own contribution to the distance and would sort last
+        behind every category the reference holds.
         """
 
         if self.spec.quantity is not CurveQuantity.CATEGORICAL:
@@ -696,7 +699,12 @@ class CurveComparison:
             )
             for category in sorted({*human, *model})
         )
-        return tuple(sorted(shares, key=lambda share: (-share.mass, share.category)))
+        return tuple(
+            sorted(
+                shares,
+                key=lambda share: (-max(share.mass, share.model), share.category),
+            )
+        )
 
     def trace(self, side: str, *, label: str, fingerprint: str) -> CurveTrace:
         """Return one side's curve as a drawable, series-pinned trace."""

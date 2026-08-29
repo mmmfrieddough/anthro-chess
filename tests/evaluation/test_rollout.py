@@ -2062,10 +2062,10 @@ def test_the_human_premature_rate_is_read_from_the_losing_players_side() -> None
     assert ahead.final_turn_white is False
     assert _human_premature_rate(
         config, HumanReference(games=(losses["1-0"],), excluded={})
-    ) == pytest.approx(0.0)
+    ) == (pytest.approx(0.0), 1)
     assert _human_premature_rate(
         config, HumanReference(games=(losses["0-1"],), excluded={})
-    ) == pytest.approx(1.0)
+    ) == (pytest.approx(1.0), 1)
 
 
 def test_a_reference_with_no_resignation_has_no_premature_rate() -> None:
@@ -2090,7 +2090,7 @@ def test_a_reference_with_no_resignation_has_no_premature_rate() -> None:
         excluded={},
     )
 
-    assert _human_premature_rate(_config().value, reference) is None
+    assert _human_premature_rate(_config().value, reference) == (None, 0)
 
 
 # --- The termination quantity ---------------------------------------------
@@ -2197,3 +2197,47 @@ def _record_for_termination(termination: GameTermination) -> Any:
             adjudicated=termination is GameTermination.PLY_LIMIT,
         ),
     )
+
+
+def test_the_unreachable_set_is_exactly_what_the_model_cannot_produce() -> None:
+    """A human category added later must not rejoin the compared vocabulary.
+
+    The set is the whole of what renormalizes the human side, and a category
+    that slipped back in would restore the total variation floor it exists to
+    remove, silently: the distance would rise once and stay there, and no
+    reading would say why.
+    """
+
+    from anthro_chess.data.termination import TerminationCategory
+    from anthro_chess.evaluation.reference import UNREACHABLE_HUMAN_TERMINATIONS
+
+    human = {category.value for category in TerminationCategory}
+    model = {termination.value for termination in GameTermination}
+
+    assert UNREACHABLE_HUMAN_TERMINATIONS == human - model
+    # And the mirror image stays reachable, so the ply limit is charged for
+    # rather than dropped with them.
+    assert model - human == {GameTermination.PLY_LIMIT.value}
+
+
+def test_a_model_only_category_is_not_sorted_off_the_drill_down() -> None:
+    """Its human mass is zero, which is last by the reference's own ordering."""
+
+    from anthro_chess.evaluation.curves import CategoryShare
+
+    shares = tuple(
+        sorted(
+            (
+                CategoryShare(category="checkmate", human=0.4, model=0.4),
+                CategoryShare(category="ply_limit", human=0.0, model=0.3),
+                CategoryShare(category="stalemate", human=0.01, model=0.01),
+            ),
+            key=lambda share: (-max(share.mass, share.model), share.category),
+        )
+    )
+
+    assert [share.category for share in shares] == [
+        "checkmate",
+        "ply_limit",
+        "stalemate",
+    ]
