@@ -354,6 +354,18 @@ def replicate_dispersion(values: Sequence[float]) -> float:
     return statistics.stdev(values)
 
 
+def pooled_process_reading(values: Sequence[float]) -> tuple[float, float]:
+    """Return the mean of one metric across processes, and that mean's spread.
+
+    Returned together because a floor built from one process's spread would
+    price the reading as though the others had not been paid for. The mean
+    rather than the median, because a median's own spread is known only
+    asymptotically and these counts are too small for that constant.
+    """
+
+    return statistics.fmean(values), process_dispersion(values) / math.sqrt(len(values))
+
+
 def process_dispersion(values: Sequence[float]) -> float:
     """Return the dispersion of one metric across separate processes.
 
@@ -420,6 +432,7 @@ __all__ = [
     "games_to_resolve",
     "measured_dispersion",
     "plug_in_rescale",
+    "pooled_process_reading",
     "process_dispersion",
     "replicate_dispersion",
     "self_combined_floor",

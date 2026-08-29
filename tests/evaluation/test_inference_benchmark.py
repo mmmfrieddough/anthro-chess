@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -60,27 +61,38 @@ from anthro_chess.evaluation.results import (
 )
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_BATCH_THROUGHPUT,
+    INFERENCE_DECISION_GFLOPS,
+    INFERENCE_DECISION_OVERHEAD_MS,
     INFERENCE_FIRST_DECISION_SECONDS,
     INFERENCE_FORWARD_THROUGHPUT,
     INFERENCE_MODEL_LOAD_SECONDS,
     INFERENCE_MOVE_LATENCY_BY_PERCENTILE,
     INFERENCE_MOVE_LATENCY_MEAN,
+    INFERENCE_PARAMETERS,
 )
 from anthro_chess.inference import CheckpointModelRunner, ModelRunnerConfig
+from anthro_chess.inference.config import InferenceDevice
 from anthro_chess.runtime import GameSession, RuntimeConfig
+
+from accelerators import inference_accelerator_parameters
 
 #: A workload small enough for the CPU suite. The measured quantities are
 #: unchanged; only the number of samples behind them is.
+#: Devices named for a workload digest without asking a driver for one. Both
+#: are types the project targets, so neither is a fiction, and constructing one
+#: is inert on a host that has no such device.
+_STANDIN_HOST = torch.device("cpu")
+_STANDIN_ACCELERATOR = torch.device("mps")
+
 FAST_LATENCY = LatencyWorkloadConfig(
     reference_plies=4,
-    sweep_plies=(0, 4),
     decisions=3,
     warmup_decisions=1,
     seed="test-latency",
 )
 FAST_THROUGHPUT = ThroughputWorkloadConfig(
-    reference_batch_size=2,
-    sweep_batch_sizes=(1, 2),
+    serving_batch_size=2,
+    compute_batch_size=4,
     history_plies=4,
     batches=2,
     warmup_batches=1,
@@ -116,8 +128,8 @@ def _config(
         "latency": FAST_LATENCY,
         "throughput": FAST_THROUGHPUT,
         # One process, so these read what the benchmark measures rather than
-        # paying for the replicate runs that qualify it.
-        "replicates": 1,
+        # paying for the replicate runs that pool and qualify it.
+        "processes": 1,
     }
     fields.update(overrides)
     return ResolvedConfig(
@@ -136,32 +148,87 @@ def test_benchmark_reports_latency_throughput_and_cold_start(
 
     result = _measure(_config(checkpoint), store=store, detail=detail)
 
-    latency = result.reference_latency
+    reading = result.serving
+    assert result.host is None
+    latency = reading.latency
     assert latency.history_plies == FAST_LATENCY.reference_plies
     assert latency.decisions == FAST_LATENCY.decisions
     assert latency.percentiles[50] <= latency.percentiles[90]
     assert latency.percentiles[90] <= latency.percentiles[99]
     assert latency.minimum_ms <= latency.mean_ms <= latency.maximum_ms
-    assert result.reference_throughput.batch_size == 2
-    assert result.reference_throughput.decisions_per_second > 0.0
-    assert result.cold_start.model_load_seconds > 0.0
-    assert result.cold_start.first_decision_seconds > 0.0
+    assert reading.serving.batch_size == 2
+    assert reading.serving.decisions_per_second > 0.0
+    assert reading.cold_start is not None
+    assert reading.cold_start.model_load_seconds > 0.0
+    assert reading.cold_start.first_decision_seconds > 0.0
+    assert result.cost.parameters > 0
+    assert result.cost.decision_gflops > 0.0
 
-    envelope, cost = result.envelopes
-    assert envelope.kind == INFERENCE_KIND
+    play, compute, cost = result.envelopes
+    assert play.kind == INFERENCE_KIND
+    assert compute.kind == INFERENCE_KIND
     assert cost.kind == BENCHMARK_COST_KIND
-    assert {item.metric for item in envelope.measurements} == {
+    assert {item.metric for item in play.measurements} == {
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier,
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[90].identifier,
         INFERENCE_MOVE_LATENCY_BY_PERCENTILE[99].identifier,
         INFERENCE_MOVE_LATENCY_MEAN.identifier,
         INFERENCE_BATCH_THROUGHPUT.identifier,
-        INFERENCE_FORWARD_THROUGHPUT.identifier,
+        INFERENCE_DECISION_OVERHEAD_MS.identifier,
+        INFERENCE_PARAMETERS.identifier,
+        INFERENCE_DECISION_GFLOPS.identifier,
         INFERENCE_MODEL_LOAD_SECONDS.identifier,
         INFERENCE_FIRST_DECISION_SECONDS.identifier,
     }
+    # The instrument is declared apart, so moving it ends only its own series.
+    assert {item.metric for item in compute.measurements} == {
+        INFERENCE_FORWARD_THROUGHPUT.identifier
+    }
+    assert play.execution is not None
+    assert compute.execution is not None
+    assert play.execution.workload_sha256 != compute.execution.workload_sha256
     assert result.recorded_paths and result.recorded_paths[0].exists()
     assert result.detail_paths and result.detail_paths[0].exists()
+
+
+def _stub_sampler(
+    monkeypatch: pytest.MonkeyPatch,
+    parent: InferenceBenchmarkResult,
+    offsets: Callable[[int], float],
+) -> list[InferenceBenchmarkConfig]:
+    """Answer every replicate with the parent's reading, shifted by a round.
+
+    Stubbed rather than spawned wherever what is under test is how the readings
+    combine: a real subprocess would put the machine's own noise into an
+    assertion about arithmetic.
+    """
+
+    sampled: list[InferenceBenchmarkConfig] = []
+
+    def fake_sampler(
+        selection: InferenceBenchmarkConfig,
+        **kwargs: object,
+    ) -> Callable[[], tuple[ProcessSample, ...]]:
+        def sample() -> tuple[ProcessSample, ...]:
+            sampled.append(selection)
+            offset = offsets(len(sampled))
+            return tuple(
+                ProcessSample(
+                    execution=envelope.execution,
+                    checkpoint=envelope.checkpoint,
+                    values=tuple(
+                        item.model_copy(update={"value": item.value + offset})
+                        for item in envelope.measurements
+                    ),
+                )
+                for envelope in parent.envelopes
+                if envelope.kind == INFERENCE_KIND and envelope.execution is not None
+            )
+
+        return sample
+
+    monkeypatch.setattr(execution_noise_module, "subprocess_sampler", fake_sampler)
+    return sampled
 
 
 def test_a_reading_carries_the_spread_its_own_replicate_processes_measured(
@@ -169,54 +236,58 @@ def test_a_reading_carries_the_spread_its_own_replicate_processes_measured(
     monkeypatch: pytest.MonkeyPatch,
     inference_run: Callable[..., Path],
 ) -> None:
-    """Nothing inside a timing reading can be resampled, so it is re-measured.
-
-    The replicate processes are stubbed rather than spawned: what is under test
-    is that the benchmark's own reading is one of the replicates and that the
-    spread reaches the recorded measurement, not that a subprocess starts.
-    """
+    """Nothing inside a timing reading can be resampled, so it is re-measured."""
 
     checkpoint = inference_run(tmp_path / "run", seed=23)
-    sampled: list[InferenceBenchmarkConfig] = []
+    parent = _measure(_config(checkpoint, processes=1))
+    # Each replicate reads a little slower than the last, so the spread is
+    # non-zero and the parent's own reading is not the whole of it.
+    sampled = _stub_sampler(monkeypatch, parent, lambda round_: 0.5 * round_)
 
-    def fake_sampler(
-        selection: InferenceBenchmarkConfig,
-        **kwargs: object,
-    ) -> Callable[[], ProcessSample]:
-        def sample() -> ProcessSample:
-            sampled.append(selection)
-            # Each replicate reads a little slower than the last, so the spread
-            # is non-zero and the parent's own reading is not the whole of it.
-            offset = 0.5 * len(sampled)
-            return ProcessSample(
-                execution=parent.execution,
-                checkpoint=parent.checkpoint,
-                reading={
-                    item.metric: item.value + offset
-                    for item in parent.envelopes[0].measurements
-                },
-            )
-
-        return sample
-
-    parent = _measure(_config(checkpoint, replicates=1))
-    monkeypatch.setattr(execution_noise_module, "subprocess_sampler", fake_sampler)
-
-    result = _measure(_config(checkpoint, replicates=3))
+    result = _measure(_config(checkpoint, processes=3))
 
     # Two sampled, because the reading being qualified is the third.
     assert len(sampled) == 2
     assert {item.model.checkpoint_path for item in sampled} == {checkpoint}
-    assert result.replicates == 3
-    assert set(result.dispersions) == {
-        item.metric for item in result.envelopes[0].measurements
-    }
+    assert result.processes == 3
     for item in result.envelopes[0].measurements:
         assert item.dispersion is not None
         assert item.dispersion.estimator == PROCESS_REPLICATE_METHOD
         assert item.dispersion.bound >= item.dispersion.value
         # A machine spread does not shrink with a game count, so it sizes no pool.
         assert item.dispersion.units is None
+
+
+def test_the_committed_value_is_pooled_over_the_processes_that_read_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The extra processes pay for themselves twice, and this is the half that
+    would otherwise be thrown away.
+
+    Where a process lands is nearly the whole of the noise, so a reading is only
+    improved by taking it in more of them. Committing the parent's own value and
+    keeping the replicates for the floor alone would leave the number as noisy
+    as one process while paying for several.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=29)
+    parent = _measure(_config(checkpoint, processes=1))
+    offsets = {1: 2000.0, 2: 10000.0}
+    _stub_sampler(monkeypatch, parent, lambda round_: offsets[round_])
+
+    result = _measure(_config(checkpoint, processes=3))
+
+    latency = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    own = parent.envelopes[0].measurement(latency)
+    pooled = result.envelopes[0].measurement(latency)
+    assert own is not None
+    assert pooled is not None
+    # The offsets dwarf any real spread between two readings of this fixture, so
+    # the live process contributes a value indistinguishable from the parent's
+    # at this scale and the mean is theirs plus a third of the two offsets.
+    assert pooled.value == pytest.approx(own.value + 4000.0, rel=1e-3)
 
 
 def test_a_metric_the_replicates_read_identically_is_left_unqualified(
@@ -231,14 +302,17 @@ def test_a_metric_the_replicates_read_identically_is_left_unqualified(
     """
 
     checkpoint = inference_run(tmp_path / "run", seed=27)
-    result = _measure(_config(checkpoint, replicates=1))
+    result = _measure(_config(checkpoint, processes=1))
     values = result.envelopes[0].measurements
     unseparated = INFERENCE_MODEL_LOAD_SECONDS.identifier
-    spreads = {
-        item.metric: 0.0 if item.metric == unseparated else 0.5 for item in values
+    readings = {
+        item.fingerprint: (item.value, 0.0 if item.metric == unseparated else 0.5)
+        for item in values
     }
 
-    records = inference_module._dispersions(values, spreads, 3, result.execution)
+    records = inference_module._dispersions(
+        inference_module._measurement_units(result), readings, 3
+    )
 
     qualified = {item.metric for item in values if item.fingerprint in records}
     assert qualified == {item.metric for item in values} - {unseparated}
@@ -256,10 +330,10 @@ def test_a_single_replicate_reads_without_measuring_a_spread(
 
     checkpoint = inference_run(tmp_path / "run", seed=24)
 
-    result = _measure(_config(checkpoint, replicates=1))
+    result = _measure(_config(checkpoint, processes=1))
 
-    assert result.replicates == 1
-    assert result.dispersions == {}
+    assert result.processes == 1
+    assert result.pooled == {}
     assert all(item.dispersion is None for item in result.envelopes[0].measurements)
 
 
@@ -281,12 +355,12 @@ def test_a_replicate_process_measures_the_checkpoint_it_was_handed(
     # instead of reading what it was handed would fail to load anything at all.
     monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(tmp_path / "empty"))
 
-    result = _measure(_config(checkpoint, replicates=2))
+    result = _measure(_config(checkpoint, processes=2))
 
-    assert result.replicates == 2
-    assert set(result.dispersions) == {
-        item.metric for item in result.envelopes[0].measurements
-    }
+    assert result.processes == 2
+    assert {label for label in result.pooled if label.startswith("cpu ")}
+    # The floor a delta faces is the pooled value's own, not one process's.
+    assert all(spread >= 0.0 for _, spread in result.pooled.values())
 
 
 def test_the_stage_attribution_never_claims_more_than_the_whole(
@@ -304,7 +378,8 @@ def test_the_stage_attribution_never_claims_more_than_the_whole(
 
     result = _measure(_config(checkpoint))
 
-    for sample in result.latency_sweep:
+    for reading in result.readings:
+        sample = reading.latency
         assert sample.context_mean_ms >= 0.0
         assert sample.predict_mean_ms >= 0.0
         # The parts are cut from the window they are subtracted from, so a
@@ -338,7 +413,6 @@ def test_the_context_stage_uses_the_session_the_decision_came_from(
 
     config = LatencyWorkloadConfig(
         reference_plies=4,
-        sweep_plies=(4,),
         decisions=2,
         warmup_decisions=0,
         seed="test-encode",
@@ -348,7 +422,7 @@ def test_the_context_stage_uses_the_session_the_decision_came_from(
         # Patched on the session rather than on the benchmark, so this asserts
         # against the seam the engine itself uses.
         patch.setattr(session, "decision_context", recording)
-        sample = _measure_latency(session, runner, _HistoryFactory(), config, 4)
+        sample = _measure_latency(session, runner, _HistoryFactory(), config)
 
     # Every measured decision took its context from the session, once.
     assert len(contexts) == config.decisions
@@ -370,21 +444,25 @@ def test_throughput_times_the_batch_it_builds(
 
     checkpoint = inference_run(tmp_path / "run", seed=18)
 
-    sample = _measure(
-        _config(
-            checkpoint,
-            throughput=FAST_THROUGHPUT.model_copy(update={"batches": 9}),
+    sample = (
+        _measure(
+            _config(
+                checkpoint,
+                throughput=FAST_THROUGHPUT.model_copy(update={"batches": 9}),
+            )
         )
-    ).reference_throughput
+        .readings[0]
+        .serving
+    )
 
     assert sample.decisions_per_second > 0.0
     # Re-running a built batch drops batch construction, masking, and sampling
-    # from the window, which on every device this runs on dominates the padded
-    # sequence it scores in exchange.
+    # from the window, and what it drops is what the overhead figure reports.
     assert sample.forward_median_ms < sample.batch_median_ms
+    assert sample.decision_overhead_ms > 0.0
 
 
-def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
+def test_a_reading_reaches_the_depth_the_generated_benchmarks_play_at(
     tmp_path: Path,
     inference_run: Callable[..., Path],
 ) -> None:
@@ -392,8 +470,8 @@ def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
 
     Completing is most of the claim: a walk that never ran out of legal moves
     could still arrive somewhere over by rule, and the session then refused to
-    decide, which failed the whole command rather than one depth. This drives
-    the real session, so it covers the half
+    decide, which failed the whole command. This drives the real session, so it
+    covers the half
     :func:`test_a_history_ending_on_a_dead_position_is_walked_again` cannot.
     """
 
@@ -402,12 +480,13 @@ def test_the_sweep_reaches_the_depth_the_generated_benchmarks_play_at(
     result = _measure(
         _config(
             checkpoint,
-            latency=FAST_LATENCY.model_copy(update={"sweep_plies": (4, 300)}),
+            latency=FAST_LATENCY.model_copy(update={"reference_plies": 300}),
         )
     )
 
-    deep = next(s for s in result.latency_sweep if s.history_plies == 300)
+    deep = result.readings[0].latency
     # Decisions were resolved at that depth, not merely scheduled for it.
+    assert deep.history_plies == 300
     assert deep.mean_ms > 0.0
     assert deep.predict_mean_ms > 0.0
 
@@ -469,16 +548,18 @@ def test_cold_start_is_reported_apart_from_steady_state_latency(
     delay_ms = delay_seconds * 1000.0
     assert served == 1
     # The cold reading carries the startup cost the first decision paid.
-    assert result.cold_start.first_decision_seconds * 1000.0 >= delay_ms
+    cold_start = result.readings[0].cold_start
+    assert cold_start is not None
+    assert cold_start.first_decision_seconds * 1000.0 >= delay_ms
     # A measured decision reads the clock at its start, after encoding, after
     # predicting, and at its end, so a steady-state window carries three ticks
     # and nothing else. The separation is exact rather than a race against the
     # injected cost.
-    assert result.reference_latency.maximum_ms == pytest.approx(
+    assert result.readings[0].latency.maximum_ms == pytest.approx(
         3 * tick_seconds * 1000.0
     )
     # Loading is still reported, on its own, as the other half of cold start.
-    assert result.cold_start.model_load_seconds > 0.0
+    assert cold_start.model_load_seconds > 0.0
 
 
 def test_warmup_decisions_are_excluded_from_the_percentiles(
@@ -511,13 +592,12 @@ def test_warmup_decisions_are_excluded_from_the_percentiles(
     session = GameSession(slow, config=RuntimeConfig(seed=7))
     config = LatencyWorkloadConfig(
         reference_plies=2,
-        sweep_plies=(2,),
         decisions=4,
         warmup_decisions=warmup,
         seed="test-warmup",
     )
 
-    sample = _measure_latency(session, slow, _HistoryFactory(), config, 2)
+    sample = _measure_latency(session, slow, _HistoryFactory(), config)
 
     assert slow.slow_calls_served == warmup
     assert sample.decisions == 4
@@ -644,7 +724,7 @@ def test_the_recorded_execution_reproduces_its_own_series_identity(
 ) -> None:
     checkpoint = inference_run(tmp_path / "run", seed=10)
 
-    envelope, _ = _measure(_config(checkpoint)).envelopes
+    envelope, _, _ = _measure(_config(checkpoint)).envelopes
 
     assert envelope.execution is not None
     assert envelope.execution.device == "cpu"
@@ -677,18 +757,18 @@ def test_a_declared_workload_change_starts_a_new_series(
     assert shallow_measurement.fingerprint != deeper_measurement.fingerprint
 
 
-def test_extending_a_sweep_does_not_end_the_headline_series(
+def test_measuring_more_decisions_does_not_end_the_series(
     tmp_path: Path,
     inference_run: Callable[..., Path],
 ) -> None:
-    """The sweep is drill-down. Only the reference point decides identity."""
+    """Sample counts estimate the same quantity more precisely."""
 
     checkpoint = inference_run(tmp_path / "run", seed=13)
     narrow = _measure(_config(checkpoint)).envelopes[0]
     wide = _measure(
         _config(
             checkpoint,
-            latency=FAST_LATENCY.model_copy(update={"sweep_plies": (0, 2, 4)}),
+            latency=FAST_LATENCY.model_copy(update={"decisions": 5}),
         )
     ).envelopes[0]
 
@@ -701,22 +781,142 @@ def test_extending_a_sweep_does_not_end_the_headline_series(
     assert narrow_measurement.fingerprint == wide_measurement.fingerprint
 
 
-def test_the_reference_point_is_measured_even_when_the_sweep_omits_it(
+def test_the_host_and_the_accelerator_do_not_land_on_one_series(
     tmp_path: Path,
     inference_run: Callable[..., Path],
 ) -> None:
-    checkpoint = inference_run(tmp_path / "run", seed=14)
+    """One run measures two devices, so the device has to be declared.
+
+    Left as an environment coordinate it would be comparison metadata, and a
+    report following the machine across a hardware change would read a host
+    reading and an accelerator reading as one line moving.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=31)
+    config = _config(checkpoint).value
+
+    host = inference_module._play_execution(config, _STANDIN_HOST)
+    accelerator = inference_module._play_execution(config, _STANDIN_ACCELERATOR)
+
+    assert host.workload_sha256 != accelerator.workload_sha256
+    # And moving the instrument leaves the product timings' series alone.
+    assert (
+        accelerator.workload_sha256
+        != inference_module._compute_execution(
+            config, _STANDIN_ACCELERATOR, 4
+        ).workload_sha256
+    )
+
+
+def test_what_a_decision_costs_the_model_is_counted_rather_than_timed(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """A count carries no noise, so it needs no floor and no replicates.
+
+    It is also the only thing here that separates two model sizes reliably: a
+    single forward is too small to occupy an accelerator, so a wall clock on
+    one barely moves between them.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=32)
+
+    first = _measure(_config(checkpoint))
+    again = _measure(_config(checkpoint))
+
+    assert first.cost.parameters == again.cost.parameters
+    assert first.cost.decision_gflops == again.cost.decision_gflops
+    counted = first.envelopes[0].measurement(INFERENCE_DECISION_GFLOPS.identifier)
+    assert counted is not None
+    assert counted.value == pytest.approx(first.cost.decision_gflops)
+    # Declared unqualifiable rather than left unknown, so a report says there is
+    # no spread to measure instead of pointing a reader at work to do.
+    for definition in (INFERENCE_PARAMETERS, INFERENCE_DECISION_GFLOPS):
+        assert definition.no_sampling_floor_reason is not None
+
+
+def test_a_two_device_reading_splits_its_series_and_counts_once(
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The grouping a run on an accelerator produces, without needing one.
+
+    The host reading is grafted onto a real result rather than measured, so this
+    runs anywhere. What it pins is the part a device cannot change: which
+    envelope each metric lands in, and that the counted quantities are entered
+    once rather than once per device.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=33)
+    measured = _measure(_config(checkpoint))
+    accelerator = replace(
+        measured.serving,
+        execution=inference_module._play_execution(
+            _config(checkpoint).value, _STANDIN_ACCELERATOR
+        ),
+    )
+    # The host reading carries no compute instrument and no cold start, which
+    # are both paid once by the process that loaded the checkpoint.
+    host = replace(measured.serving, compute=None, cold_start=None)
+    result = replace(measured, serving=accelerator, host=host)
+
+    units = {unit.slug: unit for unit in inference_module._measurement_units(result)}
+
+    device = _STANDIN_ACCELERATOR.type
+    assert set(units) == {device, f"{device}-compute", "cpu"}
+    counted = {INFERENCE_PARAMETERS.identifier, INFERENCE_DECISION_GFLOPS.identifier}
+    assert counted <= {value.metric for value in units[device].values}
+    assert not counted & {value.metric for value in units["cpu"].values}
+    assert INFERENCE_MODEL_LOAD_SECONDS.identifier not in {
+        value.metric for value in units["cpu"].values
+    }
+    # The same metric on two devices is two series rather than one read twice.
+    latency = INFERENCE_MOVE_LATENCY_BY_PERCENTILE[50].identifier
+    fingerprints = {
+        slug: next(v.fingerprint for v in unit.values if v.metric == latency)
+        for slug, unit in units.items()
+        if any(v.metric == latency for v in unit.values)
+    }
+    assert len(set(fingerprints.values())) == len(fingerprints) == 2
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("accelerator", inference_accelerator_parameters())
+def test_an_accelerator_run_also_measures_the_host(
+    accelerator: InferenceDevice,
+    tmp_path: Path,
+    inference_run: Callable[..., Path],
+) -> None:
+    """The half of the two-device path a host without an accelerator cannot run.
+
+    Everything downstream of the second reading is pinned on a grafted result,
+    which cannot catch the graft itself being wrong: that the replica loads,
+    decides, and reports as the host rather than as the device it was copied
+    from.
+    """
+
+    checkpoint = inference_run(tmp_path / "run", seed=34)
+    store = ResultsStore(tmp_path / "results")
 
     result = _measure(
         _config(
             checkpoint,
-            latency=FAST_LATENCY.model_copy(update={"sweep_plies": (0,)}),
-            throughput=FAST_THROUGHPUT.model_copy(update={"sweep_batch_sizes": (1,)}),
-        )
+            model=ModelRunnerConfig(checkpoint_path=checkpoint, device=accelerator),
+        ),
+        store=store,
     )
 
-    assert result.reference_latency.history_plies == 4
-    assert result.reference_throughput.batch_size == 2
+    assert result.serving.device == accelerator
+    assert result.host is not None
+    assert result.host.device == "cpu"
+    # The replica really decided, rather than reporting the accelerator's work.
+    assert result.host.latency.mean_ms > 0.0
+    assert result.host.serving.decisions_per_second > 0.0
+    # The instrument and the cold start are the serving device's alone.
+    assert result.host.compute is None
+    assert result.host.cold_start is None
+    kinds = [envelope.kind for envelope in result.envelopes]
+    assert kinds.count(INFERENCE_KIND) == 3
 
 
 def test_a_walk_that_ends_early_restarts_rather_than_returning_a_short_history(

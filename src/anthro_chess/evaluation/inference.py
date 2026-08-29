@@ -1,24 +1,13 @@
-"""What a checkpoint costs to play with.
+"""What a checkpoint costs to play with, and what a model change costs it.
 
-Three questions, deliberately kept apart. How long one move takes when a
-person is waiting for it; how many decisions the same checkpoint resolves per
-second when a benchmark or a server batches them; and how long the process
-takes to become useful at all. Reporting them as one number would let a
-batching win hide an interactive regression, which is the usual way a bot ends
-up too slow to play against while its dashboard improves.
-
-Both are measured end to end through :class:`GameSession`, spanning encoding,
-batch construction, model execution, legal masking, and sampling, because that
-is what a decision actually costs. Timing the forward pass alone would report a
-number no player ever experiences and would go on looking healthy while batch
-construction regressed — which is the regression this benchmark caught, when
-building a batch was linear in the history it was built from. The isolated
-forward is still reported, as its own declared quantity, because it is the
-right number for sizing a kernel change.
+Two jobs wanting different instruments. What it costs to play with is a wall
+clock on the device that serves. What a model change costs is counted, because
+one decision reads a fixed set of square tokens and that is too little work to
+register against launch overhead on an accelerator.
 
 The workload is synthetic and self-contained: positions come from a seeded
-random-legal-move walk rather than from the evaluation pool. Latency depends
-on history length and legal-move count, not on which human played the game, so
+random-legal-move walk rather than from the evaluation pool. Latency depends on
+history length and legal-move count, not on which human played the game, so
 binding this benchmark to the pool would break its series at every pool
 generation for no gain in what it measures.
 """
@@ -30,14 +19,17 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from statistics import fmean
+from typing import Any, Protocol
 
 import chess
 import torch
 from pydantic import Field, StrictInt
 from torch import Tensor
+from torch.utils.flop_counter import FlopCounterMode
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import DecisionContext
@@ -53,16 +45,19 @@ from anthro_chess.evaluation.results import (
     Measurement,
     MetricDispersion,
     ResultEnvelope,
-    WorkloadComponent,
     measurement,
 )
 from anthro_chess.evaluation.results.metrics import (
     INFERENCE_BATCH_THROUGHPUT,
+    INFERENCE_DECISION_GFLOPS,
+    INFERENCE_DECISION_OVERHEAD_MS,
     INFERENCE_FIRST_DECISION_SECONDS,
     INFERENCE_FORWARD_THROUGHPUT,
     INFERENCE_MODEL_LOAD_SECONDS,
     INFERENCE_MOVE_LATENCY_BY_PERCENTILE,
     INFERENCE_MOVE_LATENCY_MEAN,
+    INFERENCE_PARAMETERS,
+    INFERENCE_PEAK_MEMORY_MB,
     LATENCY_PERCENTILES,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
@@ -71,11 +66,15 @@ from anthro_chess.inference.config import LATEST_CHECKPOINT
 from anthro_chess.inference.runner import ModelRunnerError
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import DecisionRuntimeError, GameSession, RuntimeConfig
+from anthro_chess.training.efficiency import (
+    begin_peak_memory_measurement,
+    maximum_allocated_memory_bytes,
+)
 
 #: Bumped when what this benchmark times changes. It is part of the recorded
 #: workload, so a bump ends every series here rather than letting a redefined
 #: quantity continue an existing line.
-INFERENCE_BENCHMARK_VERSION = 2
+INFERENCE_BENCHMARK_VERSION = 3
 
 INFERENCE_KIND = "inference-efficiency"
 INFERENCE_BENCHMARK = BenchmarkReference(
@@ -83,20 +82,12 @@ INFERENCE_BENCHMARK = BenchmarkReference(
     version=INFERENCE_BENCHMARK_VERSION,
 )
 
-#: Processes one reading's dispersion is measured over, including the one taking
-#: the reading. The process is the independent replicate the dispersion bound
-#: counts, so this is the one lever that narrows the bound honestly rather than
-#: by assuming the spread is better known than it is. Three processes leave two
-#: degrees of freedom, where the bound sits more than four times above the
-#: measured dispersion and every floor is too wide to resolve anything; six
-#: leave five, where it sits about twice above.
+#: Processes one reading is taken in, including the one taking it.
 #:
-#: **This is a dial, and every one of them costs a whole benchmark run**, so it
-#: is a live trade between the width of every efficiency floor and the wall
-#: clock of every inference reading.
+#: Where a process lands is almost the whole of a timing reading's noise, so
+#: measuring more decisions inside one buys nothing and this is the only lever.
+#: `docs/evaluation.md` owns what raising it trades against what.
 DEFAULT_PROCESSES = 6
-
-SampleT = TypeVar("SampleT")
 
 logger = logging.getLogger(__name__)
 
@@ -119,23 +110,15 @@ class InferenceBenchmarkError(ValueError):
 
 
 class LatencyWorkloadConfig(ConfigModel):
-    """What batch-one latency is measured at.
+    """What batch-one latency is measured at."""
 
-    ``reference_plies`` alone decides the headline series. The sweep exists to
-    show how latency grows with history, and is deliberately kept out of series
-    identity so extending it does not end the headline series.
-    """
-
-    #: The depth the reported percentiles are taken at. Forty plies is move
-    #: twenty: a real midgame decision rather than an opening position whose
-    #: short history would flatter a full-history model.
+    #: Forty plies is move twenty: a real midgame decision rather than an
+    #: opening position whose short history would flatter a full-history model.
+    #: Latency is flat in this depth, because the model reads a fixed number of
+    #: square tokens and folds history into their channels rather than into the
+    #: sequence, so one depth says what every depth says.
     reference_plies: StrictInt = Field(default=40, ge=0)
-    #: Reaches the depth the generated benchmarks actually play at, whose games
-    #: are capped at 300 plies. A sweep stopping at 80 leaves the reader to
-    #: extrapolate across the band most of those games sit in, which is the
-    #: whole question this sweep exists to answer.
-    sweep_plies: tuple[StrictInt, ...] = (0, 20, 40, 60, 80, 120, 160, 200, 250, 300)
-    decisions: StrictInt = Field(default=30, ge=1)
+    decisions: StrictInt = Field(default=100, ge=1)
     #: Excluded from the percentiles. The first decisions pay for lazy kernel
     #: compilation and allocator growth, which is a cold-start cost and is
     #: reported as one.
@@ -144,14 +127,18 @@ class LatencyWorkloadConfig(ConfigModel):
 
 
 class ThroughputWorkloadConfig(ConfigModel):
-    """What declared-batch throughput is measured at."""
+    """The two batch sizes a reading is taken at, and what they are for."""
 
-    #: Eight is what the generated benchmarks run concurrently, so the headline
-    #: figure prices the batch the suite actually pays for.
-    reference_batch_size: StrictInt = Field(default=8, ge=1)
-    sweep_batch_sizes: tuple[StrictInt, ...] = (1, 4, 8, 16, 32, 64)
+    #: Concurrent players. This is a product figure and a poor detector: most
+    #: of a batched decision is host work that does not change when the model
+    #: does, so it barely moves between model sizes at any batch size.
+    serving_batch_size: StrictInt = Field(default=64, ge=1)
+    #: Where the device stops being launch bound and the forward pass starts
+    #: reflecting how much arithmetic the model does. Nothing serves at this
+    #: width; it is an instrument.
+    compute_batch_size: StrictInt = Field(default=256, ge=1)
     history_plies: StrictInt = Field(default=40, ge=0)
-    batches: StrictInt = Field(default=10, ge=1)
+    batches: StrictInt = Field(default=30, ge=1)
     warmup_batches: StrictInt = Field(default=3, ge=0)
     seed: str = Field(default="anthro-inference-throughput-v1", min_length=1)
 
@@ -162,17 +149,16 @@ class InferenceBenchmarkConfig(CheckpointSelection):
     runtime: RuntimeConfig = RuntimeConfig(seed=0)
     latency: LatencyWorkloadConfig = LatencyWorkloadConfig()
     throughput: ThroughputWorkloadConfig = ThroughputWorkloadConfig()
-    #: Processes this reading's dispersion is measured over, itself included,
-    #: each one a whole benchmark run. Deliberately outside the declared
-    #: workload: it decides how well the spread is known rather than what was
-    #: measured, so changing it does not end the series. ``1`` measures no
-    #: dispersion, and the reading is then reported without a floor.
-    replicates: StrictInt = Field(default=DEFAULT_PROCESSES, ge=1)
+    #: Processes this reading is taken in, itself included. Deliberately
+    #: outside the declared workload: it decides how well the same quantity is
+    #: known rather than what was measured. ``1`` takes one process's reading
+    #: and reports it without a floor.
+    processes: StrictInt = Field(default=DEFAULT_PROCESSES, ge=1)
 
 
 @dataclass(frozen=True)
 class LatencySample:
-    """One depth's measured batch-one latency, in milliseconds."""
+    """Measured batch-one latency at the declared depth, in milliseconds."""
 
     history_plies: int
     decisions: int
@@ -204,7 +190,7 @@ class LatencySample:
         return self.mean_ms - self.context_mean_ms - self.predict_mean_ms
 
     def as_record(self) -> dict[str, Any]:
-        """Return the machine-readable per-depth record."""
+        """Return the machine-readable latency record."""
 
         return {
             "history_plies": self.history_plies,
@@ -226,17 +212,14 @@ class LatencySample:
 class ThroughputSample:
     """One batch size's measured decision throughput.
 
-    Two figures, because they answer different questions and differ by over an
-    order of magnitude at the larger batches. `docs/evaluation.md` owns which is
-    which; in short, the headline resolves whole batched decisions and sizes a
-    generated run, and the forward figure re-runs an already-built batch and
-    sizes a kernel change.
+    The whole-decision figure runs the loop the generated benchmarks run:
+    collect every pending context, resolve them in one forward pass, then mask
+    and sample each result. The forward figure re-runs a batch built once, so
+    the difference between them is everything a decision costs outside the
+    model.
 
-    Every batch is timed on its own so the reported rates can come from the
-    median rather than the mean, which stops one descheduled batch carrying
-    either. That does not narrow run-to-run spread, which is a property of the
-    machine between invocations and is what a characterized execution floor
-    exists to qualify.
+    Every batch is timed on its own so the reported rates come from the median
+    rather than the mean, which stops one descheduled batch carrying either.
     """
 
     batch_size: int
@@ -257,6 +240,18 @@ class ThroughputSample:
 
         return _rate(self.batch_size, self.forward_median_ms)
 
+    @property
+    def decision_overhead_ms(self) -> float:
+        """Return milliseconds one decision spends around the model.
+
+        Flat in batch size, unlike the launch cost the forward pass amortizes,
+        because it is one decision's own host work: context assembly, batch
+        construction, legal masking and sampling. The device-to-host copy sits
+        inside both timed windows and cancels out of the difference.
+        """
+
+        return (self.batch_median_ms - self.forward_median_ms) / self.batch_size
+
     def as_record(self) -> dict[str, Any]:
         """Return the machine-readable per-batch-size record."""
 
@@ -268,6 +263,7 @@ class ThroughputSample:
             "batch_mean_ms": self.batch_mean_ms,
             "forward_decisions_per_second": self.forward_decisions_per_second,
             "forward_median_ms": self.forward_median_ms,
+            "decision_overhead_ms": self.decision_overhead_ms,
         }
 
 
@@ -288,23 +284,139 @@ class ColdStart:
 
 
 @dataclass(frozen=True)
+class ModelCost:
+    """What one decision costs the model, counted rather than timed."""
+
+    parameters: int
+    decision_gflops: float
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the machine-readable counted-cost record."""
+
+        return {
+            "parameters": self.parameters,
+            "decision_gflops": self.decision_gflops,
+        }
+
+
+@dataclass(frozen=True)
+class ComputeSample:
+    """The forward pass alone, where the device is no longer launch bound.
+
+    Carries its own execution record, and so its own series: nothing else here
+    is measured at this width.
+    """
+
+    execution: ExecutionRecord
+    batch_size: int
+    batches: int
+    forward_median_ms: float
+    peak_memory_mb: float | None
+
+    @property
+    def forward_decisions_per_second(self) -> float:
+        """Return decisions per second through the forward pass alone."""
+
+        return _rate(self.batch_size, self.forward_median_ms)
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the machine-readable compute-batch record."""
+
+        return {
+            "execution": self.execution.model_dump(mode="json"),
+            "batch_size": self.batch_size,
+            "batches": self.batches,
+            "forward_median_ms": self.forward_median_ms,
+            "forward_decisions_per_second": self.forward_decisions_per_second,
+            "peak_memory_mb": self.peak_memory_mb,
+        }
+
+
+@dataclass(frozen=True)
+class InferenceDeviceReading:
+    """Everything timed on one device, and the conditions it declared."""
+
+    execution: ExecutionRecord
+    latency: LatencySample
+    serving: ThroughputSample
+    compute: ComputeSample | None = None
+    cold_start: ColdStart | None = None
+
+    @property
+    def device(self) -> str:
+        """Return the device type this reading was taken on."""
+
+        return self.execution.device
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the machine-readable per-device record."""
+
+        return {
+            "device": self.device,
+            "execution": self.execution.model_dump(mode="json"),
+            "latency": self.latency.as_record(),
+            "serving": self.serving.as_record(),
+            "compute": None if self.compute is None else self.compute.as_record(),
+            "cold_start": (
+                None if self.cold_start is None else self.cold_start.as_record()
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class _MeasuredUnit:
+    """One declared workload's committed measurements, and where they land.
+
+    A unit rather than a device, because one device reports on two axes: what
+    it costs to play with, at the declared operating point, and what the model
+    costs it, at a batch nothing serves. Those move independently and each ends
+    only its own series.
+    """
+
+    slug: str
+    description: str
+    execution: ExecutionRecord
+    values: tuple[Measurement, ...]
+    #: What this unit alone measured, for its own bulk payload. The shared
+    #: header and the pooled values are added where the payload is assembled,
+    #: so two units cannot disagree about them.
+    measured: Mapping[str, Any]
+
+    def labels(self) -> set[str]:
+        """Return the keys this unit's values carry in the pooled maps."""
+
+        return {f"{self.slug} {value.metric}" for value in self.values}
+
+
+@dataclass(frozen=True)
 class InferenceBenchmarkResult:
-    """Everything one inference benchmark measured, and where it was written."""
+    """Everything one inference benchmark measured, and where it was written.
+
+    Every timing on ``serving`` and ``host`` is what *this* process measured.
+    The committed values are in ``pooled``, which is what a later delta is read
+    against; the diagnostics beyond those, the extremes and the stage
+    attribution, are only this process's.
+    """
 
     checkpoint: CheckpointReference
-    execution: ExecutionRecord
-    cold_start: ColdStart
-    reference_latency: LatencySample
-    latency_sweep: tuple[LatencySample, ...]
-    reference_throughput: ThroughputSample
-    throughput_sweep: tuple[ThroughputSample, ...]
-    replicates: int = 1
-    #: Each committed metric's spread across those processes. Empty at one
-    #: replicate, where there is nothing to spread over.
-    dispersions: Mapping[str, float] = field(default_factory=dict)
+    cost: ModelCost
+    serving: InferenceDeviceReading
+    host: InferenceDeviceReading | None = None
+    processes: int = 1
+    #: Each committed metric's pooled value and that value's own spread, keyed
+    #: by the series that took it and the metric, because one reading commits
+    #: the same metric on more than one device. Empty at one process, and a
+    #: spread of zero means the processes read the value identically.
+    pooled: Mapping[str, tuple[float, float]] = field(default_factory=dict)
     envelopes: tuple[ResultEnvelope, ...] = ()
     recorded_paths: tuple[Path, ...] = ()
     detail_paths: tuple[Path, ...] = ()
+
+    @property
+    def readings(self) -> tuple[InferenceDeviceReading, ...]:
+        """Return every device measured, the serving one first."""
+
+        return (self.serving,) if self.host is None else (self.serving, self.host)
 
     def as_record(self) -> dict[str, Any]:
         """Return the full structured result, detail tier included."""
@@ -312,16 +424,10 @@ class InferenceBenchmarkResult:
         return {
             "version": INFERENCE_BENCHMARK_VERSION,
             "checkpoint": self.checkpoint.model_dump(mode="json"),
-            "execution": self.execution.model_dump(mode="json"),
-            "cold_start": self.cold_start.as_record(),
-            "reference_latency": self.reference_latency.as_record(),
-            "latency_sweep": [sample.as_record() for sample in self.latency_sweep],
-            "reference_throughput": self.reference_throughput.as_record(),
-            "throughput_sweep": [
-                sample.as_record() for sample in self.throughput_sweep
-            ],
-            "replicates": self.replicates,
-            "dispersions": dict(sorted(self.dispersions.items())),
+            "cost": self.cost.as_record(),
+            "readings": [reading.as_record() for reading in self.readings],
+            "processes": self.processes,
+            "pooled": _pooled_record(self.pooled),
             "recorded": [str(path) for path in self.recorded_paths],
         }
 
@@ -332,16 +438,16 @@ def benchmark_inference(
     run_root: Path | None = None,
     recording: ResultRecording,
 ) -> InferenceBenchmarkResult:
-    """Measure one checkpoint's move latency, throughput, and cold start.
+    """Measure one checkpoint's decision cost, latency, and throughput.
 
     A recording opened without a store measures everything and records nothing,
     which is what an exploratory reading on a busy machine wants: a figure taken
     beside a training run is real but does not belong in the committed history.
 
-    ``config.replicates`` is how many processes this reading's dispersion is
-    measured over, this one included. Nothing inside a timing reading can be
-    resampled into a spread, so the benchmark measures its own by running
-    again — see :mod:`anthro_chess.evaluation.execution_noise`.
+    ``config.processes`` is how many processes the reading is taken in, this one
+    included. Nothing inside a timing reading can be resampled into a spread, so
+    the benchmark takes it again to pool the value and measure the floor at
+    once. See :mod:`anthro_chess.evaluation.execution_noise`.
     """
 
     config = resolved_config.value
@@ -355,15 +461,10 @@ def benchmark_inference(
 
     histories = _HistoryFactory()
     session = GameSession(runner, config=config.runtime)
-
     first_decision_seconds = _time_first_decision(
         session,
         runner.device,
         histories.history(config.latency.seed, config.latency.reference_plies),
-    )
-    cold_start = ColdStart(
-        model_load_seconds=model_load_seconds,
-        first_decision_seconds=first_decision_seconds,
     )
     logger.info(
         "Loaded in %.3fs; first decision took %.3fs",
@@ -371,67 +472,111 @@ def benchmark_inference(
         first_decision_seconds,
     )
 
-    latency_sweep = tuple(
-        _measure_latency(session, runner, histories, config.latency, plies)
-        for plies in _sweep_depths(config.latency)
-    )
-    reference_latency = _select(
-        latency_sweep,
-        lambda sample: sample.history_plies == config.latency.reference_plies,
-        "latency sweep",
+    cost = _model_cost(runner, config.runtime, config.throughput, histories)
+    logger.info(
+        "Counted %.3fM parameters and %.4f GFLOP per decision",
+        cost.parameters / 1e6,
+        cost.decision_gflops,
     )
 
-    throughput_sweep = tuple(
-        _measure_throughput(
-            runner,
-            config.runtime,
-            config.throughput,
+    serving = _measure_device(
+        runner,
+        config,
+        histories,
+        session=session,
+        compute_batch_size=config.throughput.compute_batch_size,
+        cold_start=ColdStart(
+            model_load_seconds=model_load_seconds,
+            first_decision_seconds=first_decision_seconds,
+        ),
+    )
+    host: InferenceDeviceReading | None = None
+    if runner.device.type != "cpu":
+        replica = runner.replicated(torch.device("cpu"))
+        host = _measure_device(
+            replica,
+            config,
             histories,
-            batch_size,
+            session=GameSession(replica, config=config.runtime),
+            compute_batch_size=None,
+            cold_start=None,
         )
-        for batch_size in _sweep_batch_sizes(config.throughput)
-    )
-    reference_throughput = _select(
-        throughput_sweep,
-        lambda sample: sample.batch_size == config.throughput.reference_batch_size,
-        "throughput sweep",
-    )
 
-    execution = _execution_record(config, runner.device)
     checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
     result = InferenceBenchmarkResult(
         checkpoint=checkpoint,
-        execution=execution,
-        cold_start=cold_start,
-        reference_latency=reference_latency,
-        latency_sweep=latency_sweep,
-        reference_throughput=reference_throughput,
-        throughput_sweep=throughput_sweep,
+        cost=cost,
+        serving=serving,
+        host=host,
     )
 
-    values = _measurements(result, execution.workload_component())
-    spreads = _replicate_spreads(
+    units = _measurement_units(result)
+    readings = _pool_across_processes(
         config,
-        result,
-        values,
+        units,
+        checkpoint=checkpoint,
         checkpoint_path=runner.selection.checkpoint_path,
-        processes=config.replicates,
+        processes=config.processes,
     )
-    result = replace(result, replicates=config.replicates, dispersions=spreads)
+    result = replace(
+        result, processes=config.processes, pooled=_labelled(units, readings)
+    )
 
     recorder = recording.measuring(
         checkpoint,
         kind=INFERENCE_KIND,
         benchmark=INFERENCE_BENCHMARK,
     )
-    recorder.disperse(_dispersions(values, spreads, config.replicates, execution))
-    recorder.add(
-        values,
-        payload=result.as_record,
-        description="Latency depth sweep, batch-size sweep, and stage attribution.",
-        execution=execution,
-    )
+    recorder.disperse(_dispersions(units, readings, config.processes))
+    for unit in units:
+        recorder.add(
+            [_committed(value, readings) for value in unit.values],
+            payload=partial(_unit_payload, unit, result),
+            description=unit.description,
+            slug=unit.slug,
+            execution=unit.execution,
+        )
     return result
+
+
+def _committed(
+    value: Measurement,
+    readings: Mapping[str, tuple[float, float]],
+) -> Measurement:
+    """Return the measurement carrying the pooled value, where there is one."""
+
+    pooled = readings.get(value.fingerprint)
+    return value if pooled is None else value.model_copy(update={"value": pooled[0]})
+
+
+def _unit_payload(
+    unit: _MeasuredUnit,
+    result: InferenceBenchmarkResult,
+) -> dict[str, Any]:
+    """Return one unit's bulk payload: what it measured, and what was committed."""
+
+    labels = unit.labels()
+    return {
+        "version": INFERENCE_BENCHMARK_VERSION,
+        "checkpoint": result.checkpoint.model_dump(mode="json"),
+        "cost": result.cost.as_record(),
+        "processes": result.processes,
+        "measured": dict(unit.measured),
+        "pooled": _pooled_record(
+            {label: value for label, value in result.pooled.items() if label in labels}
+        ),
+    }
+
+
+def _pooled_record(
+    pooled: Mapping[str, tuple[float, float]],
+) -> dict[str, dict[str, float]]:
+    """Return the pooled values in the shape a stored record carries them."""
+
+    return {
+        label: {"value": value, "spread": spread}
+        for label, (value, spread) in sorted(pooled.items())
+    }
 
 
 def replicate_selection(
@@ -443,10 +588,10 @@ def replicate_selection(
 
     Every dial the parent measured under, with two things pinned. The
     **checkpoint** becomes the absolute file the parent actually loaded, so a
-    replicate cannot resolve a different one — the sweep replaces a benchmark's
+    replicate cannot resolve a different one: the sweep replaces a benchmark's
     model selection in memory rather than through overrides, and a default
     selection resolves against whatever the machine currently points at.
-    **Replicates** becomes one, which is what stops the recursion.
+    **Processes** becomes one, which is what stops the recursion.
     """
 
     return config.model_copy(
@@ -458,24 +603,27 @@ def replicate_selection(
                     "checkpoint": LATEST_CHECKPOINT,
                 }
             ),
-            "replicates": 1,
+            "processes": 1,
         }
     )
 
 
-def _replicate_spreads(
+def _pool_across_processes(
     config: InferenceBenchmarkConfig,
-    result: InferenceBenchmarkResult,
-    values: Sequence[Measurement],
+    units: Sequence[_MeasuredUnit],
     *,
+    checkpoint: CheckpointReference,
     checkpoint_path: Path,
     processes: int,
-) -> dict[str, float]:
-    """Measure this reading's spread by taking it again in fresh processes.
+) -> dict[str, tuple[float, float]]:
+    """Take this reading again in fresh processes, and pool what they read.
 
-    The replicates run one after another rather than together: they contend for
+    The processes run one after another rather than together: they contend for
     the device they are timing, so measuring them concurrently would report the
     spread of the contention instead of the spread of the machine.
+
+    A counted quantity reads identically in every process, so its spread is zero
+    and it is left without a floor rather than qualified by one.
     """
 
     if processes < 2:
@@ -485,18 +633,17 @@ def _replicate_spreads(
     from anthro_chess.evaluation.execution_noise import (
         ExecutionNoiseError,
         ProcessSample,
-        measure_execution_dispersions,
+        measure_pooled_readings,
         subprocess_sampler,
     )
 
-    own = ProcessSample.from_measurements(
-        result.execution,
-        result.checkpoint,
-        values,
+    own = tuple(
+        ProcessSample.from_measurements(unit.execution, checkpoint, unit.values)
+        for unit in units
     )
-    logger.info("Measuring the spread of this reading across %d process(es)", processes)
+    logger.info("Taking this reading in %d process(es) and pooling them", processes)
     try:
-        return measure_execution_dispersions(
+        readings = measure_pooled_readings(
             own,
             subprocess_sampler(
                 replicate_selection(config, checkpoint_path=checkpoint_path)
@@ -505,35 +652,53 @@ def _replicate_spreads(
         )
     except ExecutionNoiseError as error:
         raise InferenceBenchmarkError(str(error)) from error
+    return readings
+
+
+def _labelled(
+    units: Sequence[_MeasuredUnit],
+    readings: Mapping[str, tuple[float, float]],
+) -> dict[str, tuple[float, float]]:
+    """Return each pooled reading under the series and metric a reader knows."""
+
+    return {
+        f"{unit.slug} {value.metric}": readings[value.fingerprint]
+        for unit in units
+        for value in unit.values
+        if value.fingerprint in readings
+    }
 
 
 def _dispersions(
-    values: Sequence[Measurement],
-    spreads: Mapping[str, float],
+    units: Sequence[_MeasuredUnit],
+    readings: Mapping[str, tuple[float, float]],
     processes: int,
-    execution: ExecutionRecord,
 ) -> dict[str, MetricDispersion]:
     """Return each series' spread, keyed the way the recorder carries one.
 
+    Each floor cites the machine its own series was measured on.
+
     A metric the processes read identically is left bare rather than qualified
-    by a floor of zero, which would clear every later delta on it. What the
-    replicates observed is that these processes did not separate the number — a
-    clock too coarse for what was timed reads that way at any process count. The
-    measured spread still travels in the reading's own diagnostics, so the zero
-    stays visible without becoming a floor.
+    by a floor of zero, which would clear every later delta on it. For a counted
+    quantity that is the right answer outright. For a timing it says the clock
+    was too coarse for what was timed, and the measured zero still travels in
+    the reading's own diagnostics.
     """
 
     from anthro_chess.evaluation.execution_noise import execution_dispersion_record
 
-    source = f"{processes} process replicates on {execution.environment_label()}"
     return {
         value.fingerprint: execution_dispersion_record(
-            spreads[value.metric],
+            readings[value.fingerprint][1],
             processes=processes,
-            source=source,
+            source=(
+                f"the mean of {processes} process replicates on "
+                f"{unit.execution.environment_label()}"
+            ),
         )
-        for value in values
-        if spreads.get(value.metric, 0.0) > 0.0
+        for unit in units
+        for value in unit.values
+        if readings.get(value.fingerprint, (0.0, 0.0))[1] > 0.0
     }
 
 
@@ -643,10 +808,10 @@ def _measure_latency(
     runner: _TimedRunner,
     histories: _HistoryFactory,
     config: LatencyWorkloadConfig,
-    history_plies: int,
 ) -> LatencySample:
-    """Measure end-to-end batch-one decision latency at one history depth."""
+    """Measure end-to-end batch-one decision latency at the declared depth."""
 
+    history_plies = config.reference_plies
     device = runner.device
     for offset in range(config.warmup_decisions):
         _reset(session, histories.history(config.seed, history_plies, offset))
@@ -693,11 +858,11 @@ def _measure_latency(
             percentile: _percentile(durations, percentile)
             for percentile in LATENCY_PERCENTILES
         },
-        mean_ms=_mean(durations),
+        mean_ms=fmean(durations),
         minimum_ms=min(durations),
         maximum_ms=max(durations),
-        context_mean_ms=_mean(context_durations),
-        predict_mean_ms=_mean(predict_durations),
+        context_mean_ms=fmean(context_durations),
+        predict_mean_ms=fmean(predict_durations),
     )
 
 
@@ -723,10 +888,8 @@ def _measure_throughput(
     checkpoint's cost series whenever the game-record schema changed.
     """
 
-    sessions = tuple(GameSession(runner, config=runtime) for _ in range(batch_size))
-    histories_used = tuple(
-        histories.history(config.seed, config.history_plies, index)
-        for index in range(batch_size)
+    sessions, histories_used = _batch_sessions(
+        runner, runtime, config, histories, batch_size
     )
 
     for _ in range(config.warmup_batches):
@@ -742,13 +905,17 @@ def _measure_throughput(
         synchronize(runner.device)
         durations.append((time.perf_counter() - started) * 1000.0)
 
-    forward_durations = _measure_forward(runner, sessions, histories_used, config)
+    _reset_batch(sessions, histories_used)
+    batch, decisions = _batch_from(runner, sessions)
+    forward_durations = _time_forward(
+        runner, config, lambda: runner.decision_logits(batch, decisions)
+    )
 
     sample = ThroughputSample(
         batch_size=batch_size,
         batches=config.batches,
         batch_median_ms=_percentile(durations, 50),
-        batch_mean_ms=_mean(durations),
+        batch_mean_ms=fmean(durations),
         forward_median_ms=_percentile(forward_durations, 50),
     )
     logger.info(
@@ -760,33 +927,34 @@ def _measure_throughput(
     return sample
 
 
-def _measure_forward(
+def _time_forward(
     runner: CheckpointModelRunner,
-    sessions: Sequence[GameSession],
-    histories_used: Sequence[Sequence[chess.Move]],
     config: ThroughputWorkloadConfig,
+    resolve: Callable[[], object],
+    between: Callable[[], None] = lambda: None,
 ) -> list[float]:
-    """Return per-batch milliseconds for the forward pass alone.
+    """Return per-batch milliseconds for a batch built once and re-run.
 
-    The batch is built once, outside every timed window, and re-run. That is
-    the point of this figure rather than an oversight: it isolates launch cost
-    from the batch construction and host copy around it, which is what an
-    optimization aimed at the kernels needs to see move.
+    Building it outside every timed window is the point of these figures rather
+    than an oversight: it isolates the model call from the construction around
+    it.
+
+    ``resolve`` differs between the callers deliberately: one times the seam a
+    decision goes through and one times the module, and `docs/evaluation.md`
+    owns why. ``between`` runs after the warmup and before the timed loop, the
+    only window a second pass can be taken in without landing in a measurement.
     """
 
-    _reset_batch(sessions, histories_used)
     with _measured_decision():
-        contexts = [session.decision_context() for session in sessions]
-        batch = MoveModelBatch.from_decision_contexts(contexts, device=runner.device)
-        decisions = runner.decision_indices(contexts)
         for _ in range(config.warmup_batches):
-            runner.decision_logits(batch, decisions)
+            resolve()
         synchronize(runner.device)
+        between()
 
         durations: list[float] = []
         for _ in range(config.batches):
             started = time.perf_counter()
-            runner.decision_logits(batch, decisions)
+            resolve()
             synchronize(runner.device)
             durations.append((time.perf_counter() - started) * 1000.0)
     return durations
@@ -835,78 +1003,387 @@ def _rate(batch_size: int, batch_ms: float) -> float:
     return batch_size / (batch_ms / 1000.0)
 
 
-def _measurements(
-    result: InferenceBenchmarkResult,
-    workload: WorkloadComponent,
-) -> tuple[Measurement, ...]:
-    """Return the committed measurements for one benchmark run."""
+def _model_cost(
+    runner: CheckpointModelRunner,
+    runtime: RuntimeConfig,
+    config: ThroughputWorkloadConfig,
+    histories: _HistoryFactory,
+) -> ModelCost:
+    """Count the parameters and the operations one decision performs.
 
-    latency = result.reference_latency
+    Counted at batch one because the count is per decision and does not vary
+    with the batch it was taken in, and because the operator counter reads
+    autograd metadata that serving deliberately strips, so this runs outside
+    inference mode and a wider batch would build a graph for nothing.
+    """
+
+    batch, decisions = _prepared_batch(runner, runtime, config, histories, 1)
+    counter = FlopCounterMode(display=False)
+    with _measured_decision(), counter:
+        runner.model.decide_at(batch, decisions)
+    return ModelCost(
+        parameters=sum(parameter.numel() for parameter in runner.model.parameters()),
+        decision_gflops=counter.get_total_flops() / 1e9,
+    )
+
+
+def _batch_sessions(
+    runner: CheckpointModelRunner,
+    runtime: RuntimeConfig,
+    config: ThroughputWorkloadConfig,
+    histories: _HistoryFactory,
+    batch_size: int,
+    distinct: int | None = None,
+) -> tuple[tuple[GameSession, ...], tuple[tuple[chess.Move, ...], ...]]:
+    """Return sessions of the declared width, and the histories they hold.
+
+    Built under the declared runtime rather than a default one: the model reads
+    its target rating from the context, so a batch assembled at another rating
+    would count and time a conditioning the reading does not declare.
+    """
+
+    offsets = batch_size if distinct is None else min(distinct, batch_size)
+    sessions = tuple(GameSession(runner, config=runtime) for _ in range(batch_size))
+    histories_used = tuple(
+        histories.history(config.seed, config.history_plies, index % offsets)
+        for index in range(batch_size)
+    )
+    return sessions, histories_used
+
+
+def _batch_from(
+    runner: CheckpointModelRunner,
+    sessions: Sequence[GameSession],
+) -> tuple[MoveModelBatch, Tensor]:
+    """Return the batch these sessions are currently deciding from."""
+
+    contexts = [session.decision_context() for session in sessions]
+    try:
+        batch = MoveModelBatch.from_decision_contexts(contexts, device=runner.device)
+    except (RuntimeError, ValueError) as error:
+        raise InferenceBenchmarkError(f"could not build a batch: {error}") from error
+    return batch, runner.decision_indices(contexts)
+
+
+def _prepared_batch(
+    runner: CheckpointModelRunner,
+    runtime: RuntimeConfig,
+    config: ThroughputWorkloadConfig,
+    histories: _HistoryFactory,
+    batch_size: int,
+    distinct: int | None = None,
+) -> tuple[MoveModelBatch, Tensor]:
+    """Return one built batch of the declared width, and its decision rows."""
+
+    sessions, histories_used = _batch_sessions(
+        runner, runtime, config, histories, batch_size, distinct
+    )
+    _reset_batch(sessions, histories_used)
+    return _batch_from(runner, sessions)
+
+
+def _measure_device(
+    runner: CheckpointModelRunner,
+    config: InferenceBenchmarkConfig,
+    histories: _HistoryFactory,
+    *,
+    session: GameSession,
+    compute_batch_size: int | None,
+    cold_start: ColdStart | None,
+) -> InferenceDeviceReading:
+    """Measure latency, serving throughput, and compute cost on one device."""
+
+    latency = _measure_latency(session, runner, histories, config.latency)
+    serving = _measure_throughput(
+        runner,
+        config.runtime,
+        config.throughput,
+        histories,
+        config.throughput.serving_batch_size,
+    )
+    compute = (
+        None
+        if compute_batch_size is None
+        else _measure_compute(runner, config, histories, compute_batch_size)
+    )
+    return InferenceDeviceReading(
+        execution=_play_execution(config, runner.device),
+        latency=latency,
+        serving=serving,
+        compute=compute,
+        cold_start=cold_start,
+    )
+
+
+def _measure_compute(
+    runner: CheckpointModelRunner,
+    config: InferenceBenchmarkConfig,
+    histories: _HistoryFactory,
+    batch_size: int,
+) -> ComputeSample:
+    """Time the forward pass alone at the batch where compute is visible.
+
+    Only the forward, because the host work around it does not change with the
+    model and would dilute the one figure that does.
+    """
+
+    throughput = config.throughput
+    batch, decisions = _prepared_batch(
+        runner,
+        config.runtime,
+        throughput,
+        histories,
+        batch_size,
+        # The forward pass is timed on a padded batch of one shape and reads no
+        # legality, so which positions filled it cannot reach the measurement,
+        # and walking fresh ones for it dominates this step's wall clock.
+        distinct=throughput.serving_batch_size,
+    )
+    peak = _PeakMemory(runner, batch, decisions)
+    with torch.inference_mode():
+        durations = _time_forward(
+            runner,
+            throughput,
+            lambda: runner.model.decide_at(batch, decisions),
+            peak.measure,
+        )
+
+    sample = ComputeSample(
+        execution=_compute_execution(config, runner.device, batch_size),
+        batch_size=batch_size,
+        batches=throughput.batches,
+        forward_median_ms=_percentile(durations, 50),
+        peak_memory_mb=peak.megabytes,
+    )
+    logger.info(
+        "Measured the forward pass at batch %s: %.1f decisions/s",
+        batch_size,
+        sample.forward_decisions_per_second,
+    )
+    return sample
+
+
+class _PeakMemory:
+    """One forward pass's high-water allocation, taken between timed windows.
+
+    An absolute figure rather than an increment: the allocator's peak is
+    re-seeded to what is already resident, and the weights and the built batch
+    are part of that, so this is what the device has to hold to serve this batch
+    at all. Taken outside the timed loop because reading it costs a
+    synchronization the measured windows already pay for once each.
+    """
+
+    def __init__(
+        self,
+        runner: CheckpointModelRunner,
+        batch: MoveModelBatch,
+        decisions: Tensor,
+    ) -> None:
+        self._runner = runner
+        self._batch = batch
+        self._decisions = decisions
+        self.megabytes: float | None = None
+
+    def measure(self) -> None:
+        """Run one pass under a fresh high-water mark and record what it held.
+
+        Through the serving seam rather than the module the caller times: the
+        host copy that seam adds allocates off the device, so the high-water
+        mark is the same either way and this keeps the finite check covered.
+        """
+
+        begin_peak_memory_measurement(self._runner.device)
+        self._runner.decision_logits(self._batch, self._decisions)
+        synchronize(self._runner.device)
+        peak = maximum_allocated_memory_bytes(self._runner.device)
+        self.megabytes = None if peak is None else peak / 1e6
+
+
+def _measurement_units(
+    result: InferenceBenchmarkResult,
+) -> tuple[_MeasuredUnit, ...]:
+    """Return the committed measurements, grouped by the workload behind them.
+
+    One group becomes one envelope. A device is a declared condition of every
+    timing here rather than an incidental coordinate, since the same metric read
+    on the host and on the accelerator is two quantities rather than one series
+    measured twice, and the compute instrument is declared apart again because
+    its batch size is nothing the product timings were taken at.
+
+    The counted quantities ride with the serving device, since they are the same
+    number anywhere and emitting them once per device would enter one value into
+    its own series repeatedly.
+    """
+
+    units: list[_MeasuredUnit] = []
+    for reading in result.readings:
+        units.append(
+            _play_unit(reading, counted=reading is result.serving, cost=result.cost)
+        )
+        if reading.compute is not None:
+            units.append(_compute_unit(reading.device, reading.compute))
+    return tuple(units)
+
+
+def _play_unit(
+    reading: InferenceDeviceReading,
+    *,
+    counted: bool,
+    cost: ModelCost,
+) -> _MeasuredUnit:
+    """Return the unit one device's product timings commit."""
+
+    workload = reading.execution.workload_component()
+    latency = reading.latency
+    serving = reading.serving
+
+    def timed(identifier: str, value: float, sample_size: int) -> Measurement:
+        return measurement(
+            identifier, value, workload=workload, sample_size=sample_size
+        )
+
     values = [
-        measurement(
+        timed(
             INFERENCE_MOVE_LATENCY_BY_PERCENTILE[percentile].identifier,
             latency.percentiles[percentile],
-            workload=workload,
-            sample_size=latency.decisions,
+            latency.decisions,
         )
         for percentile in LATENCY_PERCENTILES
     ]
-    values.append(
-        measurement(
-            INFERENCE_MOVE_LATENCY_MEAN.identifier,
-            latency.mean_ms,
-            workload=workload,
-            sample_size=latency.decisions,
-        )
+    values.extend(
+        [
+            timed(
+                INFERENCE_MOVE_LATENCY_MEAN.identifier,
+                latency.mean_ms,
+                latency.decisions,
+            ),
+            timed(
+                INFERENCE_BATCH_THROUGHPUT.identifier,
+                serving.decisions_per_second,
+                serving.batches,
+            ),
+            timed(
+                INFERENCE_DECISION_OVERHEAD_MS.identifier,
+                serving.decision_overhead_ms,
+                serving.batches,
+            ),
+        ]
     )
-    values.append(
-        measurement(
-            INFERENCE_BATCH_THROUGHPUT.identifier,
-            result.reference_throughput.decisions_per_second,
-            workload=workload,
-            sample_size=result.reference_throughput.batches,
+    if reading.cold_start is not None:
+        values.extend(
+            [
+                timed(
+                    INFERENCE_MODEL_LOAD_SECONDS.identifier,
+                    reading.cold_start.model_load_seconds,
+                    1,
+                ),
+                timed(
+                    INFERENCE_FIRST_DECISION_SECONDS.identifier,
+                    reading.cold_start.first_decision_seconds,
+                    1,
+                ),
+            ]
         )
+    if counted:
+        values.extend(
+            [
+                measurement(
+                    INFERENCE_PARAMETERS.identifier,
+                    float(cost.parameters),
+                    sample_size=1,
+                ),
+                measurement(
+                    INFERENCE_DECISION_GFLOPS.identifier,
+                    cost.decision_gflops,
+                    sample_size=1,
+                ),
+            ]
+        )
+    device = reading.device
+    return _MeasuredUnit(
+        slug=device,
+        description=f"What this checkpoint costs to play with on the {device}.",
+        execution=reading.execution,
+        values=tuple(values),
+        measured=reading.as_record(),
     )
-    values.append(
+
+
+def _compute_unit(device: str, compute: ComputeSample) -> _MeasuredUnit:
+    """Return the unit the compute instrument commits on its own workload."""
+
+    workload = compute.execution.workload_component()
+    values = [
         measurement(
             INFERENCE_FORWARD_THROUGHPUT.identifier,
-            result.reference_throughput.forward_decisions_per_second,
+            compute.forward_decisions_per_second,
             workload=workload,
-            sample_size=result.reference_throughput.batches,
+            sample_size=compute.batches,
         )
-    )
-    values.append(
-        measurement(
-            INFERENCE_MODEL_LOAD_SECONDS.identifier,
-            result.cold_start.model_load_seconds,
-            workload=workload,
-            sample_size=1,
+    ]
+    if compute.peak_memory_mb is not None:
+        values.append(
+            measurement(
+                INFERENCE_PEAK_MEMORY_MB.identifier,
+                compute.peak_memory_mb,
+                workload=workload,
+                sample_size=1,
+            )
         )
+    return _MeasuredUnit(
+        slug=f"{device}-compute",
+        description=f"What the model costs the {device}, at a batch nothing serves.",
+        execution=compute.execution,
+        values=tuple(values),
+        measured=compute.as_record(),
     )
-    values.append(
-        measurement(
-            INFERENCE_FIRST_DECISION_SECONDS.identifier,
-            result.cold_start.first_decision_seconds,
-            workload=workload,
-            sample_size=1,
-        )
-    )
-    return tuple(values)
 
 
-def _execution_record(
+def _play_execution(
     config: InferenceBenchmarkConfig,
     device: torch.device,
 ) -> ExecutionRecord:
-    """Capture the device, precision, and declared workload identity."""
+    """Declare what one device's product timings were taken under.
+
+    The device is declared rather than left to the environment because this
+    benchmark measures two of them on purpose, and two readings that differ only
+    by their coordinates would otherwise land on one series.
+    """
 
     return execution_record(
         device,
         {
             "benchmark_version": INFERENCE_BENCHMARK_VERSION,
+            "device": device.type,
             "latency_reference_plies": config.latency.reference_plies,
             "latency_seed": config.latency.seed,
-            "throughput_batch_size": config.throughput.reference_batch_size,
+            "serving_batch_size": config.throughput.serving_batch_size,
+            "throughput_history_plies": config.throughput.history_plies,
+            "throughput_seed": config.throughput.seed,
+            "target_rating": config.runtime.target_rating,
+            "temperature": config.runtime.temperature,
+        },
+    )
+
+
+def _compute_execution(
+    config: InferenceBenchmarkConfig,
+    device: torch.device,
+    batch_size: int,
+) -> ExecutionRecord:
+    """Declare what the compute instrument was taken under.
+
+    Names only what the forward pass depends on. Sharing the product timings'
+    workload would end their history whenever this batch size moved, and they
+    were never measured at it.
+    """
+
+    return execution_record(
+        device,
+        {
+            "benchmark_version": INFERENCE_BENCHMARK_VERSION,
+            "device": device.type,
+            "compute_batch_size": batch_size,
             "throughput_history_plies": config.throughput.history_plies,
             "throughput_seed": config.throughput.seed,
             "target_rating": config.runtime.target_rating,
@@ -932,40 +1409,15 @@ def _measured_decision() -> Iterator[None]:
     """Report a failure inside a measured window as this benchmark's error.
 
     Every timed block drives the session and the runner together, so both
-    failures mean the same thing here and read the same way to a caller.
+    failures mean the same thing here and read the same way to a caller. The
+    bare torch error is caught too, for the windows that call the module
+    directly and so have no runner to convert it for them.
     """
 
     try:
         yield
-    except (DecisionRuntimeError, ModelRunnerError) as error:
+    except (DecisionRuntimeError, ModelRunnerError, RuntimeError) as error:
         raise InferenceBenchmarkError(f"a measured decision failed: {error}") from error
-
-
-def _sweep_depths(config: LatencyWorkloadConfig) -> tuple[int, ...]:
-    """Return the depths to measure, with the reference depth guaranteed."""
-
-    return tuple(sorted({*config.sweep_plies, config.reference_plies}))
-
-
-def _sweep_batch_sizes(config: ThroughputWorkloadConfig) -> tuple[int, ...]:
-    """Return the batch sizes to measure, with the declared one guaranteed."""
-
-    return tuple(sorted({*config.sweep_batch_sizes, config.reference_batch_size}))
-
-
-def _select(
-    samples: Sequence[SampleT],
-    matches: Callable[[SampleT], bool],
-    label: str,
-) -> SampleT:
-    """Return the sweep entry the declared reference point names."""
-
-    for sample in samples:
-        if matches(sample):
-            return sample
-    raise InferenceBenchmarkError(  # pragma: no cover - the sweep includes it
-        f"the {label} did not include the declared reference point"
-    )
 
 
 def _percentile(values: Sequence[float], percentile: int) -> float:
@@ -983,19 +1435,18 @@ def _percentile(values: Sequence[float], percentile: int) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
-def _mean(values: Sequence[float]) -> float:
-    return sum(values) / len(values)
-
-
 __all__ = [
     "INFERENCE_BENCHMARK_VERSION",
     "INFERENCE_KIND",
     "ColdStart",
+    "ComputeSample",
+    "InferenceDeviceReading",
     "InferenceBenchmarkConfig",
     "InferenceBenchmarkError",
     "InferenceBenchmarkResult",
     "LatencySample",
     "LatencyWorkloadConfig",
+    "ModelCost",
     "ThroughputSample",
     "ThroughputWorkloadConfig",
     "benchmark_inference",

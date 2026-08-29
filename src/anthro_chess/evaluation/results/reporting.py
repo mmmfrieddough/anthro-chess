@@ -823,9 +823,11 @@ def _noise_legend(report: DeltaReport) -> list[str]:
         )
     if NoiseVerdict.UNQUALIFIABLE in verdicts:
         legend = (
-            f"{legend} 'unqualifiable' means resampling that metric's units "
-            "cannot estimate its dispersion, so no sampling floor can exist "
-            "for it; the metric registry says why."
+            f"{legend} 'unqualifiable' means no sampling floor can exist for "
+            "that metric, either because resampling its units would estimate a "
+            "different quantity or because the value is counted rather than "
+            "sampled and has no spread to estimate; the metric registry says "
+            "which."
         )
     return textwrap.wrap(
         legend,

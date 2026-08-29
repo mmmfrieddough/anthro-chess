@@ -1507,12 +1507,16 @@ def _inference_metric(
     direction: MetricDirection,
     summary: str,
     definition_version: int = 1,
+    *,
+    cost: MetricCost = MetricCost.MEASURED_EXECUTION,
+    execution_sensitive: bool = True,
+    no_sampling_floor_reason: str | None = None,
 ) -> MetricDefinition:
     """Register one inference-efficiency metric.
 
-    Every metric in this family shares a cost and a sensitivity, so declaring
-    them once keeps a later addition from quietly landing as a machine-blind
-    series.
+    A counted quantity overrides the timing defaults: it reads the same on
+    every machine, and a workload-scoped series would split one number across
+    the devices it was counted beside.
     """
 
     return register_metric(
@@ -1522,10 +1526,67 @@ def _inference_metric(
             direction=direction,
             definition_version=definition_version,
             summary=summary,
-            cost=MetricCost.MEASURED_EXECUTION,
-            execution_sensitive=True,
+            cost=cost,
+            execution_sensitive=execution_sensitive,
+            no_sampling_floor_reason=no_sampling_floor_reason,
         )
     )
+
+
+#: Why a counted quantity carries no floor.
+_COUNTED_NOT_SAMPLED = (
+    "the value is counted from the loaded module rather than sampled, so it is "
+    "identical in every process and there is nothing for a spread to be over"
+)
+
+INFERENCE_PARAMETERS = _inference_metric(
+    "inference.parameters",
+    MetricDirection.INFORMATIONAL,
+    (
+        "Parameters in the loaded checkpoint, frozen ones included. Counted "
+        "rather than timed, so it carries no noise and needs no floor."
+    ),
+    cost=MetricCost.FREE,
+    execution_sensitive=False,
+    no_sampling_floor_reason=_COUNTED_NOT_SAMPLED,
+)
+
+INFERENCE_DECISION_GFLOPS = _inference_metric(
+    "inference.decision_gflops",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Billions of floating-point operations one decision costs the model, "
+        "counted from an instrumented forward pass. This is the arithmetic a "
+        "model change alters, and it is counted rather than timed because a "
+        "wall clock understates it wherever the device is launch or bandwidth "
+        "bound."
+    ),
+    cost=MetricCost.FREE,
+    execution_sensitive=False,
+    no_sampling_floor_reason=_COUNTED_NOT_SAMPLED,
+)
+
+INFERENCE_PEAK_MEMORY_MB = _inference_metric(
+    "inference.peak_memory_mb",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Peak device memory one forward pass allocates at the declared compute "
+        "batch size, in megabytes. Bounds the batch a device can serve."
+    ),
+)
+
+INFERENCE_DECISION_OVERHEAD_MS = _inference_metric(
+    "inference.decision_overhead_ms",
+    MetricDirection.LOWER_IS_BETTER,
+    (
+        "Milliseconds one batched decision spends around the model: context "
+        "assembly, batch construction, legal masking and sampling. The host "
+        "copy is inside both timed windows and cancels, so it is not here. "
+        "Does not amortize with batch size, so it is the floor under "
+        "any decision, and it is where an encoding or action-vocabulary change "
+        "lands rather than in the forward pass."
+    ),
+)
 
 
 #: Percentiles reported for batch-one move latency. The median says what play
@@ -1574,13 +1635,13 @@ INFERENCE_FORWARD_THROUGHPUT = _inference_metric(
     "inference.forward_throughput_per_second",
     MetricDirection.HIGHER_IS_BETTER,
     (
-        "Decisions per second through the forward pass alone, on a batch built "
-        "once and re-run, taken from the median batch. Excludes batch "
-        "construction, so it isolates launch cost for a kernel or precision "
-        "change rather than saying what playing a move costs. It scores the "
-        "whole padded sequence rather than the one row per game a decision "
-        "reads, so it is a companion to the batched figure rather than a "
-        "component of it."
+        "Decisions per second through the model call alone, at the declared "
+        "compute batch size, on a batch built once and re-run and taken from "
+        "the median batch. Measured where the device stops being launch bound, "
+        "which is the only batch size at which a wall clock separates two model "
+        "sizes at all, and excluding the host copy and finite check a served "
+        "decision pays, which are fixed costs that would dilute it by more the "
+        "wider the batch."
     ),
 )
 

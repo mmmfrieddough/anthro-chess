@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         DecisionDecomposition,
         DependencyBenchmarkResult,
         InferenceBenchmarkResult,
+        InferenceDeviceReading,
         LadderBenchmarkResult,
         NoveltyBenchmarkResult,
         PoolConfig,
@@ -2163,109 +2164,115 @@ def _spread(spread: PuzzleSpread | None, digits: int) -> str:
 
 
 def _render_inference(result: InferenceBenchmarkResult) -> str:
-    execution = result.execution
-    latency = result.reference_latency
-    throughput = result.reference_throughput
-    threads = (
-        "" if execution.cpu_threads is None else f", {execution.cpu_threads} thread(s)"
-    )
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
-        (
-            f"Execution: {execution.device} ({execution.device_name}) "
-            f"{execution.precision}{threads}"
-        ),
-        f"Series: workload {execution.workload_sha256[:12]}",
         "",
-        (
-            f"Batch-one move latency at {latency.history_plies} plies "
-            f"({latency.decisions} decision(s), warmup excluded):"
-        ),
+        "What one decision costs the model, counted rather than timed:",
+        f"  parameters      {result.cost.parameters / 1e6:8.3f} M",
+        f"  per decision    {result.cost.decision_gflops:8.4f} GFLOP",
     ]
-    lines.extend(
-        f"  p{percentile:<3} {value:8.1f} ms"
-        for percentile, value in sorted(latency.percentiles.items())
-    )
-    lines.extend(
-        [
-            f"  mean {latency.mean_ms:8.1f} ms "
-            f"(min {latency.minimum_ms:.1f}, max {latency.maximum_ms:.1f})",
-            "",
-            "Where a decision spends its mean latency:",
-            f"  context   {latency.context_mean_ms:8.3f} ms "
-            "(assemble the encoded trajectory)",
-            f"  predict   {latency.predict_mean_ms:8.3f} ms "
-            "(batch build, forward, host copy)",
-            f"  remainder {latency.remainder_mean_ms:8.3f} ms "
-            "(masking, sampling, encoding the new ply)",
-            "",
-            (
-                f"Whole batched decisions at batch {throughput.batch_size}: "
-                f"{throughput.decisions_per_second:.1f} decisions/s "
-                f"(median batch {throughput.batch_median_ms:.1f} ms, "
-                f"mean {throughput.batch_mean_ms:.1f} ms)"
-            ),
-            (
-                f"  forward pass alone {throughput.forward_decisions_per_second:.1f} "
-                f"decisions/s ({throughput.forward_median_ms:.1f} ms per batch), "
-                "on a batch built once and"
-            ),
-            (
-                "  re-run: it excludes the batch construction, masking and "
-                "sampling a decision pays for."
-            ),
-            "",
-            "Cold start, reported apart from steady state:",
-            f"  model load     {result.cold_start.model_load_seconds:8.3f} s",
-            f"  first decision {result.cold_start.first_decision_seconds:8.3f} s",
-        ]
-    )
-    if len(result.latency_sweep) > 1:
-        lines.extend(["", "Latency by history depth:"])
-        lines.extend(
-            f"  {sample.history_plies:>4} plies  p50 {sample.percentiles[50]:8.1f} ms  "
-            f"mean {sample.mean_ms:8.1f} ms"
-            for sample in result.latency_sweep
-        )
-    if len(result.throughput_sweep) > 1:
-        lines.extend(["", "Throughput by batch size (whole decisions, forward alone):"])
-        lines.extend(
-            f"  batch {sample.batch_size:>4}  "
-            f"{sample.decisions_per_second:8.1f} decisions/s  "
-            f"{sample.forward_decisions_per_second:8.1f} decisions/s"
-            for sample in result.throughput_sweep
-        )
-    lines.extend(_replicate_lines(result))
+    for reading in result.readings:
+        lines.extend(_device_lines(reading))
+    lines.extend(_process_lines(result))
     lines.extend(_recorded_lines(result.recorded_paths))
     return "\n".join(lines) + "\n"
 
 
-def _replicate_lines(result: InferenceBenchmarkResult) -> list[str]:
-    """Say what the replicate processes measured, which is most of the run time.
+def _device_lines(reading: InferenceDeviceReading) -> list[str]:
+    execution = reading.execution
+    latency = reading.latency
+    serving = reading.serving
+    threads = (
+        "" if execution.cpu_threads is None else f", {execution.cpu_threads} thread(s)"
+    )
+    lines = [
+        "",
+        (
+            f"On {execution.device} ({execution.device_name}) "
+            f"{execution.precision}{threads}, as this process measured it "
+            f"(workload {execution.workload_sha256[:12]}):"
+        ),
+        (
+            f"  Batch-one move latency at {latency.history_plies} plies "
+            f"({latency.decisions} decision(s), warmup excluded):"
+        ),
+    ]
+    lines.extend(
+        f"    p{percentile:<3} {value:8.1f} ms"
+        for percentile, value in sorted(latency.percentiles.items())
+    )
+    lines.extend(
+        [
+            f"    mean {latency.mean_ms:8.1f} ms "
+            f"(min {latency.minimum_ms:.1f}, max {latency.maximum_ms:.1f})",
+            "  Where a decision spends its mean latency:",
+            f"    context   {latency.context_mean_ms:8.3f} ms "
+            "(assemble the encoded trajectory)",
+            f"    predict   {latency.predict_mean_ms:8.3f} ms "
+            "(batch build, forward, host copy)",
+            f"    remainder {latency.remainder_mean_ms:8.3f} ms "
+            "(masking, sampling, encoding the new ply)",
+            (
+                f"  Serving {serving.batch_size} concurrent decisions: "
+                f"{serving.decisions_per_second:.1f} decisions/s "
+                f"(median batch {serving.batch_median_ms:.1f} ms)"
+            ),
+            (
+                f"    {serving.decision_overhead_ms:.3f} ms of each is host work "
+                "around the model, which does not amortize."
+            ),
+        ]
+    )
+    if reading.compute is not None:
+        compute = reading.compute
+        lines.append(
+            f"  Forward pass alone at batch {compute.batch_size}: "
+            f"{compute.forward_decisions_per_second:.1f} decisions/s "
+            f"({compute.forward_median_ms:.1f} ms per batch), where the device "
+            "is no longer launch bound."
+        )
+        if compute.peak_memory_mb is not None:
+            lines.append(f"    peak device memory {compute.peak_memory_mb:.1f} MB")
+    if reading.cold_start is not None:
+        lines.extend(
+            [
+                "  Cold start, reported apart from steady state:",
+                f"    model load     {reading.cold_start.model_load_seconds:8.3f} s",
+                f"    first decision "
+                f"{reading.cold_start.first_decision_seconds:8.3f} s",
+            ]
+        )
+    return lines
 
-    Printed because the spread is what the extra processes were paid for, and a
-    reader who cannot see it has no way to judge whether the count is worth its
-    wall clock.
+
+def _process_lines(result: InferenceBenchmarkResult) -> list[str]:
+    """Say what the extra processes bought, which is most of the run time.
+
+    Printed because a reader who cannot see the spread has no way to judge
+    whether the process count is worth its wall clock.
     """
 
     from anthro_chess.evaluation.results import metric_column_width
 
-    if not result.dispersions:
+    if not result.pooled:
         return [
             "",
-            "Spread across processes: not measured; this reading was taken at one "
-            "replicate, so a delta against it reports unknown noise.",
+            "Taken in one process: the value is that process's reading and a delta "
+            "against it reports unknown noise.",
         ]
     lines = [
         "",
-        f"Spread of this reading across {result.replicates} process(es), which is "
-        "what floors a delta against it:",
+        f"Committed, pooled over {result.processes} processes. Each value is their "
+        "mean, beside the spread of that mean, which floors a delta against it:",
     ]
-    width = metric_column_width(result.dispersions)
-    lines.extend(
-        f"  {metric:<{width}} {spread:.6g}"
-        for metric, spread in sorted(result.dispersions.items())
-    )
+    width = metric_column_width(result.pooled)
+    for label, (value, spread) in sorted(result.pooled.items()):
+        qualified = (
+            f"±{spread:.6g}"
+            if spread > 0.0
+            else "(no floor; every process read it identically)"
+        )
+        lines.append(f"  {label:<{width}} {value:.6g}  {qualified}")
     return lines
 
 
@@ -3509,22 +3516,30 @@ def _run_eval_noise_sample(arguments: argparse.Namespace) -> int:
                 path=arguments.config,
                 overrides=arguments.set,
             )
-        sample = sample_execution_noise(resolved, run_root=_run_root())
+        samples = sample_execution_noise(resolved, run_root=_run_root())
     except (ConfigError, ExecutionNoiseError) as error:
         print(f"anthro eval noise sample: {error}", file=sys.stderr)
         return 2
 
     if arguments.format == "json":
-        print(json.dumps(sample.as_record(), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                [sample.as_record() for sample in samples],
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
-    print(
-        f"Checkpoint: {sample.checkpoint.label} on "
-        f"{sample.execution.environment_label()}"
-    )
-    print("One reading in this process, recorded nowhere:")
-    width = metric_column_width(sample.reading)
-    for metric, value in sorted(sample.reading.items()):
-        print(f"  {metric:<{width}} {value:.6g}")
+    for sample in samples:
+        print(
+            f"Checkpoint: {sample.checkpoint.label} on "
+            f"{sample.execution.environment_label()}"
+        )
+        print("One reading in this process, recorded nowhere:")
+        labels = {value.metric: value.value for value in sample.values}
+        width = metric_column_width(labels)
+        for metric, value in sorted(labels.items()):
+            print(f"  {metric:<{width}} {value:.6g}")
     return 0
 
 

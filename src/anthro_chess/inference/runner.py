@@ -137,6 +137,18 @@ class CheckpointModelRunner:
         self.metadata = dict(metadata)
         self.training_sha256 = training_sha256
 
+    @property
+    def model(self) -> MoveModel:
+        """Return the loaded module, for a caller that cannot go through serving.
+
+        Both serving paths run under inference mode. Torch's operator counter
+        installs module hooks that read each input's grad node, which inference
+        mode does not create, so counting through either path raises rather than
+        counting.
+        """
+
+        return self._model
+
     def parameter_sha256(self) -> str:
         """Return the digest identifying the loaded parameters."""
 
