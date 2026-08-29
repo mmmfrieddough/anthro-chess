@@ -466,8 +466,8 @@ def test_a_record_that_cannot_be_serialized_still_reads_back(
 
 def test_a_declared_workload_the_serializer_refuses_is_a_record_error() -> None:
     # A declared workload carries settings straight from configuration — the
-    # termination benchmark puts `guardrails.premature_material_balance` in
-    # one — and reaches its digest before it reaches any record.
+    # rollout puts `generation.maximum_generated_plies` in one — and reaches
+    # its digest before it reaches any record.
     with pytest.raises(ResultRecordError, match="cannot digest"):
         _execution(workload={"temperature": float("nan")})
 

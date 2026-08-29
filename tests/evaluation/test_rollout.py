@@ -71,6 +71,7 @@ from anthro_chess.evaluation.results.metrics import (
     registered_metrics,
 )
 from anthro_chess.evaluation.rollout import (
+    PREMATURE_MATERIAL_BALANCE,
     ROLLOUT_KIND,
     RepertoireWalkConfig,
     RolloutArm,
@@ -2020,18 +2021,19 @@ def test_a_suite_that_finished_every_game_reports_no_non_termination() -> None:
     assert guardrails.claimable_unfinished_games == 0
 
 
-def test_the_premature_threshold_is_part_of_the_declared_workload() -> None:
-    """Moving it counts a different set of resignations, so it ends the series."""
+def test_the_premature_threshold_is_declared_rather_than_configured() -> None:
+    """A per-run dial would end every series sharing a cell's workload.
 
-    default = _run(_config(), runner=ResigningRunner()).cells[0]
-    moved = _run(
-        _config(guardrails={"premature_material_balance": -3.0}),
-        runner=ResigningRunner(),
-    ).cells[0]
+    Only the premature rate reads the threshold, and a cell's workload is
+    shared by every metric on it, so a knob that moved it would re-baseline
+    twenty-odd readings that never look at it.
+    """
 
-    assert default.execution.workload["premature_material_balance"] == 0.0
-    assert moved.execution.workload["premature_material_balance"] == -3.0
-    assert default.execution.workload_sha256 != moved.execution.workload_sha256
+    cell = _run(_config(), runner=ResigningRunner()).cells[0]
+
+    assert PREMATURE_MATERIAL_BALANCE == 0.0
+    assert "premature_material_balance" not in cell.execution.workload
+    assert not hasattr(_config().value, "guardrails")
 
 
 def test_the_human_premature_rate_is_read_from_the_losing_players_side() -> None:
@@ -2199,45 +2201,20 @@ def _record_for_termination(termination: GameTermination) -> Any:
     )
 
 
-def test_the_unreachable_set_is_exactly_what_the_model_cannot_produce() -> None:
-    """A human category added later must not rejoin the compared vocabulary.
+def test_the_unreachable_set_tracks_the_two_ending_vocabularies() -> None:
+    """A category one side gains has to move the comparison with it.
 
-    The set is the whole of what renormalizes the human side, and a category
-    that slipped back in would restore the total variation floor it exists to
-    remove, silently: the distance would rise once and stay there, and no
-    reading would say why.
+    Derived rather than listed, so the pin worth having is on the consequence:
+    a clock the harness one day runs makes clock expiry reachable and takes it
+    out of the set, which should be a deliberate change rather than a surprise.
     """
 
     from anthro_chess.data.termination import TerminationCategory
     from anthro_chess.evaluation.reference import UNREACHABLE_HUMAN_TERMINATIONS
 
-    human = {category.value for category in TerminationCategory}
-    model = {termination.value for termination in GameTermination}
-
-    assert UNREACHABLE_HUMAN_TERMINATIONS == human - model
-    # And the mirror image stays reachable, so the ply limit is charged for
-    # rather than dropped with them.
-    assert model - human == {GameTermination.PLY_LIMIT.value}
-
-
-def test_a_model_only_category_is_not_sorted_off_the_drill_down() -> None:
-    """Its human mass is zero, which is last by the reference's own ordering."""
-
-    from anthro_chess.evaluation.curves import CategoryShare
-
-    shares = tuple(
-        sorted(
-            (
-                CategoryShare(category="checkmate", human=0.4, model=0.4),
-                CategoryShare(category="ply_limit", human=0.0, model=0.3),
-                CategoryShare(category="stalemate", human=0.01, model=0.01),
-            ),
-            key=lambda share: (-max(share.mass, share.model), share.category),
-        )
-    )
-
-    assert [share.category for share in shares] == [
-        "checkmate",
-        "ply_limit",
-        "stalemate",
-    ]
+    assert TerminationCategory.CLOCK_EXPIRY.value in UNREACHABLE_HUMAN_TERMINATIONS
+    assert TerminationCategory.ABANDONMENT.value in UNREACHABLE_HUMAN_TERMINATIONS
+    assert TerminationCategory.CHECKMATE.value not in UNREACHABLE_HUMAN_TERMINATIONS
+    # The mirror image stays on the model's side rather than being dropped with
+    # them, because the ply limit is a gap a checkpoint can close.
+    assert GameTermination.PLY_LIMIT.value not in UNREACHABLE_HUMAN_TERMINATIONS

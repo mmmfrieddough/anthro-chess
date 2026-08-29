@@ -2442,11 +2442,9 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
 
 
 def _render_guardrails(cell: RolloutCell) -> list[str]:
-    """Return one cell's terminal-action guardrails, where it has them."""
+    """Return one cell's terminal-action guardrails."""
 
     guardrails = cell.guardrails
-    if guardrails is None:
-        return []
     return [
         (
             f"  resignations   {guardrails.resignations} "
@@ -2610,11 +2608,10 @@ def _render_category_drilldowns(reading: RolloutReading) -> list[str]:
     """Show each categorical distance beside the categories behind it.
 
     A distance over categories says how much mass is in the wrong place and
-    never which place, and the two categorical quantities need that for
-    different reasons. Opening families are uneven, so a delta read without the
+    never which place. Opening families are uneven, so a delta read without the
     category's own mass invites treating a swing on a narrow line as the same
-    finding as one on a family half the corpus plays. Endings are few enough
-    that the table is the reading and the scalar is the summary of it.
+    finding as one on a family half the corpus plays. Results and endings are
+    few enough that the table is the reading and the scalar summarizes it.
     """
 
     from anthro_chess.evaluation.curves import CurveQuantity

@@ -622,10 +622,10 @@ def material_balance(board: chess.Board, color: chess.Color) -> int:
     """Return ``color``'s material advantage in pawns, negative when behind.
 
     One definition, shared by every reading that needs a dependency-free
-    position-quality signal. Both the stalemate-resource predicate and the
-    termination benchmark's premature-resignation guardrail read it, and a
-    guardrail comparing a model against humans is only meaningful when the same
-    arithmetic ran on both sides.
+    position-quality signal. The stalemate-resource predicate, generated play's
+    premature-resignation guardrail, and the resignation calibration all read
+    it, and a reading comparing a model against humans is only meaningful when
+    the same arithmetic ran on both sides.
     """
 
     own = sum(

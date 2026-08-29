@@ -278,14 +278,12 @@ def test_the_calibration_error_weights_a_band_by_how_often_it_comes_up() -> None
                 bucket="0-to-1",
                 plies=990,
                 human_resignations=0,
-                human_rate=0.0,
                 model_mass=0.0,
             ),
             CalibrationBucket(
                 bucket="9-and-above",
                 plies=10,
                 human_resignations=5,
-                human_rate=0.5,
                 model_mass=0.0,
             ),
         )
@@ -407,7 +405,6 @@ def test_a_calibration_with_no_human_resignation_reports_nothing() -> None:
                 bucket="9-and-above",
                 plies=400,
                 human_resignations=0,
-                human_rate=0.0,
                 model_mass=0.02,
             ),
         )

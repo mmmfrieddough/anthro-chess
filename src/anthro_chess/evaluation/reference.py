@@ -47,6 +47,7 @@ from anthro_chess.evaluation.curves import (
 )
 from anthro_chess.evaluation.games import (
     GameFeatures,
+    GameTermination,
     TrajectoryFeatures,
     analyze_trajectory,
 )
@@ -151,13 +152,8 @@ _QUANTITY_KINDS: Mapping[ComparedQuantity, CurveQuantity] = {
 #: move mass onto a category a checkpoint can actually produce and report the
 #: gap as a defect there.
 UNREACHABLE_HUMAN_TERMINATIONS: frozenset[str] = frozenset(
-    {
-        TerminationCategory.ABANDONMENT.value,
-        TerminationCategory.CLOCK_EXPIRY.value,
-        TerminationCategory.DRAW_AGREEMENT.value,
-        TerminationCategory.UNKNOWN.value,
-    }
-)
+    category.value for category in TerminationCategory
+) - frozenset(termination.value for termination in GameTermination)
 
 
 @dataclass(frozen=True)

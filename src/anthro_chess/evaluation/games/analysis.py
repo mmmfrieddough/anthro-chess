@@ -40,8 +40,11 @@ from anthro_chess.evaluation.results.records import canonical_json
 from anthro_chess.evaluation.slices import material_balance
 
 #: Version 3 adds the repertoire, waypoint, and book-depth readings that come
-#: out of the same classification pass the opening counts already used.
-GAME_ANALYSIS_VERSION = 3
+#: out of the same classification pass the opening counts already used. Version
+#: 4 adds the ending readings that come out of the replay the repetition
+#: counter already ran: the final material, the side to move, and whether a
+#: draw was ever claimable.
+GAME_ANALYSIS_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -128,11 +131,11 @@ class TrajectoryFeatures:
     #: reached a claimable position had nothing to decline.
     claim_ever_available: bool
 
-    def material_deficit(self, *, white: bool) -> float:
-        """Return how far behind one player was when the game stopped."""
+    def material_advantage(self, *, white: bool) -> float:
+        """Return how far ahead one player was when the game stopped."""
 
         balance = float(self.final_material_balance)
-        return -balance if white else balance
+        return balance if white else -balance
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one trajectory's features."""
@@ -472,7 +475,8 @@ def _replay(initial_position: str, moves: Sequence[int]) -> _Replay:
 
     board = chess.Board(initial_position)
     occurrences = RepetitionCounter()
-    claimable = occurrences.observe(board) >= 2 or board.is_fifty_moves()
+    occurrences.observe(board)
+    claimable = board.is_fifty_moves()
     first_repetition: int | None = None
     threefold: int | None = None
     repeated_plies = 0

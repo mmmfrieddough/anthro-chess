@@ -28,7 +28,11 @@ from anthro_chess.chess import (
 )
 
 _DRAW_RESULT = "1/2-1/2"
-_LOSER_COLORS: dict[str, chess.Color] = {"1-0": chess.BLACK, "0-1": chess.WHITE}
+
+#: Which seat a decisive result went against. Shared rather than restated,
+#: because a reading that attributes a resignation to the wrong colour reads
+#: its material from the wrong side of the board.
+LOSER_COLORS: dict[str, chess.Color] = {"1-0": chess.BLACK, "0-1": chess.WHITE}
 
 #: Normalized PGN ``Termination`` values this derivation understands. Anything
 #: else, including adjudication and unterminated games, cannot be classified
@@ -194,7 +198,7 @@ def terminal_action_for(
 def _derive_normal(*, result: str, final_board: chess.Board) -> DerivedTermination:
     """Classify a game the source reported as ending through normal play."""
 
-    loser = _LOSER_COLORS.get(result)
+    loser = LOSER_COLORS.get(result)
     if loser is not None:
         # The final position is not checkmate, so a decided game under a normal
         # termination can only have been resigned.
@@ -253,7 +257,7 @@ def _losing_clock_share(
 ) -> float | None:
     """Return the losing player's remaining time share at their last move."""
 
-    loser = _LOSER_COLORS.get(result)
+    loser = LOSER_COLORS.get(result)
     if loser is None or time_initial_ms is None or time_initial_ms <= 0:
         return None
     index = _last_ply_index(loser, len(clock_remaining_ms))

@@ -32,8 +32,8 @@ PUZZLE_ARTIFACT_FIELDS = ("puzzle_set",)
 #: ``anthro eval rollout``: optional, since a pool-free suite records the
 #: rollout scalars alone.
 ROLLOUT_ARTIFACT_FIELDS = ("pool",)
-#: ``anthro eval termination``: required, since every reading is against human
-#: endings.
+#: ``anthro eval termination``: required, since the whole reading is a pass
+#: over human games.
 TERMINATION_ARTIFACT_FIELDS = ("pool",)
 #: ``anthro eval ladder``: the pool the frozen openings are drawn from.
 LADDER_ARTIFACT_FIELDS = ("openings.pool",)

@@ -31,23 +31,19 @@ which is what gives these readings a direction at all.
 from __future__ import annotations
 
 import logging
+from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-import chess
 from pydantic import StrictBool
 from torch import Tensor
 
-from anthro_chess.chess import (
-    RESIGNATION_ACTION_ID,
-    decode_move,
-    is_terminal_action,
-)
+from anthro_chess.chess import RESIGNATION_ACTION_ID
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data import SequenceDataLoader
-from anthro_chess.data.schema import NormalizedColumn, row_game_id
+from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.evaluation.execution import runner_device
 from anthro_chess.evaluation.policy import (
     POLICY_SCORING_VERSION,
@@ -92,11 +88,12 @@ from anthro_chess.evaluation.scoring import (
     SCORED_COLUMNS,
     EvaluationLoaderConfig,
     ScoringError,
+    ScoringInputs,
     build_scoring_inputs,
     rows_identity_sha256,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
-from anthro_chess.evaluation.slices import material_balance
+from anthro_chess.evaluation.slices import board_from_encoding, material_balance
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.models import MoveModelBatch
 from anthro_chess.runtime import ActionModelRunner
@@ -111,19 +108,12 @@ TERMINATION_BENCHMARK = BenchmarkReference(
     version=TERMINATION_BENCHMARK_VERSION,
 )
 
-#: What the pass reads from a pool row: the encoder's inputs for the scored
-#: decisions, the moves the deficit at each of them is replayed from, and the
-#: two ending columns the projection this reading is identified by declares.
-_SCORED_COLUMNS = tuple(
-    dict.fromkeys(
-        (
-            *SCORED_COLUMNS,
-            NormalizedColumn.ACTION_IDS.value,
-            NormalizedColumn.INITIAL_POSITION.value,
-            NormalizedColumn.TERMINATION_CATEGORY.value,
-            NormalizedColumn.TERMINAL_ACTION_STATUS.value,
-        )
-    )
+#: What the pass reads from a pool row: the encoder's own inputs, plus the two
+#: ending columns the projection this reading is identified by declares.
+_SCORED_COLUMNS = (
+    *SCORED_COLUMNS,
+    NormalizedColumn.TERMINATION_CATEGORY.value,
+    NormalizedColumn.TERMINAL_ACTION_STATUS.value,
 )
 
 #: Deficit buckets, in pawns behind from the point of view of the player to
@@ -133,6 +123,21 @@ _SCORED_COLUMNS = tuple(
 #: down, and the ordinary range, rather than resolving the far tail nobody
 #: reads.
 DEFICIT_BUCKET_EDGES: tuple[float, ...] = (0.0, 1.0, 3.0, 5.0, 9.0)
+
+#: The bands those edges cut, in deficit order, which is the order they are
+#: reported in. Named once so the label a deficit lands on and the label the
+#: reading walks cannot disagree: they did, a populated band would vanish from
+#: the calibration rather than fail.
+DEFICIT_BUCKETS: tuple[str, ...] = (
+    f"below-{DEFICIT_BUCKET_EDGES[0]:g}",
+    *(
+        f"{low:g}-to-{high:g}"
+        for low, high in zip(
+            DEFICIT_BUCKET_EDGES, DEFICIT_BUCKET_EDGES[1:], strict=False
+        )
+    ),
+    f"{DEFICIT_BUCKET_EDGES[-1]:g}-and-above",
+)
 
 
 class TerminationBenchmarkError(ValueError):
@@ -165,7 +170,7 @@ class TerminationBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     #: scoring cost. The plies where a human resigned are the scarce half:
     #: roughly three games in ten carry one, and they are what the calibration
     #: buckets are estimated from.
-    view: ViewConfig = ViewConfig(name="termination-held-out", maximum_games=512)
+    view: ViewConfig = ViewConfig(name="termination-held-out", maximum_games=4096)
     loader: EvaluationLoaderConfig = EvaluationLoaderConfig()
     detail: TerminationDetailConfig = TerminationDetailConfig()
 
@@ -179,10 +184,14 @@ class CalibrationBucket:
     #: both sides share.
     plies: int
     human_resignations: int
-    #: Share of those plies where the human resigned rather than moved.
-    human_rate: float
     #: Mean probability the policy put on resigning across the same plies.
     model_mass: float
+
+    @property
+    def human_rate(self) -> float:
+        """Return the share of those plies where the human resigned."""
+
+        return self.human_resignations / self.plies
 
     @property
     def gap(self) -> float:
@@ -381,7 +390,7 @@ def _held_out_resignation(
         )
     rows = _rows_for(pool, selection.game_ids)
     scorer = _scoring_runner(runner)
-    decisions = _score_decisions(config, scorer, rows, selection)
+    inputs, decisions = _score_decisions(config, scorer, rows, selection)
     component = _projection_component(rows)
 
     at_resignation = [
@@ -400,7 +409,7 @@ def _held_out_resignation(
             "no game in the view carries a resignation action, so the policy "
             "has no human resignation to be scored against"
         )
-    calibration = _calibration(decisions, rows)
+    calibration = _calibration(decisions, inputs)
     if calibration.error is None:
         unavailable["resignation_calibration"] = (
             "no scored decision could be matched to the position it was taken "
@@ -410,9 +419,10 @@ def _held_out_resignation(
             "band's human rate is zero and the policy has nothing to be "
             "calibrated against"
         )
+    games = len({decision.game_id for decision in decisions})
     logger.info(
         "Resignation prediction: %s game(s), %s resignation ply/plies of %s",
-        len({decision.game_id for decision in decisions}),
+        games,
         len(at_resignation),
         len(decisions),
     )
@@ -420,7 +430,7 @@ def _held_out_resignation(
         view=selection,
         dataset=_dataset_reference(pool, selection, rows),
         data=component,
-        games=len({decision.game_id for decision in decisions}),
+        games=games,
         resignation_plies=len(at_resignation),
         move_plies=len(at_moves),
         mass_at_resignation=_mean(at_resignation),
@@ -436,8 +446,14 @@ def _score_decisions(
     runner: ScoringModelRunner,
     rows: Sequence[Mapping[str, Any]],
     selection: ViewSelection,
-) -> tuple[TerminalActionPolicy, ...]:
-    """Run one deterministic pass over the view and keep the terminal mass."""
+) -> tuple[ScoringInputs, tuple[TerminalActionPolicy, ...]]:
+    """Run one deterministic pass over the view and keep the terminal mass.
+
+    The encoded positions come back with the scores because the calibration
+    reads the material at each of them. Replaying the rows again would be a
+    second answer to which position sits at one decision, and the encoder is
+    the one that decided which plies were scored at all.
+    """
 
     try:
         inputs = build_scoring_inputs(
@@ -462,12 +478,12 @@ def _score_decisions(
         raise TerminationBenchmarkError(
             "the configured view selected no positions to score"
         )
-    return tuple(scored)
+    return inputs, tuple(scored)
 
 
 def _calibration(
     decisions: Sequence[TerminalActionPolicy],
-    rows: Sequence[Mapping[str, Any]],
+    inputs: ScoringInputs,
 ) -> ResignationCalibration:
     """Bucket the scored plies by material and compare the two sides.
 
@@ -477,15 +493,15 @@ def _calibration(
     own choice are two answers to one position rather than two populations.
     """
 
-    deficits = _deficit_by_decision(rows)
     plies: dict[str, int] = {}
     resignations: dict[str, int] = {}
     mass: dict[str, float] = {}
     for decision in decisions:
-        deficit = deficits.get((decision.game_id, decision.ply_index))
-        if deficit is None:
+        encoding = inputs.plies.get((decision.game_id, decision.ply_index))
+        if encoding is None:
             continue
-        name = _bucket(deficit)
+        board = board_from_encoding(encoding.board)
+        name = _bucket(float(-material_balance(board, board.turn)))
         plies[name] = plies.get(name, 0) + 1
         mass[name] = mass.get(name, 0.0) + decision.resignation_mass
         if decision.target_action_id == RESIGNATION_ACTION_ID:
@@ -496,34 +512,12 @@ def _calibration(
                 bucket=name,
                 plies=plies[name],
                 human_resignations=resignations.get(name, 0),
-                human_rate=resignations.get(name, 0) / plies[name],
                 model_mass=mass[name] / plies[name],
             )
-            for name in _bucket_names()
+            for name in DEFICIT_BUCKETS
             if name in plies
         )
     )
-
-
-def _deficit_by_decision(
-    rows: Sequence[Mapping[str, Any]],
-) -> dict[tuple[int, int], float]:
-    """Return how far behind the player to move was, at every decision.
-
-    Keyed the way a scored decision names itself, so the pass over positions
-    and the pass over logits are joined rather than assumed to be in step.
-    """
-
-    deficits: dict[tuple[int, int], float] = {}
-    for row in rows:
-        game_id = row_game_id(row)
-        board = chess.Board(str(row[NormalizedColumn.INITIAL_POSITION.value]))
-        for index, action_id in enumerate(row[NormalizedColumn.ACTION_IDS.value]):
-            deficits[(game_id, index)] = float(-material_balance(board, board.turn))
-            if is_terminal_action(int(action_id)):
-                break
-            board.push(decode_move(int(action_id)))
-    return deficits
 
 
 def _load_pool(config: TerminationBenchmarkConfig) -> FrozenPool:
@@ -663,40 +657,9 @@ def _scoring_runner(runner: ActionModelRunner) -> ScoringModelRunner:
 
 
 def _bucket(deficit: float) -> str:
-    """Return the bucket one deficit falls in, named by its own bounds."""
+    """Return the band one deficit falls in, by where it sits on the edges."""
 
-    edges = DEFICIT_BUCKET_EDGES
-    if deficit < edges[0]:
-        return f"below-{_edge(edges[0])}"
-    for low, high in zip(edges, edges[1:], strict=False):
-        if deficit < high:
-            return f"{_edge(low)}-to-{_edge(high)}"
-    return f"{_edge(edges[-1])}-and-above"
-
-
-def _bucket_names() -> tuple[str, ...]:
-    """Return every bucket in deficit order.
-
-    The reading walks these rather than sorting what it saw: the names sort
-    "below" ahead of every band and "9-and-above" into the middle of them, and
-    an empty band is a fact about the games rather than a gap to reorder.
-    """
-
-    edges = DEFICIT_BUCKET_EDGES
-    return (
-        f"below-{_edge(edges[0])}",
-        *(
-            f"{_edge(low)}-to-{_edge(high)}"
-            for low, high in zip(edges, edges[1:], strict=False)
-        ),
-        f"{_edge(edges[-1])}-and-above",
-    )
-
-
-def _edge(value: float) -> str:
-    """Return a stable, filename-safe name for one bucket boundary."""
-
-    return f"{value:g}".replace("-", "minus").replace(".", "_")
+    return DEFICIT_BUCKETS[bisect_right(DEFICIT_BUCKET_EDGES, deficit)]
 
 
 def _mean(values: Sequence[float]) -> float | None:
@@ -706,6 +669,7 @@ def _mean(values: Sequence[float]) -> float | None:
 
 
 __all__ = [
+    "DEFICIT_BUCKETS",
     "DEFICIT_BUCKET_EDGES",
     "TERMINATION_BENCHMARK",
     "TERMINATION_BENCHMARK_VERSION",

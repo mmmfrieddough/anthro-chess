@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import chess
 import pytest
 
-from anthro_chess.chess import encode_move
+from anthro_chess.chess import draw_claim_available, encode_move
 from anthro_chess.evaluation.games import (
     GAME_ANALYSIS_VERSION,
     DecisionRecord,
@@ -273,8 +273,8 @@ def test_the_final_material_is_signed_from_one_seat() -> None:
 
     assert trajectory.final_material_balance == 1
     assert trajectory.final_turn_white is False
-    assert trajectory.material_deficit(white=False) == pytest.approx(1.0)
-    assert trajectory.material_deficit(white=True) == pytest.approx(-1.0)
+    assert trajectory.material_advantage(white=True) == pytest.approx(1.0)
+    assert trajectory.material_advantage(white=False) == pytest.approx(-1.0)
 
 
 def test_a_claim_the_rules_never_offered_is_not_available() -> None:
@@ -303,3 +303,31 @@ def test_a_full_fifty_move_clock_makes_a_claim_available() -> None:
 
     assert trajectory.repetition.threefold_ply is None
     assert trajectory.claim_ever_available is True
+
+
+@pytest.mark.parametrize(
+    "moves",
+    (
+        pytest.param(("e2e4", "e7e5"), id="neither"),
+        pytest.param(SHUFFLE, id="threefold"),
+        pytest.param(("g1f3", "g8f6", "f3g1"), id="repeated-once"),
+    ),
+)
+def test_claim_availability_agrees_with_the_rule_the_runtime_offers_it_by(
+    moves: Sequence[str],
+) -> None:
+    """One definition decides the denominator and whether a seat was offered one.
+
+    The walk reads it off the repetition counter because `is_repetition` rewinds
+    the move stack at every ply, which is quadratic in a game's length. That is a
+    second expression of a rule `draw_claim_available` owns, so what keeps them
+    one rule is that they are checked against each other.
+    """
+
+    board = chess.Board()
+    reached = [draw_claim_available(board)]
+    for uci in moves:
+        board.push(chess.Move.from_uci(uci))
+        reached.append(draw_claim_available(board))
+
+    assert analyze_game(_record(moves)).trajectory.claim_ever_available is any(reached)

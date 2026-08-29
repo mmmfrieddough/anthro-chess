@@ -91,7 +91,7 @@ from anthro_chess.data.schema import (
     NormalizedColumn,
     row_game_id,
 )
-from anthro_chess.data.termination import TerminationCategory
+from anthro_chess.data.termination import LOSER_COLORS, TerminationCategory
 from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveComparisonError,
@@ -395,17 +395,6 @@ class DivergenceDepthConfig(ConfigModel):
     maximum_ply: Annotated[StrictInt, Field(ge=1)] | None = None
 
 
-class RolloutGuardrailsConfig(ConfigModel):
-    """Where the heuristic behind the premature-resignation reading sits."""
-
-    #: Material balance, in pawns from the resigning player's point of view, at
-    #: or above which a resignation counts as premature. Zero means "resigned
-    #: while level or ahead", which is the egregious case material alone can
-    #: honestly claim. Moving it measures a different quantity, so it joins the
-    #: declared workload.
-    premature_material_balance: float = 0.0
-
-
 class RolloutDetailConfig(ConfigModel):
     """What the machine-local detail tier keeps beside a committed summary."""
 
@@ -446,7 +435,6 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
     opening_level: OpeningLevel = OpeningLevel.FAMILY
     walk: RepertoireWalkConfig = RepertoireWalkConfig()
     divergence: DivergenceDepthConfig = DivergenceDepthConfig()
-    guardrails: RolloutGuardrailsConfig = RolloutGuardrailsConfig()
     detail: RolloutDetailConfig = RolloutDetailConfig()
     #: Games per cell the decision decomposition reads. Its own sample size
     #: rather than the cell's, because it is flat in this well below the count
@@ -493,6 +481,15 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
         return self
 
 
+#: Material balance, in pawns from the resigning player's point of view, at or
+#: above which a resignation counts as premature. Zero means "resigned while
+#: level or ahead", which is the egregious case material alone can honestly
+#: claim. Declared rather than configured: moving it counts a different set of
+#: resignations, and a per-run dial would end the series of every metric that
+#: shares a cell's workload over a quantity only this one reads.
+PREMATURE_MATERIAL_BALANCE = 0.0
+
+
 @dataclass(frozen=True)
 class TerminationGuardrails:
     """What one cell's games say about the terminal actions it was offered.
@@ -518,6 +515,18 @@ class TerminationGuardrails:
     #: still ran out of plies. With no clock to settle it, this is the failure
     #: the claim action exists to prevent.
     claimable_unfinished_games: int
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one cell's guardrails."""
+
+        return {
+            "resignations": self.resignations,
+            "premature_resignations": self.premature_resignations,
+            "premature_rate": self.premature_rate,
+            "enabled_terminal_actions": list(self.enabled_terminal_actions),
+            "silent_terminal_actions": list(self.silent_terminal_actions),
+            "claimable_unfinished_games": self.claimable_unfinished_games,
+        }
 
     @property
     def premature_rate(self) -> float | None:
@@ -550,6 +559,8 @@ class RolloutCell:
     #: The cell's reading, pooled over every seed.
     distribution: GameDistribution
     execution: ExecutionRecord
+    #: What this cell did with the terminal actions it was offered.
+    guardrails: TerminationGuardrails
     #: Per-game features, always kept: the human-reference curve reads one
     #: observation per game from them, so discarding them would make the
     #: comparison depend on whether whole games happened to be retained.
@@ -574,8 +585,6 @@ class RolloutCell:
     #: The decisions behind it, one record each. A checkpoint's interesting
     #: decisions are individual ones and no mean recovers them.
     decision_samples: tuple[DecisionSample, ...] = field(default=(), repr=False)
-    #: What this cell did with the terminal actions it was offered.
-    guardrails: TerminationGuardrails | None = field(default=None, repr=False)
 
     @property
     def label(self) -> str:
@@ -603,23 +612,7 @@ class RolloutCell:
                 for seed, distribution in self.per_seed
             ],
             "decisions": None if self.decisions is None else self.decisions.as_record(),
-            "guardrails": (
-                None
-                if self.guardrails is None
-                else {
-                    "resignations": self.guardrails.resignations,
-                    "premature_resignations": self.guardrails.premature_resignations,
-                    "enabled_terminal_actions": list(
-                        self.guardrails.enabled_terminal_actions
-                    ),
-                    "silent_terminal_actions": list(
-                        self.guardrails.silent_terminal_actions
-                    ),
-                    "claimable_unfinished_games": (
-                        self.guardrails.claimable_unfinished_games
-                    ),
-                }
-            ),
+            "guardrails": self.guardrails.as_record(),
         }
 
 
@@ -1288,24 +1281,23 @@ def _human_premature_rate(
     the result instead of off the final position.
     """
 
-    threshold = config.guardrails.premature_material_balance
-    balances = [
-        -game.trajectory.material_deficit(white=loser is chess.WHITE)
-        for game in reference.games
-        if game.termination == TerminationCategory.RESIGNATION.value
-        for loser in (_loser(game.result),)
-        if loser is not None
-    ]
-    if not balances:
+    resignations = 0
+    premature = 0
+    for game in reference.games:
+        if game.termination != TerminationCategory.RESIGNATION.value:
+            continue
+        loser = LOSER_COLORS.get(game.result)
+        if loser is None:
+            continue
+        resignations += 1
+        if (
+            game.trajectory.material_advantage(white=loser is chess.WHITE)
+            >= PREMATURE_MATERIAL_BALANCE
+        ):
+            premature += 1
+    if not resignations:
         return None, 0
-    premature = sum(1 for balance in balances if balance >= threshold)
-    return premature / len(balances), len(balances)
-
-
-def _loser(result: str) -> chess.Color | None:
-    """Return which color lost a decided game, or ``None`` for a draw."""
-
-    return {"1-0": chess.BLACK, "0-1": chess.WHITE}.get(result)
+    return premature / resignations, resignations
 
 
 def _termination_guardrails(
@@ -1318,7 +1310,6 @@ def _termination_guardrails(
     this costs a walk over the cell rather than a second replay of it.
     """
 
-    threshold = config.guardrails.premature_material_balance
     enabled = tuple(
         action_id
         for action_id, allowed in (
@@ -1327,11 +1318,13 @@ def _termination_guardrails(
         )
         if allowed
     )
+    # The last action only: a record carrying a terminal action anywhere else
+    # is refused when it is built, so scanning the rest finds nothing.
     selected = {
-        action_id
+        actions[-1]
         for feature in features
-        for action_id in feature.trajectory.action_ids
-        if is_terminal_action(action_id)
+        for actions in (feature.trajectory.action_ids,)
+        if actions and is_terminal_action(actions[-1])
     }
     resigned = [
         feature
@@ -1347,10 +1340,10 @@ def _termination_guardrails(
         premature_resignations=sum(
             1
             for feature in resigned
-            if -feature.trajectory.material_deficit(
+            if feature.trajectory.material_advantage(
                 white=feature.trajectory.final_turn_white
             )
-            >= threshold
+            >= PREMATURE_MATERIAL_BALANCE
         ),
         enabled_terminal_actions=enabled,
         silent_terminal_actions=tuple(
@@ -2155,10 +2148,6 @@ def _walk_execution_record(
 
     workload = dict(cells[0].execution.workload)
     workload.pop("target_rating", None)
-    # The guardrail threshold decides which of a cell's resignations counted as
-    # premature and reaches nothing derived here. Left in, moving it would end
-    # every series on this record over a quantity none of them reads.
-    workload.pop("premature_material_balance", None)
     workload.update(
         {
             "target_ratings": list(ratings),
@@ -2274,10 +2263,6 @@ def _reading_execution_record(
 
     workload = dict(cells[0].execution.workload)
     workload.pop("target_rating", None)
-    # The guardrail threshold decides which of a cell's resignations counted as
-    # premature and reaches nothing derived here. Left in, moving it would end
-    # every series on this record over a quantity none of them reads.
-    workload.pop("premature_material_balance", None)
     workload.update(
         {
             "target_ratings": list(ratings),
@@ -2363,12 +2348,6 @@ def _execution_record(
             "resignation_enabled": config.runtime.resignation_enabled,
             "draw_claim_enabled": config.runtime.draw_claim_enabled,
             "opening_level": config.opening_level.value,
-            # The premature guardrail's own threshold. Moving it counts a
-            # different set of resignations, so it decides the quantity rather
-            # than how precisely it was read.
-            "premature_material_balance": (
-                config.guardrails.premature_material_balance
-            ),
         },
         cpu_threads=cpu_threads,
     )
@@ -2587,8 +2566,6 @@ def _guardrail_measurements(
     """
 
     guardrails = cell.guardrails
-    if guardrails is None:  # pragma: no cover - every cell computes them
-        return ()
     games = cell.distribution.games
     values: list[tuple[str, float | None, int]] = [
         (
