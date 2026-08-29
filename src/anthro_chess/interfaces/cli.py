@@ -2546,7 +2546,7 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
         lines.extend(_render_bandwidth(reading))
         lines.extend(_render_comparison_table(reading, width))
         lines.extend(_render_unavailable(reading))
-        lines.extend(_render_repertoire_drilldown(reading))
+        lines.extend(_render_category_drilldowns(reading))
         lines.extend(_render_divergence_depth(reading))
         lines.extend(_render_exact_repertoire(reading))
     if result.recorded_paths:
@@ -2606,32 +2606,33 @@ def _render_unavailable(reading: RolloutReading) -> list[str]:
     ]
 
 
-def _render_repertoire_drilldown(reading: RolloutReading) -> list[str]:
-    """Show the largest repertoire categories with their mass beside the delta.
+def _render_category_drilldowns(reading: RolloutReading) -> list[str]:
+    """Show each categorical distance beside the categories behind it.
 
-    Family granularity is uneven — the broadest family holds a few hundred lines
-    and the median holds a handful — so a delta read without the category's mass
-    invites treating a swing on a narrow line as the same finding as one on a
-    family half the corpus plays.
+    A distance over categories says how much mass is in the wrong place and
+    never which place, and the two categorical quantities need that for
+    different reasons. Opening families are uneven, so a delta read without the
+    category's own mass invites treating a swing on a narrow line as the same
+    finding as one on a family half the corpus plays. Endings are few enough
+    that the table is the reading and the scalar is the summary of it.
     """
 
-    from anthro_chess.evaluation.reference import ComparedQuantity
+    from anthro_chess.evaluation.curves import CurveQuantity
 
-    comparison = reading.comparisons.get(ComparedQuantity.REPERTOIRE)
-    if comparison is None:
-        return []
-    shares = comparison.category_shares()[:_DRILLDOWN_CATEGORIES]
-    if not shares:
-        return []
-    lines = [
-        "  repertoire by family",
-        f"    {'family':<40}{'mass':>8}{'model':>8}{'delta':>9}",
-    ]
-    lines.extend(
-        f"    {share.category[:40]:<40}{share.mass:>8.3f}"
-        f"{share.model:>8.3f}{share.delta:>+9.3f}"
-        for share in shares
-    )
+    lines: list[str] = []
+    for quantity, comparison in reading.comparisons.items():
+        if comparison.spec.quantity is not CurveQuantity.CATEGORICAL:
+            continue
+        shares = comparison.category_shares()[:_DRILLDOWN_CATEGORIES]
+        if not shares:
+            continue
+        lines.append(f"  {quantity.value} by category")
+        lines.append(f"    {'category':<40}{'mass':>8}{'model':>8}{'delta':>9}")
+        lines.extend(
+            f"    {share.category[:40]:<40}{share.mass:>8.3f}"
+            f"{share.model:>8.3f}{share.delta:>+9.3f}"
+            for share in shares
+        )
     return lines
 
 
