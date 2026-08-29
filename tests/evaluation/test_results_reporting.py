@@ -708,7 +708,7 @@ def test_a_metric_that_can_carry_no_sampling_floor_says_so_rather_than_unknown(
     rendered = render_report(report)
     assert "unqualifiable" in rendered
     # The legend wraps to the terminal width, so it is read unwrapped here.
-    assert "no sampling floor can exist for it" in " ".join(rendered.split())
+    assert "no sampling floor can exist" in " ".join(rendered.split())
 
 
 def test_an_unknown_noise_floor_is_stated_rather_than_assumed(

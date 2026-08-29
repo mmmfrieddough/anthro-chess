@@ -671,9 +671,12 @@ the configuration overrides it.
 
 **No floor at all is two situations, not one.** A floor may be missing because a
 reading did not measure its spread, which is work somebody could do, or because
-the metric counts something resampling cannot estimate, which is not. A metric
-of the second kind declares why in the registry, and a report renders it
-`unqualifiable` rather than `unknown`. Reporting both as unknown sets a reader to
+no floor can exist for the metric, which is not. The second covers two unlike
+cases that share a consequence: a metric whose units resampling would estimate a
+different quantity from, and a metric counted rather than sampled, which has no
+spread at all and whose delta is therefore exact rather than unqualified. Both
+declare why in the registry, and a report renders them `unqualifiable` rather
+than `unknown`. Reporting both as unknown sets a reader to
 work that cannot be done, and it is the same ambiguity as a floor rendering as
 exactly zero.
 
