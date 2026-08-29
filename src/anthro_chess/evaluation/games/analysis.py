@@ -37,6 +37,7 @@ from anthro_chess.evaluation.openings import (
     repertoire_distribution,
 )
 from anthro_chess.evaluation.results.records import canonical_json
+from anthro_chess.evaluation.slices import material_balance
 
 #: Version 3 adds the repertoire, waypoint, and book-depth readings that come
 #: out of the same classification pass the opening counts already used.
@@ -112,6 +113,26 @@ class TrajectoryFeatures:
     #: pieces and one that develops sixteen differ here well before either
     #: reaches a repetition threshold.
     distinct_move_fraction: float
+    #: White's material advantage in pawns at the last position reached, from
+    #: the table :func:`~anthro_chess.evaluation.slices.material_balance` owns.
+    #: Signed from one seat so a caller naming either player reads the same
+    #: arithmetic, which is what lets a model resignation and a human one be
+    #: judged against one another.
+    final_material_balance: int
+    #: Whether White holds the move at that position. A resigning player is not
+    #: always the one to move, so whose deficit is being read has to come from
+    #: the caller rather than from the side to move.
+    final_turn_white: bool
+    #: Whether exact chess logic ever offered the player to move a draw claim.
+    #: The denominator of the non-termination guardrail: a game that never
+    #: reached a claimable position had nothing to decline.
+    claim_ever_available: bool
+
+    def material_deficit(self, *, white: bool) -> float:
+        """Return how far behind one player was when the game stopped."""
+
+        balance = float(self.final_material_balance)
+        return -balance if white else balance
 
     def as_record(self) -> dict[str, Any]:
         """Return the stored form of one trajectory's features."""
@@ -128,6 +149,9 @@ class TrajectoryFeatures:
                 "cycle_ply_fraction": self.repetition.cycle_ply_fraction,
             },
             "distinct_move_fraction": self.distinct_move_fraction,
+            "final_material_balance": self.final_material_balance,
+            "final_turn_white": self.final_turn_white,
+            "claim_ever_available": self.claim_ever_available,
         }
 
 
@@ -293,6 +317,7 @@ def analyze_trajectory(
     moves = tuple(
         action_id for action_id in action_ids if action_id < MOVE_ACTION_COUNT
     )
+    replay = _replay(initial_position, moves)
     return TrajectoryFeatures(
         trajectory_sha256=_trajectory_sha256(initial_position, action_ids),
         initial_position=initial_position,
@@ -303,8 +328,11 @@ def analyze_trajectory(
             initial_position=initial_position,
             book=book,
         ),
-        repetition=_repetition_diagnostics(initial_position, moves),
+        repetition=replay.repetition,
         distinct_move_fraction=_fraction(len(set(moves)), len(moves)),
+        final_material_balance=replay.final_material_balance,
+        final_turn_white=replay.final_turn_white,
+        claim_ever_available=replay.claim_ever_available,
     )
 
 
@@ -422,20 +450,29 @@ def _trajectory_sha256(initial_position: str, action_ids: Sequence[int]) -> str:
     return sha256(payload).hexdigest()
 
 
-def _repetition_diagnostics(
-    initial_position: str,
-    moves: Sequence[int],
-) -> RepetitionDiagnostics:
-    """Count position recurrences by replaying the game once.
+@dataclass(frozen=True)
+class _Replay:
+    """Everything one walk through a game yields about how it went."""
 
-    Through the counter the encoding feeds the model, so what is reported here
-    and what a model was trained to see are the same rule rather than two
-    statements of it.
+    repetition: RepetitionDiagnostics
+    final_material_balance: int
+    final_turn_white: bool
+    claim_ever_available: bool
+
+
+def _replay(initial_position: str, moves: Sequence[int]) -> _Replay:
+    """Replay a game once and read every position-derived feature from it.
+
+    Recurrences come through the counter the encoding feeds the model, so what
+    is reported here and what a model was trained to see are the same rule
+    rather than two statements of it. Claim availability rides the same counter
+    instead of ``board.is_repetition``, which rewinds the move stack at every
+    ply and would make one walk quadratic in the game's length.
     """
 
     board = chess.Board(initial_position)
     occurrences = RepetitionCounter()
-    occurrences.observe(board)
+    claimable = occurrences.observe(board) >= 2 or board.is_fifty_moves()
     first_repetition: int | None = None
     threefold: int | None = None
     repeated_plies = 0
@@ -446,15 +483,24 @@ def _repetition_diagnostics(
             repeated_plies += 1
             if first_repetition is None:
                 first_repetition = ply_index
-        if seen >= 2 and threefold is None:
-            threefold = ply_index
+        if seen >= 2:
+            claimable = True
+            if threefold is None:
+                threefold = ply_index
+        elif not claimable and board.is_fifty_moves():
+            claimable = True
     cycle_plies = 0 if first_repetition is None else len(moves) - first_repetition
-    return RepetitionDiagnostics(
-        first_repetition_ply=first_repetition,
-        threefold_ply=threefold,
-        maximum_occurrences=occurrences.maximum_occurrences,
-        repeated_ply_fraction=_fraction(repeated_plies, len(moves)),
-        cycle_ply_fraction=_fraction(repeated_plies, cycle_plies),
+    return _Replay(
+        repetition=RepetitionDiagnostics(
+            first_repetition_ply=first_repetition,
+            threefold_ply=threefold,
+            maximum_occurrences=occurrences.maximum_occurrences,
+            repeated_ply_fraction=_fraction(repeated_plies, len(moves)),
+            cycle_ply_fraction=_fraction(repeated_plies, cycle_plies),
+        ),
+        final_material_balance=material_balance(board, chess.WHITE),
+        final_turn_white=board.turn is chess.WHITE,
+        claim_ever_available=claimable,
     )
 
 

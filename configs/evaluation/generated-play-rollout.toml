@@ -10,8 +10,9 @@
 # Every cell of the matrix is its own measurement and its own stored result.
 # Values that decide *what* is measured are part of series identity: the arm,
 # each rating, each temperature, `generation.maximum_generated_plies`,
-# `generation.swap_colors`, `generation.claim_draws`, and
-# `runtime.resignation_enabled`. Values that decide only how precisely are not:
+# `generation.swap_colors`, `generation.claim_draws`, both
+# `runtime.*_enabled` switches, and `guardrails.premature_material_balance`.
+# Values that decide only how precisely are not:
 # `grid.seeds`, `generation.games_per_position`, and `generation.concurrency`
 # can all be raised without ending a series.
 #
@@ -35,9 +36,14 @@ expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de
 
 [runtime]
 # Rating, temperature, and seed are supplied per cell and per game, so setting
-# them here would be overridden. Resignation stays off: it is a model action
-# rather than a harness one, and enabling it changes what every ending means.
-resignation_enabled = false
+# them here would be overridden. Both terminal actions are on: humans end
+# better than a third of their games by resigning, so a seat that cannot
+# resign plays every lost position out to mate and its length, result, and
+# termination distributions are held away from any human population by a gap
+# no checkpoint can close. The switches join the declared workload, so a run
+# with them off cannot share a series with this one.
+resignation_enabled = true
+draw_claim_enabled = true
 
 [grid]
 # Ratings spanning the range the corpus actually covers, so a rating response

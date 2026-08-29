@@ -65,7 +65,9 @@ config = "configs/evaluation/puzzle-rating-response.toml"
 config = "configs/evaluation/generated-play-rollout.toml"
 
 [benchmarks.termination]
-# How the checkpoint ends games, against the human termination mix.
+# What the policy says about resigning at positions humans reached. One pass
+# over frozen games and no generation: how the checkpoint's own games end is a
+# property of generated play and is read by the rollout above.
 config = "configs/evaluation/game-termination.toml"
 
 [benchmarks.ladder]

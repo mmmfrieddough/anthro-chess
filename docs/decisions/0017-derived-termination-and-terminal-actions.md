@@ -4,7 +4,10 @@ Date: 2026-07-27
 
 ## Status
 
-Accepted.
+Accepted. Refined by
+`0083-the-termination-mix-compares-reachable-endings.md`, which keeps the rule
+that an unreachable category is not folded into a neighbour and changes which
+side counts one.
 
 ## Context
 

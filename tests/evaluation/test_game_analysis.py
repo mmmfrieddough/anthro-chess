@@ -262,3 +262,44 @@ def test_a_summary_record_is_json_ready() -> None:
     assert record["games"] == 1
     assert record["opening_level"] == "family"
     assert isinstance(record["opening_counts"], dict)
+
+
+def test_the_final_material_is_signed_from_one_seat() -> None:
+    """Two readings judge different players, so neither side may be assumed."""
+
+    trajectory = analyze_game(
+        _record(("e2e4", "e7e5", "d1h5", "b8c6", "f1c4", "g8f6", "h5f7"))
+    ).trajectory
+
+    assert trajectory.final_material_balance == 1
+    assert trajectory.final_turn_white is False
+    assert trajectory.material_deficit(white=False) == pytest.approx(1.0)
+    assert trajectory.material_deficit(white=True) == pytest.approx(-1.0)
+
+
+def test_a_claim_the_rules_never_offered_is_not_available() -> None:
+    """The non-termination guardrail's denominator, and it must be able to be empty."""
+
+    assert analyze_game(_record(("e2e4", "e7e5"))).trajectory.claim_ever_available is (
+        False
+    )
+
+
+def test_a_threefold_makes_a_claim_available() -> None:
+    """The counter that reports the repetition is the one that reports the claim."""
+
+    trajectory = analyze_game(_record(SHUFFLE)).trajectory
+
+    assert trajectory.repetition.threefold_ply == 7
+    assert trajectory.claim_ever_available is True
+
+
+def test_a_full_fifty_move_clock_makes_a_claim_available() -> None:
+    """A claim is not only a repetition, and the counter cannot see this half."""
+
+    # Ninety-nine half-moves already made, so one more fills the clock.
+    position = "7k/8/8/8/8/8/R7/6K1 w - - 99 80"
+    trajectory = analyze_game(_record(("a2a3",), initial_position=position)).trajectory
+
+    assert trajectory.repetition.threefold_ply is None
+    assert trajectory.claim_ever_available is True
