@@ -108,17 +108,11 @@ class ComparedQuantity(StrEnum):
     BOOK_CONSUMED_FRACTION = "book-consumed-fraction"
     #: Distinct moves as a share of moves played.
     MOVE_DIVERSITY = "move-diversity"
-    #: How the game ended, over the rule endings both sides can reach. A human
-    #: game that ended on the clock, by walking away, or by agreement is left
-    #: out of this quantity rather than compared against, because a total
-    #: variation distance is the mass that has to move and a model barred from
-    #: producing a category cannot move the mass sitting on it. Counting them
-    #: pinned the distance at the human mass they carry, and pinned it in a
-    #: region where the model was above the human rate on every category it
-    #: could produce, which made the distance flat in exactly the
-    #: redistribution it exists to see. The ply limit stays on the model's side
-    #: with no human counterpart, so a suite that stops its games is charged
-    #: for it here as well as in the unfinished rate.
+    #: How the game ended, over the endings both sides can reach. The human
+    #: side leaves out what the model cannot produce, since a distance whose
+    #: two sides sit on one side of each other is flat in the redistribution it
+    #: exists to report. The ply limit stays on the model's side with nothing
+    #: opposite it, which is a gap a checkpoint can close. See
     #: ``docs/decisions/0083-the-termination-mix-compares-reachable-endings.md``.
     TERMINATION = "termination"
 
@@ -144,13 +138,11 @@ _QUANTITY_KINDS: Mapping[ComparedQuantity, CurveQuantity] = {
 }
 
 
-#: Endings only a human platform produces. A clock the harness does not run, a
-#: player who cannot walk away, and an agreement there is no channel to reach:
-#: none is a category a checkpoint could move toward, so the human side leaves
-#: them out of the termination quantity and is renormalized over the rest by
-#: doing so. They are dropped rather than folded into a neighbour, which would
-#: move mass onto a category a checkpoint can actually produce and report the
-#: gap as a defect there.
+#: Human endings with no counterpart in the generated vocabulary: a clock the
+#: harness does not run, a player who cannot walk away, an agreement there is
+#: no channel to reach, and an ending the derivation could not classify. The
+#: human side leaves them out of the termination quantity and is renormalized
+#: over the rest by doing so.
 UNREACHABLE_HUMAN_TERMINATIONS: frozenset[str] = frozenset(
     category.value for category in TerminationCategory
 ) - frozenset(termination.value for termination in GameTermination)

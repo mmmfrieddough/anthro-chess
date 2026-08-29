@@ -29,9 +29,9 @@ from anthro_chess.chess import (
 
 _DRAW_RESULT = "1/2-1/2"
 
-#: Which seat a decisive result went against. Shared rather than restated,
-#: because a reading that attributes a resignation to the wrong colour reads
-#: its material from the wrong side of the board.
+#: Which seat a decisive result went against. A reading that attributes a
+#: resignation to the wrong colour reads its material from the wrong side of
+#: the board.
 LOSER_COLORS: dict[str, chess.Color] = {"1-0": chess.BLACK, "0-1": chess.WHITE}
 
 #: Normalized PGN ``Termination`` values this derivation understands. Anything

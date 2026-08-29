@@ -2442,7 +2442,7 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
 
 
 def _render_guardrails(cell: RolloutCell) -> list[str]:
-    """Return one cell's terminal-action guardrails."""
+    """Show what one cell did with the terminal actions it was offered."""
 
     guardrails = cell.guardrails
     return [

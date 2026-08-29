@@ -318,10 +318,9 @@ def test_claim_availability_agrees_with_the_rule_the_runtime_offers_it_by(
 ) -> None:
     """One definition decides the denominator and whether a seat was offered one.
 
-    The walk reads it off the repetition counter because `is_repetition` rewinds
-    the move stack at every ply, which is quadratic in a game's length. That is a
-    second expression of a rule `draw_claim_available` owns, so what keeps them
-    one rule is that they are checked against each other.
+    The walk reads claim availability off the repetition counter rather than
+    through `draw_claim_available`, so what keeps the two one rule is that they
+    are checked against each other.
     """
 
     board = chess.Board()

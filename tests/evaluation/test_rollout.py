@@ -1970,9 +1970,6 @@ def test_a_worker_that_stops_fails_this_reading_rather_than_the_sweep(
         )
 
 
-# --- Terminal-action guardrails -------------------------------------------
-
-
 def _guardrails(**overrides: Any) -> Any:
     """Return the guardrails of a one-cell suite's only cell."""
 
@@ -2093,9 +2090,6 @@ def test_a_reference_with_no_resignation_has_no_premature_rate() -> None:
     )
 
     assert _human_premature_rate(_config().value, reference) == (None, 0)
-
-
-# --- The termination quantity ---------------------------------------------
 
 
 def _human_game(termination: str) -> Any:

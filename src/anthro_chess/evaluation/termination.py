@@ -6,10 +6,7 @@ cross-entropy, so this reading exists to make the difference visible before
 resignation is enabled by default.
 
 Everything here comes out of one deterministic pass over frozen human games,
-which is what makes it cheap enough to take at a training cadence. What the
-model does with the actions when it plays is a property of generated games and
-belongs to the rollout, which offers both terminal actions and reads the
-termination mix and the three guardrails off the games it already plays.
+which is what makes it cheap enough to take at a training cadence.
 
 Two readings, from the same pass:
 
@@ -100,6 +97,9 @@ from anthro_chess.runtime import ActionModelRunner
 
 logger = logging.getLogger(__name__)
 
+#: Version 2 records the resignation reading alone. A version 1 record also
+#: carries a termination mix, a deficit distribution, and terminal-action
+#: guardrails, so the two payloads are not the same reading.
 TERMINATION_BENCHMARK_VERSION = 2
 
 TERMINATION_KIND = "game-termination"
@@ -126,7 +126,7 @@ DEFICIT_BUCKET_EDGES: tuple[float, ...] = (0.0, 1.0, 3.0, 5.0, 9.0)
 
 #: The bands those edges cut, in deficit order, which is the order they are
 #: reported in. Named once so the label a deficit lands on and the label the
-#: reading walks cannot disagree: they did, a populated band would vanish from
+#: reading walks cannot disagree: a mismatch would drop a populated band from
 #: the calibration rather than fail.
 DEFICIT_BUCKETS: tuple[str, ...] = (
     f"below-{DEFICIT_BUCKET_EDGES[0]:g}",
@@ -598,10 +598,9 @@ def _held_out_measurements(reading: HeldOutResignation) -> tuple[Measurement, ..
     """Return the readings the summary tier records.
 
     Sample sizes are per metric rather than shared. The mass readings are
-    averaged over populations that differ by orders of magnitude — a handful of
-    resignation plies against every move ply in the view — and reporting the
-    larger count for both would overstate the first one's precision to every
-    reader, the noise-floor layer included.
+    averaged over populations that differ by orders of magnitude, a handful of
+    resignation plies against every move ply in the view, so reporting the
+    larger count for both would overstate the first one's precision.
     """
 
     data = reading.data

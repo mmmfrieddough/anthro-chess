@@ -5,7 +5,7 @@ tests are about the join and the reductions rather than about generated play:
 that both sides of a calibration band are read at the same plies, that the
 error is weighted by how often a position comes up, and that a reading with no
 population behind it says so instead of writing a zero a reader would take for
-a measurement. How a checkpoint's own games end is the rollout's to measure.
+a measurement.
 """
 
 from __future__ import annotations

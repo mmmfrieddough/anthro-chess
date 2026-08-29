@@ -465,8 +465,8 @@ def test_a_record_that_cannot_be_serialized_still_reads_back(
 
 
 def test_a_declared_workload_the_serializer_refuses_is_a_record_error() -> None:
-    # A declared workload carries settings straight from configuration — the
-    # rollout puts `generation.maximum_generated_plies` in one — and reaches
+    # A declared workload carries settings straight from configuration, and the
+    # rollout puts `generation.maximum_generated_plies` in one, so it reaches
     # its digest before it reaches any record.
     with pytest.raises(ResultRecordError, match="cannot digest"):
         _execution(workload={"temperature": float("nan")})

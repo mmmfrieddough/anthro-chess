@@ -118,17 +118,15 @@ class TrajectoryFeatures:
     distinct_move_fraction: float
     #: White's material advantage in pawns at the last position reached, from
     #: the table :func:`~anthro_chess.evaluation.slices.material_balance` owns.
-    #: Signed from one seat so a caller naming either player reads the same
-    #: arithmetic, which is what lets a model resignation and a human one be
-    #: judged against one another.
+    #: Signed from one seat, so a caller naming either player reads the same
+    #: arithmetic.
     final_material_balance: int
     #: Whether White holds the move at that position. A resigning player is not
     #: always the one to move, so whose deficit is being read has to come from
     #: the caller rather than from the side to move.
     final_turn_white: bool
-    #: Whether exact chess logic ever offered the player to move a draw claim.
-    #: The denominator of the non-termination guardrail: a game that never
-    #: reached a claimable position had nothing to decline.
+    #: Whether exact chess logic ever offered the player to move a draw claim,
+    #: at any position in the game rather than only the last.
     claim_ever_available: bool
 
     def material_advantage(self, *, white: bool) -> float:

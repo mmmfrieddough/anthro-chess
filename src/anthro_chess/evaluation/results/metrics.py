@@ -597,19 +597,17 @@ GENERATED_PLAY_FAMILY = register_family(
 )
 
 #: Split from generated play rather than folded into it, because the two are
-#: read on different terms. A generated-play metric describes the moves; this
-#: one describes the decision to stop making them, which the model chooses and
-#: which no aggregate over moves can surface. It also spans both sides of the
-#: pool: the mix and the deficit are read on games the model played, while the
-#: resignation prediction is read on games humans played.
+#: read on different terms. A generated-play metric describes the moves the
+#: model played; this one describes what its policy says about stopping, read
+#: on games humans played.
 GAME_TERMINATION_FAMILY = register_family(
     MetricFamily(
         identifier="game-termination",
         title="Game termination",
         summary=(
-            "How games end, read against the human termination mix rather than "
-            "against a target rate. Premature resignation is the product-"
-            "critical failure here and is invisible to every other family."
+            "Whether the policy wants to resign where a human did, and at the "
+            "material a human would have. Read on frozen human games, against "
+            "the human's own action rather than against a target rate."
         ),
     )
 )

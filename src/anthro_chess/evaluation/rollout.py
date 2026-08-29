@@ -484,21 +484,14 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
 #: Material balance, in pawns from the resigning player's point of view, at or
 #: above which a resignation counts as premature. Zero means "resigned while
 #: level or ahead", which is the egregious case material alone can honestly
-#: claim. Declared rather than configured: moving it counts a different set of
-#: resignations, and a per-run dial would end the series of every metric that
-#: shares a cell's workload over a quantity only this one reads.
+#: claim. Declared rather than configured, since moving it counts a different
+#: set of resignations.
 PREMATURE_MATERIAL_BALANCE = 0.0
 
 
 @dataclass(frozen=True)
 class TerminationGuardrails:
-    """What one cell's games say about the terminal actions it was offered.
-
-    Kept apart from the termination distance the same cells feed, because a
-    distributional distance averages away exactly the asymmetry that matters
-    here: resigning from won positions and never resigning at all are opposite
-    defects that move one distance in the same direction.
-    """
+    """What one cell's games say about the terminal actions it was offered."""
 
     resignations: int
     #: Resignations from positions the resigning player was not behind in on
@@ -834,9 +827,7 @@ class RolloutReading:
     #: The share of human resignations in the reference the material proxy
     #: calls premature. The reading the model's own rate is judged against: the
     #: proxy admits unsound positions on both sides identically, so the model
-    #: rate is legible against this and not against zero. A property of the
-    #: reference rather than of the checkpoint, which is why it sits with the
-    #: comparison rather than on a cell.
+    #: rate is legible against this and not against zero.
     human_premature_rate: float | None = None
     #: The resignations that rate is a share of, which is a fraction of the
     #: reference rather than all of it.
@@ -1333,8 +1324,6 @@ def _termination_guardrails(
     ]
     return TerminationGuardrails(
         resignations=len(resigned),
-        # "Not lost" by the material proxy: the resigning player was level or
-        # ahead, which is the egregious case material alone can honestly claim.
         # The terminal action belongs to whoever held the move, so the position
         # the game stopped at is the resigning player's own.
         premature_resignations=sum(
@@ -2553,13 +2542,10 @@ def _guardrail_measurements(
 ) -> tuple[Measurement, ...]:
     """Return one cell's terminal-action guardrails.
 
-    Sample sizes differ per metric. A premature rate is a share of the
-    resignations that happened, while the non-termination rate is a share of
-    every game played and the silent count rests on all of them too: the
-    evidence that an action was never selected is how many games could have
-    selected it, not how many actions were offered. Reporting the game count
-    for the premature rate would overstate it to every reader, the noise-floor
-    layer included.
+    Sample sizes differ per metric: a premature rate is a share of the
+    resignations that happened, while the silent count and the non-termination
+    rate rest on every game played, since the evidence that an action was never
+    selected is how many games could have selected it.
 
     A cell that offered no terminal action reports the silent count as nothing
     rather than as a passing zero, which would read as an action used.
