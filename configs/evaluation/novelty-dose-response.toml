@@ -20,11 +20,12 @@ expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de
 # pool the reading is defined over.
 #
 # Sized on the narrowest quantity it reports, which is the policy mass in the
-# minor band at full dose. Five independent draws at 1600 games put its spread
-# at 0.0079, against 0.0143 between the weakest and strongest checkpoint on this
-# machine: 1.8 times the floor across sixty-four times the training, which is
-# not enough to read a smaller difference than that. Four times the games halves
-# the floor and takes it to 3.6.
+# minor band at full dose. Four independent draws at this size put its spread at
+# 0.0042, against 0.0067 between two checkpoints of one recipe four times apart
+# in training. That is 1.6 times the floor, where the same pair read in
+# distribution moves a quarter of its own: the reading separates them where an
+# unperturbed one cannot, and does not separate them cleanly. Reaching twice the
+# floor on a pair this close would take about ten thousand games.
 name = "novelty"
 minimum_plies = 40
 maximum_games = 6400

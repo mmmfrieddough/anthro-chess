@@ -120,8 +120,11 @@ so. With the derivation and the labelling moved across processes, a reading over
 6400 games falls from 291 to 74 seconds.
 
 Reading the tied-best captures rather than all of them costs discrimination as
-well as buying honesty. Over five draws at 1600 games the full-dose minor band
-has a spread of 0.0079 against 0.0143 between the weakest and strongest
-checkpoint here, which is 1.8 times the floor where the whole-set form read 3.2.
-Less of each position's mass is being counted, and the view is sized to pay it
-back.
+well as buying honesty, because less of each position's mass is counted. At the
+declared size the full-dose minor band has a spread of 0.0042 over four draws,
+against 0.0067 between two checkpoints of one recipe four times apart in
+training. That is 1.6 times the floor. The same pair read in distribution moves
+0.0008 against a floor of 0.0032, so the perturbed reading separates them where
+an unperturbed one does not, and neither separates them cleanly. Reaching twice
+the floor on a pair this close would take about ten thousand games, and whether
+that is worth its wall clock is a sizing question rather than a design one.
