@@ -16,8 +16,8 @@ pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
 
 [view]
-# Its own view, because this reading pays seven forward passes per batch where
-# the checkpoint reading pays one: every batch is scored under the true
+# Its own view, because every batch is scored once per distinct conditioning
+# where the checkpoint reading scores it once in total: under the true
 # conditioning, under each corrupted one, and at each rating on the
 # cross-conditioning grid. Sharing one view would have made the family that
 # tolerates a smaller sample pay for the family that does not.

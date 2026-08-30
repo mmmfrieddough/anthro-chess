@@ -34,6 +34,14 @@ four ratings, so the position-weighted mean of any of those columns is that same
 degradation at that rating: +0.1405, +0.0493, +0.0358, +0.0944 on the mature
 checkpoint, against +0.0389 reported for the dedicated pass at 1500.
 
+The section also opened on an argument that does not hold. It said ordinary
+metrics cannot establish rating dependence, using loss sliced by rating band as
+the counterexample. Sliced loss is a straw man, and the real claim it stood in
+for is false: `ladder.fitted_rating_slope`, `ladder.fitted_rating_span`, the two
+ladder ordering accuracies, `puzzle.greedy_rating_slope`,
+`puzzle.sampled_rating_slope`, the two puzzle ordering accuracies, and the
+conditional distances on generated play all go flat when the dial does nothing.
+
 ## Decision
 
 **The cross-conditioning comparison is reported graded as well as counted.**
@@ -54,6 +62,17 @@ rather than scored.** `constant_rating` is gone from the configuration and
 passes rather than eight, and the report shows the pinned degradation at every
 grid rating instead of at one, which also names the single rating that best
 explains the corpus.
+
+**The family is argued for on what it adds rather than on what the others
+cannot do.** Three things, and none of them is a claim on another family's
+territory. *Isolation*: the others change the rating and read a downstream
+aggregate, with sampling, opponents and whole-game dynamics in between, where
+this one reads the probability of the same move at the same position.
+*Cost*: the two families that would also catch a dead dial are the most
+expensive in the suite and this one runs in a fraction of either, so it is the
+one a checkpoint can afford routinely. *Diagnosis rather than detection*: a flat
+ladder slope says the dial does not work, and does not separate a model that
+cannot read the input from one that reads it and whose behavior does not follow.
 
 **Both tables are rendered.** The cross-conditioning grid and the per-band
 prefix split were computed, recorded, and shown as one scalar each. The scalars
@@ -107,11 +126,13 @@ different set of games, so the workload digest changes and
 `docs/evaluation.md` already states for two sizes of one reading, and it applies
 here whatever else this change did.
 
-Four places state the pass count, and a later change to the treatments moves all
-four: `configs/evaluation/rating-dependency.toml`,
-`configs/evaluation/checkpoint-suite.toml`, `docs/evaluation.md`, and
-`tests/evaluation/test_checkpoint.py::test_the_dependency_tests_score_each_conditioning_once`,
-which is the only one that fails on its own.
+One place states the pass count, and it is the one that fails when the count
+moves: `tests/evaluation/test_checkpoint.py::test_the_dependency_tests_score_each_conditioning_once`.
+The configuration files, the schema docstring and `docs/evaluation.md` state the
+rule that produces it, which is one forward pass per distinct conditioning
+against a held-out reading's one in total. An earlier draft of this change
+restated the number in five places and left one of them stale in the same
+commit, which is what a hand-kept agreement between documents does.
 
 ## References
 

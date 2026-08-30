@@ -52,8 +52,9 @@ if TYPE_CHECKING:
     )
     from anthro_chess.evaluation.dependency import (
         CrossConditioningCell,
-        DependencyTestResult,
+        CrossConditioningResult,
         WithinGameGroup,
+        WithinGameResult,
     )
     from anthro_chess.evaluation.results import (
         DetailStore,
@@ -1944,23 +1945,7 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _band_conditioning_ratings(
-    by_band: Mapping[str, Mapping[int, CrossConditioningCell]],
-    ratings: Sequence[int],
-) -> dict[str, int]:
-    """Return the grid rating that falls inside each band, where one does."""
-
-    from anthro_chess.evaluation.slices import rating_band_name
-
-    own: dict[str, int] = {}
-    for rating in ratings:
-        band = rating_band_name(rating)
-        if band is not None and band in by_band:
-            own.setdefault(band, rating)
-    return own
-
-
-def _render_cross_conditioning(dependency: DependencyTestResult) -> list[str]:
+def _render_cross_conditioning(cross: CrossConditioningResult) -> list[str]:
     """Show the band-by-conditioning table beside the scalars that summarize it.
 
     The match rate is a fraction of four, and a checkpoint that has learned the
@@ -1969,7 +1954,6 @@ def _render_cross_conditioning(dependency: DependencyTestResult) -> list[str]:
     conditioning value means anything, and the row ends are what say how much.
     """
 
-    cross = dependency.cross_conditioning
     if not cross.cells:
         return []
     ratings = sorted({cell.conditioning_rating for cell in cross.cells})
@@ -1977,36 +1961,31 @@ def _render_cross_conditioning(dependency: DependencyTestResult) -> list[str]:
     for cell in cross.cells:
         by_band.setdefault(cell.rating_band, {})[cell.conditioning_rating] = cell
 
-    # The star is the band's own rating rather than the row's smallest, so a
-    # band that fails to prefer its own shows a star off the minimum. Marking
-    # the minimum would render every band as though it had matched.
-    own = _band_conditioning_ratings(by_band, ratings)
-    header = "".join(f"{rating:>10}" for rating in ratings)
+    # Read rather than re-derived: the star has to mark the column the penalty
+    # below it priced against, and the band table is an argument to the reading.
+    own = dict(cross.band_conditioning)
+    pinned = dict(cross.pinned_degradations)
     lines = [
         "Cross-conditioning move loss (* marks each band's own rating):",
-        f"  {'band':<16}{header}{'positions':>11}",
+        f"  {'band':<16}"
+        + "".join(f"{rating:>10}" for rating in ratings)
+        + f"{'positions':>11}",
     ]
     for band, cells in by_band.items():
         marked = own.get(band)
-        columns: list[str] = []
-        for rating in ratings:
-            scored = cells.get(rating)
-            if scored is None:
-                columns.append(f"{'-':>10}")
-                continue
-            star = "*" if rating == marked else ""
-            columns.append(f"{star + format(scored.move_loss, '.4f'):>10}")
-        row = "".join(columns)
-        positions = max(cell.position_count for cell in cells.values())
-        lines.append(f"  {band:<16}{row}{positions:>11}")
-
-    pinned = dict(cross.pinned_degradations)
-    lines.append(
-        f"  {'pinned there':<16}"
-        + "".join(
-            f"{pinned[rating]:>+10.4f}" if rating in pinned else f"{'-':>10}"
+        row = "".join(
+            "{:>10}".format(
+                ("*" if rating == marked else "")
+                + format(cells[rating].move_loss, ".4f")
+            )
             for rating in ratings
         )
+        # Every band holds a cell at every grid rating, all with one count.
+        scored = next(iter(cells.values())).position_count
+        lines.append(f"  {band:<16}{row}{scored:>11}")
+    lines.append(
+        f"  {'pinned there':<16}"
+        + "".join(f"{pinned[rating]:>+10.4f}" for rating in ratings)
     )
     lines.append(
         f"  match rate {_optional(cross.match_rate)} over "
@@ -2019,7 +1998,7 @@ def _render_cross_conditioning(dependency: DependencyTestResult) -> list[str]:
     return lines
 
 
-def _render_within_game(dependency: DependencyTestResult) -> list[str]:
+def _render_within_game(within: WithinGameResult) -> list[str]:
     """Show each band's own prefix split beside the one number pooled from them.
 
     The response has no sampling floor, so whether the bands agree is the only
@@ -2032,7 +2011,6 @@ def _render_within_game(dependency: DependencyTestResult) -> list[str]:
         WEAKER_PREFIX_GROUP,
     )
 
-    within = dependency.within_game
     if not within.groups:
         return ["Within-game response: no band held enough held-out prefixes"]
     halves: dict[str, dict[str, WithinGameGroup]] = {}
@@ -2051,10 +2029,8 @@ def _render_within_game(dependency: DependencyTestResult) -> list[str]:
         ),
     ]
     for band, groups in halves.items():
-        weak = groups.get(WEAKER_PREFIX_GROUP)
-        strong = groups.get(STRONGER_PREFIX_GROUP)
-        if weak is None or strong is None:
-            continue
+        weak = groups[WEAKER_PREFIX_GROUP]
+        strong = groups[STRONGER_PREFIX_GROUP]
         lines.append(
             f"  {band:<16}{weak.position_count:>8}{strong.position_count:>8}"
             f"{weak.mean_prefix_strength:>+10.3f}{strong.mean_prefix_strength:>+10.3f}"
@@ -2096,9 +2072,9 @@ def _render_dependency(result: DependencyBenchmarkResult) -> str:
         f"  anchor policy divergence:      {dependency.anchor_divergence:.6f}",
         f"  anchor top-1 agreement:        {dependency.anchor_agreement_rate:.6f}",
         "",
-        *_render_cross_conditioning(dependency),
+        *_render_cross_conditioning(dependency.cross_conditioning),
         "",
-        *_render_within_game(dependency),
+        *_render_within_game(dependency.within_game),
     ]
     if result.dispersions:
         lines.extend(

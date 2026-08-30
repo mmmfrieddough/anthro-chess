@@ -1055,22 +1055,12 @@ A dependency test checks that a conditioning input actually changes model
 behavior in the intended direction.
 
 It is not the only reading that would catch a rating input the model ignores,
-and it should not be argued for as though it were. The ladder's fitted slope,
-span, and ordering accuracy, the puzzle family's rating slopes and ordering
-accuracies, and the conditional distances on generated play all go flat when
-the dial does nothing. What this family adds over those is threefold, and each
-part is a reason to keep it rather than a claim on their territory:
-
-- **Isolation.** The others change the rating and read a downstream aggregate,
-  with sampling, opponents, and whole-game dynamics in between. This one
-  changes the input and reads the probability of the same move at the same
-  position, everything else held.
-- **Cost.** The families that would also catch a dead dial are the two most
-  expensive in the suite, and this one runs in a fraction of either, so it is
-  the one a checkpoint can afford routinely.
-- **Diagnosis rather than detection.** A flat ladder slope says the dial does
-  not work. It does not separate a model that cannot read the input from one
-  that reads it and whose behavior does not follow. This does.
+and it is not written as though it were. What it adds is that it changes the
+input and reads the same move at the same position with everything else held,
+cheaply enough to run on any checkpoint, and so separates a model that cannot
+read the input from one that reads it and whose behavior does not follow.
+`docs/decisions/0084-the-direction-test-is-graded-and-the-pinned-pass-is-derived.md`
+owns why that replaced an earlier argument.
 
 The basic form evaluates frozen held-out examples under the true conditioning
 value and again under corrupted conditioning: a shuffled value, or explicit
@@ -1137,10 +1127,10 @@ learned yet, which is not the same finding as a miswired input.
 
 `anthro eval dependency` is the reading surface, and it declares its own view
 rather than sharing the checkpoint reading's. Every batch is scored once under
-the true conditioning and again under each corrupted and each fixed one, so the
-reading pays seven forward passes where a held-out reading pays one. Sharing one
-view would have made the family that tolerates a different sample set the cost
-of the family that does not.
+the true conditioning and again under each corrupted and each fixed one, so it
+pays a forward pass per distinct conditioning where a held-out reading pays one
+in total. Sharing one view would have made the family that tolerates a different
+sample set the cost of the family that does not.
 
 Its size is set by the narrowest quantity rather than by the cheapest reading
 that would detect a dead input. Detection needs almost nothing: a degradation

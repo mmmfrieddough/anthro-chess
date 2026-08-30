@@ -235,11 +235,9 @@ class CheckpointEvaluationConfig(PoolPassConfig):
 class DependencyBenchmarkConfig(PoolPassConfig):
     """Code-owned schema for ``anthro eval dependency``.
 
-    The conditioning treatments cost seven forward passes per batch on top of
-    the one every reading pays, and what they answer is whether the model
-    reads its rating input at all rather than how well it predicts. That is a
-    coarser question than held-out prediction asks, so it is asked over its
-    own view.
+    Every batch is scored once per distinct conditioning, where a held-out
+    reading scores it once in total, so this reading is asked over its own view
+    rather than sharing that one.
     """
 
     view: ViewConfig = ViewConfig(name="rating-dependency")

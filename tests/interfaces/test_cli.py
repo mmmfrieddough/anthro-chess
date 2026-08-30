@@ -2647,61 +2647,54 @@ def _cross_result(
         CrossConditioningResult,
     )
 
-    cells = tuple(
-        CrossConditioningCell(
-            rating_band=band,
-            conditioning_rating=rating,
-            position_count=100,
-            move_loss=loss,
-        )
-        for band, row in losses.items()
-        for rating, loss in row.items()
-    )
     return CrossConditioningResult(
-        cells=cells,
+        cells=tuple(
+            CrossConditioningCell(
+                rating_band=band,
+                conditioning_rating=rating,
+                position_count=100,
+                move_loss=loss,
+            )
+            for band, row in losses.items()
+            for rating, loss in row.items()
+        ),
         compared_bands=compared,
         matched_bands=matched,
         excluded_bands=excluded,
         penalty=0.25,
         penalty_positions=400,
         pinned_degradations=((1000, 0.14), (2200, 0.09)),
+        band_conditioning=(("under_1200", 1000), ("2000_plus", 2200)),
     )
 
 
 def test_the_cross_conditioning_star_marks_the_band_not_the_winner() -> None:
     """A band that prefers the wrong rating has to render as one.
 
-    The star is what a reader checks the diagonal with, so marking the row's
-    smallest loss instead would draw every band as though it had matched and
-    hide the one case the table exists to show.
+    The star is what a reader checks the diagonal with, and it has to mark the
+    column the penalty on the line below priced the others against. Marking the
+    row's smallest loss instead would draw every band as though it had matched
+    and hide the one case the table exists to show.
     """
 
     from anthro_chess.interfaces.cli import _render_cross_conditioning
 
-    dependency = cast(
-        Any,
-        type(
-            "_Reading",
-            (),
-            {
-                "cross_conditioning": _cross_result(
-                    {
-                        # Prefers 1400, which is not its own band's rating.
-                        "under_1200": {1000: 2.10, 2200: 2.05},
-                        "2000_plus": {1000: 2.40, 2200: 1.90},
-                    },
-                    compared=("under_1200", "2000_plus"),
-                    matched=("2000_plus",),
-                ),
-                "true_move_loss": 2.0,
-            },
-        )(),
+    rendered = "\n".join(
+        _render_cross_conditioning(
+            _cross_result(
+                {
+                    # Prefers 2200, which is not its own band's rating.
+                    "under_1200": {1000: 2.10, 2200: 2.05},
+                    "2000_plus": {1000: 2.40, 2200: 1.90},
+                },
+                compared=("under_1200", "2000_plus"),
+                matched=("2000_plus",),
+            )
+        )
     )
 
-    rendered = "\n".join(_render_cross_conditioning(dependency))
-
-    under = next(row for row in rendered.splitlines() if row.startswith("  under_1200"))
-    plus = next(row for row in rendered.splitlines() if row.startswith("  2000_plus"))
+    under = next(r for r in rendered.splitlines() if r.startswith("  under_1200"))
+    plus = next(r for r in rendered.splitlines() if r.startswith("  2000_plus"))
     assert "*2.1000" in under, "the star belongs on the band's own rating"
     assert "*2.0500" not in under, "the star must not follow the row's minimum"
     assert "*1.9000" in plus
@@ -2713,23 +2706,15 @@ def test_the_cross_conditioning_pinned_row_comes_from_the_record() -> None:
 
     from anthro_chess.interfaces.cli import _render_cross_conditioning
 
-    dependency = cast(
-        Any,
-        type(
-            "_Reading",
-            (),
-            {
-                "cross_conditioning": _cross_result(
-                    {"under_1200": {1000: 2.10, 2200: 2.30}},
-                    compared=("under_1200",),
-                    excluded=("2000_plus",),
-                ),
-                "true_move_loss": 2.0,
-            },
-        )(),
+    rendered = "\n".join(
+        _render_cross_conditioning(
+            _cross_result(
+                {"under_1200": {1000: 2.10, 2200: 2.30}},
+                compared=("under_1200",),
+                excluded=("2000_plus",),
+            )
+        )
     )
-
-    rendered = "\n".join(_render_cross_conditioning(dependency))
 
     assert "pinned there       +0.1400   +0.0900" in rendered
     assert "too thin to compare: 2000_plus" in rendered
@@ -2756,30 +2741,23 @@ def test_the_within_game_table_sizes_both_halves() -> None:
             move_loss=1.5,
         )
 
-    dependency = cast(
-        Any,
-        type(
-            "_Reading",
-            (),
-            {
-                "within_game": WithinGameResult(
-                    groups=(
-                        group(WEAKER_PREFIX_GROUP, 700, -0.10),
-                        group(STRONGER_PREFIX_GROUP, 300, -0.04),
-                    ),
-                    response=0.06,
-                    compared_bands=("under_1200",),
-                    excluded_bands=(),
-                    positions_with_prefix=1000,
-                    anchor_low_rating=1000,
-                    anchor_high_rating=2200,
-                )
-            },
-        )(),
+    rendered = "\n".join(
+        _render_within_game(
+            WithinGameResult(
+                groups=(
+                    group(WEAKER_PREFIX_GROUP, 700, -0.10),
+                    group(STRONGER_PREFIX_GROUP, 300, -0.04),
+                ),
+                response=0.06,
+                compared_bands=("under_1200",),
+                excluded_bands=(),
+                positions_with_prefix=1000,
+                anchor_low_rating=1000,
+                anchor_high_rating=2200,
+            )
+        )
     )
 
-    rendered = "\n".join(_render_within_game(dependency))
-
-    row = next(row for row in rendered.splitlines() if row.startswith("  under_1200"))
+    row = next(r for r in rendered.splitlines() if r.startswith("  under_1200"))
     assert "     700     300" in row, "both halves are sized, not just the weaker"
     assert "+0.060" in row
