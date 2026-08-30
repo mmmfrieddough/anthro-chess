@@ -1059,8 +1059,6 @@ and it is not written as though it were. What it adds is that it changes the
 input and reads the same move at the same position with everything else held,
 cheaply enough to run on any checkpoint, and so separates a model that cannot
 read the input from one that reads it and whose behavior does not follow.
-`docs/decisions/0084-the-direction-test-is-graded-and-the-pinned-pass-is-derived.md`
-owns why that replaced an earlier argument.
 
 The basic form evaluates frozen held-out examples under the true conditioning
 value and again under corrupted conditioning: a shuffled value, or explicit
