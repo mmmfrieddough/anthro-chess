@@ -285,6 +285,13 @@ class PoolProjection:
             for table_index, game_ids in enumerate(self._game_ids)
             for offset, game_id in enumerate(game_ids)
         }
+        held = sum(len(game_ids) for game_ids in self._game_ids)
+        if len(self._positions) != held:
+            raise error(
+                f"the evaluation pool holds {held} row(s) under "
+                f"{len(self._positions)} distinct game id(s); two games derive "
+                "the same id and one would be served for the other"
+            )
 
     def encoded_ply_counts(self) -> dict[int, int]:
         """Return how many timesteps encoding each game will produce.

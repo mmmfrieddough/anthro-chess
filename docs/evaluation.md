@@ -1468,10 +1468,10 @@ contract the project rejected for rule cases.
 
 **Perturbation replaces detection.** Deriving positions by perturbing pool games
 supplies novelty at a known dose by construction, so there is nothing to detect,
-validate, or keep stable across checkpoints. The dose is the axis, an
-unperturbed control arm drawn from the same games gives it a baseline, and phase
-is held fixed throughout, since phase dominates the absolute level and an
-unsliced comparison mistakes one for the other.
+validate, or keep stable across checkpoints. The dose is the axis, and an
+unperturbed control arm drawn from the same games gives it a baseline. What has
+to be held fixed beside the dose is whatever else the perturbation moves, which
+is decided per quantity and named where each is defined.
 
 ### What Remains Measurable
 

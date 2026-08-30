@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, cast
 
@@ -566,21 +564,32 @@ def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
     return output
 
 
-def test_preparing_an_arm_across_processes_agrees_with_one(
+def test_a_reading_prepared_across_processes_matches_one_prepared_here(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    training_run: Callable[..., Path],
+    fixture_game_id: Callable[[int], int],
 ) -> None:
-    games = derive_arm(
-        [row for row in _rows(normalized_row)],
-        dose=1.0,
-        config=_perturbation(),
+    normalized, manifest = write_corpus(
+        tmp_path / "corpus", _corpus_rows(normalized_row)
     )
-    assert len(games) >= 2
+    pool = _freeze(tmp_path, normalized, manifest)
+    checkpoint = training_run(
+        tmp_path / "run", normalized=normalized, manifest=manifest
+    )
 
-    serial_encodings, serial_sets = novelty._prepare_arm(games)
+    serial = _measure(_config(pool, checkpoint))
+    # A fixture arm is one chunk, so the sweep's own pool never receives a
+    # submission at the shipped size and the path this exercises is the one
+    # every real reading takes.
     monkeypatch.setattr(novelty, "_PREPARE_CHUNK_GAMES", 1)
-    with ProcessPoolExecutor(mp_context=get_context("spawn")) as executor:
-        parallel_encodings, parallel_sets = novelty._prepare_arm(games, executor)
+    parallel = _measure(_config(pool, checkpoint))
 
-    assert serial_encodings == parallel_encodings
-    assert serial_sets == parallel_sets
+    assert [arm.dose for arm in parallel.arms] == [arm.dose for arm in serial.arms]
+    for prepared, here in zip(parallel.arms, serial.arms, strict=True):
+        assert prepared.scored_positions == here.scored_positions
+        assert prepared.phases == here.phases
+        assert prepared.bands == here.bands
+        assert prepared.legality == here.legality

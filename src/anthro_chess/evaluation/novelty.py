@@ -1,4 +1,4 @@
-"""Capability retention under a controlled novelty dose.
+"""What a controlled novelty dose costs the policy.
 
 The model degrades on positions unlike those it trained on. Slicing the pool by
 a familiarity proxy cannot measure that, because the pool is human games and is
@@ -28,10 +28,10 @@ control arm's positions that survived is a reported metric.
 
 What can be measured on the derived arms is limited by the same divergence.
 Held-out move prediction is undefined once a prefix stops being what the humans
-played, so it is reported on the control arm only. Legality needs no target and
-survives; so do the predicates exact chess logic resolves. On perturbed arms the
-reference is the model's own unperturbed rate on the same positions, so results
-there are reported as retention rather than as an absolute rate.
+played. Legality needs no target and survives. So does material gain, which is
+read at a fixed size of win: whether a position offers one and how large is a
+property of the board, and a random opponent hands over larger ones, so an
+average across sizes reports the mix rather than the model.
 
 See ``docs/evaluation.md`` and
 ``docs/decisions/0024-one-sided-perturbation-derived-novelty.md``.
@@ -40,6 +40,7 @@ See ``docs/evaluation.md`` and
 from __future__ import annotations
 
 import logging
+import os
 from collections import Counter, defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Executor, ProcessPoolExecutor
@@ -50,6 +51,7 @@ from hashlib import sha256
 from multiprocessing import get_context
 from pathlib import Path
 from random import Random
+from statistics import fmean
 from typing import Any, cast
 
 import chess
@@ -161,6 +163,11 @@ NOVELTY_BENCHMARK = BenchmarkReference(
 #: The dose at which no opponent move is replaced.
 CONTROL_DOSE = 0.0
 
+#: Workers preparing arms. Capped rather than left to the core count because
+#: importing this module to run pure-Python chess costs a worker most of a
+#: gigabyte, and the stage it shortens is seconds long.
+_PREPARE_WORKER_LIMIT = 8
+
 #: Derived games per unit of work handed to a worker. Large enough that
 #: pickling a result is not most of the job, small enough that the last worker
 #: to finish does not hold up the arm.
@@ -271,6 +278,19 @@ class DerivedGame:
 
 
 @dataclass(frozen=True)
+class _Opportunity:
+    """One scored material-gain opportunity, with the game it came from."""
+
+    game_id: int
+    band: str
+    success: bool
+    policy_mass: float
+    #: Never absent here: a band names a set only where a capture wins, so the
+    #: set has a member to rank.
+    best_rank: int
+
+
+@dataclass(frozen=True)
 class BandReading:
     """One win-size band's reading on one arm."""
 
@@ -278,8 +298,7 @@ class BandReading:
     opportunities: int
     selected_rate: float
     policy_mass: float
-    mean_best_rank: float | None
-    rankable_opportunities: int
+    mean_best_rank: float
 
     def as_record(self) -> dict[str, object]:
         return {
@@ -287,7 +306,6 @@ class BandReading:
             "selected_rate": self.selected_rate,
             "policy_mass": self.policy_mass,
             "mean_best_rank": self.mean_best_rank,
-            "rankable_opportunities": self.rankable_opportunities,
         }
 
 
@@ -298,6 +316,7 @@ class ArmReading:
     dose: float
     games: tuple[DerivedGame, ...]
     bands: Mapping[str, BandReading]
+    opportunities: tuple[_Opportunity, ...]
     positions: tuple[PositionPolicy, ...]
     scored_positions: int
     #: Scored positions per game phase. Kept because truncation moves the mix
@@ -309,7 +328,11 @@ class ArmReading:
     def legality(self) -> _Legality:
         """Return legality over every position this arm scored."""
 
-        return self.paired_legality(self.measured_keys)
+        return _Legality(
+            legal_mass=fmean(item.legal_mass for item in self.positions),
+            mask_penalty=fmean(item.mask_penalty for item in self.positions),
+            positions=len(self.positions),
+        )
 
     @property
     def is_control(self) -> bool:
@@ -476,7 +499,10 @@ def benchmark_novelty(
     # forked worker inherits both that context and whatever locks its threads
     # were holding. One pool for the whole sweep, because spawning re-imports
     # this module and paying that per arm would cost more than it saves.
-    with ProcessPoolExecutor(mp_context=get_context("spawn")) as executor:
+    with ProcessPoolExecutor(
+        max_workers=_prepare_workers(),
+        mp_context=get_context("spawn"),
+    ) as executor:
         for dose in sorted(config.perturbation.doses):
             logger.info("Deriving and scoring the novelty arm at dose %.3f", dose)
             try:
@@ -535,8 +561,8 @@ def benchmark_novelty(
             _arm_measurements(arm, control, component, workload),
             payload=partial(_arm_payload, arm, per_position=config.detail.per_position),
             description=(
-                "Per-arm derivation provenance, slice tables, and "
-                "predicate readings for one novelty dose."
+                "Per-arm derivation provenance, phase counts, and "
+                "material-gain band readings for one novelty dose."
             ),
             slug=f"dose-{dose_slug}",
             data=data,
@@ -751,10 +777,12 @@ def _score_arm(
             f"the novelty arm at dose {dose} scored no position inside its window"
         )
 
+    opportunities = _opportunities(band_scores, subsets)
     return ArmReading(
         dose=dose,
         games=games,
-        bands=_reduce_bands(band_scores, subsets),
+        bands=_reduce_bands(opportunities),
+        opportunities=opportunities,
         positions=tuple(positions),
         scored_positions=len(positions),
         phases=Counter(
@@ -776,8 +804,10 @@ def prepare_games(
     already holds the encoding is the cheapest place to rebuild the board.
 
     The name a set carries is the band, so the scorer groups by difficulty for
-    free and a position lands in exactly one. Every winning action stays in the
-    set: the band describes the opportunity, not which captures count.
+    free and a position lands in exactly one. The set holds the captures that
+    win the most, not every capture that wins something: mass over a set counts
+    its members, and a random opponent leaves more of them standing, which
+    reintroduces inside a band the mix effect the bands exist to remove.
 
     This resolves the one predicate the dose reading keeps rather than calling
     the shared matcher, which would also push every legal move for mate, probe
@@ -801,11 +831,19 @@ def prepare_games(
             winning = material_winning_moves(board, tuple(board.legal_moves))
             if not winning:
                 continue
-            band = _gain_band(max(gain for _, gain in winning))
+            best = max(gain for _, gain in winning)
             sets[(ply.game_id, ply.ply_index)] = {
-                band: frozenset(encode_move(move) for move, _ in winning)
+                _gain_band(best): frozenset(
+                    encode_move(move) for move, gain in winning if gain == best
+                )
             }
     return encodings, sets
+
+
+def _prepare_workers() -> int:
+    """Return how many workers prepare an arm on this machine."""
+
+    return max(1, min(_PREPARE_WORKER_LIMIT, os.process_cpu_count() or 1))
 
 
 def _prepare_arm(
@@ -865,34 +903,52 @@ class _Legality:
     positions: int
 
 
-def _reduce_bands(
+def _opportunities(
     scored: Sequence[ActionSetPolicy],
     subsets: Mapping[PositionKey, Mapping[str, frozenset[int]]],
-) -> dict[str, BandReading]:
+) -> tuple[_Opportunity, ...]:
+    """Return one record per scored opportunity, keeping the game it came from.
+
+    Kept per game rather than summed away, because a sampling floor resamples
+    games and cannot be derived from an arm's totals.
+    """
+
+    records: list[_Opportunity] = []
+    for item in scored:
+        if item.best_rank is None:
+            raise NoveltyBenchmarkError(
+                f"the {item.name!r} band named an empty action set at "
+                f"game {item.game_id} ply {item.ply_index}"
+            )
+        records.append(
+            _Opportunity(
+                game_id=item.game_id,
+                band=item.name,
+                success=item.selected_action_id
+                in subsets[(item.game_id, item.ply_index)][item.name],
+                policy_mass=item.raw_probability_mass,
+                best_rank=item.best_rank,
+            )
+        )
+    return tuple(records)
+
+
+def _reduce_bands(opportunities: Sequence[_Opportunity]) -> dict[str, BandReading]:
     """Reduce the scored opportunities to one reading per win-size band."""
 
-    grouped: dict[str, list[ActionSetPolicy]] = defaultdict(list)
-    for item in scored:
-        grouped[item.name].append(item)
-
-    readings: dict[str, BandReading] = {}
-    for band, items in grouped.items():
-        ranks = [item.best_rank for item in items if item.best_rank is not None]
-        winning = [subsets[(item.game_id, item.ply_index)][band] for item in items]
-        readings[band] = BandReading(
+    grouped: dict[str, list[_Opportunity]] = defaultdict(list)
+    for item in opportunities:
+        grouped[item.band].append(item)
+    return {
+        band: BandReading(
             band=band,
             opportunities=len(items),
-            selected_rate=sum(
-                1.0
-                for item, actions in zip(items, winning, strict=True)
-                if item.selected_action_id in actions
-            )
-            / len(items),
-            policy_mass=sum(item.raw_probability_mass for item in items) / len(items),
-            mean_best_rank=(sum(ranks) / len(ranks) if ranks else None),
-            rankable_opportunities=len(ranks),
+            selected_rate=sum(1.0 for item in items if item.success) / len(items),
+            policy_mass=sum(item.policy_mass for item in items) / len(items),
+            mean_best_rank=sum(item.best_rank for item in items) / len(items),
         )
-    return readings
+        for band, items in grouped.items()
+    }
 
 
 def _arm_measurements(
@@ -994,12 +1050,10 @@ def _measure(
 
 
 def _ratio(value: float, reference: float) -> float:
-    """Return a retention ratio, with an absent reference reported as zero.
+    """Return a share, with an absent reference reported as zero.
 
-    A control arm that never realized the quantity leaves retention undefined
-    rather than infinite. Zero is the honest floor: nothing was retained
-    because there was nothing to retain, and the opportunity counts beside it
-    say so.
+    An arm that scored nothing leaves the share undefined rather than
+    infinite, and the counts recorded beside it say which happened.
     """
 
     if reference == 0.0:
@@ -1008,26 +1062,40 @@ def _ratio(value: float, reference: float) -> float:
 
 
 def _arm_game_totals(arm: ArmReading) -> tuple[GameTotals, ...]:
-    """Return each derived game's contribution to this arm's own metrics."""
+    """Return each derived game's contribution to this arm's own metrics.
+
+    The band readings are here as well as the legality one, because the view
+    is sized on a band and a value with no floor cannot carry a claim that a
+    difference survived the draw.
+    """
 
     by_game: dict[int, list[PositionPolicy]] = defaultdict(list)
     for position in arm.positions:
         by_game[position.game_id].append(position)
+    bands: dict[int, dict[str, list[_Opportunity]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for opportunity in arm.opportunities:
+        bands[opportunity.game_id][opportunity.band].append(opportunity)
 
     totals: list[GameTotals] = []
     for game_id, positions in sorted(by_game.items()):
-        count = len(positions)
-        totals.append(
-            GameTotals(
-                game_id=game_id,
-                metrics={
-                    NOVELTY_MASK_PENALTY.identifier: MetricTotal(
-                        total=sum(item.mask_penalty for item in positions),
-                        positions=count,
-                    ),
-                },
+        metrics = {
+            NOVELTY_MASK_PENALTY.identifier: MetricTotal(
+                total=sum(item.mask_penalty for item in positions),
+                positions=len(positions),
+            ),
+        }
+        for band, items in bands[game_id].items():
+            metrics[NOVELTY_MATERIAL_GAIN_POLICY_MASS[band].identifier] = MetricTotal(
+                total=sum(item.policy_mass for item in items),
+                positions=len(items),
             )
-        )
+            metrics[NOVELTY_MATERIAL_GAIN_SELECTED_RATE[band].identifier] = MetricTotal(
+                total=sum(1.0 for item in items if item.success),
+                positions=len(items),
+            )
+        totals.append(GameTotals(game_id=game_id, metrics=metrics))
     return tuple(totals)
 
 

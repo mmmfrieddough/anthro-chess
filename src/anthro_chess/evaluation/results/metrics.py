@@ -18,7 +18,10 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+import chess
+
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.evaluation.slices import MATERIAL_VALUES
 
 METRIC_IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
@@ -1092,9 +1095,9 @@ def _novelty_metric(
 #: novelty effect: measured over 1600 games, pawn-only wins fall from 51% of
 #: the control's opportunities to 22% of the full dose's.
 MATERIAL_GAIN_BAND_FLOORS: Mapping[str, int] = {
-    "pawn": 1,
-    "minor": 3,
-    "rook_or_better": 5,
+    "pawn": MATERIAL_VALUES[chess.PAWN],
+    "minor": MATERIAL_VALUES[chess.KNIGHT],
+    "rook_or_better": MATERIAL_VALUES[chess.ROOK],
 }
 
 NOVELTY_MASK_PENALTY = _novelty_metric(

@@ -2105,16 +2105,16 @@ def _render_novelty(result: NoveltyBenchmarkResult) -> str:
         # Paired on position: the control is read over the plies this arm
         # reached, so a truncated arm is not compared against positions it
         # never saw.
-        keys = arm.measured_keys
+        legality = arm.legality
         delta = (
-            arm.paired_legality(keys).mask_penalty
-            - control.paired_legality(keys).mask_penalty
+            legality.mask_penalty
+            - control.paired_legality(arm.measured_keys).mask_penalty
         )
         lines.append(
             f"  dose={arm.dose:<6.3f} realized={arm.realized_dose:.3f}  "
             f"positions={arm.scored_positions:<6} "
             f"truncated={arm.truncated_games:<5} "
-            f"mask_penalty={arm.legality.mask_penalty:.4f} "
+            f"mask_penalty={legality.mask_penalty:.4f} "
             f"delta={delta:+.4f}"
         )
     lines.append("")
@@ -2129,32 +2129,17 @@ def _render_novelty(result: NoveltyBenchmarkResult) -> str:
             if reading is None:
                 lines.append(f"    dose={arm.dose:<6.3f} n=0")
                 continue
-            rank = (
-                "-"
-                if reading.mean_best_rank is None
-                else f"{reading.mean_best_rank:.2f}"
-            )
             lines.append(
                 f"    dose={arm.dose:<6.3f} n={reading.opportunities:<6} "
                 f"share={reading.opportunities / arm.scored_positions:.3f} "
                 f"mass={reading.policy_mass:.4f} "
-                f"rate={reading.selected_rate:.4f} rank={rank}"
+                f"rate={reading.selected_rate:.4f} "
+                f"rank={reading.mean_best_rank:.2f}"
             )
     if result.recorded_paths:
         lines.append("")
         lines.append(f"Recorded {len(result.recorded_paths)} result file(s).")
     return "\n".join(lines) + "\n"
-
-
-#: Placeholder for a retention with no reference to divide by, kept the same
-#: width as a rendered ratio so the columns stay readable.
-_MISSING_RATIO = "     -"
-
-
-def _render_ratio(value: float, reference: float) -> str:
-    """Render a retention ratio, naming an absent reference rather than faking one."""
-
-    return _MISSING_RATIO if reference == 0.0 else f"{value / reference:.4f}"
 
 
 def _render_puzzles(result: PuzzleBenchmarkResult) -> str:

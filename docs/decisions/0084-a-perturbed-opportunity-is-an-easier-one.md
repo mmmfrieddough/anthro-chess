@@ -25,12 +25,14 @@ works for legality because legality is defined at every position. Whether a
 position offers a material win, and how large, is a property of the board, and
 the board is exactly what the dose replaces.
 
-Measured over 1600 games, model-free, the mix moves hard:
+Measured over 1600 games, model-free, the mix moves hard. The share of
+material-gain opportunities whose best capture nets a pawn, a minor piece, or a
+rook or more:
 
-| dose | pawn only | minor or better | queen or better | ways to win |
-| --- | ---: | ---: | ---: | ---: |
-| 0.000 | 51.0% | 42.7% | 3.6% | 1.56 |
-| 1.000 | 22.0% | 66.7% | 11.0% | 2.18 |
+| dose | pawn | minor | rook or better |
+| --- | ---: | ---: | ---: |
+| 0.000 | 57.3% | 34.4% | 8.4% |
+| 1.000 | 33.3% | 36.4% | 30.2% |
 
 A random opponent hangs a queen where a human hangs a pawn.
 
@@ -40,10 +42,19 @@ A random opponent hangs a queen where a human hangs a pawn.
 shared material scale, and every band reports its own policy mass, selected
 rate, and share of the arm's positions. The retention ratio is withdrawn.
 
-Held at a fixed win size the reading inverts. Minor-piece-or-better wins on the
-555k checkpoint, policy mass by dose: 0.8786, 0.8283, 0.8025, 0.7446, 0.7085,
-0.6757. Monotone at every step, on all three checkpoints measured and on every
-draw. The rate rose because the mix got easier, not because the model held up.
+**A band scores the captures that win the most, not every capture that wins
+something.** The mix effect returns inside a band otherwise: mass over a set
+counts its members, and the number of winning captures per position rises with
+the dose in every band, 1.70 to 2.29 in the minor one. Restricted to the
+captures tied at the best gain that count is flat, 1.52 to 1.63, and the
+measured decline is larger for it: minor-band mass falls 0.268 rather than
+0.203, and the rook-or-better band 0.287 rather than 0.151. Reading the whole
+set was hiding a quarter to a half of the effect.
+
+Held at a fixed win size the reading inverts. The minor band on the 555k
+checkpoint, policy mass by dose: 0.8550, 0.7811, 0.7471, 0.6746, 0.6250, 0.5869.
+Monotone at every step, on all three checkpoints measured and on every draw. The
+rate rose because the mix got easier, not because the model held up.
 
 **Policy mass leads and the selected rate follows it.** The failure this
 benchmark was opened for is recorded in the motivating evidence of its issue: a
@@ -53,6 +64,10 @@ sees it only once the mass has fallen far enough to change the argmax.
 
 **The opportunity share of each band is reported beside it**, so a reading that
 moved because the mix moved is visible rather than inferred from the counts.
+
+**Every band reading carries a sampling floor**, because the view is sized on
+one of them and a value with no floor cannot support a claim that a difference
+survived the draw.
 
 **Phase is not sliced beneath the bands.** Truncation moves that mix as well,
 from 43% opening on the control to 68% at full dose. Held fixed, the minor band
@@ -101,4 +116,12 @@ already accepts for a re-cut pool and applies here for the same reason.
 
 The reading no longer builds a slice table, since it reported one number off it
 and the rule-case dimension resolved every predicate for every position to do
-so. A reading over 1600 games falls from 87 to 48 seconds.
+so. With the derivation and the labelling moved across processes, a reading over
+6400 games falls from 291 to 74 seconds.
+
+Reading the tied-best captures rather than all of them costs discrimination as
+well as buying honesty. Over five draws at 1600 games the full-dose minor band
+has a spread of 0.0079 against 0.0143 between the weakest and strongest
+checkpoint here, which is 1.8 times the floor where the whole-set form read 3.2.
+Less of each position's mass is being counted, and the view is sized to pay it
+back.

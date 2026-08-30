@@ -4,7 +4,7 @@
 # view layer. Only the opponent's moves are replaced, and only from the onset
 # ply onward; the player's continuation is the human's own, replayed while it
 # stays legal. See `docs/evaluation.md` for what survives out of distribution
-# and why the perturbed arms are read as retention rather than as rates.
+# and what each surviving quantity has to hold fixed beside the dose.
 #
 # The model selection is deliberately absent: with no explicit checkpoint or
 # run, `anthro eval novelty` uses the machine-local default selection beneath
@@ -19,20 +19,22 @@ expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de
 # filters on length. Subsampling keeps a sweep affordable without shrinking the
 # pool the reading is defined over.
 #
-# Sized on the headline quantity, which is the policy mass on a minor-piece or
-# better material win at full dose. Five independent draws at 1600 games put
-# its spread at 0.0059, against 0.0190 between the weakest and strongest
-# checkpoint on this machine: 3.2 times the floor across sixty-four times the
-# training. That gap is coarse next to the arms this has to separate later, and
-# four times the games halves the floor.
+# Sized on the narrowest quantity it reports, which is the policy mass in the
+# minor band at full dose. Five independent draws at 1600 games put its spread
+# at 0.0079, against 0.0143 between the weakest and strongest checkpoint on this
+# machine: 1.8 times the floor across sixty-four times the training, which is
+# not enough to read a smaller difference than that. Four times the games halves
+# the floor and takes it to 3.6.
 name = "novelty"
 minimum_plies = 40
 maximum_games = 6400
 
 [perturbation]
 # Dose zero is the control arm and is required. The sweep is denser at the low
-# end because that is where the curve is expected to be non-monotonic: a small
-# perturbation takes the model off book without yet giving away material.
+# end because the realized share of replaced moves runs well ahead of the
+# configured rate once divergence starts: 0.0625 realizes 0.17 and 0.125
+# realizes 0.31, so the configured points below a quarter are what place any
+# reading in the lightly perturbed half of the axis at all.
 doses = [0.0, 0.0625, 0.125, 0.25, 0.5, 1.0]
 onset_plies = 16
 window_moves = 8
