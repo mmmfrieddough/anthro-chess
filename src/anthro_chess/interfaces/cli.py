@@ -1944,6 +1944,22 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _band_conditioning_ratings(
+    by_band: Mapping[str, Mapping[int, CrossConditioningCell]],
+    ratings: Sequence[int],
+) -> dict[str, int]:
+    """Return the grid rating that falls inside each band, where one does."""
+
+    from anthro_chess.evaluation.slices import rating_band_name
+
+    own: dict[str, int] = {}
+    for rating in ratings:
+        band = rating_band_name(rating)
+        if band is not None and band in by_band:
+            own.setdefault(band, rating)
+    return own
+
+
 def _render_cross_conditioning(dependency: DependencyTestResult) -> list[str]:
     """Show the band-by-conditioning table beside the scalars that summarize it.
 
@@ -1961,39 +1977,42 @@ def _render_cross_conditioning(dependency: DependencyTestResult) -> list[str]:
     for cell in cross.cells:
         by_band.setdefault(cell.rating_band, {})[cell.conditioning_rating] = cell
 
+    # The star is the band's own rating rather than the row's smallest, so a
+    # band that fails to prefer its own shows a star off the minimum. Marking
+    # the minimum would render every band as though it had matched.
+    own = _band_conditioning_ratings(by_band, ratings)
     header = "".join(f"{rating:>10}" for rating in ratings)
     lines = [
         "Cross-conditioning move loss (* marks each band's own rating):",
         f"  {'band':<16}{header}{'positions':>11}",
     ]
     for band, cells in by_band.items():
-        best = min(cells, key=lambda rating: cells[rating].move_loss)
-        row = "".join(
-            f"{('*' if rating == best else '') + f'{cells[rating].move_loss:.4f}':>10}"
-            if rating in cells
-            else f"{'-':>10}"
-            for rating in ratings
-        )
+        marked = own.get(band)
+        columns: list[str] = []
+        for rating in ratings:
+            scored = cells.get(rating)
+            if scored is None:
+                columns.append(f"{'-':>10}")
+                continue
+            star = "*" if rating == marked else ""
+            columns.append(f"{star + format(scored.move_loss, '.4f'):>10}")
+        row = "".join(columns)
         positions = max(cell.position_count for cell in cells.values())
         lines.append(f"  {band:<16}{row}{positions:>11}")
 
-    # Pinning every position at one rating is a scoring pass this table already
-    # took, so the whole curve is here rather than the one point a dedicated
-    # treatment would have cost a pass to produce.
-    pinned = []
-    for rating in ratings:
-        column = [by_band[band][rating] for band in by_band if rating in by_band[band]]
-        scored = sum(cell.position_count for cell in column)
-        if not scored:
-            pinned.append(f"{'-':>10}")
-            continue
-        loss = sum(cell.move_loss * cell.position_count for cell in column) / scored
-        pinned.append(f"{loss - dependency.true_move_loss:>+10.4f}")
-    lines.append(f"  {'pinned there':<16}{''.join(pinned)}")
+    pinned = dict(cross.pinned_degradations)
+    lines.append(
+        f"  {'pinned there':<16}"
+        + "".join(
+            f"{pinned[rating]:>+10.4f}" if rating in pinned else f"{'-':>10}"
+            for rating in ratings
+        )
+    )
     lines.append(
         f"  match rate {_optional(cross.match_rate)} over "
         f"{len(cross.compared_bands)} band(s), "
-        f"away-band penalty {_optional(cross.penalty)}"
+        f"away-band penalty {_optional(cross.penalty)} "
+        f"over {cross.penalty_positions} position(s)"
     )
     if cross.excluded_bands:
         lines.append(f"  too thin to compare: {', '.join(cross.excluded_bands)}")
@@ -2027,7 +2046,7 @@ def _render_within_game(dependency: DependencyTestResult) -> list[str]:
             f"{within.anchor_high_rating}):"
         ),
         (
-            f"  {'band':<16}{'n/half':>8}{'prefix-':>10}{'prefix+':>10}"
+            f"  {'band':<16}{'n-':>8}{'n+':>8}{'prefix-':>10}{'prefix+':>10}"
             f"{'align-':>10}{'align+':>10}{'shift':>9}"
         ),
     ]
@@ -2037,7 +2056,7 @@ def _render_within_game(dependency: DependencyTestResult) -> list[str]:
         if weak is None or strong is None:
             continue
         lines.append(
-            f"  {band:<16}{weak.position_count:>8}"
+            f"  {band:<16}{weak.position_count:>8}{strong.position_count:>8}"
             f"{weak.mean_prefix_strength:>+10.3f}{strong.mean_prefix_strength:>+10.3f}"
             f"{weak.mean_alignment:>+10.3f}{strong.mean_alignment:>+10.3f}"
             f"{strong.mean_alignment - weak.mean_alignment:>+9.3f}"

@@ -59,6 +59,14 @@ explains the corpus.
 prefix split were computed, recorded, and shown as one scalar each. The scalars
 stay as summaries and the tables print beneath them.
 
+**The view is 8,000 games rather than 2,000.** Sized on the quantity that binds
+rather than on what the reading costs. Four independent draws at 2,000 games put
+the shuffled degradation's spread at 0.0031, and it moved 0.0049 across four
+times the training: a clearance of 1.34, which one unlucky draw reads as no
+movement at all. Four times the games halves the floor and takes that to 2.64.
+Nothing this family reports asks for finer, and detecting a dead input needs a
+small fraction of it.
+
 ## Why Not Redefine The Match Rate
 
 Making the rate finer, by counting adjacent pairs or by ranking rather than
@@ -78,19 +86,32 @@ waiting on 1500 in particular.
 ## Consequences
 
 The family still reports seven quantities: one is removed and one is added, so
-what changes is which, not how many. A reading taken before this change has no
-penalty to compare against, so that metric's history begins here, and
-`dependency.rating_constant_degradation` keeps whatever history it had without
-gaining more.
+what changes is which, not how many. The penalty's history begins here.
 
-Seven passes rather than eight measured 28.4 s against 31.3 s at 2000 games on
+`dependency.rating_constant_degradation` leaves the registry, and its stored
+values become unreadable rather than frozen: `anthro eval report` resolves a
+metric through the registry, so `--history` on it now fails and a delta report
+skips it. The records keep the numbers and nothing renders them. That is
+accepted here because the whole curve it was one point of is now recorded on
+every reading.
+
+Seven passes rather than eight measured 28.4 s against 31.3 s at 2,000 games on
 one idle RTX 4090, and the surviving quantities were unchanged to every reported
-digit.
+digit. The shipped step is 8,000 games and costs 95.1 s on that machine, so the
+pass saved and the resize move the cost in opposite directions and the resize
+wins.
 
-`configs/evaluation/rating-dependency.toml` states the pass count to argue what
-the benchmark costs, and
-`tests/evaluation/test_checkpoint.py::test_the_dependency_tests_score_each_conditioning_once`
-counts it. A later change to the treatments moves both.
+**The resize ends every series this family carries.** A view cap selects a
+different set of games, so the workload digest changes and
+`series_fingerprint` returns a new value for all of them. That is the rule
+`docs/evaluation.md` already states for two sizes of one reading, and it applies
+here whatever else this change did.
+
+Four places state the pass count, and a later change to the treatments moves all
+four: `configs/evaluation/rating-dependency.toml`,
+`configs/evaluation/checkpoint-suite.toml`, `docs/evaluation.md`, and
+`tests/evaluation/test_checkpoint.py::test_the_dependency_tests_score_each_conditioning_once`,
+which is the only one that fails on its own.
 
 ## References
 

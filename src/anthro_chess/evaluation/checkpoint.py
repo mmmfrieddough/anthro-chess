@@ -1192,7 +1192,7 @@ def _dependency_measurements(
                 DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier,
                 penalty,
                 data=component,
-                sample_size=dependency.rated_position_count,
+                sample_size=dependency.cross_conditioning.penalty_positions,
             )
         )
     match_rate = dependency.cross_conditioning.match_rate
