@@ -17,11 +17,13 @@ from pydantic import ValidationError
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
+    DRAW_CLAIM_ACTION_ID,
     RESIGNATION_ACTION_ID,
     encode_move,
 )
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
+from anthro_chess.data.schema import NormalizedColumn
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation import rollout as rollout_module
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
@@ -29,10 +31,15 @@ from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.curves import (
     CurveQuantity,
 )
-from anthro_chess.evaluation.games import GameTermination
+from anthro_chess.evaluation.games import (
+    GameTermination,
+    analyze_games,
+    analyze_trajectory,
+)
 from anthro_chess.evaluation.reference import (
     DECLARED_NEIGHBOURS,
     ComparedQuantity,
+    ReferenceConfig,
     curve_spec,
     minimum_reference_games,
 )
@@ -64,6 +71,7 @@ from anthro_chess.evaluation.results.metrics import (
     registered_metrics,
 )
 from anthro_chess.evaluation.rollout import (
+    PREMATURE_MATERIAL_BALANCE,
     ROLLOUT_KIND,
     RepertoireWalkConfig,
     RolloutArm,
@@ -573,6 +581,11 @@ def test_every_generated_play_metric_is_reported_by_the_benchmark(
         _compared(
             reference_pool,
             grid={"target_ratings": (1200, 1800)},
+            # Both terminal actions on, as the shipped selection has them: the
+            # guardrails are counted over enabled actions, so a suite that
+            # offered none reports them as absent rather than as zero and this
+            # coverage check would pass while two series never started.
+            runtime=RuntimeConfig(resignation_enabled=True, draw_claim_enabled=True),
         )
     )
 
@@ -1955,3 +1968,247 @@ def test_a_worker_that_stops_fails_this_reading_rather_than_the_sweep(
             runner=None,
             checkpoint=None,
         )
+
+
+def _guardrails(**overrides: Any) -> Any:
+    """Return the guardrails of a one-cell suite's only cell."""
+
+    runtime = overrides.pop(
+        "runtime", RuntimeConfig(resignation_enabled=True, draw_claim_enabled=True)
+    )
+    result = _run(_config(runtime=runtime, **overrides), runner=ResigningRunner())
+    return result.cells[0].guardrails
+
+
+def test_a_seat_that_always_resigns_is_measured_as_premature() -> None:
+    """Resigning from the opening is the failure the guardrail exists to catch."""
+
+    guardrails = _guardrails()
+
+    assert guardrails.resignations > 0
+    assert guardrails.premature_resignations == guardrails.resignations
+    assert guardrails.premature_rate == pytest.approx(1.0)
+
+
+def test_a_disabled_terminal_action_is_absent_from_the_silent_count() -> None:
+    """An action nothing offered cannot be one the model declined to use."""
+
+    guardrails = _guardrails(
+        runtime=RuntimeConfig(resignation_enabled=True, draw_claim_enabled=False)
+    )
+
+    assert guardrails.enabled_terminal_actions == (RESIGNATION_ACTION_ID,)
+    assert guardrails.silent_terminal_actions == ()
+
+
+def test_an_offered_action_nobody_selects_is_named() -> None:
+    """A capability the runtime offers and the model never uses is silent."""
+
+    guardrails = _guardrails()
+
+    assert DRAW_CLAIM_ACTION_ID in guardrails.enabled_terminal_actions
+    assert guardrails.silent_terminal_actions == (DRAW_CLAIM_ACTION_ID,)
+
+
+def test_a_suite_that_finished_every_game_reports_no_non_termination() -> None:
+    """The rate counts games the ply limit stopped, not games that ended."""
+
+    guardrails = _guardrails()
+
+    assert guardrails.claimable_unfinished_games == 0
+
+
+def test_the_premature_threshold_is_declared_rather_than_configured() -> None:
+    """A per-run dial would end every series sharing a cell's workload.
+
+    Only the premature rate reads the threshold, and a cell's workload is
+    shared by every metric on it, so a knob that moved it would re-baseline
+    twenty-odd readings that never look at it.
+    """
+
+    cell = _run(_config(), runner=ResigningRunner()).cells[0]
+
+    assert PREMATURE_MATERIAL_BALANCE == 0.0
+    assert "premature_material_balance" not in cell.execution.workload
+    assert not hasattr(_config().value, "guardrails")
+
+
+def test_the_human_premature_rate_is_read_from_the_losing_players_side() -> None:
+    """A player may resign on the opponent's turn, so the mover is the wrong seat."""
+
+    from anthro_chess.evaluation.reference import ComparableGame, HumanReference
+    from anthro_chess.evaluation.rollout import _human_premature_rate
+
+    # White is a queen up and Black is to move. Black resigning is hopeless and
+    # White resigning is the premature case, and both share this final position.
+    ahead = analyze_trajectory(
+        chess.STARTING_FEN,
+        [
+            encode_move(chess.Move.from_uci(uci))
+            for uci in ("e2e4", "e7e5", "d1h5", "e8e7", "h5e5")
+        ],
+    )
+    config = _config().value
+    losses = {
+        "0-1": ComparableGame(
+            rating=1500.0, result="0-1", trajectory=ahead, termination="resignation"
+        ),
+        "1-0": ComparableGame(
+            rating=1500.0, result="1-0", trajectory=ahead, termination="resignation"
+        ),
+    }
+
+    assert ahead.final_turn_white is False
+    assert _human_premature_rate(
+        config, HumanReference(games=(losses["1-0"],), excluded={})
+    ) == (pytest.approx(0.0), 1)
+    assert _human_premature_rate(
+        config, HumanReference(games=(losses["0-1"],), excluded={})
+    ) == (pytest.approx(1.0), 1)
+
+
+def test_a_reference_with_no_resignation_has_no_premature_rate() -> None:
+    """Zero would read as a population that never resigned early."""
+
+    from anthro_chess.evaluation.reference import ComparableGame, HumanReference
+    from anthro_chess.evaluation.rollout import _human_premature_rate
+
+    trajectory = analyze_trajectory(
+        chess.STARTING_FEN,
+        [encode_move(chess.Move.from_uci(uci)) for uci in ("e2e4", "e7e5")],
+    )
+    reference = HumanReference(
+        games=(
+            ComparableGame(
+                rating=1500.0,
+                result="1-0",
+                trajectory=trajectory,
+                termination="checkmate",
+            ),
+        ),
+        excluded={},
+    )
+
+    assert _human_premature_rate(_config().value, reference) == (None, 0)
+
+
+def _human_game(termination: str) -> Any:
+    """Return one human game that ended the named way."""
+
+    from anthro_chess.evaluation.reference import _comparable_game
+
+    row = {
+        NormalizedColumn.WHITE_NORMALIZED_RATING.value: 1500,
+        NormalizedColumn.BLACK_NORMALIZED_RATING.value: 1500,
+        NormalizedColumn.ACTION_IDS.value: [
+            encode_move(chess.Move.from_uci(uci)) for uci in ("e2e4", "e7e5")
+        ],
+        NormalizedColumn.INITIAL_POSITION.value: chess.STARTING_FEN,
+        NormalizedColumn.RESULT.value: "1-0",
+        NormalizedColumn.TERMINATION_CATEGORY.value: termination,
+    }
+    game, reason = _comparable_game(row, ReferenceConfig(), book=None)
+    assert game is not None, reason
+    return game
+
+
+@pytest.mark.parametrize(
+    "termination",
+    ("clock_expiry", "abandonment", "draw_agreement", "unknown"),
+)
+def test_a_human_ending_the_model_cannot_reach_leaves_the_termination_quantity(
+    termination: str,
+) -> None:
+    """Its mass is what pinned the distance and flattened it against the model."""
+
+    game = _human_game(termination)
+
+    assert game.value(ComparedQuantity.TERMINATION) is None
+    assert game.observation(ComparedQuantity.TERMINATION) is None
+    # Only that quantity. The game was still played, so its length, result and
+    # opening are ordinary observations of the reference.
+    assert game.observation(ComparedQuantity.GAME_LENGTH) is not None
+    assert game.observation(ComparedQuantity.RESULT) is not None
+
+
+def test_a_human_ending_the_model_can_reach_stays_in_the_comparison() -> None:
+    """Dropping every category would leave nothing to be close to."""
+
+    game = _human_game("checkmate")
+
+    assert game.value(ComparedQuantity.TERMINATION) == "checkmate"
+
+
+def test_the_ply_limit_stays_on_the_model_side_with_no_counterpart() -> None:
+    """A game the harness stopped is charged for here as well as as unfinished."""
+
+    from anthro_chess.evaluation.reference import generated_games
+
+    features = analyze_games(
+        [
+            _record_for_termination(GameTermination.PLY_LIMIT),
+            _record_for_termination(GameTermination.CHECKMATE),
+        ]
+    )
+    values = [
+        game.value(ComparedQuantity.TERMINATION)
+        for game in generated_games(features, rating=1500)
+    ]
+
+    assert values == [GameTermination.PLY_LIMIT.value, GameTermination.CHECKMATE.value]
+
+
+def _record_for_termination(termination: GameTermination) -> Any:
+    """Return one generated record that ended the named way."""
+
+    from anthro_chess.evaluation.games import (
+        DecisionRecord,
+        GameOutcome,
+        SeatRecord,
+        build_game_record,
+    )
+
+    action_ids = [
+        encode_move(chess.Move.from_uci(uci)) for uci in ("e2e4", "e7e5", "g1f3")
+    ]
+    seat = SeatRecord(kind="model", label="fixture", seed=0)
+    return build_game_record(
+        initial_position=chess.STARTING_FEN,
+        prefix_plies=0,
+        action_ids=action_ids,
+        white=seat,
+        black=seat,
+        seed=0,
+        decisions=[
+            DecisionRecord(
+                ply_index=index,
+                slot="white" if index % 2 == 0 else "black",
+                action_id=action_id,
+            )
+            for index, action_id in enumerate(action_ids)
+        ],
+        outcome=GameOutcome(
+            result="*" if termination is GameTermination.PLY_LIMIT else "1-0",
+            termination=termination,
+            adjudicated=termination is GameTermination.PLY_LIMIT,
+        ),
+    )
+
+
+def test_the_unreachable_set_tracks_the_two_ending_vocabularies() -> None:
+    """A category one side gains has to move the comparison with it.
+
+    Derived rather than listed, so the pin worth having is on the consequence:
+    a clock the harness one day runs makes clock expiry reachable and takes it
+    out of the set, which should be a deliberate change rather than a surprise.
+    """
+
+    from anthro_chess.data.termination import TerminationCategory
+    from anthro_chess.evaluation.reference import UNREACHABLE_HUMAN_TERMINATIONS
+
+    assert TerminationCategory.CLOCK_EXPIRY.value in UNREACHABLE_HUMAN_TERMINATIONS
+    assert TerminationCategory.ABANDONMENT.value in UNREACHABLE_HUMAN_TERMINATIONS
+    assert TerminationCategory.CHECKMATE.value not in UNREACHABLE_HUMAN_TERMINATIONS
+    # The mirror image stays on the model's side rather than being dropped with
+    # them, because the ply limit is a gap a checkpoint can close.
+    assert GameTermination.PLY_LIMIT.value not in UNREACHABLE_HUMAN_TERMINATIONS

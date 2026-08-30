@@ -1,15 +1,11 @@
-"""What the game-termination family measures, and what it refuses to measure.
+"""What the resignation reading measures, and what it refuses to measure.
 
-Two halves. The first is the derivation: given a game that ended a particular
-way, this family has to read the ending, the material behind a resignation, and
-whether a draw was ever claimable, exactly. Those are the correctness gates,
-and they run on constructed sequences whose endings are known rather than on
-generated play that happens to reach one.
-
-The second is the wiring: which readings reach the committed tier, which series
-they land on, and — the part worth the most here — which readings report
-themselves unavailable instead of writing a zero a reader would take for a
-measurement.
+Everything here is one deterministic pass over frozen human games, so the
+tests are about the join and the reductions rather than about generated play:
+that both sides of a calibration band are read at the same plies, that the
+error is weighted by how often a position comes up, and that a reading with no
+population behind it says so instead of writing a zero a reader would take for
+a measurement.
 """
 
 from __future__ import annotations
@@ -19,32 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-import chess
 import pytest
 import torch
-from pydantic import ValidationError
 
-from anthro_chess.chess import (
-    ACTION_VOCABULARY_SIZE,
-    DRAW_CLAIM_ACTION_ID,
-    RESIGNATION_ACTION_ID,
-    encode_move,
-)
+from anthro_chess.chess import ACTION_VOCABULARY_SIZE, RESIGNATION_ACTION_ID
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
-from anthro_chess.data import DecisionContext, Speed
+from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation import PoolConfig, freeze_pool
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
-from anthro_chess.evaluation.games import (
-    DecisionRecord,
-    GameOutcome,
-    GameRecord,
-    GameTermination,
-    SeatRecord,
-    build_game_record,
-    termination_from_outcome,
-)
-from anthro_chess.evaluation.reference import ReferenceConfig
 from anthro_chess.evaluation.results import (
     CheckpointReference,
     DetailStore,
@@ -52,91 +31,42 @@ from anthro_chess.evaluation.results import (
 )
 from anthro_chess.evaluation.results.metrics import (
     GAME_TERMINATION_FAMILY,
-    TERMINATION_MIX_CONDITIONAL_DISTANCE,
-    TERMINATION_MIX_POOLED_DISTANCE,
     TERMINATION_PREDICTION_PROJECTION,
-    TERMINATION_PREMATURE_RESIGNATION_HUMAN_RATE,
-    TERMINATION_PREMATURE_RESIGNATION_RATE,
-    TERMINATION_RESIGNATION_DEFICIT_DISTANCE,
-    TERMINATION_RESIGNATION_DEFICIT_MEDIAN,
+    TERMINATION_RESIGNATION_CALIBRATION_ERROR,
+    TERMINATION_RESIGNATION_CALIBRATION_GAP,
     TERMINATION_RESIGNATION_MASS_AT_MOVES,
     TERMINATION_RESIGNATION_MASS_AT_RESIGNATION,
     TERMINATION_RESIGNATION_MASS_SEPARATION,
-    TERMINATION_SILENT_TERMINAL_ACTIONS,
-    TERMINATION_UNTIMED_NON_TERMINATION_RATE,
     MetricDirection,
     registered_metrics,
 )
 from anthro_chess.evaluation.termination import (
-    DECLARED_MIX_NEIGHBOURS as _DECLARED,
-)
-from anthro_chess.evaluation.termination import (
-    HUMAN_ONLY_CATEGORIES,
-    MODEL_ONLY_CATEGORIES,
     TERMINATION_KIND,
-    TERMINATION_MIX_CATEGORIES,
+    CalibrationBucket,
+    ResignationCalibration,
     TerminationBenchmarkConfig,
     TerminationBenchmarkError,
     TerminationBenchmarkResult,
-    generated_ending,
-    human_ending,
 )
-from anthro_chess.runtime import RuntimeConfig
 
 CHECKPOINT = CheckpointReference(label="fixture-checkpoint", step=1)
 
-#: Knights out and back twice, which returns the starting position for the
-#: third time. A draw becomes claimable at the final position and the game has
-#: not ended, which is the non-termination failure the claim action exists for.
-THREEFOLD_SHUFFLE = ("g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8")
-
-#: White to move and stalemate available in one. The ending is a property of
-#: the position rather than of anything a seat chose.
-STALEMATE_FEN = "k7/8/2K5/1Q6/8/8/8/8 w - - 0 1"
-STALEMATE_MOVES = ("b5b6",)
-
-#: The last piece besides the kings is captured, so the rules end the game on
-#: their own with no claim and no decision.
-INSUFFICIENT_FEN = "k7/8/8/8/8/8/6n1/K6B w - - 0 1"
-INSUFFICIENT_MOVES = ("h1g2",)
-
-#: A resignation from a hopeless position: black is a queen down and to move.
-LOST_FEN = "k7/8/8/8/8/8/8/K5Q1 b - - 0 40"
-
-#: A resignation from a position black is winning, which is the guardrail's
-#: whole reason to exist.
-WINNING_FEN = "k5q1/8/8/8/8/8/8/K7 b - - 0 40"
+#: White wins a pawn on move three and keeps it, so the scored plies span three
+#: deficit bands instead of sitting level in one: the two before the capture,
+#: the ones where Black is a pawn down, and the ones where White is a pawn up.
+#: Six plies leaves White to move, which is what makes a White loss append the
+#: resignation action rather than omit it for the opponent's turn.
+PAWN_UP_MOVES = ("e2e4", "d7d5", "e4d5", "g8f6", "g1f3", "f6g4")
 
 
 @dataclass
-class ShufflingRunner:
-    """A stand-in policy that prefers the first legal move it is offered.
-
-    Deterministic and terminal-action averse: it never resigns and never
-    claims, which is exactly the checkpoint the silent-non-use guardrail
-    exists to name.
-    """
+class MovePlayingRunner:
+    """A stand-in policy that plays moves and cannot score whole batches."""
 
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
 
     def predict(self, context: DecisionContext) -> torch.Tensor:
-        logits = torch.zeros(ACTION_VOCABULARY_SIZE)
-        logits[RESIGNATION_ACTION_ID] = -50.0
-        logits[DRAW_CLAIM_ACTION_ID] = -50.0
-        generator = torch.Generator().manual_seed(len(context.plies))
-        return logits + torch.randn(ACTION_VOCABULARY_SIZE, generator=generator) * 0.01
-
-
-@dataclass
-class ResigningRunner:
-    """A stand-in policy that resigns as soon as it is allowed to."""
-
-    device: torch.device = field(default_factory=lambda: torch.device("cpu"))
-
-    def predict(self, context: DecisionContext) -> torch.Tensor:
-        logits = torch.zeros(ACTION_VOCABULARY_SIZE)
-        logits[RESIGNATION_ACTION_ID] = 40.0
-        return logits
+        return torch.zeros(ACTION_VOCABULARY_SIZE)
 
 
 @dataclass
@@ -145,14 +75,17 @@ class TargetAwareScorer:
 
     It reads the batch's targets, which no real model can do. That is the
     point: it produces a reading whose direction is known in advance, so a test
-    can assert that the two halves of the held-out measurement are separated
-    the way they are defined to be rather than merely that both are floats.
+    can assert the halves are separated the way they are defined to be rather
+    than merely that both are floats.
     """
 
     device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     #: Zero makes the scorer blind to the target, which is what the collapsed
     #: separation case needs.
     separation: float = 6.0
+    #: Applied at every scored ply, so a large negative reads as a policy that
+    #: never wants to resign anywhere.
+    baseline: float = 0.0
 
     def predict(self, context: DecisionContext) -> torch.Tensor:
         return torch.zeros(ACTION_VOCABULARY_SIZE)
@@ -161,7 +94,7 @@ class TargetAwareScorer:
         shape = (*batch.action_targets.shape, ACTION_VOCABULARY_SIZE)
         logits = torch.zeros(shape, dtype=torch.float32)
         resigned = batch.action_targets == RESIGNATION_ACTION_ID
-        logits[..., RESIGNATION_ACTION_ID] = torch.where(
+        logits[..., RESIGNATION_ACTION_ID] = self.baseline + torch.where(
             resigned,
             torch.full_like(batch.action_targets, 0, dtype=torch.float32)
             + self.separation,
@@ -170,99 +103,22 @@ class TargetAwareScorer:
         return logits
 
 
-def _record(
-    *,
-    initial_position: str,
-    moves: Sequence[str],
-    outcome: GameOutcome,
-    rating: int = 1500,
-    terminal_action_id: int | None = None,
-) -> GameRecord:
-    """Assemble one generated record from an explicit line and ending."""
-
-    board = chess.Board(initial_position)
-    action_ids: list[int] = []
-    for move_text in moves:
-        move = chess.Move.from_uci(move_text)
-        assert move in board.legal_moves, f"{move_text} is illegal here"
-        action_ids.append(encode_move(move))
-        board.push(move)
-    if terminal_action_id is not None:
-        action_ids.append(terminal_action_id)
-
-    root = chess.Board(initial_position)
-    seat = SeatRecord(
-        kind="model",
-        label="fixture",
-        seed=0,
-        configuration={"target_rating": rating, "temperature": 1.0},
-    )
-    decisions = tuple(
-        DecisionRecord(
-            ply_index=index,
-            slot=(
-                "white" if (root.turn == chess.WHITE) == (index % 2 == 0) else "black"
-            ),
-            action_id=action_id,
-        )
-        for index, action_id in enumerate(action_ids)
-    )
-    return build_game_record(
-        initial_position=initial_position,
-        prefix_plies=0,
-        action_ids=action_ids,
-        white=seat,
-        black=seat,
-        seed=0,
-        decisions=decisions,
-        outcome=outcome,
-    )
-
-
-@pytest.fixture
-def small_bandwidth(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shrink the declared bandwidth so a fixture reference can support it.
-
-    The declared value is chosen from tens of thousands of real games and a
-    fixture cannot hold that many. The constant itself is asserted separately.
-    """
-
-    monkeypatch.setattr(
-        "anthro_chess.evaluation.termination.DECLARED_MIX_NEIGHBOURS", 4
-    )
-
-
-@pytest.fixture
-def pool(
-    tmp_path: Path,
-    normalized_row: Callable[..., dict[str, Any]],
+def _freeze(
+    directory: Path,
+    rows: Sequence[dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
+    *,
+    pool_id: str,
 ) -> Path:
-    """Freeze a pool whose test games end in a mix of ways.
+    """Freeze one fixture pool from explicit rows."""
 
-    Even ply counts with a black loss leave White to move at the end, which is
-    what makes the derivation attribute the resignation to the side to move and
-    append the terminal action. Those are the games the held-out reading has
-    any positives at all from.
-    """
-
-    rows = [
-        normalized_row(
-            index,
-            split="test",
-            plies=4 + (index % 4) * 2,
-            rating=1100 + (index % 10) * 100,
-            result=("0-1", "1-0", "1/2-1/2")[index % 3],
-        )
-        for index in range(1, 41)
-    ]
-    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
-    output = tmp_path / "pool"
+    normalized, manifest = write_corpus(directory / "corpus", list(rows))
+    output = directory / "pool"
     freeze_pool(
         ResolvedConfig(
             value=PoolConfig.model_validate(
                 {
-                    "pool_id": "fixture-termination",
+                    "pool_id": pool_id,
                     "normalized": str(normalized),
                     "manifest": str(manifest),
                 }
@@ -274,27 +130,37 @@ def pool(
     return output
 
 
-def _config(pool: Path, **overrides: Any) -> ResolvedConfig[TerminationBenchmarkConfig]:
-    """Return a resolved suite small enough for the CPU test suite."""
+@pytest.fixture
+def pool(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> Path:
+    """Freeze a pool whose games span several material bands.
 
-    fields: dict[str, Any] = {
-        "pool": str(pool),
-        "runtime": RuntimeConfig(resignation_enabled=True, draw_claim_enabled=True),
-        "grid": {
-            "target_ratings": (1200, 1800),
-            "temperatures": (1.0,),
-            "seeds": (0,),
-            **overrides.pop("grid", {}),
-        },
-        "generation": {
-            "games_per_position": 1,
-            "maximum_generated_plies": 6,
-            "swap_colors": False,
-            **overrides.pop("generation", {}),
-        },
-        "reference": {"resamples": 8, **overrides.pop("reference", {})},
-        "held_out": {"enabled": False, **overrides.pop("held_out", {})},
-    }
+    A White loss on an even ply count leaves White to move at the end, which is
+    what makes preparation attribute the resignation to the side to move and
+    append the terminal action. Those are the games this reading has any
+    positives at all from.
+    """
+
+    rows = [
+        normalized_row(
+            index,
+            split="test",
+            moves=PAWN_UP_MOVES,
+            rating=1100 + (index % 10) * 100,
+            result=("0-1", "1-0", "1/2-1/2")[index % 3],
+        )
+        for index in range(1, 41)
+    ]
+    return _freeze(tmp_path, rows, write_corpus, pool_id="fixture-termination")
+
+
+def _config(pool: Path, **overrides: Any) -> ResolvedConfig[TerminationBenchmarkConfig]:
+    """Return a resolved selection small enough for the CPU test suite."""
+
+    fields: dict[str, Any] = {"pool": str(pool)}
     fields.update(overrides)
     return ResolvedConfig(
         value=TerminationBenchmarkConfig.model_validate(fields),
@@ -316,311 +182,19 @@ def _run(
             config,
             store=store,
             detail=detail,
-            runner=runner or ShufflingRunner(),
+            runner=runner or TargetAwareScorer(),
             checkpoint=CHECKPOINT,
         ),
     )
 
 
-# --- The shared vocabulary ------------------------------------------------
+# --- The two mass readings ------------------------------------------------
 
 
-def test_both_sides_are_counted_over_one_vocabulary() -> None:
-    """Every category either side can produce is in the compared vocabulary."""
-
-    for termination in GameTermination:
-        assert termination.value in TERMINATION_MIX_CATEGORIES
-    for category in (*HUMAN_ONLY_CATEGORIES, *MODEL_ONLY_CATEGORIES):
-        assert category in TERMINATION_MIX_CATEGORIES
-
-
-def test_categories_neither_side_can_produce_stay_their_own_bucket() -> None:
-    """Abandonment and the ply limit are visible rather than folded away."""
-
-    assert "abandonment" in HUMAN_ONLY_CATEGORIES
-    assert GameTermination.PLY_LIMIT.value in MODEL_ONLY_CATEGORIES
-    # The two sets are genuinely disjoint: a category is either something only
-    # a human platform produces or something only the harness does, never both.
-    assert not set(HUMAN_ONLY_CATEGORIES) & set(MODEL_ONLY_CATEGORIES)
-
-
-def test_the_rule_endings_share_their_names_across_both_vocabularies() -> None:
-    """A rule ending counts as one category however it was produced."""
-
-    from anthro_chess.data.termination import TerminationCategory
-
-    shared = {
-        GameTermination.CHECKMATE,
-        GameTermination.STALEMATE,
-        GameTermination.INSUFFICIENT_MATERIAL,
-        GameTermination.SEVENTYFIVE_MOVES,
-        GameTermination.FIVEFOLD_REPETITION,
-        GameTermination.FIFTY_MOVES,
-        GameTermination.THREEFOLD_REPETITION,
-        GameTermination.RESIGNATION,
-    }
-    for termination in shared:
-        assert TerminationCategory(termination.value).value == termination.value
-
-
-# --- Correctness gates ----------------------------------------------------
-
-
-def test_a_claimable_threefold_that_never_ends_is_reported_as_such() -> None:
-    """The non-termination guardrail sees a claim the model declined to take."""
-
-    record = _record(
-        initial_position=chess.STARTING_FEN,
-        moves=THREEFOLD_SHUFFLE,
-        outcome=GameOutcome(
-            result="*",
-            termination=GameTermination.PLY_LIMIT,
-            adjudicated=True,
-        ),
-    )
-    # The chess layer agrees the claim was genuinely available, so the reading
-    # rests on exact rule logic rather than on the harness's own bookkeeping.
-    assert record.board().is_repetition(3)
-
-    ending = generated_ending(record)
-    assert ending.claimable_and_unfinished is True
-    assert ending.category == GameTermination.PLY_LIMIT.value
-
-
-def test_a_threefold_the_model_claims_is_not_a_non_termination() -> None:
-    """Claiming is the behavior the guardrail exists to reward, not punish."""
-
-    record = _record(
-        initial_position=chess.STARTING_FEN,
-        moves=THREEFOLD_SHUFFLE,
-        terminal_action_id=DRAW_CLAIM_ACTION_ID,
-        outcome=GameOutcome(
-            result="1/2-1/2",
-            termination=GameTermination.THREEFOLD_REPETITION,
-            adjudicated=False,
-        ),
-    )
-    ending = generated_ending(record)
-    assert ending.claimable_and_unfinished is False
-    assert ending.category == GameTermination.THREEFOLD_REPETITION.value
-    assert ending.selected_terminal_actions == frozenset({DRAW_CLAIM_ACTION_ID})
-
-
-@pytest.mark.parametrize(
-    ("initial_position", "moves", "expected"),
-    [
-        (STALEMATE_FEN, STALEMATE_MOVES, GameTermination.STALEMATE),
-        (
-            INSUFFICIENT_FEN,
-            INSUFFICIENT_MOVES,
-            GameTermination.INSUFFICIENT_MATERIAL,
-        ),
-    ],
-)
-def test_an_automatic_draw_is_detected_exactly(
-    initial_position: str,
-    moves: tuple[str, ...],
-    expected: GameTermination,
-) -> None:
-    """A rule ending needs no claim, and the position itself proves which."""
-
-    record = _record(
-        initial_position=initial_position,
-        moves=moves,
-        outcome=GameOutcome(result="1/2-1/2", termination=expected, adjudicated=False),
-    )
-    outcome = record.board().outcome()
-    assert outcome is not None
-    # Result detection is exact: the chess layer's own classification of the
-    # final position agrees with the ending the record carries.
-    assert termination_from_outcome(outcome) is expected
-
-    ending = generated_ending(record)
-    assert ending.category == expected.value
-    assert ending.claimable_and_unfinished is False
-    assert ending.resignation_deficit is None
-
-
-def test_a_resignation_deficit_is_read_from_the_resigning_players_side() -> None:
-    """Behind is positive, which is the direction the human data was measured in."""
-
-    record = _record(
-        initial_position=LOST_FEN,
-        moves=(),
-        terminal_action_id=RESIGNATION_ACTION_ID,
-        outcome=GameOutcome(
-            result="1-0",
-            termination=GameTermination.RESIGNATION,
-            adjudicated=False,
-        ),
-    )
-    ending = generated_ending(record)
-    assert ending.resignation_deficit == pytest.approx(9.0)
-
-
-def test_resigning_while_winning_reads_as_a_negative_deficit() -> None:
-    """The premature case has to be visible in the quantity, not only in a rate."""
-
-    record = _record(
-        initial_position=WINNING_FEN,
-        moves=(),
-        terminal_action_id=RESIGNATION_ACTION_ID,
-        outcome=GameOutcome(
-            result="1-0",
-            termination=GameTermination.RESIGNATION,
-            adjudicated=False,
-        ),
-    )
-    ending = generated_ending(record)
-    assert ending.resignation_deficit == pytest.approx(-9.0)
-
-
-def test_a_human_resignation_is_read_from_the_losing_players_side(
-    normalized_row: Callable[..., dict[str, Any]],
-) -> None:
-    """One definition of deficit, applied identically on both sides."""
-
-    row = normalized_row(1, split="test", plies=4, result="0-1", rating=1500)
-    ending, reason = human_ending(row, ReferenceConfig())
-    assert reason is None
-    assert ending is not None
-    assert ending.category == "resignation"
-    # Four plies of the shared opening leave material level, so the human side
-    # reports a zero deficit rather than declining to report one.
-    assert ending.resignation_deficit == pytest.approx(0.0)
-
-
-def test_a_lopsided_human_game_is_excluded_rather_than_averaged(
-    normalized_row: Callable[..., dict[str, Any]],
-) -> None:
-    """A mismatch belongs to neither player's rating, so it belongs to neither."""
-
-    row = normalized_row(1, split="test", plies=4, result="0-1", rating=1500)
-    row["black_normalized_rating"] = 2400
-    _, reason = human_ending(row, ReferenceConfig(maximum_rating_gap=200))
-    assert reason == "rating_gap"
-
-
-def test_a_reference_ending_carries_the_class_both_clock_columns_derive(
-    normalized_row: Callable[..., dict[str, Any]],
-) -> None:
-    """A reference ending carries the class a training selection filters on.
-
-    One minute is bullet or blitz depending on the increment, so the two rows
-    differ only in that column.
-    """
-
-    def speed_of(increment_ms: int) -> Speed | None:
-        row = normalized_row(
-            1,
-            plies=4,
-            time_initial_ms=60_000,
-            time_increment_ms=increment_ms,
-        )
-        ending, _ = human_ending(row, ReferenceConfig())
-        assert ending is not None
-        return ending.speed
-
-    assert speed_of(0) is Speed.BULLET
-    assert speed_of(3_000) is Speed.BLITZ
-
-
-# --- Guardrails -----------------------------------------------------------
-
-
-def test_a_model_that_never_resigns_reports_silent_non_use(pool: Path) -> None:
-    """The opposite failure to premature resignation, named rather than implied."""
-
-    result = _run(_config(pool))
-    reading = result.reading(1.0)
-    assert reading.guardrails.resignations == 0
-    assert set(reading.guardrails.enabled_terminal_actions) == {
-        RESIGNATION_ACTION_ID,
-        DRAW_CLAIM_ACTION_ID,
-    }
-    assert set(reading.guardrails.silent_terminal_actions) == {
-        RESIGNATION_ACTION_ID,
-        DRAW_CLAIM_ACTION_ID,
-    }
-
-
-def test_a_model_that_never_resigns_has_no_deficit_rather_than_a_zero(
-    pool: Path,
-) -> None:
-    """A zero deficit would read as resigning while exactly level."""
-
-    result = _run(_config(pool))
-    reading = result.reading(1.0)
-    assert reading.deficit.model_median is None
-    assert "resignation_deficit" in reading.unavailable
-    reported = {
-        found.metric for envelope in result.envelopes for found in envelope.measurements
-    }
-    assert TERMINATION_RESIGNATION_DEFICIT_MEDIAN.identifier not in reported
-    assert TERMINATION_RESIGNATION_DEFICIT_DISTANCE.identifier not in reported
-
-
-def test_a_disabled_terminal_action_is_absent_from_the_silent_count(
-    pool: Path,
-) -> None:
-    """An action the runtime never offered is not one the model left unused."""
-
-    result = _run(
-        _config(
-            pool,
-            runtime=RuntimeConfig(resignation_enabled=False, draw_claim_enabled=False),
-        )
-    )
-    reading = result.reading(1.0)
-    assert reading.guardrails.enabled_terminal_actions == ()
-    assert "silent_terminal_actions" in reading.unavailable
-    reported = {
-        found.metric for envelope in result.envelopes for found in envelope.measurements
-    }
-    assert TERMINATION_SILENT_TERMINAL_ACTIONS.identifier not in reported
-
-
-def test_a_model_that_always_resigns_is_measured_as_premature(pool: Path) -> None:
-    """Resigning from the starting position is the failure this family exists for."""
-
-    result = _run(_config(pool), runner=ResigningRunner())
-    reading = result.reading(1.0)
-    guardrails = reading.guardrails
-    assert guardrails.resignations == guardrails.games
-    assert guardrails.premature_rate == pytest.approx(1.0)
-    assert guardrails.silent_terminal_actions == (DRAW_CLAIM_ACTION_ID,)
-    # The human rate is reported beside it, which is what makes a heuristic
-    # material proxy readable rather than an absolute claim.
-    assert guardrails.human_premature_rate is not None
-
-
-def test_the_untimed_non_termination_rate_is_reported_over_every_game(
-    pool: Path,
-) -> None:
-    """A rate needs its denominator to be the games that could have failed."""
-
-    result = _run(_config(pool))
-    guardrails = result.reading(1.0).guardrails
-    assert guardrails.games > 0
-    assert guardrails.untimed_non_termination_rate == pytest.approx(
-        guardrails.claimable_unfinished_games / guardrails.games
-    )
-
-
-# --- Held-out resignation prediction --------------------------------------
-
-
-def test_the_held_out_reading_separates_resignation_plies_from_move_plies(
-    pool: Path,
-) -> None:
+def test_the_reading_separates_resignation_plies_from_move_plies(pool: Path) -> None:
     """Both halves come out of one pass, and the separation is their difference."""
 
-    result = _run(
-        _config(pool, held_out={"enabled": True}),
-        runner=TargetAwareScorer(),
-    )
-    held_out = result.held_out
-    assert held_out is not None
+    held_out = _run(_config(pool)).held_out
     assert held_out.resignation_plies > 0
     assert held_out.move_plies > held_out.resignation_plies
     assert held_out.mass_at_resignation is not None
@@ -634,25 +208,16 @@ def test_the_held_out_reading_separates_resignation_plies_from_move_plies(
 def test_a_policy_blind_to_the_ending_shows_no_separation(pool: Path) -> None:
     """The reading has to be able to say the model learned nothing."""
 
-    result = _run(
-        _config(pool, held_out={"enabled": True}),
-        runner=TargetAwareScorer(separation=0.0),
-    )
-    held_out = result.held_out
-    assert held_out is not None
+    held_out = _run(_config(pool), runner=TargetAwareScorer(separation=0.0)).held_out
     assert held_out.separation == pytest.approx(0.0, abs=1e-9)
 
 
-def test_the_held_out_halves_carry_their_own_sample_sizes(pool: Path) -> None:
+def test_the_two_halves_carry_their_own_sample_sizes(pool: Path) -> None:
     """The two populations differ by orders of magnitude and must say so."""
 
-    result = _run(
-        _config(pool, held_out={"enabled": True}),
-        runner=TargetAwareScorer(),
-    )
+    result = _run(_config(pool))
     held_out = result.held_out
-    assert held_out is not None
-    envelope = _held_out_envelope(result)
+    envelope = _envelope(result)
     at_resignation = envelope.measurement(
         TERMINATION_RESIGNATION_MASS_AT_RESIGNATION.identifier
     )
@@ -664,21 +229,82 @@ def test_the_held_out_halves_carry_their_own_sample_sizes(pool: Path) -> None:
     assert at_moves.sample_size != at_resignation.sample_size
 
 
-def test_the_held_out_reading_is_scoped_by_the_content_it_scored(
-    pool: Path,
-) -> None:
-    """Nothing was generated, so the human decisions are series identity."""
+# --- The deficit calibration ----------------------------------------------
 
-    result = _run(
-        _config(pool, held_out={"enabled": True}),
-        runner=TargetAwareScorer(),
+
+def test_the_calibration_reads_both_sides_at_the_same_plies(pool: Path) -> None:
+    """One position distribution, not one per side, is what makes it a comparison."""
+
+    calibration = _run(_config(pool)).held_out.calibration
+    assert len(calibration.buckets) > 1
+    for bucket in calibration.buckets:
+        assert bucket.plies > 0
+        assert bucket.human_rate == pytest.approx(
+            bucket.human_resignations / bucket.plies
+        )
+        assert bucket.gap == pytest.approx(bucket.model_mass - bucket.human_rate)
+    assert calibration.plies == sum(bucket.plies for bucket in calibration.buckets)
+
+
+def test_the_calibration_bands_run_in_deficit_order(pool: Path) -> None:
+    """Sorting the names would file "below" first and "9-and-above" mid-range."""
+
+    calibration = _run(_config(pool)).held_out.calibration
+    names = [bucket.bucket for bucket in calibration.buckets]
+    assert names[0] == "below-0"
+    assert names == sorted(names, key=_declared_order.index)
+
+
+def test_a_policy_that_never_resigns_reads_as_a_negative_gap(pool: Path) -> None:
+    """A signed reading is what separates resigning too readily from too rarely."""
+
+    calibration = _run(
+        _config(pool), runner=TargetAwareScorer(separation=0.0, baseline=-40.0)
+    ).held_out.calibration
+    assert calibration.gap is not None
+    assert calibration.error is not None
+    assert calibration.gap < 0.0
+    # Every band is short of the human rate, so the absolute reading is the
+    # signed one negated rather than something larger.
+    assert calibration.error == pytest.approx(-calibration.gap)
+
+
+def test_the_calibration_error_weights_a_band_by_how_often_it_comes_up() -> None:
+    """An unweighted mean would let thirty plies count for twenty thousand."""
+
+    calibration = ResignationCalibration(
+        buckets=(
+            CalibrationBucket(
+                bucket="0-to-1",
+                plies=990,
+                human_resignations=0,
+                model_mass=0.0,
+            ),
+            CalibrationBucket(
+                bucket="9-and-above",
+                plies=10,
+                human_resignations=5,
+                model_mass=0.0,
+            ),
+        )
     )
-    envelope = _held_out_envelope(result)
-    assert envelope.execution is None
-    assert envelope.data is not None
-    assert [digest.projection for digest in envelope.data.components] == [
-        TERMINATION_PREDICTION_PROJECTION.name
-    ]
+
+    assert calibration.plies == 1000
+    assert calibration.error == pytest.approx(0.005)
+    assert calibration.gap == pytest.approx(-0.005)
+
+
+def test_a_calibration_with_no_plies_reports_nothing_rather_than_zero() -> None:
+    """Zero error would read as a policy that matched humans exactly."""
+
+    calibration = ResignationCalibration(buckets=())
+
+    assert calibration.plies == 0
+    assert calibration.error is None
+    assert calibration.gap is None
+
+
+# --- Readings with nothing behind them ------------------------------------
 
 
 def test_a_view_without_a_resignation_reports_unavailable(
@@ -699,27 +325,9 @@ def test_a_view_without_a_resignation_reports_unavailable(
         normalized_row(index, split="test", plies=6, rating=1500, result="1-0")
         for index in range(1, 13)
     ]
-    normalized, manifest = write_corpus(tmp_path / "corpus", rows)
-    output = tmp_path / "pool"
-    freeze_pool(
-        ResolvedConfig(
-            value=PoolConfig.model_validate(
-                {
-                    "pool_id": "fixture-no-resignations",
-                    "normalized": str(normalized),
-                    "manifest": str(manifest),
-                }
-            ),
-            provenance=ConfigProvenance(source=None, overrides=()),
-        ),
-        output,
-    )
-    result = _run(
-        _config(output, held_out={"enabled": True}),
-        runner=TargetAwareScorer(),
-    )
+    output = _freeze(tmp_path, rows, write_corpus, pool_id="fixture-no-resignations")
+    result = _run(_config(output))
     held_out = result.held_out
-    assert held_out is not None
     assert held_out.resignation_plies == 0
     assert held_out.mass_at_resignation is None
     assert "resignation_mass_at_resignation" in held_out.unavailable
@@ -728,335 +336,150 @@ def test_a_view_without_a_resignation_reports_unavailable(
     }
     assert TERMINATION_RESIGNATION_MASS_AT_RESIGNATION.identifier not in reported
     assert TERMINATION_RESIGNATION_MASS_SEPARATION.identifier not in reported
+    # And the calibration with it. Every band's human rate is zero here, so any
+    # mass the policy spends would be committed as spending more than humans
+    # did, against a rate no human supplied.
+    assert held_out.calibration.plies > 0
+    assert held_out.calibration.human_resignations == 0
+    assert held_out.calibration.error is None
+    assert held_out.calibration.gap is None
+    assert "resignation_calibration" in held_out.unavailable
+    assert TERMINATION_RESIGNATION_CALIBRATION_ERROR.identifier not in reported
+    assert TERMINATION_RESIGNATION_CALIBRATION_GAP.identifier not in reported
     # The half that does have a population is still reported, so one missing
     # reading does not take the rest of the family down with it.
     assert TERMINATION_RESIGNATION_MASS_AT_MOVES.identifier in reported
 
 
 def test_a_runner_that_cannot_score_batches_says_so(pool: Path) -> None:
-    """A stand-in that only plays games cannot produce the held-out half."""
+    """A stand-in that only plays games cannot produce this reading at all."""
 
     with pytest.raises(TerminationBenchmarkError, match="scores whole batches"):
-        _run(_config(pool, held_out={"enabled": True}), runner=ShufflingRunner())
+        _run(_config(pool), runner=MovePlayingRunner())
 
 
-# --- The mix comparison ---------------------------------------------------
+def test_a_pool_this_reading_is_not_defined_over_is_refused(pool: Path) -> None:
+    """A superseded pool left at the configured path is a different population."""
+
+    config = _config(pool, expected_pool_game_ids_sha256="0" * 64)
+    with pytest.raises(TerminationBenchmarkError, match="not the one this"):
+        _run(config)
 
 
-def test_the_mix_compares_both_sides_over_one_rating_axis(
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """The headline reading is the shared curve shape, not a new one."""
-
-    result = _run(_config(pool))
-    mix = result.mix("overall", 1.0)
-    assert mix.human_games > 0
-    assert mix.model_games > 0
-    assert mix.comparison.spec.grid == (1200.0, 1800.0)
-    assert 0.0 <= mix.comparison.pooled_distance <= 1.0
-    categories = {share.category for share in mix.comparison.category_shares()}
-    assert categories <= set(TERMINATION_MIX_CATEGORIES)
+# --- What reaches the store -----------------------------------------------
 
 
-def test_the_mix_reports_how_far_its_smoother_actually_reached(
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """The declared neighbour count is the same whatever the reference holds.
+def test_the_reading_is_scoped_by_the_content_it_scored(pool: Path) -> None:
+    """Nothing was generated, so the human decisions are series identity."""
 
-    What decides whether the grid resolves its points is the rating span those
-    neighbours occupy, so that is what the mix prints beside its distances.
-    """
+    envelope = _envelope(_run(_config(pool)))
+    assert envelope.execution is None
+    assert envelope.data is not None
+    assert [digest.projection for digest in envelope.data.components] == [
+        TERMINATION_PREDICTION_PROJECTION.name
+    ]
 
-    from anthro_chess.interfaces.cli import _render_termination
+
+def test_the_calibration_reaches_the_committed_tier(pool: Path) -> None:
+    """A reading nothing records is a series that never starts."""
 
     result = _run(_config(pool))
-
-    comparison = result.mix("overall", 1.0).comparison
-    spans = " ".join(f"±{point.bandwidth:.0f}" for point in comparison.points)
-    assert f"  bandwidth   reaches {spans} rating points" in _render_termination(result)
-
-
-def test_a_reference_below_the_bandwidth_is_rejected_before_a_sweep_starts(
-    pool: Path,
-) -> None:
-    """The mix bandwidth is a neighbour count, so this cap is its radius.
-
-    A cap below one bandwidth per grid point does not make the mix noisier; it
-    makes every grid point the same neighbourhood. Rejected on the configuration
-    so a suite plan catches it rather than the run that follows.
-    """
-
-    with pytest.raises(ValidationError, match="below the 2048 game"):
-        _config(
-            pool,
-            reference={
-                "view": {"name": "termination-reference", "maximum_games": 2000},
-            },
-        )
-
-
-def test_a_reference_too_thin_for_the_mix_says_so_in_the_pool_pass(
-    pool: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The declared cap cannot promise what the pool and the filter leave.
-
-    Said while the reference is read rather than only in the unavailable lines
-    the run ends with. Not an error, because the guardrails, the deficit, and
-    the held-out reading need no curve at all.
-    """
-
-    result = _run(_config(pool))
-
-    assert "below the" in caplog.text
-    assert result.mixes == ()
-    assert "mix:overall" in result.unavailable
-
-
-def test_the_human_reference_scopes_the_mix_series(
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """Two references are two smoothings, so two quantities rather than two draws.
-
-    Without this in identity a checkpoint whose endings were compared against a
-    small reference would be plotted against one compared against a large one,
-    and the difference between the smoothings would render as movement.
-    """
-
-    workloads = []
-    for maximum_games in (16, 32):
-        result = _run(
-            _config(
-                pool,
-                reference={
-                    "view": {
-                        "name": "termination-reference",
-                        "require_ratings": True,
-                        "maximum_games": maximum_games,
-                    },
-                },
-            )
-        )
-        workloads.append(result.mix("overall", 1.0).execution.workload_sha256)
-
-    assert workloads[0] != workloads[1]
-
-
-def test_the_mix_reports_each_arm_beside_its_own_qualifiers(
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """One arm's qualifier printed beside the other's distance is misread.
-
-    The mix line carried a single floor — the conditional one — with the pooled
-    distance immediately after it, and the null level the verdict is actually
-    computed against was not printed at all. The same defect as the rollout
-    table, recorded together in #172.
-
-    Four games per position because a mix curve resamples the stream a game came
-    out of, and a handful of streams played across the rating grid is too few
-    replicates to read a spread from, whatever the game count.
-    """
-
-    from anthro_chess.interfaces.cli import _render_termination
-
-    result = _run(_config(pool, generation={"games_per_position": 4}))
-
-    rendered = _render_termination(result)
-    comparison = result.mix("overall", 1.0).comparison
-    assert comparison.references is not None
-    assert comparison.dispersions is not None
+    envelope = _envelope(result)
+    reported = {found.metric for found in envelope.measurements}
+    assert TERMINATION_RESIGNATION_CALIBRATION_ERROR.identifier in reported
+    assert TERMINATION_RESIGNATION_CALIBRATION_GAP.identifier in reported
     assert (
-        f"  conditional {comparison.conditional_distance:.4f}  "
-        f"null {comparison.references.conditional:.4f}  "
-        f"floor {comparison.dispersions.conditional_floor:.4f}"
-    ) in rendered
-    assert (
-        f"  pooled      {comparison.pooled_distance:.4f}  "
-        f"null {comparison.references.pooled:.4f}  "
-        f"floor {comparison.dispersions.pooled_floor:.4f}"
-    ) in rendered
-    assert f"  reads as    {comparison.response.value}" in rendered
+        envelope.measurement(
+            TERMINATION_RESIGNATION_CALIBRATION_ERROR.identifier
+        ).sample_size
+        == result.held_out.calibration.plies
+    )
 
 
-def test_a_reference_too_small_for_the_bandwidth_reports_unavailable(
-    pool: Path,
-) -> None:
-    """A distance no reference can support is refused rather than estimated."""
+def test_a_calibration_with_no_human_resignation_reports_nothing() -> None:
+    """Zero on both sides of every band is a missing reference, not agreement."""
 
-    result = _run(_config(pool))
-    assert result.mixes == ()
-    assert "mix:overall" in result.unavailable
-    assert "bandwidth" in result.unavailable["mix:overall"]
-
-
-def test_two_speed_classes_land_on_different_series(
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """Two human populations are two questions, so they must not share a line."""
-
-    result = _run(
-        _config(
-            pool,
-            speeds=("overall", Speed.BLITZ),
+    calibration = ResignationCalibration(
+        buckets=(
+            CalibrationBucket(
+                bucket="9-and-above",
+                plies=400,
+                human_resignations=0,
+                model_mass=0.02,
+            ),
         )
     )
-    everything = result.mix("overall", 1.0)
-    blitz = result.mix("blitz", 1.0)
-    assert everything.execution.workload_sha256 != blitz.execution.workload_sha256
-    conditional = TERMINATION_MIX_CONDITIONAL_DISTANCE.identifier
-    found = [envelope.measurement(conditional) for envelope in result.envelopes]
-    fingerprints = {item.fingerprint for item in found if item is not None}
-    assert len(fingerprints) == 2
+
+    assert calibration.plies == 400
+    assert calibration.human_resignations == 0
+    assert calibration.error is None
+    assert calibration.gap is None
 
 
-def test_an_unpopulated_speed_class_reports_unavailable(
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """A class no reference game belongs to has nothing to compare against."""
+def test_every_registered_metric_of_the_family_is_reported(pool: Path) -> None:
+    """A registered metric no benchmark writes is a series that never starts."""
 
-    result = _run(_config(pool, speeds=(Speed.CLASSICAL,)))
-    assert result.mixes == ()
-    assert "mix:classical" in result.unavailable
-
-
-def test_the_declared_bandwidth_is_frozen_in_code() -> None:
-    """Re-selecting per run would mean two checkpoints were measured differently."""
-
-    assert _DECLARED == 1024
-
-
-def test_a_single_rating_is_a_point_rather_than_a_curve(pool: Path) -> None:
-    """A curve's axis is the rating, so one rating cannot produce one."""
-
-    with pytest.raises(TerminationBenchmarkError, match="at least two"):
-        _run(_config(pool, grid={"target_ratings": (1500,)}))
-
-
-def test_a_pool_this_suite_is_not_defined_over_is_refused(pool: Path) -> None:
-    """The generation a selection pins reaches the loader from here."""
-
-    with pytest.raises(TerminationBenchmarkError, match="expected 0{64}"):
-        _run(_config(pool, expected_pool_game_ids_sha256="0" * 64))
-
-
-# --- Recording ------------------------------------------------------------
-
-
-def test_every_reading_is_recorded_under_its_own_kind(
-    tmp_path: Path,
-    pool: Path,
-    small_bandwidth: None,
-) -> None:
-    """Three units, three records, each with its own series."""
-
-    store = ResultsStore(tmp_path / "results")
-    detail = DetailStore(tmp_path / "detail")
-    result = _run(
-        _config(pool, held_out={"enabled": True}),
-        runner=TargetAwareScorer(),
-        store=store,
-        detail=detail,
-    )
-    assert len(result.recorded_paths) == len(result.envelopes)
-    assert {envelope.kind for envelope in result.envelopes} == {
-        TERMINATION_KIND,
-        BENCHMARK_COST_KIND,
+    result = _run(_config(pool))
+    reported = {found.metric for found in _envelope(result).measurements}
+    assert reported == {
+        metric.identifier
+        for metric in registered_metrics(GAME_TERMINATION_FAMILY.identifier)
     }
-    # Every reading writes a detail payload; the cost record has none to write.
-    assert len(result.detail_paths) == len(result.envelopes) - 1
-    for path in result.detail_paths:
-        assert path.is_file()
 
 
-def test_a_greedy_reading_counts_the_endings_it_played_once(pool: Path) -> None:
-    """Every ending is counted, so a replayed game would be counted again.
-
-    Greedy seats replay one game per position, so a temperature-zero reading
-    plays one replicate rather than the configured grid of them.
-    """
-
-    result = _run(
-        _config(
-            pool,
-            grid={"temperatures": (0.0,), "seeds": (0, 1, 2)},
-            generation={"games_per_position": 2},
-        )
-    )
-
-    # Two ratings, one position each, neither swapped nor replayed.
-    assert result.reading(0.0).games == 2
-
-
-def test_the_generated_readings_are_scoped_by_the_recipe_they_were_played_under(
+def test_the_reading_is_recorded_under_its_own_kind(
     pool: Path,
+    tmp_path: Path,
 ) -> None:
-    """Whether the terminal actions were enabled decides what was measured."""
+    """The cost of the run is filed apart from the reading it paid for."""
 
-    enabled = _run(_config(pool)).reading(1.0)
-    disabled = _run(
-        _config(
-            pool,
-            runtime=RuntimeConfig(resignation_enabled=False, draw_claim_enabled=False),
-        )
-    ).reading(1.0)
-    assert enabled.execution.workload_sha256 != disabled.execution.workload_sha256
-    assert enabled.execution.workload["resignation_enabled"] is True
-    assert disabled.execution.workload["resignation_enabled"] is False
+    store = ResultsStore(tmp_path / "store")
+    result = _run(_config(pool), store=store, detail=DetailStore(tmp_path / "detail"))
 
-
-def test_the_premature_threshold_is_part_of_the_declared_workload(
-    pool: Path,
-) -> None:
-    """Moving it measures a different quantity, so it ends the series."""
-
-    default = _run(_config(pool)).reading(1.0)
-    moved = _run(
-        _config(pool, guardrails={"premature_material_balance": -3.0})
-    ).reading(1.0)
-    assert default.execution.workload_sha256 != moved.execution.workload_sha256
+    kinds = {envelope.kind for envelope in result.envelopes}
+    assert kinds == {TERMINATION_KIND, BENCHMARK_COST_KIND}
+    assert result.recorded_paths
 
 
 def test_the_family_reports_its_defects_with_a_direction() -> None:
-    """The guardrails are defects; the mix's own shape is not a target."""
+    """A reading with no direction cannot say whether a change was an improvement."""
 
     directions = {
         metric.identifier: metric.direction
         for metric in registered_metrics(GAME_TERMINATION_FAMILY.identifier)
     }
+
     assert (
-        directions[TERMINATION_PREMATURE_RESIGNATION_RATE.identifier]
-        is MetricDirection.LOWER_IS_BETTER
+        directions[TERMINATION_RESIGNATION_MASS_SEPARATION.identifier]
+        is MetricDirection.HIGHER_IS_BETTER
     )
     assert (
-        directions[TERMINATION_UNTIMED_NON_TERMINATION_RATE.identifier]
+        directions[TERMINATION_RESIGNATION_CALIBRATION_ERROR.identifier]
         is MetricDirection.LOWER_IS_BETTER
     )
+    # Signed rather than directional: resigning too readily and too rarely are
+    # different findings, and neither is the one this number is minimized at.
     assert (
-        directions[TERMINATION_SILENT_TERMINAL_ACTIONS.identifier]
-        is MetricDirection.LOWER_IS_BETTER
-    )
-    # The human comparison rate explains the model rate rather than improving
-    # on its own, which is what keeps a heuristic proxy honest.
-    assert (
-        directions[TERMINATION_PREMATURE_RESIGNATION_HUMAN_RATE.identifier]
+        directions[TERMINATION_RESIGNATION_CALIBRATION_GAP.identifier]
         is MetricDirection.INFORMATIONAL
     )
-    assert (
-        directions[TERMINATION_MIX_POOLED_DISTANCE.identifier]
-        is MetricDirection.LOWER_IS_BETTER
-    )
 
 
-def _held_out_envelope(result: TerminationBenchmarkResult) -> Any:
-    """Return the envelope carrying the held-out resignation reading."""
+_declared_order = [
+    "below-0",
+    "0-to-1",
+    "1-to-3",
+    "3-to-5",
+    "5-to-9",
+    "9-and-above",
+]
 
-    for envelope in result.envelopes:
-        if envelope.execution is None:
-            return envelope
-    raise AssertionError("no envelope was recorded for the held-out reading")
+
+def _envelope(result: TerminationBenchmarkResult) -> Any:
+    """Return the one reading envelope, apart from the cost record."""
+
+    envelopes = [
+        envelope for envelope in result.envelopes if envelope.kind == TERMINATION_KIND
+    ]
+    assert len(envelopes) == 1
+    return envelopes[0]

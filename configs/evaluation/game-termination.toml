@@ -1,4 +1,4 @@
-# How a checkpoint ends games, read against the human termination mix.
+# What the policy says about resigning, at positions humans actually reached.
 #
 # The model selection is deliberately absent: with no explicit checkpoint or
 # run, `anthro eval termination` uses the machine-local default selection
@@ -8,104 +8,29 @@
 #   anthro eval termination --config <this file> \
 #     --set model.run_path='"blitz-v3"'
 #
-# Values that decide *what* is measured are part of series identity: each
-# rating, each temperature, `generation.maximum_generated_plies`,
-# `generation.swap_colors`, `generation.claim_draws`, both
-# `runtime.*_enabled` switches, `guardrails.premature_material_balance`, and
-# each speed class. Values that decide only how precisely are not:
-# `grid.seeds`, `generation.games_per_position`, and `generation.concurrency`
-# can all be raised without ending a series.
+# Nothing is generated here, so the reading is scoped by the human content it
+# scored rather than by a generation recipe: the view and the pool decide what
+# the series is, and `loader.*` only decides how the pass is batched. How a
+# checkpoint's own games end is a property of generated play and is read by
+# `anthro eval rollout`, over games it plays with both terminal actions on.
 
-# Every reading here is against human endings, so the pool is required rather
-# than optional: the mix and the deficit are compared against it, and the
-# held-out resignation reading is scored on it.
 pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 # The generation this reading is defined over. A superseded pool left at that
 # path is refused rather than scored.
 expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
-# One mix reading per speed class, each its own series. The corpus is blitz, so
-# reading against the undivided reference is the honest default: a named speed
-# only becomes useful once the corpus spans speeds, and an unpopulated class
-# reports as unavailable rather than as a distance over nothing.
-speeds = ["overall"]
 
-[runtime]
-# Both terminal actions on. This is the point of the suite: a run with them
-# disabled measures a model that was never offered the choice, and its
-# silent-non-use reading would be vacuous. The switches join the declared
-# workload so such a run cannot share a series with this one.
-resignation_enabled = true
-draw_claim_enabled = true
-
-[grid]
-# The curve's axis, spanning the range the corpus covers. A point with no
-# generated game nearby drops out of the conditional reading rather than being
-# interpolated, so more points is cheap insurance rather than waste.
-target_ratings = [1100, 1300, 1500, 1700, 1900, 2100]
-# One reading per temperature. Temperature is a separate dial rather than a
-# point on the rating axis, so mixing two into one curve would report a
-# sampling setting as a rating effect.
-temperatures = [1.0]
-seeds = [0, 1, 2, 3, 4]
-
-[generation]
-# Long enough for a real game to finish and short enough that a checkpoint
-# shuffling in a drawn endgame does not run the suite for hours. It is also the
-# denominator of the non-termination guardrail: a game the limit stopped is
-# exactly the game that failed to end.
-maximum_generated_plies = 300
-games_per_position = 8
-swap_colors = true
-# The harness does not claim for a seat. Claiming would report the harness's
-# policy as the model's behavior, and the whole point of the non-termination
-# guardrail is whether the model uses the claim action it now has.
-claim_draws = false
-concurrency = 8
-
-[reference]
-maximum_rating_gap = 200
-# Resamples behind the mix distance's floor and reference level. A sample
-# count, so raising it narrows the floors without ending a series.
-resamples = 200
-
-[reference.view]
-# Sized from the bandwidth, matching the generated-play reference beside it and
-# for the same reason: the declared smoothing is a neighbour count, so this
-# number is the smoothing radius rather than a sample size. At 2,000 selected
-# games one neighbourhood spans 620 rating points against a grid spaced 200
-# apart; at 12,000 the widest is 180. It also supplies the human deficit
-# distribution and the human premature-resignation rate.
-#
-# Unlike the rollout reference this one is cheap — endings are read from the
-# row rather than replayed, so the whole pool costs four seconds. It is capped
-# anyway, because a mix distance smoothed over a different reference is a
-# different quantity whatever it cost to read.
-name = "termination-reference"
-maximum_games = 12000
-require_ratings = true
-
-[held_out]
-# The cheap half. One pass over frozen games, no rollouts, so it is affordable
-# far more often than the generated readings beside it.
-enabled = true
-
-[held_out.view]
+[view]
 name = "termination-held-out"
-# Every ply of every selected game is scored, so this is sized by scoring cost
-# rather than by how much reference the curve wants.
-maximum_games = 512
-
-[guardrails]
-# Material balance, in pawns from the resigning player's point of view, at or
-# above which a resignation counts as premature. Zero means "resigned while
-# level or ahead", which is the egregious case material alone can honestly
-# claim. Moving it measures a different quantity, so it ends the series.
-premature_material_balance = 0.0
+# Every ply of every selected game is scored, so this is sized by scoring cost.
+# The binding half is the plies where a human resigned: roughly three games in
+# ten carry one, and they are the numerator of every calibration band. At 4096
+# games the deepest band holds enough of them to separate a checkpoint from
+# itself, which 512 did not.
+maximum_games = 4096
 
 [detail]
-# Per-decision resignation mass, machine-local. The largest payload here and
-# the one that makes an unexpected held-out reading explainable.
+# Per-decision resignation mass, machine-local. The one payload that makes an
+# unexpected reading explainable, and one row per scored ply: at the view size
+# above that is around 275,000 rows per checkpoint, in a tier nothing prunes.
+# Turn it off for a cadence that reads more often than it looks.
 retain_decisions = true
-# Whole games off by default: the rollout suite already retains generated games
-# and this one would double that cost for the same trajectories.
-retain_games = false

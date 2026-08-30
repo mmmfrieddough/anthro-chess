@@ -184,11 +184,12 @@ model error from sampling error over a payload of generated games or a played
 session's log; see decision decomposition below. `anthro eval puzzles` measures
 the external puzzle-rating response described in the rating section, and
 `anthro eval ladder` measures the self-play rating ladder and its temperature
-response described beside it. `anthro eval termination` measures how a
-checkpoint ends games against the human termination mix; see game termination
-below. `anthro eval budget` reports held-out quality
-against the training budget that bought it, joining two families rather than
-defining a third; see training efficiency below. Training efficiency itself has no command, because it is
+response described beside it. `anthro eval termination` measures what the policy
+says about resigning at positions humans reached; see game termination below,
+where how a checkpoint's own games end is read by the rollout instead.
+`anthro eval budget` reports held-out quality against the training budget that
+bought it, joining two families rather than defining a third; see training
+efficiency below. Training efficiency itself has no command, because it is
 measured by `anthro train` while the run happens. `anthro eval suite` runs all
 of the checkpoint-scoped benchmarks above in one sweep; see the benchmark suite
 below.
@@ -1400,7 +1401,7 @@ what the UCI adapter's reconstructable debug events are for; `docs/interfaces.md
 owns the event format and `anthro eval decisions` is the reading surface. A
 reconstructed session is deliberately not turned into a game record: a log can
 end mid-game, and an invented termination would corrupt the one format the
-termination benchmarks read.
+generated-play readings count endings over.
 
 A generating benchmark decomposes the games it just played rather than writing
 them out and reading them back. The games are already in hand, and a payload
@@ -2103,16 +2104,15 @@ length and how a game ends are strong functions of the clock, so a reference
 drawn from however the pool happens to be composed reports that composition as a
 distance. The harness plays untimed, so a speed class slices the reference
 rather than the model, and it is the class `anthro_chess.data.speed` derives
-from the game's own time control, the same one the termination mix is read
-against. The reference names a **rating pool** as well, because rating is this
-comparison's own axis: every reference game is placed at the mean of its two
-players' ratings, and numbers drawn from two pools are two scales plotted as
-one. **One class per reading here**, where the termination mix compares several,
-so a population the pool holds no game of is not a distance over nothing but a
-suite with nothing to compare: it fails in the pool pass, before the games it
-would have measured are played. The same class selects the human-prefix arm's
-roots, since a mixed set of openings compared against one class's reference
-would put that difference into every distance.
+from the game's own time control. The reference names a **rating pool** as well,
+because rating is this comparison's own axis: every reference game is placed at
+the mean of its two players' ratings, and numbers drawn from two pools are two
+scales plotted as one. **One class per reading**, so a population the pool holds
+no game of is not a distance over nothing but a suite with nothing to compare:
+it fails in the pool pass, before the games it would have measured are played.
+The same class selects the human-prefix arm's roots, since a mixed set of
+openings compared against one class's reference would put that difference into
+every distance.
 
 ### Shared Generation Machinery
 
@@ -2526,26 +2526,43 @@ final position, and aggregate move prediction cannot surface it. A checkpoint
 that never resigns and one that resigns while winning can post the same move
 cross-entropy.
 
-The headline reading is a human-reference curve comparison over derived
-termination categories, sliced by rating and by speed. It shares the
-shape described under human-reference curve comparisons rather than defining a
-new one. Categories the model cannot produce, such as abandonment, stay visible
-as their own bucket instead of being folded into a neighbor, because hiding them
-inside a comparable category creates a permanent gap no checkpoint can close.
+The readings split by where they are measured rather than by subject. What a
+checkpoint's own games end as is a property of generated play and is read by
+the rollout, over games it plays with both terminal actions enabled. Whether
+the policy knows when to resign is answerable on games humans already played,
+costs one pass, and is `anthro eval termination`.
 
-Resignation carries a cheap held-out reading and an expensive generated one. On
-frozen human games, measure whether the policy assigns resignation mass at the
-ply where the player actually resigned, and how much mass it assigns at plies
-where the player moved instead. On generated games, measure the distribution of
-how far behind the model was when it resigned, against the human distribution
-for the same rating band.
+### Endings On Generated Play
+
+The mix is a human-reference curve comparison over derived termination
+categories, and shares the shape described under human-reference curve
+comparisons rather than defining a new one. It is one of generated play's
+compared quantities, beside the result distribution it refines.
+
+**The human side counts only endings the model could have produced.** A game
+that expired on a clock the harness does not run, that a player walked away
+from, or that the two players agreed, is left out of this quantity and stays in
+every other one. A total variation distance is the mass that has to move, so
+counting a category the model is barred from producing puts a floor under the
+distance, and the floor is not the damage. The mass has to land somewhere,
+which pushes the model above the human rate on every category it does produce,
+and a distance whose two sides sit on one side of each other is flat in exactly
+the redistribution it exists to report.
+`docs/decisions/0083-the-termination-mix-compares-reachable-endings.md` records
+what that cost and what it took to see it.
+
+The ply limit is the mirror image and stays where it is: a game the harness
+stopped has no human counterpart, so it sits in the model's own vocabulary with
+nothing opposite it. That is a gap a checkpoint can close, unlike the four the
+human side drops, and it is charged here as well as in the unfinished rate.
 
 Two guardrails matter more than closeness of fit, because their failure modes
 are not symmetric. **Premature resignation**, meaning resigning from positions
 that are not lost, is the product-critical failure: it is worse than never
 resigning and it is invisible to every other benchmark. **Silent non-use** is
 the opposite failure, where an enabled terminal action is never selected. Both
-should be reported explicitly rather than inferred from a distribution distance.
+are reported explicitly rather than inferred from a distribution distance, and
+per cell, so the rating axis stays readable.
 
 Judging whether a resignation was premature needs a position-quality signal.
 Material balance is the dependency-free proxy and is enough to catch the
@@ -2554,68 +2571,58 @@ engine-dependency decision recorded elsewhere in this document. Because the
 proxy is heuristic rather than decidable, the model's premature rate is reported
 beside the same rate computed over the human reference, following the rule the
 adjudicated decisions above already state: a heuristic predicate is read against
-a reference, never as an absolute.
+a reference, never as an absolute. The two are attributed differently and have
+to be: a generated resignation belongs to the seat holding the move, while a
+human platform accepts one on either turn, so the human side reads the seat the
+result went against.
 
 Draw claims are rare enough in human data that a distribution comparison carries
 little information. The reading that matters is the untimed non-termination
-rate: generated untimed games that reach a claimable dead position and never
-end. That is the failure the claim action exists to prevent. Correctness gates
-should also cover constructed claimable-threefold and automatic-draw sequences,
-so claim availability and claim handling are exact rather than sampled.
+rate: generated games that reached a claimable dead position and never ended.
+That is the failure the claim action exists to prevent. Correctness gates should
+also cover constructed claimable-threefold and automatic-draw sequences, so
+claim availability and claim handling are exact rather than sampled.
 
-### The Implemented Family
+**The terminal actions are enabled for generated play.** A seat that cannot
+resign plays every lost position out to mate or the ply limit, and humans end
+better than a third of their games by resigning, so its length, result, and
+termination distributions are held away from any human population by a gap no
+checkpoint can close. Both switches join the declared workload, so a run with
+them off cannot share a series with one that has them on.
+
+### Resignation Prediction On Human Games
 
 `anthro_chess.evaluation.termination` implements this and `anthro eval
-termination` is its reading surface. It produces three kinds of record, because
-it measures three kinds of thing. A **generated reading** spans one
-temperature's whole rating grid and carries the deficit and the guardrails. A
-**mix** additionally names the human speed class it was compared
-against, since two classes are two questions rather than two samples of one. The
-**held-out resignation** reading generated nothing, so it is scoped by the human
-content it scored rather than by a generation recipe, which is also what makes
-it the one reading here cheap enough to take often.
+termination` is its reading surface. One deterministic pass over a fixed view
+of frozen human games, scoped by the content it scored rather than by a
+generation recipe, which is what makes it cheap enough to take at a training
+cadence.
 
-The two sides are counted over one vocabulary formed as the union of the derived
-human categories and the harness's own. The ply limit is the model-only bucket
-that mirrors abandonment, kept visible for the same reason: a generated game the
-harness stopped has no human counterpart, and folding it into a comparable
-category would move mass a checkpoint cannot move.
+The **mass separation** is how much more probability the policy puts on
+resigning at the plies where a human resigned than at the plies where one moved.
+Neither half means much alone, since both rise together on a model that has
+merely learned the action exists.
 
-The generated side is untimed, because the harness plays no clock. A speed class
-therefore slices the *reference*, which is the useful direction anyway: the
-question is which human population a checkpoint's endings resemble. A class
-names one speed, and
-`docs/decisions/0056-the-speed-axis-is-derived-from-the-time-control.md` owns
-the derivation it names, so a blitz mix and a blitz training selection read one
-population. One class covers the reference undivided, and a class no reference
-game belongs to reports as unavailable rather than as a distance over nothing.
-
-The mix distance **saturates while the model produces none of the human
-categories**, and a reader tracking it early will otherwise mistake that for a
-broken instrument. A total-variation distance is the mass that has to move for
-the two distributions to agree, so a model producing zero of some set of human
-endings cannot score below the human mass on that set, whatever it does with
-its own. The first shakedown reading sat exactly there: across five checkpoints
-of one run the model ended games only by resigning or by hitting the ply limit,
-producing none of the eight other human categories, which carry 0.626 of human
-mass — and the distance read 0.626 at every checkpoint, to sixteen significant
-figures.
-
-That is the correct answer rather than a defect, and the number is not stuck:
-moving one percent of the model's mass onto checkmate moves the distance by
-exactly one percent. It unpins the moment a checkpoint checkmates anyone. Until
-then the composition change that *is* happening shows up in the category
-drill-down and in the rating-variation metric rather than in the headline, which
-is the reason the distance is read with its drill-down rather than on its own.
+The **deficit calibration** is the same mass read against material rather than
+pooled over every ply: the policy's mean resignation mass in each band of
+material the player to move was behind, against the share of plies in that band
+where the human resigned rather than moved. Both sides come from the same plies
+of the same games, so the position distribution is shared rather than each side
+bringing its own, and a model that spends as much resignation mass as humans
+while spending it in the wrong positions is separated from one that does not.
+The headline weights each band by how often a position in it comes up, so it
+reads as the gap at a ply drawn at random; the bands themselves travel with the
+reading, because the tail is where the interesting disagreement is and the
+weighting is not where it shows.
 
 Every reading with no population behind it reports an explicit unavailable with
 its reason rather than a zero. This matters most where a zero is a plausible
-measurement: a model that never resigned has no median deficit, and writing zero
-there would read as resigning while exactly level. The same shape covers a pool
-holding no game that carries a terminal action, which is what a corpus prepared
+measurement: a view holding no game that carries a terminal action has no
+resignation to score the policy against, and writing zero mass there would read
+as a policy that never wants to resign. That is also what a corpus prepared
 before the terminal actions existed looks like from here once it is compatible
-enough to load at all — an incompatible one is refused by the pool loader and
-the model runner on vocabulary identity, well before any metric is computed.
+enough to load at all; an incompatible one is refused by the pool loader and the
+model runner on vocabulary identity, well before any metric is computed.
 
 ## Training Efficiency
 

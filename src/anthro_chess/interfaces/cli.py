@@ -54,9 +54,12 @@ if TYPE_CHECKING:
         DetailStore,
         ResultsStore,
     )
-    from anthro_chess.evaluation.rollout import RolloutReading
+    from anthro_chess.evaluation.rollout import (
+        RolloutCell,
+        RolloutReading,
+        TerminationGuardrails,
+    )
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
-    from anthro_chess.evaluation.termination import Guardrails
     from anthro_chess.evaluation.views import ViewSelection
     from anthro_chess.training import TrainingConfig
 
@@ -2438,6 +2441,23 @@ def _render_comparison_table(reading: RolloutReading, width: int) -> list[str]:
     return lines
 
 
+def _render_guardrails(cell: RolloutCell) -> list[str]:
+    """Show what one cell did with the terminal actions it was offered."""
+
+    guardrails = cell.guardrails
+    return [
+        (
+            f"  resignations   {guardrails.resignations} "
+            f"({_optional_rate(guardrails.premature_rate)} premature), "
+            f"{_silent_actions(guardrails)}"
+        ),
+        (
+            f"  never ended    {guardrails.claimable_unfinished_games} game(s) "
+            "reached a claimable position and ran out of plies"
+        ),
+    ]
+
+
 def _render_rollout(result: RolloutBenchmarkResult) -> str:
     from anthro_chess.evaluation.games import GameTermination
 
@@ -2488,6 +2508,7 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                     "distinct moves"
                 ),
                 f"  repertoire     {_counts(distribution.repertoire_counts, limit=5)}",
+                *_render_guardrails(cell),
                 (
                     f"  waypoints      "
                     f"{distribution.waypoint_game_rate:.3f} of games stopped "
@@ -2515,10 +2536,15 @@ def _render_rollout(result: RolloutBenchmarkResult) -> str:
                 ),
             ]
         )
+        if reading.human_premature_rate is not None:
+            lines.append(
+                "  human resignations were "
+                f"{reading.human_premature_rate:.1%} premature by the same proxy"
+            )
         lines.extend(_render_bandwidth(reading))
         lines.extend(_render_comparison_table(reading, width))
         lines.extend(_render_unavailable(reading))
-        lines.extend(_render_repertoire_drilldown(reading))
+        lines.extend(_render_category_drilldowns(reading))
         lines.extend(_render_divergence_depth(reading))
         lines.extend(_render_exact_repertoire(reading))
     if result.recorded_paths:
@@ -2578,32 +2604,32 @@ def _render_unavailable(reading: RolloutReading) -> list[str]:
     ]
 
 
-def _render_repertoire_drilldown(reading: RolloutReading) -> list[str]:
-    """Show the largest repertoire categories with their mass beside the delta.
+def _render_category_drilldowns(reading: RolloutReading) -> list[str]:
+    """Show each categorical distance beside the categories behind it.
 
-    Family granularity is uneven — the broadest family holds a few hundred lines
-    and the median holds a handful — so a delta read without the category's mass
-    invites treating a swing on a narrow line as the same finding as one on a
-    family half the corpus plays.
+    A distance over categories says how much mass is in the wrong place and
+    never which place. Opening families are uneven, so a delta read without the
+    category's own mass invites treating a swing on a narrow line as the same
+    finding as one on a family half the corpus plays. Results and endings are
+    few enough that the table is the reading and the scalar summarizes it.
     """
 
-    from anthro_chess.evaluation.reference import ComparedQuantity
+    from anthro_chess.evaluation.curves import CurveQuantity
 
-    comparison = reading.comparisons.get(ComparedQuantity.REPERTOIRE)
-    if comparison is None:
-        return []
-    shares = comparison.category_shares()[:_DRILLDOWN_CATEGORIES]
-    if not shares:
-        return []
-    lines = [
-        "  repertoire by family",
-        f"    {'family':<40}{'mass':>8}{'model':>8}{'delta':>9}",
-    ]
-    lines.extend(
-        f"    {share.category[:40]:<40}{share.mass:>8.3f}"
-        f"{share.model:>8.3f}{share.delta:>+9.3f}"
-        for share in shares
-    )
+    lines: list[str] = []
+    for quantity, comparison in reading.comparisons.items():
+        if comparison.spec.quantity is not CurveQuantity.CATEGORICAL:
+            continue
+        shares = comparison.category_shares()[:_DRILLDOWN_CATEGORIES]
+        if not shares:
+            continue
+        lines.append(f"  {quantity.value} by category")
+        lines.append(f"    {'category':<40}{'mass':>8}{'model':>8}{'delta':>9}")
+        lines.extend(
+            f"    {share.category[:40]:<40}{share.mass:>8.3f}"
+            f"{share.model:>8.3f}{share.delta:>+9.3f}"
+            for share in shares
+        )
     return lines
 
 
@@ -2667,111 +2693,38 @@ def _against_null(null: float | None) -> str:
     return "" if null is None else f" (null {null:.4f})"
 
 
-def _termination_arm(
-    name: str,
-    distance: float,
-    *,
-    null: float | None,
-    floor: float | None,
-) -> str:
-    """Render one arm of the termination mix beside its own qualifiers."""
-
-    return (
-        f"  {name:<11} {distance:.4f}  "
-        f"null {_optional_value(null, '.4f')}  "
-        f"floor {_optional_value(floor, '.4f')}"
-    )
-
-
 def _render_termination(result: TerminationBenchmarkResult) -> str:
+    held_out = result.held_out
+    calibration = held_out.calibration
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
-        f"Games: {result.games} generated against {result.reference_games} human "
-        f"reference game(s)",
+        f"Scored {held_out.games} human game(s): {held_out.resignation_plies} "
+        f"resignation ply/plies, {held_out.move_plies} move ply/plies",
+        "",
+        "Resignation mass",
+        f"  at resignation {_optional_value(held_out.mass_at_resignation, '.5f')}  "
+        f"at moves {_optional_value(held_out.mass_at_moves, '.5f')}  "
+        f"separation {_optional_value(held_out.separation, '.5f')}",
     ]
-    for reading in result.generated:
-        guardrails = reading.guardrails
-        deficit = reading.deficit
+    if calibration.buckets:
         lines.extend(
             [
                 "",
-                f"{reading.label}  "
-                f"(series workload {reading.execution.workload_sha256[:12]})",
-                f"  games          {reading.games} across ratings "
-                f"{', '.join(str(rating) for rating in reading.ratings)}",
-                f"  terminations   {_counts(reading.category_counts)}",
-                f"  resignations   {guardrails.resignations} "
-                f"({_optional_rate(guardrails.premature_rate)} premature, "
-                f"human {_optional_rate(guardrails.human_premature_rate)})",
-                f"  deficit        median "
-                f"{_optional_value(deficit.model_median)} pawns vs human "
-                f"{_optional_value(deficit.human_median)} "
-                f"(distance {_optional_value(deficit.distance, '.4f')})",
-                f"  silent actions {_silent_actions(guardrails)}",
-                f"  never ended    {guardrails.claimable_unfinished_games} claimable "
-                f"({_optional_rate(guardrails.untimed_non_termination_rate)})",
+                "By material the player to move was behind",
+                f"  error {_optional_value(calibration.error, '.5f')}  "
+                f"gap {_optional_value(calibration.gap, '+.5f')} over "
+                f"{calibration.plies} scored ply/plies",
+                f"    {'pawns behind':<16}{'plies':>8}{'human':>10}{'model':>10}"
+                f"{'gap':>10}",
             ]
         )
-        for name, reason in sorted(reading.unavailable.items()):
-            lines.append(f"  unavailable    {name}: {reason}")
-    for mix in result.mixes:
-        comparison = mix.comparison
-        references = comparison.references
-        spreads = comparison.dispersions
-        # One line per arm rather than one line for both. The verdict is
-        # computed from each distance against its own null, so a layout that
-        # puts one arm's qualifier beside the other arm's distance invites the
-        # misreading #172 records.
-        lines.extend(
-            [
-                "",
-                f"Termination mix — {mix.label}  "
-                f"(series {mix.execution.workload_sha256[:12]})",
-                f"  {mix.model_games} generated vs {mix.human_games} human game(s)",
-                # The realized span rather than the declared neighbour count,
-                # for the reason the rollout reading gives: the count is the
-                # same whatever the reference holds, and it is the span that
-                # says whether the grid resolves the points it plots.
-                "  bandwidth   reaches "
-                + " ".join(f"±{point.bandwidth:.0f}" for point in comparison.points)
-                + " rating points",
-                _termination_arm(
-                    "conditional",
-                    comparison.conditional_distance,
-                    null=None if references is None else references.conditional,
-                    floor=None if spreads is None else spreads.conditional_floor,
-                ),
-                _termination_arm(
-                    "pooled",
-                    comparison.pooled_distance,
-                    null=None if references is None else references.pooled,
-                    floor=None if spreads is None else spreads.pooled_floor,
-                ),
-                f"  reads as    {comparison.response.value}",
-            ]
-        )
-        for share in comparison.category_shares()[:6]:
+        for bucket in calibration.buckets:
             lines.append(
-                f"    {share.category:<24}human {share.human:.3f}  "
-                f"model {share.model:.3f}  delta {share.delta:+.3f}"
+                f"    {bucket.bucket:<16}{bucket.plies:>8}"
+                f"{bucket.human_rate:>10.5f}{bucket.model_mass:>10.5f}"
+                f"{bucket.gap:>+10.5f}"
             )
-    held_out = result.held_out
-    if held_out is not None:
-        lines.extend(
-            [
-                "",
-                "Held-out resignation prediction",
-                f"  {held_out.games} game(s), {held_out.resignation_plies} "
-                f"resignation ply/plies, {held_out.move_plies} move ply/plies",
-                f"  mass at resignation "
-                f"{_optional_value(held_out.mass_at_resignation, '.5f')}  "
-                f"at moves {_optional_value(held_out.mass_at_moves, '.5f')}  "
-                f"separation {_optional_value(held_out.separation, '.5f')}",
-            ]
-        )
-        for name, reason in sorted(held_out.unavailable.items()):
-            lines.append(f"  unavailable    {name}: {reason}")
-    for name, reason in sorted(result.unavailable.items()):
+    for name, reason in sorted(held_out.unavailable.items()):
         lines.append(f"Unavailable: {name}: {reason}")
     if result.recorded_paths:
         lines.append("")
@@ -2779,7 +2732,7 @@ def _render_termination(result: TerminationBenchmarkResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _silent_actions(guardrails: Guardrails) -> str:
+def _silent_actions(guardrails: TerminationGuardrails) -> str:
     """Return a readable summary of which enabled actions went unused."""
 
     from anthro_chess.chess import DRAW_CLAIM_ACTION_ID, RESIGNATION_ACTION_ID

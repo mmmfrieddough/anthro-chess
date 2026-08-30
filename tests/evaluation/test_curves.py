@@ -1197,8 +1197,11 @@ def test_the_category_drilldown_shows_mass_beside_the_delta() -> None:
         spec=spec, human=human, model=model, resamples=0
     ).category_shares()
 
-    # Ordered by the reference's own mass, so the broad family leads.
-    assert [share.category for share in shares] == ["sicilian", "novelty"]
+    # Ordered by the larger of the two sides, so the category the model spent
+    # all of its own mass on leads the family the reference mostly plays.
+    assert [share.category for share in shares] == ["novelty", "sicilian"]
+    assert shares[0].model > shares[0].mass
+    assert shares[1].mass > shares[1].model
     assert shares[0].mass == shares[0].human
     assert shares[0].delta == pytest.approx(shares[0].model - shares[0].human)
     assert sum(abs(share.delta) for share in shares) == pytest.approx(

@@ -79,12 +79,19 @@ import numpy as np
 import torch
 from pydantic import Field, StrictBool, StrictInt, model_validator
 
-from anthro_chess.chess import MOVE_ACTION_COUNT, decode_move
+from anthro_chess.chess import (
+    DRAW_CLAIM_ACTION_ID,
+    MOVE_ACTION_COUNT,
+    RESIGNATION_ACTION_ID,
+    decode_move,
+    is_terminal_action,
+)
 from anthro_chess.config import ConfigModel, ResolvedConfig
 from anthro_chess.data.schema import (
     NormalizedColumn,
     row_game_id,
 )
+from anthro_chess.data.termination import LOSER_COLORS, TerminationCategory
 from anthro_chess.evaluation.curves import (
     CurveComparison,
     CurveComparisonError,
@@ -205,11 +212,15 @@ from anthro_chess.evaluation.results.metrics import (
     GENERATED_PLAY_MEAN_GAME_PLIES,
     GENERATED_PLAY_MEAN_GENERATED_PLIES,
     GENERATED_PLAY_POOLED_DISTANCE,
+    GENERATED_PLAY_PREMATURE_RESIGNATION_HUMAN_RATE,
+    GENERATED_PLAY_PREMATURE_RESIGNATION_RATE,
     GENERATED_PLAY_RATING_VARIATION,
     GENERATED_PLAY_REPEATED_POSITION_GAME_RATE,
     GENERATED_PLAY_RESIGNATION_RATE,
+    GENERATED_PLAY_SILENT_TERMINAL_ACTIONS,
     GENERATED_PLAY_THREEFOLD_CLAIMABLE_GAME_RATE,
     GENERATED_PLAY_UNFINISHED_GAME_RATE,
+    GENERATED_PLAY_UNTIMED_NON_TERMINATION_RATE,
     GENERATED_PLAY_WAYPOINT_GAME_RATE,
     GENERATED_PLAY_WHITE_SCORE,
     MOVE_PREDICTION_PROJECTION,
@@ -470,6 +481,59 @@ class RolloutBenchmarkConfig(CheckpointSelection, PoolGenerationPin):
         return self
 
 
+#: Material balance, in pawns from the resigning player's point of view, at or
+#: above which a resignation counts as premature. Zero means "resigned while
+#: level or ahead", which is the egregious case material alone can honestly
+#: claim. Declared rather than configured, since moving it counts a different
+#: set of resignations.
+PREMATURE_MATERIAL_BALANCE = 0.0
+
+
+@dataclass(frozen=True)
+class TerminationGuardrails:
+    """What one cell's games say about the terminal actions it was offered."""
+
+    resignations: int
+    #: Resignations from positions the resigning player was not behind in on
+    #: material. Heuristic by construction, which is why the reading it is
+    #: judged against is the same count over human resignations rather than
+    #: zero.
+    premature_resignations: int
+    #: Terminal actions the runtime offered this cell, and the ones no game in
+    #: it ever selected. A disabled action is absent from both rather than
+    #: silently counted as used.
+    enabled_terminal_actions: tuple[int, ...]
+    silent_terminal_actions: tuple[int, ...]
+    #: Games that reached a position a draw could have been claimed in and
+    #: still ran out of plies. With no clock to settle it, this is the failure
+    #: the claim action exists to prevent.
+    claimable_unfinished_games: int
+
+    def as_record(self) -> dict[str, Any]:
+        """Return the stored form of one cell's guardrails."""
+
+        return {
+            "resignations": self.resignations,
+            "premature_resignations": self.premature_resignations,
+            "premature_rate": self.premature_rate,
+            "enabled_terminal_actions": list(self.enabled_terminal_actions),
+            "silent_terminal_actions": list(self.silent_terminal_actions),
+            "claimable_unfinished_games": self.claimable_unfinished_games,
+        }
+
+    @property
+    def premature_rate(self) -> float | None:
+        """Return the share of resignations that were premature.
+
+        ``None`` where the model never resigned, which is a reading rather
+        than a zero: the silent-action count is what says so.
+        """
+
+        if not self.resignations:
+            return None
+        return self.premature_resignations / self.resignations
+
+
 @dataclass(frozen=True)
 class RolloutCell:
     """One measured point of the matrix: an arm at a rating and temperature."""
@@ -488,6 +552,8 @@ class RolloutCell:
     #: The cell's reading, pooled over every seed.
     distribution: GameDistribution
     execution: ExecutionRecord
+    #: What this cell did with the terminal actions it was offered.
+    guardrails: TerminationGuardrails
     #: Per-game features, always kept: the human-reference curve reads one
     #: observation per game from them, so discarding them would make the
     #: comparison depend on whether whole games happened to be retained.
@@ -539,6 +605,7 @@ class RolloutCell:
                 for seed, distribution in self.per_seed
             ],
             "decisions": None if self.decisions is None else self.decisions.as_record(),
+            "guardrails": self.guardrails.as_record(),
         }
 
 
@@ -757,6 +824,14 @@ class RolloutReading:
     #: on a waypoint has made no repertoire choice to compare, and reporting
     #: that is more useful than failing the whole reading or writing a zero.
     unavailable: dict[ComparedQuantity, str] = field(default_factory=dict)
+    #: The share of human resignations in the reference the material proxy
+    #: calls premature. The reading the model's own rate is judged against: the
+    #: proxy admits unsound positions on both sides identically, so the model
+    #: rate is legible against this and not against zero.
+    human_premature_rate: float | None = None
+    #: The resignations that rate is a share of, which is a fraction of the
+    #: reference rather than all of it.
+    human_premature_resignations: int = 0
     #: The repertoire distance recomputed at each book ply. Detail tier only.
     divergence: tuple[DepthDivergence, ...] = ()
     #: The shallow repertoire enumerated exactly, when the walk ran.
@@ -1162,6 +1237,7 @@ def _measure_cell(
                 records.extend(_spread(played, min(remaining, retained_share)))
     decomposition = _decompose(read)
     cell = RolloutCell(
+        guardrails=_termination_guardrails(config, features),
         arm=source.arm,
         target_rating=target_rating,
         temperature=temperature,
@@ -1183,6 +1259,92 @@ def _measure_cell(
         ),
     )
     return cell
+
+
+def _human_premature_rate(
+    config: RolloutBenchmarkConfig,
+    reference: HumanReference,
+) -> tuple[float | None, int]:
+    """Return the share of human resignations called early, and of how many.
+
+    The losing player rather than the one holding the move: a human platform
+    accepts a resignation on either turn, so the seat that gave up is read off
+    the result instead of off the final position.
+    """
+
+    resignations = 0
+    premature = 0
+    for game in reference.games:
+        if game.termination != TerminationCategory.RESIGNATION.value:
+            continue
+        loser = LOSER_COLORS.get(game.result)
+        if loser is None:
+            continue
+        resignations += 1
+        if (
+            game.trajectory.material_advantage(white=loser is chess.WHITE)
+            >= PREMATURE_MATERIAL_BALANCE
+        ):
+            premature += 1
+    if not resignations:
+        return None, 0
+    return premature / resignations, resignations
+
+
+def _termination_guardrails(
+    config: RolloutBenchmarkConfig,
+    features: Sequence[GameFeatures],
+) -> TerminationGuardrails:
+    """Read one cell's terminal-action behavior off the games it played.
+
+    Every quantity comes from features the analysis pass already produced, so
+    this costs a walk over the cell rather than a second replay of it.
+    """
+
+    enabled = tuple(
+        action_id
+        for action_id, allowed in (
+            (RESIGNATION_ACTION_ID, config.runtime.resignation_enabled),
+            (DRAW_CLAIM_ACTION_ID, config.runtime.draw_claim_enabled),
+        )
+        if allowed
+    )
+    # The last action only: a record carrying a terminal action anywhere else
+    # is refused when it is built, so scanning the rest finds nothing.
+    selected = {
+        actions[-1]
+        for feature in features
+        for actions in (feature.trajectory.action_ids,)
+        if actions and is_terminal_action(actions[-1])
+    }
+    resigned = [
+        feature
+        for feature in features
+        if feature.termination is GameTermination.RESIGNATION
+    ]
+    return TerminationGuardrails(
+        resignations=len(resigned),
+        # The terminal action belongs to whoever held the move, so the position
+        # the game stopped at is the resigning player's own.
+        premature_resignations=sum(
+            1
+            for feature in resigned
+            if feature.trajectory.material_advantage(
+                white=feature.trajectory.final_turn_white
+            )
+            >= PREMATURE_MATERIAL_BALANCE
+        ),
+        enabled_terminal_actions=enabled,
+        silent_terminal_actions=tuple(
+            action_id for action_id in enabled if action_id not in selected
+        ),
+        claimable_unfinished_games=sum(
+            1
+            for feature in features
+            if feature.termination is GameTermination.PLY_LIMIT
+            and feature.trajectory.claim_ever_available
+        ),
+    )
 
 
 def _spread(records: Sequence[GameRecord], count: int) -> tuple[GameRecord, ...]:
@@ -1486,6 +1648,7 @@ def _curve_reading(
     # what decides whether another run of it would produce different games —
     # and therefore whether it has any evaluation noise for a floor to bound.
     varies = replicates_vary((temperature,))
+    premature_rate, premature_resignations = _human_premature_rate(config, reference)
     reading_execution = _reading_execution_record(
         config, cells, temperature, ratings, reference_view, device=device
     )
@@ -1536,6 +1699,8 @@ def _curve_reading(
         human_games=len(reference.games),
         comparisons=comparisons,
         seed_spread=_seed_spread(config, cells, reference, ratings),
+        human_premature_rate=premature_rate,
+        human_premature_resignations=premature_resignations,
         unavailable=unavailable,
         divergence=_divergence_by_depth(
             config, cells, reference, ratings, book=book, model_varies=varies
@@ -2355,6 +2520,59 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
             distribution.classified_games,
         ),
     )
+    return (
+        tuple(
+            measurement(
+                identifier,
+                value,
+                workload=workload,
+                sample_size=sample_size if sample_size > 0 else None,
+            )
+            for identifier, value, sample_size in values
+        )
+        + _decision_measurements(cell, workload=workload)
+        + _guardrail_measurements(cell, workload=workload)
+    )
+
+
+def _guardrail_measurements(
+    cell: RolloutCell,
+    *,
+    workload: WorkloadComponent,
+) -> tuple[Measurement, ...]:
+    """Return one cell's terminal-action guardrails.
+
+    Sample sizes differ per metric: a premature rate is a share of the
+    resignations that happened, while the silent count and the non-termination
+    rate rest on every game played, since the evidence that an action was never
+    selected is how many games could have selected it.
+
+    A cell that offered no terminal action reports the silent count as nothing
+    rather than as a passing zero, which would read as an action used.
+    """
+
+    guardrails = cell.guardrails
+    games = cell.distribution.games
+    values: list[tuple[str, float | None, int]] = [
+        (
+            GENERATED_PLAY_PREMATURE_RESIGNATION_RATE.identifier,
+            guardrails.premature_rate,
+            guardrails.resignations,
+        ),
+        (
+            GENERATED_PLAY_UNTIMED_NON_TERMINATION_RATE.identifier,
+            _fraction(guardrails.claimable_unfinished_games, games),
+            games,
+        ),
+    ]
+    if guardrails.enabled_terminal_actions:
+        values.append(
+            (
+                GENERATED_PLAY_SILENT_TERMINAL_ACTIONS.identifier,
+                float(len(guardrails.silent_terminal_actions)),
+                games,
+            )
+        )
     return tuple(
         measurement(
             identifier,
@@ -2363,7 +2581,8 @@ def _measurements(cell: RolloutCell) -> tuple[Measurement, ...]:
             sample_size=sample_size if sample_size > 0 else None,
         )
         for identifier, value, sample_size in values
-    ) + _decision_measurements(cell, workload=workload)
+        if value is not None
+    )
 
 
 def _decision_measurements(
@@ -2490,6 +2709,18 @@ def _curve_measurements(reading: RolloutReading) -> tuple[Measurement, ...]:
                     ].identifier,
                 ),
                 workload=workload,
+            )
+        )
+    if reading.human_premature_rate is not None:
+        # With the reading rather than with a cell: it is a property of the
+        # reference every cell is judged against, and the same number on each
+        # of them would read as a per-cell measurement of the checkpoint.
+        measurements.append(
+            measurement(
+                GENERATED_PLAY_PREMATURE_RESIGNATION_HUMAN_RATE.identifier,
+                reading.human_premature_rate,
+                workload=workload,
+                sample_size=reading.human_premature_resignations,
             )
         )
     return tuple(measurements)

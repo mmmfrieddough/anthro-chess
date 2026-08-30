@@ -37,6 +37,7 @@ from pydantic import Field, StrictBool, StrictInt
 
 from anthro_chess.config import ConfigModel
 from anthro_chess.data.schema import NormalizedColumn
+from anthro_chess.data.termination import TerminationCategory
 from anthro_chess.evaluation.curves import (
     BandwidthSelection,
     CurveQuantity,
@@ -46,6 +47,7 @@ from anthro_chess.evaluation.curves import (
 )
 from anthro_chess.evaluation.games import (
     GameFeatures,
+    GameTermination,
     TrajectoryFeatures,
     analyze_trajectory,
 )
@@ -65,10 +67,7 @@ class ComparedQuantity(StrEnum):
     """What a generated-play curve comparison measures.
 
     Deliberately not everything a rollout reports. A quantity belongs here when
-    a human game and a generated game both have it and the two are comparable:
-    the harness's ply limit has no human counterpart, and how a game *ended* is
-    a richer vocabulary on the human side than the model can produce, so
-    termination is measured separately rather than folded in here.
+    a human game and a generated game both have it and the two are comparable.
     """
 
     #: Moves per game. The most legible human-likeness reading there is, and
@@ -109,6 +108,13 @@ class ComparedQuantity(StrEnum):
     BOOK_CONSUMED_FRACTION = "book-consumed-fraction"
     #: Distinct moves as a share of moves played.
     MOVE_DIVERSITY = "move-diversity"
+    #: How the game ended, over the endings both sides can reach. The human
+    #: side leaves out what the model cannot produce, since a distance whose
+    #: two sides sit on one side of each other is flat in the redistribution it
+    #: exists to report. The ply limit stays on the model's side with nothing
+    #: opposite it, which is a gap a checkpoint can close. See
+    #: ``docs/decisions/0083-the-termination-mix-compares-reachable-endings.md``.
+    TERMINATION = "termination"
 
     @property
     def kind(self) -> CurveQuantity:
@@ -128,7 +134,18 @@ _QUANTITY_KINDS: Mapping[ComparedQuantity, CurveQuantity] = {
     ComparedQuantity.BOOK_AVAILABLE_DEPTH: CurveQuantity.SCALAR,
     ComparedQuantity.BOOK_CONSUMED_FRACTION: CurveQuantity.SCALAR,
     ComparedQuantity.MOVE_DIVERSITY: CurveQuantity.SCALAR,
+    ComparedQuantity.TERMINATION: CurveQuantity.CATEGORICAL,
 }
+
+
+#: Human endings with no counterpart in the generated vocabulary: a clock the
+#: harness does not run, a player who cannot walk away, an agreement there is
+#: no channel to reach, and an ending the derivation could not classify. The
+#: human side leaves them out of the termination quantity and is renormalized
+#: over the rest by doing so.
+UNREACHABLE_HUMAN_TERMINATIONS: frozenset[str] = frozenset(
+    category.value for category in TerminationCategory
+) - frozenset(termination.value for termination in GameTermination)
 
 
 @dataclass(frozen=True)
@@ -147,6 +164,10 @@ class ComparableGame:
     rating: float
     result: str
     trajectory: TrajectoryFeatures
+    #: How the game ended, in the shared vocabulary, or ``None`` where this
+    #: side cannot contribute it: a human ending only a platform produces has
+    #: no counterpart to be compared against.
+    termination: str | None
     stream: int | None = None
 
     def value(
@@ -184,6 +205,8 @@ class ComparableGame:
             return float(opening.available_ply) if opening.classified else None
         if quantity is ComparedQuantity.BOOK_CONSUMED_FRACTION:
             return opening.consumed_fraction if opening.classified else None
+        if quantity is ComparedQuantity.TERMINATION:
+            return self.termination
         return self.trajectory.distinct_move_fraction
 
     def observation(
@@ -262,6 +285,7 @@ REFERENCE_COLUMNS = (
     NormalizedColumn.ACTION_IDS.value,
     NormalizedColumn.INITIAL_POSITION.value,
     NormalizedColumn.RESULT.value,
+    NormalizedColumn.TERMINATION_CATEGORY.value,
 )
 
 
@@ -331,6 +355,7 @@ def generated_games(
             rating=float(rating),
             result=str(feature.result),
             trajectory=feature.trajectory,
+            termination=feature.termination.value,
             stream=feature.seed,
         )
         for feature in features
@@ -357,14 +382,24 @@ def _comparable_game(
         [int(value) for value in action_ids],
         book=book,
     )
+    category = row.get(NormalizedColumn.TERMINATION_CATEGORY.value)
     return (
         ComparableGame(
             rating=(float(white) + float(black)) / 2.0,
             result=str(row[NormalizedColumn.RESULT.value]),
             trajectory=trajectory,
+            termination=_reachable_termination(category),
         ),
         None,
     )
+
+
+def _reachable_termination(category: object) -> str | None:
+    """Return a human ending the model could have produced, or ``None``."""
+
+    if not category or str(category) in UNREACHABLE_HUMAN_TERMINATIONS:
+        return None
+    return str(category)
 
 
 #: Version of the declared curve shape. Bumping it ends every generated-play
