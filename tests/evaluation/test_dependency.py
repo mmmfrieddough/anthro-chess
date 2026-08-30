@@ -31,6 +31,7 @@ from anthro_chess.evaluation.policy import (
 from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
+    DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY,
 )
 
 CONDITIONING_VALUES = (1000, 2200)
@@ -87,6 +88,79 @@ def test_cross_conditioning_matches_when_each_slice_prefers_its_own_value() -> N
         (cell.rating_band, cell.conditioning_rating): cell.move_loss
         for cell in cross.cells
     }[("under_1200", 1000)] == pytest.approx(1.0)
+
+
+def test_the_away_band_penalty_grades_what_the_match_rate_saturates() -> None:
+    """Both bands still prefer their own value, so the rate cannot separate these.
+
+    One arm prefers its own conditioning by a hair and the other by a mile.
+    That is the case the match rate was always going to miss, since it counts
+    slices rather than measuring them.
+    """
+
+    def reading(away: float) -> tuple[float, float]:
+        contexts: dict[PositionKey, PositionContext] = {}
+        true: list[PositionPolicy] = []
+        low_scores: list[float] = []
+        high_scores: list[float] = []
+        for index in range(4):
+            contexts[(1, index)] = _context(1, index, rating=1000, band="under_1200")
+            contexts[(2, index)] = _context(2, index, rating=2200, band="2000_plus")
+            true.extend([_policy(1, index, 2.0), _policy(2, index, 2.0)])
+            low_scores.extend([1.0, 1.0 + away])
+            high_scores.extend([1.0 + away, 1.0])
+        result = _build(
+            contexts,
+            true,
+            {},
+            conditioned={1000: low_scores, 2200: high_scores},
+        )
+        cross = result.cross_conditioning
+        assert cross.match_rate is not None
+        assert cross.penalty is not None
+        return cross.match_rate, cross.penalty
+
+    narrow_rate, narrow_penalty = reading(0.05)
+    wide_rate, wide_penalty = reading(2.0)
+
+    assert narrow_rate == pytest.approx(wide_rate)
+    assert narrow_penalty == pytest.approx(0.05)
+    assert wide_penalty == pytest.approx(2.0)
+
+
+def test_the_away_band_penalty_carries_a_per_game_share() -> None:
+    """Unlike the match rate it is a mean over positions, so a floor can exist.
+
+    Recovering the reported value from the retained totals is what says the
+    dispersion beside it describes the quantity printed beside it.
+    """
+
+    contexts = {
+        (1, 0): _context(1, 0, rating=1000, band="under_1200"),
+        (2, 0): _context(2, 0, rating=2200, band="2000_plus"),
+        (2, 1): _context(2, 1, rating=2200, band="2000_plus"),
+    }
+    true = [_policy(1, 0, 2.0), _policy(2, 0, 2.0), _policy(2, 1, 2.0)]
+
+    result = _build(
+        contexts,
+        true,
+        {},
+        conditioned={1000: [1.0, 4.0, 5.0], 2200: [3.0, 1.0, 1.0]},
+        minimum_slice_positions=1,
+    )
+
+    penalty = result.cross_conditioning.penalty
+    identifier = DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier
+    shares = {item.game_id: item.metrics[identifier] for item in result.per_game_totals}
+    assert shares[1].positions == 1
+    assert shares[2].positions == 2
+    assert shares[1].total == pytest.approx(2.0)
+    assert shares[2].total == pytest.approx(7.0)
+    weighted = sum(item.total for item in shares.values()) / sum(
+        item.positions for item in shares.values()
+    )
+    assert penalty == pytest.approx(weighted)
 
 
 def test_cross_conditioning_reports_thin_slices_without_scoring_them() -> None:

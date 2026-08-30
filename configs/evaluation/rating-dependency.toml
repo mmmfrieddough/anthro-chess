@@ -16,14 +16,19 @@ pool = "artifacts/lichess-univ-2018-01-2021-06-test"
 expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de903da00bc4525a94c"
 
 [view]
-# Its own view, and a small one, because this reading asks a coarser question
-# than held-out prediction does and pays far more per game to ask it: every
-# batch is scored once under the true conditioning and then again under each
-# corrupted and each fixed one, which is eight forward passes where the
-# checkpoint reading pays one. A degradation large enough to say the model
-# reads its input at all does not need the resolution a move-loss delta does.
+# Its own view, because every batch is scored once per distinct conditioning
+# where the checkpoint reading scores it once in total: under the true
+# conditioning, under each corrupted one, and at each rating on the
+# cross-conditioning grid. Sharing one view would have made the family that
+# tolerates a smaller sample pay for the family that does not.
+#
+# Sized on the narrowest quantity, which is the shuffled degradation. Four
+# independent draws at 2000 games put its spread at 0.0031, and it moved 0.0049
+# across four times the training, clearing its floor by 1.34: close enough that
+# one unlucky draw reads as no movement at all. Four times the games halves the
+# floor and takes that to 2.64.
 name = "rating-dependency"
-maximum_games = 2000
+maximum_games = 8000
 
 [loader]
 batch_size = 8

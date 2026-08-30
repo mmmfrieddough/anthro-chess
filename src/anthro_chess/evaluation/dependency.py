@@ -1,19 +1,19 @@
 """Dependency tests for the rating conditioning input.
 
-Rating-sliced loss cannot show that a model reads the rating input. It
-measures how hard each band's positions are to predict, and it looks
-unremarkable on a model that ignores conditioning entirely. These tests answer
-the different question: score the same held-out positions under true and
-corrupted conditioning, and see whether the prediction gets worse.
+Score the same held-out positions under true and corrupted conditioning, and
+see whether the prediction gets worse.
 
 Three forms are computed, each answering more than the last:
 
 - **corruption** shows sensitivity. A conditioning input the model uses should
-  predict worse when the value is shuffled, pinned to a constant, or removed.
+  predict worse when the value is shuffled or removed. Absence probes an
+  unseen input rather than reliance on the value, because the corpus rates
+  every game and the rating-absent embedding is never trained.
 - **cross-conditioning** shows direction. Scoring every rating slice under
   every conditioning value should put each slice's best result on the matching
   pair, which separates a model that reacts to the input from one that learned
-  its meaning.
+  its meaning. Reported both as the fraction of slices that match and as
+  what a position pays for being scored outside its own band.
 - **within-game response** shows whether rating is tracked or treated as a
   static prior, by asking whether the policy at a fixed stated rating leans
   toward the strong-conditioned policy when the play so far has looked strong.
@@ -49,7 +49,7 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ABSENT_DEGRADATION,
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
-    DEPENDENCY_RATING_CONSTANT_DEGRADATION,
+    DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY,
     DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
 )
 from anthro_chess.evaluation.slices import (
@@ -58,10 +58,12 @@ from anthro_chess.evaluation.slices import (
     rating_band_name,
 )
 
+#: Version 3 carries the cross-conditioning penalty and the pinned-rating curve,
+#: and drops the ``constant`` corruption entry.
 #: Version 2 reads ``maturity`` off the evaluated checkpoint. Version 1 records
 #: carry the position count their run finished on for every checkpoint in it, so
 #: the two are not comparable per position.
-DEPENDENCY_TEST_VERSION = 2
+DEPENDENCY_TEST_VERSION = 3
 
 #: Key identifying one scored position across conditioning passes.
 PositionKey = tuple[int, int]
@@ -85,10 +87,12 @@ class ConditioningKind(StrEnum):
     ABSENT = "absent"
 
 
-#: ``TRUE`` has no entry: it is the baseline the others degrade from.
+#: ``TRUE`` has no entry: it is the baseline the others degrade from, and
+#: ``CONSTANT`` none because the cross-conditioning table already scores every
+#: position at each fixed rating, so a dedicated pass would buy one point of a
+#: curve the reading holds in full.
 DEGRADATION_METRICS = {
     ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
-    ConditioningKind.CONSTANT: DEPENDENCY_RATING_CONSTANT_DEGRADATION,
     ConditioningKind.ABSENT: DEPENDENCY_RATING_ABSENT_DEGRADATION,
 }
 
@@ -119,7 +123,6 @@ class DependencyTestConfig(ConfigModel):
     """Code-owned schema for the rating dependency-test mode."""
 
     enabled: StrictBool = True
-    constant_rating: int = Field(default=1500, ge=0)
     cross_conditioning_ratings: tuple[int, ...] = (1000, 1400, 1800, 2200)
     shuffle_seed: str = Field(default="anthro-dependency-shuffle-v1", min_length=1)
     #: Slices thinner than this are reported but excluded from the headline
@@ -224,6 +227,18 @@ class CrossConditioningResult:
     compared_bands: tuple[str, ...]
     matched_bands: tuple[str, ...]
     excluded_bands: tuple[str, ...]
+    #: Mean extra loss a position pays under a conditioning outside its own
+    #: band, over the same bands ``compared_bands`` names.
+    penalty: float | None
+    #: Positions behind that mean, which is fewer than every rated one wherever
+    #: a band was too thin to compare or the grid names it no value.
+    penalty_positions: int
+    #: What scoring every position at one fixed rating costs, per grid rating.
+    pinned_degradations: tuple[tuple[int, float], ...]
+    #: The grid rating that falls inside each band, which is the column the
+    #: penalty priced the others against. The band table is an argument to this
+    #: reading, so a second derivation elsewhere could take a different one.
+    band_conditioning: tuple[tuple[str, int], ...]
 
     @property
     def match_rate(self) -> float | None:
@@ -237,6 +252,16 @@ class CrossConditioningResult:
         """Return the stable JSON-serializable record."""
 
         return {
+            "penalty": self.penalty,
+            "penalty_positions": self.penalty_positions,
+            "pinned_degradations": [
+                {"conditioning_rating": rating, "degradation": degradation}
+                for rating, degradation in self.pinned_degradations
+            ],
+            "band_conditioning": [
+                {"rating_band": band, "conditioning_rating": rating}
+                for band, rating in self.band_conditioning
+            ],
             "match_rate": self.match_rate,
             "compared_bands": list(self.compared_bands),
             "matched_bands": list(self.matched_bands),
@@ -603,12 +628,15 @@ def reduce_dependency_columns(
         _corruption_result(columns, name, rated, true_move_loss)
         for name in sorted(columns.corrupted)
     )
-    cross = _cross_conditioning(config, columns, rating_bands)
+    cross, penalties = _cross_conditioning(
+        config, columns, rating_bands, true_move_loss
+    )
     values = config.conditioning_values()
     within = _within_game(
         config,
         columns,
         rated,
+        rating_bands,
         anchor_low=values[0],
         anchor_high=values[-1],
     )
@@ -628,7 +656,7 @@ def reduce_dependency_columns(
             float(columns.anchor_agreement[index]) for index in signals
         ),
         maturity=maturity,
-        per_game_totals=_per_game_totals(columns, rated),
+        per_game_totals=_per_game_totals(columns, rated, penalties),
     )
 
 
@@ -650,16 +678,19 @@ def _require_conditioning_passes(
 def _per_game_totals(
     columns: DependencyColumns,
     rated: Sequence[int],
+    penalties: Mapping[int, MetricTotal],
 ) -> tuple[GameTotals, ...]:
     """Return each game's share of the position-mean dependency results.
 
     The game is the resampling unit, for the reason
-    ``anthro_chess.evaluation.noise`` gives. The anchors count the positions a
-    trajectory signal was computed for while the degradations count every rated
-    one, which is why each total carries its own.
+    ``anthro_chess.evaluation.noise`` gives. Each quantity carries its own
+    count, because they are means over different positions: the degradations
+    over every rated one, the anchors over those a trajectory signal was
+    computed for, and the cross-conditioning penalty over those whose band the
+    grid names a value for.
 
-    Two of the family's seven quantities are absent because no resampling of
-    games could recompute them; each declares why in its
+    Two of the family's quantities are absent because no resampling of games
+    could recompute them; each declares why in its
     ``no_sampling_floor_reason``.
     """
 
@@ -715,6 +746,9 @@ def _per_game_totals(
                     total=agreement[game_id],
                     positions=anchor_positions[game_id],
                 ),
+                DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier: penalties.get(
+                    game_id, MetricTotal(0.0, 0)
+                ),
             },
         )
         for game_id, count in sorted(positions.items())
@@ -737,11 +771,33 @@ def _corruption_result(
     )
 
 
+def _band_conditioning(
+    values: Sequence[int],
+    rating_bands: Sequence[RatingBand],
+) -> dict[str, int]:
+    """Return the conditioning value that belongs to each band the grid names.
+
+    A grid naming two values inside one band would leave that band without a
+    single value of its own, so the first wins and the second is read as an
+    away value like any other.
+    """
+
+    matching: dict[str, int] = {}
+    for value in values:
+        name = rating_band_name(value, rating_bands)
+        if name is not None:
+            matching.setdefault(name, value)
+    return matching
+
+
 def _cross_conditioning(
     config: DependencyTestConfig,
     columns: DependencyColumns,
     rating_bands: Sequence[RatingBand],
-) -> CrossConditioningResult:
+    true_move_loss: float,
+) -> tuple[CrossConditioningResult, dict[int, MetricTotal]]:
+    """Return the table, the two summaries of it, and the penalty's shares."""
+
     values = _require_conditioning_passes(config, columns.conditioned)
 
     band_losses: dict[str, dict[int, list[float]]] = {}
@@ -782,18 +838,92 @@ def _cross_conditioning(
         if rating_band_name(best, rating_bands) == definition.name:
             matched.append(definition.name)
 
-    return CrossConditioningResult(
-        cells=tuple(cells),
-        compared_bands=tuple(compared),
-        matched_bands=tuple(matched),
-        excluded_bands=tuple(excluded),
+    shares = _penalty_shares(columns, values, rating_bands, frozenset(compared))
+    scored = sum(share.positions for share in shares.values())
+    return (
+        CrossConditioningResult(
+            cells=tuple(cells),
+            compared_bands=tuple(compared),
+            matched_bands=tuple(matched),
+            excluded_bands=tuple(excluded),
+            penalty=(
+                sum(share.total for share in shares.values()) / scored
+                if scored
+                else None
+            ),
+            penalty_positions=scored,
+            pinned_degradations=_pinned_degradations(cells, values, true_move_loss),
+            band_conditioning=tuple(
+                sorted(_band_conditioning(values, rating_bands).items())
+            ),
+        ),
+        shares,
     )
+
+
+def _pinned_degradations(
+    cells: Sequence[CrossConditioningCell],
+    values: Sequence[int],
+    true_move_loss: float,
+) -> tuple[tuple[int, float], ...]:
+    """Return what scoring every position at one fixed rating costs, per rating.
+
+    The cells cover the positions carrying a band and ``true_move_loss`` the
+    ones carrying a rating, which are the same set because a band is derived
+    from a rating and every rating falls in one. A band table leaving a rating
+    unbanded would offset the whole curve against the degradations beside it.
+    """
+
+    pinned: list[tuple[int, float]] = []
+    for value in values:
+        column = [cell for cell in cells if cell.conditioning_rating == value]
+        scored = sum(cell.position_count for cell in column)
+        if not scored:
+            continue
+        loss = sum(cell.move_loss * cell.position_count for cell in column) / scored
+        pinned.append((value, loss - true_move_loss))
+    return tuple(pinned)
+
+
+def _penalty_shares(
+    columns: DependencyColumns,
+    values: Sequence[int],
+    rating_bands: Sequence[RatingBand],
+    compared: frozenset[str],
+) -> dict[int, MetricTotal]:
+    """Return what positions pay for conditioning outside their own band.
+
+    A band too thin for the match rate to count is skipped here too, so the
+    graded summary does not describe a wider set than the counted one it prints
+    beside. A band the grid names no value inside is skipped as well, for the
+    different reason that it has no column of its own to price the others
+    against; the rate still counts it, and it can never match.
+    """
+
+    matching = _band_conditioning(values, rating_bands)
+    per_game: dict[int, MetricTotal] = {}
+    for index in range(columns.positions):
+        band = columns.band(index)
+        own = None if band is None or band not in compared else matching.get(band)
+        if own is None:
+            continue
+        base = columns.conditioned[own][index]
+        penalty = fmean(
+            columns.conditioned[value][index] - base for value in values if value != own
+        )
+        carried = per_game.get(columns.game_ids[index], MetricTotal(0.0, 0))
+        per_game[columns.game_ids[index]] = MetricTotal(
+            total=carried.total + penalty,
+            positions=carried.positions + 1,
+        )
+    return per_game
 
 
 def _within_game(
     config: DependencyTestConfig,
     columns: DependencyColumns,
     rated: Sequence[int],
+    rating_bands: Sequence[RatingBand],
     *,
     anchor_low: int,
     anchor_high: int,
@@ -812,8 +942,11 @@ def _within_game(
     excluded: list[str] = []
     weaker: list[float] = []
     stronger: list[float] = []
-    for band in sorted(by_band):
-        entries = by_band[band]
+    for definition in rating_bands:
+        band = definition.name
+        entries = by_band.get(band)
+        if entries is None:
+            continue
         if len(entries) < 2 * config.minimum_slice_positions:
             excluded.append(band)
             continue

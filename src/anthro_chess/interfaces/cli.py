@@ -50,6 +50,12 @@ if TYPE_CHECKING:
         RolloutBenchmarkResult,
         TerminationBenchmarkResult,
     )
+    from anthro_chess.evaluation.dependency import (
+        CrossConditioningCell,
+        CrossConditioningResult,
+        WithinGameGroup,
+        WithinGameResult,
+    )
     from anthro_chess.evaluation.results import (
         DetailStore,
         ResultsStore,
@@ -1939,10 +1945,100 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_cross_conditioning(cross: CrossConditioningResult) -> list[str]:
+    """Show the band-by-conditioning table beside the scalars that summarize it.
+
+    Reading the diagonal against its own row is what says whether a
+    conditioning value means anything, and the row ends are what say how much.
+    """
+
+    if not cross.cells:
+        return []
+    ratings = sorted({cell.conditioning_rating for cell in cross.cells})
+    by_band: dict[str, dict[int, CrossConditioningCell]] = {}
+    for cell in cross.cells:
+        by_band.setdefault(cell.rating_band, {})[cell.conditioning_rating] = cell
+
+    own = dict(cross.band_conditioning)
+    pinned = dict(cross.pinned_degradations)
+    lines = [
+        "Cross-conditioning move loss (* marks each band's own rating):",
+        f"  {'band':<16}"
+        + "".join(f"{rating:>10}" for rating in ratings)
+        + f"{'positions':>11}",
+    ]
+    for band, cells in by_band.items():
+        marked = own.get(band)
+        row = "".join(
+            "{:>10}".format(
+                ("*" if rating == marked else "")
+                + format(cells[rating].move_loss, ".4f")
+            )
+            for rating in ratings
+        )
+        # Every band holds a cell at every grid rating, all with one count.
+        scored = next(iter(cells.values())).position_count
+        lines.append(f"  {band:<16}{row}{scored:>11}")
+    lines.append(
+        f"  {'pinned there':<16}"
+        + "".join(f"{pinned[rating]:>+10.4f}" for rating in ratings)
+    )
+    lines.append(
+        f"  match rate {_optional(cross.match_rate)} over "
+        f"{len(cross.compared_bands)} band(s), "
+        f"away-band penalty {_optional(cross.penalty)} "
+        f"over {cross.penalty_positions} position(s)"
+    )
+    if cross.excluded_bands:
+        lines.append(f"  too thin to compare: {', '.join(cross.excluded_bands)}")
+    return lines
+
+
+def _render_within_game(within: WithinGameResult) -> list[str]:
+    """Show each band's own prefix split beside the one number pooled from them.
+
+    The response has no sampling floor, so whether the bands agree is the only
+    thing standing in for one. Bands moving together read differently from
+    bands cancelling out, and the pooled number cannot separate them.
+    """
+
+    from anthro_chess.evaluation.dependency import (
+        STRONGER_PREFIX_GROUP,
+        WEAKER_PREFIX_GROUP,
+    )
+
+    if not within.groups:
+        return ["Within-game response: no band held enough held-out prefixes"]
+    halves: dict[str, dict[str, WithinGameGroup]] = {}
+    for group in within.groups:
+        halves.setdefault(group.rating_band, {})[group.group] = group
+
+    lines = [
+        (
+            f"Within-game response at a fixed stated rating "
+            f"(prefix judged at {within.anchor_low_rating} against "
+            f"{within.anchor_high_rating}):"
+        ),
+        (
+            f"  {'band':<16}{'n-':>8}{'n+':>8}{'prefix-':>10}{'prefix+':>10}"
+            f"{'align-':>10}{'align+':>10}{'shift':>9}"
+        ),
+    ]
+    for band, groups in halves.items():
+        weak = groups[WEAKER_PREFIX_GROUP]
+        strong = groups[STRONGER_PREFIX_GROUP]
+        lines.append(
+            f"  {band:<16}{weak.position_count:>8}{strong.position_count:>8}"
+            f"{weak.mean_prefix_strength:>+10.3f}{strong.mean_prefix_strength:>+10.3f}"
+            f"{weak.mean_alignment:>+10.3f}{strong.mean_alignment:>+10.3f}"
+            f"{strong.mean_alignment - weak.mean_alignment:>+9.3f}"
+        )
+    lines.append(f"  pooled response {_optional(within.response)}")
+    return lines
+
+
 def _render_dependency(result: DependencyBenchmarkResult) -> str:
     dependency = result.dependency
-    match_rate = dependency.cross_conditioning.match_rate
-    response = dependency.within_game.response
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
         (
@@ -1969,10 +2065,12 @@ def _render_dependency(result: DependencyBenchmarkResult) -> str:
             f"  {item.conditioning.name:<10} degradation={item.degradation:+.6f}"
             for item in dependency.corruptions
         ),
-        f"  cross-conditioning match rate: {_optional(match_rate)}",
-        f"  within-game response:          {_optional(response)}",
         f"  anchor policy divergence:      {dependency.anchor_divergence:.6f}",
         f"  anchor top-1 agreement:        {dependency.anchor_agreement_rate:.6f}",
+        "",
+        *_render_cross_conditioning(dependency.cross_conditioning),
+        "",
+        *_render_within_game(dependency.within_game),
     ]
     if result.dispersions:
         lines.extend(

@@ -43,9 +43,9 @@ config = "configs/evaluation/lichess-univ-2018-01-2021-06-checkpoint.toml"
 [benchmarks.dependency]
 # Whether the model reads its rating conditioning, which is a correctness
 # question rather than a quality one. It declares its own view because it pays
-# eight forward passes per batch where the reading above pays one, and what it
-# asks does not need the resolution a move-loss delta does; its own file
-# carries that argument.
+# one forward pass per distinct conditioning where the reading above pays one in
+# total, and is sized on the narrowest quantity it reports rather than on that
+# cost; its own file carries the measurement.
 config = "configs/evaluation/rating-dependency.toml"
 
 [benchmarks.novelty]

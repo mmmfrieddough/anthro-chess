@@ -480,7 +480,6 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     dependency = result.dependency
     assert {item.conditioning.name for item in dependency.corruptions} == {
         "shuffled",
-        "constant",
         "absent",
     }
     for item in dependency.corruptions:
@@ -509,6 +508,7 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert "dependency.rating_shuffled_degradation" in measurements
     assert "dependency.rating_absent_degradation" in measurements
     assert "dependency.rating_anchor_policy_divergence" in measurements
+    assert "dependency.rating_cross_conditioning_penalty" in measurements
 
 
 def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
@@ -571,7 +571,7 @@ def test_the_dependency_tests_score_each_conditioning_once(
     training_run: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Eight passes over the view, one per distinct conditioning.
+    """Seven passes over the view, one per distinct conditioning.
 
     The anchor comparison scores two fixed conditionings the cross-conditioning
     table also wants, and the trajectory needs the true-conditioning policy the
@@ -584,9 +584,9 @@ def test_the_dependency_tests_score_each_conditioning_once(
     That the carried scores equal a standalone pass' is
     ``ActiveBatch.rescored``'s guarantee, which ``test_policy`` pins.
 
-    ``configs/evaluation/rating-dependency.toml`` states this same count to
-    argue what the benchmark costs, and nothing else here would catch it going
-    stale, so a change that moves this number belongs there too.
+    This is the only place the count itself is written down. The configuration
+    files, the schema docstring and ``docs/evaluation.md`` state the rule that
+    produces it, so a change to the treatments fails here and nowhere else.
     """
 
     normalized, manifest = corpus(tmp_path / "corpus")
@@ -611,7 +611,7 @@ def test_the_dependency_tests_score_each_conditioning_once(
     _measure_dependency(_dependency_config(pool, checkpoint, view=view))
 
     assert batches > 0
-    assert calls == 8 * batches
+    assert calls == 7 * batches
 
 
 def test_absent_conditioning_changes_what_the_model_is_shown(

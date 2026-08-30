@@ -120,6 +120,7 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
     DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE,
+    DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY,
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
     MOVE_PREDICTION_PROJECTION,
 )
@@ -234,11 +235,9 @@ class CheckpointEvaluationConfig(PoolPassConfig):
 class DependencyBenchmarkConfig(PoolPassConfig):
     """Code-owned schema for ``anthro eval dependency``.
 
-    The conditioning treatments cost seven forward passes per batch on top of
-    the one every reading pays, and what they answer is whether the model
-    reads its rating input at all rather than how well it predicts. That is a
-    coarser question than held-out prediction asks, so it is asked over its
-    own view.
+    Every batch is scored once per distinct conditioning, where a held-out
+    reading scores it once in total, so this reading is asked over its own view
+    rather than sharing that one.
     """
 
     view: ViewConfig = ViewConfig(name="rating-dependency")
@@ -479,11 +478,6 @@ class _BatchSession:
         corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
-            Conditioning(
-                name="constant",
-                kind=ConditioningKind.CONSTANT,
-                rating=self._config.constant_rating,
-            ),
             Conditioning(name="absent", kind=ConditioningKind.ABSENT),
         ):
             corrupted[conditioning.name] = (
@@ -1189,6 +1183,16 @@ def _dependency_measurements(
             sample_size=dependency.rated_position_count,
         )
     )
+    penalty = dependency.cross_conditioning.penalty
+    if penalty is not None:
+        values.append(
+            measurement(
+                DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier,
+                penalty,
+                data=component,
+                sample_size=dependency.cross_conditioning.penalty_positions,
+            )
+        )
     match_rate = dependency.cross_conditioning.match_rate
     if match_rate is not None:
         values.append(

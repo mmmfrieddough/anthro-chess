@@ -1303,21 +1303,6 @@ DEPENDENCY_RATING_SHUFFLED_DEGRADATION = register_metric(
     )
 )
 
-DEPENDENCY_RATING_CONSTANT_DEGRADATION = register_metric(
-    MetricDefinition(
-        identifier="dependency.rating_constant_degradation",
-        family=CORRECTNESS_FAMILY.identifier,
-        direction=MetricDirection.HIGHER_IS_BETTER,
-        definition_version=1,
-        summary=(
-            "Increase in held-out move loss when every position is scored at "
-            "one fixed rating."
-        ),
-        cost=MetricCost.REPEATED_PASS,
-        projection=MOVE_PREDICTION_PROJECTION.name,
-    )
-)
-
 DEPENDENCY_RATING_ABSENT_DEGRADATION = register_metric(
     MetricDefinition(
         identifier="dependency.rating_absent_degradation",
@@ -1351,6 +1336,23 @@ DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE = register_metric(
             "the games a reading scored estimates the dispersion of a "
             "different quantity"
         ),
+    )
+)
+
+DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY = register_metric(
+    MetricDefinition(
+        identifier="dependency.rating_cross_conditioning_penalty",
+        family=CORRECTNESS_FAMILY.identifier,
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        definition_version=1,
+        summary=(
+            "Mean extra move loss a position pays when scored at a "
+            "conditioning rating outside its own band, against its own band's. "
+            "The graded form of the match rate above, which saturates at one "
+            "on any checkpoint that has learned the ordering at all."
+        ),
+        cost=MetricCost.REPEATED_PASS,
+        projection=MOVE_PREDICTION_PROJECTION.name,
     )
 )
 
