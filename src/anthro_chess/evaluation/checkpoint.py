@@ -120,6 +120,7 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
     DEPENDENCY_RATING_CROSS_CONDITIONING_MATCH_RATE,
+    DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY,
     DEPENDENCY_RATING_WITHIN_GAME_RESPONSE,
     MOVE_PREDICTION_PROJECTION,
 )
@@ -479,11 +480,6 @@ class _BatchSession:
         corrupted: dict[str, tuple[Conditioning, tuple[float, ...]]] = {}
         for conditioning in (
             Conditioning(name="shuffled", kind=ConditioningKind.SHUFFLED),
-            Conditioning(
-                name="constant",
-                kind=ConditioningKind.CONSTANT,
-                rating=self._config.constant_rating,
-            ),
             Conditioning(name="absent", kind=ConditioningKind.ABSENT),
         ):
             corrupted[conditioning.name] = (
@@ -1189,6 +1185,16 @@ def _dependency_measurements(
             sample_size=dependency.rated_position_count,
         )
     )
+    penalty = dependency.cross_conditioning.penalty
+    if penalty is not None:
+        values.append(
+            measurement(
+                DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier,
+                penalty,
+                data=component,
+                sample_size=dependency.rated_position_count,
+            )
+        )
     match_rate = dependency.cross_conditioning.match_rate
     if match_rate is not None:
         values.append(

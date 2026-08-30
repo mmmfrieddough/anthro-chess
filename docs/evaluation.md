@@ -1052,28 +1052,54 @@ or loss contract, rather than for unrelated software changes.
 ### Dependency Tests
 
 A dependency test checks that a conditioning input actually changes model
-behavior in the intended direction. Ordinary metrics cannot do this. Loss
-sliced by a context value measures how hard those examples are to predict, not
-whether the model reads the input, and it looks unremarkable on a model that
-ignores the input entirely.
+behavior in the intended direction.
+
+It is not the only reading that would catch a rating input the model ignores,
+and it should not be argued for as though it were. The ladder's fitted slope,
+span, and ordering accuracy, the puzzle family's rating slopes and ordering
+accuracies, and the conditional distances on generated play all go flat when
+the dial does nothing. What this family adds over those is threefold, and each
+part is a reason to keep it rather than a claim on their territory:
+
+- **Isolation.** The others change the rating and read a downstream aggregate,
+  with sampling, opponents, and whole-game dynamics in between. This one
+  changes the input and reads the probability of the same move at the same
+  position, everything else held.
+- **Cost.** The families that would also catch a dead dial are the two most
+  expensive in the suite, and this one runs in a fraction of either, so it is
+  the one a checkpoint can afford routinely.
+- **Diagnosis rather than detection.** A flat ladder slope says the dial does
+  not work. It does not separate a model that cannot read the input from one
+  that reads it and whose behavior does not follow. This does.
 
 The basic form evaluates frozen held-out examples under the true conditioning
-value and again under corrupted conditioning, such as a shuffled value, a fixed
-constant, or explicit absence. A conditioning input that the model uses should
-show clearly worse held-out prediction when corrupted.
+value and again under corrupted conditioning: a shuffled value, or explicit
+absence. A conditioning input that the model uses should show clearly worse
+held-out prediction when corrupted. Pinning every position at one fixed rating
+is a third corruption, and the cross-conditioning grid below already scores it
+at every grid rating, so it is read off that table rather than paid for again.
 
-The absent treatment answers a different question from the other two when the
-training corpus never contained rating-absent positions. Removing the input
-then measures how the model handles an input distribution it never saw, not how
-much it relies on the value, and a large absent degradation beside negligible
-shuffled and constant degradations says the model reacts to rating *presence*
-far more than to rating *value*. Read the three together rather than treating
-absence as the strongest form of the same test.
+The absent treatment answers a different question from the others. The corpus
+this project trains on carries a rating on every game, so the model's
+rating-absent embedding is never trained and the treatment substitutes a vector
+the model has not seen. That measures how it handles an unseen input rather
+than how much it relies on the value, and it is not comparable to the shuffled
+degradation beside it. Read absence as an out-of-distribution probe until
+training masks the rating on some fraction of examples; it would become a
+dependency treatment in the ordinary sense if it did.
 
 Direction matters as well as magnitude. Evaluating each context slice under
 each conditioning value produces a cross-conditioning comparison whose best
 result should fall on the matching pair. This distinguishes a model that merely
 reacts to the input from one that has learned its intended meaning.
+
+That comparison is reported twice, because the obvious summary of it saturates.
+Counting the slices whose best value is the matching one is a fraction of four,
+and a checkpoint that has learned the ordering at all scores one on it, so the
+rate reports a regression and never progress. The graded form is what a
+position pays for being scored outside its own band, averaged: the same
+comparison, left as a distance instead of a count, and unlike the rate it is a
+mean over positions and so carries a sampling floor.
 
 Dependency tests belong to the correctness family rather than the quality
 family. They should run on frozen inputs whenever a conditioning contract
@@ -1112,16 +1138,25 @@ learned yet, which is not the same finding as a miswired input.
 `anthro eval dependency` is the reading surface, and it declares its own view
 rather than sharing the checkpoint reading's. Every batch is scored once under
 the true conditioning and again under each corrupted and each fixed one, so the
-reading pays eight forward passes where a held-out reading pays one, and a
-degradation large enough to say the model reads its input at all does not need
-the resolution a move-loss delta does. Sharing one view made the family that
-tolerates the smaller sample set the cost of the family that does not.
+reading pays seven forward passes where a held-out reading pays one. Sharing one
+view would have made the family that tolerates a different sample set the cost
+of the family that does not.
+
+Its size is set by the narrowest quantity rather than by the cheapest reading
+that would detect a dead input. Detection needs almost nothing: a degradation
+collapsing to zero is visible on a handful of games. What the view is sized for
+is the finer question of whether conditioning is still being learned between
+two checkpoints, and there the shuffled degradation is the binding one. The
+configuration file carries the measurement.
 
 Two reported quantities are not means over positions and can carry no sampling
 floor: the cross-conditioning match rate counts rating slices, and the
 within-game response splits each slice at that slice's own median. A report
 says `unqualifiable` for those rather than `unknown`, since only the latter is
-waiting on work somebody could do.
+waiting on work somebody could do. Both are rendered beside the per-band table
+they summarize, which is where the evidence for either actually is: four bands
+moving together is a different reading from four cancelling out, and neither
+scalar can tell them apart.
 `docs/decisions/0028-qualifying-the-rating-dependency-family.md` owns the
 choice, and its estimator for the remaining quantities is superseded by
 `docs/decisions/0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`.

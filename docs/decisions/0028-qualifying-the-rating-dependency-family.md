@@ -8,7 +8,9 @@ Accepted. Extends `0026-conservative-dispersion-bounds.md`. The estimator below
 is superseded by
 `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.md`, which
 removes the paired bootstrap and the module named here; what survives is which
-of this family's quantities can carry a sampling floor at all.
+of this family's quantities can carry a sampling floor at all. Refined by
+`0084-the-direction-test-is-graded-and-the-pinned-pass-is-derived.md`, which
+changes which quantities the family reports.
 
 ## Context
 

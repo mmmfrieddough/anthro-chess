@@ -478,9 +478,11 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     result = _measure_dependency(_dependency_config(pool, checkpoint))
 
     dependency = result.dependency
+    # Pinning at one rating is absent here on purpose: it is a column of the
+    # cross-conditioning table below, so a dedicated treatment would pay a pass
+    # for one point of a curve the reading already holds.
     assert {item.conditioning.name for item in dependency.corruptions} == {
         "shuffled",
-        "constant",
         "absent",
     }
     for item in dependency.corruptions:
@@ -509,6 +511,7 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     assert "dependency.rating_shuffled_degradation" in measurements
     assert "dependency.rating_absent_degradation" in measurements
     assert "dependency.rating_anchor_policy_divergence" in measurements
+    assert "dependency.rating_cross_conditioning_penalty" in measurements
 
 
 def test_the_dependency_reading_carries_a_spread_for_what_it_can_resample(
@@ -571,15 +574,17 @@ def test_the_dependency_tests_score_each_conditioning_once(
     training_run: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Eight passes over the view, one per distinct conditioning.
+    """Seven passes over the view, one per distinct conditioning.
 
     The anchor comparison scores two fixed conditionings the cross-conditioning
     table also wants, and the trajectory needs the true-conditioning policy the
     primary pass already computed, so all three are carried rather than
-    re-scored. Counted rather than asserted structurally, because the passes
-    are what the reading costs: the checkpoint reading over the same view is
-    exactly one pass, which is what turns a call count into a pass count on any
-    fixture.
+    re-scored. Pinning every position at one rating is carried too: that is a
+    column of the cross-conditioning table, and a dedicated treatment would
+    have bought one point of a curve the table already holds. Counted rather
+    than asserted structurally, because the passes are what the reading costs:
+    the checkpoint reading over the same view is exactly one pass, which is
+    what turns a call count into a pass count on any fixture.
 
     That the carried scores equal a standalone pass' is
     ``ActiveBatch.rescored``'s guarantee, which ``test_policy`` pins.
@@ -611,7 +616,7 @@ def test_the_dependency_tests_score_each_conditioning_once(
     _measure_dependency(_dependency_config(pool, checkpoint, view=view))
 
     assert batches > 0
-    assert calls == 8 * batches
+    assert calls == 7 * batches
 
 
 def test_absent_conditioning_changes_what_the_model_is_shown(

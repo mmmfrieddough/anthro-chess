@@ -1,19 +1,24 @@
 """Dependency tests for the rating conditioning input.
 
-Rating-sliced loss cannot show that a model reads the rating input. It
-measures how hard each band's positions are to predict, and it looks
-unremarkable on a model that ignores conditioning entirely. These tests answer
-the different question: score the same held-out positions under true and
-corrupted conditioning, and see whether the prediction gets worse.
+Score the same held-out positions under true and corrupted conditioning, and
+see whether the prediction gets worse. The ladder and puzzle families would
+also catch a rating input the model ignores; what this one adds is that it
+changes the input and reads the same move at the same position, with no
+sampling or game dynamics in between, cheaply enough to run on any checkpoint.
 
 Three forms are computed, each answering more than the last:
 
 - **corruption** shows sensitivity. A conditioning input the model uses should
-  predict worse when the value is shuffled, pinned to a constant, or removed.
+  predict worse when the value is shuffled or removed. Absence is the weaker
+  of the two here: the corpus rates every game, so the model's rating-absent
+  embedding is untrained and the treatment reads as an out-of-distribution
+  probe rather than as a measure of reliance on the value.
 - **cross-conditioning** shows direction. Scoring every rating slice under
   every conditioning value should put each slice's best result on the matching
   pair, which separates a model that reacts to the input from one that learned
-  its meaning.
+  its meaning. Reported both as the fraction of slices that match, which
+  saturates, and as what a position pays for being scored outside its own
+  band, which does not.
 - **within-game response** shows whether rating is tracked or treated as a
   static prior, by asking whether the policy at a fixed stated rating leans
   toward the strong-conditioned policy when the play so far has looked strong.
@@ -49,7 +54,7 @@ from anthro_chess.evaluation.results.metrics import (
     DEPENDENCY_RATING_ABSENT_DEGRADATION,
     DEPENDENCY_RATING_ANCHOR_POLICY_DIVERGENCE,
     DEPENDENCY_RATING_ANCHOR_TOP1_AGREEMENT,
-    DEPENDENCY_RATING_CONSTANT_DEGRADATION,
+    DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY,
     DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
 )
 from anthro_chess.evaluation.slices import (
@@ -85,10 +90,12 @@ class ConditioningKind(StrEnum):
     ABSENT = "absent"
 
 
-#: ``TRUE`` has no entry: it is the baseline the others degrade from.
+#: ``TRUE`` has no entry: it is the baseline the others degrade from, and
+#: ``CONSTANT`` none because the cross-conditioning table already scores every
+#: position at each fixed rating, so a dedicated pass would buy one point of a
+#: curve the reading holds in full.
 DEGRADATION_METRICS = {
     ConditioningKind.SHUFFLED: DEPENDENCY_RATING_SHUFFLED_DEGRADATION,
-    ConditioningKind.CONSTANT: DEPENDENCY_RATING_CONSTANT_DEGRADATION,
     ConditioningKind.ABSENT: DEPENDENCY_RATING_ABSENT_DEGRADATION,
 }
 
@@ -119,7 +126,6 @@ class DependencyTestConfig(ConfigModel):
     """Code-owned schema for the rating dependency-test mode."""
 
     enabled: StrictBool = True
-    constant_rating: int = Field(default=1500, ge=0)
     cross_conditioning_ratings: tuple[int, ...] = (1000, 1400, 1800, 2200)
     shuffle_seed: str = Field(default="anthro-dependency-shuffle-v1", min_length=1)
     #: Slices thinner than this are reported but excluded from the headline
@@ -224,6 +230,11 @@ class CrossConditioningResult:
     compared_bands: tuple[str, ...]
     matched_bands: tuple[str, ...]
     excluded_bands: tuple[str, ...]
+    #: Mean extra loss a position pays under a conditioning outside its own
+    #: band. The match rate below reads one on any checkpoint that has learned
+    #: the ordering at all, so it reports a regression and never progress;
+    #: this is the same comparison left graded.
+    penalty: float | None
 
     @property
     def match_rate(self) -> float | None:
@@ -237,6 +248,7 @@ class CrossConditioningResult:
         """Return the stable JSON-serializable record."""
 
         return {
+            "penalty": self.penalty,
             "match_rate": self.match_rate,
             "compared_bands": list(self.compared_bands),
             "matched_bands": list(self.matched_bands),
@@ -603,12 +615,14 @@ def reduce_dependency_columns(
         _corruption_result(columns, name, rated, true_move_loss)
         for name in sorted(columns.corrupted)
     )
-    cross = _cross_conditioning(config, columns, rating_bands)
+    penalties = _cross_penalties(config, columns, rating_bands)
+    cross = _cross_conditioning(config, columns, rating_bands, penalties)
     values = config.conditioning_values()
     within = _within_game(
         config,
         columns,
         rated,
+        rating_bands,
         anchor_low=values[0],
         anchor_high=values[-1],
     )
@@ -628,7 +642,7 @@ def reduce_dependency_columns(
             float(columns.anchor_agreement[index]) for index in signals
         ),
         maturity=maturity,
-        per_game_totals=_per_game_totals(columns, rated),
+        per_game_totals=_per_game_totals(columns, rated, penalties),
     )
 
 
@@ -650,16 +664,19 @@ def _require_conditioning_passes(
 def _per_game_totals(
     columns: DependencyColumns,
     rated: Sequence[int],
+    penalties: Mapping[int, float],
 ) -> tuple[GameTotals, ...]:
     """Return each game's share of the position-mean dependency results.
 
     The game is the resampling unit, for the reason
-    ``anthro_chess.evaluation.noise`` gives. The anchors count the positions a
-    trajectory signal was computed for while the degradations count every rated
-    one, which is why each total carries its own.
+    ``anthro_chess.evaluation.noise`` gives. Each quantity carries its own
+    count, because they are means over different positions: the degradations
+    over every rated one, the anchors over those a trajectory signal was
+    computed for, and the cross-conditioning penalty over those whose band the
+    grid names a value for.
 
-    Two of the family's seven quantities are absent because no resampling of
-    games could recompute them; each declares why in its
+    Two of the family's quantities are absent because no resampling of games
+    could recompute them; each declares why in its
     ``no_sampling_floor_reason``.
     """
 
@@ -668,6 +685,12 @@ def _per_game_totals(
     anchor_positions: dict[int, int] = defaultdict(int)
     divergence: dict[int, float] = defaultdict(float)
     agreement: dict[int, float] = defaultdict(float)
+    penalty_positions: dict[int, int] = defaultdict(int)
+    penalty_totals: dict[int, float] = defaultdict(float)
+    for index, penalty in penalties.items():
+        game_id = columns.game_ids[index]
+        penalty_positions[game_id] += 1
+        penalty_totals[game_id] += penalty
     for index in rated:
         game_id = columns.game_ids[index]
         positions[game_id] += 1
@@ -715,6 +738,10 @@ def _per_game_totals(
                     total=agreement[game_id],
                     positions=anchor_positions[game_id],
                 ),
+                DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier: MetricTotal(
+                    total=penalty_totals[game_id],
+                    positions=penalty_positions[game_id],
+                ),
             },
         )
         for game_id, count in sorted(positions.items())
@@ -737,10 +764,61 @@ def _corruption_result(
     )
 
 
+def _band_conditioning(
+    values: Sequence[int],
+    rating_bands: Sequence[RatingBand],
+) -> dict[str, int]:
+    """Return the conditioning value that belongs to each band the grid names.
+
+    A grid naming two values inside one band would leave that band without a
+    single value of its own, so the first wins and the second is read as an
+    away value like any other.
+    """
+
+    matching: dict[str, int] = {}
+    for value in values:
+        name = rating_band_name(value, rating_bands)
+        if name is not None:
+            matching.setdefault(name, value)
+    return matching
+
+
+def _cross_penalties(
+    config: DependencyTestConfig,
+    columns: DependencyColumns,
+    rating_bands: Sequence[RatingBand],
+) -> dict[int, float]:
+    """Return what each position pays for being conditioned outside its band.
+
+    Held per position rather than per band, because this is the one
+    cross-conditioning quantity a game carries a share of, and a floor needs
+    that share. A band the grid names no value for contributes nothing: there
+    is no matching column to price the others against.
+    """
+
+    values = _require_conditioning_passes(config, columns.conditioned)
+    matching = _band_conditioning(values, rating_bands)
+    penalties: dict[int, float] = {}
+    for index in range(columns.positions):
+        band = columns.band(index)
+        own = None if band is None else matching.get(band)
+        if own is None:
+            continue
+        away = [value for value in values if value != own]
+        if not away:
+            continue
+        base = columns.conditioned[own][index]
+        penalties[index] = fmean(
+            columns.conditioned[value][index] - base for value in away
+        )
+    return penalties
+
+
 def _cross_conditioning(
     config: DependencyTestConfig,
     columns: DependencyColumns,
     rating_bands: Sequence[RatingBand],
+    penalties: Mapping[int, float],
 ) -> CrossConditioningResult:
     values = _require_conditioning_passes(config, columns.conditioned)
 
@@ -787,6 +865,7 @@ def _cross_conditioning(
         compared_bands=tuple(compared),
         matched_bands=tuple(matched),
         excluded_bands=tuple(excluded),
+        penalty=fmean(penalties.values()) if penalties else None,
     )
 
 
@@ -794,6 +873,7 @@ def _within_game(
     config: DependencyTestConfig,
     columns: DependencyColumns,
     rated: Sequence[int],
+    rating_bands: Sequence[RatingBand],
     *,
     anchor_low: int,
     anchor_high: int,
@@ -812,8 +892,11 @@ def _within_game(
     excluded: list[str] = []
     weaker: list[float] = []
     stronger: list[float] = []
-    for band in sorted(by_band):
-        entries = by_band[band]
+    for definition in rating_bands:
+        band = definition.name
+        entries = by_band.get(band)
+        if entries is None:
+            continue
         if len(entries) < 2 * config.minimum_slice_positions:
             excluded.append(band)
             continue
