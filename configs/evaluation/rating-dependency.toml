@@ -27,10 +27,6 @@ expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de
 # across four times the training, clearing its floor by 1.34: close enough that
 # one unlucky draw reads as no movement at all. Four times the games halves the
 # floor and takes that to 2.64.
-#
-# Nothing here asks for finer. Detecting a dead input needs a fraction of this,
-# since a degradation collapsing to zero is visible on a handful of games, and
-# the separations this size cannot resolve are ones no decision turns on.
 name = "rating-dependency"
 maximum_games = 8000
 

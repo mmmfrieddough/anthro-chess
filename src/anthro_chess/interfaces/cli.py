@@ -1948,9 +1948,7 @@ def _render_evaluation(result: CheckpointEvaluationResult) -> str:
 def _render_cross_conditioning(cross: CrossConditioningResult) -> list[str]:
     """Show the band-by-conditioning table beside the scalars that summarize it.
 
-    The match rate is a fraction of four, and a checkpoint that has learned the
-    ordering at all posts a one; the table it stands for keeps moving long
-    after. Reading the diagonal against its own row is what says whether a
+    Reading the diagonal against its own row is what says whether a
     conditioning value means anything, and the row ends are what say how much.
     """
 
@@ -1961,8 +1959,6 @@ def _render_cross_conditioning(cross: CrossConditioningResult) -> list[str]:
     for cell in cross.cells:
         by_band.setdefault(cell.rating_band, {})[cell.conditioning_rating] = cell
 
-    # Read rather than re-derived: the star has to mark the column the penalty
-    # below it priced against, and the band table is an argument to the reading.
     own = dict(cross.band_conditioning)
     pinned = dict(cross.pinned_degradations)
     lines = [
@@ -2002,8 +1998,8 @@ def _render_within_game(within: WithinGameResult) -> list[str]:
     """Show each band's own prefix split beside the one number pooled from them.
 
     The response has no sampling floor, so whether the bands agree is the only
-    thing standing in for one. Four bands moving together is a different reading
-    from four cancelling out, and the pooled number cannot tell them apart.
+    thing standing in for one. Bands moving together read differently from
+    bands cancelling out, and the pooled number cannot separate them.
     """
 
     from anthro_chess.evaluation.dependency import (

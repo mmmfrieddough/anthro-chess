@@ -6,16 +6,14 @@ see whether the prediction gets worse.
 Three forms are computed, each answering more than the last:
 
 - **corruption** shows sensitivity. A conditioning input the model uses should
-  predict worse when the value is shuffled or removed. Absence is the weaker
-  of the two here: the corpus rates every game, so the model's rating-absent
-  embedding is untrained and the treatment reads as an out-of-distribution
-  probe rather than as a measure of reliance on the value.
+  predict worse when the value is shuffled or removed. Absence probes an
+  unseen input rather than reliance on the value, because the corpus rates
+  every game and the rating-absent embedding is never trained.
 - **cross-conditioning** shows direction. Scoring every rating slice under
   every conditioning value should put each slice's best result on the matching
   pair, which separates a model that reacts to the input from one that learned
-  its meaning. Reported both as the fraction of slices that match, which
-  saturates, and as what a position pays for being scored outside its own
-  band, which does not.
+  its meaning. Reported both as the fraction of slices that match and as
+  what a position pays for being scored outside its own band.
 - **within-game response** shows whether rating is tracked or treated as a
   static prior, by asking whether the policy at a fixed stated rating leans
   toward the strong-conditioned policy when the play so far has looked strong.
@@ -61,7 +59,7 @@ from anthro_chess.evaluation.slices import (
 )
 
 #: Version 3 carries the cross-conditioning penalty and the pinned-rating curve,
-#: and drops the ``constant`` corruption entry that a dedicated pass produced.
+#: and drops the ``constant`` corruption entry.
 #: Version 2 reads ``maturity`` off the evaluated checkpoint. Version 1 records
 #: carry the position count their run finished on for every checkpoint in it, so
 #: the two are not comparable per position.
@@ -230,10 +228,7 @@ class CrossConditioningResult:
     matched_bands: tuple[str, ...]
     excluded_bands: tuple[str, ...]
     #: Mean extra loss a position pays under a conditioning outside its own
-    #: band, over the same bands ``compared_bands`` names. The match rate below
-    #: reads one on any checkpoint that has learned the ordering at all, so it
-    #: reports a regression and never progress; this is the same comparison
-    #: left graded.
+    #: band, over the same bands ``compared_bands`` names.
     penalty: float | None
     #: Positions behind that mean, which is fewer than every rated one wherever
     #: a band was too thin to compare or the grid names it no value.
@@ -241,9 +236,8 @@ class CrossConditioningResult:
     #: What scoring every position at one fixed rating costs, per grid rating.
     pinned_degradations: tuple[tuple[int, float], ...]
     #: The grid rating that falls inside each band, which is the column the
-    #: penalty priced the others against and the one a reader checks the
-    #: diagonal with. Recorded rather than re-derived because the band table is
-    #: an argument to this reading and a second derivation could take another.
+    #: penalty priced the others against. The band table is an argument to this
+    #: reading, so a second derivation elsewhere could take a different one.
     band_conditioning: tuple[tuple[str, int], ...]
 
     @property
@@ -705,7 +699,6 @@ def _per_game_totals(
     anchor_positions: dict[int, int] = defaultdict(int)
     divergence: dict[int, float] = defaultdict(float)
     agreement: dict[int, float] = defaultdict(float)
-    penalty = penalties
     for index in rated:
         game_id = columns.game_ids[index]
         positions[game_id] += 1
@@ -753,7 +746,7 @@ def _per_game_totals(
                     total=agreement[game_id],
                     positions=anchor_positions[game_id],
                 ),
-                DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier: penalty.get(
+                DEPENDENCY_RATING_CROSS_CONDITIONING_PENALTY.identifier: penalties.get(
                     game_id, MetricTotal(0.0, 0)
                 ),
             },
@@ -803,13 +796,7 @@ def _cross_conditioning(
     rating_bands: Sequence[RatingBand],
     true_move_loss: float,
 ) -> tuple[CrossConditioningResult, dict[int, MetricTotal]]:
-    """Return the table, the two summaries of it, and the penalty's shares.
-
-    The penalty is computed here rather than beside this because it depends on
-    which bands were thin enough to drop. Excluding a band from the counted
-    summary and keeping it in the graded one would have the two describe
-    different sets while the report prints them on one line.
-    """
+    """Return the table, the two summaries of it, and the penalty's shares."""
 
     values = _require_conditioning_passes(config, columns.conditioned)
 
@@ -881,9 +868,10 @@ def _pinned_degradations(
 ) -> tuple[tuple[int, float], ...]:
     """Return what scoring every position at one fixed rating costs, per rating.
 
-    This is the treatment a dedicated pass used to buy one point of. Every
-    column of the table above is one, so the curve is read off the cells rather
-    than scored again.
+    The cells cover the positions carrying a band and ``true_move_loss`` the
+    ones carrying a rating, which are the same set because a band is derived
+    from a rating and every rating falls in one. A band table leaving a rating
+    unbanded would offset the whole curve against the degradations beside it.
     """
 
     pinned: list[tuple[int, float]] = []
@@ -910,10 +898,6 @@ def _penalty_shares(
     beside. A band the grid names no value inside is skipped as well, for the
     different reason that it has no column of its own to price the others
     against; the rate still counts it, and it can never match.
-
-    Accumulated per game rather than kept per position: both readers of this
-    want sums, and a mapping over every scored position would cost an order of
-    magnitude more than the packed columns it was read from.
     """
 
     matching = _band_conditioning(values, rating_bands)

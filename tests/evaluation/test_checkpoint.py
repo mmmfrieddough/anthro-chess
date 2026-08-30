@@ -478,9 +478,6 @@ def test_dependency_tests_report_degradation_without_a_verdict(
     result = _measure_dependency(_dependency_config(pool, checkpoint))
 
     dependency = result.dependency
-    # Pinning at one rating is absent here on purpose: it is a column of the
-    # cross-conditioning table below, so a dedicated treatment would pay a pass
-    # for one point of a curve the reading already holds.
     assert {item.conditioning.name for item in dependency.corruptions} == {
         "shuffled",
         "absent",
@@ -579,19 +576,17 @@ def test_the_dependency_tests_score_each_conditioning_once(
     The anchor comparison scores two fixed conditionings the cross-conditioning
     table also wants, and the trajectory needs the true-conditioning policy the
     primary pass already computed, so all three are carried rather than
-    re-scored. Pinning every position at one rating is carried too: that is a
-    column of the cross-conditioning table, and a dedicated treatment would
-    have bought one point of a curve the table already holds. Counted rather
-    than asserted structurally, because the passes are what the reading costs:
-    the checkpoint reading over the same view is exactly one pass, which is
-    what turns a call count into a pass count on any fixture.
+    re-scored. Counted rather than asserted structurally, because the passes
+    are what the reading costs: the checkpoint reading over the same view is
+    exactly one pass, which is what turns a call count into a pass count on any
+    fixture.
 
     That the carried scores equal a standalone pass' is
     ``ActiveBatch.rescored``'s guarantee, which ``test_policy`` pins.
 
-    ``configs/evaluation/rating-dependency.toml`` states this same count to
-    argue what the benchmark costs, and nothing else here would catch it going
-    stale, so a change that moves this number belongs there too.
+    This is the only place the count itself is written down. The configuration
+    files, the schema docstring and ``docs/evaluation.md`` state the rule that
+    produces it, so a change to the treatments fails here and nowhere else.
     """
 
     normalized, manifest = corpus(tmp_path / "corpus")

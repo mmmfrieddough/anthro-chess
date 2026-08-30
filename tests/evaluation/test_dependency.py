@@ -95,8 +95,7 @@ def test_the_away_band_penalty_grades_what_the_match_rate_saturates() -> None:
 
     One arm prefers its own conditioning by a hair and the other by a mile.
     That is the case the match rate was always going to miss, since it counts
-    slices rather than measuring them, and it is the reason the graded form
-    exists beside it.
+    slices rather than measuring them.
     """
 
     def reading(away: float) -> tuple[float, float]:

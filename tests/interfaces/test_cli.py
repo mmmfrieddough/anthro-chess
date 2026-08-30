@@ -2702,7 +2702,7 @@ def test_the_cross_conditioning_star_marks_the_band_not_the_winner() -> None:
 
 
 def test_the_cross_conditioning_pinned_row_comes_from_the_record() -> None:
-    """The retired treatment's replacement is read, not recomputed here."""
+    """A renderer that recomputed the curve from its cells would drift from it."""
 
     from anthro_chess.interfaces.cli import _render_cross_conditioning
 
