@@ -2089,7 +2089,7 @@ def _render_dependency(result: DependencyBenchmarkResult) -> str:
 
 
 def _render_novelty(result: NoveltyBenchmarkResult) -> str:
-    from anthro_chess.evaluation.results.metrics import MATERIAL_GAIN_BAND_FLOORS
+    from anthro_chess.evaluation.results.metrics import MATERIAL_GAIN_BAND_NAMES
 
     control = result.control
     lines = [
@@ -2122,7 +2122,7 @@ def _render_novelty(result: NoveltyBenchmarkResult) -> str:
         "Material gain by how much the position wins, so a dose is not read "
         "against an easier mix:"
     )
-    for band in MATERIAL_GAIN_BAND_FLOORS:
+    for band in MATERIAL_GAIN_BAND_NAMES:
         lines.append(f"  {band}")
         for arm in result.arms:
             reading = arm.bands.get(band)

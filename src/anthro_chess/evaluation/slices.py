@@ -530,13 +530,11 @@ def material_winning_moves(
     the win is would otherwise resolve every one of them a second time.
     """
 
-    winning = (
-        (move, _exchange_gain(board, move))
+    return tuple(
+        (move, gain)
         for move in legal_moves
         if board.is_capture(move)
-    )
-    return tuple(
-        (move, gain) for move, gain in winning if gain >= MATERIAL_GAIN_THRESHOLD
+        and (gain := _exchange_gain(board, move)) >= MATERIAL_GAIN_THRESHOLD
     )
 
 
@@ -608,6 +606,16 @@ def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -
         return max(0, at_risk - _continue_exchange(board, square, next_at_risk))
     finally:
         board.pop()
+
+
+#: How much a position's best material win nets, as the least each band
+#: covers. A random opponent hands over larger wins than a human does, so a
+#: dose comparison that does not hold this fixed reports the mix.
+MATERIAL_GAIN_BAND_FLOORS: Mapping[str, int] = {
+    "pawn": 1,
+    "minor": 3,
+    "rook_or_better": 5,
+}
 
 
 #: Conventional pawn values for the material proxy. Deliberately the textbook

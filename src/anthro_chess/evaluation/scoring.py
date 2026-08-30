@@ -187,7 +187,7 @@ def build_scoring_inputs(
     length_bucket_width: int | None,
     identity_sha256: str,
     labels: Mapping[PositionKey, PositionLabels] | None = None,
-    encodings: Mapping[int, Sequence[PlyEncoding]] | None = None,
+    encodings: Mapping[int, tuple[PlyEncoding, ...]] | None = None,
 ) -> ScoringInputs:
     """Encode normalized rows once and derive the slices every reading needs.
 
@@ -209,8 +209,7 @@ def build_scoring_inputs(
     contexts: dict[PositionKey, PositionContext] = {}
     for row in ordered:
         game_id = row_game_id(row)
-        supplied = None if encodings is None else encodings.get(game_id)
-        encoded = tuple(supplied) if supplied else encode_game(encoding_input(row))
+        encoded = (encodings or {}).get(game_id) or encode_game(encoding_input(row))
         examples.append(
             SequenceExample(
                 shard_index=0,

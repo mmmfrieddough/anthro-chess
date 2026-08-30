@@ -18,10 +18,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-import chess
-
 from anthro_chess.data.schema import NormalizedColumn
-from anthro_chess.evaluation.slices import MATERIAL_VALUES
 
 METRIC_IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 
@@ -1094,11 +1091,10 @@ def _novelty_metric(
 #: so a dose comparison that does not hold this fixed reads the mix as a
 #: novelty effect: measured over 1600 games, pawn-only wins fall from 51% of
 #: the control's opportunities to 22% of the full dose's.
-MATERIAL_GAIN_BAND_FLOORS: Mapping[str, int] = {
-    "pawn": MATERIAL_VALUES[chess.PAWN],
-    "minor": MATERIAL_VALUES[chess.KNIGHT],
-    "rook_or_better": MATERIAL_VALUES[chess.ROOK],
-}
+#: Band names are part of metric identity, so they are stated here rather than
+#: imported. A slice layer that renamed a band or moved its floor would end
+#: these series, which is the intended behavior and is asserted by the tests.
+MATERIAL_GAIN_BAND_NAMES: tuple[str, ...] = ("pawn", "minor", "rook_or_better")
 
 NOVELTY_MASK_PENALTY = _novelty_metric(
     "novelty.mask_penalty",
@@ -1152,7 +1148,7 @@ NOVELTY_MATERIAL_GAIN_POLICY_MASS: Mapping[str, MetricDefinition] = {
             "never reach, beside the same win taken first elsewhere."
         ),
     )
-    for band in MATERIAL_GAIN_BAND_FLOORS
+    for band in MATERIAL_GAIN_BAND_NAMES
 }
 
 NOVELTY_MATERIAL_GAIN_SELECTED_RATE: Mapping[str, MetricDefinition] = {
@@ -1166,7 +1162,7 @@ NOVELTY_MATERIAL_GAIN_SELECTED_RATE: Mapping[str, MetricDefinition] = {
             "is what a player meets."
         ),
     )
-    for band in MATERIAL_GAIN_BAND_FLOORS
+    for band in MATERIAL_GAIN_BAND_NAMES
 }
 
 NOVELTY_MATERIAL_GAIN_OPPORTUNITY_SHARE: Mapping[str, MetricDefinition] = {
@@ -1180,7 +1176,7 @@ NOVELTY_MATERIAL_GAIN_OPPORTUNITY_SHARE: Mapping[str, MetricDefinition] = {
             "perturbation changed the mix is visible rather than inferred."
         ),
     )
-    for band in MATERIAL_GAIN_BAND_FLOORS
+    for band in MATERIAL_GAIN_BAND_NAMES
 }
 
 

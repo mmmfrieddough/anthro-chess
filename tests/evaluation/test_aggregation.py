@@ -25,6 +25,7 @@ from anthro_chess.evaluation.aggregation import (
 from anthro_chess.evaluation.opening_frequency import OPENING_TIER_NAMES
 from anthro_chess.evaluation.policy import PositionPolicy
 from anthro_chess.evaluation.results.metrics import (
+    MATERIAL_GAIN_BAND_NAMES,
     OPENING_TIER_SLICE_NAMES,
     PHASE_SLICE_NAMES,
     RATING_BAND_SLICE_NAMES,
@@ -33,6 +34,7 @@ from anthro_chess.evaluation.results.metrics import (
 )
 from anthro_chess.evaluation.slices import (
     DEFAULT_RATING_BANDS,
+    MATERIAL_GAIN_BAND_FLOORS,
     GamePhase,
     PlayerColor,
     PositionCharacteristic,
@@ -149,6 +151,7 @@ def test_registered_slice_names_match_the_slice_layer() -> None:
     )
     assert UNRATED_SLICE_NAME == UNRATED_SLICE
     assert OPENING_TIER_SLICE_NAMES == OPENING_TIER_NAMES
+    assert MATERIAL_GAIN_BAND_NAMES == tuple(MATERIAL_GAIN_BAND_FLOORS)
 
 
 def test_an_opening_label_covers_every_position_of_its_game() -> None:

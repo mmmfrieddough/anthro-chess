@@ -119,7 +119,6 @@ from anthro_chess.evaluation.results import (
     projection_content_digest,
 )
 from anthro_chess.evaluation.results.metrics import (
-    MATERIAL_GAIN_BAND_FLOORS,
     MOVE_PREDICTION_PROJECTION,
     NOVELTY_DERIVED_PLY_RETENTION,
     NOVELTY_MASK_PENALTY,
@@ -141,6 +140,7 @@ from anthro_chess.evaluation.scoring import (
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
 from anthro_chess.evaluation.slices import (
+    MATERIAL_GAIN_BAND_FLOORS,
     SLICE_SCHEME_VERSION,
     board_from_encoding,
     material_winning_moves,
@@ -328,11 +328,7 @@ class ArmReading:
     def legality(self) -> _Legality:
         """Return legality over every position this arm scored."""
 
-        return _Legality(
-            legal_mass=fmean(item.legal_mass for item in self.positions),
-            mask_penalty=fmean(item.mask_penalty for item in self.positions),
-            positions=len(self.positions),
-        )
+        return self.paired_legality(None)
 
     @property
     def is_control(self) -> bool:
@@ -348,8 +344,8 @@ class ArmReading:
             (position.game_id, position.ply_index) for position in self.positions
         )
 
-    def paired_legality(self, keys: frozenset[PositionKey]) -> _Legality:
-        """Return legality over only the positions in ``keys``.
+    def paired_legality(self, keys: frozenset[PositionKey] | None) -> _Legality:
+        """Return legality over the positions in ``keys``, or over all of them.
 
         A perturbed arm ends where the human's reply stopped being legal, so it
         scores a subset of the control's positions, and comparing its mean
@@ -358,16 +354,19 @@ class ArmReading:
         the reading, making legality look *better* under perturbation.
         """
 
-        kept = [
-            position
-            for position in self.positions
-            if (position.game_id, position.ply_index) in keys
-        ]
+        kept = (
+            self.positions
+            if keys is None
+            else [
+                position
+                for position in self.positions
+                if (position.game_id, position.ply_index) in keys
+            ]
+        )
         if not kept:
-            return _Legality(legal_mass=0.0, mask_penalty=0.0, positions=0)
+            return _Legality(mask_penalty=0.0, positions=0)
         return _Legality(
-            legal_mass=sum(item.legal_mass for item in kept) / len(kept),
-            mask_penalty=sum(item.mask_penalty for item in kept) / len(kept),
+            mask_penalty=fmean(item.mask_penalty for item in kept),
             positions=len(kept),
         )
 
@@ -732,7 +731,7 @@ def _score_arm(
     config: NoveltyBenchmarkConfig,
     selection: ViewSelection,
     split: SplitName,
-    executor: Executor | None = None,
+    executor: Executor,
 ) -> ArmReading:
     """Derive one arm and score the player decisions inside its window."""
 
@@ -792,7 +791,7 @@ def _score_arm(
     )
 
 
-def prepare_games(
+def _prepare_games(
     games: Sequence[DerivedGame],
 ) -> tuple[
     dict[int, tuple[PlyEncoding, ...]], dict[PositionKey, dict[str, frozenset[int]]]
@@ -828,7 +827,16 @@ def prepare_games(
             if ply.ply_index not in measured:
                 continue
             board = board_from_encoding(ply.board)
-            winning = material_winning_moves(board, tuple(board.legal_moves))
+            # The encoding's own legal actions rather than a second generation:
+            # rebuilding them is the most expensive thing encoding a ply does.
+            winning = material_winning_moves(
+                board,
+                tuple(
+                    decode_move(action)
+                    for action in ply.enabled_actions()
+                    if not is_terminal_action(action)
+                ),
+            )
             if not winning:
                 continue
             best = max(gain for _, gain in winning)
@@ -848,7 +856,7 @@ def _prepare_workers() -> int:
 
 def _prepare_arm(
     games: Sequence[DerivedGame],
-    executor: Executor | None = None,
+    executor: Executor,
 ) -> tuple[
     dict[int, tuple[PlyEncoding, ...]], dict[PositionKey, dict[str, frozenset[int]]]
 ]:
@@ -862,10 +870,10 @@ def _prepare_arm(
         games[start : start + _PREPARE_CHUNK_GAMES]
         for start in range(0, len(games), _PREPARE_CHUNK_GAMES)
     ]
-    mapper = map if executor is None or len(chunks) < 2 else executor.map
+    mapper = map if len(chunks) < 2 else executor.map
     encodings: dict[int, tuple[PlyEncoding, ...]] = {}
     sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
-    for chunk_encodings, chunk_sets in mapper(prepare_games, chunks):
+    for chunk_encodings, chunk_sets in mapper(_prepare_games, chunks):
         encodings.update(chunk_encodings)
         sets.update(chunk_sets)
     return encodings, sets
@@ -874,12 +882,7 @@ def _prepare_arm(
 def _gain_band(gain: int) -> str:
     """Return which band a position's largest material win falls in."""
 
-    for band, floor in _BAND_FLOORS:
-        if gain >= floor:
-            return band
-    raise NoveltyBenchmarkError(
-        f"a material win of {gain} falls below every band's floor"
-    )
+    return next(band for band, floor in _BAND_FLOORS if gain >= floor)
 
 
 def _batches(
@@ -898,7 +901,6 @@ def _batches(
 class _Legality:
     """Legality over one selection of an arm's scored positions."""
 
-    legal_mass: float
     mask_penalty: float
     positions: int
 
@@ -915,11 +917,7 @@ def _opportunities(
 
     records: list[_Opportunity] = []
     for item in scored:
-        if item.best_rank is None:
-            raise NoveltyBenchmarkError(
-                f"the {item.name!r} band named an empty action set at "
-                f"game {item.game_id} ply {item.ply_index}"
-            )
+        assert item.best_rank is not None  # a band names a set only where one wins
         records.append(
             _Opportunity(
                 game_id=item.game_id,
@@ -989,16 +987,14 @@ def _arm_measurements(
     # human's reply stopped being legal, so its survivors are the positions the
     # perturbation disturbed least.
     if not arm.is_control:
-        keys = arm.measured_keys
-        reference = control.paired_legality(keys)
-        observed = arm.paired_legality(keys)
+        reference = control.paired_legality(arm.measured_keys)
         values.append(
             _measure(
                 NOVELTY_MASK_PENALTY_DELTA,
-                observed.mask_penalty - reference.mask_penalty,
+                overall.mask_penalty - reference.mask_penalty,
                 component,
                 workload,
-                observed.positions,
+                overall.positions,
             )
         )
 
@@ -1212,5 +1208,4 @@ __all__ = [
     "BandReading",
     "benchmark_novelty",
     "derive_arm",
-    "prepare_games",
 ]

@@ -27,7 +27,7 @@ from anthro_chess.evaluation.novelty import (
     derive_arm,
 )
 from anthro_chess.evaluation.results import DetailStore, ResultsStore
-from anthro_chess.evaluation.results.metrics import MATERIAL_GAIN_BAND_FLOORS
+from anthro_chess.evaluation.results.metrics import MATERIAL_GAIN_BAND_NAMES
 from anthro_chess.interfaces.cli import main
 
 #: A long, quiet line. The window has to open and then run for several of the
@@ -372,13 +372,12 @@ def test_material_gain_bands_and_phase_counts_reach_the_detail_tier(
 
     control = result.control
     assert control.bands
-    assert set(control.bands) <= set(MATERIAL_GAIN_BAND_FLOORS)
+    assert set(control.bands) <= set(MATERIAL_GAIN_BAND_NAMES)
     for reading in control.bands.values():
         assert reading.opportunities >= 1
         assert 0.0 <= reading.selected_rate <= 1.0
         assert 0.0 <= reading.policy_mass <= 1.0
-        if reading.mean_best_rank is not None:
-            assert reading.mean_best_rank >= 1.0
+        assert reading.mean_best_rank >= 1.0
 
     assert result.detail_paths
     payload = json.loads(Path(result.detail_paths[0]).read_text(encoding="utf-8"))
