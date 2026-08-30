@@ -735,14 +735,15 @@ def _score_arm(
 ) -> ArmReading:
     """Derive one arm and score the player decisions inside its window."""
 
-    games = derive_arm(source_rows, dose=dose, config=config.perturbation)
+    games, encodings, subsets = _prepare_arm(
+        source_rows, executor, dose=dose, config=config.perturbation
+    )
     if not games:
         raise NoveltyBenchmarkError(
             f"the novelty arm at dose {dose} derived no measurable position; "
             "the view's games are shorter than the configured onset"
         )
     rows = [game.row for game in games]
-    encodings, subsets = _prepare_arm(games, executor)
     inputs = build_scoring_inputs(
         rows,
         split=split,
@@ -792,14 +793,16 @@ def _score_arm(
 
 
 def _prepare_games(
-    games: Sequence[DerivedGame],
+    request: tuple[Sequence[Mapping[str, Any]], float, PerturbationConfig],
 ) -> tuple[
-    dict[int, tuple[PlyEncoding, ...]], dict[PositionKey, dict[str, frozenset[int]]]
+    tuple[DerivedGame, ...],
+    dict[int, tuple[PlyEncoding, ...]],
+    dict[PositionKey, dict[str, frozenset[int]]],
 ]:
-    """Encode one chunk of derived games and name its material-gain sets.
+    """Derive one chunk of source games, encode them, and name their gain sets.
 
-    Both halves are pure functions of the derived game and together they are
-    most of a reading's wall clock, so they are done in one pass: a worker that
+    All three are pure functions of the source game and together they are most
+    of a reading's wall clock, so they are done in one pass: a worker that
     already holds the encoding is the cheapest place to rebuild the board.
 
     The name a set carries is the band, so the scorer groups by difficulty for
@@ -817,6 +820,8 @@ def _prepare_games(
     pool sends to a worker.
     """
 
+    rows, dose, config = request
+    games = derive_arm(rows, dose=dose, config=config)
     encodings: dict[int, tuple[PlyEncoding, ...]] = {}
     sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
     for game in games:
@@ -845,7 +850,7 @@ def _prepare_games(
                     encode_move(move) for move, gain in winning if gain == best
                 )
             }
-    return encodings, sets
+    return games, encodings, sets
 
 
 def _prepare_workers() -> int:
@@ -855,28 +860,37 @@ def _prepare_workers() -> int:
 
 
 def _prepare_arm(
-    games: Sequence[DerivedGame],
+    source_rows: Sequence[Mapping[str, Any]],
     executor: Executor,
+    *,
+    dose: float,
+    config: PerturbationConfig,
 ) -> tuple[
-    dict[int, tuple[PlyEncoding, ...]], dict[PositionKey, dict[str, frozenset[int]]]
+    tuple[DerivedGame, ...],
+    dict[int, tuple[PlyEncoding, ...]],
+    dict[PositionKey, dict[str, frozenset[int]]],
 ]:
-    """Prepare every derived game, across ``executor`` where there are enough.
+    """Derive and prepare one arm, across ``executor`` where there are enough.
 
-    Chunks are consumed in order, so a run on one core and a run on thirty
-    assemble the same inputs.
+    The rows are put in game-id order here rather than in a worker, so a chunk
+    holds the games it would have held on one core and the arm assembles the
+    same either way.
     """
 
+    ordered = sorted(source_rows, key=row_game_id)
     chunks = [
-        games[start : start + _PREPARE_CHUNK_GAMES]
-        for start in range(0, len(games), _PREPARE_CHUNK_GAMES)
+        (ordered[start : start + _PREPARE_CHUNK_GAMES], dose, config)
+        for start in range(0, len(ordered), _PREPARE_CHUNK_GAMES)
     ]
     mapper = map if len(chunks) < 2 else executor.map
+    games: list[DerivedGame] = []
     encodings: dict[int, tuple[PlyEncoding, ...]] = {}
     sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
-    for chunk_encodings, chunk_sets in mapper(_prepare_games, chunks):
+    for chunk_games, chunk_encodings, chunk_sets in mapper(_prepare_games, chunks):
+        games.extend(chunk_games)
         encodings.update(chunk_encodings)
         sets.update(chunk_sets)
-    return encodings, sets
+    return tuple(games), encodings, sets
 
 
 def _gain_band(gain: int) -> str:
