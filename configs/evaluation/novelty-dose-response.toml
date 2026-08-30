@@ -31,4 +31,9 @@ onset_plies = 16
 window_moves = 8
 
 [loader]
-batch_size = 8
+# Every arm is a separate pass, so this reading is more launch-bound than one
+# that scores the pool once. Measured over one full-dose arm, the forward pass
+# and the gather beside it fall from 1.56s at 8 to 0.99s at 32, and 256 buys a
+# further 0.05s: past 32 the launches are paid for and what is left scales with
+# positions.
+batch_size = 32

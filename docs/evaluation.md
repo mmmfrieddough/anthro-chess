@@ -1482,15 +1482,24 @@ not even be legal. Move cross-entropy, top-k accuracy, and distribution
 comparison are undefined there, not merely noisier.
 
 **Only measurements whose ground truth comes from the chess layer survive out of
-distribution.** Legality qualifies, needing no target at all. So do the
-adjudicated decisions above. This is what makes the two sections one benchmark:
-perturbation supplies the novelty axis, and chess-derived predicates supply the
-ground truth that still exists on it.
+distribution.** Legality qualifies, needing no target at all. So does material
+gain. This is what makes the two sections one benchmark: perturbation supplies
+the novelty axis, and chess-derived predicates supply the ground truth that
+still exists on it.
 
-Human rates exist only on the control arm. On perturbed arms the reference
-becomes the model's own unperturbed rate, so results there are reported as
-**retention** rather than as an absolute conversion rate. Without that rule the
-perturbed arm quietly becomes the correctness gate this project rejects.
+Perturbation also decides which predicates fire, and most of them stop. The
+forcing predicates depend on a coherent opponent: check falls from 2.3% of
+scored positions on the control arm to 0.2% at full dose, and the positions with
+a single legal reply are overwhelmingly replies to a check. Over sixteen times
+the pool, full dose leaves 136 mate-available opportunities, 45
+mate-threatened, 1 only-move and no stalemate-available. No sample size reaches
+them, so this benchmark reports material gain alone and the others keep their
+sample over human positions in the adjudicated-decisions family.
+
+Human rates exist only on the control arm, and the reference on a perturbed arm
+is the model's own control reading of the same quantity. The reading is a curve
+across doses rather than a level to pass, so no absolute target is implied and
+the perturbed arm does not become the correctness gate this project rejects.
 
 ### Expected Shape
 
@@ -1507,12 +1516,14 @@ dial controls style matching but not robustness. Monotonicity may break at the
 very bottom of the rating range, where the model cannot reliably convert even a
 won position.
 
-The dose-response curve may be non-monotonic at low dose. A small perturbation
-takes the model off book without yet giving away material, so it loses learned
-guidance and gains nothing, while a large one hands over enough material that
-conversion becomes easy. A dip at intermediate dose is therefore expected rather
-than anomalous, and it is the region where playing something odd on purpose
-would be a real tactic against the bot.
+A dip at intermediate dose was predicted here and the offline form does not
+show one. The reasoning was that a small perturbation takes the model off book
+without yet giving away material, while a large one hands over enough that the
+remaining decisions are easy. Read at a fixed size of win, policy mass falls at
+every dose step on every checkpoint measured, so the second half of that
+reasoning was the mix moving rather than the decisions getting easier. The
+prediction stands for the rollout form, where the model plays its own
+continuation and a material edge has to be converted.
 
 This benchmark has no human reference, and that is structural rather than an
 omission: humans do not play random opponents, so no pool curve exists. Its
@@ -1564,15 +1575,29 @@ whose human replies happened to stay legal — so the share of the control arm's
 positions that survived is reported as its own metric rather than left for a
 reader to infer from differing sample sizes.
 
-**Retention is paired on position**, and this is not a refinement. A perturbed
+**Legality is paired on position**, and this is not a refinement. A perturbed
 arm scores a subset of the control's positions, so reading its mean against the
 control's mean over everything reports the composition difference as a novelty
-effect. Every retention here reads the control over the arm's own positions.
+effect. The legality delta reads the control over the arm's own plies.
+
+**Material gain is read at a fixed size of win**, for the same reason one level
+up. Pairing on the ply does not reach this one: whether a position offers a
+material win, and how large, is a property of the board, and the board is what
+the dose changes. A random opponent hangs a queen where a human hangs a pawn, so
+pawn-only wins fall from half the control's opportunities to a fifth of the full
+dose's while free queens triple. Averaged across sizes that mix shift is large
+enough to invert the reading, which is why the bands are the unit and the
+opportunity share of each is reported beside it.
+
+Phase is not sliced beneath the bands, though truncation moves that mix too. The
+phase gap inside a band is an order smaller than the win-size gap, so holding
+phase fixed reproduces the unsliced curve; the per-arm phase counts are kept in
+the detail tier so a surprising reading can be checked against what it was taken
+over.
 
 The material-gain probe is not a private criterion here. It is a heuristic entry
-in the shared predicate registry, so the same pass scores it on every arm and it
-carries a human reference at dose zero, which is the reporting rule heuristic
-predicates require.
+in the shared predicate registry, and it carries a human reference at dose zero,
+which is the reporting rule heuristic predicates require.
 
 `docs/decisions/0024-one-sided-perturbation-derived-novelty.md` owns the
 derivation contract, the shakedown reading where unpaired retention inverted the
