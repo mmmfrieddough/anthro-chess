@@ -609,8 +609,8 @@ def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -
 
 
 #: How much a position's best material win nets, as the least each band
-#: covers. A random opponent hands over larger wins than a human does, so a
-#: dose comparison that does not hold this fixed reports the mix.
+#: covers. The lowest floor has to sit at or below MATERIAL_GAIN_THRESHOLD:
+#: a caller banding a winning move expects one of these to take it.
 MATERIAL_GAIN_BAND_FLOORS: Mapping[str, int] = {
     "pawn": 1,
     "minor": 3,

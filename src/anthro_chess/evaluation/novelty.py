@@ -319,9 +319,8 @@ class ArmReading:
     opportunities: tuple[_Opportunity, ...]
     positions: tuple[PositionPolicy, ...]
     scored_positions: int
-    #: Scored positions per game phase. Kept because truncation moves the mix
-    #: hard, from 43% opening on the control to 68% at full dose, so a reading
-    #: that surprises is read against what it was taken over.
+    #: Kept because truncation moves the phase mix hard, so a reading that
+    #: surprises can be read against what it was taken over.
     phases: Mapping[str, int]
 
     @property
@@ -801,23 +800,14 @@ def _prepare_games(
 ]:
     """Derive one chunk of source games, encode them, and name their gain sets.
 
-    All three are pure functions of the source game and together they are most
-    of a reading's wall clock, so they are done in one pass: a worker that
-    already holds the encoding is the cheapest place to rebuild the board.
+    All three in one pass because a worker that already holds the encoding is
+    the cheapest place to rebuild the board.
 
-    The name a set carries is the band, so the scorer groups by difficulty for
-    free and a position lands in exactly one. The set holds the captures that
-    win the most, not every capture that wins something: mass over a set counts
-    its members, and a random opponent leaves more of them standing, which
-    reintroduces inside a band the mix effect the bands exist to remove.
+    A set is named for its band and holds only the captures winning the most.
+    Mass over a set counts its members, and a random opponent leaves more of
+    them standing, which would put the mix effect back inside a band.
 
-    This resolves the one predicate the dose reading keeps rather than calling
-    the shared matcher, which would also push every legal move for mate, probe
-    a null move for a threat, and answer three questions a perturbed position
-    has no sample for.
-
-    Module level rather than a closure because it is the unit of work a process
-    pool sends to a worker.
+    Picklable by name, which is what a spawned worker resolves it through.
     """
 
     rows, dose, config = request
@@ -931,7 +921,7 @@ def _opportunities(
 
     records: list[_Opportunity] = []
     for item in scored:
-        assert item.best_rank is not None  # a band names a set only where one wins
+        assert item.best_rank is not None
         records.append(
             _Opportunity(
                 game_id=item.game_id,
@@ -997,9 +987,7 @@ def _arm_measurements(
     ]
 
     # Paired on position: the control is read over the plies this arm actually
-    # reached, never over everything it had. A perturbed arm ends where the
-    # human's reply stopped being legal, so its survivors are the positions the
-    # perturbation disturbed least.
+    # reached, never over everything it had.
     if not arm.is_control:
         reference = control.paired_legality(arm.measured_keys)
         values.append(
@@ -1074,9 +1062,8 @@ def _ratio(value: float, reference: float) -> float:
 def _arm_game_totals(arm: ArmReading) -> tuple[GameTotals, ...]:
     """Return each derived game's contribution to this arm's own metrics.
 
-    The band readings are here as well as the legality one, because the view
-    is sized on a band and a value with no floor cannot carry a claim that a
-    difference survived the draw.
+    The bands are here as well as legality because a sampling floor is
+    resampled over these, and every reported band carries one.
     """
 
     by_game: dict[int, list[PositionPolicy]] = defaultdict(list)

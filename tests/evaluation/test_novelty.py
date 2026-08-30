@@ -326,9 +326,7 @@ def test_the_benchmark_pairs_its_legality_delta_on_position(
     assert perturbed_penalty is not None
 
     # Paired on position rather than a difference of the two arms' overall
-    # means. A perturbed arm ends where the human's reply stopped being legal,
-    # so its positions are a subset of the control's, and the unpaired form
-    # reports that composition difference as a novelty effect.
+    # means.
     perturbed_arm = result.arms[-1]
     keys = perturbed_arm.measured_keys
     assert keys < control.measured_keys

@@ -1086,14 +1086,9 @@ def _novelty_metric(
     )
 
 
-#: The size of the win each band covers, in the shared material scale, as the
-#: least it nets. A random opponent hangs a queen where a human hangs a pawn,
-#: so a dose comparison that does not hold this fixed reads the mix as a
-#: novelty effect: measured over 1600 games, pawn-only wins fall from 51% of
-#: the control's opportunities to 22% of the full dose's.
 #: Band names are part of metric identity, so they are stated here rather than
 #: imported. A slice layer that renamed a band or moved its floor would end
-#: these series, which is the intended behavior and is asserted by the tests.
+#: these series, which is the intended behavior.
 MATERIAL_GAIN_BAND_NAMES: tuple[str, ...] = ("pawn", "minor", "rook_or_better")
 
 NOVELTY_MASK_PENALTY = _novelty_metric(
