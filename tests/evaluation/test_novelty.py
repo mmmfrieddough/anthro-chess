@@ -27,7 +27,7 @@ from anthro_chess.evaluation.novelty import (
     derive_arm,
 )
 from anthro_chess.evaluation.results import DetailStore, ResultsStore
-from anthro_chess.evaluation.slices import PositionPredicate
+from anthro_chess.evaluation.results.metrics import MATERIAL_GAIN_BAND_FLOORS
 from anthro_chess.interfaces.cli import main
 
 #: A long, quiet line. The window has to open and then run for several of the
@@ -259,7 +259,7 @@ def test_derive_arm_rejects_a_dose_outside_the_rate(
         derive_arm(_rows(normalized_row), dose=2.0, config=_perturbation())
 
 
-def test_the_benchmark_reports_retention_against_its_own_control(
+def test_the_benchmark_pairs_its_legality_delta_on_position(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
@@ -309,42 +309,38 @@ def test_the_benchmark_reports_retention_against_its_own_control(
     control_metrics = {item.metric for item in control_envelope.measurements}
     perturbed_metrics = {item.metric for item in perturbed_envelope.measurements}
 
-    # Legality survives out of distribution and is reported at every dose,
-    # held fixed per phase.
-    assert "novelty.legal_mass" in control_metrics
+    # Legality survives out of distribution and is reported at every dose.
     assert "novelty.mask_penalty" in control_metrics
-    assert any(metric.startswith("novelty.mask_penalty_") for metric in control_metrics)
-    # Retention exists only where there is something to retain against, so the
-    # control arm carries no retention of its own.
-    assert "novelty.legal_mass_retention" not in control_metrics
-    assert "novelty.legal_mass_retention" in perturbed_metrics
-    assert "novelty.mask_penalty_ratio" in perturbed_metrics
+    # The delta exists only where there is something to compare against, so the
+    # control arm carries none of its own.
+    assert "novelty.mask_penalty_delta" not in control_metrics
+    assert "novelty.mask_penalty_delta" in perturbed_metrics
     # Held-out prediction is undefined once the prefix diverges, so it is
     # absent from every arm of this benchmark.
     assert not any(metric.startswith("held_out.") for metric in perturbed_metrics)
 
-    retention = perturbed_envelope.measurement("novelty.legal_mass_retention")
-    control_mass = control_envelope.measurement("novelty.legal_mass")
-    perturbed_mass = perturbed_envelope.measurement("novelty.legal_mass")
-    assert retention is not None and control_mass is not None
-    assert perturbed_mass is not None
+    delta = perturbed_envelope.measurement("novelty.mask_penalty_delta")
+    control_penalty = control_envelope.measurement("novelty.mask_penalty")
+    perturbed_penalty = perturbed_envelope.measurement("novelty.mask_penalty")
+    assert delta is not None and control_penalty is not None
+    assert perturbed_penalty is not None
 
-    # Retention is paired on position rather than being a ratio of the two
-    # arms' overall means. A perturbed arm ends where the human's reply stopped
-    # being legal, so its positions are a subset of the control's, and the
-    # unpaired ratio reports that composition difference as a novelty effect.
+    # Paired on position rather than a difference of the two arms' overall
+    # means. A perturbed arm ends where the human's reply stopped being legal,
+    # so its positions are a subset of the control's, and the unpaired form
+    # reports that composition difference as a novelty effect.
     perturbed_arm = result.arms[-1]
     keys = perturbed_arm.measured_keys
     assert keys < control.measured_keys
-    assert retention.value == pytest.approx(
-        perturbed_arm.paired_legality(keys).legal_mass
-        / control.paired_legality(keys).legal_mass
+    assert delta.value == pytest.approx(
+        perturbed_arm.paired_legality(keys).mask_penalty
+        - control.paired_legality(keys).mask_penalty
     )
-    assert retention.value != pytest.approx(perturbed_mass.value / control_mass.value)
+    assert delta.value != pytest.approx(perturbed_penalty.value - control_penalty.value)
 
     # Two doses are two series: a delta across them would compare different
     # measurements rather than the same one over time.
-    assert control_mass.fingerprint != perturbed_mass.fingerprint
+    assert control_penalty.fingerprint != perturbed_penalty.fingerprint
 
     for envelope in recorded:
         envelope.verify()
@@ -356,7 +352,7 @@ def test_the_benchmark_reports_retention_against_its_own_control(
         assert workload["window_moves"] == WINDOW
 
 
-def test_predicates_and_phase_slices_reach_the_detail_tier(
+def test_material_gain_bands_and_phase_counts_reach_the_detail_tier(
     tmp_path: Path,
     normalized_row: Callable[..., dict[str, Any]],
     write_corpus: Callable[..., tuple[Path, Path]],
@@ -375,21 +371,21 @@ def test_predicates_and_phase_slices_reach_the_detail_tier(
     result = _measure(_config(pool, checkpoint), detail=detail)
 
     control = result.control
-    # Material gain is the predicate common enough to appear on quiet play, and
-    # it is what carries the capability question onto the perturbed arms.
-    assert PositionPredicate.MATERIAL_GAIN in control.predicates
-    reading = control.predicates[PositionPredicate.MATERIAL_GAIN]
-    assert reading.opportunities >= 1
-    assert 0.0 <= reading.selected_rate <= 1.0
-    assert 0.0 <= reading.policy_mass <= 1.0
-    if reading.mean_best_rank is not None:
-        assert reading.mean_best_rank >= 1.0
+    assert control.bands
+    assert set(control.bands) <= set(MATERIAL_GAIN_BAND_FLOORS)
+    for reading in control.bands.values():
+        assert reading.opportunities >= 1
+        assert 0.0 <= reading.selected_rate <= 1.0
+        assert 0.0 <= reading.policy_mass <= 1.0
+        if reading.mean_best_rank is not None:
+            assert reading.mean_best_rank >= 1.0
 
     assert result.detail_paths
     payload = json.loads(Path(result.detail_paths[0]).read_text(encoding="utf-8"))
     assert payload["dose"] == 0.0
     assert payload["realized_dose"] == 0.0
-    assert "phase" in payload["slices"]["dimensions"]
+    assert payload["phases"]
+    assert payload["material_gain_bands"]
     assert payload["games"]
     assert set(payload["games"][0]) >= {
         "game_id",
@@ -502,9 +498,8 @@ def test_cli_reads_a_sweep_without_recording_it(
     output = capsys.readouterr().out
     assert status == 0
     assert "Dose response" in output
-    assert "retention is against this checkpoint's own control" in output
-    assert "Predicate retention by dose:" in output
-    assert "material_gain" in output
+    assert "so a dose is not read against an easier mix" in output
+    assert "minor" in output
     # A shakedown reading commits nothing, so no recorded files are named.
     assert "Recorded" not in output
 

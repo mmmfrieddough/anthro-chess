@@ -2089,6 +2089,8 @@ def _render_dependency(result: DependencyBenchmarkResult) -> str:
 
 
 def _render_novelty(result: NoveltyBenchmarkResult) -> str:
+    from anthro_chess.evaluation.results.metrics import MATERIAL_GAIN_BAND_FLOORS
+
     control = result.control
     lines = [
         f"Checkpoint: {result.checkpoint.label} (step {result.checkpoint.step})",
@@ -2097,48 +2099,46 @@ def _render_novelty(result: NoveltyBenchmarkResult) -> str:
             f"view {result.view.name!r} ({result.view.selected_games} game(s))"
         ),
         "",
-        "Dose response (retention is against this checkpoint's own control):",
+        "Dose response:",
     ]
     for arm in result.arms:
-        overall = arm.slices.overall
         # Paired on position: the control is read over the plies this arm
         # reached, so a truncated arm is not compared against positions it
         # never saw.
         keys = arm.measured_keys
-        reference = control.paired_legality(keys)
-        observed = arm.paired_legality(keys)
+        delta = (
+            arm.paired_legality(keys).mask_penalty
+            - control.paired_legality(keys).mask_penalty
+        )
         lines.append(
             f"  dose={arm.dose:<6.3f} realized={arm.realized_dose:.3f}  "
             f"positions={arm.scored_positions:<6} "
             f"truncated={arm.truncated_games:<5} "
-            f"legal_mass={overall.legal_mass:.4f} "
-            f"retention={_render_ratio(observed.legal_mass, reference.legal_mass)} "
-            f"mask_penalty={overall.mask_penalty:.4f}"
+            f"mask_penalty={arm.legality.mask_penalty:.4f} "
+            f"delta={delta:+.4f}"
         )
     lines.append("")
-    lines.append("Predicate retention by dose:")
-    for arm in result.arms:
-        keys = arm.measured_keys
-        for predicate, reading in sorted(
-            arm.predicates.items(), key=lambda item: item[0].value
-        ):
-            paired = control.paired_predicate(predicate, keys)
+    lines.append(
+        "Material gain by how much the position wins, so a dose is not read "
+        "against an easier mix:"
+    )
+    for band in MATERIAL_GAIN_BAND_FLOORS:
+        lines.append(f"  {band}")
+        for arm in result.arms:
+            reading = arm.bands.get(band)
+            if reading is None:
+                lines.append(f"    dose={arm.dose:<6.3f} n=0")
+                continue
             rank = (
                 "-"
                 if reading.mean_best_rank is None
                 else f"{reading.mean_best_rank:.2f}"
             )
-            retention = (
-                _MISSING_RATIO
-                if paired is None
-                else _render_ratio(reading.selected_rate, paired.selected_rate)
-            )
             lines.append(
-                f"  dose={arm.dose:<6.3f} {predicate.value:<20} "
-                f"n={reading.opportunities:<6} "
-                f"rate={reading.selected_rate:.4f} "
-                f"retention={retention} "
-                f"mass={reading.policy_mass:.4f} rank={rank}"
+                f"    dose={arm.dose:<6.3f} n={reading.opportunities:<6} "
+                f"share={reading.opportunities / arm.scored_positions:.3f} "
+                f"mass={reading.policy_mass:.4f} "
+                f"rate={reading.selected_rate:.4f} rank={rank}"
             )
     if result.recorded_paths:
         lines.append("")
