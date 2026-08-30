@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +15,7 @@ import pytest
 from anthro_chess.chess import decode_move, is_terminal_action
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data.schema import row_game_id
-from anthro_chess.evaluation import PoolConfig, freeze_pool
+from anthro_chess.evaluation import PoolConfig, freeze_pool, novelty
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.novelty import (
@@ -562,3 +564,23 @@ def _freeze(tmp_path: Path, normalized: Path, manifest: Path) -> Path:
         output,
     )
     return output
+
+
+def test_preparing_an_arm_across_processes_agrees_with_one(
+    monkeypatch: pytest.MonkeyPatch,
+    normalized_row: Callable[..., dict[str, Any]],
+) -> None:
+    games = derive_arm(
+        [row for row in _rows(normalized_row)],
+        dose=1.0,
+        config=_perturbation(),
+    )
+    assert len(games) >= 2
+
+    serial_encodings, serial_sets = novelty._prepare_arm(games)
+    monkeypatch.setattr(novelty, "_PREPARE_CHUNK_GAMES", 1)
+    with ProcessPoolExecutor(mp_context=get_context("spawn")) as executor:
+        parallel_encodings, parallel_sets = novelty._prepare_arm(games, executor)
+
+    assert serial_encodings == parallel_encodings
+    assert serial_sets == parallel_sets

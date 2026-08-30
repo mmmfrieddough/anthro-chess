@@ -41,11 +41,13 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from hashlib import sha256
+from multiprocessing import get_context
 from pathlib import Path
 from random import Random
 from typing import Any, cast
@@ -55,7 +57,12 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from anthro_chess.chess import decode_move, encode_move, is_terminal_action
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import DataLoadingError, SequenceDataLoader
+from anthro_chess.data import (
+    DataLoadingError,
+    PlyEncoding,
+    SequenceDataLoader,
+    encode_game,
+)
 from anthro_chess.data.schema import (
     SPLIT_NAMES,
     NormalizedColumn,
@@ -127,6 +134,7 @@ from anthro_chess.evaluation.scoring import (
     EvaluationLoaderConfig,
     ScoringInputs,
     build_scoring_inputs,
+    encoding_input,
     rows_identity_sha256,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
@@ -152,6 +160,11 @@ NOVELTY_BENCHMARK = BenchmarkReference(
 
 #: The dose at which no opponent move is replaced.
 CONTROL_DOSE = 0.0
+
+#: Derived games per unit of work handed to a worker. Large enough that
+#: pickling a result is not most of the job, small enough that the last worker
+#: to finish does not hold up the arm.
+_PREPARE_CHUNK_GAMES = 64
 
 #: The bands in descending order of what they cover, so the first floor a
 #: position's largest win clears names it.
@@ -459,23 +472,29 @@ def benchmark_novelty(
 
     split = _pool_split(pool)
     arms: list[ArmReading] = []
-    for dose in sorted(config.perturbation.doses):
-        logger.info("Deriving and scoring the novelty arm at dose %.3f", dose)
-        try:
-            arms.append(
-                _score_arm(
-                    source_rows,
-                    runner,
-                    dose=dose,
-                    config=config,
-                    selection=selection,
-                    split=split,
+    # Spawn rather than fork: the runner above has initialized CUDA, and a
+    # forked worker inherits both that context and whatever locks its threads
+    # were holding. One pool for the whole sweep, because spawning re-imports
+    # this module and paying that per arm would cost more than it saves.
+    with ProcessPoolExecutor(mp_context=get_context("spawn")) as executor:
+        for dose in sorted(config.perturbation.doses):
+            logger.info("Deriving and scoring the novelty arm at dose %.3f", dose)
+            try:
+                arms.append(
+                    _score_arm(
+                        source_rows,
+                        runner,
+                        dose=dose,
+                        config=config,
+                        selection=selection,
+                        split=split,
+                        executor=executor,
+                    )
                 )
-            )
-        except (CheckpointEvaluationError, ValueError) as error:
-            if isinstance(error, NoveltyBenchmarkError):
-                raise
-            raise NoveltyBenchmarkError(str(error)) from error
+            except (CheckpointEvaluationError, ValueError) as error:
+                if isinstance(error, NoveltyBenchmarkError):
+                    raise
+                raise NoveltyBenchmarkError(str(error)) from error
 
     component = projection_content_digest(source_rows, MOVE_PREDICTION_PROJECTION)
     checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
@@ -687,6 +706,7 @@ def _score_arm(
     config: NoveltyBenchmarkConfig,
     selection: ViewSelection,
     split: SplitName,
+    executor: Executor | None = None,
 ) -> ArmReading:
     """Derive one arm and score the player decisions inside its window."""
 
@@ -697,6 +717,7 @@ def _score_arm(
             "the view's games are shorter than the configured onset"
         )
     rows = [game.row for game in games]
+    encodings, subsets = _prepare_arm(games, executor)
     inputs = build_scoring_inputs(
         rows,
         split=split,
@@ -706,6 +727,7 @@ def _score_arm(
             rows,
             context=(selection.as_record(), config.perturbation.recipe.value, dose),
         ),
+        encodings=encodings,
     )
     measured: set[PositionKey] = {
         (game.game_id, ply_index) for game in games for ply_index in game.measured_plies
@@ -713,7 +735,6 @@ def _score_arm(
 
     positions: list[PositionPolicy] = []
     band_scores: list[ActionSetPolicy] = []
-    subsets = _material_gain_sets(inputs, measured)
     for batch in _batches(inputs, runner):
         active = active_batch(runner.action_logits(batch), batch)
         positions.extend(
@@ -743,11 +764,16 @@ def _score_arm(
     )
 
 
-def _material_gain_sets(
-    inputs: ScoringInputs,
-    measured: Collection[PositionKey],
-) -> dict[PositionKey, dict[str, frozenset[int]]]:
-    """Name each position's material-winning actions by how much the best wins.
+def prepare_games(
+    games: Sequence[DerivedGame],
+) -> tuple[
+    dict[int, tuple[PlyEncoding, ...]], dict[PositionKey, dict[str, frozenset[int]]]
+]:
+    """Encode one chunk of derived games and name its material-gain sets.
+
+    Both halves are pure functions of the derived game and together they are
+    most of a reading's wall clock, so they are done in one pass: a worker that
+    already holds the encoding is the cheapest place to rebuild the board.
 
     The name a set carries is the band, so the scorer groups by difficulty for
     free and a position lands in exactly one. Every winning action stays in the
@@ -757,17 +783,54 @@ def _material_gain_sets(
     the shared matcher, which would also push every legal move for mate, probe
     a null move for a threat, and answer three questions a perturbed position
     has no sample for.
+
+    Module level rather than a closure because it is the unit of work a process
+    pool sends to a worker.
     """
 
+    encodings: dict[int, tuple[PlyEncoding, ...]] = {}
     sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
-    for key in measured:
-        board = board_from_encoding(inputs.plies[key].board)
-        winning = material_winning_moves(board, tuple(board.legal_moves))
-        if not winning:
-            continue
-        band = _gain_band(max(gain for _, gain in winning))
-        sets[key] = {band: frozenset(encode_move(move) for move, _ in winning)}
-    return sets
+    for game in games:
+        encoded = encode_game(encoding_input(game.row))
+        encodings[game.game_id] = tuple(encoded)
+        measured = frozenset(game.measured_plies)
+        for ply in encoded:
+            if ply.ply_index not in measured:
+                continue
+            board = board_from_encoding(ply.board)
+            winning = material_winning_moves(board, tuple(board.legal_moves))
+            if not winning:
+                continue
+            band = _gain_band(max(gain for _, gain in winning))
+            sets[(ply.game_id, ply.ply_index)] = {
+                band: frozenset(encode_move(move) for move, _ in winning)
+            }
+    return encodings, sets
+
+
+def _prepare_arm(
+    games: Sequence[DerivedGame],
+    executor: Executor | None = None,
+) -> tuple[
+    dict[int, tuple[PlyEncoding, ...]], dict[PositionKey, dict[str, frozenset[int]]]
+]:
+    """Prepare every derived game, across ``executor`` where there are enough.
+
+    Chunks are consumed in order, so a run on one core and a run on thirty
+    assemble the same inputs.
+    """
+
+    chunks = [
+        games[start : start + _PREPARE_CHUNK_GAMES]
+        for start in range(0, len(games), _PREPARE_CHUNK_GAMES)
+    ]
+    mapper = map if executor is None or len(chunks) < 2 else executor.map
+    encodings: dict[int, tuple[PlyEncoding, ...]] = {}
+    sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
+    for chunk_encodings, chunk_sets in mapper(prepare_games, chunks):
+        encodings.update(chunk_encodings)
+        sets.update(chunk_sets)
+    return encodings, sets
 
 
 def _gain_band(gain: int) -> str:
@@ -1081,4 +1144,5 @@ __all__ = [
     "BandReading",
     "benchmark_novelty",
     "derive_arm",
+    "prepare_games",
 ]
