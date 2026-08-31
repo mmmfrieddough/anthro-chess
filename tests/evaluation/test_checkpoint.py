@@ -34,6 +34,7 @@ from anthro_chess.evaluation.checkpoint import (
     ADJUDICATION_KIND,
     DEPENDENCY_KIND,
     HELD_OUT_KIND,
+    _sessions,
 )
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
 from anthro_chess.evaluation.dependency import ConditioningKind
@@ -1139,3 +1140,25 @@ def test_the_adjudicated_decisions_stay_out_of_the_payload_unless_asked_for(
     assert retained.adjudication.positions
     assert retained.adjudication.as_record()["positions"]
     assert retained.adjudication.predicates == default.adjudication.predicates
+
+
+def test_a_pool_pass_replicates_only_onto_the_devices_it_declares(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spare card would otherwise halve a cost the record cannot distinguish."""
+
+    class _Replicating:
+        def __init__(self, device: torch.device) -> None:
+            self.device = device
+
+        def replicated(self, device: torch.device) -> _Replicating:
+            return _Replicating(device)
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+    runner = cast(Any, _Replicating(torch.device("cuda", 0)))
+
+    assert CheckpointEvaluationConfig(pool=Path("artifacts/pool")).devices == 1
+    assert len(_sessions(runner, None, None, 1)) == 1
+    assert len(_sessions(runner, None, None, 2)) == 2
+    assert len(_sessions(runner, None, None, "all")) == 4
+    assert len(_sessions(runner, None, None, 8)) == 4
