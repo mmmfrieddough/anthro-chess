@@ -56,11 +56,12 @@ checkpoint, policy mass by dose: 0.8550, 0.7811, 0.7471, 0.6746, 0.6250, 0.5869.
 Monotone at every step, on all three checkpoints measured and on every draw. The
 rate rose because the mix got easier, not because the model held up.
 
-**Policy mass leads and the selected rate follows it.** The failure this
-benchmark was opened for is recorded in the motivating evidence of its issue: a
-winning capture ranked sixth at 3.7% in a position humans never reach, beside
-the same win taken first one ply earlier. That is a mass collapse, and the rate
-sees it only once the mass has fallen far enough to change the argmax.
+**Policy mass leads and the selected rate follows it.** The rate moves only
+once the mass has fallen far enough to change the argmax, so it is the coarser
+of the two by construction and measurably so: on the two checkpoints of the
+shakedown below, the full-dose minor band separates them by 0.0067 of mass and
+by 0.0002 of rate. The rate is kept beside it because it is the half a player
+meets.
 
 **The opportunity share of each band is reported beside it**, so a reading that
 moved because the mix moved is visible rather than inferred from the counts.

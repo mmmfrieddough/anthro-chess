@@ -1136,11 +1136,10 @@ NOVELTY_MATERIAL_GAIN_POLICY_MASS: Mapping[str, MetricDefinition] = {
         f"novelty.material_gain_policy_mass_{band}",
         direction=MetricDirection.HIGHER_IS_BETTER,
         summary=(
-            f"Raw policy mass on the actions that win material, where the most "
-            f"the position wins is {band.replace('_', ' ')}. Mass rather than a "
-            "selected rate because the failure this benchmark was opened for "
-            "was a winning capture ranked sixth at 3.7% in a position humans "
-            "never reach, beside the same win taken first elsewhere."
+            f"Raw policy mass on the actions winning the most material "
+            f"available, where that is {band.replace('_', ' ')}. Mass rather "
+            "than the selected rate beside it, which moves only once the mass "
+            "has fallen far enough to change the argmax."
         ),
     )
     for band in MATERIAL_GAIN_BAND_NAMES
@@ -1151,10 +1150,9 @@ NOVELTY_MATERIAL_GAIN_SELECTED_RATE: Mapping[str, MetricDefinition] = {
         f"novelty.material_gain_selected_rate_{band}",
         direction=MetricDirection.HIGHER_IS_BETTER,
         summary=(
-            f"Rate at which the legal greedy action wins the material available, "
-            f"where the most the position wins is {band.replace('_', ' ')}. The "
-            "coarser half of the pair above: it moves later and by less, and it "
-            "is what a player meets."
+            f"Rate at which the legal greedy action wins the most material "
+            f"available, where that is {band.replace('_', ' ')}. The coarser "
+            "half of the pair above, and the half a player meets."
         ),
     )
     for band in MATERIAL_GAIN_BAND_NAMES
