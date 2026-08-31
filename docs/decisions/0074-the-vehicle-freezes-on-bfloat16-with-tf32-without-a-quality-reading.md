@@ -26,6 +26,10 @@ the freeze this record's arithmetic is carried into. It takes both dials as
 shipped defaults rather than restating them in the configuration, which is what
 this record's own note on the issue asked for.
 
+`0085-the-serving-path-declares-its-arithmetic.md` settles the same two dials on
+the other side of the checkpoint, and reaches a different pair: the runtime keeps
+one of them and declines the other.
+
 ## Context
 
 `precision` and `matmul_precision` are execution-compatibility keys. A run

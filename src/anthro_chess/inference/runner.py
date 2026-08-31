@@ -5,7 +5,8 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -113,6 +114,28 @@ def detect_inference_device_capabilities() -> InferenceDeviceCapabilities:
         cuda_built=torch.backends.cuda.is_built(),
         cuda_available=torch.cuda.is_available(),
     )
+
+
+#: Reduced-precision float32 matmul, which rounds a matmul's inputs and
+#: accumulates in float32. The training path declares the same setting.
+MATMUL_PRECISION = "high"
+
+
+@contextmanager
+def _serving_arithmetic() -> Iterator[None]:
+    """Compute one forward pass at the precision the runtime declares.
+
+    Scoped rather than set once at load, because Torch holds this per process:
+    a process that also trains would otherwise have the precision its own run
+    declared replaced by whichever model runner it happened to construct.
+    """
+
+    previous = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision(MATMUL_PRECISION)
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous)
 
 
 class CheckpointModelRunner:
@@ -231,7 +254,7 @@ class CheckpointModelRunner:
         """
 
         try:
-            with torch.inference_mode():
+            with _serving_arithmetic(), torch.inference_mode():
                 logits = self._model(batch)
         except (RuntimeError, ValueError) as error:
             raise ModelRunnerError(f"model inference failed: {error}") from error
@@ -287,7 +310,7 @@ class CheckpointModelRunner:
         """
 
         try:
-            with torch.inference_mode():
+            with _serving_arithmetic(), torch.inference_mode():
                 logits = self._model.decide_at(batch, decisions)
         except (RuntimeError, ValueError) as error:
             raise ModelRunnerError(f"model inference failed: {error}") from error

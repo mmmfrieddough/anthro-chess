@@ -19,6 +19,7 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import DecisionContext
 from anthro_chess.evaluation.benchmarks import benchmark_registry, run_benchmark
 from anthro_chess.evaluation.cost import BENCHMARK_COST_KIND
+from anthro_chess.evaluation.execution import measured_precision
 from anthro_chess.evaluation.execution_noise import ProcessSample
 from anthro_chess.evaluation.inference import (
     INFERENCE_KIND,
@@ -728,7 +729,7 @@ def test_the_recorded_execution_reproduces_its_own_series_identity(
 
     assert envelope.execution is not None
     assert envelope.execution.device == "cpu"
-    assert envelope.execution.precision == "float32"
+    assert envelope.execution.precision == measured_precision()
     assert envelope.execution.cpu_threads == torch.get_num_threads()
     assert envelope.execution.workload["latency_reference_plies"] == 4
     # verify() recomputes every fingerprint from the record alone.

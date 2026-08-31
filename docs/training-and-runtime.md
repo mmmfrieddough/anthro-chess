@@ -198,6 +198,15 @@ they declare is the arithmetic every gradient is computed in. So both are
 settings a continuation has to match: a run that changed either partway would
 have no way to say which half produced its weights.
 
+**The serving path declares one of the two.** Parameters load as float32 and the
+runtime pins reduced-precision matmul, so a served decision is computed more
+precisely than the bfloat16 that produced the weights and less precisely than
+the framework default it used to inherit. Autocast is not carried across: it is
+slower than the matmul setting alone at the batch a player occupies, and it
+costs a quarter of the tightest benchmark's own floor.
+`docs/decisions/0085-the-serving-path-declares-its-arithmetic.md` carries both
+readings and what the choice gives up between backends.
+
 **The memory that trade returns buys no throughput.** On a 24 GiB card,
 throughput saturates at a batch well below the memory ceiling at every width in
 the range this project trains, so activation memory a precision change gives back

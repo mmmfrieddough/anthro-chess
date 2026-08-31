@@ -15,12 +15,13 @@ import pytest
 import torch
 
 from anthro_chess.evaluation.execution import (
-    MEASURED_PRECISION,
     device_name,
     execution_record,
+    measured_precision,
     platform_key,
     synchronize,
 )
+from anthro_chess.inference.runner import MATMUL_PRECISION
 
 from accelerators import accelerator_parameters
 
@@ -33,7 +34,7 @@ def test_a_cpu_measurement_names_the_processor_and_its_thread_count() -> None:
     assert record.device == "cpu"
     assert record.device_name == (platform.processor() or platform.machine())
     assert record.cpu_threads == torch.get_num_threads()
-    assert record.precision == MEASURED_PRECISION
+    assert record.precision == measured_precision()
     assert record.platform_key == platform_key()
 
 
@@ -99,3 +100,10 @@ def test_synchronizing_waits_for_queued_work_a_bare_enqueue_leaves_running(
     waited_seconds = time.perf_counter() - waited_started
 
     assert waited_seconds > enqueue_seconds
+
+
+def test_a_reading_names_the_matmul_precision_it_was_produced_at() -> None:
+    """A record naming only the dtype would compare across two arithmetics."""
+
+    assert measured_precision() == f"float32-matmul-{MATMUL_PRECISION}"
+    assert MATMUL_PRECISION in execution_record(torch.device("cpu"), WORKLOAD).precision
