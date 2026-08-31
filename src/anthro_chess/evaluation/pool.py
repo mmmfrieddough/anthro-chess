@@ -232,20 +232,12 @@ def pool_rows(
     most, and the per-ply clock and action columns it skips are most of what a
     full read costs. A required argument rather than an optional one, so a new
     benchmark cannot pay for the whole schema by saying nothing.
+
+    A caller gathering more than once holds a :class:`PoolProjection` instead,
+    which is what this builds and discards.
     """
 
-    wanted = set(game_ids)
-    try:
-        rows = [
-            row
-            for row in read_normalized_rows(pool.games_path, columns)
-            if row_game_id(row) in wanted
-        ]
-    except DataLoadingError as loading_error:
-        raise error(str(loading_error)) from loading_error
-    if len(rows) != len(wanted):
-        raise error("the evaluation pool does not contain every selected game")
-    return tuple(sorted(rows, key=lambda row: row_game_id(row)))
+    return PoolProjection(pool, columns, error=error).rows(game_ids)
 
 
 class PoolProjection:
@@ -293,6 +285,13 @@ class PoolProjection:
             for table_index, game_ids in enumerate(self._game_ids)
             for offset, game_id in enumerate(game_ids)
         }
+        held = sum(len(game_ids) for game_ids in self._game_ids)
+        if len(self._positions) != held:
+            raise error(
+                f"the evaluation pool holds {held} row(s) under "
+                f"{len(self._positions)} distinct game id(s); two games derive "
+                "the same id and one would be served for the other"
+            )
 
     def encoded_ply_counts(self) -> dict[int, int]:
         """Return how many timesteps encoding each game will produce.

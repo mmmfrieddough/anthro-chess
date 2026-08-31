@@ -437,11 +437,11 @@ def match_position_predicates(
             successful_action_ids=frozenset(action_ids[move] for move in stalemates),
         )
 
-    winning = _material_winning_moves(board, moves)
+    winning = material_winning_moves(board, moves)
     if winning:
         matches[PositionPredicate.MATERIAL_GAIN] = PredicateMatch(
             predicate=PositionPredicate.MATERIAL_GAIN,
-            successful_action_ids=frozenset(action_ids[move] for move in winning),
+            successful_action_ids=frozenset(action_ids[move] for move, _ in winning),
         )
 
     if board.is_check():
@@ -515,22 +515,26 @@ def _moves_avoiding_reply(
     return tuple(safe)
 
 
-def _material_winning_moves(
+def material_winning_moves(
     board: chess.Board,
     legal_moves: Sequence[chess.Move],
-) -> tuple[chess.Move, ...]:
-    """Return the captures whose exchange sequence nets material.
+) -> tuple[tuple[chess.Move, int], ...]:
+    """Return the captures whose exchange sequence nets material, and what each nets.
 
     Only captures are considered. A quiet move that wins material needs an
     evaluation function to recognize, which is the dependency this project
     keeps out of benchmark time.
+
+    The amount comes back with the move because resolving an exchange is most
+    of what matching this predicate costs, and a caller that reads how large
+    the win is would otherwise resolve every one of them a second time.
     """
 
     return tuple(
-        move
+        (move, gain)
         for move in legal_moves
         if board.is_capture(move)
-        and _exchange_gain(board, move) >= MATERIAL_GAIN_THRESHOLD
+        and (gain := _exchange_gain(board, move)) >= MATERIAL_GAIN_THRESHOLD
     )
 
 
@@ -602,6 +606,16 @@ def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -
         return max(0, at_risk - _continue_exchange(board, square, next_at_risk))
     finally:
         board.pop()
+
+
+#: How much a position's best material win nets, as the least each band
+#: covers. The lowest floor has to sit at or below MATERIAL_GAIN_THRESHOLD:
+#: a caller banding a winning move expects one of these to take it.
+MATERIAL_GAIN_BAND_FLOORS: Mapping[str, int] = {
+    "pawn": 1,
+    "minor": 3,
+    "rook_or_better": 5,
+}
 
 
 #: Conventional pawn values for the material proxy. Deliberately the textbook

@@ -1086,15 +1086,10 @@ def _novelty_metric(
     )
 
 
-NOVELTY_LEGAL_MASS = _novelty_metric(
-    "novelty.legal_mass",
-    direction=MetricDirection.HIGHER_IS_BETTER,
-    summary=(
-        "Raw probability mass on legal moves at derived positions, on the arm's "
-        "own dose. Legality needs no target, which is why it survives out of "
-        "distribution at all."
-    ),
-)
+#: Band names are part of metric identity, so they are stated here rather than
+#: imported. A slice layer that renamed a band or moved its floor would end
+#: these series, which is the intended behavior.
+MATERIAL_GAIN_BAND_NAMES: tuple[str, ...] = ("pawn", "minor", "rook_or_better")
 
 NOVELTY_MASK_PENALTY = _novelty_metric(
     "novelty.mask_penalty",
@@ -1104,36 +1099,14 @@ NOVELTY_MASK_PENALTY = _novelty_metric(
     ),
 )
 
-NOVELTY_MASK_PENALTY_BY_PHASE: Mapping[str, MetricDefinition] = {
-    phase: _novelty_metric(
-        f"novelty.mask_penalty_{phase}",
-        direction=MetricDirection.LOWER_IS_BETTER,
-        summary=(
-            f"Negative log of raw legal mass at derived {phase} positions. "
-            "Phase dominates the absolute level, so a dose comparison that does "
-            "not hold it fixed reads phase composition as a novelty effect."
-        ),
-    )
-    for phase in PHASE_SLICE_NAMES
-}
-
-NOVELTY_LEGAL_MASS_RETENTION = _novelty_metric(
-    "novelty.legal_mass_retention",
-    direction=MetricDirection.HIGHER_IS_BETTER,
-    summary=(
-        "Legal mass at this dose over the same checkpoint's unperturbed rate on "
-        "the same games. Perturbed arms have no human reference, so the model's "
-        "own control arm is the only honest one; an absolute rate there would "
-        "quietly become a correctness gate."
-    ),
-)
-
-NOVELTY_MASK_PENALTY_RATIO = _novelty_metric(
-    "novelty.mask_penalty_ratio",
+NOVELTY_MASK_PENALTY_DELTA = _novelty_metric(
+    "novelty.mask_penalty_delta",
     direction=MetricDirection.LOWER_IS_BETTER,
     summary=(
-        "Mask penalty at this dose over the same checkpoint's unperturbed mask "
-        "penalty on the same games. One means the dose cost nothing."
+        "Extra legality penalty this dose costs over the same checkpoint's "
+        "unperturbed reading of the same plies. A difference rather than a "
+        "ratio: both sides approach zero as a checkpoint trains, and the "
+        "ratio of two vanishing numbers grows with checkpoint quality."
     ),
 )
 
@@ -1158,55 +1131,45 @@ NOVELTY_DERIVED_PLY_RETENTION = _novelty_metric(
     ),
 )
 
-NOVELTY_PREDICATE_SELECTED_RATE: Mapping[str, MetricDefinition] = {
-    predicate: _novelty_metric(
-        f"novelty.{predicate}_selected_rate",
-        direction=MetricDirection.INFORMATIONAL,
-        summary=(
-            f"Rate at which the model's legal greedy action handles "
-            f"{predicate.replace('_', ' ')} positions at this dose. Absolute "
-            "rates are readable against the human reference only at dose zero."
-        ),
-    )
-    for predicate in ADJUDICATED_PREDICATE_NAMES
-}
-
-NOVELTY_PREDICATE_POLICY_MASS: Mapping[str, MetricDefinition] = {
-    predicate: _novelty_metric(
-        f"novelty.{predicate}_policy_mass",
-        direction=MetricDirection.INFORMATIONAL,
-        summary=(
-            f"Raw policy mass on actions that handle "
-            f"{predicate.replace('_', ' ')} positions at this dose."
-        ),
-    )
-    for predicate in ADJUDICATED_PREDICATE_NAMES
-}
-
-NOVELTY_PREDICATE_BEST_RANK: Mapping[str, MetricDefinition] = {
-    predicate: _novelty_metric(
-        f"novelty.{predicate}_best_rank",
-        direction=MetricDirection.LOWER_IS_BETTER,
-        summary=(
-            f"Mean legal-masked rank of the best action handling a "
-            f"{predicate.replace('_', ' ')} position at this dose, so a near "
-            "miss stays distinguishable from an absence."
-        ),
-    )
-    for predicate in ADJUDICATED_PREDICATE_NAMES
-}
-
-NOVELTY_PREDICATE_RETENTION: Mapping[str, MetricDefinition] = {
-    predicate: _novelty_metric(
-        f"novelty.{predicate}_retention",
+NOVELTY_MATERIAL_GAIN_POLICY_MASS: Mapping[str, MetricDefinition] = {
+    band: _novelty_metric(
+        f"novelty.material_gain_policy_mass_{band}",
         direction=MetricDirection.HIGHER_IS_BETTER,
         summary=(
-            f"Selected-action rate on {predicate.replace('_', ' ')} positions at "
-            "this dose over the same checkpoint's unperturbed rate. This is the "
-            "capability question the dose sweep exists to ask."
+            f"Raw policy mass on the actions winning the most material "
+            f"available, where that is {band.replace('_', ' ')}. Mass rather "
+            "than the selected rate beside it, which moves only once the mass "
+            "has fallen far enough to change the argmax."
         ),
     )
-    for predicate in ADJUDICATED_PREDICATE_NAMES
+    for band in MATERIAL_GAIN_BAND_NAMES
+}
+
+NOVELTY_MATERIAL_GAIN_SELECTED_RATE: Mapping[str, MetricDefinition] = {
+    band: _novelty_metric(
+        f"novelty.material_gain_selected_rate_{band}",
+        direction=MetricDirection.HIGHER_IS_BETTER,
+        summary=(
+            f"Rate at which the legal greedy action wins the most material "
+            f"available, where that is {band.replace('_', ' ')}. The coarser "
+            "half of the pair above, and the half a player meets."
+        ),
+    )
+    for band in MATERIAL_GAIN_BAND_NAMES
+}
+
+NOVELTY_MATERIAL_GAIN_OPPORTUNITY_SHARE: Mapping[str, MetricDefinition] = {
+    band: _novelty_metric(
+        f"novelty.material_gain_opportunity_share_{band}",
+        direction=MetricDirection.INFORMATIONAL,
+        summary=(
+            f"Share of this arm's scored positions that offer a "
+            f"{band.replace('_', ' ')} material win. The mix the bands exist to "
+            "hold fixed, reported so a reading that moved because the "
+            "perturbation changed the mix is visible rather than inferred."
+        ),
+    )
+    for band in MATERIAL_GAIN_BAND_NAMES
 }
 
 

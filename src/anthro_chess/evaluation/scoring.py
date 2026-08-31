@@ -187,11 +187,16 @@ def build_scoring_inputs(
     length_bucket_width: int | None,
     identity_sha256: str,
     labels: Mapping[PositionKey, PositionLabels] | None = None,
+    encodings: Mapping[int, tuple[PlyEncoding, ...]] | None = None,
 ) -> ScoringInputs:
     """Encode normalized rows once and derive the slices every reading needs.
 
     ``labels`` are the rule-sensitive labels of these positions, already
     derived. Left out, :meth:`ScoringInputs.labels` resolves them on demand.
+
+    ``encodings`` is the same for the games themselves, keyed by game id, for a
+    caller that encoded them across processes. Encoding is deterministic, so
+    which of the two produced them does not reach the result.
     """
 
     ordered = sorted(
@@ -203,11 +208,12 @@ def build_scoring_inputs(
     slices: dict[PositionKey, PositionSlices] = {}
     contexts: dict[PositionKey, PositionContext] = {}
     for row in ordered:
-        encoded = encode_game(encoding_input(row))
+        game_id = row_game_id(row)
+        encoded = (encodings or {}).get(game_id) or encode_game(encoding_input(row))
         examples.append(
             SequenceExample(
                 shard_index=0,
-                game_id=row_game_id(row),
+                game_id=game_id,
                 start_ply=encoded[0].ply_index,
                 plies=encoded,
             )

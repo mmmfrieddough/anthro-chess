@@ -4,7 +4,10 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted.
+Accepted. Refined by
+`0084-a-perturbed-opportunity-is-an-easier-one.md`, which keeps the pairing
+below and adds that it does not reach a confound living in the board rather
+than in the ply.
 
 ## Context
 
@@ -114,16 +117,14 @@ consistent with the motivating evidence rather than a disappointment: the
 observed failure was a missed material win at a position whose raw-logit
 legality was unremarkable. Legality is what still *has* a ground truth out of
 distribution, not what the damage shows up in. The predicate readings are where
-the dose response actually lives, and they move a great deal: across one
-training run the material-gain retention at full dose went from nothing to most
-of the unperturbed rate.
+the dose response actually lives. The retention that reported it here has since
+been withdrawn for reading a mix rather than a capability, and
+`0084-a-perturbed-opportunity-is-an-easier-one.md` says what replaced it.
 
-The dose response is **not monotonic**, which the expected shape predicted in
-advance and the reading confirms. On a trained checkpoint the intermediate dose
-retains less than the full dose. A small perturbation takes the model off book
-without yet giving away material, so it loses learned guidance and gains
-nothing; a large one hands over enough material that the remaining decisions are
-easy. A dip in the middle is the reading, not an anomaly.
+The dose response looked **not monotonic**, which the expected shape had
+predicted in advance. Read at a fixed size of win it falls at every step, so the
+dip was the mix moving rather than the later decisions getting easier. `0084`
+carries that measurement.
 
 A rollout companion is still wanted and is not covered here. It plays whole
 games against a random opponent, where the model genuinely does choose its own

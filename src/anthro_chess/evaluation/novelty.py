@@ -1,4 +1,4 @@
-"""Capability retention under a controlled novelty dose.
+"""What a controlled novelty dose costs the policy.
 
 The model degrades on positions unlike those it trained on. Slicing the pool by
 a familiarity proxy cannot measure that, because the pool is human games and is
@@ -28,10 +28,10 @@ control arm's positions that survived is a reported metric.
 
 What can be measured on the derived arms is limited by the same divergence.
 Held-out move prediction is undefined once a prefix stops being what the humans
-played, so it is reported on the control arm only. Legality needs no target and
-survives; so do the predicates exact chess logic resolves. On perturbed arms the
-reference is the model's own unperturbed rate on the same positions, so results
-there are reported as retention rather than as an absolute rate.
+played. Legality needs no target and survives. So does material gain, which is
+read at a fixed size of win: whether a position offers one and how large is a
+property of the board, and a random opponent hands over larger ones, so an
+average across sizes reports the mix rather than the model.
 
 See ``docs/evaluation.md`` and
 ``docs/decisions/0024-one-sided-perturbation-derived-novelty.md``.
@@ -40,14 +40,18 @@ See ``docs/evaluation.md`` and
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+import os
+from collections import Counter, defaultdict
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from hashlib import sha256
+from multiprocessing import get_context
 from pathlib import Path
 from random import Random
+from statistics import fmean
 from typing import Any, cast
 
 import chess
@@ -55,15 +59,19 @@ from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from anthro_chess.chess import decode_move, encode_move, is_terminal_action
 from anthro_chess.config import ConfigModel, ResolvedConfig
-from anthro_chess.data import DataLoadingError, SequenceDataLoader
+from anthro_chess.data import (
+    DataLoadingError,
+    PlyEncoding,
+    SequenceDataLoader,
+    encode_game,
+)
 from anthro_chess.data.schema import (
     SPLIT_NAMES,
     NormalizedColumn,
     SplitName,
     row_game_id,
 )
-from anthro_chess.evaluation.adjudication import action_sets, merge_game_totals
-from anthro_chess.evaluation.aggregation import PHASE_DIMENSION, SliceTable
+from anthro_chess.evaluation.adjudication import merge_game_totals
 from anthro_chess.evaluation.checkpoint import (
     CheckpointEvaluationError,
     DetailConfig,
@@ -113,15 +121,11 @@ from anthro_chess.evaluation.results import (
 from anthro_chess.evaluation.results.metrics import (
     MOVE_PREDICTION_PROJECTION,
     NOVELTY_DERIVED_PLY_RETENTION,
-    NOVELTY_LEGAL_MASS,
-    NOVELTY_LEGAL_MASS_RETENTION,
     NOVELTY_MASK_PENALTY,
-    NOVELTY_MASK_PENALTY_BY_PHASE,
-    NOVELTY_MASK_PENALTY_RATIO,
-    NOVELTY_PREDICATE_BEST_RANK,
-    NOVELTY_PREDICATE_POLICY_MASS,
-    NOVELTY_PREDICATE_RETENTION,
-    NOVELTY_PREDICATE_SELECTED_RATE,
+    NOVELTY_MASK_PENALTY_DELTA,
+    NOVELTY_MATERIAL_GAIN_OPPORTUNITY_SHARE,
+    NOVELTY_MATERIAL_GAIN_POLICY_MASS,
+    NOVELTY_MATERIAL_GAIN_SELECTED_RATE,
     NOVELTY_REALIZED_DOSE,
     MetricDefinition,
 )
@@ -130,12 +134,17 @@ from anthro_chess.evaluation.scoring import (
     SCORED_COLUMNS,
     EvaluationLoaderConfig,
     ScoringInputs,
-    aggregate_positions,
     build_scoring_inputs,
+    encoding_input,
     rows_identity_sha256,
 )
 from anthro_chess.evaluation.selection import CheckpointSelection
-from anthro_chess.evaluation.slices import SLICE_SCHEME_VERSION, PositionPredicate
+from anthro_chess.evaluation.slices import (
+    MATERIAL_GAIN_BAND_FLOORS,
+    SLICE_SCHEME_VERSION,
+    board_from_encoding,
+    material_winning_moves,
+)
 from anthro_chess.evaluation.views import ViewConfig, ViewSelection, apply_view
 from anthro_chess.inference import CheckpointModelRunner
 from anthro_chess.inference.runner import ModelRunnerError
@@ -144,7 +153,7 @@ from anthro_chess.models import MoveModelBatch
 #: Bumped when the derivation changes what a dose means. Results are not
 #: comparable across recipe versions, which is why this joins the workload.
 NOVELTY_RECIPE_VERSION = 1
-NOVELTY_BENCHMARK_VERSION = 1
+NOVELTY_BENCHMARK_VERSION = 2
 NOVELTY_KIND = "novelty-dose-response"
 NOVELTY_BENCHMARK = BenchmarkReference(
     name=NOVELTY_KIND,
@@ -153,6 +162,22 @@ NOVELTY_BENCHMARK = BenchmarkReference(
 
 #: The dose at which no opponent move is replaced.
 CONTROL_DOSE = 0.0
+
+#: Workers preparing arms. Capped rather than left to the core count because
+#: importing this module to run pure-Python chess costs a worker most of a
+#: gigabyte, and the stage it shortens is seconds long.
+_PREPARE_WORKER_LIMIT = 8
+
+#: Derived games per unit of work handed to a worker. Large enough that
+#: pickling a result is not most of the job, small enough that the last worker
+#: to finish does not hold up the arm.
+_PREPARE_CHUNK_GAMES = 64
+
+#: The bands in descending order of what they cover, so the first floor a
+#: position's largest win clears names it.
+_BAND_FLOORS: tuple[tuple[str, int], ...] = tuple(
+    sorted(MATERIAL_GAIN_BAND_FLOORS.items(), key=lambda item: -item[1])
+)
 
 logger = logging.getLogger(__name__)
 
@@ -253,15 +278,27 @@ class DerivedGame:
 
 
 @dataclass(frozen=True)
-class PredicateReading:
-    """One predicate's reading on one arm."""
+class _Opportunity:
+    """One scored material-gain opportunity, with the game it came from."""
 
-    predicate: PositionPredicate
+    game_id: int
+    band: str
+    success: bool
+    policy_mass: float
+    #: Never absent here: a band names a set only where a capture wins, so the
+    #: set has a member to rank.
+    best_rank: int
+
+
+@dataclass(frozen=True)
+class BandReading:
+    """One win-size band's reading on one arm."""
+
+    band: str
     opportunities: int
     selected_rate: float
     policy_mass: float
-    mean_best_rank: float | None
-    rankable_opportunities: int
+    mean_best_rank: float
 
     def as_record(self) -> dict[str, object]:
         return {
@@ -269,7 +306,6 @@ class PredicateReading:
             "selected_rate": self.selected_rate,
             "policy_mass": self.policy_mass,
             "mean_best_rank": self.mean_best_rank,
-            "rankable_opportunities": self.rankable_opportunities,
         }
 
 
@@ -279,11 +315,19 @@ class ArmReading:
 
     dose: float
     games: tuple[DerivedGame, ...]
-    slices: SliceTable
-    predicates: Mapping[PositionPredicate, PredicateReading]
+    bands: Mapping[str, BandReading]
+    opportunities: tuple[_Opportunity, ...]
     positions: tuple[PositionPolicy, ...]
-    opportunities: Mapping[PositionPredicate, tuple[_Opportunity, ...]]
     scored_positions: int
+    #: Kept because truncation moves the phase mix hard, so a reading that
+    #: surprises can be read against what it was taken over.
+    phases: Mapping[str, int]
+
+    @property
+    def legality(self) -> _Legality:
+        """Return legality over every position this arm scored."""
+
+        return self.paired_legality(None)
 
     @property
     def is_control(self) -> bool:
@@ -299,41 +343,31 @@ class ArmReading:
             (position.game_id, position.ply_index) for position in self.positions
         )
 
-    def paired_legality(self, keys: frozenset[PositionKey]) -> _Legality:
-        """Return legality over only the positions in ``keys``.
+    def paired_legality(self, keys: frozenset[PositionKey] | None) -> _Legality:
+        """Return legality over the positions in ``keys``, or over all of them.
 
-        Retention is a paired quantity. A perturbed arm ends where the human's
-        reply stopped being legal, so it scores a subset of the control's
-        positions, and comparing its mean against the control's mean over
-        everything reports that composition difference as a novelty effect.
-        That artifact can be large enough to invert the reading, making
-        legality look *better* under perturbation.
+        A perturbed arm ends where the human's reply stopped being legal, so it
+        scores a subset of the control's positions, and comparing its mean
+        against the control's mean over everything reports that composition
+        difference as a novelty effect. That artifact is large enough to invert
+        the reading, making legality look *better* under perturbation.
         """
 
-        kept = [
-            position
-            for position in self.positions
-            if (position.game_id, position.ply_index) in keys
-        ]
+        kept = (
+            self.positions
+            if keys is None
+            else [
+                position
+                for position in self.positions
+                if (position.game_id, position.ply_index) in keys
+            ]
+        )
         if not kept:
-            return _Legality(legal_mass=0.0, mask_penalty=0.0, positions=0)
+            return _Legality(mask_penalty=0.0, positions=0)
         return _Legality(
-            legal_mass=sum(item.legal_mass for item in kept) / len(kept),
-            mask_penalty=sum(item.mask_penalty for item in kept) / len(kept),
+            mask_penalty=fmean(item.mask_penalty for item in kept),
             positions=len(kept),
         )
-
-    def paired_predicate(
-        self,
-        predicate: PositionPredicate,
-        keys: frozenset[PositionKey],
-    ) -> PredicateReading | None:
-        """Return one predicate's reading over only the positions in ``keys``."""
-
-        kept = tuple(
-            item for item in self.opportunities.get(predicate, ()) if item.key in keys
-        )
-        return None if not kept else _reduce(predicate, kept)
 
     @property
     def realized_dose(self) -> float:
@@ -356,12 +390,10 @@ class ArmReading:
             "realized_dose": self.realized_dose,
             "scored_positions": self.scored_positions,
             "truncated_games": self.truncated_games,
-            "slices": self.slices.as_record(),
-            "predicates": {
-                predicate.value: reading.as_record()
-                for predicate, reading in sorted(
-                    self.predicates.items(), key=lambda item: item[0].value
-                )
+            "phases": dict(sorted(self.phases.items())),
+            "material_gain_bands": {
+                band: reading.as_record()
+                for band, reading in sorted(self.bands.items())
             },
             "games": [game.as_record() for game in self.games],
         }
@@ -461,23 +493,32 @@ def benchmark_novelty(
 
     split = _pool_split(pool)
     arms: list[ArmReading] = []
-    for dose in sorted(config.perturbation.doses):
-        logger.info("Deriving and scoring the novelty arm at dose %.3f", dose)
-        try:
-            arms.append(
-                _score_arm(
-                    source_rows,
-                    runner,
-                    dose=dose,
-                    config=config,
-                    selection=selection,
-                    split=split,
+    # Spawn rather than fork: the runner above has initialized CUDA, and a
+    # forked worker inherits both that context and whatever locks its threads
+    # were holding. One pool for the whole sweep, because spawning re-imports
+    # this module and paying that per arm would cost more than it saves.
+    with ProcessPoolExecutor(
+        max_workers=_prepare_workers(),
+        mp_context=get_context("spawn"),
+    ) as executor:
+        for dose in sorted(config.perturbation.doses):
+            logger.info("Deriving and scoring the novelty arm at dose %.3f", dose)
+            try:
+                arms.append(
+                    _score_arm(
+                        source_rows,
+                        runner,
+                        dose=dose,
+                        config=config,
+                        selection=selection,
+                        split=split,
+                        executor=executor,
+                    )
                 )
-            )
-        except (CheckpointEvaluationError, ValueError) as error:
-            if isinstance(error, NoveltyBenchmarkError):
-                raise
-            raise NoveltyBenchmarkError(str(error)) from error
+            except (CheckpointEvaluationError, ValueError) as error:
+                if isinstance(error, NoveltyBenchmarkError):
+                    raise
+                raise NoveltyBenchmarkError(str(error)) from error
 
     component = projection_content_digest(source_rows, MOVE_PREDICTION_PROJECTION)
     checkpoint = checkpoint_reference(runner, label=config.checkpoint_label)
@@ -518,8 +559,8 @@ def benchmark_novelty(
             _arm_measurements(arm, control, component, workload),
             payload=partial(_arm_payload, arm, per_position=config.detail.per_position),
             description=(
-                "Per-arm derivation provenance, slice tables, and "
-                "predicate readings for one novelty dose."
+                "Per-arm derivation provenance, phase counts, and "
+                "material-gain band readings for one novelty dose."
             ),
             slug=f"dose-{dose_slug}",
             data=data,
@@ -689,10 +730,13 @@ def _score_arm(
     config: NoveltyBenchmarkConfig,
     selection: ViewSelection,
     split: SplitName,
+    executor: Executor,
 ) -> ArmReading:
     """Derive one arm and score the player decisions inside its window."""
 
-    games = derive_arm(source_rows, dose=dose, config=config.perturbation)
+    games, encodings, subsets = _prepare_arm(
+        source_rows, executor, dose=dose, config=config.perturbation
+    )
     if not games:
         raise NoveltyBenchmarkError(
             f"the novelty arm at dose {dose} derived no measurable position; "
@@ -708,14 +752,14 @@ def _score_arm(
             rows,
             context=(selection.as_record(), config.perturbation.recipe.value, dose),
         ),
+        encodings=encodings,
     )
     measured: set[PositionKey] = {
         (game.game_id, ply_index) for game in games for ply_index in game.measured_plies
     }
 
     positions: list[PositionPolicy] = []
-    predicate_scores: list[ActionSetPolicy] = []
-    subsets = action_sets(inputs, measured)
+    band_scores: list[ActionSetPolicy] = []
     for batch in _batches(inputs, runner):
         active = active_batch(runner.action_logits(batch), batch)
         positions.extend(
@@ -726,22 +770,123 @@ def _score_arm(
         # No window filter here, unlike the scored positions above: the scorer
         # reads a subset only where one was named, and the subsets were named
         # over the window.
-        predicate_scores.extend(score_action_sets(active, subsets))
+        band_scores.extend(score_action_sets(active, subsets))
     if not positions:
         raise NoveltyBenchmarkError(
             f"the novelty arm at dose {dose} scored no position inside its window"
         )
 
-    opportunities = _predicate_opportunities(predicate_scores, inputs)
+    opportunities = _opportunities(band_scores, subsets)
     return ArmReading(
         dose=dose,
         games=games,
-        slices=aggregate_positions(positions, inputs),
-        predicates=_reduce_opportunities(opportunities),
-        positions=tuple(positions),
+        bands=_reduce_bands(opportunities),
         opportunities=opportunities,
+        positions=tuple(positions),
         scored_positions=len(positions),
+        phases=Counter(
+            str(inputs.slices[(item.game_id, item.ply_index)].phase)
+            for item in positions
+        ),
     )
+
+
+def _prepare_games(
+    request: tuple[Sequence[Mapping[str, Any]], float, PerturbationConfig],
+) -> tuple[
+    tuple[DerivedGame, ...],
+    dict[int, tuple[PlyEncoding, ...]],
+    dict[PositionKey, dict[str, frozenset[int]]],
+]:
+    """Derive one chunk of source games, encode them, and name their gain sets.
+
+    All three in one pass because a worker that already holds the encoding is
+    the cheapest place to rebuild the board.
+
+    A set is named for its band and holds only the captures winning the most.
+    Mass over a set counts its members, and a random opponent leaves more of
+    them standing, which would put the mix effect back inside a band.
+
+    Picklable by name, which is what a spawned worker resolves it through.
+    """
+
+    rows, dose, config = request
+    games = derive_arm(rows, dose=dose, config=config)
+    encodings: dict[int, tuple[PlyEncoding, ...]] = {}
+    sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
+    for game in games:
+        encoded = encode_game(encoding_input(game.row))
+        encodings[game.game_id] = tuple(encoded)
+        measured = frozenset(game.measured_plies)
+        for ply in encoded:
+            if ply.ply_index not in measured:
+                continue
+            board = board_from_encoding(ply.board)
+            # The encoding's own legal actions rather than a second generation:
+            # rebuilding them is the most expensive thing encoding a ply does.
+            winning = material_winning_moves(
+                board,
+                tuple(
+                    decode_move(action)
+                    for action in ply.enabled_actions()
+                    if not is_terminal_action(action)
+                ),
+            )
+            if not winning:
+                continue
+            best = max(gain for _, gain in winning)
+            sets[(ply.game_id, ply.ply_index)] = {
+                _gain_band(best): frozenset(
+                    encode_move(move) for move, gain in winning if gain == best
+                )
+            }
+    return games, encodings, sets
+
+
+def _prepare_workers() -> int:
+    """Return how many workers prepare an arm on this machine."""
+
+    return max(1, min(_PREPARE_WORKER_LIMIT, os.process_cpu_count() or 1))
+
+
+def _prepare_arm(
+    source_rows: Sequence[Mapping[str, Any]],
+    executor: Executor,
+    *,
+    dose: float,
+    config: PerturbationConfig,
+) -> tuple[
+    tuple[DerivedGame, ...],
+    dict[int, tuple[PlyEncoding, ...]],
+    dict[PositionKey, dict[str, frozenset[int]]],
+]:
+    """Derive and prepare one arm, across ``executor`` where there are enough.
+
+    The rows are put in game-id order here rather than in a worker, so a chunk
+    holds the games it would have held on one core and the arm assembles the
+    same either way.
+    """
+
+    ordered = sorted(source_rows, key=row_game_id)
+    chunks = [
+        (ordered[start : start + _PREPARE_CHUNK_GAMES], dose, config)
+        for start in range(0, len(ordered), _PREPARE_CHUNK_GAMES)
+    ]
+    mapper = map if len(chunks) < 2 else executor.map
+    games: list[DerivedGame] = []
+    encodings: dict[int, tuple[PlyEncoding, ...]] = {}
+    sets: dict[PositionKey, dict[str, frozenset[int]]] = {}
+    for chunk_games, chunk_encodings, chunk_sets in mapper(_prepare_games, chunks):
+        games.extend(chunk_games)
+        encodings.update(chunk_encodings)
+        sets.update(chunk_sets)
+    return tuple(games), encodings, sets
+
+
+def _gain_band(gain: int) -> str:
+    """Return which band a position's largest material win falls in."""
+
+    return next(band for band, floor in _BAND_FLOORS if gain >= floor)
 
 
 def _batches(
@@ -760,78 +905,51 @@ def _batches(
 class _Legality:
     """Legality over one selection of an arm's scored positions."""
 
-    legal_mass: float
     mask_penalty: float
     positions: int
 
 
-@dataclass(frozen=True)
-class _Opportunity:
-    """One predicate opportunity on a derived arm, with no human reference."""
-
-    key: PositionKey
-    success: bool
-    policy_mass: float
-    best_rank: int | None
-
-
-def _predicate_opportunities(
+def _opportunities(
     scored: Sequence[ActionSetPolicy],
-    inputs: ScoringInputs,
-) -> Mapping[PositionPredicate, tuple[_Opportunity, ...]]:
-    """Group the scored predicate opportunities, keeping their positions.
+    subsets: Mapping[PositionKey, Mapping[str, frozenset[int]]],
+) -> tuple[_Opportunity, ...]:
+    """Return one record per scored opportunity, keeping the game it came from.
 
-    The positions are kept rather than summed away because retention has to be
-    computed over the ones a perturbed arm actually reached, not over every
-    opportunity the control arm had.
-
-    No human rate appears here even on the control arm. The control's own human
-    reference is the checkpoint runner's job; this benchmark's question is what
-    the model retains relative to itself.
+    Kept per game rather than summed away, because a sampling floor resamples
+    games and cannot be derived from an arm's totals.
     """
 
-    grouped: dict[PositionPredicate, list[_Opportunity]] = defaultdict(list)
+    records: list[_Opportunity] = []
     for item in scored:
-        key = (item.game_id, item.ply_index)
-        predicate = PositionPredicate(item.name)
-        match = inputs.labels(key).predicates.get(predicate)
-        if match is None:
-            continue
-        grouped[predicate].append(
+        assert item.best_rank is not None
+        records.append(
             _Opportunity(
-                key=key,
-                success=item.selected_action_id in match.successful_action_ids,
+                game_id=item.game_id,
+                band=item.name,
+                success=item.selected_action_id
+                in subsets[(item.game_id, item.ply_index)][item.name],
                 policy_mass=item.raw_probability_mass,
                 best_rank=item.best_rank,
             )
         )
-    return {predicate: tuple(items) for predicate, items in grouped.items()}
+    return tuple(records)
 
 
-def _reduce(
-    predicate: PositionPredicate,
-    items: Sequence[_Opportunity],
-) -> PredicateReading:
-    """Reduce one predicate's opportunities to a single reading."""
+def _reduce_bands(opportunities: Sequence[_Opportunity]) -> dict[str, BandReading]:
+    """Reduce the scored opportunities to one reading per win-size band."""
 
-    ranks = [item.best_rank for item in items if item.best_rank is not None]
-    return PredicateReading(
-        predicate=predicate,
-        opportunities=len(items),
-        selected_rate=sum(1.0 for item in items if item.success) / len(items),
-        policy_mass=sum(item.policy_mass for item in items) / len(items),
-        mean_best_rank=(sum(ranks) / len(ranks) if ranks else None),
-        rankable_opportunities=len(ranks),
-    )
-
-
-def _reduce_opportunities(
-    opportunities: Mapping[PositionPredicate, Sequence[_Opportunity]],
-) -> Mapping[PositionPredicate, PredicateReading]:
+    grouped: dict[str, list[_Opportunity]] = defaultdict(list)
+    for item in opportunities:
+        grouped[item.band].append(item)
     return {
-        predicate: _reduce(predicate, items)
-        for predicate, items in opportunities.items()
-        if items
+        band: BandReading(
+            band=band,
+            opportunities=len(items),
+            selected_rate=sum(1.0 for item in items if item.success) / len(items),
+            policy_mass=sum(item.policy_mass for item in items) / len(items),
+            mean_best_rank=sum(item.best_rank for item in items) / len(items),
+        )
+        for band, items in grouped.items()
     }
 
 
@@ -841,23 +959,16 @@ def _arm_measurements(
     component: DataComponent,
     workload: WorkloadComponent,
 ) -> tuple[Measurement, ...]:
-    """Return one arm's committed measurements, retention included."""
+    """Return one arm's committed measurements."""
 
-    overall = arm.slices.overall
+    overall = arm.legality
     values: list[Measurement] = [
-        _measure(
-            NOVELTY_LEGAL_MASS,
-            overall.legal_mass,
-            component,
-            workload,
-            overall.position_count,
-        ),
         _measure(
             NOVELTY_MASK_PENALTY,
             overall.mask_penalty,
             component,
             workload,
-            overall.position_count,
+            overall.positions,
         ),
         _measure(
             NOVELTY_REALIZED_DOSE,
@@ -874,52 +985,34 @@ def _arm_measurements(
             len(arm.games),
         ),
     ]
-    for phase, definition in NOVELTY_MASK_PENALTY_BY_PHASE.items():
-        summary = arm.slices.slice_summary(PHASE_DIMENSION, phase)
-        if summary is None:
-            continue
-        values.append(
-            _measure(
-                definition,
-                summary.mask_penalty,
-                component,
-                workload,
-                summary.position_count,
-            )
-        )
 
-    # Retention is paired on position: the control is read over the positions
-    # this arm actually reached, never over everything it had.
-    keys = arm.measured_keys
+    # Paired on position: the control is read over the plies this arm actually
+    # reached, never over everything it had.
     if not arm.is_control:
-        reference = control.paired_legality(keys)
-        observed = arm.paired_legality(keys)
+        reference = control.paired_legality(arm.measured_keys)
         values.append(
             _measure(
-                NOVELTY_LEGAL_MASS_RETENTION,
-                _ratio(observed.legal_mass, reference.legal_mass),
+                NOVELTY_MASK_PENALTY_DELTA,
+                overall.mask_penalty - reference.mask_penalty,
                 component,
                 workload,
-                observed.positions,
-            )
-        )
-        values.append(
-            _measure(
-                NOVELTY_MASK_PENALTY_RATIO,
-                _ratio(observed.mask_penalty, reference.mask_penalty),
-                component,
-                workload,
-                observed.positions,
+                overall.positions,
             )
         )
 
-    for predicate, reading in sorted(
-        arm.predicates.items(), key=lambda item: item[0].value
-    ):
-        name = predicate.value
+    for band, reading in sorted(arm.bands.items()):
         values.append(
             _measure(
-                NOVELTY_PREDICATE_SELECTED_RATE[name],
+                NOVELTY_MATERIAL_GAIN_POLICY_MASS[band],
+                reading.policy_mass,
+                component,
+                workload,
+                reading.opportunities,
+            )
+        )
+        values.append(
+            _measure(
+                NOVELTY_MATERIAL_GAIN_SELECTED_RATE[band],
                 reading.selected_rate,
                 component,
                 workload,
@@ -928,39 +1021,11 @@ def _arm_measurements(
         )
         values.append(
             _measure(
-                NOVELTY_PREDICATE_POLICY_MASS[name],
-                reading.policy_mass,
+                NOVELTY_MATERIAL_GAIN_OPPORTUNITY_SHARE[band],
+                _ratio(reading.opportunities, arm.scored_positions),
                 component,
                 workload,
-                reading.opportunities,
-            )
-        )
-        if reading.mean_best_rank is not None:
-            values.append(
-                _measure(
-                    NOVELTY_PREDICATE_BEST_RANK[name],
-                    reading.mean_best_rank,
-                    component,
-                    workload,
-                    reading.rankable_opportunities,
-                )
-            )
-        if arm.is_control:
-            continue
-        # A predicate is realized by the position, and a perturbed position is
-        # a different one, so this pairs on the positions rather than on the
-        # opportunities: the control's rate is read over the plies this arm
-        # reached, whether or not the predicate fired there for the control.
-        paired = control.paired_predicate(predicate, keys)
-        if paired is None:
-            continue
-        values.append(
-            _measure(
-                NOVELTY_PREDICATE_RETENTION[name],
-                _ratio(reading.selected_rate, paired.selected_rate),
-                component,
-                workload,
-                reading.opportunities,
+                arm.scored_positions,
             )
         )
     return tuple(values)
@@ -983,12 +1048,10 @@ def _measure(
 
 
 def _ratio(value: float, reference: float) -> float:
-    """Return a retention ratio, with an absent reference reported as zero.
+    """Return a share, with an absent reference reported as zero.
 
-    A control arm that never realized the quantity leaves retention undefined
-    rather than infinite. Zero is the honest floor: nothing was retained
-    because there was nothing to retain, and the opportunity counts beside it
-    say so.
+    An arm that scored nothing leaves the share undefined rather than
+    infinite, and the counts recorded beside it say which happened.
     """
 
     if reference == 0.0:
@@ -997,30 +1060,39 @@ def _ratio(value: float, reference: float) -> float:
 
 
 def _arm_game_totals(arm: ArmReading) -> tuple[GameTotals, ...]:
-    """Return each derived game's contribution to this arm's own metrics."""
+    """Return each derived game's contribution to this arm's own metrics.
+
+    The bands are here as well as legality because a sampling floor is
+    resampled over these, and every reported band carries one.
+    """
 
     by_game: dict[int, list[PositionPolicy]] = defaultdict(list)
     for position in arm.positions:
         by_game[position.game_id].append(position)
+    bands: dict[int, dict[str, list[_Opportunity]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for opportunity in arm.opportunities:
+        bands[opportunity.game_id][opportunity.band].append(opportunity)
 
     totals: list[GameTotals] = []
     for game_id, positions in sorted(by_game.items()):
-        count = len(positions)
-        totals.append(
-            GameTotals(
-                game_id=game_id,
-                metrics={
-                    NOVELTY_LEGAL_MASS.identifier: MetricTotal(
-                        total=sum(item.legal_mass for item in positions),
-                        positions=count,
-                    ),
-                    NOVELTY_MASK_PENALTY.identifier: MetricTotal(
-                        total=sum(item.mask_penalty for item in positions),
-                        positions=count,
-                    ),
-                },
+        metrics = {
+            NOVELTY_MASK_PENALTY.identifier: MetricTotal(
+                total=sum(item.mask_penalty for item in positions),
+                positions=len(positions),
+            ),
+        }
+        for band, items in bands[game_id].items():
+            metrics[NOVELTY_MATERIAL_GAIN_POLICY_MASS[band].identifier] = MetricTotal(
+                total=sum(item.policy_mass for item in items),
+                positions=len(items),
             )
-        )
+            metrics[NOVELTY_MATERIAL_GAIN_SELECTED_RATE[band].identifier] = MetricTotal(
+                total=sum(1.0 for item in items if item.success),
+                positions=len(items),
+            )
+        totals.append(GameTotals(game_id=game_id, metrics=metrics))
     return tuple(totals)
 
 
@@ -1134,7 +1206,7 @@ __all__ = [
     "NoveltyBenchmarkResult",
     "PerturbationConfig",
     "PerturbationRecipe",
-    "PredicateReading",
+    "BandReading",
     "benchmark_novelty",
     "derive_arm",
 ]

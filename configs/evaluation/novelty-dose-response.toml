@@ -1,10 +1,10 @@
-# Capability retention under a controlled novelty dose.
+# What a controlled novelty dose costs the policy.
 #
 # Perturbed continuations are derived from the frozen pool through the shared
 # view layer. Only the opponent's moves are replaced, and only from the onset
 # ply onward; the player's continuation is the human's own, replayed while it
 # stays legal. See `docs/evaluation.md` for what survives out of distribution
-# and why the perturbed arms are read as retention rather than as rates.
+# and what each surviving quantity has to hold fixed beside the dose.
 #
 # The model selection is deliberately absent: with no explicit checkpoint or
 # run, `anthro eval novelty` uses the machine-local default selection beneath
@@ -18,17 +18,32 @@ expected_pool_game_ids_sha256 = "8ff80e72aac7dadd07a418e0c951d3c56a1045a48cd74de
 # Games have to be long enough for the window to open and run, so this view
 # filters on length. Subsampling keeps a sweep affordable without shrinking the
 # pool the reading is defined over.
+#
+# Sized on the narrowest quantity it reports, which is the policy mass in the
+# minor band at full dose. Four independent draws at this size put its spread at
+# 0.0042, against 0.0067 between two checkpoints of one recipe four times apart
+# in training. That is 1.6 times the floor, where the same pair read in
+# distribution moves a quarter of its own: the reading separates them where an
+# unperturbed one cannot, and does not separate them cleanly. Reaching twice the
+# floor on a pair this close would take about ten thousand games.
 name = "novelty"
 minimum_plies = 40
-maximum_games = 400
+maximum_games = 6400
 
 [perturbation]
 # Dose zero is the control arm and is required. The sweep is denser at the low
-# end because that is where the curve is expected to be non-monotonic: a small
-# perturbation takes the model off book without yet giving away material.
+# end because the realized share of replaced moves runs well ahead of the
+# configured rate once divergence starts: 0.0625 realizes 0.17 and 0.125
+# realizes 0.31, so the configured points below a quarter are what place any
+# reading in the lightly perturbed half of the axis at all.
 doses = [0.0, 0.0625, 0.125, 0.25, 0.5, 1.0]
 onset_plies = 16
 window_moves = 8
 
 [loader]
-batch_size = 8
+# Every arm is a separate pass, so this reading is more launch-bound than one
+# that scores the pool once. Measured over one full-dose arm, the forward pass
+# and the gather beside it fall from 1.56s at 8 to 0.99s at 32, and 256 buys a
+# further 0.05s: past 32 the launches are paid for and what is left scales with
+# positions.
+batch_size = 32
