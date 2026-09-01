@@ -206,6 +206,11 @@ class SeedFloorReport:
     #: Checkpoint steps on either side that the characterization was not taken
     #: at, which is what ``HORIZON`` names.
     off_horizon_steps: tuple[int, ...] = ()
+    #: How many readings recorded no step at all. Also ``HORIZON``: a reading
+    #: that does not say where it was taken has not been shown to be at the
+    #: characterized one, and treating silence as agreement is what would let a
+    #: branch match a floor it was never measured against.
+    unrecorded_steps: int = 0
     #: Training-health metrics whose current reading sits outside the control
     #: arms' own spread, which is what ``DEPARTED`` names.
     departures: tuple[str, ...] = ()
@@ -240,6 +245,7 @@ class SeedFloorReport:
             "arms": None if dispersion is None else len(dispersion.arms),
             "seeds": None if dispersion is None else list(dispersion.seeds),
             "off_horizon_steps": list(self.off_horizon_steps),
+            "unrecorded_steps": self.unrecorded_steps,
             "departures": list(self.departures),
         }
 
@@ -915,12 +921,17 @@ def _seed_floor_line(report: DeltaReport) -> list[str]:
             f"{dispersion.horizon_steps} step(s)"
         )
         if header.scope is SeedScope.HORIZON:
-            steps = ", ".join(str(step) for step in header.off_horizon_steps)
+            taken = []
+            if header.off_horizon_steps:
+                steps = ", ".join(str(step) for step in header.off_horizon_steps)
+                taken.append(f"readings were taken at step(s) {steps}")
+            if header.unrecorded_steps:
+                taken.append(f"{header.unrecorded_steps} reading(s) recorded no step")
             line = (
-                f"Seed floor: not applied. It describes {found}, and these "
-                f"readings were taken at step(s) {steps}. The horizon sits "
-                "outside the training identity, so this pair matches the key "
-                "without having been shown to share the spread."
+                f"Seed floor: not applied. It describes {found}, and "
+                f"{' and '.join(taken)}. The horizon sits outside the training "
+                "identity, so this pair matches the key without having been "
+                "shown to share the spread."
             )
         elif header.scope is SeedScope.DEPARTED:
             departures = ", ".join(header.departures)
@@ -1507,7 +1518,7 @@ def _metric_delta(
     )
     noise = _noise_verdict(definition, delta, floor)
     seed = seed_floor.floor(definition.identifier, workload)
-    seed_verdict = _seed_verdict(definition, delta, seed)
+    seed_verdict = _seed_verdict(delta, seed)
     return MetricDelta(
         metric=definition.identifier,
         family=definition.family,
@@ -1740,11 +1751,7 @@ def _noise_verdict(
     return NoiseVerdict.CLEARED
 
 
-def _seed_verdict(
-    definition: MetricDefinition,
-    delta: float,
-    floor: float | None,
-) -> NoiseVerdict:
+def _seed_verdict(delta: float, floor: float | None) -> NoiseVerdict:
     """Judge one delta against the control's seed spread.
 
     ``UNKNOWN`` rather than ``UNQUALIFIABLE`` where a metric declares that
@@ -1783,25 +1790,37 @@ def _seed_floor_report(
     if dispersion is None:
         return SeedFloorReport(scope=SeedScope.NO_RECORD, training_sha256=digest)
 
+    steps = [
+        envelope.checkpoint.step for envelope in (*baseline_results, *current_results)
+    ]
     off_horizon = tuple(
         sorted(
             {
-                envelope.checkpoint.step
-                for envelope in (*baseline_results, *current_results)
-                if envelope.checkpoint.step is not None
-                and envelope.checkpoint.step != dispersion.horizon_steps
+                step
+                for step in steps
+                if step is not None and step != dispersion.horizon_steps
             }
         )
     )
-    if off_horizon:
+    unrecorded = sum(1 for step in steps if step is None)
+    if off_horizon or unrecorded:
         return SeedFloorReport(
             scope=SeedScope.HORIZON,
             training_sha256=digest,
             dispersion=dispersion,
             off_horizon_steps=off_horizon,
+            unrecorded_steps=unrecorded,
         )
 
-    health = _health_readings(current_results)
+    # Only the readings the characterization has a band for are evidence.
+    # A current side reporting health it never measured leaves the scope
+    # unverified rather than checked, which is the state ``departures`` would
+    # otherwise render as an empty tuple.
+    health = {
+        metric: value
+        for metric, value in _health_readings(current_results).items()
+        if metric in dispersion.health
+    }
     if not health:
         return SeedFloorReport(
             scope=SeedScope.UNVERIFIED,
@@ -1847,7 +1866,9 @@ def _health_readings(results: Sequence[ResultEnvelope]) -> dict[str, float]:
         for definition in registered_metrics(TRAINING_HEALTH_FAMILY.identifier)
     }
     readings: dict[str, float] = {}
-    for envelope in sorted(results, key=lambda item: item.recorded_at):
+    for envelope in sorted(
+        results, key=lambda item: (item.recorded_at, item.result_id)
+    ):
         for measurement in envelope.measurements:
             if measurement.metric in health:
                 readings[measurement.metric] = measurement.value

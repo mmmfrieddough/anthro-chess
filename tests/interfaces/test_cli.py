@@ -2767,13 +2767,21 @@ def _write_arm(run_root: Path, name: str, *, seed: int, step: int = 8000) -> Non
     """Write the two files a characterization reads off an arm's run.
 
     Minimal on purpose: what the command needs from a run is the seed it was
-    initialized at and the horizon and wall clock its last logged interval
-    reached, and writing only those is what says so.
+    initialized at, the checkpoint step its record describes, and the wall clock
+    its last logged interval reached. Writing only those is what says so.
     """
 
     directory = run_root / name
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "run.json").write_text(json.dumps({"seed": seed, "complete": True}))
+    (directory / "run.json").write_text(
+        json.dumps(
+            {
+                "seed": seed,
+                "complete": True,
+                "optimization": {"completed_steps": step},
+            }
+        )
+    )
     (directory / "metrics.jsonl").write_text(
         json.dumps(
             {

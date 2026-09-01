@@ -53,17 +53,21 @@ checkpoint_every_steps = 25000
 # could drift. See `docs/decisions/0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
 # and `docs/decisions/0073-compilation-is-on-by-default-and-plain-fusion-beats-graph-capture.md`.
 
-# Health-only, so it scores no positions and costs nothing. It exists so that
-# every arm puts `training_health` where a comparison can read it: the seed
-# floor describes stable baselines, and an arm whose health departs from the
-# vehicle's is outside its scope rather than qualified by it. The interval
-# divides the horizon above so the last firing lands on it, sharing a checkpoint
-# label with the reading that scores the final checkpoint; a run at another
-# horizon records no health there, and its comparison reports the scope as
-# unverified, which is what it is.
+# Health-only, so it scores no positions. It exists so that every arm puts
+# `training_health` where a comparison can read it: the seed floor describes
+# stable baselines, and an arm whose health departs from the vehicle's is
+# outside its scope rather than qualified by it.
+#
+# The interval is the horizon above, so this fires exactly once and at the step
+# the final checkpoint is saved at. A firing labels its readings by the step it
+# ran at whether or not a checkpoint exists there, so a shorter interval would
+# put labels in the store for checkpoints that never existed, and a report
+# choosing its own baseline would pick one of those over the previous real
+# checkpoint. A run at another horizon records no health at all, and its
+# comparison reports the floor's scope as unverified, which is what it is.
 [[evaluation.cadences]]
 name = "training-health"
-every_steps = 13893
+every_steps = 69465
 metrics = [
   "training_health.gradient_norm",
   "training_health.clip_rate",

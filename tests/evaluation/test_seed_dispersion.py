@@ -35,6 +35,7 @@ def _arm(
     move_loss: float,
     health: Mapping[str, float] | None = None,
     metrics: Mapping[str, Mapping[str, float]] | None = None,
+    fingerprints: Mapping[str, Mapping[str, str]] | None = None,
     training_seconds: float = 3600.0,
 ) -> ArmReading:
     return ArmReading(
@@ -43,6 +44,7 @@ def _arm(
         checkpoint=f"{run_id}-step-00069465",
         training_seconds=training_seconds,
         metrics=metrics if metrics is not None else {MOVE_LOSS: {"": move_loss}},
+        fingerprints=fingerprints if fingerprints is not None else {},
         health=health if health is not None else {GRADIENT_NORM: 0.5},
     )
 
@@ -266,3 +268,73 @@ def test_a_characterization_filed_under_another_digest_is_refused(
 
     with pytest.raises(SeedDispersionError, match="would never reach this file"):
         read_seed_dispersion(misfiled)
+
+
+def test_a_cell_the_arms_measured_on_different_series_carries_no_spread() -> None:
+    """A spread over two series describes neither of them.
+
+    One checkpoint can carry an in-training preview of a metric and a canonical
+    pool pass of it under one label, and the two are different measurements. A
+    delta across two fingerprints is refused everywhere else here, and a spread
+    over them is the same mistake with more arms.
+    """
+
+    dispersion = _characterized(
+        _arm(
+            "a",
+            17,
+            move_loss=1.4,
+            metrics={MOVE_LOSS: {"": 1.40}, "legality.mask_penalty": {"": 0.10}},
+            fingerprints={
+                MOVE_LOSS: {"": "canonical"},
+                "legality.mask_penalty": {"": "canonical"},
+            },
+        ),
+        _arm(
+            "b",
+            29,
+            move_loss=1.5,
+            metrics={MOVE_LOSS: {"": 1.50}, "legality.mask_penalty": {"": 0.20}},
+            fingerprints={
+                MOVE_LOSS: {"": "canonical"},
+                "legality.mask_penalty": {"": "preview"},
+            },
+        ),
+    )
+
+    assert dispersion.floor(MOVE_LOSS) is not None
+    assert dispersion.floor("legality.mask_penalty") is None
+
+
+def test_replicates_at_more_than_one_seed_are_refused_rather_than_merged() -> None:
+    """One record holds one nondeterminism term, and merging discards evidence."""
+
+    with pytest.raises(SeedDispersionError, match="more than one seed"):
+        _characterized(
+            _arm("a", 17, move_loss=1.40),
+            _arm("b", 17, move_loss=1.41),
+            _arm("c", 29, move_loss=1.50),
+            _arm("d", 29, move_loss=1.52),
+        )
+
+
+def test_the_health_band_is_read_off_the_spread_rather_than_its_bound() -> None:
+    """A scope check that widens errs the way the check exists to prevent.
+
+    Every floor here rests on the conservative upper limit on a spread, because
+    a floor that understates noise licenses noise as a finding. A scope check
+    inverts that: widening it passes an arm whose dispersion has been shown not
+    to match, and then quotes it a floor measured on ones that do.
+    """
+
+    dispersion = _characterized(
+        _arm("a", 17, move_loss=1.40, health={GRADIENT_NORM: 0.49}),
+        _arm("b", 29, move_loss=1.50, health={GRADIENT_NORM: 0.50}),
+        _arm("c", 43, move_loss=1.60, health={GRADIENT_NORM: 0.51}),
+    )
+
+    band = dispersion.health[GRADIENT_NORM]
+    assert band.covered == pytest.approx(DEFAULT_COVERAGE * band.dispersion.value)
+    assert band.covered < DEFAULT_COVERAGE * band.dispersion.bound
+    # Four sample sigma out is a departure. Built from the bound it would not be.
+    assert not band.covers(band.center + 4 * band.dispersion.value)

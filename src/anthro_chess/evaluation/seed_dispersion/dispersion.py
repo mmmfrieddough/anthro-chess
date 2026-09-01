@@ -94,9 +94,20 @@ class HealthBand(ResultModel):
 
     @property
     def covered(self) -> float:
-        """Return how far from ``center`` a reading may sit and still be in scope."""
+        """Return how far from ``center`` a reading may sit and still be in scope.
 
-        return DEFAULT_COVERAGE * self.dispersion.bound
+        Built from the measured spread rather than from the conservative bound
+        every floor here rests on, which is the one place in this package that
+        is right. A bound widens, and widening a floor errs safe while widening
+        a scope check errs the other way: at three arms the bound is over four
+        times the spread, so an arm well outside what the base showed would be
+        passed as sharing its dispersion and quoted a floor measured on stable
+        ones. Erring toward withholding costs a reader a floor they might have
+        been entitled to; erring the other way is the failure this check exists
+        for.
+        """
+
+        return DEFAULT_COVERAGE * self.dispersion.value
 
     def covers(self, value: float) -> bool:
         """Return whether one arm's reading sits inside the vehicle's spread."""
@@ -201,6 +212,11 @@ class ArmReading(ResultModel):
     #: One value per metric per declared workload, keyed the way a report groups
     #: its rows. The empty workload key is the reading that declares none.
     metrics: Mapping[str, Mapping[str, float]]
+    #: The series each of those values was measured on, keyed identically. Two
+    #: arms can report one metric under one workload from different views — an
+    #: in-training preview and a canonical pool pass both label their reading by
+    #: the checkpoint — and a spread over those describes neither.
+    fingerprints: Mapping[str, Mapping[str, str]] = Field(default_factory=dict)
     health: Mapping[str, float] = Field(default_factory=dict)
 
 
@@ -245,32 +261,46 @@ def characterize(
             "spread to characterize"
         )
     replicates = [arms for arms in by_seed.values() if len(arms) > 1]
+    if len(replicates) > 1:
+        # One record holds one nondeterminism term, and pooling several is not
+        # the same arithmetic as taking one: the groups have their own degrees
+        # of freedom and their own source. Refusing says so; merging them would
+        # silently keep whichever group was read last.
+        raise SeedDispersionError(
+            "arms are repeated at more than one seed, and this record holds "
+            "one nondeterminism term: repeat one seed, or characterize the "
+            "groups separately"
+        )
     nondeterminism: dict[str, dict[str, MetricDispersion]] = {}
     for arms in replicates:
-        for metric, cells in _spread(
+        nondeterminism = _spread(
             arms,
             source=f"{len(arms)} arms at seed {arms[0].seed}",
-        ).items():
-            nondeterminism.setdefault(metric, {}).update(cells)
-    return SeedDispersion(
-        training_sha256=training_sha256,
-        horizon_steps=horizon_steps,
-        arms=tuple(
-            SeedArm(
-                run_id=reading.run_id,
-                seed=reading.seed,
-                checkpoint=reading.checkpoint,
-                training_seconds=reading.training_seconds,
-            )
-            for reading in readings
-        ),
-        metrics=metrics,
-        nondeterminism=nondeterminism,
-        health=_health(representatives),
-        scoring_seconds=scoring_seconds,
-        measured_at=measured_at,
-        notes=notes,
-    )
+        )
+    try:
+        return SeedDispersion(
+            training_sha256=training_sha256,
+            horizon_steps=horizon_steps,
+            arms=tuple(
+                SeedArm(
+                    run_id=reading.run_id,
+                    seed=reading.seed,
+                    checkpoint=reading.checkpoint,
+                    training_seconds=reading.training_seconds,
+                )
+                for reading in readings
+            ),
+            metrics=metrics,
+            nondeterminism=nondeterminism,
+            health=_health(representatives),
+            scoring_seconds=scoring_seconds,
+            measured_at=measured_at,
+            notes=notes,
+        )
+    except ValidationError as error:
+        raise SeedDispersionError(
+            f"these arms do not describe one characterization: {error}"
+        ) from error
 
 
 def _spread(
@@ -289,6 +319,8 @@ def _spread(
     degrees_of_freedom = len(readings) - 1
     spreads: dict[str, dict[str, MetricDispersion]] = {}
     for metric, workload in sorted(shared):
+        if not _one_series(readings, metric, workload):
+            continue
         values = [reading.metrics[metric][workload] for reading in readings]
         try:
             dispersion = measured_dispersion(
@@ -305,6 +337,25 @@ def _spread(
             continue
         spreads.setdefault(metric, {})[workload] = dispersion
     return spreads
+
+
+def _one_series(
+    readings: Sequence[ArmReading],
+    metric: str,
+    workload: str,
+) -> bool:
+    """Return whether every arm measured this cell on the same series.
+
+    A cell no arm recorded a series for passes, since there is nothing saying
+    they differ and a store predating the field is the ordinary case. A cell
+    where they disagree is refused, the way a delta across two fingerprints is
+    refused everywhere else here.
+    """
+
+    recorded = {
+        reading.fingerprints.get(metric, {}).get(workload) for reading in readings
+    } - {None}
+    return len(recorded) <= 1
 
 
 def _shared_cells(readings: Sequence[ArmReading]) -> set[tuple[str, str]]:
@@ -373,7 +424,7 @@ def read_seed_dispersion(path: Path) -> SeedDispersion:
     """Return the characterization stored at one path."""
 
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise SeedDispersionError(
             f"seed dispersion at {path} cannot be read: {error}"
@@ -410,7 +461,8 @@ def write_seed_dispersion(
             sort_keys=True,
             allow_nan=False,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     return path
 

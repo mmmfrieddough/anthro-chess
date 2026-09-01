@@ -3548,9 +3548,8 @@ def _run_eval_seed_dispersion(arguments: argparse.Namespace) -> int:
         write_seed_dispersion,
     )
     from anthro_chess.evaluation.seed_dispersion.arms import characterize_runs
-    from anthro_chess.machine import RUN_ROOT_VARIABLE, optional_root
 
-    run_root = optional_root(RUN_ROOT_VARIABLE)
+    run_root = _run_root()
     directories = [_run_directory(name, run_root) for name in arguments.run]
     missing = [directory for directory in directories if not directory.is_dir()]
     if missing:

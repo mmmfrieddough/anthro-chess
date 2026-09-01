@@ -3148,11 +3148,10 @@ number says so.
 Seed replicates belong to the control rather than to the change under test. A
 base that a run of changes will be tested against is trained at several seeds
 once, and each comparison against that base reads against the spread those arms
-showed; only a new base pays again. What decision 0043 removed was the stored,
-scoped, indexed form of such a characterization rather than the act of taking
-one — the spread is read beside the comparison it qualifies, the way every other
-dispersion here is. Nothing sizes a sample count against seed variance until one
-such measurement exists, because benchmark noise below it buys no attribution.
+showed; only a new base pays again. That storage is narrower than the four
+kinds, six producers, and fingerprint-keyed index decision 0043 collapsed: one
+characterization per training identity, findable by exact digest and by nothing
+else, which decision 0065 reopened for a base that cannot move and for no other.
 
 A null reading is a reading. Arms are not re-run until a number improves, and a
 delta inside its floor is a null result rather than a small win.

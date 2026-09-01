@@ -1557,3 +1557,78 @@ def test_an_arm_that_recorded_no_health_is_floored_but_said_to_be_unverified(
     assert report.seed_floor.scope is SeedScope.UNVERIFIED
     assert _row(report, "held_out.move_loss").seed is NoiseVerdict.WITHIN
     assert "unverified rather than established" in _unwrapped(report)
+
+
+def test_a_reading_that_recorded_no_step_is_not_taken_to_be_on_the_horizon(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    monkeypatch: pytest.MonkeyPatch,
+    training_scope: str,
+) -> None:
+    """Silence about where a reading was taken is not agreement that it matches.
+
+    Most of the committed store predates the fields a reading now carries, so a
+    result with a training identity and no step is the ordinary old record
+    rather than a contrived one.
+    """
+
+    component = move_prediction_component()
+    monkeypatch.setattr(
+        reporting,
+        "seed_dispersion_for",
+        lambda digest, **_: _seed_dispersion(training_scope, floor=0.2),
+    )
+    results = _seed_pair(recorded_result, component, current_loss=3.4, health=0.5)
+    results[0] = recorded_result(
+        label="checkpoint-a",
+        step=None,
+        measurements=[
+            measurement(
+                "held_out.move_loss", 3.5, data=component, dispersion=_dispersion(1e-9)
+            )
+        ],
+        recorded_at=BASELINE_AT,
+    )
+
+    report = build_delta_report(results, BridgeIndex())
+
+    assert report.seed_floor.scope is SeedScope.HORIZON
+    assert report.seed_floor.unrecorded_steps == 1
+    assert _row(report, "held_out.move_loss").seed_floor is None
+    assert "1 reading(s) recorded no step" in _unwrapped(report)
+
+
+def test_health_the_characterization_has_no_band_for_verifies_nothing(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    monkeypatch: pytest.MonkeyPatch,
+    training_scope: str,
+) -> None:
+    """A comparison of no readings is unverified rather than passed.
+
+    A characterization taken before a health metric was recorded has no band for
+    it, so an arm reporting only that metric has had nothing checked. Reading
+    the empty departure list as agreement would say the arm was shown to be in
+    scope when nothing was compared.
+    """
+
+    component = move_prediction_component()
+    monkeypatch.setattr(
+        reporting,
+        "seed_dispersion_for",
+        lambda digest, **_: _seed_dispersion(training_scope, floor=0.2),
+    )
+    results = _seed_pair(recorded_result, component, current_loss=3.4)
+    results.append(
+        recorded_result(
+            label="checkpoint-b",
+            kind="training-health",
+            measurements=[measurement("training_health.clip_rate", 0.9)],
+            recorded_at=CURRENT_AT,
+        )
+    )
+
+    report = build_delta_report(results, BridgeIndex())
+
+    assert report.seed_floor.scope is SeedScope.UNVERIFIED
+    assert "unverified rather than established" in _unwrapped(report)
