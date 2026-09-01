@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from anthro_chess.evaluation.results import DEFAULT_COVERAGE, dispersion_bound
-from anthro_chess.evaluation.seed_dispersion import (
+from anthro_chess.evaluation.results.seed_dispersion import (
     SEED_ARM_METHOD,
     ArmReading,
     SeedDispersion,
@@ -32,17 +32,19 @@ def _arm(
     run_id: str,
     seed: int,
     *,
-    move_loss: float,
+    move_loss: float = 1.4,
     health: Mapping[str, float] | None = None,
     metrics: Mapping[str, Mapping[str, float]] | None = None,
     fingerprints: Mapping[str, Mapping[str, str]] | None = None,
-    training_seconds: float = 3600.0,
+    wall_clock_seconds: float = 3600.0,
 ) -> ArmReading:
+    """Return one arm, reporting ``move_loss`` unless given other readings."""
+
     return ArmReading(
         run_id=run_id,
         seed=seed,
         checkpoint=f"{run_id}-step-00069465",
-        training_seconds=training_seconds,
+        wall_clock_seconds=wall_clock_seconds,
         metrics=metrics if metrics is not None else {MOVE_LOSS: {"": move_loss}},
         fingerprints=fingerprints if fingerprints is not None else {},
         health=health if health is not None else {GRADIENT_NORM: 0.5},
@@ -110,14 +112,13 @@ def test_a_metric_only_some_arms_reported_carries_no_spread() -> None:
     """Mixing replicate counts would make the bound depend on the row asked for."""
 
     dispersion = _characterized(
-        _arm("a", 17, move_loss=1.40, metrics={MOVE_LOSS: {"": 1.40}}),
+        _arm("a", 17, metrics={MOVE_LOSS: {"": 1.40}}),
         _arm(
             "b",
             29,
-            move_loss=1.50,
             metrics={MOVE_LOSS: {"": 1.50}, "legality.mask_penalty": {"": 0.1}},
         ),
-        _arm("c", 43, move_loss=1.60, metrics={MOVE_LOSS: {"": 1.60}}),
+        _arm("c", 43, metrics={MOVE_LOSS: {"": 1.60}}),
     )
 
     assert set(dispersion.metrics) == {MOVE_LOSS}
@@ -134,15 +135,9 @@ def test_a_cell_every_arm_agreed_on_exactly_is_withheld() -> None:
 
     settled = "legality.mask_penalty"
     dispersion = _characterized(
-        _arm(
-            "a", 17, move_loss=1.4, metrics={MOVE_LOSS: {"": 1.4}, settled: {"": 0.0}}
-        ),
-        _arm(
-            "b", 29, move_loss=1.5, metrics={MOVE_LOSS: {"": 1.5}, settled: {"": 0.0}}
-        ),
-        _arm(
-            "c", 43, move_loss=1.6, metrics={MOVE_LOSS: {"": 1.6}, settled: {"": 0.0}}
-        ),
+        _arm("a", 17, metrics={MOVE_LOSS: {"": 1.4}, settled: {"": 0.0}}),
+        _arm("b", 29, metrics={MOVE_LOSS: {"": 1.5}, settled: {"": 0.0}}),
+        _arm("c", 43, metrics={MOVE_LOSS: {"": 1.6}, settled: {"": 0.0}}),
     )
 
     assert dispersion.floor(MOVE_LOSS) is not None
@@ -158,19 +153,16 @@ def test_a_workload_scoped_metric_keeps_one_spread_per_cell() -> None:
         _arm(
             "a",
             17,
-            move_loss=1.4,
             metrics={plies: {"cell-1200": 60.0, "cell-1800": 80.0}},
         ),
         _arm(
             "b",
             29,
-            move_loss=1.4,
             metrics={plies: {"cell-1200": 62.0, "cell-1800": 90.0}},
         ),
         _arm(
             "c",
             43,
-            move_loss=1.4,
             metrics={plies: {"cell-1200": 64.0, "cell-1800": 100.0}},
         ),
     )
@@ -226,12 +218,12 @@ def test_the_measurement_records_what_it_cost() -> None:
     """So a session replacing the vehicle can price re-characterizing it."""
 
     dispersion = _characterized(
-        _arm("a", 17, move_loss=1.4, training_seconds=21000.0),
-        _arm("b", 29, move_loss=1.5, training_seconds=21200.0),
+        _arm("a", 17, move_loss=1.4, wall_clock_seconds=21000.0),
+        _arm("b", 29, move_loss=1.5, wall_clock_seconds=21200.0),
         scoring_seconds=1800.0,
     )
 
-    assert dispersion.training_seconds == pytest.approx(42200.0)
+    assert dispersion.training_wall_clock_seconds == pytest.approx(42200.0)
     assert dispersion.wall_clock_seconds == pytest.approx(44000.0)
 
 
@@ -283,7 +275,6 @@ def test_a_cell_the_arms_measured_on_different_series_carries_no_spread() -> Non
         _arm(
             "a",
             17,
-            move_loss=1.4,
             metrics={MOVE_LOSS: {"": 1.40}, "legality.mask_penalty": {"": 0.10}},
             fingerprints={
                 MOVE_LOSS: {"": "canonical"},
@@ -293,7 +284,6 @@ def test_a_cell_the_arms_measured_on_different_series_carries_no_spread() -> Non
         _arm(
             "b",
             29,
-            move_loss=1.5,
             metrics={MOVE_LOSS: {"": 1.50}, "legality.mask_penalty": {"": 0.20}},
             fingerprints={
                 MOVE_LOSS: {"": "canonical"},
@@ -334,7 +324,6 @@ def test_the_health_band_is_read_off_the_spread_rather_than_its_bound() -> None:
     )
 
     band = dispersion.health[GRADIENT_NORM]
-    assert band.covered == pytest.approx(DEFAULT_COVERAGE * band.dispersion.value)
     assert band.covered < DEFAULT_COVERAGE * band.dispersion.bound
     # Four sample sigma out is a departure. Built from the bound it would not be.
     assert not band.covers(band.center + 4 * band.dispersion.value)

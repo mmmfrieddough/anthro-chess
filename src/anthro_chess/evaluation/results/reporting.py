@@ -34,9 +34,9 @@ from anthro_chess.evaluation.results.comparability import (
     measurements_by_workload,
     provenance_differences,
     recorded_series,
+    training_health_readings,
 )
 from anthro_chess.evaluation.results.metrics import (
-    TRAINING_HEALTH_FAMILY,
     MetricDefinition,
     MetricDirection,
     MetricFamily,
@@ -50,13 +50,13 @@ from anthro_chess.evaluation.results.records import (
     Measurement,
     ResultEnvelope,
 )
+from anthro_chess.evaluation.results.seed_dispersion import (
+    SeedDispersion,
+    seed_dispersion_for,
+)
 from anthro_chess.evaluation.results.store import (
     checkpoint_labels,
     results_for_checkpoint,
-)
-from anthro_chess.evaluation.seed_dispersion import (
-    SeedDispersion,
-    seed_dispersion_for,
 )
 
 #: Absence reason for a family registered ahead of the benchmark that fills it.
@@ -794,7 +794,7 @@ def render_report(report: DeltaReport) -> str:
         for group in family.series:
             lines.extend(_render_group_header(group))
             for metric in group.metrics:
-                lines.append(_render_metric(metric, width, report.seed_floor.applies))
+                lines.append(_render_metric(metric, width))
     if unregistered:
         lines.extend(
             textwrap.wrap(
@@ -1101,7 +1101,7 @@ _MOVEMENT_LABELS = {
 }
 
 
-def _render_metric(metric: MetricDelta, width: int, seed_floor: bool) -> str:
+def _render_metric(metric: MetricDelta, width: int) -> str:
     change = _MOVEMENT_LABELS.get(metric.movement, metric.movement.value)
     row = (
         f"  {metric.metric:<{width}} "
@@ -1113,10 +1113,7 @@ def _render_metric(metric: MetricDelta, width: int, seed_floor: bool) -> str:
     )
     if metric.noise is not NoiseVerdict.NOT_APPLICABLE:
         row = f"{row} noise {metric.noise.value}"
-    # Only where a characterization describes this comparison. Everywhere else
-    # every row would carry the same 'unknown', which says nothing about the
-    # row and pushes the annotations that do off the line.
-    if seed_floor and metric.seed is not NoiseVerdict.NOT_APPLICABLE:
+    if metric.seed is not NoiseVerdict.NOT_APPLICABLE:
         row = f"{row} seed {metric.seed.value}"
     if metric.note is not None:
         row = f"{row.rstrip()}  ({metric.note})"
@@ -1442,9 +1439,9 @@ def _metric_delta(
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
-    hidden_series: int = 1,
-    seed_floor: SeedFloorReport = NO_SEED_FLOOR,
-    workload: str = UNSCOPED_WORKLOAD,
+    hidden_series: int,
+    seed_floor: SeedFloorReport,
+    workload: str,
 ) -> MetricDelta:
     if current is None:
         assert baseline is not None  # the caller skips a metric with neither
@@ -1518,7 +1515,7 @@ def _metric_delta(
     )
     noise = _noise_verdict(definition, delta, floor)
     seed = seed_floor.floor(definition.identifier, workload)
-    seed_verdict = _seed_verdict(delta, seed)
+    seed_verdict = _seed_verdict(delta, seed, characterized=seed_floor.applies)
     return MetricDelta(
         metric=definition.identifier,
         family=definition.family,
@@ -1751,17 +1748,24 @@ def _noise_verdict(
     return NoiseVerdict.CLEARED
 
 
-def _seed_verdict(delta: float, floor: float | None) -> NoiseVerdict:
+def _seed_verdict(
+    delta: float,
+    floor: float | None,
+    *,
+    characterized: bool,
+) -> NoiseVerdict:
     """Judge one delta against the control's seed spread.
 
-    ``UNKNOWN`` rather than ``UNQUALIFIABLE`` where a metric declares that
-    resampling cannot estimate its dispersion: that declaration is about the
-    benchmark's own units, and a characterization that trains the whole
-    configuration again does not resample them. A metric with no stored spread
-    is one no arm reported or every arm agreed on, which is a gap somebody
-    could fill rather than an impossibility.
+    The two absences are different answers, and the row says which. Where
+    nothing describes this comparison at all it is ``NOT_APPLICABLE`` and no row
+    is waiting on anything; where a characterization applies but recorded no
+    spread for this metric, ``UNKNOWN`` names a gap somebody could fill. Not
+    ``UNQUALIFIABLE``: that declaration is about resampling a benchmark's own
+    units, and training the configuration again does not resample them.
     """
 
+    if not characterized:
+        return NoiseVerdict.NOT_APPLICABLE
     if floor is None:
         return NoiseVerdict.UNKNOWN
     if abs(delta) <= floor:
@@ -1818,7 +1822,7 @@ def _seed_floor_report(
     # otherwise render as an empty tuple.
     health = {
         metric: value
-        for metric, value in _health_readings(current_results).items()
+        for metric, value in training_health_readings(current_results).items()
         if metric in dispersion.health
     }
     if not health:
@@ -1853,28 +1857,6 @@ def _one_identity(results: Sequence[ResultEnvelope]) -> str | None:
     return identity
 
 
-def _health_readings(results: Sequence[ResultEnvelope]) -> dict[str, float]:
-    """Return the training-health values recorded for one checkpoint.
-
-    A later reading of one metric wins, which only arises where a checkpoint
-    was scored more than once; the readings are of one optimizer step either
-    way.
-    """
-
-    health = {
-        definition.identifier
-        for definition in registered_metrics(TRAINING_HEALTH_FAMILY.identifier)
-    }
-    readings: dict[str, float] = {}
-    for envelope in sorted(
-        results, key=lambda item: (item.recorded_at, item.result_id)
-    ):
-        for measurement in envelope.measurements:
-            if measurement.metric in health:
-                readings[measurement.metric] = measurement.value
-    return readings
-
-
 def _selection(
     label: str,
     results: Sequence[ResultEnvelope],
@@ -1899,13 +1881,9 @@ def _report_training_identity(
     covering two says the readings under it are not one checkpoint's.
     """
 
-    before = {envelope.checkpoint.training_sha256 for envelope in baseline_results} - {
-        None
-    }
-    after = {envelope.checkpoint.training_sha256 for envelope in current_results} - {
-        None
-    }
-    if len(before) != 1 or len(after) != 1:
+    before = _one_identity(baseline_results)
+    after = _one_identity(current_results)
+    if before is None or after is None:
         return AxisChange.UNKNOWN
     return AxisChange.UNCHANGED if before == after else AxisChange.CHANGED
 

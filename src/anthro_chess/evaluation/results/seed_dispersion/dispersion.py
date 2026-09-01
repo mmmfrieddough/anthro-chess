@@ -53,6 +53,7 @@ from anthro_chess.evaluation.results.records import (
     ResultModel,
     Sha256Hex,
 )
+from anthro_chess.evaluation.results.store import canonical_readable_json
 
 #: How a seed dispersion was estimated, named beside the two estimators in
 #: ``noise`` so a stored spread never has to be guessed at. The replicate is a
@@ -77,7 +78,10 @@ class SeedArm(ResultModel):
     #: The checkpoint label its readings were recorded under, which is what ties
     #: this arm to the measurements the spread was taken over.
     checkpoint: str = Field(min_length=1)
-    training_seconds: float = Field(gt=0.0)
+    #: What the run took end to end, as the run itself measured it. Not the
+    #: store's ``training.training_seconds``, which times the optimizer loop
+    #: alone; this is what re-characterizing would have to be scheduled around.
+    wall_clock_seconds: float = Field(gt=0.0)
 
 
 class HealthBand(ResultModel):
@@ -162,16 +166,16 @@ class SeedDispersion(ResultModel):
         return tuple(sorted({arm.seed for arm in self.arms}))
 
     @property
-    def training_seconds(self) -> float:
+    def training_wall_clock_seconds(self) -> float:
         """Return what training every arm cost."""
 
-        return math.fsum(arm.training_seconds for arm in self.arms)
+        return math.fsum(arm.wall_clock_seconds for arm in self.arms)
 
     @property
     def wall_clock_seconds(self) -> float:
         """Return what the whole characterization cost, training and scoring."""
 
-        return self.training_seconds + self.scoring_seconds
+        return self.training_wall_clock_seconds + self.scoring_seconds
 
     def floor(self, metric: str, workload: str = UNSCOPED_WORKLOAD) -> float | None:
         """Return the delta this configuration's seed spread alone can produce.
@@ -208,7 +212,7 @@ class ArmReading(ResultModel):
     run_id: str = Field(min_length=1)
     seed: int = Field(ge=0)
     checkpoint: str = Field(min_length=1)
-    training_seconds: float = Field(gt=0.0)
+    wall_clock_seconds: float = Field(gt=0.0)
     #: One value per metric per declared workload, keyed the way a report groups
     #: its rows. The empty workload key is the reading that declares none.
     metrics: Mapping[str, Mapping[str, float]]
@@ -251,10 +255,8 @@ def characterize(
             "distinct seeds; every arm given here shares one seed"
         )
 
-    metrics = _spread(
-        representatives,
-        source=f"{len(representatives)} seed arms of one training configuration",
-    )
+    source = f"{len(representatives)} seed arms of one training configuration"
+    metrics = _spread(representatives, source=source)
     if not metrics:
         raise SeedDispersionError(
             "no metric was reported by every seed arm, so nothing here has a "
@@ -271,12 +273,14 @@ def characterize(
             "one nondeterminism term: repeat one seed, or characterize the "
             "groups separately"
         )
-    nondeterminism: dict[str, dict[str, MetricDispersion]] = {}
-    for arms in replicates:
-        nondeterminism = _spread(
-            arms,
-            source=f"{len(arms)} arms at seed {arms[0].seed}",
+    nondeterminism = (
+        _spread(
+            replicates[0],
+            source=f"{len(replicates[0])} arms at seed {replicates[0][0].seed}",
         )
+        if replicates
+        else {}
+    )
     try:
         return SeedDispersion(
             training_sha256=training_sha256,
@@ -286,13 +290,13 @@ def characterize(
                     run_id=reading.run_id,
                     seed=reading.seed,
                     checkpoint=reading.checkpoint,
-                    training_seconds=reading.training_seconds,
+                    wall_clock_seconds=reading.wall_clock_seconds,
                 )
                 for reading in readings
             ),
             metrics=metrics,
             nondeterminism=nondeterminism,
-            health=_health(representatives),
+            health=_health(representatives, source=source),
             scoring_seconds=scoring_seconds,
             measured_at=measured_at,
             notes=notes,
@@ -316,27 +320,39 @@ def _spread(
     """
 
     shared = _shared_cells(readings)
-    degrees_of_freedom = len(readings) - 1
     spreads: dict[str, dict[str, MetricDispersion]] = {}
     for metric, workload in sorted(shared):
         if not _one_series(readings, metric, workload):
             continue
         values = [reading.metrics[metric][workload] for reading in readings]
-        try:
-            dispersion = measured_dispersion(
-                replicate_dispersion(values),
-                degrees_of_freedom=degrees_of_freedom,
-                source=source,
-                estimator=SEED_ARM_METHOD,
-            )
-        except NoiseCharacterizationError:
-            # A cell every arm agreed on to the last digit observed that it
-            # could not move rather than that nothing could, and a zero floor
-            # would clear every delta. Withheld here for the same reason the
-            # bound refuses one.
-            continue
-        spreads.setdefault(metric, {})[workload] = dispersion
+        dispersion = _estimate(values, source=source)
+        if dispersion is not None:
+            spreads.setdefault(metric, {})[workload] = dispersion
     return spreads
+
+
+def _estimate(
+    values: Sequence[float],
+    *,
+    source: str,
+) -> MetricDispersion | None:
+    """Return the spread over replicate readings, or nothing where it is zero.
+
+    Replicates that agreed to the last digit observed that they could not move
+    the quantity rather than that nothing could, and the floor a zero spread
+    implies clears every delta. Withheld for the same reason the bound refuses
+    one.
+    """
+
+    try:
+        return measured_dispersion(
+            replicate_dispersion(values),
+            degrees_of_freedom=len(values) - 1,
+            source=source,
+            estimator=SEED_ARM_METHOD,
+        )
+    except NoiseCharacterizationError:
+        return None
 
 
 def _one_series(
@@ -374,29 +390,25 @@ def _shared_cells(readings: Sequence[ArmReading]) -> set[tuple[str, str]]:
     return shared
 
 
-def _health(readings: Sequence[ArmReading]) -> dict[str, HealthBand]:
+def _health(
+    readings: Sequence[ArmReading],
+    *,
+    source: str,
+) -> dict[str, HealthBand]:
     """Return what the arms' training health looked like, metric by metric."""
 
     shared = set(readings[0].health)
     for reading in readings[1:]:
         shared &= set(reading.health)
-    degrees_of_freedom = len(readings) - 1
     bands: dict[str, HealthBand] = {}
     for metric in sorted(shared):
         values = [reading.health[metric] for reading in readings]
-        try:
-            dispersion = measured_dispersion(
-                replicate_dispersion(values),
-                degrees_of_freedom=degrees_of_freedom,
-                source=f"{len(readings)} seed arms of one training configuration",
-                estimator=SEED_ARM_METHOD,
+        dispersion = _estimate(values, source=source)
+        if dispersion is not None:
+            bands[metric] = HealthBand(
+                center=statistics.fmean(values),
+                dispersion=dispersion,
             )
-        except NoiseCharacterizationError:
-            continue
-        bands[metric] = HealthBand(
-            center=statistics.fmean(values),
-            dispersion=dispersion,
-        )
     return bands
 
 
@@ -454,16 +466,7 @@ def write_seed_dispersion(
     root = DATA_DIRECTORY if directory is None else directory
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{dispersion.training_sha256}.json"
-    path.write_text(
-        json.dumps(
-            dispersion.model_dump(mode="json"),
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    path.write_bytes(canonical_readable_json(dispersion.as_record()))
     return path
 
 

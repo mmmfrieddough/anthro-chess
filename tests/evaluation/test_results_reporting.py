@@ -46,7 +46,7 @@ from anthro_chess.evaluation.results.reporting import (
     CheckpointSelection,
     SeedScope,
 )
-from anthro_chess.evaluation.seed_dispersion import (
+from anthro_chess.evaluation.results.seed_dispersion import (
     HealthBand,
     SeedArm,
     SeedDispersion,
@@ -1266,14 +1266,20 @@ def _unwrapped(report: DeltaReport) -> str:
     return " ".join(render_report(report).split())
 
 
+#: The step ``recorded_result`` labels its readings with, and therefore the
+#: horizon a characterization has to name to describe them.
+FIXTURE_HORIZON = 8000
+
+#: What the vehicle arms' gradient norm sat at, and how far apart they were.
+HEALTH_CENTER = 0.5
+HEALTH_SPREAD = 0.01
+
+
 def _seed_dispersion(
     training_scope: str,
     *,
     floor: float,
-    horizon_steps: int = 8000,
-    health_center: float = 0.5,
-    health_spread: float = 0.01,
-    workload: str = "",
+    horizon_steps: int = FIXTURE_HORIZON,
 ) -> SeedDispersion:
     """Return a characterization whose ``held_out.move_loss`` floor is ``floor``.
 
@@ -1282,7 +1288,6 @@ def _seed_dispersion(
     header then says. ``test_seed_dispersion`` owns the arithmetic.
     """
 
-    spread = floor / (DEFAULT_COVERAGE * math.sqrt(2.0))
     return SeedDispersion(
         training_sha256=training_scope,
         horizon_steps=horizon_steps,
@@ -1291,27 +1296,46 @@ def _seed_dispersion(
                 run_id=f"arm-{seed}",
                 seed=seed,
                 checkpoint=f"arm-{seed}-step-{horizon_steps:08d}",
-                training_seconds=3600.0,
+                wall_clock_seconds=3600.0,
             )
             for seed in (17, 29, 43)
         ),
-        metrics={
-            "held_out.move_loss": {
-                workload: MetricDispersion(value=spread, bound=spread)
-            }
-        },
+        metrics={"held_out.move_loss": {"": _dispersion(floor)}},
         health={
             "training_health.gradient_norm": HealthBand(
-                center=health_center,
+                center=HEALTH_CENTER,
                 dispersion=MetricDispersion(
-                    value=health_spread,
-                    bound=health_spread,
+                    value=HEALTH_SPREAD,
+                    bound=HEALTH_SPREAD,
                 ),
             )
         },
         scoring_seconds=600.0,
         measured_at=BASELINE_AT,
     )
+
+
+@pytest.fixture(name="recorded_dispersion")
+def _recorded_dispersion(
+    monkeypatch: pytest.MonkeyPatch,
+    training_scope: str,
+) -> Callable[..., None]:
+    """Return a factory installing one characterization for the fixture identity.
+
+    The lookup reads checked-in package data, and no characterization is filed
+    for the fixture identity, which is what
+    ``test_a_configuration_with_no_recorded_spread_says_so`` asserts by leaving
+    this fixture unused.
+    """
+
+    def install(**kwargs: Any) -> None:
+        monkeypatch.setattr(
+            reporting,
+            "seed_dispersion_for",
+            lambda digest, **_: _seed_dispersion(training_scope, **kwargs),
+        )
+
+    return install
 
 
 def _seed_pair(
@@ -1368,8 +1392,7 @@ def _seed_pair(
 def test_a_delta_the_control_arms_produce_among_themselves_reads_as_unchanged(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """The benchmark floor cannot see the training run; this one can.
 
@@ -1380,11 +1403,7 @@ def test_a_delta_the_control_arms_produce_among_themselves_reads_as_unchanged(
     """
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(training_scope, floor=0.2),
-    )
+    recorded_dispersion(floor=0.2)
 
     report = build_delta_report(
         _seed_pair(recorded_result, component, current_loss=3.4, health=0.5),
@@ -1404,17 +1423,12 @@ def test_a_delta_the_control_arms_produce_among_themselves_reads_as_unchanged(
 def test_a_delta_outside_both_floors_clears_both(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """Clearing both is what distinguishes a change from a different run."""
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(training_scope, floor=0.05),
-    )
+    recorded_dispersion(floor=0.05)
 
     report = build_delta_report(
         _seed_pair(recorded_result, component, current_loss=3.0, health=0.5),
@@ -1458,8 +1472,7 @@ def test_a_configuration_with_no_recorded_spread_says_so(
 def test_a_reading_taken_at_another_horizon_is_not_floored_by_this_one(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """The horizon sits outside the identity, so the key alone does not scope it.
 
@@ -1469,13 +1482,7 @@ def test_a_reading_taken_at_another_horizon_is_not_floored_by_this_one(
     """
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(
-            training_scope, floor=0.2, horizon_steps=8000
-        ),
-    )
+    recorded_dispersion(floor=0.2)
 
     report = build_delta_report(
         _seed_pair(
@@ -1497,8 +1504,7 @@ def test_a_reading_taken_at_another_horizon_is_not_floored_by_this_one(
 def test_an_arm_whose_training_health_departs_is_outside_the_floors_scope(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """Instability widens an arm's spread past what the floor was measured on.
 
@@ -1509,13 +1515,7 @@ def test_an_arm_whose_training_health_departs_is_outside_the_floors_scope(
     """
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(
-            training_scope, floor=0.2, health_center=0.5
-        ),
-    )
+    recorded_dispersion(floor=0.2)
 
     report = build_delta_report(
         _seed_pair(recorded_result, component, current_loss=3.4, health=9.0),
@@ -1532,8 +1532,7 @@ def test_an_arm_whose_training_health_departs_is_outside_the_floors_scope(
 def test_an_arm_that_recorded_no_health_is_floored_but_said_to_be_unverified(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """Not having been shown to depart is not the same as having been shown not to.
 
@@ -1543,11 +1542,7 @@ def test_an_arm_that_recorded_no_health_is_floored_but_said_to_be_unverified(
     """
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(training_scope, floor=0.2),
-    )
+    recorded_dispersion(floor=0.2)
 
     report = build_delta_report(
         _seed_pair(recorded_result, component, current_loss=3.4),
@@ -1562,8 +1557,7 @@ def test_an_arm_that_recorded_no_health_is_floored_but_said_to_be_unverified(
 def test_a_reading_that_recorded_no_step_is_not_taken_to_be_on_the_horizon(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """Silence about where a reading was taken is not agreement that it matches.
 
@@ -1573,11 +1567,7 @@ def test_a_reading_that_recorded_no_step_is_not_taken_to_be_on_the_horizon(
     """
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(training_scope, floor=0.2),
-    )
+    recorded_dispersion(floor=0.2)
     results = _seed_pair(recorded_result, component, current_loss=3.4, health=0.5)
     results[0] = recorded_result(
         label="checkpoint-a",
@@ -1601,8 +1591,7 @@ def test_a_reading_that_recorded_no_step_is_not_taken_to_be_on_the_horizon(
 def test_health_the_characterization_has_no_band_for_verifies_nothing(
     recorded_result: ResultFactory,
     move_prediction_component: Digest,
-    monkeypatch: pytest.MonkeyPatch,
-    training_scope: str,
+    recorded_dispersion: Callable[..., None],
 ) -> None:
     """A comparison of no readings is unverified rather than passed.
 
@@ -1613,11 +1602,7 @@ def test_health_the_characterization_has_no_band_for_verifies_nothing(
     """
 
     component = move_prediction_component()
-    monkeypatch.setattr(
-        reporting,
-        "seed_dispersion_for",
-        lambda digest, **_: _seed_dispersion(training_scope, floor=0.2),
-    )
+    recorded_dispersion(floor=0.2)
     results = _seed_pair(recorded_result, component, current_loss=3.4)
     results.append(
         recorded_result(

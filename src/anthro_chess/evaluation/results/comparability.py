@@ -14,6 +14,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from anthro_chess.evaluation.results.metrics import (
+    TRAINING_HEALTH_FAMILY,
+    registered_metrics,
+)
 from anthro_chess.evaluation.results.records import (
     Bridge,
     Measurement,
@@ -366,6 +370,24 @@ def latest_measurement(
 #: Group key for a reading whose metric declares no workload. One group, which
 #: is the case every benchmark writing a single envelope per checkpoint stays
 #: in.
+def training_health_readings(
+    envelopes: Sequence[ResultEnvelope],
+) -> dict[str, float]:
+    """Return what one checkpoint's results say about the run that made it.
+
+    Shared between the side that characterizes a base's health and the side
+    that checks an arm against it, because a scope check comparing two
+    differently-selected sets of readings compares nothing.
+    """
+
+    readings: dict[str, float] = {}
+    for definition in registered_metrics(TRAINING_HEALTH_FAMILY.identifier):
+        found = latest_measurement(envelopes, definition.identifier)
+        if found is not None:
+            readings[definition.identifier] = found[1].value
+    return readings
+
+
 UNSCOPED_WORKLOAD = ""
 
 

@@ -60,12 +60,12 @@ if TYPE_CHECKING:
         DetailStore,
         ResultsStore,
     )
+    from anthro_chess.evaluation.results.seed_dispersion import SeedDispersion
     from anthro_chess.evaluation.rollout import (
         RolloutCell,
         RolloutReading,
         TerminationGuardrails,
     )
-    from anthro_chess.evaluation.seed_dispersion import SeedDispersion
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
     from anthro_chess.evaluation.views import ViewSelection
     from anthro_chess.training import TrainingConfig
@@ -3543,11 +3543,11 @@ def _run_eval_seed_dispersion(arguments: argparse.Namespace) -> int:
         ResultsStoreError,
         resolve_store_root,
     )
-    from anthro_chess.evaluation.seed_dispersion import (
+    from anthro_chess.evaluation.results.seed_dispersion import (
         SeedDispersionError,
         write_seed_dispersion,
     )
-    from anthro_chess.evaluation.seed_dispersion.arms import characterize_runs
+    from anthro_chess.evaluation.results.seed_dispersion.arms import characterize_runs
 
     run_root = _run_root()
     directories = [_run_directory(name, run_root) for name in arguments.run]
@@ -3597,11 +3597,10 @@ def _render_seed_dispersion(dispersion: SeedDispersion) -> str:
         f"Horizon:           {dispersion.horizon_steps} step(s)",
         f"Arms:              {len(dispersion.arms)} at seed(s) "
         f"{', '.join(str(seed) for seed in dispersion.seeds)}",
-        f"Spread:            {cells} metric cell(s) over "
-        f"{len(dispersion.seeds)} distinct seed(s)",
+        f"Spread:            {cells} metric cell(s)",
         f"Health band:       {len(dispersion.health)} reading(s)",
         f"Wall clock:        {dispersion.wall_clock_seconds / 3600:.2f} h "
-        f"({dispersion.training_seconds / 3600:.2f} h training, "
+        f"({dispersion.training_wall_clock_seconds / 3600:.2f} h training, "
         f"{dispersion.scoring_seconds / 3600:.2f} h scoring)",
     ]
     if dispersion.nondeterminism:
@@ -3614,7 +3613,7 @@ def _render_seed_dispersion(dispersion: SeedDispersion) -> str:
     for arm in dispersion.arms:
         lines.append(
             f"  {arm.run_id} seed={arm.seed} "
-            f"{arm.training_seconds / 3600:.2f} h -> {arm.checkpoint}"
+            f"{arm.wall_clock_seconds / 3600:.2f} h -> {arm.checkpoint}"
         )
     return "\n".join(lines)
 

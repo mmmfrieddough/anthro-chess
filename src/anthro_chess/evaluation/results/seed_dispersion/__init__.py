@@ -1,7 +1,6 @@
 """The seed spread of a frozen training configuration, keyed to its identity."""
 
-from anthro_chess.evaluation.seed_dispersion.dispersion import (
-    DATA_DIRECTORY,
+from anthro_chess.evaluation.results.seed_dispersion.dispersion import (
     SEED_ARM_METHOD,
     ArmReading,
     HealthBand,
@@ -15,7 +14,6 @@ from anthro_chess.evaluation.seed_dispersion.dispersion import (
 )
 
 __all__ = [
-    "DATA_DIRECTORY",
     "SEED_ARM_METHOD",
     "ArmReading",
     "HealthBand",

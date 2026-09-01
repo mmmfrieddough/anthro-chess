@@ -16,30 +16,38 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from anthro_chess.evaluation.results.comparability import UNSCOPED_WORKLOAD
+from anthro_chess.evaluation.results.comparability import (
+    measurements_by_workload,
+    training_health_readings,
+)
 from anthro_chess.evaluation.results.metrics import (
+    BENCHMARK_COST_FAMILY,
+    BENCHMARK_WALL_CLOCK_SECONDS,
     TRAINING_HEALTH_FAMILY,
-    MetricRegistryError,
-    metric_definition,
     registered_metrics,
 )
 from anthro_chess.evaluation.results.records import (
     ResultEnvelope,
     default_checkpoint_label,
 )
-from anthro_chess.evaluation.results.store import ResultsStore
-from anthro_chess.evaluation.seed_dispersion.dispersion import (
+from anthro_chess.evaluation.results.seed_dispersion.dispersion import (
     ArmReading,
     SeedDispersion,
     SeedDispersionError,
     characterize,
 )
+from anthro_chess.evaluation.results.store import (
+    ResultsStore,
+    results_for_checkpoint,
+)
 
-#: What a recording benchmark writes beside its reading to say what the
-#: invocation cost. Summed across the arms rather than characterized: it is a
-#: property of the machine and the hour, and a spread over it would describe
-#: neither the model nor the seed.
-BENCHMARK_COST_METRIC = "benchmark.wall_clock_seconds"
+#: The families withheld from the spread. Training health is what says whether
+#: the spread applies at all, and benchmark cost times the machine rather than
+#: the model, so a floor built from it would qualify a delta in what an
+#: invocation cost.
+_UNCHARACTERIZED_FAMILIES = frozenset(
+    {TRAINING_HEALTH_FAMILY.identifier, BENCHMARK_COST_FAMILY.identifier}
+)
 
 
 @dataclass(frozen=True)
@@ -98,15 +106,13 @@ def characterize_runs(
 
 
 def _arm_reading(run: _Run, results: Sequence[ResultEnvelope]) -> ArmReading:
-    scored = [
-        envelope for envelope in results if envelope.checkpoint.label == run.checkpoint
-    ]
+    scored = results_for_checkpoint(results, run.checkpoint)
     if not scored:
         raise SeedDispersionError(
             f"nothing in the results store scored {run.checkpoint}; the arm has "
             "to be read before its spread can be"
         )
-    metrics, fingerprints, health = _measurements(scored)
+    metrics, fingerprints = _measurements(scored)
     if not metrics:
         raise SeedDispersionError(
             f"{run.checkpoint} has no scored metric to characterize"
@@ -116,10 +122,10 @@ def _arm_reading(run: _Run, results: Sequence[ResultEnvelope]) -> ArmReading:
             run_id=run.directory.name,
             seed=run.seed,
             checkpoint=run.checkpoint,
-            training_seconds=run.elapsed_seconds,
+            wall_clock_seconds=run.elapsed_seconds,
             metrics=metrics,
             fingerprints=fingerprints,
-            health=health,
+            health=training_health_readings(scored),
         )
     except ValidationError as error:
         raise SeedDispersionError(
@@ -129,54 +135,31 @@ def _arm_reading(run: _Run, results: Sequence[ResultEnvelope]) -> ArmReading:
 
 def _measurements(
     scored: Sequence[ResultEnvelope],
-) -> tuple[
-    dict[str, dict[str, float]],
-    dict[str, dict[str, str]],
-    dict[str, float],
-]:
-    """Split one checkpoint's readings into what is floored and what is scoped.
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, str]]]:
+    """Return one checkpoint's values and series, per metric and workload.
 
-    Training health is withheld from the spread because it is what says whether
-    the spread applies at all. Benchmark cost is withheld because it times the
-    machine: a floor built from it would qualify a delta in what an invocation
-    cost, which is not a quantity any comparison here reads.
+    Grouped by the store's own rule rather than by a second one, because a
+    report looks the stored spread up under the workload key it derives that
+    way. A key derived differently here would miss every lookup and leave every
+    row reading as though nothing had been characterized.
     """
 
-    health_metrics = {
-        definition.identifier
-        for definition in registered_metrics(TRAINING_HEALTH_FAMILY.identifier)
-    }
     metrics: dict[str, dict[str, float]] = {}
     fingerprints: dict[str, dict[str, str]] = {}
-    health: dict[str, float] = {}
-    for envelope in sorted(scored, key=lambda item: (item.recorded_at, item.result_id)):
-        for found in envelope.measurements:
-            if found.metric in health_metrics:
-                health[found.metric] = found.value
-                continue
-            if found.metric == BENCHMARK_COST_METRIC:
-                continue
-            workload = UNSCOPED_WORKLOAD
-            if _execution_sensitive(found.metric) and envelope.execution:
-                workload = envelope.execution.workload_sha256
-            metrics.setdefault(found.metric, {})[workload] = found.value
-            fingerprints.setdefault(found.metric, {})[workload] = found.fingerprint
-    return metrics, fingerprints, health
-
-
-def _execution_sensitive(metric: str) -> bool:
-    """Return whether a metric's declared workload is an input to its value.
-
-    An unregistered identifier is treated as declaring no workload rather than
-    refused. A store holding a reading whose metric has since been retired is a
-    thing that happens, and it should cost that row its floor rather than the
-    whole characterization.
-    """
-
-    try:
-        return metric_definition(metric).execution_sensitive
-    except MetricRegistryError:
-        return False
+    for definition in registered_metrics():
+        if definition.family in _UNCHARACTERIZED_FAMILIES:
+            continue
+        cells = measurements_by_workload(
+            scored,
+            definition.identifier,
+            workload_scoped=definition.execution_sensitive,
+        )
+        for workload, (_, found) in cells.items():
+            metrics.setdefault(definition.identifier, {})[workload] = found.value
+            fingerprints.setdefault(definition.identifier, {})[workload] = (
+                found.fingerprint
+            )
+    return metrics, fingerprints
 
 
 def _scoring_seconds(
@@ -188,10 +171,10 @@ def _scoring_seconds(
 
     return sum(
         found.value
-        for envelope in results
-        if envelope.checkpoint.label in labels
-        for found in envelope.measurements
-        if found.metric == BENCHMARK_COST_METRIC
+        for label in labels
+        for envelope in results_for_checkpoint(results, label)
+        if (found := envelope.measurement(BENCHMARK_WALL_CLOCK_SECONDS.identifier))
+        is not None
     )
 
 
@@ -259,8 +242,7 @@ def _json(path: Path) -> object:
 def _identity(run: _Run, results: Sequence[ResultEnvelope]) -> str:
     recorded = {
         envelope.checkpoint.training_sha256
-        for envelope in results
-        if envelope.checkpoint.label == run.checkpoint
+        for envelope in results_for_checkpoint(results, run.checkpoint)
     } - {None}
     if len(recorded) != 1:
         raise SeedDispersionError(
@@ -272,4 +254,4 @@ def _identity(run: _Run, results: Sequence[ResultEnvelope]) -> str:
     return identity
 
 
-__all__ = ["BENCHMARK_COST_METRIC", "characterize_runs"]
+__all__ = ["characterize_runs"]
