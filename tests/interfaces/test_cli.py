@@ -2761,3 +2761,178 @@ def test_the_within_game_table_sizes_both_halves() -> None:
     row = next(r for r in rendered.splitlines() if r.startswith("  under_1200"))
     assert "     700     300" in row, "both halves are sized, not just the weaker"
     assert "+0.060" in row
+
+
+def _write_arm(run_root: Path, name: str, *, seed: int, step: int = 8000) -> None:
+    """Write the two files a characterization reads off an arm's run.
+
+    Minimal on purpose: what the command needs from a run is the seed it was
+    initialized at and the horizon and wall clock its last logged interval
+    reached, and writing only those is what says so.
+    """
+
+    directory = run_root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "run.json").write_text(json.dumps({"seed": seed, "complete": True}))
+    (directory / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "record": "step",
+                "global_step": step,
+                "elapsed_seconds": 3600.0,
+                "move_loss": 3.5,
+            }
+        )
+        + "\n"
+    )
+
+
+def _record_arm_reading(
+    store_root: Path,
+    label: str,
+    *,
+    move_loss: float,
+    training_sha256: str,
+    step: int = 8000,
+) -> None:
+    from datetime import UTC, datetime
+
+    from anthro_chess.evaluation.results import (
+        BenchmarkReference,
+        CheckpointReference,
+        ResultsStore,
+        build_result,
+        dataset_reference,
+        measurement,
+        projection_content_digest,
+    )
+    from anthro_chess.evaluation.results.metrics import MOVE_PREDICTION_PROJECTION
+
+    rows = [
+        {
+            "game_id": game_id,
+            "ruleset": "standard",
+            "initial_position": "startpos",
+            "action_ids": [1, 2, 3],
+            "white_normalized_rating": 1500,
+            "black_normalized_rating": 1500,
+        }
+        for game_id in (1, 2)
+    ]
+    component = projection_content_digest(rows, MOVE_PREDICTION_PROJECTION)
+    ResultsStore(store_root).append(
+        build_result(
+            kind="held-out-prediction",
+            benchmark=BenchmarkReference(name="move-validation", version=1),
+            checkpoint=CheckpointReference(
+                label=label,
+                step=step,
+                training_sha256=training_sha256,
+            ),
+            data=dataset_reference(
+                pool_id="fixture-pool",
+                pool_version=1,
+                view="canonical",
+                selected_games=component.games,
+                game_ids_sha256="a" * 64,
+                components=[component],
+            ),
+            measurements=[measurement("held_out.move_loss", move_loss, data=component)],
+            recorded_at=datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
+        )
+    )
+
+
+def test_eval_seed_dispersion_characterizes_arms_and_files_them_by_identity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run says which arm it is; the store says what its checkpoint scored."""
+
+    run_root = tmp_path / "runs"
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(run_root))
+    for name, seed, loss in (
+        ("arm-a", 17, 3.5),
+        ("arm-b", 29, 3.6),
+        ("arm-c", 43, 3.7),
+    ):
+        _write_arm(run_root, name, seed=seed)
+        _record_arm_reading(
+            tmp_path / "scratch",
+            f"{name}-step-00008000",
+            move_loss=loss,
+            training_sha256=CLI_TRAINING_SHA256,
+        )
+
+    assert (
+        main(
+            [
+                "eval",
+                "seed-dispersion",
+                "--run",
+                "arm-a",
+                "--run",
+                "arm-b",
+                "--run",
+                "arm-c",
+                "--store",
+                str(tmp_path / "scratch"),
+                "--into",
+                str(tmp_path / "characterizations"),
+            ]
+        )
+        == 0
+    )
+
+    written = tmp_path / "characterizations" / f"{CLI_TRAINING_SHA256}.json"
+    record = json.loads(written.read_text())
+    assert record["horizon_steps"] == 8000
+    assert [arm["seed"] for arm in record["arms"]] == [17, 29, 43]
+    assert record["metrics"]["held_out.move_loss"][""]["value"] > 0.0
+    out = capsys.readouterr().out
+    assert "Arms:              3 at seed(s) 17, 29, 43" in out
+    assert "Wall clock:" in out
+
+
+def test_eval_seed_dispersion_refuses_arms_of_two_configurations(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spread over two configurations has no identity to be stored against."""
+
+    run_root = tmp_path / "runs"
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(run_root))
+    for name, seed, loss, identity in (
+        ("arm-a", 17, 3.5, CLI_TRAINING_SHA256),
+        ("arm-b", 29, 3.6, "9d" * 32),
+    ):
+        _write_arm(run_root, name, seed=seed)
+        _record_arm_reading(
+            tmp_path / "scratch",
+            f"{name}-step-00008000",
+            move_loss=loss,
+            training_sha256=identity,
+        )
+
+    assert (
+        main(
+            [
+                "eval",
+                "seed-dispersion",
+                "--run",
+                "arm-a",
+                "--run",
+                "arm-b",
+                "--store",
+                str(tmp_path / "scratch"),
+                "--into",
+                str(tmp_path / "characterizations"),
+            ]
+        )
+        == 2
+    )
+
+    assert "do not share one training identity" in capsys.readouterr().err
+    assert not (tmp_path / "characterizations").exists()

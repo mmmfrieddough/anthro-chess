@@ -2,9 +2,12 @@
 # against. `docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
 # owns why it exists, and the record beside it owns how this size was derived.
 #
-# Editing this file changes `training_sha256` and invalidates every comparison
-# ever read against it. A test asserts the digest, so an edit fails there rather
-# than in a reading months later that looks fine.
+# Editing what this file declares about training changes `training_sha256` and
+# invalidates every comparison ever read against it, including the stored seed
+# dispersion. A test asserts the digest, so an edit fails there rather than in a
+# reading months later that looks fine. What a run records is outside the digest
+# by construction, so the cadence below can be added without moving it, and the
+# same test is what says so.
 #
 # An arm applies its one change on top of this and changes nothing else:
 #
@@ -49,6 +52,23 @@ checkpoint_every_steps = 25000
 # that the vehicle takes the decided defaults rather than a copy of them that
 # could drift. See `docs/decisions/0074-the-vehicle-freezes-on-bfloat16-with-tf32-without-a-quality-reading.md`
 # and `docs/decisions/0073-compilation-is-on-by-default-and-plain-fusion-beats-graph-capture.md`.
+
+# Health-only, so it scores no positions and costs nothing. It exists so that
+# every arm puts `training_health` where a comparison can read it: the seed
+# floor describes stable baselines, and an arm whose health departs from the
+# vehicle's is outside its scope rather than qualified by it. The interval
+# divides the horizon above so the last firing lands on it, sharing a checkpoint
+# label with the reading that scores the final checkpoint; a run at another
+# horizon records no health there, and its comparison reports the scope as
+# unverified, which is what it is.
+[[evaluation.cadences]]
+name = "training-health"
+every_steps = 13893
+metrics = [
+  "training_health.gradient_norm",
+  "training_health.clip_rate",
+  "training_health.update_to_weight_ratio",
+]
 
 [model]
 # Width is the dial and everything else follows the shape rules in

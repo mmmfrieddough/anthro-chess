@@ -36,6 +36,7 @@ from anthro_chess.evaluation.results.comparability import (
     recorded_series,
 )
 from anthro_chess.evaluation.results.metrics import (
+    TRAINING_HEALTH_FAMILY,
     MetricDefinition,
     MetricDirection,
     MetricFamily,
@@ -52,6 +53,10 @@ from anthro_chess.evaluation.results.records import (
 from anthro_chess.evaluation.results.store import (
     checkpoint_labels,
     results_for_checkpoint,
+)
+from anthro_chess.evaluation.seed_dispersion import (
+    SeedDispersion,
+    seed_dispersion_for,
 )
 
 #: Absence reason for a family registered ahead of the benchmark that fills it.
@@ -164,6 +169,87 @@ class NoiseVerdict(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
+class SeedScope(StrEnum):
+    """Whether the control's recorded seed spread describes this comparison."""
+
+    #: Found for the control's identity, and nothing says it does not apply.
+    APPLIED = "applied"
+    #: No characterization is recorded for the control's training identity, or
+    #: the control recorded no identity to look one up by. One statement rather
+    #: than two, because what a reader does about either is the same.
+    NO_RECORD = "no_record"
+    #: Found, but a reading was taken at a step the characterization was not.
+    #: The horizon sits outside ``training_sha256`` by construction, so a
+    #: branch matches the key without having been shown to share the spread.
+    HORIZON = "horizon"
+    #: Found, but the current arm's training health departs from what the
+    #: control's arms showed. Instability widens an arm's spread past what a
+    #: floor measured on stable baselines allows, so the floor would read too
+    #: narrow in exactly the case where a wrong claim is most tempting.
+    DEPARTED = "departed"
+    #: Found, and nothing on the current side recorded training health, so
+    #: whether the arm is inside the floor's scope is unverified rather than
+    #: established. The floor is quoted with that said, for the same reason an
+    #: unrecorded training identity is reported rather than assumed to match.
+    UNVERIFIED = "unverified"
+
+
+@dataclass(frozen=True)
+class SeedFloorReport:
+    """What the control's recorded seed spread says about this comparison."""
+
+    scope: SeedScope
+    #: The control's training identity, which is the key a characterization is
+    #: found by. ``None`` where the control recorded none.
+    training_sha256: str | None = None
+    dispersion: SeedDispersion | None = None
+    #: Checkpoint steps on either side that the characterization was not taken
+    #: at, which is what ``HORIZON`` names.
+    off_horizon_steps: tuple[int, ...] = ()
+    #: Training-health metrics whose current reading sits outside the control
+    #: arms' own spread, which is what ``DEPARTED`` names.
+    departures: tuple[str, ...] = ()
+
+    @property
+    def applies(self) -> bool:
+        """Return whether rows should be floored by this spread."""
+
+        return self.scope in (SeedScope.APPLIED, SeedScope.UNVERIFIED)
+
+    def floor(self, metric: str, workload: str) -> float | None:
+        """Return the seed floor one row's delta faces, when there is one.
+
+        Keyed by the control's workload rather than the treatment's, because
+        the spread describes the control. The two agree wherever the row is
+        comparable at all, since a workload change moves the fingerprint and a
+        row whose fingerprint moved carries no delta to floor.
+        """
+
+        if not self.applies or self.dispersion is None:
+            return None
+        return self.dispersion.floor(metric, workload)
+
+    def as_record(self) -> dict[str, object]:
+        """Return the machine-readable seed-floor header."""
+
+        dispersion = self.dispersion
+        return {
+            "scope": self.scope.value,
+            "training_sha256": self.training_sha256,
+            "horizon_steps": None if dispersion is None else dispersion.horizon_steps,
+            "arms": None if dispersion is None else len(dispersion.arms),
+            "seeds": None if dispersion is None else list(dispersion.seeds),
+            "off_horizon_steps": list(self.off_horizon_steps),
+            "departures": list(self.departures),
+        }
+
+
+#: What a report carries before anything has been looked up, and what every
+#: comparison outside the checkpoint pivot keeps. Shared rather than rebuilt
+#: because the value is frozen and says nothing about the comparison holding it.
+NO_SEED_FLOOR = SeedFloorReport(scope=SeedScope.NO_RECORD)
+
+
 @dataclass(frozen=True)
 class MetricDelta:
     """One metric's default-view row."""
@@ -188,6 +274,15 @@ class MetricDelta:
     #: is neither reading's, and which side contributed the width is the first
     #: thing a reader chasing a wide floor wants.
     noise_floor_source: str | None
+    #: What the control's own arms, differing only in their initialization
+    #: seed, moved this metric by. The floor above cannot see it, because seed
+    #: variance is a property of the training run rather than of the benchmark.
+    #: ``None`` wherever no characterization describes this comparison.
+    seed_floor: float | None
+    #: Whether the delta cleared the seed floor, judged the same way as the
+    #: sampling one. A delta has to clear both to be a movement this comparison
+    #: attributes to the change under test.
+    seed: NoiseVerdict
     bridges: tuple[str, ...]
     note: str | None
     #: Which coordinates moved. ``None`` for a metric with no execution
@@ -219,6 +314,8 @@ class MetricDelta:
             "noise": self.noise.value,
             "noise_floor": self.noise_floor,
             "noise_floor_source": self.noise_floor_source,
+            "seed_floor": self.seed_floor,
+            "seed": self.seed.value,
             "bridges": list(self.bridges),
             "note": self.note,
             "attribution": (
@@ -331,6 +428,10 @@ class DeltaReport:
     #: carried per row: a row's own verdict never keys on it, and this is what
     #: automation reads.
     training: AxisChange = AxisChange.UNKNOWN
+    #: What the control's recorded seed spread says about this comparison.
+    #: Reduced over the pair for the same reason the training identity is: a
+    #: ``--family`` flag must not be able to change whether a floor applies.
+    seed_floor: SeedFloorReport = NO_SEED_FLOOR
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable report."""
@@ -342,6 +443,7 @@ class DeltaReport:
             "families": [family.as_record() for family in self.families],
             "provenance": _difference_records(self.provenance),
             "training": self.training.value,
+            "seed_floor": self.seed_floor.as_record(),
         }
 
 
@@ -432,6 +534,7 @@ def build_delta_report(
         else ()
     )
 
+    seed_floor = _seed_floor_report(baseline_results, current_results)
     sliced = families is not None or metrics is not None
     selected = _selected_metrics(families, metrics)
     sections: list[FamilyReport] = []
@@ -455,6 +558,7 @@ def build_delta_report(
                 current_label,
                 baseline_label,
                 pivot,
+                seed_floor,
             )
         )
 
@@ -469,6 +573,7 @@ def build_delta_report(
         provenance=_report_provenance(baseline_results, current_results),
         pivot=pivot,
         training=_report_training_identity(baseline_results, current_results),
+        seed_floor=seed_floor,
     )
 
 
@@ -659,6 +764,7 @@ def render_report(report: DeltaReport) -> str:
     if report.pivot is ReportPivot.ENVIRONMENT:
         lines.append("Model held fixed; the environment is what varies.")
     lines.extend(_training_identity_line(report))
+    lines.extend(_seed_floor_line(report))
     width = metric_column_width(
         metric.metric for family in report.families for metric in family.metrics
     )
@@ -682,7 +788,7 @@ def render_report(report: DeltaReport) -> str:
         for group in family.series:
             lines.extend(_render_group_header(group))
             for metric in group.metrics:
-                lines.append(_render_metric(metric, width))
+                lines.append(_render_metric(metric, width, report.seed_floor.applies))
     if unregistered:
         lines.extend(
             textwrap.wrap(
@@ -691,7 +797,14 @@ def render_report(report: DeltaReport) -> str:
                 subsequent_indent="  ",
             )
         )
-    lines.extend(["", *_confounded_legend(report), *_noise_legend(report)])
+    lines.extend(
+        [
+            "",
+            *_confounded_legend(report),
+            *_noise_legend(report),
+            *_seed_legend(report),
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -767,6 +880,68 @@ def _training_identity_line(report: DeltaReport) -> list[str]:
     return textwrap.wrap(line, width=MAXIMUM_LINE_WIDTH, subsequent_indent="  ")
 
 
+def _seed_floor_line(report: DeltaReport) -> list[str]:
+    """State what the control's recorded seed spread does for this comparison.
+
+    Stated in every case rather than only where one applies, for the reason the
+    training-identity line above is: a reader deciding whether a delta carries
+    a claim needs "floored on seed" and "nobody has measured this
+    configuration's seed spread" to look different, and no row below
+    distinguishes them.
+    """
+
+    if report.pivot is not ReportPivot.CHECKPOINT or report.baseline is None:
+        return []
+    header = report.seed_floor
+    dispersion = header.dispersion
+    if header.scope is SeedScope.NO_RECORD:
+        line = (
+            "Seed floor: none recorded for the baseline's training identity "
+            f"{_short(header.training_sha256)}, so no delta below is qualified "
+            "on seed."
+            if header.training_sha256 is not None
+            else (
+                "Seed floor: none; the baseline recorded no single training "
+                "identity to find one by, so no delta below is qualified on "
+                "seed."
+            )
+        )
+    else:
+        assert dispersion is not None  # every other scope found one
+        found = (
+            f"{len(dispersion.arms)} arm(s) at seed(s) "
+            f"{', '.join(str(seed) for seed in dispersion.seeds)}, recorded for "
+            f"training identity {_short(header.training_sha256)} at "
+            f"{dispersion.horizon_steps} step(s)"
+        )
+        if header.scope is SeedScope.HORIZON:
+            steps = ", ".join(str(step) for step in header.off_horizon_steps)
+            line = (
+                f"Seed floor: not applied. It describes {found}, and these "
+                f"readings were taken at step(s) {steps}. The horizon sits "
+                "outside the training identity, so this pair matches the key "
+                "without having been shown to share the spread."
+            )
+        elif header.scope is SeedScope.DEPARTED:
+            departures = ", ".join(header.departures)
+            line = (
+                f"Seed floor: not applied. It describes {found}, and the "
+                f"current reading's {departures} sits outside what those arms "
+                "showed. An unstable arm's spread is wider than a floor "
+                "measured on stable ones, so quoting it here would read too "
+                "narrow."
+            )
+        elif header.scope is SeedScope.UNVERIFIED:
+            line = (
+                f"Seed floor: applied, from {found}. Nothing on the current "
+                "side recorded training health, so whether this arm shares the "
+                "spread is unverified rather than established."
+            )
+        else:
+            line = f"Seed floor: applied, from {found}."
+    return textwrap.wrap(line, width=MAXIMUM_LINE_WIDTH, subsequent_indent="  ")
+
+
 def _confounded_legend(report: DeltaReport) -> list[str]:
     """Explain the confounded verdict, naming what actually moved."""
 
@@ -815,11 +990,15 @@ def _noise_legend(report: DeltaReport) -> list[str]:
         "'unknown' means at least one of the two readings measured none."
     )
     if NoiseVerdict.CLEARED in verdicts:
+        seen_by = (
+            "which the seed column beside it is what sees"
+            if report.seed_floor.applies
+            else "which no floor read off a reading's own units can see"
+        )
         legend = (
             f"{legend} 'cleared' means larger than benchmark noise, not that "
             "the change caused it: two arms differ by their initialization "
-            "seeds as well, which no floor read off a reading's own units can "
-            "see."
+            f"seeds as well, {seen_by}."
         )
     if NoiseVerdict.UNQUALIFIABLE in verdicts:
         legend = (
@@ -834,6 +1013,23 @@ def _noise_legend(report: DeltaReport) -> list[str]:
         width=MAXIMUM_LINE_WIDTH,
         subsequent_indent="  ",
     )
+
+
+def _seed_legend(report: DeltaReport) -> list[str]:
+    """Explain the seed column, when the rows carry one."""
+
+    if not report.seed_floor.applies:
+        return []
+    legend = (
+        "seed: a delta is judged a second time against what the baseline's own "
+        "arms, differing only in their initialization seed, moved the metric "
+        "by. 'within' means the delta is one a rerun of the baseline could "
+        "have produced on its own and reads as 'unchanged' in the change "
+        "column; 'unknown' means the characterization recorded no spread for "
+        "that metric. Clearing both floors is what distinguishes a change from "
+        "a different training run."
+    )
+    return textwrap.wrap(legend, width=MAXIMUM_LINE_WIDTH, subsequent_indent="  ")
 
 
 def render_history(history: MetricHistory) -> str:
@@ -894,7 +1090,7 @@ _MOVEMENT_LABELS = {
 }
 
 
-def _render_metric(metric: MetricDelta, width: int) -> str:
+def _render_metric(metric: MetricDelta, width: int, seed_floor: bool) -> str:
     change = _MOVEMENT_LABELS.get(metric.movement, metric.movement.value)
     row = (
         f"  {metric.metric:<{width}} "
@@ -906,6 +1102,11 @@ def _render_metric(metric: MetricDelta, width: int) -> str:
     )
     if metric.noise is not NoiseVerdict.NOT_APPLICABLE:
         row = f"{row} noise {metric.noise.value}"
+    # Only where a characterization describes this comparison. Everywhere else
+    # every row would carry the same 'unknown', which says nothing about the
+    # row and pushes the annotations that do off the line.
+    if seed_floor and metric.seed is not NoiseVerdict.NOT_APPLICABLE:
+        row = f"{row} seed {metric.seed.value}"
     if metric.note is not None:
         row = f"{row.rstrip()}  ({metric.note})"
     return row.rstrip()
@@ -967,6 +1168,7 @@ def _family_report(
     current_label: str,
     baseline_label: str | None,
     pivot: ReportPivot,
+    seed_floor: SeedFloorReport = NO_SEED_FLOOR,
 ) -> FamilyReport:
     if not definitions:
         return FamilyReport(
@@ -1018,6 +1220,8 @@ def _family_report(
                     definition,
                     bridges,
                 ),
+                seed_floor=seed_floor,
+                workload=pairings[key],
             )
             if row.environment:
                 environment = row.environment
@@ -1228,6 +1432,8 @@ def _metric_delta(
     baseline_label: str | None,
     pivot: ReportPivot,
     hidden_series: int = 1,
+    seed_floor: SeedFloorReport = NO_SEED_FLOOR,
+    workload: str = UNSCOPED_WORKLOAD,
 ) -> MetricDelta:
     if current is None:
         assert baseline is not None  # the caller skips a metric with neither
@@ -1300,6 +1506,8 @@ def _metric_delta(
         else ()
     )
     noise = _noise_verdict(definition, delta, floor)
+    seed = seed_floor.floor(definition.identifier, workload)
+    seed_verdict = _seed_verdict(definition, delta, seed)
     return MetricDelta(
         metric=definition.identifier,
         family=definition.family,
@@ -1308,10 +1516,14 @@ def _metric_delta(
         current=current_measurement.value,
         delta=delta,
         comparability=comparison.comparability,
-        movement=_pivoted_movement(definition, delta, attribution, pivot, noise),
+        movement=_pivoted_movement(
+            definition, delta, attribution, pivot, noise, seed_verdict
+        ),
         noise=noise,
         noise_floor=floor,
         noise_floor_source=floor_source,
+        seed_floor=seed,
+        seed=seed_verdict,
         bridges=tuple(bridge.bridge_id for bridge in comparison.bridges),
         attribution=attribution,
         environment=environment,
@@ -1377,6 +1589,8 @@ def _incomparable_delta(
         comparability=comparability,
         movement=Movement.UNKNOWN,
         noise=NoiseVerdict.NOT_APPLICABLE,
+        seed=NoiseVerdict.NOT_APPLICABLE,
+        seed_floor=None,
         noise_floor=None,
         noise_floor_source=None,
         bridges=(),
@@ -1392,6 +1606,7 @@ def _pivoted_movement(
     attribution: Attribution | None,
     pivot: ReportPivot,
     noise: NoiseVerdict,
+    seed: NoiseVerdict,
 ) -> Movement:
     """Return the verdict, given what the report holds fixed.
 
@@ -1413,7 +1628,7 @@ def _pivoted_movement(
     """
 
     if attribution is None:
-        return _movement(definition.direction, delta, noise)
+        return _movement(definition.direction, delta, noise, seed)
     if pivot is ReportPivot.CHECKPOINT:
         # The environment has to have provably held still; an unverifiable
         # claim of sameness is exactly what must not pass. A condition change
@@ -1422,7 +1637,7 @@ def _pivoted_movement(
             return Movement.CONFOUNDED
         if attribution.conditions is AxisChange.CHANGED:
             return Movement.CONFOUNDED
-        return _movement(definition.direction, delta, noise)
+        return _movement(definition.direction, delta, noise, seed)
 
     # The environment pivot asks whether the machine got faster, so what has to
     # hold still is the thing being measured on it. Where a benchmark declares
@@ -1436,7 +1651,7 @@ def _pivoted_movement(
     )
     if held is not AxisChange.UNCHANGED:
         return Movement.CONFOUNDED
-    return _movement(definition.direction, delta, noise)
+    return _movement(definition.direction, delta, noise, seed)
 
 
 def _delta_floor(
@@ -1479,20 +1694,28 @@ def _movement(
     direction: MetricDirection,
     delta: float,
     noise: NoiseVerdict,
+    seed: NoiseVerdict,
 ) -> Movement:
-    """Return the verdict on the delta, which noise can withdraw.
+    """Return the verdict on the delta, which either floor can withdraw.
 
     A delta inside its floor is not a smaller improvement than one that clears
     it; it is a number that has not been shown to have moved. Reporting the sign
     of it as ``better`` is how a row comes to read ``better`` and ``within`` at
     once, which is the reading that sends somebody to defend a change the
     benchmark cannot distinguish from its own noise.
+
+    The seed floor withdraws it on the same terms. A delta the control's own
+    arms produce among themselves is what one training run differs from another
+    by, and calling it an improvement is the failure a floor keyed to a frozen
+    configuration exists to prevent.
     """
 
     if direction is MetricDirection.INFORMATIONAL:
         return Movement.INFORMATIONAL
-    if noise is NoiseVerdict.WITHIN or math.isclose(
-        delta, 0.0, abs_tol=0.0, rel_tol=0.0
+    if (
+        noise is NoiseVerdict.WITHIN
+        or seed is NoiseVerdict.WITHIN
+        or math.isclose(delta, 0.0, abs_tol=0.0, rel_tol=0.0)
     ):
         return Movement.UNCHANGED
     improved = (
@@ -1515,6 +1738,120 @@ def _noise_verdict(
     if abs(delta) <= floor:
         return NoiseVerdict.WITHIN
     return NoiseVerdict.CLEARED
+
+
+def _seed_verdict(
+    definition: MetricDefinition,
+    delta: float,
+    floor: float | None,
+) -> NoiseVerdict:
+    """Judge one delta against the control's seed spread.
+
+    ``UNKNOWN`` rather than ``UNQUALIFIABLE`` where a metric declares that
+    resampling cannot estimate its dispersion: that declaration is about the
+    benchmark's own units, and a characterization that trains the whole
+    configuration again does not resample them. A metric with no stored spread
+    is one no arm reported or every arm agreed on, which is a gap somebody
+    could fill rather than an impossibility.
+    """
+
+    if floor is None:
+        return NoiseVerdict.UNKNOWN
+    if abs(delta) <= floor:
+        return NoiseVerdict.WITHIN
+    return NoiseVerdict.CLEARED
+
+
+def _seed_floor_report(
+    baseline_results: Sequence[ResultEnvelope],
+    current_results: Sequence[ResultEnvelope],
+) -> SeedFloorReport:
+    """Return what a recorded seed spread says about this pair of readings.
+
+    Keyed to the control alone. Read literally, a floor for "the identity both
+    readings carry" describes nothing: a candidate change moves the digest,
+    because moving it is what makes it a change, so the two arms of a vehicle
+    comparison never share one.
+    ``docs/decisions/0076-the-vehicle-is-width-128-at-the-target-regime.md``
+    owns that correction.
+    """
+
+    digest = _one_identity(baseline_results)
+    if digest is None:
+        return SeedFloorReport(scope=SeedScope.NO_RECORD)
+    dispersion = seed_dispersion_for(digest)
+    if dispersion is None:
+        return SeedFloorReport(scope=SeedScope.NO_RECORD, training_sha256=digest)
+
+    off_horizon = tuple(
+        sorted(
+            {
+                envelope.checkpoint.step
+                for envelope in (*baseline_results, *current_results)
+                if envelope.checkpoint.step is not None
+                and envelope.checkpoint.step != dispersion.horizon_steps
+            }
+        )
+    )
+    if off_horizon:
+        return SeedFloorReport(
+            scope=SeedScope.HORIZON,
+            training_sha256=digest,
+            dispersion=dispersion,
+            off_horizon_steps=off_horizon,
+        )
+
+    health = _health_readings(current_results)
+    if not health:
+        return SeedFloorReport(
+            scope=SeedScope.UNVERIFIED,
+            training_sha256=digest,
+            dispersion=dispersion,
+        )
+    departures = dispersion.departures(health)
+    if departures:
+        return SeedFloorReport(
+            scope=SeedScope.DEPARTED,
+            training_sha256=digest,
+            dispersion=dispersion,
+            departures=departures,
+        )
+    return SeedFloorReport(
+        scope=SeedScope.APPLIED,
+        training_sha256=digest,
+        dispersion=dispersion,
+    )
+
+
+def _one_identity(results: Sequence[ResultEnvelope]) -> str | None:
+    """Return the one training identity a side recorded, or ``None``."""
+
+    recorded = {envelope.checkpoint.training_sha256 for envelope in results} - {None}
+    if len(recorded) != 1:
+        return None
+    identity = recorded.pop()
+    assert identity is not None  # the ``None`` was removed above
+    return identity
+
+
+def _health_readings(results: Sequence[ResultEnvelope]) -> dict[str, float]:
+    """Return the training-health values recorded for one checkpoint.
+
+    A later reading of one metric wins, which only arises where a checkpoint
+    was scored more than once; the readings are of one optimizer step either
+    way.
+    """
+
+    health = {
+        definition.identifier
+        for definition in registered_metrics(TRAINING_HEALTH_FAMILY.identifier)
+    }
+    readings: dict[str, float] = {}
+    for envelope in sorted(results, key=lambda item: item.recorded_at):
+        for measurement in envelope.measurements:
+            if measurement.metric in health:
+                readings[measurement.metric] = measurement.value
+    return readings
 
 
 def _selection(

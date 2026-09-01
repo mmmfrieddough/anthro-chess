@@ -3105,26 +3105,38 @@ view, for the reason "Benchmark Data Layers" gives above, so its precision never
 needs raising later.
 
 **What makes a delta admissible is narrower than the machinery suggests**,
-because of what a floor is built from. **No floor here sees training-seed
-noise.** A floor is combined from what the two readings' own units could have
-moved, and seed variance is a property of the training run rather than of the
-benchmark, so nothing a reading measures can reach it. Such a floor says the
-delta survives a different draw rather than that the change produced it. The
-report says so beside the verdict: `cleared` means larger than benchmark noise,
-and never that the change caused it. The exception claims less rather than more:
-a replayed reading states a spread of zero, which says its games cannot be
-redrawn at all and therefore says nothing about a draw that could be. Two arms
-differ by their initialization seeds as well as by the change, so clearing a
-floor establishes that two models differ, not that the change is why. How much
-seed variance costs at a scale that matters is unmeasured, and is read off the
-comparisons this section describes rather than derived in advance.
+because of what a floor is built from. **A benchmark floor does not see
+training-seed noise.** It is combined from what the two readings' own units
+could have moved, and seed variance is a property of the training run rather
+than of the benchmark, so nothing a reading measures can reach it. Such a floor
+says the delta survives a different draw rather than that the change produced
+it. The report says so beside the verdict: `cleared` means larger than benchmark
+noise, and never that the change caused it. The exception claims less rather
+than more: a replayed reading states a spread of zero, which says its games
+cannot be redrawn at all and therefore says nothing about a draw that could be.
+Two arms differ by their initialization seeds as well as by the change, so
+clearing that floor alone establishes that two models differ, not that the
+change is why.
 
-A claim therefore rests on a delta far enough outside seed variance that nothing
-else explains it, or on arms read at several seeds — a deliberate, occasional
-act for a result worth its cost, rather than machinery riding on every
-comparison. Anything narrower is reported as what it is, a delta not
-distinguished from seed variance, rather than as an improvement. A family with
-no floor at all can show that nothing else moved; it cannot carry the claim.
+**The seed floor is what does see it, and only where one has been
+characterized.** Arms of one training configuration differing only in their
+initialization seed give the spread directly, and the spread is stored against
+that configuration's `training_sha256` where a comparison finds it by exact
+digest or reports that it has none. That is affordable for a configuration that
+stands still and nowhere else, so the ablation vehicle is the one base carrying
+one; `anthro eval seed-dispersion` is what characterizes a base, and
+`anthro eval report` prints the second verdict beside the first. Two scope
+limits withhold it rather than widening it: an arm whose training-health
+readings depart from the base's arms, and a reading taken at a horizon the
+characterization was not, since the horizon sits outside the digest.
+
+A claim therefore rests on a delta clearing both floors, or on one far enough
+outside seed variance that nothing else explains it, or on arms read at several
+seeds — a deliberate, occasional act for a result worth its cost, rather than
+machinery riding on every comparison. Anything narrower is reported as what it
+is, a delta not distinguished from seed variance, rather than as an improvement.
+A family with no floor at all can show that nothing else moved; it cannot carry
+the claim.
 
 Two numbers make that a bar stated in advance rather than a judgement made after
 the reading: a delta carries a claim at **twice the printed floor**, and
