@@ -368,6 +368,31 @@ def _scan_row_group(
         yield position, None, ply_counts[position] + (1 if appended else 0)
 
 
+def shard_loader_configuration_sha256(
+    config: SequenceLoaderConfig,
+    streaming: StreamingLoaderConfig,
+) -> str:
+    """Return the loader identity a shard-backed run records.
+
+    Wider than :func:`loader_configuration_sha256`, which describes the
+    selection alone. Only the planning window joins it, because only the window
+    decides which examples share a batch; worker count and prefetch depth are
+    what the machine can afford, and a run resumed on another machine should be
+    free to afford differently.
+    """
+
+    return sha256(
+        json.dumps(
+            {
+                "loader": loader_configuration_sha256(config),
+                "planning_window_examples": streaming.planning_window_examples,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
 class StreamingSequenceDataLoader(SequenceBatchSource):
     """Deterministic shard-backed batch iterator with explicit resume state.
 
@@ -407,20 +432,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         # loader: it decides what a decoded ply carries, not which games the
         # selection holds.
         self.legal_actions = legal_actions
-        self.configuration_sha256 = sha256(
-            json.dumps(
-                {
-                    "loader": loader_configuration_sha256(config),
-                    # Only the window, because only the window decides which
-                    # examples share a batch. Worker count and prefetch depth
-                    # are what the machine can afford, and a run resumed on
-                    # another machine should be free to afford differently.
-                    "planning_window_examples": streaming.planning_window_examples,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
+        self.configuration_sha256 = shard_loader_configuration_sha256(config, streaming)
         self._pool: ProcessPoolExecutor | None = None
         self._reader: Any | None = None
         self._reader_shard: int | None = None

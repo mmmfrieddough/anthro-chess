@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from anthro_chess.data.loading import loader_configuration_sha256
+from anthro_chess.data.streaming import shard_loader_configuration_sha256
 from anthro_chess.models.move_model import model_identity
 from anthro_chess.training.checkpoints import training_identity_sha256
 from anthro_chess.training.config import TrainingConfig
@@ -38,7 +38,7 @@ VEHICLE_CORPUS_DATASET_SHA256 = (
 #: A comparison finds the vehicle's seed dispersion by this exact value or
 #: reports that it has none.
 VEHICLE_TRAINING_SHA256 = (
-    "256493d34f48f0b2db561e6d4867614c5855e7f6e7f6b2d106380855d4136ac4"
+    "13ebf875b3116fa04f2d0321637be7b843deccbbc9e4ff2ee72ed60db319d088"
 )
 
 
@@ -56,13 +56,32 @@ def vehicle_compatibility(config: TrainingConfig) -> Mapping[str, object]:
             "train": {
                 "manifest_sha256": VEHICLE_CORPUS_MANIFEST_SHA256,
                 "dataset_sha256": VEHICLE_CORPUS_DATASET_SHA256,
-                "loader_configuration_sha256": loader_configuration_sha256(
-                    config.train.loader
-                ),
+                "loader_configuration_sha256": _loader_identity(config),
             },
             "validation": None,
         },
         model=model_identity(config.model),
+    )
+
+
+def _loader_identity(config: TrainingConfig) -> str:
+    """Return the loader digest a vehicle arm records, not the selection's own.
+
+    A shard-backed run records the selection digest wrapped with its planning
+    window, and the vehicle declares ``[train.streaming]``, so it takes that
+    path. Digesting the selection alone here would name an identity no arm can
+    carry, and the constant below would then be a key nothing looks anything up
+    by.
+    """
+
+    if config.train.streaming is None:
+        raise ValueError(
+            "the vehicle trains through the shard-backed loader; a "
+            "configuration without a streaming section is not it"
+        )
+    return shard_loader_configuration_sha256(
+        config.train.loader,
+        config.train.streaming,
     )
 
 
