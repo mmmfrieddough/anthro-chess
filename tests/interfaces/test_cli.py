@@ -2772,9 +2772,7 @@ ARM_STEP = 8000
 def _write_arm(run_root: Path, name: str, *, seed: int) -> str:
     """Write the two files a characterization reads off an arm, and its label.
 
-    Minimal on purpose: what the command needs from a run is the seed it was
-    initialized at, the checkpoint step its record describes, and the wall clock
-    its last logged interval reached. Writing only those is what says so.
+    Minimal on purpose: what is written here is exactly what the command reads.
     """
 
     directory = run_root / name

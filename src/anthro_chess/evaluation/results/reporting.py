@@ -175,22 +175,16 @@ class SeedScope(StrEnum):
     #: Found for the control's identity, and nothing says it does not apply.
     APPLIED = "applied"
     #: No characterization is recorded for the control's training identity, or
-    #: the control recorded no identity to look one up by. One statement rather
-    #: than two, because what a reader does about either is the same.
+    #: the control recorded no identity to look one up by.
     NO_RECORD = "no_record"
     #: Found, but a reading was taken at a step the characterization was not.
-    #: The horizon sits outside ``training_sha256`` by construction, so a
-    #: branch matches the key without having been shown to share the spread.
     HORIZON = "horizon"
     #: Found, but the current arm's training health departs from what the
-    #: control's arms showed. Instability widens an arm's spread past what a
-    #: floor measured on stable baselines allows, so the floor would read too
-    #: narrow in exactly the case where a wrong claim is most tempting.
+    #: control's arms showed, so the floor was measured on arms it does not
+    #: describe.
     DEPARTED = "departed"
-    #: Found, and nothing on the current side recorded training health, so
-    #: whether the arm is inside the floor's scope is unverified rather than
-    #: established. The floor is quoted with that said, for the same reason an
-    #: unrecorded training identity is reported rather than assumed to match.
+    #: Found, and nothing on the current side recorded training health, so the
+    #: floor is quoted with its scope unverified rather than established.
     UNVERIFIED = "unverified"
 
 
@@ -206,10 +200,8 @@ class SeedFloorReport:
     #: Checkpoint steps on either side that the characterization was not taken
     #: at, which is what ``HORIZON`` names.
     off_horizon_steps: tuple[int, ...] = ()
-    #: How many readings recorded no step at all. Also ``HORIZON``: a reading
-    #: that does not say where it was taken has not been shown to be at the
-    #: characterized one, and treating silence as agreement is what would let a
-    #: branch match a floor it was never measured against.
+    #: How many readings recorded no step at all. Also ``HORIZON``: silence
+    #: about where a reading was taken is not agreement that it matches.
     unrecorded_steps: int = 0
     #: Training-health metrics whose current reading sits outside the control
     #: arms' own spread, which is what ``DEPARTED`` names.
@@ -251,8 +243,7 @@ class SeedFloorReport:
 
 
 #: What a report carries before anything has been looked up, and what every
-#: comparison outside the checkpoint pivot keeps. Shared rather than rebuilt
-#: because the value is frozen and says nothing about the comparison holding it.
+#: comparison outside the checkpoint pivot keeps.
 NO_SEED_FLOOR = SeedFloorReport(scope=SeedScope.NO_RECORD)
 
 
@@ -1712,10 +1703,7 @@ def _movement(
     once, which is the reading that sends somebody to defend a change the
     benchmark cannot distinguish from its own noise.
 
-    The seed floor withdraws it on the same terms. A delta the control's own
-    arms produce among themselves is what one training run differs from another
-    by, and calling it an improvement is the failure a floor keyed to a frozen
-    configuration exists to prevent.
+    The seed floor withdraws it on the same terms.
     """
 
     if direction is MetricDirection.INFORMATIONAL:
@@ -1756,12 +1744,9 @@ def _seed_verdict(
 ) -> NoiseVerdict:
     """Judge one delta against the control's seed spread.
 
-    The two absences are different answers, and the row says which. Where
-    nothing describes this comparison at all it is ``NOT_APPLICABLE`` and no row
-    is waiting on anything; where a characterization applies but recorded no
-    spread for this metric, ``UNKNOWN`` names a gap somebody could fill. Not
-    ``UNQUALIFIABLE``: that declaration is about resampling a benchmark's own
-    units, and training the configuration again does not resample them.
+    Not ``UNQUALIFIABLE`` where no spread is recorded: that verdict is about
+    resampling a benchmark's own units, and training the configuration again
+    does not resample them.
     """
 
     if not characterized:
@@ -1779,12 +1764,10 @@ def _seed_floor_report(
 ) -> SeedFloorReport:
     """Return what a recorded seed spread says about this pair of readings.
 
-    Keyed to the control alone. Read literally, a floor for "the identity both
-    readings carry" describes nothing: a candidate change moves the digest,
-    because moving it is what makes it a change, so the two arms of a vehicle
-    comparison never share one.
-    ``docs/decisions/0076-the-vehicle-is-width-128-at-the-target-regime.md``
-    owns that correction.
+    Keyed to the control alone. A floor for "the identity both readings carry"
+    would describe nothing: a candidate change moves the digest, because moving
+    it is what makes it a change, so the two arms of a vehicle comparison never
+    share one.
     """
 
     digest = _one_identity(baseline_results)
@@ -1816,10 +1799,9 @@ def _seed_floor_report(
             unrecorded_steps=unrecorded,
         )
 
-    # Only the readings the characterization has a band for are evidence.
-    # A current side reporting health it never measured leaves the scope
-    # unverified rather than checked, which is the state ``departures`` would
-    # otherwise render as an empty tuple.
+    # Only readings the characterization has a band for are evidence: an
+    # unfiltered intersection would come back empty and render as no
+    # departures, which reads as checked and passed.
     health = {
         metric: value
         for metric, value in training_health_readings(current_results).items()

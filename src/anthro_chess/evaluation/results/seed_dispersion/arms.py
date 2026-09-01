@@ -1,9 +1,9 @@
 """Reading a set of trained arms into the spread they showed.
 
 The arms live in two places and neither alone is enough. The run directory says
-what a run was — its seed, the checkpoint it finished at, and what it cost — and
-the results store says what that checkpoint scored. This joins them on the label
-both sides derive from the run.
+what a run was: its seed, the checkpoint it finished at, and what it cost. The
+results store says what that checkpoint scored. This joins them on the label both
+sides derive from the run.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ _UNCHARACTERIZED_FAMILIES = frozenset(
 
 @dataclass(frozen=True)
 class _Run:
-    """What one arm's own artifacts say about it, read once each."""
+    """What one arm's own artifacts say about it."""
 
     directory: Path
     seed: int
@@ -179,8 +179,6 @@ def _scoring_seconds(
 
 
 def _read_run(directory: Path) -> _Run:
-    """Return what one run's two artifacts say, reading each of them once."""
-
     record = _json(directory / "run.json")
     if not isinstance(record, dict):
         raise SeedDispersionError(f"the run record at {directory} is not a record")
@@ -199,6 +197,8 @@ def _read_run(directory: Path) -> _Run:
             f"the run record at {directory} names no completed step, so which "
             "checkpoint its readings describe cannot be established"
         )
+    # `elapsed_seconds` accumulates from the run's start, so the last logged
+    # step carries the whole run.
     elapsed = _last_step_entry(directory).get("elapsed_seconds")
     if not isinstance(elapsed, int | float) or elapsed <= 0.0:
         raise SeedDispersionError(f"the metrics at {directory} state no wall clock")

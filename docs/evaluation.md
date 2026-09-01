@@ -3132,8 +3132,8 @@ characterization was not, since the horizon sits outside the digest.
 
 A claim therefore rests on a delta clearing both floors, or on one far enough
 outside seed variance that nothing else explains it, or on arms read at several
-seeds — a deliberate, occasional act for a result worth its cost, rather than
-machinery riding on every comparison. Anything narrower is reported as what it
+seeds, which is a deliberate, occasional act for a result worth its cost rather
+than machinery riding on every comparison. Anything narrower is reported as what it
 is, a delta not distinguished from seed variance, rather than as an improvement.
 A family with no floor at all can show that nothing else moved; it cannot carry
 the claim.

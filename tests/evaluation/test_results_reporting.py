@@ -1322,10 +1322,8 @@ def _recorded_dispersion(
 ) -> Callable[..., None]:
     """Return a factory installing one characterization for the fixture identity.
 
-    The lookup reads checked-in package data, and no characterization is filed
-    for the fixture identity, which is what
-    ``test_a_configuration_with_no_recorded_spread_says_so`` asserts by leaving
-    this fixture unused.
+    The lookup otherwise reads checked-in package data, where nothing is filed
+    for the fixture identity.
     """
 
     def install(**kwargs: Any) -> None:

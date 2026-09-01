@@ -367,9 +367,6 @@ def latest_measurement(
     return None
 
 
-#: Group key for a reading whose metric declares no workload. One group, which
-#: is the case every benchmark writing a single envelope per checkpoint stays
-#: in.
 def training_health_readings(
     envelopes: Sequence[ResultEnvelope],
 ) -> dict[str, float]:
@@ -388,6 +385,9 @@ def training_health_readings(
     return readings
 
 
+#: Group key for a reading whose metric declares no workload. One group, which
+#: is the case every benchmark writing a single envelope per checkpoint stays
+#: in.
 UNSCOPED_WORKLOAD = ""
 
 

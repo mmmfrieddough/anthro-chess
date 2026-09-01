@@ -6,8 +6,9 @@ comparing two checkpoints will confidently describe movement that is seed luck.
 
 Every reading measures the spread of its own units and stores it: the
 **dispersion**. Comparing two readings combines them, because the variance of a
-difference is the sum of the two variances — :func:`combined_floor`. Nothing
-here is characterized ahead of a comparison, stored between runs, or looked up.
+difference is the sum of the two variances, which :func:`combined_floor` does.
+Nothing here is characterized ahead of a comparison, stored between runs, or
+looked up.
 
 The one dispersion that is, is the one no reading can measure about itself:
 :mod:`anthro_chess.evaluation.results.seed_dispersion` holds what arms of a

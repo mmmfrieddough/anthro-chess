@@ -5,9 +5,8 @@
 # Editing what this file declares about training changes `training_sha256` and
 # invalidates every comparison ever read against it, including the stored seed
 # dispersion. A test asserts the digest, so an edit fails there rather than in a
-# reading months later that looks fine. What a run records is outside the digest
-# by construction, so the cadence below can be added without moving it, and the
-# same test is what says so.
+# reading months later that looks fine. What a run records is outside the
+# digest, so the cadence below does not move it, and the same test says so.
 #
 # An arm applies its one change on top of this and changes nothing else:
 #
@@ -54,17 +53,12 @@ checkpoint_every_steps = 25000
 # and `docs/decisions/0073-compilation-is-on-by-default-and-plain-fusion-beats-graph-capture.md`.
 
 # Health-only, so it scores no positions. It exists so that every arm puts
-# `training_health` where a comparison can read it: the seed floor describes
-# stable baselines, and an arm whose health departs from the vehicle's is
-# outside its scope rather than qualified by it.
+# `training_health` where a comparison can read it.
 #
-# The interval is the horizon above, so this fires exactly once and at the step
-# the final checkpoint is saved at. A firing labels its readings by the step it
-# ran at whether or not a checkpoint exists there, so a shorter interval would
-# put labels in the store for checkpoints that never existed, and a report
-# choosing its own baseline would pick one of those over the previous real
-# checkpoint. A run at another horizon records no health at all, and its
-# comparison reports the floor's scope as unverified, which is what it is.
+# The interval is the horizon above, so this fires once, at the step the final
+# checkpoint is saved at. A firing labels its readings by the step it ran at
+# whether or not a checkpoint exists there, so a shorter interval would put
+# labels in the store for checkpoints that were never saved.
 [[evaluation.cadences]]
 name = "training-health"
 every_steps = 69465

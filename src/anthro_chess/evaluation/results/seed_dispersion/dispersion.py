@@ -10,23 +10,6 @@ The spread is measurable, but only for a configuration that stands still.
 owns why that is the ablation vehicle and nothing else, and
 ``docs/decisions/0076-the-vehicle-is-width-128-at-the-target-regime.md`` owns
 the identity it is stored against.
-
-Three things about the stored record are load-bearing rather than incidental.
-
-**It is found by exact digest or not at all.** A floor that can be found
-approximately can be applied to a configuration it did not measure, which is
-the failure the whole design exists to prevent.
-
-**It describes the control, not the arm.** It is measured on baseline arms, so
-the treatment's own dispersion is assumed to match. Where a treatment's training
-health departs from what the vehicle's arms showed, that assumption fails in the
-one direction that matters: an unstable arm's spread is wider than the floor
-allows, so the floor reads too narrow and noise clears it.
-
-**It describes one horizon.** ``training_sha256`` excludes the step budget by
-construction, which is what lets a cooldown branch match its trunk, so a reading
-taken at another horizon matches this record's key without having been shown to
-share its spread.
 """
 
 from __future__ import annotations
@@ -75,8 +58,7 @@ class SeedArm(ResultModel):
 
     run_id: str = Field(min_length=1)
     seed: int = Field(ge=0)
-    #: The checkpoint label its readings were recorded under, which is what ties
-    #: this arm to the measurements the spread was taken over.
+    #: The label its readings were recorded under.
     checkpoint: str = Field(min_length=1)
     #: What the run took end to end, as the run itself measured it. Not the
     #: store's ``training.training_seconds``, which times the optimizer loop
@@ -85,13 +67,7 @@ class SeedArm(ResultModel):
 
 
 class HealthBand(ResultModel):
-    """What one training-health reading looked like across the vehicle's arms.
-
-    Stored as a center and a spread rather than as the range the arms happened
-    to span, because a range over a handful of arms is as wide as its widest
-    arm and no wider, and the check built on it would fire on a treatment that
-    is merely at the edge of normal.
-    """
+    """What one training-health reading looked like across the vehicle's arms."""
 
     center: float
     dispersion: MetricDispersion
@@ -100,15 +76,11 @@ class HealthBand(ResultModel):
     def covered(self) -> float:
         """Return how far from ``center`` a reading may sit and still be in scope.
 
-        Built from the measured spread rather than from the conservative bound
-        every floor here rests on, which is the one place in this package that
-        is right. A bound widens, and widening a floor errs safe while widening
-        a scope check errs the other way: at three arms the bound is over four
-        times the spread, so an arm well outside what the base showed would be
-        passed as sharing its dispersion and quoted a floor measured on stable
-        ones. Erring toward withholding costs a reader a floor they might have
-        been entitled to; erring the other way is the failure this check exists
-        for.
+        Built from the measured spread rather than the conservative bound every
+        floor here rests on: widening a floor errs safe, but widening a scope
+        check passes an arm whose dispersion has been shown not to match and
+        then quotes it a floor measured on stable ones. At three arms the bound
+        is over four times the spread.
         """
 
         return DEFAULT_COVERAGE * self.dispersion.value
@@ -142,8 +114,7 @@ class SeedDispersion(ResultModel):
         default_factory=dict
     )
     health: Mapping[str, HealthBand] = Field(default_factory=dict)
-    #: What scoring the arms cost, beside what training them cost. Together
-    #: they are what re-characterizing a replacement vehicle would price at.
+    #: What scoring the arms cost, beside what training them cost.
     scoring_seconds: float = Field(ge=0.0)
     measured_at: datetime
     notes: str | None = Field(default=None, min_length=1)
@@ -217,9 +188,9 @@ class ArmReading(ResultModel):
     #: its rows. The empty workload key is the reading that declares none.
     metrics: Mapping[str, Mapping[str, float]]
     #: The series each of those values was measured on, keyed identically. Two
-    #: arms can report one metric under one workload from different views — an
+    #: arms can report one metric under one workload from different views: an
     #: in-training preview and a canonical pool pass both label their reading by
-    #: the checkpoint — and a spread over those describes neither.
+    #: the checkpoint, and a spread over those describes neither.
     fingerprints: Mapping[str, Mapping[str, str]] = Field(default_factory=dict)
     health: Mapping[str, float] = Field(default_factory=dict)
 
@@ -264,10 +235,9 @@ def characterize(
         )
     replicates = [arms for arms in by_seed.values() if len(arms) > 1]
     if len(replicates) > 1:
-        # One record holds one nondeterminism term, and pooling several is not
-        # the same arithmetic as taking one: the groups have their own degrees
-        # of freedom and their own source. Refusing says so; merging them would
-        # silently keep whichever group was read last.
+        # Pooling several nondeterminism groups is not the same arithmetic as
+        # taking one: they have their own degrees of freedom and their own
+        # source.
         raise SeedDispersionError(
             "arms are repeated at more than one seed, and this record holds "
             "one nondeterminism term: repeat one seed, or characterize the "

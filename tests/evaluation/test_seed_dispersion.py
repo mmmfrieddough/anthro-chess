@@ -126,12 +126,7 @@ def test_a_metric_only_some_arms_reported_carries_no_spread() -> None:
 
 
 def test_a_cell_every_arm_agreed_on_exactly_is_withheld() -> None:
-    """A zero spread would produce a floor that clears every delta.
-
-    The arms observed that they could not move the quantity, which is not the
-    same as observing that nothing could, so the row reports no seed floor
-    rather than one of zero.
-    """
+    """A zero spread would produce a floor that clears every delta."""
 
     settled = "legality.mask_penalty"
     dispersion = _characterized(
@@ -309,13 +304,7 @@ def test_replicates_at_more_than_one_seed_are_refused_rather_than_merged() -> No
 
 
 def test_the_health_band_is_read_off_the_spread_rather_than_its_bound() -> None:
-    """A scope check that widens errs the way the check exists to prevent.
-
-    Every floor here rests on the conservative upper limit on a spread, because
-    a floor that understates noise licenses noise as a finding. A scope check
-    inverts that: widening it passes an arm whose dispersion has been shown not
-    to match, and then quotes it a floor measured on ones that do.
-    """
+    """A scope check that widens errs the way the check exists to prevent."""
 
     dispersion = _characterized(
         _arm("a", 17, move_loss=1.40, health={GRADIENT_NORM: 0.49}),
