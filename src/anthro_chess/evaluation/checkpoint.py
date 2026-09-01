@@ -26,11 +26,11 @@ from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import chess
 import torch
-from pydantic import StrictBool
+from pydantic import Field, StrictBool, StrictInt
 from torch import Tensor
 
 from anthro_chess.config import ConfigModel, ResolvedConfig
@@ -222,6 +222,10 @@ class PoolPassConfig(CheckpointSelection, PoolGenerationPin):
     loader: EvaluationLoaderConfig = EvaluationLoaderConfig()
     leakage: LeakageConfig = LeakageConfig()
     noise: NoiseConfig = NoiseConfig()
+    #: Accelerators the pass may replicate the model onto, or ``"all"`` for
+    #: every one the host exposes. Declared rather than detected, because the
+    #: cost recorded beside the reading names the device and not how many.
+    devices: Annotated[StrictInt, Field(ge=1)] | Literal["all"] = 1
 
 
 class CheckpointEvaluationConfig(PoolPassConfig):
@@ -854,6 +858,7 @@ def _score(
         _ShuffledRatings(reading, conditioning.shuffle_seed)
         if conditioning is not None
         else None,
+        config.devices,
     )
     aggregator = SliceAggregator()
     adjudication = (
@@ -969,18 +974,22 @@ def _sessions(
     runner: CheckpointModelRunner,
     config: DependencyTestConfig | None,
     shuffled: _ShuffledRatings | None,
+    requested: int | Literal["all"],
 ) -> tuple[_BatchSession, ...]:
-    """Return one scoring session per accelerator this machine exposes.
+    """Return one scoring session per accelerator this pass was given.
 
     The forward passes are what a reading is mostly made of, and they are the
     part of a batch a second device can take. Replicas answer for the same
     selection and the same digest, so which device scored a batch is not a
-    property of the reading.
+    property of the reading. How many of them ran is not a property of the
+    reading either, but it is one of the cost recorded beside it. So the count
+    is declared rather than taken from whatever the host happens to expose.
     """
 
     if runner.device.type != "cuda":
         return (_BatchSession(runner, config, shuffled),)
-    devices = torch.cuda.device_count()
+    available = torch.cuda.device_count()
+    devices = available if requested == "all" else min(requested, available)
     if devices > 1:
         logger.info("Scoring across %s devices", devices)
     replicas = (
