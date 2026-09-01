@@ -8,11 +8,13 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import chess
 import pytest
 import torch
 from tiny_models import tiny_model_config
+from torch import Tensor
 
 from anthro_chess.chess import (
     ACTION_VOCABULARY_SIZE,
@@ -34,6 +36,7 @@ from anthro_chess.inference import (
     resolve_model_selection,
     write_model_selection,
 )
+from anthro_chess.inference.runner import MATMUL_PRECISION
 from anthro_chess.machine import RUN_ROOT_VARIABLE
 from anthro_chess.models import MoveModel, MoveModelBatch
 from anthro_chess.training.checkpoints import save_training_checkpoint
@@ -84,6 +87,33 @@ def test_cpu_runner_loads_and_recomputes_complete_target_free_history(
     torch.testing.assert_close(developed_logits, repeated_logits, rtol=0.0, atol=0.0)
     assert runner.selection.checkpoint_path == checkpoint.resolve()
     assert runner.selection.as_record()["source"] == "explicit-checkpoint"
+
+
+def test_serving_a_decision_scopes_the_matmul_precision_to_the_forward_pass(
+    tmp_path: Path,
+) -> None:
+    """Torch holds this per process, so a runner must not leave it moved."""
+
+    runner = CheckpointModelRunner.load(
+        ModelRunnerConfig(
+            checkpoint_path=_write_run(tmp_path / "run", seed=11),
+            device="cpu",
+        )
+    )
+    context = build_decision_context(chess.Board(), (), target_rating=1650)
+    served: list[str] = []
+    original = runner.model.forward
+
+    def _observed(batch: MoveModelBatch) -> Tensor:
+        served.append(torch.get_float32_matmul_precision())
+        return original(batch)
+
+    torch.set_float32_matmul_precision("highest")
+    with patch.object(runner.model, "forward", _observed):
+        runner.action_logits(MoveModelBatch.from_decision_context(context))
+
+    assert served == [MATMUL_PRECISION]
+    assert torch.get_float32_matmul_precision() == "highest"
 
 
 def test_decision_tensorization_rates_the_whole_trajectory() -> None:
@@ -468,9 +498,13 @@ def test_a_cpu_checkpoint_decides_the_same_way_on_this_hosts_accelerator(
     assert accelerated.device.type == accelerator
     assert accelerated.parameter_sha256() == cpu.parameter_sha256()
     logits = accelerated.predict(context)
+    reference = cpu.predict(context)
     assert logits.device.type == "cpu"
     assert torch.isfinite(logits).all()
-    torch.testing.assert_close(logits, cpu.predict(context), rtol=1e-4, atol=1e-4)
+    assert torch.argmax(logits) == torch.argmax(reference)
+    # Absolute rather than relative: only the accelerator runs reduced-precision
+    # matmul, and a logit near zero has no meaningful relative agreement.
+    torch.testing.assert_close(logits, reference, rtol=0.0, atol=0.01)
 
 
 @pytest.mark.gpu

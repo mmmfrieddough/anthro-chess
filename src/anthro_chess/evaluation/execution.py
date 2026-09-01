@@ -25,12 +25,19 @@ from typing import Any
 import torch
 
 from anthro_chess.evaluation.results import ExecutionRecord, execution_reference
+from anthro_chess.inference.runner import MATMUL_PRECISION
 
-#: Parameter precision the runtime loads. Recorded rather than configured,
-#: because the runner rejects a checkpoint that is not float32 today; when a
-#: precision dial arrives it becomes an input to this value rather than a new
-#: execution coordinate.
-MEASURED_PRECISION = "float32"
+
+def measured_precision() -> str:
+    """Return the arithmetic a reading was produced in, parameters then matmul.
+
+    The runner rejects a checkpoint whose parameters are not float32, so the
+    first half is fixed. The second is the runtime's own declaration, because a
+    reading that named only the dtype would compare against one computed in
+    different arithmetic and say nothing about the difference.
+    """
+
+    return f"float32-matmul-{MATMUL_PRECISION}"
 
 
 def execution_record(
@@ -50,7 +57,7 @@ def execution_record(
     return execution_reference(
         device=device.type,
         device_name=device_name(device),
-        precision=MEASURED_PRECISION,
+        precision=measured_precision(),
         torch_version=torch.__version__,
         platform_key=platform_key(),
         platform=platform.platform(),
