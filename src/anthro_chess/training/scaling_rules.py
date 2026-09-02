@@ -83,12 +83,14 @@ class FittedRange:
 MODEL_DIM_RANGE = FittedRange("model_dim", 32, 128)
 
 #: How long a run is, relative to its own capacity. The vehicle and the target
-#: both sit at 800.
-POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 1600)
+#: both sit at 800, which is the top of what was measured rather than a point
+#: inside it: the arms that would have carried 1600 were given up to re-measure
+#: the anchor rung, and the range says so rather than reaching past them.
+POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 800)
 
-#: Positions per optimizer step. Below the low end the step is launch bound and
-#: above the high end nothing here measured.
-BATCH_RANGE = FittedRange("positions per optimizer step", 4096, 65536)
+#: The horizon in positions, spanned by the arms behind the rate rule. Its ends
+#: are width 32 at 100 positions per parameter and width 128 at 800.
+POSITIONS_RANGE = FittedRange("positions", 1.4e7, 1.2e9)
 
 
 def model_config_for_width(model_dim: int) -> MoveModelConfig:
@@ -148,49 +150,60 @@ REFERENCE_POSITIONS_PER_PARAMETER = 800
 REFERENCE_POSITIONS = REFERENCE_POSITIONS_PER_PARAMETER * REFERENCE_PARAMETERS
 REFERENCE_BATCH_POSITIONS = 16_384
 
-# PROVISIONAL: replaced from the fit before this lands. See scratchpad PENDING.md.
-LEARNING_RATE_AT_REFERENCE = 2.91e-3
-SIZE_EXPONENT = 0.0
+#: The rate the fit gives at the reference. Read off the fitted line rather than
+#: taken from the reference rung's own arms, so that the rule reproduces itself
+#: at every scale including this one.
+LEARNING_RATE_AT_REFERENCE = 2.98e-3
+
+#: How the rate moves with parameter count. Fitted over widths 32, 64 and 128 at
+#: 800 positions per parameter, where the fit lands inside every rung's own
+#: near-optimal band.
+SIZE_EXPONENT = -0.5455
+
+#: How the rate moves with the horizon. Measured at -0.001 with a standard error
+#: of 0.089 across an eightfold change in run length, so it is set to zero
+#: rather than to a number indistinguishable from it. Setting it to the point
+#: estimate would dress a null result as a measurement.
 HORIZON_EXPONENT = 0.0
-BATCH_EXPONENT = 0.0
-BATCH_HORIZON_EXPONENT = 0.0
+
 WARMUP_FRACTION = 0.01
 WEIGHT_DECAY_HORIZONS = float("inf")
 SECOND_MOMENT_POSITIONS = 1.6384e7
 
 
 def batch_positions(positions: int) -> int:
-    """Return the positions one optimizer step should span at this horizon.
+    """Return the positions one optimizer step spans, which is held rather than fitted.
 
-    Batch is fitted against the horizon rather than against the model, which
-    is the parameterization outside work uses and the one ``docs/research.md``
-    records as disagreeing with a size-indexed fit. Snapped to a power of two,
-    because that is the spacing the axis was measured on and the loss surface
-    between two measured batches is flatter than the gap between them.
+    This is the one setting of the five that did not become a rule against
+    scale, and the reason is evidence rather than omission. Sweeping batch
+    against horizon at width 32 put the best batch at 4096 positions at every
+    horizon measured, moving by less than the 4x spacing the grid could resolve,
+    so no exponent is supported. What does move is the penalty for a larger
+    batch, which falls from 14% to 0.9% as the horizon grows eightfold, and that
+    is the critical batch growing without the optimum being locatable.
+
+    So the batch is held at the value the rate rule was fitted at. Prescribing
+    the smaller batch the arms preferred would pair it with a rate measured at
+    this one, and the two were never measured together.
     """
 
-    grown = (positions / REFERENCE_POSITIONS) ** BATCH_HORIZON_EXPONENT
-    wanted = REFERENCE_BATCH_POSITIONS * grown
-    snapped = 2 ** round(math.log2(wanted))
-    BATCH_RANGE.check(snapped)
-    return int(snapped)
+    POSITIONS_RANGE.check(positions)
+    return REFERENCE_BATCH_POSITIONS
 
 
-def peak_learning_rate(parameters: int, positions: int, batch: int) -> float:
-    """Return the rate the trunk holds, for a model, a horizon, and a batch.
+def peak_learning_rate(parameters: int, positions: int) -> float:
+    """Return the rate the trunk holds, for a model and a horizon.
 
-    Three terms rather than one. The size and horizon exponents are separated
-    by fitting the ray both the vehicle and the target sit on and then the
-    horizon alone at one width: along that ray a size change is also a horizon
-    change, so a single sweep cannot tell the two apart.
+    Two terms rather than three: there is no batch term, because every arm
+    behind this fit ran at one batch. A term fitted from the batch axis would
+    have to come from arms that also differ in how many optimizer steps they
+    take, which is the same change wearing another name at a fixed horizon.
     """
 
-    BATCH_RANGE.check(batch)
     rate: float = (
         LEARNING_RATE_AT_REFERENCE
         * (parameters / REFERENCE_PARAMETERS) ** SIZE_EXPONENT
         * (positions / REFERENCE_POSITIONS) ** HORIZON_EXPONENT
-        * (batch / REFERENCE_BATCH_POSITIONS) ** BATCH_EXPONENT
     )
     return rate
 
@@ -234,7 +247,6 @@ def second_moment_decay(batch: int) -> float:
     rule is stated over positions and the constant is derived from the batch.
     """
 
-    BATCH_RANGE.check(batch)
     return 1.0 - batch / SECOND_MOMENT_POSITIONS
 
 
@@ -282,7 +294,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
     parameters = scale.parameters
     positions = scale.positions
     batch = batch_positions(positions)
-    rate = peak_learning_rate(parameters, positions, batch)
+    rate = peak_learning_rate(parameters, positions)
     return ResolvedRun(
         scale=scale,
         parameters=parameters,
@@ -300,7 +312,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
 
 
 __all__ = [
-    "BATCH_RANGE",
+    "POSITIONS_RANGE",
     "COOLDOWN_FRACTION",
     "MICRO_BATCH_POSITIONS",
     "MODEL_DIM_RANGE",

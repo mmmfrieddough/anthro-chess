@@ -10,14 +10,15 @@ from anthro_chess.config import load_config
 from anthro_chess.models import MoveModel, parameter_count
 from anthro_chess.training.config import TrainingConfig
 from anthro_chess.training.scaling_rules import (
-    BATCH_RANGE,
     MODEL_DIM_RANGE,
+    POSITIONS_RANGE,
     POSITIONS_PER_PARAMETER_RANGE,
     REFERENCE_BATCH_POSITIONS,
     REFERENCE_PARAMETERS,
     REFERENCE_POSITIONS_PER_PARAMETER,
     OutsideFittedRange,
     TrainingScale,
+    batch_positions,
     model_config_for_width,
     resolve,
     second_moment_decay,
@@ -116,13 +117,22 @@ def test_a_resolved_run_declares_a_schedule_its_own_horizon_can_carry(
     A warmup rule and a horizon rule can each be reasonable and still produce a
     pair the schedule refuses, and that failure belongs here rather than in the
     first minute of a ladder rung.
+
+    Scales the rules decline are skipped rather than asserted over: the width
+    range and the ratio range are separate, and their corners multiply out to
+    horizons no arm reached. The count at the end is what keeps this from
+    passing vacuously if the rules ever declined everything.
     """
 
+    carried = 0
     for model_dim in (32, 64, 96, 128):
-        for ratio in (100, 800, 1600):
-            resolved = resolve(
-                TrainingScale(model_dim=model_dim, positions_per_parameter=ratio)
-            )
+        for ratio in (100, 400, 800):
+            try:
+                resolved = resolve(
+                    TrainingScale(model_dim=model_dim, positions_per_parameter=ratio)
+                )
+            except OutsideFittedRange:
+                continue
             configured = vehicle.model_copy(
                 update={
                     "steps": resolved.steps,
@@ -140,6 +150,8 @@ def test_a_resolved_run_declares_a_schedule_its_own_horizon_can_carry(
             schedule = configured.learning_rate_schedule()
             assert schedule.warmup_steps >= 1
             assert schedule.warmup_steps + schedule.cooldown_steps <= schedule.steps
+            carried += 1
+    assert carried >= 8
 
 
 def test_the_second_moment_timescale_is_what_survives_a_batch_change() -> None:
@@ -194,10 +206,32 @@ def test_a_scale_outside_the_fit_is_refused_rather_than_extrapolated(
         resolve(TrainingScale(model_dim=model_dim, positions_per_parameter=ratio))
 
 
-def test_a_batch_outside_the_measured_span_is_refused() -> None:
-    """The batch axis carries its own boundary, reached by its own rule."""
+def test_a_horizon_outside_the_measured_span_is_refused() -> None:
+    """The horizon carries its own boundary, separate from the width's.
+
+    A width inside the fit and a ratio inside the fit can still multiply to a
+    horizon no arm reached, which is why the check is on the product rather than
+    only on the two dials a caller sets.
+    """
 
     with pytest.raises(OutsideFittedRange):
-        second_moment_decay(int(BATCH_RANGE.high) * 2)
+        batch_positions(int(POSITIONS_RANGE.high) * 4)
     with pytest.raises(OutsideFittedRange):
-        second_moment_decay(int(BATCH_RANGE.low) // 2)
+        batch_positions(int(POSITIONS_RANGE.low) // 4)
+
+
+def test_the_batch_is_held_at_what_the_rate_rule_was_fitted_at() -> None:
+    """The one setting that did not become a rule against scale.
+
+    Sweeping it put the best batch at the same value at every horizon measured,
+    so no exponent is supported. Holding it is what keeps the rate, which was
+    measured at this batch and only at this batch, from being paired with one it
+    was never measured at.
+    """
+
+    spans = {
+        batch_positions(round(ratio * parameter_count(model_config_for_width(width))))
+        for width in (32, 64, 128)
+        for ratio in (100, 400, 800)
+    }
+    assert spans == {REFERENCE_BATCH_POSITIONS}
