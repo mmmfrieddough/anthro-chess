@@ -9,7 +9,7 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from anthro_chess import __version__
-from anthro_chess.config import ConfigProvenance, ResolvedConfig
+from anthro_chess.config import ConfigProvenance, ResolvedConfig, load_config
 from anthro_chess.data import AcquisitionResult, PreparationResult
 from anthro_chess.evaluation import MoveValidationMetrics
 from anthro_chess.evaluation.results import ResultEnvelope
@@ -2895,3 +2895,60 @@ def test_eval_seed_dispersion_refuses_arms_of_two_configurations(
 
     assert "do not share one training identity" in capsys.readouterr().err
     assert not (tmp_path / "characterizations").exists()
+
+
+def test_scale_refuses_a_width_the_rules_were_never_fitted_over(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The target's own width is outside the fit, and saying so is the point.
+
+    A rule that answered here would be extrapolating, and the caller would have
+    no way to tell that from a fitted answer. The nonzero exit is what stops a
+    script from configuring a run out of one.
+    """
+
+    assert (
+        main(["scale", "--model-dim", "512", "--positions-per-parameter", "800"]) == 1
+    )
+    captured = capsys.readouterr()
+    assert "outside the fitted range" in captured.err
+    assert captured.out == ""
+
+
+def test_scale_emits_overrides_a_training_run_accepts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rules have to produce a run rather than a report.
+
+    Every key here is one the training schema owns, so a rung is the resolver's
+    output handed to `anthro train` against whichever selection already carries
+    the corpus, which is the half of a configuration no rule can produce.
+    """
+
+    assert (
+        main(
+            [
+                "scale",
+                "--model-dim",
+                "128",
+                "--positions-per-parameter",
+                "800",
+                "--format",
+                "overrides",
+            ]
+        )
+        == 0
+    )
+    emitted = capsys.readouterr().out.split()
+    assert emitted.count("--set") == len(emitted) // 2
+    keys = {argument.split("=")[0] for argument in emitted if argument != "--set"}
+    assert {"learning_rate", "steps", "warmup_positions", "model.model_dim"} <= keys
+
+    overrides = [argument for argument in emitted if argument != "--set"]
+    resolved = load_config(
+        TrainingConfig,
+        path=Path(__file__).parents[2] / "configs/training/ablation-vehicle.toml",
+        overrides=overrides,
+    ).value
+    assert resolved.model.model_dim == 128
+    resolved.learning_rate_schedule()
