@@ -104,125 +104,68 @@ rollout distribution comparison needs family aggregation.
 Make every experiment cheaper and every reading interpretable, before scaling
 starts spending against them.
 
-Stage 3 built the instrument. Reading it on real checkpoints, and profiling it
-on the CUDA host, showed that it is not yet affordable enough or resolved enough
-to guide the decisions stage 5 wants to make. None of that is scaling work, and
-all of it sits upstream of scaling work: a capacity comparison read from a suite
-whose cost is unknown, and whose readings mostly state no resolution, produces a
-number nobody can act on.
+Closed. A device-bound training step, an evaluation suite that records what it
+cost beside what it measured, a stated resolution or a recorded finding for every
+metric family, and the whole reference frame stage 5 reads against: the widened
+corpus, the first pool cut, the target scale, the schedule family, a deliberately
+designed architecture, the optimization surface it needed, and the ablation
+vehicle with its seed dispersion. `docs/evaluation.md` and
+`docs/training-and-runtime.md` own what the suite and the loop now are;
+`docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
+and `docs/decisions/0076-the-vehicle-is-width-128-at-the-target-regime.md` own
+the vehicle.
 
-Some of stage 3's freedom runs through this stage and ends inside it. No
-benchmark history is protected and no checkpoint is worth preserving until the
-first pool is cut, so breaking a comparability series, bumping the
-preprocessing version, changing the action vocabulary, and regenerating the
-corpus all stay cheap, and work should not be deferred or resequenced to avoid
-them. Batching an expensive corpus regeneration is still worthwhile, but that is
-an argument about compute rather than about history. Designation fixes the
-core's per-axis statistical power permanently, which is why the corpus and pool
-work that breaks containment belongs before it. See
-`docs/decisions/0013-benchmark-result-comparability.md`.
-
-This stage has two halves. The first makes an experiment cheaper. The training
-step should stop spending longer building a batch than the device spends
-computing it, which is a property of the loader's representation rather than of
-model size and so is worth fixing at any capacity later selected. The evaluation
-suite should stop paying for repeated work — pools materialized once per
-benchmark, scoring passes it already holds the answer to, replicates that are
-provably one game. Training moves to a multi-GPU CUDA host here, and using every
-card on a long run is the ordinary execution path rather than an optimization to
-justify later. Single-device CUDA lands first, because it is the foundation the
-distributed path shares and the baseline its scaling efficiency is read against,
-but distribution does not wait for a demonstrated single-device limit, and it is
-measured at a width where the reading means something. Corpus-scale training
-reads through bounded-memory shard-backed loading rather than fixture-oriented
-eager materialization, which is what makes a pass over the prepared selection
-possible at all. Both loaders stay, because a fixture or a proof slice is
-cheaper read eagerly; `docs/data.md` owns which applies where.
-
-The second half makes a reading interpretable. A benchmark should record what it
-cost where it records what it measured, so a cost claim is reviewable the way a
-metric delta is; cost figures asserted in configuration files drift silently and
-have. The families the suite actually spends its time in should state a
-resolution, or record that they cannot discriminate and what that means for
-reading them. The shape of the noise-floor system is settled here against
-measured resolution rather than extended by default.
-
-Sample size, rather than the estimator, turned out to be the binding constraint
-on resolution, and sample size is an efficiency problem. That is why the two
-halves are one stage rather than two: the cheap lever on resolution is a view
-size nobody could afford, and affording it is the first half's job.
-
-This stage also defines how a change that alters the model shows it improved
-something. The test suite proves a change did not break anything; nothing yet
-says how to tell an improvement from run-to-run noise, so every model-affecting
-change otherwise sets its own evidence standard. That definition should compose
-the machinery this stage and stage 3 already built rather than add tooling.
+**The two halves are one stage because sample size, rather than the estimator,
+is the binding constraint on resolution.** Kept because the stage reads as two
+unrelated ones fused, and would be split by anyone re-sequencing it from the
+outside. The cheap lever on a floor is a view size nobody could afford, and
+affording it is the efficiency half's job, so settling the noise-floor system
+first would have chosen an estimator for a sample size nobody had settled.
 
 **What separates this stage from the next is a single question: does changing
-this invalidate readings already taken?** Everything answering yes belongs here,
-because the cost of being wrong is not redoing the item but redoing everything
-measured against it. Everything answering no is a reading, and readings do not
-spoil one another. `docs/scaling.md` states that rule and the program it orders.
+this invalidate readings already taken?** That rule is live and orders stage 5.
+Everything answering yes belonged here, because the cost of being wrong is not
+redoing the item but redoing everything measured against it. Everything answering
+no is a reading, and readings do not spoil one another. `docs/scaling.md` states
+it and the program it orders.
 
-So this stage ends by fixing the whole reference frame rather than only the
-evaluation half of it. Deciding engine-assisted filtering, widening the corpus
-across the measurement axes, cutting the first pool generation, and designating
-the core land in that order, each breaking containment or ending a series and all
-free until the designation and permanent after it. Four further items close the
-frame, and all of them share one property: each is carried inside the vehicle's
-identity, so none can follow the vehicle without invalidating it.
+Three things ended differently than this stage planned them, and each is a
+landmark other documents lean on.
 
-- **The target model scale**, which follows from the compute budget and the
-  deployment envelope rather than from any measurement, which sizes everything
-  below it, and which
-  `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
-  settles.
-- **The learning-rate schedule family**, which decides for the life of the
-  project whether extending a run is a branch or a restart, and which
-  `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` settles as a
-  branch.
-- **The architecture**, which had never been designed. It was assembled from
-  defaults, and the flat rating dial is what that produced: the trunk it grew
-  around was rating-neutral by construction, so the rating could not reach the
-  representation at all. Settling it meant copying what the field has already
-  established and measuring only what would be this project's own answer, the
-  conditioning path being the case where no published result transfers.
-- **The optimization surface** — schedule, warmup, decoupled weight decay — which
-  does not exist today. A single learning-rate float and a plain optimizer cannot
-  express any of the settings the scaling program treats as scale-coupled.
+- **There is no evaluation core, and the containment window is shut.** Stage 3's
+  freedom ran through this stage: breaking a comparability series, bumping the
+  preprocessing version, changing the action vocabulary, and regenerating the
+  corpus were all cheap while no benchmark history was protected. It ended at the
+  first pool cut rather than at a core designation, because
+  `docs/decisions/0068-a-pool-re-cut-breaks-benchmark-history-and-that-is-accepted.md`
+  decided against designating one. A record dating a change as free "before the
+  core is designated" names that cut. Per-axis power is no longer fixed
+  permanently there, so a thin axis is a reason to re-cut rather than a loss that
+  outlives the decision.
+- **Distribution moved to stage 5.** Using every card on a long run was scoped
+  here. It is a scaling result rather than a trust one, so it is read there as a
+  speedup against the single-card baseline this stage produced.
+- **The reduced sweep is gone.** Every benchmark carries one declared size, per
+  `docs/decisions/0079-one-declared-size-per-benchmark.md`, so the sizing
+  question this stage expected to answer for two scales is answered for one.
 
-Those close into **the ablation vehicle**: one frozen training configuration that
-every later candidate change is read against, its identity pinned by a test, and
-its seed dispersion characterized against that pin.
-`docs/decisions/0065-a-frozen-ablation-vehicle-is-the-base-a-seed-floor-can-live-on.md`
-owns why it exists and what it gives up.
+One finding leaves this stage unresolved and constrains stage 5. The rating
+ladder cannot measure a strength difference between two checkpoints, at any grid
+size: two checkpoints never meet, and the fit is invariant to shifting every
+rating in it by a constant, so two independently fitted rows share no origin.
+What it does resolve is the shape of one checkpoint's own rating surface, which
+is anchor-invariant and comparable. A strength claim needs both checkpoints in
+one round robin or a fixed external anchor, and neither is designed.
+`docs/evaluation.md` states the invariance.
 
-Two of the four are experiments despite closing the frame, and they run without a
-seed floor because the vehicle they would be measured against does not exist yet.
-That makes them instruments for large effects only; `docs/scaling.md` says what
-such a reading can and cannot carry.
-
-The vehicle follows the designation rather than preceding it, because it needs a
-pool to read against. That ordering costs something worth naming: the core's
-per-axis coverage is sized without a checkpoint that plays like the eventual
-model, so it is provisioned generously rather than tightly, since held-out games
-are cheap and the designation is permanent.
-
-The vehicle is what makes the rest affordable. Decision 0029 measured seed
-variance and concluded such a characterization "belongs to a configuration rather
-than to a change, so a base worth several changes pays for it once"; decision
-0043 then removed the machinery because no configuration in this project ever
-stood still long enough to be that base. Creating one deliberately is the whole
-of what is new here.
-
-Buying capacity is what belongs to stage 5 and is blocked on this one.
+Buying capacity is what belongs to stage 5 and was blocked on this one.
 
 ### 5. Scale And Improve
 
 Use the working loop and evaluation harness to improve the bot.
 
 Everything in this stage is a reading. Stage 4 fixed the frame — the corpus, the
-core, the target scale, the schedule family, the vehicle and its seed floor — so
+pool, the target scale, the schedule family, the vehicle and its seed floor — so
 nothing here invalidates anything measured before it, and the items below are
 ordered by what each one needs rather than by what it would spoil.
 `docs/scaling.md` owns the program and the coupling that sets the order; the
