@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from anthro_chess.config import load_config
+from anthro_chess.evaluation.results.seed_dispersion import seed_dispersion_for
 from anthro_chess.models import MoveModel
 from anthro_chess.training.config import TrainingConfig
 from anthro_chess.training.vehicle import (
@@ -62,3 +63,23 @@ def test_the_vehicle_trains_at_the_regime_its_size_was_derived_from(
         parameter.numel() for parameter in MoveModel(vehicle.model).parameters()
     )
     assert positions / parameters == pytest.approx(800, rel=0.01)
+
+
+def test_the_stored_seed_dispersion_describes_the_vehicle_it_is_filed_under(
+    vehicle: TrainingConfig,
+) -> None:
+    """The floor and the configuration it qualifies have to be the same thing.
+
+    Found by exact digest and by nothing else, so a characterization filed
+    under a stale identity is not a floor that is slightly wrong: it is one no
+    reading reaches. The horizon is checked too, because ``training_sha256``
+    excludes the step budget, so a record could carry the right key and
+    describe a run of another length.
+    """
+
+    dispersion = seed_dispersion_for(VEHICLE_TRAINING_SHA256)
+
+    assert dispersion is not None
+    assert dispersion.horizon_steps == vehicle.steps
+    assert len(dispersion.seeds) >= 3
+    assert dispersion.metrics

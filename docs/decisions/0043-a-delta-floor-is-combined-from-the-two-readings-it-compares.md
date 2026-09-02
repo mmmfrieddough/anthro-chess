@@ -21,7 +21,9 @@ floor for one configuration that cannot move. That record does not reopen the
 collapse below: the objection here is to a floor keyed to a baseline every
 accepted change redefines, and a frozen instrument is not one. What it adds is
 one number attached to one identity digest, not a kind, a producer, a tier, or an
-index.
+index. `0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md` measures
+that number and finds it the binding one on most metrics, which bears on how the
+floors this record combines are read rather than on how they are built.
 
 ## Context
 

@@ -3122,7 +3122,12 @@ change is why.
 characterized.** Arms of one training configuration differing only in their
 initialization seed give the spread directly, and the spread is stored against
 that configuration's `training_sha256` where a comparison finds it by exact
-digest or reports that it has none. That is affordable for a configuration that
+digest or reports that it has none. It is the total arm-to-arm spread rather
+than a seed term extracted from it, because what a comparison faces is one
+training run against another and relaxed determinism leaves the two free to
+differ in more than the seed;
+`docs/decisions/0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md`
+owns that choice and carries what the vehicle's own arms showed. That is affordable for a configuration that
 stands still and nowhere else, so the ablation vehicle is the one base carrying
 one; `anthro eval seed-dispersion` is what characterizes a base, and
 `anthro eval report` prints the second verdict beside the first. Two scope
