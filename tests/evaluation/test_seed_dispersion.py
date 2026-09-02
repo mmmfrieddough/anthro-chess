@@ -316,3 +316,26 @@ def test_the_health_band_is_read_off_the_spread_rather_than_its_bound() -> None:
     assert band.covered < DEFAULT_COVERAGE * band.dispersion.bound
     # Four sample sigma out is a departure. Built from the bound it would not be.
     assert not band.covers(band.center + 4 * band.dispersion.value)
+
+
+def test_a_health_reading_every_arm_agreed_on_still_bounds_the_scope() -> None:
+    """Where a band and a floor part company, and why it matters here.
+
+    The estimator refuses a zero spread because a floor of zero clears every
+    delta. A band of zero admits only the value the arms showed, which is the
+    safe direction: the vehicle's clip rate sat at zero on every arm, and an
+    arm that clips at all is the instability the scope check exists to catch.
+    """
+
+    clip_rate = "training_health.clip_rate"
+    dispersion = _characterized(
+        _arm("a", 17, move_loss=1.40, health={clip_rate: 0.0}),
+        _arm("b", 29, move_loss=1.50, health={clip_rate: 0.0}),
+        _arm("c", 43, move_loss=1.60, health={clip_rate: 0.0}),
+    )
+
+    band = dispersion.health[clip_rate]
+    assert band.covered == 0.0
+    assert band.covers(0.0)
+    assert dispersion.departures({clip_rate: 0.0}) == ()
+    assert dispersion.departures({clip_rate: 0.05}) == (clip_rate,)

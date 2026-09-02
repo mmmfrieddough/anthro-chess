@@ -372,14 +372,34 @@ def _health(
         shared &= set(reading.health)
     bands: dict[str, HealthBand] = {}
     for metric in sorted(shared):
-        values = [reading.health[metric] for reading in readings]
-        dispersion = _estimate(values, source=source)
-        if dispersion is not None:
-            bands[metric] = HealthBand(
-                center=statistics.fmean(values),
-                dispersion=dispersion,
-            )
+        band = _band([reading.health[metric] for reading in readings], source=source)
+        if band is not None:
+            bands[metric] = band
     return bands
+
+
+def _band(values: Sequence[float], *, source: str) -> HealthBand | None:
+    """Return the band a health reading's arms describe.
+
+    Arms that agreed exactly still bound the scope, which is where a band and a
+    floor part company. A floor of zero clears every delta, so the estimator
+    refuses to build one; a band of zero admits only the value the arms showed,
+    and an arm reading anything else has been shown not to match them. The
+    vehicle's clip rate is that case: every arm sat at zero, and an arm that
+    clips at all is the instability this check exists to catch.
+    """
+
+    dispersion = _estimate(values, source=source)
+    if dispersion is None:
+        if len(set(values)) != 1 or not math.isfinite(values[0]):
+            return None
+        dispersion = MetricDispersion(
+            value=0.0,
+            bound=0.0,
+            source=source,
+            estimator=SEED_ARM_METHOD,
+        )
+    return HealthBand(center=statistics.fmean(values), dispersion=dispersion)
 
 
 def seed_dispersion_for(
