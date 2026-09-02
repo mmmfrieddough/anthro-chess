@@ -1344,7 +1344,13 @@ def _seed_pair(
     health: float | None = None,
     current_step: int = 8000,
 ) -> list[ResultEnvelope]:
-    """Return a baseline and a current reading, optionally with a health one."""
+    """Return a baseline and a current reading, optionally with health ones.
+
+    ``health`` is the current arm's reading; the baseline gets the band's own
+    centre. Both sides of a vehicle comparison are arms and the scope check
+    reads both, so a baseline with no health leaves the scope unverified
+    whatever the current arm reports.
+    """
 
     reading = _dispersion(1e-9)
     results = [
@@ -1372,18 +1378,22 @@ def _seed_pair(
         ),
     ]
     if health is not None:
-        results.append(
-            recorded_result(
-                label="checkpoint-b",
-                step=current_step,
-                kind="training-health",
-                # A health reading has no data dependency, so it carries no
-                # component: it is about the optimizer step rather than about
-                # anything scored.
-                measurements=[measurement("training_health.gradient_norm", health)],
-                recorded_at=CURRENT_AT,
+        for label, step, value, at in (
+            ("checkpoint-a", 8000, HEALTH_CENTER, BASELINE_AT),
+            ("checkpoint-b", current_step, health, CURRENT_AT),
+        ):
+            results.append(
+                recorded_result(
+                    label=label,
+                    step=step,
+                    kind="training-health",
+                    # A health reading has no data dependency, so it carries no
+                    # component: it is about the optimizer step rather than
+                    # about anything scored.
+                    measurements=[measurement("training_health.gradient_norm", value)],
+                    recorded_at=at,
+                )
             )
-        )
     return results
 
 
@@ -1615,3 +1625,72 @@ def test_health_the_characterization_has_no_band_for_verifies_nothing(
 
     assert report.seed_floor.scope is SeedScope.UNVERIFIED
     assert "unverified rather than established" in _unwrapped(report)
+
+
+def test_an_unstable_control_is_outside_the_floors_scope_too(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """Both sides of a vehicle comparison are arms, and the digest cannot tell
+    a control that went unstable from a treatment that did.
+
+    The floor describes stable baselines. Checking only the side under test
+    would apply it to a comparison whose control is the arm it does not
+    describe, which is the direction that reads too narrow.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+    results = _seed_pair(recorded_result, component, current_loss=3.4, health=0.5)
+    results.append(
+        recorded_result(
+            label="checkpoint-a",
+            kind="training-health",
+            measurements=[measurement("training_health.gradient_norm", 9.0)],
+            recorded_at=datetime(2026, 7, 2, tzinfo=UTC),
+        )
+    )
+
+    report = build_delta_report(results, BridgeIndex())
+
+    assert report.seed_floor.scope is SeedScope.DEPARTED
+    assert _row(report, "held_out.move_loss").seed_floor is None
+
+
+def test_an_arm_reporting_only_some_bands_leaves_the_scope_unverified(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    monkeypatch: pytest.MonkeyPatch,
+    training_scope: str,
+) -> None:
+    """An empty departure list from a partial reading is not a clean one.
+
+    The vehicle's clip rate sits at zero on every arm, so its band admits only
+    zero and is the one that catches instability. An arm that reports the
+    gradient norm and not the clip rate has had that band go unread, and
+    treating the overlap it did report as the whole check hides exactly the
+    reading the check exists for.
+    """
+
+    component = move_prediction_component()
+    dispersion = _seed_dispersion(training_scope, floor=0.2)
+    widened = dispersion.model_copy(
+        update={
+            "health": {
+                **dispersion.health,
+                "training_health.clip_rate": HealthBand(
+                    center=0.0,
+                    dispersion=MetricDispersion(value=0.0, bound=0.0),
+                ),
+            }
+        }
+    )
+    monkeypatch.setattr(reporting, "seed_dispersion_for", lambda digest, **_: widened)
+
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.4, health=HEALTH_CENTER),
+        BridgeIndex(),
+    )
+
+    assert report.seed_floor.scope is SeedScope.UNVERIFIED

@@ -1799,21 +1799,23 @@ def _seed_floor_report(
             unrecorded_steps=unrecorded,
         )
 
-    # Only readings the characterization has a band for are evidence: an
-    # unfiltered intersection would come back empty and render as no
-    # departures, which reads as checked and passed.
-    health = {
-        metric: value
-        for metric, value in training_health_readings(current_results).items()
-        if metric in dispersion.health
-    }
-    if not health:
-        return SeedFloorReport(
-            scope=SeedScope.UNVERIFIED,
-            training_sha256=digest,
-            dispersion=dispersion,
-        )
-    departures = dispersion.departures(health)
+    # Both sides, because both are arms. The floor describes stable baselines,
+    # and a control that went unstable is as far outside its scope as a
+    # treatment that did; the digest cannot tell the two apart.
+    departures: tuple[str, ...] = ()
+    for side in (baseline_results, current_results):
+        health = training_health_readings(side)
+        # Every band has to be read, not merely one of them. A side reporting
+        # some of them and not others has had the rest not checked, and an
+        # empty departure list from a partial reading is indistinguishable from
+        # a clean one.
+        if not dispersion.health.keys() <= health.keys():
+            return SeedFloorReport(
+                scope=SeedScope.UNVERIFIED,
+                training_sha256=digest,
+                dispersion=dispersion,
+            )
+        departures = tuple(sorted({*departures, *dispersion.departures(health)}))
     if departures:
         return SeedFloorReport(
             scope=SeedScope.DEPARTED,

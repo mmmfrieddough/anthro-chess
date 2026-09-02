@@ -3130,10 +3130,13 @@ differ in more than the seed;
 owns that choice and carries what the vehicle's own arms showed. That is affordable for a configuration that
 stands still and nowhere else, so the ablation vehicle is the one base carrying
 one; `anthro eval seed-dispersion` is what characterizes a base, and
-`anthro eval report` prints the second verdict beside the first. Two scope
-limits withhold it rather than widening it: an arm whose training-health
-readings depart from the base's arms, and a reading taken at a horizon the
-characterization was not, since the horizon sits outside the digest.
+`anthro eval report` prints the second verdict beside the first. Three
+states withhold it rather than widening it: either arm's training-health
+readings departing from the base's, a reading taken at a horizon the
+characterization was not, since the horizon sits outside the digest, and a
+comparison whose readings did not record every health quantity the
+characterization holds a band for. The last is a scope the comparison could not
+check rather than one it failed, and the floor is quoted with that said.
 
 A claim therefore rests on a delta clearing both floors, or on one far enough
 outside seed variance that nothing else explains it, or on arms read at several
