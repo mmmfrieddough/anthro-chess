@@ -504,6 +504,22 @@ class MoveModel(nn.Module):
         return model_identity(self.config)
 
 
+def parameter_count(config: MoveModelConfig) -> int:
+    """Return how many trainable values a model built from ``config`` holds.
+
+    Every tensor the assembled model owns, the action head included. The head
+    is the part an outside count is most often missing, and here it runs from a
+    sixty-third of the total at ``model_dim`` 32 to a thirty-ninth at 512: a
+    small share that grows with width, because this head factors an action into
+    two square choices rather than projecting onto the vocabulary.
+
+    Built rather than derived from the shape, so it cannot drift away from what
+    the architecture actually allocates.
+    """
+
+    return sum(parameter.numel() for parameter in MoveModel(config).parameters())
+
+
 def model_identity(config: MoveModelConfig) -> dict[str, object]:
     """Return the compatibility metadata a model built from ``config`` carries.
 

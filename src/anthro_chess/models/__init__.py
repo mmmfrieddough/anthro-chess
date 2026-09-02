@@ -10,6 +10,7 @@ from anthro_chess.models.move_model import (
     MoveModel,
     RatingEmbedding,
     SourceDestinationHead,
+    parameter_count,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "OptionalTensor",
     "RatingEmbedding",
     "SourceDestinationHead",
+    "parameter_count",
 ]
