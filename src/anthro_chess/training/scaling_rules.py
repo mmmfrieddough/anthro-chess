@@ -29,7 +29,6 @@ establish.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from anthro_chess.models import MoveModelConfig, parameter_count

@@ -11,8 +11,8 @@ from anthro_chess.models import MoveModel, parameter_count
 from anthro_chess.training.config import TrainingConfig
 from anthro_chess.training.scaling_rules import (
     MODEL_DIM_RANGE,
-    POSITIONS_RANGE,
     POSITIONS_PER_PARAMETER_RANGE,
+    POSITIONS_RANGE,
     REFERENCE_BATCH_POSITIONS,
     REFERENCE_PARAMETERS,
     REFERENCE_POSITIONS_PER_PARAMETER,
