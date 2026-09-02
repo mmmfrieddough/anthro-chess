@@ -19,7 +19,9 @@ settled, by taking both as shipped defaults rather than by restating them.
 configuration instantiates, and the qualification that the horizon sits outside
 the digest.
 
-`#488` characterizes the seed dispersion against the identity this record pins.
+`#488` characterizes the seed dispersion against the identity this record pins,
+and `0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md` records what
+it found.
 
 ## Context
 

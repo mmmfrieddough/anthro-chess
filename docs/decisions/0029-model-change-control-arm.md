@@ -17,7 +17,9 @@ record's own conclusion is why the numbers do not carry: a dispersion belongs to
 a configuration rather than to a change. What survives is the direction, that
 seed variance is large enough to fake a narrow result. A usable figure comes
 from characterizing the vehicle 0065 designates, against that vehicle's own
-digest.
+digest. `0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md` is that
+figure, and it confirms the direction this record established while replacing
+its magnitudes.
 
 Refined by
 `0040-training-noise-floors-are-scoped-to-the-configuration-they-measured.md`,

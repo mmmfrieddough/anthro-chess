@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         DetailStore,
         ResultsStore,
     )
+    from anthro_chess.evaluation.results.seed_dispersion import SeedDispersion
     from anthro_chess.evaluation.rollout import (
         RolloutCell,
         RolloutReading,
@@ -845,6 +846,50 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     promote_parser.set_defaults(handler=_run_eval_promote)
+
+    seed_dispersion_parser = eval_commands.add_parser(
+        "seed-dispersion",
+        help=(
+            "Characterize what arms of one training configuration, differing "
+            "only in their initialization seed, moved every metric by."
+        ),
+    )
+    seed_dispersion_parser.add_argument(
+        "--run",
+        action="append",
+        required=True,
+        help=(
+            "One arm's run, by name beneath the run root or by path. Repeat it "
+            "for every arm; arms sharing a seed measure nondeterminism rather "
+            "than contributing to the spread."
+        ),
+    )
+    seed_dispersion_parser.add_argument(
+        "--store",
+        type=Path,
+        help=(
+            "Store the arms' readings are taken from, defaulting as every --store does."
+        ),
+    )
+    seed_dispersion_parser.add_argument(
+        "--into",
+        type=Path,
+        help=(
+            "Directory the characterization is written to, defaulting to the "
+            "package data a lookup by training identity reads. Committing that "
+            "file in a pull request is what makes the floor findable."
+        ),
+    )
+    seed_dispersion_parser.add_argument(
+        "--notes",
+        help="What this characterization is, recorded beside it.",
+    )
+    seed_dispersion_parser.add_argument(
+        "--no-write",
+        action="store_true",
+        help="Report what the arms show without writing it anywhere.",
+    )
+    seed_dispersion_parser.set_defaults(handler=_run_eval_seed_dispersion)
 
     tensorboard_parser = eval_commands.add_parser(
         "tensorboard",
@@ -3490,6 +3535,88 @@ def _run_eval_promote(arguments: argparse.Namespace) -> int:
     for path in promoted:
         print(f"  {path}")
     return 0
+
+
+def _run_eval_seed_dispersion(arguments: argparse.Namespace) -> int:
+    from anthro_chess.evaluation.results import (
+        ResultsStore,
+        ResultsStoreError,
+        resolve_store_root,
+    )
+    from anthro_chess.evaluation.results.seed_dispersion import (
+        SeedDispersionError,
+        write_seed_dispersion,
+    )
+    from anthro_chess.evaluation.results.seed_dispersion.arms import characterize_runs
+
+    run_root = _run_root()
+    directories = [_run_directory(name, run_root) for name in arguments.run]
+    missing = [directory for directory in directories if not directory.is_dir()]
+    if missing:
+        print(
+            "anthro eval seed-dispersion: no run directory at "
+            + ", ".join(str(directory) for directory in missing),
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        store = ResultsStore(resolve_store_root(arguments.store))
+        dispersion = characterize_runs(
+            directories,
+            store,
+            notes=arguments.notes,
+        )
+    except (SeedDispersionError, ResultsStoreError) as error:
+        print(f"anthro eval seed-dispersion: {error}", file=sys.stderr)
+        return 2
+
+    print(_render_seed_dispersion(dispersion))
+    if arguments.no_write:
+        return 0
+    path = write_seed_dispersion(dispersion, directory=arguments.into)
+    print(f"Wrote {path}")
+    return 0
+
+
+def _run_directory(name: str, run_root: Path | None) -> Path:
+    """Return where one arm's run lives, by name beneath the root or by path."""
+
+    given = Path(name)
+    if given.is_absolute() or len(given.parts) > 1 or run_root is None:
+        return given
+    return run_root / name
+
+
+def _render_seed_dispersion(dispersion: SeedDispersion) -> str:
+    """Render what the arms showed, and what it cost to find out."""
+
+    cells = sum(len(by_workload) for by_workload in dispersion.metrics.values())
+    lines = [
+        f"Training identity: {dispersion.training_sha256}",
+        f"Horizon:           {dispersion.horizon_steps} step(s)",
+        f"Arms:              {len(dispersion.arms)} at seed(s) "
+        f"{', '.join(str(seed) for seed in dispersion.seeds)}",
+        f"Spread:            {cells} metric cell(s)",
+        f"Health band:       {len(dispersion.health)} reading(s)",
+        f"Card hours:        {dispersion.wall_clock_seconds / 3600:.2f} summed "
+        f"over the arms ({dispersion.training_wall_clock_seconds / 3600:.2f} "
+        f"training, {dispersion.scoring_seconds / 3600:.2f} scoring); elapsed "
+        f"time divides by the cards run at once",
+    ]
+    if dispersion.nondeterminism:
+        replicated = sum(
+            len(by_workload) for by_workload in dispersion.nondeterminism.values()
+        )
+        lines.append(
+            f"Nondeterminism:    {replicated} metric cell(s) from arms at one seed"
+        )
+    for arm in dispersion.arms:
+        lines.append(
+            f"  {arm.run_id} seed={arm.seed} "
+            f"{arm.wall_clock_seconds / 3600:.2f} h -> {arm.checkpoint}"
+        )
+    return "\n".join(lines)
 
 
 def _run_eval_tensorboard(arguments: argparse.Namespace) -> int:

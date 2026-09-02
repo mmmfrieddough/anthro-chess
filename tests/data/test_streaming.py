@@ -24,7 +24,10 @@ from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     validate_manifest_outputs,
 )
-from anthro_chess.data.streaming import ShardedSelection
+from anthro_chess.data.streaming import (
+    ShardedSelection,
+    shard_loader_configuration_sha256,
+)
 
 Corpus = tuple[tuple[ShardIdentity, ...], str]
 
@@ -71,6 +74,31 @@ def _loader(
         config,
         StreamingLoaderConfig() if streaming is None else streaming,
         legal_actions=legal_actions,
+    )
+
+
+def test_a_shard_backed_loader_records_the_identity_the_helper_computes(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+) -> None:
+    """A caller holding the two configurations and no corpus computes this one.
+
+    ``anthro_chess.training.vehicle`` is that caller: it names the identity a
+    vehicle arm will record before any arm exists, and a stored seed dispersion
+    is filed under it. Computing the selection digest alone there once named a
+    key no reading carried, which nothing caught because the constant and the
+    check derived it the same wrong way. This is the check that would have.
+    """
+
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row))
+    config = SequenceLoaderConfig(split="train", batch_size=2)
+    streaming = StreamingLoaderConfig(planning_window_examples=64)
+
+    loader = _loader(corpus, config, streaming)
+
+    assert loader.configuration_sha256 == shard_loader_configuration_sha256(
+        config, streaming
     )
 
 

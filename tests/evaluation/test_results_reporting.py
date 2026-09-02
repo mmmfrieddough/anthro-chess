@@ -37,12 +37,19 @@ from anthro_chess.evaluation.results import (
     render_history,
     render_provenance,
     render_report,
+    reporting,
 )
 from anthro_chess.evaluation.results.reporting import (
     MAXIMUM_LINE_WIDTH,
     MAXIMUM_METRIC_COLUMN_WIDTH,
     MINIMUM_METRIC_COLUMN_WIDTH,
     CheckpointSelection,
+    SeedScope,
+)
+from anthro_chess.evaluation.results.seed_dispersion import (
+    HealthBand,
+    SeedArm,
+    SeedDispersion,
 )
 
 ResultFactory = Callable[..., ResultEnvelope]
@@ -1140,9 +1147,10 @@ def test_the_default_text_view_stays_readable(
     # rating family, generated play, game termination, novelty, and training
     # efficiency, which have metrics but no result in this fixture; a family
     # gets its own actionable absence section as soon as it has a metric to be
-    # absent. One further line states the training identity, which is a header
-    # rather than a per-row annotation for exactly this reason.
-    assert len(rendered.splitlines()) <= 36
+    # absent. Two further lines state the training identity and what the
+    # baseline's recorded seed spread does here, both headers rather than
+    # per-row annotations for exactly this reason.
+    assert len(rendered.splitlines()) <= 37
 
 
 def _width_report(*identifiers: str) -> DeltaReport:
@@ -1166,6 +1174,8 @@ def _width_report(*identifiers: str) -> DeltaReport:
             noise=NoiseVerdict.NOT_APPLICABLE,
             noise_floor=None,
             noise_floor_source=None,
+            seed_floor=None,
+            seed=NoiseVerdict.NOT_APPLICABLE,
             bridges=(),
             note=None,
         )
@@ -1244,3 +1254,443 @@ def test_short_identifiers_keep_the_column_at_its_minimum() -> None:
     assert _header(rendered).index("better") == (
         indent + MINIMUM_METRIC_COLUMN_WIDTH + separator
     )
+
+
+def _unwrapped(report: DeltaReport) -> str:
+    """Return the rendered report with its line wrapping undone.
+
+    The headers wrap at the report's own width, so a phrase they state can be
+    split across two lines without anything about it having changed.
+    """
+
+    return " ".join(render_report(report).split())
+
+
+#: The step ``recorded_result`` labels its readings with, and therefore the
+#: horizon a characterization has to name to describe them.
+FIXTURE_HORIZON = 8000
+
+#: What the vehicle arms' gradient norm sat at, and how far apart they were.
+HEALTH_CENTER = 0.5
+HEALTH_SPREAD = 0.01
+
+
+def _seed_dispersion(
+    training_scope: str,
+    *,
+    floor: float,
+    horizon_steps: int = FIXTURE_HORIZON,
+) -> SeedDispersion:
+    """Return a characterization whose ``held_out.move_loss`` floor is ``floor``.
+
+    Written from the floor back, the way ``_dispersion`` above is and for the
+    same reason: what these tests are about is which floor binds and what the
+    header then says. ``test_seed_dispersion`` owns the arithmetic.
+    """
+
+    return SeedDispersion(
+        training_sha256=training_scope,
+        horizon_steps=horizon_steps,
+        arms=tuple(
+            SeedArm(
+                run_id=f"arm-{seed}",
+                seed=seed,
+                checkpoint=f"arm-{seed}-step-{horizon_steps:08d}",
+                wall_clock_seconds=3600.0,
+            )
+            for seed in (17, 29, 43)
+        ),
+        metrics={"held_out.move_loss": {"": _dispersion(floor)}},
+        health={
+            "training_health.gradient_norm": HealthBand(
+                center=HEALTH_CENTER,
+                dispersion=MetricDispersion(
+                    value=HEALTH_SPREAD,
+                    bound=HEALTH_SPREAD,
+                ),
+            )
+        },
+        scoring_seconds=600.0,
+        measured_at=BASELINE_AT,
+    )
+
+
+@pytest.fixture(name="recorded_dispersion")
+def _recorded_dispersion(
+    monkeypatch: pytest.MonkeyPatch,
+    training_scope: str,
+) -> Callable[..., None]:
+    """Return a factory installing one characterization for the fixture identity.
+
+    The lookup otherwise reads checked-in package data, where nothing is filed
+    for the fixture identity.
+    """
+
+    def install(**kwargs: Any) -> None:
+        monkeypatch.setattr(
+            reporting,
+            "seed_dispersion_for",
+            lambda digest, **_: _seed_dispersion(training_scope, **kwargs),
+        )
+
+    return install
+
+
+def _seed_pair(
+    recorded_result: ResultFactory,
+    component: DataComponent,
+    *,
+    current_loss: float,
+    health: float | None = None,
+    current_step: int = 8000,
+) -> list[ResultEnvelope]:
+    """Return a baseline and a current reading, optionally with health ones.
+
+    ``health`` is the current arm's reading; the baseline gets the band's own
+    centre. Both sides of a vehicle comparison are arms and the scope check
+    reads both, so a baseline with no health leaves the scope unverified
+    whatever the current arm reports.
+    """
+
+    reading = _dispersion(1e-9)
+    results = [
+        recorded_result(
+            label="checkpoint-a",
+            measurements=[
+                measurement(
+                    "held_out.move_loss", 3.5, data=component, dispersion=reading
+                )
+            ],
+            recorded_at=BASELINE_AT,
+        ),
+        recorded_result(
+            label="checkpoint-b",
+            step=current_step,
+            measurements=[
+                measurement(
+                    "held_out.move_loss",
+                    current_loss,
+                    data=component,
+                    dispersion=reading,
+                )
+            ],
+            recorded_at=CURRENT_AT,
+        ),
+    ]
+    if health is not None:
+        for label, step, value, at in (
+            ("checkpoint-a", 8000, HEALTH_CENTER, BASELINE_AT),
+            ("checkpoint-b", current_step, health, CURRENT_AT),
+        ):
+            results.append(
+                recorded_result(
+                    label=label,
+                    step=step,
+                    kind="training-health",
+                    # A health reading has no data dependency, so it carries no
+                    # component: it is about the optimizer step rather than
+                    # about anything scored.
+                    measurements=[measurement("training_health.gradient_norm", value)],
+                    recorded_at=at,
+                )
+            )
+    return results
+
+
+def test_a_delta_the_control_arms_produce_among_themselves_reads_as_unchanged(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """The benchmark floor cannot see the training run; this one can.
+
+    A delta larger than benchmark noise is a real difference between two
+    models. Whether the change under test produced it is a different question,
+    and until a configuration's seed spread is recorded nothing here can answer
+    it. Where one is, a delta inside it is not an improvement.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.4, health=0.5),
+        BridgeIndex(),
+    )
+
+    row = _row(report, "held_out.move_loss")
+    assert row.noise is NoiseVerdict.CLEARED
+    assert row.seed is NoiseVerdict.WITHIN
+    assert row.movement is Movement.UNCHANGED
+    assert row.seed_floor == pytest.approx(0.2)
+    assert report.seed_floor.scope is SeedScope.APPLIED
+    assert "Seed floor: applied" in _unwrapped(report)
+    assert "seed within" in render_report(report)
+
+
+def test_a_delta_outside_both_floors_clears_both(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """Clearing both is what distinguishes a change from a different run."""
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.05)
+
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.0, health=0.5),
+        BridgeIndex(),
+    )
+
+    row = _row(report, "held_out.move_loss")
+    assert row.noise is NoiseVerdict.CLEARED
+    assert row.seed is NoiseVerdict.CLEARED
+    assert row.movement is Movement.BETTER
+
+
+def test_a_configuration_with_no_recorded_spread_says_so(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    training_scope: str,
+) -> None:
+    """A floor that could be found approximately would apply to anything.
+
+    The default lookup is left in place here rather than stubbed: no
+    characterization is checked in for the fixture identity, which is the
+    negative case this asserts.
+    """
+
+    component = move_prediction_component()
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.4),
+        BridgeIndex(),
+    )
+
+    row = _row(report, "held_out.move_loss")
+    assert report.seed_floor.scope is SeedScope.NO_RECORD
+    assert report.seed_floor.training_sha256 == training_scope
+    assert row.seed_floor is None
+    assert row.movement is Movement.BETTER
+    assert "Seed floor: none recorded" in _unwrapped(report)
+    # No row carries a seed column, so nothing below the header mentions one.
+    assert " seed " not in render_report(report)
+
+
+def test_a_reading_taken_at_another_horizon_is_not_floored_by_this_one(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """The horizon sits outside the identity, so the key alone does not scope it.
+
+    A cooldown branched at a different horizon carries the trunk's training
+    identity by construction, which is what lets a branch match its trunk. It
+    has not been shown to share the trunk's spread.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+
+    report = build_delta_report(
+        _seed_pair(
+            recorded_result,
+            component,
+            current_loss=3.4,
+            health=0.5,
+            current_step=4000,
+        ),
+        BridgeIndex(),
+    )
+
+    assert report.seed_floor.scope is SeedScope.HORIZON
+    assert report.seed_floor.off_horizon_steps == (4000,)
+    assert _row(report, "held_out.move_loss").seed_floor is None
+    assert "readings were taken at step(s) 4000" in _unwrapped(report)
+
+
+def test_an_arm_whose_training_health_departs_is_outside_the_floors_scope(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """Instability widens an arm's spread past what the floor was measured on.
+
+    The failure is one-directional, which is what makes it worth checking: an
+    unstable arm's readings scatter further than stable ones, so the floor reads
+    too narrow and noise clears it. Quoting the floor here would be at its most
+    confident exactly where it is least applicable.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.4, health=9.0),
+        BridgeIndex(),
+    )
+
+    assert report.seed_floor.scope is SeedScope.DEPARTED
+    assert report.seed_floor.departures == ("training_health.gradient_norm",)
+    assert _row(report, "held_out.move_loss").seed_floor is None
+    assert _row(report, "held_out.move_loss").movement is Movement.BETTER
+    assert "sits outside what those arms showed" in _unwrapped(report)
+
+
+def test_an_arm_that_recorded_no_health_is_floored_but_said_to_be_unverified(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """Not having been shown to depart is not the same as having been shown not to.
+
+    Reported the way an unrecorded training identity is, rather than by
+    withholding the floor: an arm nobody measured the health of is the ordinary
+    case for a reading taken before the cadence existed.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.4),
+        BridgeIndex(),
+    )
+
+    assert report.seed_floor.scope is SeedScope.UNVERIFIED
+    assert _row(report, "held_out.move_loss").seed is NoiseVerdict.WITHIN
+    assert "unverified rather than established" in _unwrapped(report)
+
+
+def test_a_reading_that_recorded_no_step_is_not_taken_to_be_on_the_horizon(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """Silence about where a reading was taken is not agreement that it matches.
+
+    Most of the committed store predates the fields a reading now carries, so a
+    result with a training identity and no step is the ordinary old record
+    rather than a contrived one.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+    results = _seed_pair(recorded_result, component, current_loss=3.4, health=0.5)
+    results[0] = recorded_result(
+        label="checkpoint-a",
+        step=None,
+        measurements=[
+            measurement(
+                "held_out.move_loss", 3.5, data=component, dispersion=_dispersion(1e-9)
+            )
+        ],
+        recorded_at=BASELINE_AT,
+    )
+
+    report = build_delta_report(results, BridgeIndex())
+
+    assert report.seed_floor.scope is SeedScope.HORIZON
+    assert report.seed_floor.unrecorded_steps == 1
+    assert _row(report, "held_out.move_loss").seed_floor is None
+    assert "1 reading(s) recorded no step" in _unwrapped(report)
+
+
+def test_health_the_characterization_has_no_band_for_verifies_nothing(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """A comparison of no readings is unverified rather than passed.
+
+    A characterization taken before a health metric was recorded has no band for
+    it, so an arm reporting only that metric has had nothing checked. Reading
+    the empty departure list as agreement would say the arm was shown to be in
+    scope when nothing was compared.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+    results = _seed_pair(recorded_result, component, current_loss=3.4)
+    results.append(
+        recorded_result(
+            label="checkpoint-b",
+            kind="training-health",
+            measurements=[measurement("training_health.clip_rate", 0.9)],
+            recorded_at=CURRENT_AT,
+        )
+    )
+
+    report = build_delta_report(results, BridgeIndex())
+
+    assert report.seed_floor.scope is SeedScope.UNVERIFIED
+    assert "unverified rather than established" in _unwrapped(report)
+
+
+def test_an_unstable_control_is_outside_the_floors_scope_too(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    recorded_dispersion: Callable[..., None],
+) -> None:
+    """Both sides of a vehicle comparison are arms, and the digest cannot tell
+    a control that went unstable from a treatment that did.
+
+    The floor describes stable baselines. Checking only the side under test
+    would apply it to a comparison whose control is the arm it does not
+    describe, which is the direction that reads too narrow.
+    """
+
+    component = move_prediction_component()
+    recorded_dispersion(floor=0.2)
+    results = _seed_pair(recorded_result, component, current_loss=3.4, health=0.5)
+    results.append(
+        recorded_result(
+            label="checkpoint-a",
+            kind="training-health",
+            measurements=[measurement("training_health.gradient_norm", 9.0)],
+            recorded_at=datetime(2026, 7, 2, tzinfo=UTC),
+        )
+    )
+
+    report = build_delta_report(results, BridgeIndex())
+
+    assert report.seed_floor.scope is SeedScope.DEPARTED
+    assert _row(report, "held_out.move_loss").seed_floor is None
+
+
+def test_an_arm_reporting_only_some_bands_leaves_the_scope_unverified(
+    recorded_result: ResultFactory,
+    move_prediction_component: Digest,
+    monkeypatch: pytest.MonkeyPatch,
+    training_scope: str,
+) -> None:
+    """An empty departure list from a partial reading is not a clean one.
+
+    The vehicle's clip rate sits at zero on every arm, so its band admits only
+    zero and is the one that catches instability. An arm that reports the
+    gradient norm and not the clip rate has had that band go unread, and
+    treating the overlap it did report as the whole check hides exactly the
+    reading the check exists for.
+    """
+
+    component = move_prediction_component()
+    dispersion = _seed_dispersion(training_scope, floor=0.2)
+    widened = dispersion.model_copy(
+        update={
+            "health": {
+                **dispersion.health,
+                "training_health.clip_rate": HealthBand(
+                    center=0.0,
+                    dispersion=MetricDispersion(value=0.0, bound=0.0),
+                ),
+            }
+        }
+    )
+    monkeypatch.setattr(reporting, "seed_dispersion_for", lambda digest, **_: widened)
+
+    report = build_delta_report(
+        _seed_pair(recorded_result, component, current_loss=3.4, health=HEALTH_CENTER),
+        BridgeIndex(),
+    )
+
+    assert report.seed_floor.scope is SeedScope.UNVERIFIED

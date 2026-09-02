@@ -13,6 +13,8 @@ unchanged by `0043-a-delta-floor-is-combined-from-the-two-readings-it-compares.m
 what is bounded. `0060-a-curve-resamples-the-stream-not-the-game.md` reads the
 replicate rule below onto the generated-play curves, where the replicate is the
 stream a game came out of rather than the game.
+`0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md` reads the bound
+onto a spread of whole training runs, where the replicate is an arm.
 
 ## Context
 

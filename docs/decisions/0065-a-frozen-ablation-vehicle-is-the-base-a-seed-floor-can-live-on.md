@@ -22,6 +22,11 @@ rather than after it. It also qualifies the exact-digest guarantee below: the
 horizon is outside the digest, so a cooldown branched at a different one matches
 the vehicle's floor without having been shown to share its spread.
 
+`0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md` is the
+measurement this record created its base for, and it settles a question left
+open here: most of the spread is the training run rather than the seed, so the
+stored floor is the total rather than a seed term extracted from it.
+
 `docs/scaling.md` states the resulting rule and owns the program the vehicle
 serves.
 

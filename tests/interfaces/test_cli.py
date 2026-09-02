@@ -12,6 +12,7 @@ from anthro_chess import __version__
 from anthro_chess.config import ConfigProvenance, ResolvedConfig
 from anthro_chess.data import AcquisitionResult, PreparationResult
 from anthro_chess.evaluation import MoveValidationMetrics
+from anthro_chess.evaluation.results import ResultEnvelope
 from anthro_chess.interfaces.cli import main
 from anthro_chess.training import TrainingConfig, TrainingResult
 
@@ -2761,3 +2762,136 @@ def test_the_within_game_table_sizes_both_halves() -> None:
     row = next(r for r in rendered.splitlines() if r.startswith("  under_1200"))
     assert "     700     300" in row, "both halves are sized, not just the weaker"
     assert "+0.060" in row
+
+
+#: The step the arms below finish at, which is both the horizon a
+#: characterization describes and the label its readings are recorded under.
+ARM_STEP = 8000
+
+
+def _write_arm(run_root: Path, name: str, *, seed: int) -> str:
+    """Write the two files a characterization reads off an arm, and its label.
+
+    Minimal on purpose: what is written here is exactly what the command reads.
+    """
+
+    directory = run_root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "run.json").write_text(
+        json.dumps(
+            {
+                "seed": seed,
+                "complete": True,
+                "optimization": {"completed_steps": ARM_STEP},
+            }
+        )
+    )
+    (directory / "metrics.jsonl").write_text(
+        json.dumps(
+            {"record": "step", "global_step": ARM_STEP, "elapsed_seconds": 3600.0}
+        )
+        + "\n"
+    )
+    return f"{name}-step-{ARM_STEP:08d}"
+
+
+def test_eval_seed_dispersion_characterizes_arms_and_files_them_by_identity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_result: Callable[..., ResultEnvelope],
+    training_scope: str,
+) -> None:
+    """The run says which arm it is; the store says what its checkpoint scored."""
+
+    from anthro_chess.evaluation.results import ResultsStore
+
+    run_root = tmp_path / "runs"
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(run_root))
+    store = ResultsStore(tmp_path / "scratch")
+    for name, seed, loss in (
+        ("arm-a", 17, 3.5),
+        ("arm-b", 29, 3.6),
+        ("arm-c", 43, 3.7),
+    ):
+        label = _write_arm(run_root, name, seed=seed)
+        store.append(recorded_result(label=label, step=ARM_STEP, move_loss=loss))
+
+    assert (
+        main(
+            [
+                "eval",
+                "seed-dispersion",
+                "--run",
+                "arm-a",
+                "--run",
+                "arm-b",
+                "--run",
+                "arm-c",
+                "--store",
+                str(tmp_path / "scratch"),
+                "--into",
+                str(tmp_path / "characterizations"),
+            ]
+        )
+        == 0
+    )
+
+    written = tmp_path / "characterizations" / f"{training_scope}.json"
+    record = json.loads(written.read_text())
+    assert record["horizon_steps"] == ARM_STEP
+    assert [arm["seed"] for arm in record["arms"]] == [17, 29, 43]
+    assert record["metrics"]["held_out.move_loss"][""]["value"] > 0.0
+    out = capsys.readouterr().out
+    assert "Arms:              3 at seed(s) 17, 29, 43" in out
+    assert "Card hours:" in out
+
+
+def test_eval_seed_dispersion_refuses_arms_of_two_configurations(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_result: Callable[..., ResultEnvelope],
+    training_scope: str,
+) -> None:
+    """A spread over two configurations has no identity to be stored against."""
+
+    from anthro_chess.evaluation.results import ResultsStore
+
+    run_root = tmp_path / "runs"
+    monkeypatch.setenv("ANTHRO_CHESS_RUN_ROOT", str(run_root))
+    store = ResultsStore(tmp_path / "scratch")
+    for name, seed, loss, identity in (
+        ("arm-a", 17, 3.5, training_scope),
+        ("arm-b", 29, 3.6, "9d" * 32),
+    ):
+        label = _write_arm(run_root, name, seed=seed)
+        store.append(
+            recorded_result(
+                label=label,
+                step=ARM_STEP,
+                move_loss=loss,
+                training_sha256=identity,
+            )
+        )
+
+    assert (
+        main(
+            [
+                "eval",
+                "seed-dispersion",
+                "--run",
+                "arm-a",
+                "--run",
+                "arm-b",
+                "--store",
+                str(tmp_path / "scratch"),
+                "--into",
+                str(tmp_path / "characterizations"),
+            ]
+        )
+        == 2
+    )
+
+    assert "do not share one training identity" in capsys.readouterr().err
+    assert not (tmp_path / "characterizations").exists()
