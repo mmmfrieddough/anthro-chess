@@ -3599,9 +3599,10 @@ def _render_seed_dispersion(dispersion: SeedDispersion) -> str:
         f"{', '.join(str(seed) for seed in dispersion.seeds)}",
         f"Spread:            {cells} metric cell(s)",
         f"Health band:       {len(dispersion.health)} reading(s)",
-        f"Wall clock:        {dispersion.wall_clock_seconds / 3600:.2f} h "
-        f"({dispersion.training_wall_clock_seconds / 3600:.2f} h training, "
-        f"{dispersion.scoring_seconds / 3600:.2f} h scoring)",
+        f"Card hours:        {dispersion.wall_clock_seconds / 3600:.2f} summed "
+        f"over the arms ({dispersion.training_wall_clock_seconds / 3600:.2f} "
+        f"training, {dispersion.scoring_seconds / 3600:.2f} scoring); elapsed "
+        f"time divides by the cards run at once",
     ]
     if dispersion.nondeterminism:
         replicated = sum(

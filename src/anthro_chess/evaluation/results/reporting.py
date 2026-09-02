@@ -213,18 +213,18 @@ class SeedFloorReport:
 
         return self.scope in (SeedScope.APPLIED, SeedScope.UNVERIFIED)
 
-    def floor(self, metric: str, workload: str) -> float | None:
+    def floor(self, metric: str, workload: str, series: str | None) -> float | None:
         """Return the seed floor one row's delta faces, when there is one.
 
-        Keyed by the control's workload rather than the treatment's, because
-        the spread describes the control. The two agree wherever the row is
-        comparable at all, since a workload change moves the fingerprint and a
+        Keyed by the control's workload and series rather than the treatment's,
+        because the spread describes the control. The two agree wherever the row
+        is comparable at all, since a workload change moves the fingerprint and a
         row whose fingerprint moved carries no delta to floor.
         """
 
         if not self.applies or self.dispersion is None:
             return None
-        return self.dispersion.floor(metric, workload)
+        return self.dispersion.floor(metric, workload, series)
 
     def as_record(self) -> dict[str, object]:
         """Return the machine-readable seed-floor header."""
@@ -1505,7 +1505,9 @@ def _metric_delta(
         else ()
     )
     noise = _noise_verdict(definition, delta, floor)
-    seed = seed_floor.floor(definition.identifier, workload)
+    seed = seed_floor.floor(
+        definition.identifier, workload, baseline_measurement.fingerprint
+    )
     seed_verdict = _seed_verdict(delta, seed, characterized=seed_floor.applies)
     return MetricDelta(
         metric=definition.identifier,

@@ -129,7 +129,17 @@ rejections-that-should-not-have-been are measured rather than assumed.
 **One host, one corpus, one horizon.** The floor describes the vehicle where it
 was measured. `training_sha256` excludes the step budget, so a reading from a
 branch at another horizon matches the key without sharing the spread, and the
-comparison reports that rather than quoting the floor.
+comparison reports that rather than quoting the floor. It reports it from the
+step the reading was labelled with, which is the only horizon evidence a result
+envelope carries: a run declaring a longer horizon and checkpointing at 69465
+passes that check while being an uncooled trunk checkpoint, and nothing here
+can see the difference.
+
+**A cell is scoped to the series it was read over as well as to the digest**,
+because a regenerated pool moves the fingerprint while leaving the training
+identity alone. What that check cannot do is follow a bridge: two readings a
+bridge declares to be one series still get no floor if the characterization was
+taken on the other side of it.
 
 ## Consequences
 

@@ -339,3 +339,33 @@ def test_a_health_reading_every_arm_agreed_on_still_bounds_the_scope() -> None:
     assert band.covers(0.0)
     assert dispersion.departures({clip_rate: 0.0}) == ()
     assert dispersion.departures({clip_rate: 0.05}) == (clip_rate,)
+
+
+def test_a_reading_on_another_series_gets_no_floor() -> None:
+    """A spread describes the units it was read over, and the digest does not.
+
+    A regenerated evaluation pool moves the series fingerprint while leaving
+    ``training_sha256`` alone, so a floor found by that digest alone would be
+    quoted for readings taken over games it never scored.
+    """
+
+    dispersion = _characterized(
+        _arm(
+            "a",
+            17,
+            metrics={MOVE_LOSS: {"": 1.40}},
+            fingerprints={MOVE_LOSS: {"": "pool-v1"}},
+        ),
+        _arm(
+            "b",
+            29,
+            metrics={MOVE_LOSS: {"": 1.50}},
+            fingerprints={MOVE_LOSS: {"": "pool-v1"}},
+        ),
+    )
+
+    assert dispersion.floor(MOVE_LOSS, "", "pool-v1") is not None
+    assert dispersion.floor(MOVE_LOSS, "", "pool-v2") is None
+    # A caller that cannot say which series it holds is answered as before, so
+    # a record predating the field keeps qualifying what it already did.
+    assert dispersion.floor(MOVE_LOSS, "", None) is not None

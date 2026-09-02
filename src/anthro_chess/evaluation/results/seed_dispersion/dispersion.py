@@ -113,6 +113,12 @@ class SeedDispersion(ResultModel):
     nondeterminism: Mapping[str, Mapping[str, MetricDispersion]] = Field(
         default_factory=dict
     )
+    #: The series each cell was measured on, keyed identically to ``metrics``.
+    #: A spread describes the units it was read over, and a regenerated pool
+    #: moves the fingerprint while leaving ``training_sha256`` alone, so
+    #: without this a floor measured on one pool would be quoted for readings
+    #: taken on another.
+    series: Mapping[str, Mapping[str, str]] = Field(default_factory=dict)
     health: Mapping[str, HealthBand] = Field(default_factory=dict)
     #: What scoring the arms cost, beside what training them cost.
     scoring_seconds: float = Field(ge=0.0)
@@ -144,21 +150,41 @@ class SeedDispersion(ResultModel):
 
     @property
     def wall_clock_seconds(self) -> float:
-        """Return what the whole characterization cost, training and scoring."""
+        """Return what the whole characterization cost, summed over the arms.
+
+        A resource cost rather than an elapsed one. Arms run concurrently where
+        a host has the cards for it, and nothing recorded here says how many it
+        had, so a session scheduling a re-characterization divides this by the
+        cards it means to use.
+        """
 
         return self.training_wall_clock_seconds + self.scoring_seconds
 
-    def floor(self, metric: str, workload: str = UNSCOPED_WORKLOAD) -> float | None:
-        """Return the delta this configuration's seed spread alone can produce.
+    def floor(
+        self,
+        metric: str,
+        workload: str = UNSCOPED_WORKLOAD,
+        series: str | None = None,
+    ) -> float | None:
+        """Return the delta this configuration's spread alone can produce.
 
         The two arms of a comparison are replicate draws of one training
         configuration as far as this floor is concerned, so their spreads
         combine the way any two do. The treatment's spread is assumed equal to
         the control's, which is the assumption :attr:`health` exists to check.
+
+        A reading on a series this cell was not measured on gets nothing. The
+        spread describes the units it was read over, and the identity the whole
+        record is keyed by says nothing about them.
         """
 
         dispersion = self.metrics.get(metric, {}).get(workload)
-        return None if dispersion is None else self_combined_floor(dispersion)
+        if dispersion is None:
+            return None
+        recorded = self.series.get(metric, {}).get(workload)
+        if series is not None and recorded is not None and series != recorded:
+            return None
+        return self_combined_floor(dispersion)
 
     def departures(self, health: Mapping[str, float]) -> tuple[str, ...]:
         """Return the health readings sitting outside the vehicle's own spread.
@@ -228,6 +254,14 @@ def characterize(
 
     source = f"{len(representatives)} seed arms of one training configuration"
     metrics = _spread(representatives, source=source)
+    series = {
+        metric: {
+            workload: representatives[0].fingerprints[metric][workload]
+            for workload in cells
+            if workload in representatives[0].fingerprints.get(metric, {})
+        }
+        for metric, cells in metrics.items()
+    }
     if not metrics:
         raise SeedDispersionError(
             "no metric was reported by every seed arm, so nothing here has a "
@@ -265,6 +299,7 @@ def characterize(
                 for reading in readings
             ),
             metrics=metrics,
+            series={m: c for m, c in series.items() if c},
             nondeterminism=nondeterminism,
             health=_health(representatives, source=source),
             scoring_seconds=scoring_seconds,

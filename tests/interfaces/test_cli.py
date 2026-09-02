@@ -2844,7 +2844,7 @@ def test_eval_seed_dispersion_characterizes_arms_and_files_them_by_identity(
     assert record["metrics"]["held_out.move_loss"][""]["value"] > 0.0
     out = capsys.readouterr().out
     assert "Arms:              3 at seed(s) 17, 29, 43" in out
-    assert "Wall clock:" in out
+    assert "Card hours:" in out
 
 
 def test_eval_seed_dispersion_refuses_arms_of_two_configurations(
