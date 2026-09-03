@@ -149,15 +149,18 @@ REFERENCE_POSITIONS_PER_PARAMETER = 800
 REFERENCE_POSITIONS = REFERENCE_POSITIONS_PER_PARAMETER * REFERENCE_PARAMETERS
 REFERENCE_BATCH_POSITIONS = 16_384
 
-#: The rate the fit gives at the reference. Read off the fitted line rather than
-#: taken from the reference rung's own arms, so that the rule reproduces itself
-#: at every scale including this one.
-LEARNING_RATE_AT_REFERENCE = 2.98e-3
+#: The rate the fit gives at the reference, rounded to what the arms support.
+#: The fit itself returns 2.98e-3, but every rung's near-optimal band is about a
+#: factor of two wide, so digits past the second describe the fit rather than
+#: the loss surface.
+LEARNING_RATE_AT_REFERENCE = 3.0e-3
 
-#: How the rate moves with parameter count. Fitted over widths 32, 64 and 128 at
-#: 800 positions per parameter, where the fit lands inside every rung's own
-#: near-optimal band.
-SIZE_EXPONENT = -0.5455
+#: How the rate moves with parameter count, fitted over widths 32, 64 and 128 at
+#: 800 positions per parameter. The fit returns -0.5455 and is rounded on the
+#: same argument as the rate above, checked rather than assumed: at -0.55 the
+#: rule still lands inside all three rungs' bands, and at -0.5 it leaves width
+#: 64's. So two figures is what the bands can tell apart and one is not.
+SIZE_EXPONENT = -0.55
 
 #: How the rate moves with the horizon. Measured at -0.001 with a standard error
 #: of 0.089 across an eightfold change in run length, so it is set to zero
