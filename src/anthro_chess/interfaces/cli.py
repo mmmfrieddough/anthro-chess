@@ -31,12 +31,6 @@ from anthro_chess.machine import (
     optional_root,
     required_root,
 )
-from anthro_chess.training.scaling_rules import (
-    OutsideFittedRange,
-    ResolvedRun,
-    TrainingScale,
-    resolve,
-)
 
 if TYPE_CHECKING:
     from anthro_chess.data import ArchiveConfig, PrepareConfig, SequenceDataConfig
@@ -75,6 +69,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
     from anthro_chess.evaluation.views import ViewSelection
     from anthro_chess.training import TrainingConfig
+    from anthro_chess.training.scaling_rules import ResolvedRun
 
 CommandHandler = Callable[[argparse.Namespace], int]
 logger = logging.getLogger(__name__)
@@ -1186,6 +1181,12 @@ def _run_smoke(_arguments: argparse.Namespace) -> int:
 
 def _run_scale(arguments: argparse.Namespace) -> int:
     """Print the settings the scaling rules produce at one scale."""
+
+    from anthro_chess.training.scaling_rules import (
+        OutsideFittedRange,
+        TrainingScale,
+        resolve,
+    )
 
     try:
         resolved = resolve(

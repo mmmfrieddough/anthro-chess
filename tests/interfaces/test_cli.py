@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import re
@@ -13,6 +14,7 @@ from anthro_chess.config import ConfigProvenance, ResolvedConfig, load_config
 from anthro_chess.data import AcquisitionResult, PreparationResult
 from anthro_chess.evaluation import MoveValidationMetrics
 from anthro_chess.evaluation.results import ResultEnvelope
+from anthro_chess.interfaces import cli
 from anthro_chess.interfaces.cli import main
 from anthro_chess.training import TrainingConfig, TrainingResult
 
@@ -2952,3 +2954,26 @@ def test_scale_emits_overrides_a_training_run_accepts(
     ).value
     assert resolved.model.model_dim == 128
     resolved.learning_rate_schedule()
+
+
+def test_the_command_module_imports_no_training_code_at_module_level() -> None:
+    """The installed package is smoke tested without torch, so this has to hold.
+
+    Every training import in this module is deferred into the handler that needs
+    it, because importing `anthro_chess.training` pulls in torch and the wheel is
+    installed without it for `anthro smoke`. The convention was only implicit
+    until a module-level import broke the smoke test, which fails in continuous
+    integration after a push rather than here.
+    """
+
+    module = Path(cli.__file__)
+    tree = ast.parse(module.read_text())
+    offending = [
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.col_offset == 0
+        and node.module
+        and node.module.startswith("anthro_chess.training")
+    ]
+    assert offending == []
