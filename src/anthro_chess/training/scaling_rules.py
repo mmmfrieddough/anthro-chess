@@ -193,14 +193,13 @@ WEIGHT_DECAY_HORIZONS = float("inf")
 #: The span the second moment averages over, in positions, so that a batch
 #: change moves the constant rather than silently rescaling the average.
 #:
-#: This is the vehicle's own span and not the best one measured. A sweep at
-#: width 32 put the optimum near 5.5e5 positions, with this value costing 1.0%,
-#: which does clear that width's dispersion. It is not adopted here for two
-#: reasons: it is one reading at one width, one batch and one horizon; and every
-#: comparison in this milestone is read against a vehicle that runs at this
-#: span, so a rung configured away from it would not be comparable to the
-#: instrument it is read against. The finding is filed to be read against the
-#: vehicle rather than taken on a single-scale reading.
+#: This is the vehicle's own span, held because no other one survived being
+#: checked. A sweep at width 32 and 800 positions per parameter put the optimum
+#: at 33 steps with this value costing 1.0%, and the same sweep at half that
+#: horizon put it at 100 steps. A constant span predicts neither, and a constant
+#: share of the run predicts the arm that read worst. Nothing here identifies a
+#: span to carry, so the value stays where every comparison in this milestone is
+#: read against, and `#552` holds what would settle it.
 SECOND_MOMENT_POSITIONS = 1.6384e7
 
 

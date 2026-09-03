@@ -204,9 +204,25 @@ which it cannot be. That is what a corpus repeating nothing should give: at
 1.17e8 positions against 138.7e9 plies there is no overfitting for decay to
 prevent.
 
-**The second moment is the one dial with a signal.** Its span has an interior
-optimum near 5.5e5 positions, and the vehicle's 1.64e7 costs 1.0%, which clears
-the dispersion. That reading is not adopted here; the Consequences below say why.
+**The second moment had a signal that did not survive a second horizon.** At 800
+positions per parameter its span has an interior optimum at 33 optimizer steps
+and the vehicle's value costs 1.0%, which clears the dispersion. Repeating the
+sweep at 400 moved the optimum to 100 steps:
+
+| second-moment span at 400 pos/param | 10 steps | 16.7 | 33.3 | 100 |
+| --- | ---: | ---: | ---: | ---: |
+| | 1.7392 | 1.7511 | 1.7451 | **1.7257** |
+
+Adam's second moment averages over steps, so at a fixed batch a span in
+positions and one in steps are the same claim; a span held as a share of the run
+is a different one. Neither predicts this. A constant span wants 33 steps at both
+horizons, and a constant share wants 16.7 steps at the shorter one, which is the
+worst arm run there. Both curves are also non-monotone. The four arms of the
+second horizon share their step count, logging interval, data order, seed and
+rate, so this is not a comparability artifact.
+
+So the span is held at the vehicle's, and the reason is that nothing measured
+here identifies one to carry rather than that a better one was left on the table.
 
 ## Decision
 
@@ -292,12 +308,13 @@ these rules can produce.
 that reads negative is discarded only where it had one, and `anthro scale` is now
 what supplies it.
 
-**The vehicle's second-moment span is a candidate change, not a defect.** A
-shorter span measured better at width 32 by more than that width's dispersion.
-It is filed to be read against the vehicle rather than adopted, because it is one
-reading at one width, one batch and one horizon, and because a rung configured
-away from the vehicle on a dial that matters would not be comparable to the
-instrument it is read against.
+**The second-moment span is open rather than settled.** A shorter span measured
+better at one horizon and a different one measured better at another, in a
+direction neither candidate form predicts. `#552` carries both readings and what
+would settle them, which is the span swept at a third horizon and a second width
+with replicates, since the response was rough enough that the non-monotonicity
+may itself be noise. Until then the vehicle's value is what every comparison in
+this milestone is read against, and that is reason enough to keep it.
 
 **A sweeping session can tell a diverged arm from a crashed one.** Three arms
 here diverged, and the first of them stopped the run on a JSON serialization
