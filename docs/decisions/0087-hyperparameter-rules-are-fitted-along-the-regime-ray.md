@@ -86,6 +86,7 @@ fit; 96 is held out.
 | 0.001 | | | 1.4235 |
 | 0.0015 | | 1.5460 | |
 | 0.003 | 1.7931 | 1.5280 | **1.4181** |
+| 0.0055 | | | 1.4203 |
 | 0.006 | 1.7606 | 1.5215 | |
 | 0.01 | | | 1.4253 |
 | 0.012 | **1.7440** | **1.5210** | |
@@ -106,14 +107,17 @@ at 64.
 
 At width 32 and batch 16384.
 
-| peak rate | 100 | 400 | 800 |
-| ---: | ---: | ---: | ---: |
-| 0.003 | | 1.8481 | 1.7931 |
-| 0.006 | 2.1254 | 1.7857 | 1.7606 |
-| 0.012 | **2.0502** | 1.7555 | **1.7440** |
-| 0.024 | 2.2196 | **1.7510** | 1.7901 |
-| 0.036 | | 1.9910 | |
-| 0.048 | 3.2057 | 1.8566 | diverged |
+| peak rate | 100 | 400 | 800 | 1600 |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.003 | | 1.8481 | 1.7931 | 1.7286 |
+| 0.006 | 2.1254 | 1.7857 | 1.7606 | **1.7085** |
+| 0.012 | **2.0502** | 1.7555 | **1.7440** | 1.7126 |
+| 0.024 | 2.2196 | **1.7510** | 1.7901 | 1.7263 |
+| 0.036 | | 1.9910 | | |
+| 0.048 | 3.2057 | 1.8566 | diverged | |
+
+**One rate lands inside all four rungs' bands**, which is the statement the null
+rests on rather than the exponent's own error bar.
 
 ### What Each Rung Puts The Optimum At
 
@@ -128,10 +132,11 @@ warning.
 | rung | optimum | near-optimal band | tolerance |
 | --- | ---: | --- | ---: |
 | width 32, 800 pos/param | 1.02e-2 | [6.9e-3, 1.4e-2] | 0.70% |
-| width 64, 800 pos/param | 6.4e-3 | [5.5e-3, 1.2e-2] | 0.09% |
-| width 128, 800 pos/param | 2.9e-3 | [2.2e-3, 3.8e-3] | 0.10% |
+| width 64, 800 pos/param | 6.4e-3 | [4.9e-3, 1.3e-2] | 0.16% |
+| width 128, 800 pos/param | 2.9e-3 | [2.2e-3, 4.4e-3] | 0.10% |
 | width 32, 100 pos/param | 1.05e-2 | [9.6e-3, 1.3e-2] | 0.59% |
 | width 32, 400 pos/param | 1.4e-2 | [1.0e-2, 2.5e-2] | 0.69% |
+| width 32, 1600 pos/param | 8.7e-3 | [4.0e-3, 1.8e-2] | 0.71% |
 
 A band is where the measured curve stays within one run-to-run standard
 deviation of its minimum, walked outward along the arms rather than read off the
@@ -142,6 +147,7 @@ parabola, because the parabola is symmetric in log rate and the curve is not.
 | width | arms | mean | seed dispersion | one seed, two arms |
 | ---: | ---: | ---: | ---: | ---: |
 | 32 | 4 | 1.7350 | 0.699% | 0.090% |
+| 64 | 3 | 1.5243 | 0.159% | not run |
 | 128 | 6 | 1.4325 | 0.097% | 0.029% |
 
 **The spread grows sharply as the model shrinks**, seven-fold from the vehicle to
@@ -234,16 +240,23 @@ The peak rate is the one setting that became a rule against scale:
 
     learning_rate = 3.0e-3 x (parameters / 1,422,662) ^ -0.55
 
-fitted over widths 32 to 128 at 100 to 800 positions per parameter, and holding
+fitted over widths 32 to 128 at 100 to 1600 positions per parameter, and holding
 at batch 16384. Two figures rather than the fit's four, because every rung's
-band is about a factor of two wide: at -0.55 the rule lands inside all three
-bands and at -0.5 it leaves width 64's, so two is what the measurement supports
-and one is not.
+band is about a factor of two wide. The fit returns -0.5154 with a standard
+error of 0.0594, and rounding was taken as far as the bands allow.
+
+**The rounding is checked against both axes, and only both axes reject the
+coarser value.** Against the three size rungs alone, -0.5 lands inside all of
+them. The horizon rungs at width 32 are what refuse it: their lower band edges
+hold that width's rate above 1.01e-2, which needs an exponent no shallower than
+-0.533. A criterion applied to the axis a constant was fitted on would have
+passed a rule that misses two rungs of the other.
 
 **The horizon term is zero, and that is a measurement rather than an omission.**
-Across an eightfold change in run length the exponent came out at -0.001 with a
-standard error of 0.089. Writing the point estimate down would dress a null
-result as a finding.
+Across a sixteenfold change in run length the exponent came out at -0.060 with a
+standard error of 0.057. Writing the point estimate down would dress a null
+result as a finding, and the null is the stronger statement: a single rate lands
+inside all four horizons' bands.
 
 **A parameter count is every tensor the assembled model owns, the action head
 included.** `anthro_chess.models.parameter_count` is the one implementation. The
@@ -283,8 +296,11 @@ the nondeterminism term rather than the seed term, which is what makes them
 usable. But no rung has replicates at more than one rate, so a rung's optimum
 carries no estimate of how much the seed moves it.
 
-**The horizon reaches 800 positions per parameter and no further.** The arms that
-would have carried 1600 were spent re-measuring the anchor rung instead.
+**The horizon ratio reaches 1600 but the absolute horizon does not follow it.**
+The ratio was swept to 1600 at width 32 only, so the longest run behind any rule
+is the vehicle's 1.14e9 positions. A width and a ratio both inside their own
+ranges can still multiply to a horizon no arm reached, and the positions range
+refuses there.
 
 **One published anchor disagrees and cannot be reconciled from here.**
 `docs/research.md` (Chessformer) records a peak rate of 5e-5 held constant from

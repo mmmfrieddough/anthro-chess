@@ -87,10 +87,10 @@ class FittedRange:
 MODEL_DIM_RANGE = FittedRange("model_dim", 32, 128)
 
 #: How long a run is, relative to its own capacity. The vehicle and the target
-#: both sit at 800, which is the top of what was measured rather than a point
-#: inside it: the arms that would have carried 1600 were given up to re-measure
-#: the anchor rung, and the range says so rather than reaching past them.
-POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 800)
+#: both sit at 800, which is inside this rather than at its edge. The rate was
+#: swept at 100, 400, 800 and 1600, and the horizon-independent rule lands inside
+#: every one of those four rungs' bands.
+POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 1600)
 
 #: The horizon in positions, spanned by the arms behind the rate rule. Its ends
 #: are width 32 at 100 positions per parameter and width 128 at 800.
@@ -161,16 +161,20 @@ REFERENCE_BATCH_POSITIONS = 16_384
 LEARNING_RATE_AT_REFERENCE = 3.0e-3
 
 #: How the rate moves with parameter count, fitted over widths 32, 64 and 128 at
-#: 800 positions per parameter. The fit returns -0.5455 and is rounded on the
-#: same argument as the rate above, checked rather than assumed: at -0.55 the
-#: rule still lands inside all three rungs' bands, and at -0.5 it leaves width
-#: 64's. So two figures is what the bands can tell apart and one is not.
+#: 800 positions per parameter, where the fit returns -0.5154 with a standard
+#: error of 0.0594. Rounded on the same argument as the rate above and checked
+#: against every rung of both axes, which is what the check has to cover: the
+#: size rungs alone would allow -0.5, and the horizon rungs at width 32 reject
+#: it, because their lower band edges hold that width's rate above 1.01e-2 and
+#: an exponent shallower than -0.533 cannot reach it. Two figures is what the
+#: bands can tell apart and one is not.
 SIZE_EXPONENT = -0.55
 
-#: How the rate moves with the horizon. Measured at -0.001 with a standard error
-#: of 0.089 across an eightfold change in run length, so it is set to zero
-#: rather than to a number indistinguishable from it. Setting it to the point
-#: estimate would dress a null result as a measurement.
+#: How the rate moves with the horizon. Measured at -0.060 with a standard error
+#: of 0.057 across a sixteenfold change in run length, so it is set to zero
+#: rather than to a number one standard error from it. Setting it to the point
+#: estimate would dress a null result as a measurement, and the null is the
+#: stronger statement here: one rate lands inside all four horizons' bands.
 HORIZON_EXPONENT = 0.0
 
 #: Warmup as a share of the horizon. Swept from a quarter of a percent to eight
