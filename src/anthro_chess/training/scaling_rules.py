@@ -6,6 +6,11 @@ module is that record for the five settings a size or horizon change moves:
 the peak learning rate, the batch, the warmup, the weight-decay timescale, and
 the optimizer's second-moment decay.
 
+**Only the rate became a rule against scale.** The other four are held, each
+because the arms behind it said so rather than because it was skipped, and each
+carries that reason where it is set. A caller gets all five from ``resolve``
+either way; the difference is what a scale change moves.
+
 Two conventions hold everywhere below.
 
 **A parameter count is every trainable tensor of the assembled model, the
