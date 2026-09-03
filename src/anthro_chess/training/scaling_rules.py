@@ -168,8 +168,34 @@ SIZE_EXPONENT = -0.55
 #: estimate would dress a null result as a measurement.
 HORIZON_EXPONENT = 0.0
 
+#: Warmup as a share of the horizon. Swept from a quarter of a percent to eight
+#: percent at width 32, where the response rose monotonically with length across
+#: a total spread of 0.38%, inside that width's own 0.70% run-to-run dispersion.
+#: So the dial is flat over the range a run would use it, and this is the
+#: vehicle's value kept rather than an optimum found. Shorter reads very
+#: slightly better, and a later session has nothing to gain by re-deriving it.
 WARMUP_FRACTION = 0.01
+
+#: The decay timescale as a multiple of the horizon, or infinite for none.
+#: Swept at a quarter, one and four horizons against no decay at all: the best
+#: beat no decay by 0.42%, inside the seed dispersion, and the four-horizon arm
+#: read worse than no decay, which it cannot be. Nothing here resolves, which is
+#: what a corpus that never repeats at these horizons should give: there is no
+#: overfitting for decay to prevent. Recorded as a timescale anyway, because
+#: that is the half of the pair a horizon change leaves alone.
 WEIGHT_DECAY_HORIZONS = float("inf")
+
+#: The span the second moment averages over, in positions, so that a batch
+#: change moves the constant rather than silently rescaling the average.
+#:
+#: This is the vehicle's own span and not the best one measured. A sweep at
+#: width 32 put the optimum near 5.5e5 positions, with this value costing 1.0%,
+#: which does clear that width's dispersion. It is not adopted here for two
+#: reasons: it is one reading at one width, one batch and one horizon; and every
+#: comparison in this milestone is read against a vehicle that runs at this
+#: span, so a rung configured away from it would not be comparable to the
+#: instrument it is read against. The finding is filed to be read against the
+#: vehicle rather than taken on a single-scale reading.
 SECOND_MOMENT_POSITIONS = 1.6384e7
 
 
