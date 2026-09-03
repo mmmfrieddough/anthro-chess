@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import time
 from collections.abc import Mapping, Sequence
@@ -103,6 +104,53 @@ _FIRST_MOMENT_DECAY = 0.9
 
 class TrainingError(ValueError):
     """Raised when a configured training run cannot execute safely."""
+
+
+class TrainingDiverged(TrainingError):
+    """Raised when a run's own numbers leave the finite range.
+
+    Separate from the errors above because a sweep meets it deliberately: the
+    top of a learning-rate bracket is established by running arms that are
+    meant to fail this way, and such an arm is a reading rather than an
+    accident. The command exits on its own code so a caller can record the rate
+    as unusable instead of stopping.
+
+    Two things reach it. A non-finite move loss is the loud case and was always
+    caught. A non-finite entry anywhere in the reported record is the quiet one:
+    the loss can still read in the hundreds while the observed gradient norm has
+    overflowed, and then it is the metrics writer that fails, several intervals
+    after the model actually left the finite range.
+    """
+
+
+def _refuse_non_finite(record: Mapping[str, object], global_step: int) -> None:
+    """Stop a run whose reported numbers have left the finite range.
+
+    The metrics file is written with ``allow_nan=False``, which is right: a
+    reader should never have to decide what a bare ``Infinity`` in a metrics
+    row meant. Without this the serializer is what notices, and it reports a
+    JSON problem for what is really the model having diverged several intervals
+    earlier. Naming the field and the step is the difference between a sweep
+    recording an unusable rate and a session debugging the writer.
+    """
+
+    def offending(value: object, path: str) -> str | None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                found = offending(nested, f"{path}.{key}" if path else str(key))
+                if found:
+                    return found
+        elif isinstance(value, float) and not math.isfinite(value):
+            return f"{path} is {value}"
+        return None
+
+    found = offending(record, "")
+    if found:
+        raise TrainingDiverged(
+            f"training diverged by optimizer step {global_step}: {found}. "
+            f"The run is stopped rather than continued, and no checkpoint is "
+            f"written for it."
+        )
 
 
 @dataclass(frozen=True)
@@ -816,7 +864,7 @@ def _optimize(
             average_loss: float | None = None
             if drained is not None:
                 if not drained.finite:
-                    raise TrainingError(
+                    raise TrainingDiverged(
                         "move loss is not finite between global steps "
                         f"{interval_start_step} and {global_step}; the deferred "
                         "loss read-back reports the interval rather than the "
@@ -875,6 +923,7 @@ def _optimize(
                         health_monitor.instrumentation_seconds
                     ),
                 }
+                _refuse_non_finite(record, global_step)
                 metrics_file.write(
                     json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
                 )

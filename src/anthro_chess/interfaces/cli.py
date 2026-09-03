@@ -4087,7 +4087,12 @@ def _run_train(arguments: argparse.Namespace) -> int:
         resolve_optional_detail_root,
         resolve_store_root,
     )
-    from anthro_chess.training import TrainingConfig, TrainingError, run_training
+    from anthro_chess.training import (
+        TrainingConfig,
+        TrainingDiverged,
+        TrainingError,
+        run_training,
+    )
 
     try:
         resolved = load_config(
@@ -4121,6 +4126,9 @@ def _run_train(arguments: argparse.Namespace) -> int:
             detail=detail,
             verify_data=arguments.verify_data,
         )
+    except TrainingDiverged as error:
+        print(f"anthro train: {error}", file=sys.stderr)
+        return 3
     except (ConfigError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2
