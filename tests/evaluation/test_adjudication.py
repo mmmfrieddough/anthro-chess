@@ -9,6 +9,7 @@ import pytest
 
 from anthro_chess.evaluation.adjudication import AdjudicationAccumulator, action_sets
 from anthro_chess.evaluation.policy import ActionSetPolicy
+from anthro_chess.evaluation.results import DataComponent
 from anthro_chess.evaluation.scoring import build_scoring_inputs
 from anthro_chess.evaluation.slices import PositionPredicate
 
@@ -123,3 +124,78 @@ def test_action_sets_narrow_to_the_positions_a_reading_keeps(
     assert set(wide) == {(fixture_game_id(43), 0), (fixture_game_id(44), 0)}
     narrowed = (fixture_game_id(44), 0)
     assert action_sets(inputs, [narrowed]) == {narrowed: wide[narrowed]}
+
+
+def test_the_human_gap_is_reported_per_rating_band(
+    normalized_row: Callable[..., dict[str, Any]],
+    fixture_game_id: Callable[[int], int],
+    move_prediction_component: Callable[..., DataComponent],
+) -> None:
+    """The band drill-down is what says whether the dial delivers a player."""
+
+    rows = [
+        normalized_row(
+            index,
+            split="test",
+            rating=rating,
+            initial_position=FORCED_FEN,
+            moves=("f7f8",),
+        )
+        for index, rating in ((43, 1500), (44, 2200))
+    ]
+    inputs = build_scoring_inputs(
+        rows,
+        split="test",
+        batch_size=2,
+        length_bucket_width=None,
+        identity_sha256="c" * 64,
+    )
+
+    scores: list[ActionSetPolicy] = []
+    for index, converts in ((43, True), (44, False)):
+        key = (fixture_game_id(index), 0)
+        matches = inputs.labels(key).predicates
+        target = inputs.plies[key].target_action_id
+        off_target = (
+            max(matches[PositionPredicate.MATE_AVAILABLE].successful_action_ids) + 1
+        )
+        scores.extend(
+            ActionSetPolicy(
+                game_id=fixture_game_id(index),
+                ply_index=0,
+                name=predicate.value,
+                selected_action_id=target if converts else off_target,
+                raw_probability_mass=0.75,
+                best_rank=1,
+            )
+            for predicate in matches
+        )
+
+    accumulator = AdjudicationAccumulator()
+    accumulator.add(tuple(scores), inputs)
+    report = accumulator.report()
+
+    assert report is not None
+    values = {
+        item.metric: item
+        for item in report.measurements(move_prediction_component(rows))
+    }
+    matched = values["adjudicated.mate_available_human_gap_1200_to_1599"]
+    missed = values["adjudicated.mate_available_human_gap_2000_plus"]
+    assert matched.value == pytest.approx(0.0)
+    assert matched.sample_size == 1
+    assert missed.value == pytest.approx(-1.0)
+    assert missed.sample_size == 1
+    assert values["adjudicated.mate_available_human_gap"].value == pytest.approx(-0.5)
+    assert "adjudicated.mate_available_human_gap_under_1200" not in values
+
+    floored = {
+        metric
+        for game in report.per_game_totals
+        for metric in game.metrics
+        if metric.startswith("adjudicated.mate_available_human_gap_")
+    }
+    assert floored == {
+        "adjudicated.mate_available_human_gap_1200_to_1599",
+        "adjudicated.mate_available_human_gap_2000_plus",
+    }

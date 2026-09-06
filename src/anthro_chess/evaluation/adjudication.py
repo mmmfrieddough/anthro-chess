@@ -19,6 +19,7 @@ from anthro_chess.evaluation.results import DataComponent, Measurement, measurem
 from anthro_chess.evaluation.results.metrics import (
     ADJUDICATED_BEST_RANK,
     ADJUDICATED_HUMAN_GAP,
+    ADJUDICATED_HUMAN_GAP_BY_RATING_BAND,
     ADJUDICATED_HUMAN_RATE,
     ADJUDICATED_POLICY_MASS,
     ADJUDICATED_SELECTED_RATE,
@@ -124,7 +125,7 @@ class AdjudicationReport:
         }
 
     def measurements(self, component: DataComponent) -> tuple[Measurement, ...]:
-        """Return the bounded overall readings for the committed tier."""
+        """Return the overall readings and their band drill-down."""
 
         values: list[Measurement] = []
         for predicate, report in sorted(
@@ -144,6 +145,21 @@ class AdjudicationReport:
                         value,
                         data=component,
                         sample_size=summary.opportunities,
+                    )
+                )
+            # Registered bands rather than realized ones. A run with moved
+            # band boundaries realizes names nothing registers, so its
+            # drill-down stays in the record instead of continuing these series.
+            for band, definition in ADJUDICATED_HUMAN_GAP_BY_RATING_BAND[name].items():
+                in_band = report.rating_bands.get(band)
+                if in_band is None:
+                    continue
+                values.append(
+                    measurement(
+                        definition.identifier,
+                        in_band.human_gap,
+                        data=component,
+                        sample_size=in_band.opportunities,
                     )
                 )
             if report.mean_best_rank is not None:
@@ -344,6 +360,20 @@ def _game_totals(
             metrics[ADJUDICATED_BEST_RANK[name].identifier] = MetricTotal(
                 total=float(sum(ranks)),
                 positions=len(ranks),
+            )
+        by_band: dict[str, list[AdjudicatedPosition]] = defaultdict(list)
+        for item in group:
+            by_band[item.rating_band].append(item)
+        for band, members in by_band.items():
+            definition = ADJUDICATED_HUMAN_GAP_BY_RATING_BAND[name].get(band)
+            if definition is None:
+                continue
+            metrics[definition.identifier] = MetricTotal(
+                total=sum(
+                    float(item.model_success) - float(item.human_success)
+                    for item in members
+                ),
+                positions=len(members),
             )
     return GameTotals(game_id=game_id, metrics=metrics)
 

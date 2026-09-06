@@ -1037,6 +1037,26 @@ ADJUDICATED_HUMAN_GAP: Mapping[str, MetricDefinition] = {
     for predicate in ADJUDICATED_PREDICATE_NAMES
 }
 
+ADJUDICATED_HUMAN_GAP_BY_RATING_BAND: Mapping[str, Mapping[str, MetricDefinition]] = {
+    predicate: {
+        band: _adjudicated_metric(
+            predicate,
+            f"human_gap_{band}",
+            direction=MetricDirection.INFORMATIONAL,
+            summary=(
+                f"Model selected-action rate minus the held-out human rate for "
+                f"{predicate.replace('_', ' ')} positions whose mover is {band}, "
+                "referenced against the humans of that band rather than the "
+                "pool's. How the gap varies across bands is what separates a "
+                "dial that delivers a different player from one that delivers a "
+                "uniformly better one."
+            ),
+        )
+        for band in (*RATING_BAND_SLICE_NAMES, UNRATED_SLICE_NAME)
+    }
+    for predicate in ADJUDICATED_PREDICATE_NAMES
+}
+
 ADJUDICATED_BEST_RANK: Mapping[str, MetricDefinition] = {
     predicate: _adjudicated_metric(
         predicate,
