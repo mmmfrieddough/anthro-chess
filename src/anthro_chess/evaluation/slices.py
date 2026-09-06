@@ -107,10 +107,6 @@ class PredicateDefinition:
 
     predicate: PositionPredicate
     classification: PredicateClass
-    #: Whether the successful actions are the mistake rather than the chance
-    #: taken. Required rather than defaulted, so a predicate cannot be added
-    #: without saying which, and a report cannot read its rank backwards.
-    scores_a_fault: bool
     summary: str
 
 
@@ -126,31 +122,26 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
     PositionPredicate.MATE_AVAILABLE: PredicateDefinition(
         predicate=PositionPredicate.MATE_AVAILABLE,
         classification=PredicateClass.DECIDABLE,
-        scores_a_fault=False,
         summary="The side to move can checkmate immediately.",
     ),
     PositionPredicate.MATE_THREATENED: PredicateDefinition(
         predicate=PositionPredicate.MATE_THREATENED,
         classification=PredicateClass.DECIDABLE,
-        scores_a_fault=False,
         summary="Passing would allow an immediate mate; successful moves remove it.",
     ),
     PositionPredicate.STALEMATE_AVAILABLE: PredicateDefinition(
         predicate=PositionPredicate.STALEMATE_AVAILABLE,
         classification=PredicateClass.DECIDABLE,
-        scores_a_fault=False,
         summary="The side to move can end the game by stalemate immediately.",
     ),
     PositionPredicate.ONLY_MOVE: PredicateDefinition(
         predicate=PositionPredicate.ONLY_MOVE,
         classification=PredicateClass.DECIDABLE,
-        scores_a_fault=False,
         summary="The side to move has exactly one legal move.",
     ),
     PositionPredicate.MATERIAL_GAIN: PredicateDefinition(
         predicate=PositionPredicate.MATERIAL_GAIN,
         classification=PredicateClass.HEURISTIC,
-        scores_a_fault=False,
         summary=(
             "A capture wins material through the full exchange on its square; "
             "successful moves are those captures."
@@ -159,7 +150,6 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
     PositionPredicate.MATERIAL_CONCESSION: PredicateDefinition(
         predicate=PositionPredicate.MATERIAL_CONCESSION,
         classification=PredicateClass.HEURISTIC,
-        scores_a_fault=True,
         summary=(
             "A move leaves the opponent winning more material than it took or "
             "than the mover could already have been made to lose; successful "
@@ -433,9 +423,9 @@ def match_position_predicates(
     human-referenced predicate needs. Neither is a claim that a move is
     objectively best or objectively a mistake.
 
-    Concession is the same resolution read from the other side, so it needs the
-    null-move baseline and does not resolve in check. Where mate is available
-    it is left out: the material is not the point of a mating line.
+    Concession reads the same resolution from the other side, so it joins the
+    threat predicate behind the pass, and drops out where mate is available:
+    the material is not the point of a mating line.
     """
 
     moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
@@ -470,14 +460,6 @@ def match_position_predicates(
             successful_action_ids=frozenset(action_ids[move] for move, _ in winning),
         )
 
-    if not mates:
-        conceding = _material_conceding_moves(board, moves)
-        if conceding:
-            matches[PositionPredicate.MATERIAL_CONCESSION] = PredicateMatch(
-                predicate=PositionPredicate.MATERIAL_CONCESSION,
-                successful_action_ids=frozenset(action_ids[move] for move in conceding),
-            )
-
     if board.is_check():
         return matches
 
@@ -488,6 +470,11 @@ def match_position_predicates(
         matches[PositionPredicate.MATE_THREATENED] = PredicateMatch(
             predicate=PositionPredicate.MATE_THREATENED,
             successful_action_ids=frozenset(action_ids[move] for move in safe),
+        )
+    if not mates and (conceding := _material_conceding_moves(board, moves)):
+        matches[PositionPredicate.MATERIAL_CONCESSION] = PredicateMatch(
+            predicate=PositionPredicate.MATERIAL_CONCESSION,
+            successful_action_ids=frozenset(action_ids[move] for move in conceding),
         )
     return matches
 
@@ -578,31 +565,16 @@ def _material_conceding_moves(
 ) -> tuple[chess.Move, ...]:
     """Return the moves that hand the opponent material it was not already owed.
 
-    A concession is the two-ply material swing one decision is responsible for:
-    what the opponent can win outright afterwards, less what the move itself
-    put on the mover's side of the ledger, less what the opponent could already
-    win had the mover passed. Without the first correction every even trade
-    reads as a concession, since the recapture wins material by the same
-    criterion the capture did, and every promotion reads as one worth the piece
-    promoted to; without the second, a mover who ignores a standing threat is
-    charged for material nobody conceded.
+    The two-ply material swing one decision is responsible for: what the
+    opponent can win outright afterwards, less what the move put on the mover's
+    side of the ledger, less what a pass would have conceded anyway. Netting
+    the second keeps an even trade and a promotion from reading as blunders;
+    netting the third keeps an unanswered standing threat from reading as one.
 
-    A move that ends the game leaves no reply to win anything, so mate and
-    stalemate fall out rather than being excluded.
-
-    The baseline is what the opponent's *best* reply wins, so a piece newly
-    hung is invisible where something worth more was already loose. The
-    opponent has one move either way, which is why the comparison is a maximum
-    rather than a sum, and both sides of a human-referenced reading are scored
-    the same way.
-
-    Empty while the mover is in check: a null move cannot price the baseline,
-    and ``python-chess`` leaves undefined a position whose idle side is
+    The mover must not be in check. A null move cannot price the baseline
+    there, and ``python-chess`` leaves undefined a position whose idle side is
     attacked.
     """
-
-    if board.is_check():
-        return ()
 
     board.push(chess.Move.null())
     try:

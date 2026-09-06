@@ -955,34 +955,46 @@ HELD_OUT_MOVE_LOSS_BY_OPENING_TIER: Mapping[str, MetricDefinition] = {
     for tier in OPENING_TIER_SLICE_NAMES
 }
 
-ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
-    "mate_available",
-    "mate_threatened",
-    "material_concession",
-    "material_gain",
-    "only_move",
-    "stalemate_available",
-)
 
-#: Predicates whose successful actions are the fault rather than the
-#: opportunity. The paired rates and the mass read the same way for both, since
-#: each is the share of a named action set. The rank does not: ranking a fault
-#: low is only better for a model with no rating to answer to, and this one is
-#: asked to play like a weak human at one end of its dial.
-ADJUDICATED_FAULT_PREDICATE_NAMES: tuple[str, ...] = ("material_concession",)
+@dataclass(frozen=True)
+class _AdjudicatedPredicate:
+    """How one predicate's five series read.
 
-#: What a successful action does, per predicate. Written out rather than
-#: derived from the name because one shared verb cannot describe both an
-#: opportunity taken and a fault committed, and a summary that reads backwards
-#: is worse than none.
-_ADJUDICATED_ACTION_PHRASES: Mapping[str, str] = {
-    "mate_available": "delivers the available mate",
-    "mate_threatened": "removes the threatened mate",
-    "material_concession": "concedes material",
-    "material_gain": "wins the available material",
-    "only_move": "plays the one legal move",
-    "stalemate_available": "forces the available stalemate",
+    ``action`` completes "an action that ...", written out rather than derived
+    from the name because one shared verb cannot describe both an opportunity
+    taken and a fault committed. ``scores_a_fault`` says which of those it is.
+    """
+
+    action: str
+    scores_a_fault: bool
+
+
+#: Written out rather than read from the predicate registry, which this module
+#: cannot see: metric identity is a contract, and a predicate renamed there has
+#: to break a test rather than quietly rename five series. A predicate missing
+#: here raises while the module loads.
+_ADJUDICATED_PREDICATES: Mapping[str, _AdjudicatedPredicate] = {
+    "mate_available": _AdjudicatedPredicate(
+        "delivers the available mate", scores_a_fault=False
+    ),
+    "mate_threatened": _AdjudicatedPredicate(
+        "removes the threatened mate", scores_a_fault=False
+    ),
+    "material_concession": _AdjudicatedPredicate(
+        "concedes material", scores_a_fault=True
+    ),
+    "material_gain": _AdjudicatedPredicate(
+        "wins the available material", scores_a_fault=False
+    ),
+    "only_move": _AdjudicatedPredicate(
+        "plays the one legal move", scores_a_fault=False
+    ),
+    "stalemate_available": _AdjudicatedPredicate(
+        "forces the available stalemate", scores_a_fault=False
+    ),
 }
+
+ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = tuple(sorted(_ADJUDICATED_PREDICATES))
 
 
 def _adjudicated_metric(
@@ -1012,7 +1024,7 @@ ADJUDICATED_HUMAN_RATE: Mapping[str, MetricDefinition] = {
         direction=MetricDirection.INFORMATIONAL,
         summary=(
             f"Rate at which held-out humans played an action that "
-            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}, the reference for the "
+            f"{_ADJUDICATED_PREDICATES[predicate].action}, the reference for the "
             "model rather than a perfect-play target."
         ),
     )
@@ -1026,7 +1038,7 @@ ADJUDICATED_SELECTED_RATE: Mapping[str, MetricDefinition] = {
         direction=MetricDirection.INFORMATIONAL,
         summary=(
             f"Rate at which the model's legal greedy action "
-            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}."
+            f"{_ADJUDICATED_PREDICATES[predicate].action}."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
@@ -1039,7 +1051,7 @@ ADJUDICATED_POLICY_MASS: Mapping[str, MetricDefinition] = {
         direction=MetricDirection.INFORMATIONAL,
         summary=(
             f"Raw policy mass assigned to every action that "
-            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}."
+            f"{_ADJUDICATED_PREDICATES[predicate].action}."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
@@ -1052,7 +1064,7 @@ ADJUDICATED_HUMAN_GAP: Mapping[str, MetricDefinition] = {
         direction=MetricDirection.INFORMATIONAL,
         summary=(
             f"Model selected-action rate minus the held-out human rate where an "
-            f"action {_ADJUDICATED_ACTION_PHRASES[predicate]}. Zero is a match, "
+            f"action {_ADJUDICATED_PREDICATES[predicate].action}. Zero is a match, "
             "and the sign says which way the model departs from the humans it "
             "is read against."
         ),
@@ -1068,7 +1080,7 @@ ADJUDICATED_HUMAN_GAP_BY_RATING_BAND: Mapping[str, Mapping[str, MetricDefinition
             direction=MetricDirection.INFORMATIONAL,
             summary=(
                 f"Model selected-action rate minus the held-out human rate "
-                f"where an action {_ADJUDICATED_ACTION_PHRASES[predicate]} and "
+                f"where an action {_ADJUDICATED_PREDICATES[predicate].action} and "
                 f"the mover is {band}, referenced against the humans of that "
                 "band rather than the pool's. How the gap varies across bands "
                 "is what separates a dial that delivers a different player from "
@@ -1080,29 +1092,41 @@ ADJUDICATED_HUMAN_GAP_BY_RATING_BAND: Mapping[str, Mapping[str, MetricDefinition
     for predicate in ADJUDICATED_PREDICATE_NAMES
 }
 
-ADJUDICATED_BEST_RANK: Mapping[str, MetricDefinition] = {
-    predicate: _adjudicated_metric(
+
+def _adjudicated_best_rank(predicate: str) -> MetricDefinition:
+    """Return one predicate's rank series.
+
+    The only one of the five that a fault reads differently. Ranking a
+    concession low is an improvement for a model with no rating to answer to,
+    and this one is asked to play like a weak human at one end of its dial, so
+    the fault's rank explains movement rather than scoring it.
+    """
+
+    entry = _ADJUDICATED_PREDICATES[predicate]
+    return _adjudicated_metric(
         predicate,
         "best_rank",
         direction=(
             MetricDirection.INFORMATIONAL
-            if predicate in ADJUDICATED_FAULT_PREDICATE_NAMES
+            if entry.scores_a_fault
             else MetricDirection.LOWER_IS_BETTER
         ),
         summary=(
             f"Mean legal-masked rank of the highest-ranked action that "
-            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}. "
+            f"{entry.action}. "
             + (
-                "One means the model's first choice is the fault. Whether that "
-                "is worse depends on the rating it was asked for, so this "
-                "explains movement rather than scoring it."
-                if predicate in ADJUDICATED_FAULT_PREDICATE_NAMES
+                "One means the model's first choice is the fault."
+                if entry.scores_a_fault
                 else "One means the model preferred it; a large rank "
                 "distinguishes an absence from the near miss the policy mass "
                 "alone cannot separate."
             )
         ),
     )
+
+
+ADJUDICATED_BEST_RANK: Mapping[str, MetricDefinition] = {
+    predicate: _adjudicated_best_rank(predicate)
     for predicate in ADJUDICATED_PREDICATE_NAMES
 }
 

@@ -25,10 +25,7 @@ from anthro_chess.evaluation import (
     position_slices,
     rating_band_name,
 )
-from anthro_chess.evaluation.results.metrics import (
-    ADJUDICATED_FAULT_PREDICATE_NAMES,
-    ADJUDICATED_PREDICATE_NAMES,
-)
+from anthro_chess.evaluation.results.metrics import ADJUDICATED_PREDICATE_NAMES
 from anthro_chess.evaluation.slices import _material_conceding_moves, position_labels
 
 
@@ -256,16 +253,6 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
     }
     assert ADJUDICATED_PREDICATE_NAMES == tuple(
         sorted(predicate.value for predicate in PREDICATE_REGISTRY)
-    )
-    # Polarity lives in both modules and only the registry forces a new
-    # predicate to declare it. A predicate missing from the tuple below would
-    # register a rank that scores a fault the way it scores an opportunity.
-    assert ADJUDICATED_FAULT_PREDICATE_NAMES == tuple(
-        sorted(
-            predicate.value
-            for predicate, definition in PREDICATE_REGISTRY.items()
-            if definition.scores_a_fault
-        )
     )
 
 
