@@ -21,7 +21,11 @@ from anthro_chess.training.efficiency import (
 from anthro_chess.training.losses import masked_action_cross_entropy
 
 if TYPE_CHECKING:
-    from anthro_chess.training.runner import TrainingError, TrainingResult
+    from anthro_chess.training.runner import (
+        TrainingDiverged,
+        TrainingError,
+        TrainingResult,
+    )
 
 __all__ = [
     "CHECKPOINT_VERSION",
@@ -32,6 +36,7 @@ __all__ = [
     "TrainingEfficiencyConfig",
     "TrainingEfficiencyError",
     "TrainingEfficiencySummary",
+    "TrainingDiverged",
     "TrainingError",
     "TrainingResult",
     "checkpoint_path",
@@ -47,6 +52,7 @@ def __getattr__(name: str) -> Any:
 
     if name in {
         "RUN_ARTIFACT_VERSION",
+        "TrainingDiverged",
         "TrainingError",
         "TrainingResult",
         "run_training",

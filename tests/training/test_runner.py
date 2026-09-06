@@ -43,7 +43,9 @@ from anthro_chess.training.devices import (
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
+    TrainingDiverged,
     _execution_record,
+    _refuse_non_finite,
     _training_device,
     compatibility_record,
 )
@@ -2357,3 +2359,40 @@ shuffle = {str(shuffle).lower()}
         encoding="utf-8",
     )
     return config_path
+
+
+def test_a_diverged_run_says_so_instead_of_failing_to_serialize() -> None:
+    """The metrics writer must not be what notices that a run has diverged.
+
+    ``allow_nan=False`` on the metrics file is right, so without this check the
+    serializer raises and the run dies reporting a JSON problem several
+    intervals after the model actually left the finite range. A learning-rate
+    sweep meets this deliberately, since running arms that diverge is how the
+    top of a bracket gets established.
+    """
+
+    record = {
+        "record": "step",
+        "global_step": 3009,
+        "move_loss": 206.5,
+        "training_health": {"clip_rate": 1.0, "gradient_norm": float("inf")},
+    }
+    with pytest.raises(TrainingDiverged) as raised:
+        _refuse_non_finite(record, 3009)
+    message = str(raised.value)
+    assert "training_health.gradient_norm" in message
+    assert "3009" in message
+    assert "no checkpoint" in message
+
+
+def test_an_ordinary_step_record_is_left_alone() -> None:
+    """The check has to be invisible to every run that has not diverged."""
+
+    record = {
+        "record": "step",
+        "global_step": 100,
+        "move_loss": 1.42,
+        "training_health": {"clip_rate": 0.0, "gradient_norm": 0.21},
+        "optimizer_seconds": None,
+    }
+    _refuse_non_finite(record, 100)

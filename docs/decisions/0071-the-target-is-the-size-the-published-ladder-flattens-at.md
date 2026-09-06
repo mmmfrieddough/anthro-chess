@@ -30,6 +30,10 @@ the vehicle this record priced, at width 128. It retakes the throughput scan
 first, because compilation, packed batches, and a corpus that opens in seconds
 all landed after this one and all three move what an arm costs.
 
+`0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
+fits the hyperparameter rules that have to reach the size this record derived,
+and states the parameter count they are expressed against.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and

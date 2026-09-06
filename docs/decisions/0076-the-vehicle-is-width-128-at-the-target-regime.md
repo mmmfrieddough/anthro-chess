@@ -23,6 +23,9 @@ the digest.
 and `0086-the-training-run-is-the-binding-floor-at-vehicle-scale.md` records what
 it found.
 
+`0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
+fits the cross-scale rules this record's rate sweep is the top rung of.
+
 ## Context
 
 `0071` derived the target and, in its Consequences, priced the vehicle at each

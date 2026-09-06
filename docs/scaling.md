@@ -59,6 +59,13 @@ The regress does not terminate because the tiers run out. It terminates because
 the loss surface is flat enough near its optimum that the remaining error stops
 being measurable, which is what the next section is about.
 
+`anthro_chess.training.scaling_rules` holds the rules this project fitted, and
+`anthro scale` reads them: it produces every scale-dependent setting from a
+width and a horizon, and refuses a scale outside the span its arms covered.
+`docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
+records what was measured, what each rule came out at, and what the fit does not
+establish.
+
 ## Model Size Is Derived, Not Tuned
 
 **The target model size follows from the compute budget and the deployment
@@ -309,6 +316,8 @@ a reading or a recorded decision rather than a judgement that enough was done.
    read against.
 5. **Hyperparameter rules across scale.** Fitted, and validated at one size not
    used in the fit.
+   `docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
+   records the arms behind each rule and the range outside which it refuses.
 6. **The allocation ladder.** Several small sizes spanning one to two decades,
    yielding the size-versus-data rule and, with it, the target's data budget.
 7. **Candidate changes, one arm each against the vehicle**, then the accepted set

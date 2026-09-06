@@ -18,6 +18,10 @@ family in the frozen configuration, and inherits the qualification below that th
 horizon sits outside the digest: an edit to the step budget alone leaves the
 identity intact, so a test asserts the horizon separately.
 
+`0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
+carries this record's cooldown fraction rather than fitting one, and states the
+warmup rule that sits inside this schedule family.
+
 ## Context
 
 Two schedule families are available, and the evidence in

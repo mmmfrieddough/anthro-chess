@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from anthro_chess.evaluation.suite import StepOutcome, SuitePlan, SuiteRun
     from anthro_chess.evaluation.views import ViewSelection
     from anthro_chess.training import TrainingConfig
+    from anthro_chess.training.scaling_rules import ResolvedRun
 
 CommandHandler = Callable[[argparse.Namespace], int]
 logger = logging.getLogger(__name__)
@@ -1077,6 +1078,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_parser.set_defaults(handler=_run_train)
 
+    scale_parser = subcommands.add_parser(
+        "scale",
+        help="Report the settings the scaling rules produce at one scale.",
+        description=(
+            "Produce every scale-dependent training setting from a width and a "
+            "horizon: the peak learning rate, the batch, the warmup, the "
+            "weight-decay timescale, and the optimizer's second-moment decay. "
+            "Refuses a scale outside the range the rules were fitted over "
+            "rather than extrapolating."
+        ),
+    )
+    scale_parser.add_argument(
+        "--model-dim",
+        type=int,
+        required=True,
+        help="The model width, which is the single size dial.",
+    )
+    scale_parser.add_argument(
+        "--positions-per-parameter",
+        type=float,
+        required=True,
+        help="How long the run is relative to its own capacity.",
+    )
+    scale_parser.add_argument(
+        "--format",
+        choices=("text", "json", "overrides"),
+        default="text",
+        help=(
+            "Output format (default: %(default)s). 'overrides' prints the "
+            "'anthro train --set' arguments this scale resolves to."
+        ),
+    )
+    scale_parser.set_defaults(handler=_run_scale)
+
     machine_parser = subcommands.add_parser(
         "machine",
         help="Report the configured artifact roots and what they hold.",
@@ -1142,6 +1177,118 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _run_smoke(_arguments: argparse.Namespace) -> int:
     print(f"Anthro Chess {__version__} is installed and ready.")
     return 0
+
+
+def _run_scale(arguments: argparse.Namespace) -> int:
+    """Print the settings the scaling rules produce at one scale."""
+
+    from anthro_chess.training.scaling_rules import (
+        OutsideFittedRange,
+        TrainingScale,
+        resolve,
+    )
+
+    try:
+        resolved = resolve(
+            TrainingScale(
+                model_dim=arguments.model_dim,
+                positions_per_parameter=arguments.positions_per_parameter,
+            )
+        )
+    except OutsideFittedRange as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if arguments.format == "json":
+        print(json.dumps(_scale_record(resolved), indent=2, sort_keys=True))
+    elif arguments.format == "overrides":
+        print(" ".join(_scale_overrides(resolved)))
+    else:
+        print(_render_scale(resolved), end="")
+    return 0
+
+
+def _scale_record(resolved: ResolvedRun) -> dict[str, object]:
+    return {
+        "model_dim": resolved.scale.model_dim,
+        "positions_per_parameter": resolved.scale.positions_per_parameter,
+        "parameters": resolved.parameters,
+        "positions": resolved.positions,
+        "batch_positions": resolved.batch_positions,
+        "steps": resolved.steps,
+        "learning_rate": resolved.learning_rate,
+        "positions_per_batch": resolved.positions_per_batch,
+        "gradient_accumulation_steps": resolved.gradient_accumulation_steps,
+        "warmup_positions": resolved.warmup_positions,
+        "cooldown_fraction": resolved.cooldown_fraction,
+        "weight_decay": resolved.weight_decay,
+        "second_moment_decay": resolved.second_moment_decay,
+        "weight_decay_steps": resolved.weight_decay_steps,
+        "second_moment_positions": resolved.second_moment_positions,
+    }
+
+
+def _scale_overrides(resolved: ResolvedRun) -> list[str]:
+    """Return the ``anthro train --set`` arguments this scale resolves to.
+
+    Emitted as arguments rather than as a file so that a rung is one command
+    against whichever selection already carries the corpus, which is the half
+    of a configuration no rule can produce.
+    """
+
+    model = resolved.scale.model
+    settings: dict[str, object] = {
+        "steps": resolved.steps,
+        "learning_rate": resolved.learning_rate,
+        "warmup_positions": resolved.warmup_positions,
+        "cooldown_fraction": resolved.cooldown_fraction,
+        "weight_decay": resolved.weight_decay,
+        "second_moment_decay": resolved.second_moment_decay,
+        "gradient_accumulation_steps": resolved.gradient_accumulation_steps,
+        "train.loader.positions_per_batch": resolved.positions_per_batch,
+        "model.model_dim": model.model_dim,
+        "model.attention_heads": model.attention_heads,
+        "model.layers": model.layers,
+        "model.feedforward_dim": model.feedforward_dim,
+        "model.geometric_bias_dim": model.geometric_bias_dim,
+    }
+    return [f"--set {key}={_toml_scalar(value)}" for key, value in settings.items()]
+
+
+def _toml_scalar(value: object) -> str:
+    return repr(value) if isinstance(value, float) else str(value)
+
+
+def _render_scale(resolved: ResolvedRun) -> str:
+    scale = resolved.scale
+    decay = resolved.weight_decay_steps
+    rows = (
+        ("model_dim", f"{scale.model_dim}"),
+        ("positions per parameter", f"{scale.positions_per_parameter:g}"),
+        ("parameters", f"{resolved.parameters:,}"),
+        ("positions", f"{resolved.positions:,}"),
+        ("", ""),
+        ("learning_rate", f"{resolved.learning_rate:.4g}"),
+        ("batch positions", f"{resolved.batch_positions:,}"),
+        ("positions_per_batch", f"{resolved.positions_per_batch:,}"),
+        ("gradient_accumulation_steps", f"{resolved.gradient_accumulation_steps}"),
+        ("steps", f"{resolved.steps:,}"),
+        ("warmup_positions", f"{resolved.warmup_positions:,}"),
+        ("cooldown_fraction", f"{resolved.cooldown_fraction:g}"),
+        ("weight_decay", f"{resolved.weight_decay:g}"),
+        ("second_moment_decay", f"{resolved.second_moment_decay:.6g}"),
+        ("", ""),
+        (
+            "weight-decay timescale",
+            "infinite" if decay == float("inf") else f"{decay:,.0f} steps",
+        ),
+        (
+            "second-moment timescale",
+            f"{resolved.second_moment_positions:,.0f} positions",
+        ),
+    )
+    return "".join(
+        "\n" if not name else f"  {name:<30}{value}\n" for name, value in rows
+    )
 
 
 def _run_machine(arguments: argparse.Namespace) -> int:
@@ -3941,7 +4088,12 @@ def _run_train(arguments: argparse.Namespace) -> int:
         resolve_optional_detail_root,
         resolve_store_root,
     )
-    from anthro_chess.training import TrainingConfig, TrainingError, run_training
+    from anthro_chess.training import (
+        TrainingConfig,
+        TrainingDiverged,
+        TrainingError,
+        run_training,
+    )
 
     try:
         resolved = load_config(
@@ -3975,6 +4127,9 @@ def _run_train(arguments: argparse.Namespace) -> int:
             detail=detail,
             verify_data=arguments.verify_data,
         )
+    except TrainingDiverged as error:
+        print(f"anthro train: {error}", file=sys.stderr)
+        return 3
     except (ConfigError, ResultsStoreError, TrainingError) as error:
         print(f"anthro train: {error}", file=sys.stderr)
         return 2

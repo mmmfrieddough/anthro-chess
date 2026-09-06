@@ -18,6 +18,10 @@ whose figures were retired because they described a 276,002-parameter model at
 
 `docs/evaluation.md` (Regression Comparisons) states the resulting rule.
 
+`0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
+reads its near-optimal bands against the dispersion measured here, and extends
+that measurement to two smaller widths.
+
 ## Context
 
 0029 measured seed variance once, at 276,002 parameters, and found it large
