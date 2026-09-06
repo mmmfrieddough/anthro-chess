@@ -966,8 +966,9 @@ ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
 
 #: Predicates whose successful actions are the fault rather than the
 #: opportunity. The paired rates and the mass read the same way for both, since
-#: each is the share of a named action set; the rank inverts, because a fault
-#: the policy ranks first is the bad case.
+#: each is the share of a named action set. The rank does not: ranking a fault
+#: low is only better for a model with no rating to answer to, and this one is
+#: asked to play like a weak human at one end of its dial.
 ADJUDICATED_FAULT_PREDICATE_NAMES: tuple[str, ...] = ("material_concession",)
 
 #: What a successful action does, per predicate. Written out rather than
@@ -1084,16 +1085,17 @@ ADJUDICATED_BEST_RANK: Mapping[str, MetricDefinition] = {
         predicate,
         "best_rank",
         direction=(
-            MetricDirection.HIGHER_IS_BETTER
+            MetricDirection.INFORMATIONAL
             if predicate in ADJUDICATED_FAULT_PREDICATE_NAMES
             else MetricDirection.LOWER_IS_BETTER
         ),
         summary=(
-            f"Mean legal-masked rank of the best action that "
+            f"Mean legal-masked rank of the highest-ranked action that "
             f"{_ADJUDICATED_ACTION_PHRASES[predicate]}. "
             + (
-                "One means the model's first choice is the fault, which is why "
-                "this reads the other way from the ranks beside it."
+                "One means the model's first choice is the fault. Whether that "
+                "is worse depends on the rating it was asked for, so this "
+                "explains movement rather than scoring it."
                 if predicate in ADJUDICATED_FAULT_PREDICATE_NAMES
                 else "One means the model preferred it; a large rank "
                 "distinguishes an absence from the near miss the policy mass "

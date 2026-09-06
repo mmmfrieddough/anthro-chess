@@ -107,6 +107,10 @@ class PredicateDefinition:
 
     predicate: PositionPredicate
     classification: PredicateClass
+    #: Whether the successful actions are the mistake rather than the chance
+    #: taken. Required rather than defaulted, so a predicate cannot be added
+    #: without saying which, and a report cannot read its rank backwards.
+    scores_a_fault: bool
     summary: str
 
 
@@ -122,26 +126,31 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
     PositionPredicate.MATE_AVAILABLE: PredicateDefinition(
         predicate=PositionPredicate.MATE_AVAILABLE,
         classification=PredicateClass.DECIDABLE,
+        scores_a_fault=False,
         summary="The side to move can checkmate immediately.",
     ),
     PositionPredicate.MATE_THREATENED: PredicateDefinition(
         predicate=PositionPredicate.MATE_THREATENED,
         classification=PredicateClass.DECIDABLE,
+        scores_a_fault=False,
         summary="Passing would allow an immediate mate; successful moves remove it.",
     ),
     PositionPredicate.STALEMATE_AVAILABLE: PredicateDefinition(
         predicate=PositionPredicate.STALEMATE_AVAILABLE,
         classification=PredicateClass.DECIDABLE,
+        scores_a_fault=False,
         summary="The side to move can end the game by stalemate immediately.",
     ),
     PositionPredicate.ONLY_MOVE: PredicateDefinition(
         predicate=PositionPredicate.ONLY_MOVE,
         classification=PredicateClass.DECIDABLE,
+        scores_a_fault=False,
         summary="The side to move has exactly one legal move.",
     ),
     PositionPredicate.MATERIAL_GAIN: PredicateDefinition(
         predicate=PositionPredicate.MATERIAL_GAIN,
         classification=PredicateClass.HEURISTIC,
+        scores_a_fault=False,
         summary=(
             "A capture wins material through the full exchange on its square; "
             "successful moves are those captures."
@@ -150,9 +159,11 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
     PositionPredicate.MATERIAL_CONCESSION: PredicateDefinition(
         predicate=PositionPredicate.MATERIAL_CONCESSION,
         classification=PredicateClass.HEURISTIC,
+        scores_a_fault=True,
         summary=(
-            "A move hands the opponent material it could not win before; "
-            "successful moves are those concessions."
+            "A move leaves the opponent winning more material than it took or "
+            "than the mover could already have been made to lose; successful "
+            "moves are those concessions."
         ),
     ),
 }
@@ -459,6 +470,14 @@ def match_position_predicates(
             successful_action_ids=frozenset(action_ids[move] for move, _ in winning),
         )
 
+    if not mates:
+        conceding = _material_conceding_moves(board, moves)
+        if conceding:
+            matches[PositionPredicate.MATERIAL_CONCESSION] = PredicateMatch(
+                predicate=PositionPredicate.MATERIAL_CONCESSION,
+                successful_action_ids=frozenset(action_ids[move] for move in conceding),
+            )
+
     if board.is_check():
         return matches
 
@@ -470,16 +489,6 @@ def match_position_predicates(
             predicate=PositionPredicate.MATE_THREATENED,
             successful_action_ids=frozenset(action_ids[move] for move in safe),
         )
-
-    if PositionPredicate.MATE_AVAILABLE not in matches:
-        conceding = _material_conceding_moves(board, moves)
-        if conceding:
-            matches[PositionPredicate.MATERIAL_CONCESSION] = PredicateMatch(
-                predicate=PositionPredicate.MATERIAL_CONCESSION,
-                successful_action_ids=frozenset(
-                    action_ids[move] for move, _ in conceding
-                ),
-            )
     return matches
 
 
@@ -566,24 +575,34 @@ def material_winning_moves(
 def _material_conceding_moves(
     board: chess.Board,
     legal_moves: Sequence[chess.Move],
-) -> tuple[tuple[chess.Move, int], ...]:
-    """Return the moves that hand the opponent material, and what each hands it.
+) -> tuple[chess.Move, ...]:
+    """Return the moves that hand the opponent material it was not already owed.
 
     A concession is the two-ply material swing one decision is responsible for:
     what the opponent can win outright afterwards, less what the move itself
-    took, less what the opponent could already win had the mover passed.
-    Without the first correction every even trade reads as a concession, since
-    the recapture wins material by the same criterion the capture did; without
-    the second, a mover who ignores a standing threat is charged for material
-    nobody conceded.
+    put on the mover's side of the ledger, less what the opponent could already
+    win had the mover passed. Without the first correction every even trade
+    reads as a concession, since the recapture wins material by the same
+    criterion the capture did, and every promotion reads as one worth the piece
+    promoted to; without the second, a mover who ignores a standing threat is
+    charged for material nobody conceded.
 
     A move that ends the game leaves no reply to win anything, so mate and
     stalemate fall out rather than being excluded.
 
-    The mover must not be in check, since a null move cannot price the baseline
-    there and ``python-chess`` does not define a position whose idle side is
+    The baseline is what the opponent's *best* reply wins, so a piece newly
+    hung is invisible where something worth more was already loose. The
+    opponent has one move either way, which is why the comparison is a maximum
+    rather than a sum, and both sides of a human-referenced reading are scored
+    the same way.
+
+    Empty while the mover is in check: a null move cannot price the baseline,
+    and ``python-chess`` leaves undefined a position whose idle side is
     attacked.
     """
+
+    if board.is_check():
+        return ()
 
     board.push(chess.Move.null())
     try:
@@ -591,16 +610,16 @@ def _material_conceding_moves(
     finally:
         board.pop()
 
-    conceding: list[tuple[chess.Move, int]] = []
+    conceding: list[chess.Move] = []
     for move in legal_moves:
-        taken = _captured_value(board, move)
+        invested = _captured_value(board, move) + _promotion_value(move)
         board.push(move)
         try:
-            swing = _best_material_win(board) - taken - already_offered
+            swing = _best_material_win(board) - invested - already_offered
         finally:
             board.pop()
         if swing >= MATERIAL_GAIN_THRESHOLD:
-            conceding.append((move, swing))
+            conceding.append(move)
     return tuple(conceding)
 
 
@@ -623,6 +642,19 @@ def _best_material_win(board: chess.Board) -> int:
     )
 
 
+def _promotion_value(move: chess.Move) -> int:
+    """Return what promoting adds to the mover's material, zero for other moves.
+
+    A queening pawn is a queen the opponent can then win, and charging that
+    whole queen as conceded would make every promotion a blunder. Only the pawn
+    was ever invested.
+    """
+
+    if move.promotion is None:
+        return 0
+    return MATERIAL_VALUES[move.promotion] - MATERIAL_VALUES[chess.PAWN]
+
+
 def _captured_value(board: chess.Board, move: chess.Move) -> int:
     """Return what one move takes off the board, zero when it takes nothing."""
 
@@ -637,9 +669,9 @@ def _exchange_value(piece_type: int | None) -> int:
     """Return one piece's worth inside an exchange resolution.
 
     Reads the shared material table so a pawn is worth the same here as in a
-    balance, with the king's ordering price applied on top. An empty square
-    resolves to a pawn, which only arises for an en-passant capture whose
-    target square holds nothing.
+    balance, with the king's ordering price applied on top. The argument is
+    optional because ``piece_type_at`` is; every call site reads a square that
+    holds a piece, and an empty one prices as a pawn rather than raising.
     """
 
     if piece_type is None:

@@ -1339,11 +1339,12 @@ different weight in a report.
 
 Both of the expensive predicates push every legal move: mate available tests
 each reply for checkmate, and material concession resolves the exchange the
-reply offers. Concession is the more expensive of the two by several times,
-because a checkmate test stops at the first legal reply while an exchange has
-to be played out. Over a frozen pool they are derived once per generation into
-the artifact beside it and read back; anything scoring positions no pool holds,
-such as a perturbed continuation, resolves them live and pays for them there.
+reply offers. Concession dominates what a pool's labels cost to derive, by an
+order over mate availability, because a checkmate test stops at the first legal
+reply while an exchange has to be played out. Over a frozen pool they are
+derived once per generation into the artifact beside it and read back; anything
+scoring positions no pool holds, such as a perturbed continuation, resolves
+them live and pays for them there.
 
 The implemented predicate registry lives in
 `anthro_chess.evaluation.slices`. It records whether a predicate is decidable or
@@ -1392,15 +1393,22 @@ The predicate does not resolve while the mover is in check, since there is no
 null move to price the baseline against, and it is left out where mate is
 available, since the material is not what a mating line is about.
 
-Two consequences follow from the successful actions being the fault. The rank
-inverts, so `adjudicated.material_concession_best_rank` declares that higher is
-better where every rank beside it declares the opposite: a conceding move the
-policy ranks first is the bad case. And **it is reported as concession rather
-than as blunder**, because at the top of the dial the two diverge. A model that
-concedes less often than a strong human may be failing to sacrifice rather than
-failing to blunder. Both are the conditional failing to reach, so a finding
-points the same way either way, but only one of the two labels is something the
-criterion measured.
+Two consequences follow from the successful actions being the fault. Its rank
+carries no direction, where every other predicate's rank declares that lower is
+better: ranking a concession low is an improvement only for a model with no
+rating to answer to, and this one is asked to play like a weak human at one end
+of its dial. And **it is reported as concession rather than as blunder**,
+because at the top of the dial the two diverge. A model that concedes less
+often than a strong human may be failing to sacrifice rather than failing to
+blunder. Both are the conditional failing to reach, so a finding points the
+same way either way, but only one of the two labels is something the criterion
+measured.
+
+The baseline is what the opponent's best reply wins rather than a sum over
+everything loose, since the opponent only gets one move. A piece newly hung is
+therefore invisible where something worth more was already hanging, which is
+the criterion being deterministic rather than sound again: humans in those
+positions are scored the same way, so the reference absorbs it.
 
 ## Decision Decomposition
 

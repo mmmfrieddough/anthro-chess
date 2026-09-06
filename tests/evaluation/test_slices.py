@@ -29,7 +29,7 @@ from anthro_chess.evaluation.results.metrics import (
     ADJUDICATED_FAULT_PREDICATE_NAMES,
     ADJUDICATED_PREDICATE_NAMES,
 )
-from anthro_chess.evaluation.slices import position_labels
+from anthro_chess.evaluation.slices import _material_conceding_moves, position_labels
 
 
 def _phase(fen: str) -> GamePhase:
@@ -257,9 +257,16 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
     assert ADJUDICATED_PREDICATE_NAMES == tuple(
         sorted(predicate.value for predicate in PREDICATE_REGISTRY)
     )
-    # A name nothing registers would leave the predicate's rank declaring the
-    # direction the opportunity predicates declare, which is backwards for it.
-    assert set(ADJUDICATED_FAULT_PREDICATE_NAMES) <= set(ADJUDICATED_PREDICATE_NAMES)
+    # Polarity lives in both modules and only the registry forces a new
+    # predicate to declare it. A predicate missing from the tuple below would
+    # register a rank that scores a fault the way it scores an opportunity.
+    assert ADJUDICATED_FAULT_PREDICATE_NAMES == tuple(
+        sorted(
+            predicate.value
+            for predicate, definition in PREDICATE_REGISTRY.items()
+            if definition.scores_a_fault
+        )
+    )
 
 
 def test_material_concession_is_the_swing_one_decision_owns() -> None:
@@ -278,6 +285,11 @@ def test_material_concession_is_the_swing_one_decision_owns() -> None:
         # The bishop already wins the rook, so no move here concedes it: what
         # the opponent could take had the mover passed is priced out first.
         "3bk3/8/8/R7/8/8/8/4K3 w - - 0 1": set(),
+        # Promoting into a rook concedes the pawn, not the queen it becomes:
+        # only the pawn was ever the mover's to lose.
+        "7r/1P6/8/8/8/8/8/K6k w - - 0 1": {"b7b8q", "b7b8r", "b7b8b", "b7b8n"},
+        # The rook already attacks b7, so queening it costs nothing at all.
+        "7k/1P6/8/8/8/8/1r6/4K3 w - - 0 1": set(),
     }
 
     for fen, expected in cases.items():
@@ -292,23 +304,29 @@ def test_material_concession_is_the_swing_one_decision_owns() -> None:
 
 
 def test_material_concession_leaves_out_check_and_available_mate() -> None:
-    """Both positions hold a concession, and neither is scored for one."""
+    """Both positions hold concessions, and neither is scored for one."""
 
-    # Blocking with the queen drops it to the rook, but a null move cannot
-    # price the baseline while the mover is in check.
+    # The same pieces with the black rook one file over, so the only difference
+    # is the check. A null move cannot price the baseline against a position
+    # whose idle side is attacked, so the predicate does not resolve there.
     in_check = chess.Board("4r2k/8/8/8/8/8/8/4K2Q w - - 0 1")
     assert in_check.is_check()
     assert PositionPredicate.MATERIAL_CONCESSION not in match_position_predicates(
         in_check
     )
+    unchecked = match_position_predicates(
+        chess.Board("5r1k/8/8/8/8/8/8/4K2Q w - - 0 1")
+    )
+    assert PositionPredicate.MATERIAL_CONCESSION in unchecked
 
     # Qg6 drops the queen to a pawn and Qxh7 to the king. Ra8 is mate, so the
-    # material is not what this decision is about.
-    mating = match_position_predicates(
-        chess.Board("6k1/5ppp/8/8/8/3Q4/8/R5K1 w - - 0 1")
-    )
-    assert PositionPredicate.MATE_AVAILABLE in mating
-    assert PositionPredicate.MATERIAL_CONCESSION not in mating
+    # material is not what this decision is about, and the derivation is asked
+    # directly to show that the mate is what drops them.
+    mating = chess.Board("6k1/5ppp/8/8/8/3Q4/8/R5K1 w - - 0 1")
+    observed = match_position_predicates(mating)
+    assert PositionPredicate.MATE_AVAILABLE in observed
+    assert PositionPredicate.MATERIAL_CONCESSION not in observed
+    assert _material_conceding_moves(mating, tuple(mating.legal_moves))
 
 
 def test_mate_actions_include_promotion_and_en_passant() -> None:
