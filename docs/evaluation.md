@@ -1322,7 +1322,7 @@ correctness gate would push toward special-case handling, which the project
 rejects.
 
 Positions where the right answer needs an evaluation function are a second,
-weaker class. Material-gain probes belong here: simple material counting will
+weaker class. The material probes belong here: simple material counting will
 admit positions where the capture is unsound, so the criterion cannot claim the
 certainty the cases above have. That does not disqualify it, because **the human
 reference absorbs the criterion's noise**. If an admitted position's "winning"
@@ -1337,11 +1337,13 @@ predicates are reported **only relative to a reference**, never as an absolute
 rate. Predicates should record which class they belong to, since the two carry
 different weight in a report.
 
-Deciding whether mate is available means pushing every legal move and testing
-for checkmate, which is the most expensive characteristic derived so far. Over a
-frozen pool it is derived once per generation into the artifact beside it and
-read back; anything scoring positions no pool holds, such as a perturbed
-continuation, resolves it live.
+Both of the expensive predicates push every legal move: mate available tests
+each reply for checkmate, and material concession resolves the exchange the
+reply offers. Concession is the more expensive of the two by several times,
+because a checkmate test stops at the first legal reply while an exchange has
+to be played out. Over a frozen pool they are derived once per generation into
+the artifact beside it and read back; anything scoring positions no pool holds,
+such as a perturbed continuation, resolves them live and pays for them there.
 
 The implemented predicate registry lives in
 `anthro_chess.evaluation.slices`. It records whether a predicate is decidable or
@@ -1361,7 +1363,7 @@ findings. It is absent rather than zero where no legal action handles the
 predicate, which is a real state — a threatened mate nothing prevents offers
 nothing to rank.
 
-Material gain is the one implemented heuristic predicate, and it resolves the
+Material gain is one of the two heuristic predicates, and it resolves the
 exchange on the target square rather than counting the captured piece. Plain
 counting would admit every capture of a defended piece, which is not a gain at
 all. The resolution uses exact legal move generation rather than a bitboard
@@ -1375,6 +1377,30 @@ applied criterion rather than a sound one, which is what the reporting rule
 above requires. It is also far more common than the decidable predicates, so it
 is the one that carries useful statistics onto the perturbed arms of the
 novelty sweep.
+
+Material concession is the second, and it is the only predicate whose
+successful actions are the fault rather than the opportunity. Every other one
+scores whether the mover took something it was handed; this scores the mover
+creating a loss, which is the half of a rating conditional the rest of the
+family cannot see. It reads the same resolution one ply later from the other
+side: what the opponent can win outright after the move, less what the move
+itself took, less what the opponent could already win had the mover passed. The
+first correction is what keeps an even trade from reading as a blunder, since
+the recapture wins material by the same criterion the capture did; the second
+is what makes the reading about the decision rather than about the position.
+The predicate does not resolve while the mover is in check, since there is no
+null move to price the baseline against, and it is left out where mate is
+available, since the material is not what a mating line is about.
+
+Two consequences follow from the successful actions being the fault. The rank
+inverts, so `adjudicated.material_concession_best_rank` declares that higher is
+better where every rank beside it declares the opposite: a conceding move the
+policy ranks first is the bad case. And **it is reported as concession rather
+than as blunder**, because at the top of the dial the two diverge. A model that
+concedes less often than a strong human may be failing to sacrifice rather than
+failing to blunder. Both are the conditional failing to reach, so a finding
+points the same way either way, but only one of the two labels is something the
+criterion measured.
 
 ## Decision Decomposition
 

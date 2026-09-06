@@ -25,7 +25,10 @@ from anthro_chess.evaluation import (
     position_slices,
     rating_band_name,
 )
-from anthro_chess.evaluation.results.metrics import ADJUDICATED_PREDICATE_NAMES
+from anthro_chess.evaluation.results.metrics import (
+    ADJUDICATED_FAULT_PREDICATE_NAMES,
+    ADJUDICATED_PREDICATE_NAMES,
+)
 from anthro_chess.evaluation.slices import position_labels
 
 
@@ -213,6 +216,9 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
         },
         "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR w KQkq - 0 2": {
             PositionPredicate.MATE_THREATENED: 10,
+            # b4, f4 and g5 each drop a pawn to a piece that already sees the
+            # square, which is what the heuristic predicate below scores.
+            PositionPredicate.MATERIAL_CONCESSION: 3,
         },
         "8/8/8/r7/8/8/Q7/5k1K w - - 0 1": {
             # Qxa5 wins the undefended rook, so the heuristic predicate fires
@@ -238,15 +244,71 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
 
     # Classification carries real weight in a report: a decidable predicate has
     # an answer exact chess logic supplies outright, while a heuristic one is
-    # readable only against a reference. Material gain is the only heuristic.
+    # readable only against a reference. The two material predicates are the
+    # heuristics, and neither may drift into the decidable class.
     assert {
-        predicate: definition.classification
+        predicate
         for predicate, definition in PREDICATE_REGISTRY.items()
         if definition.classification is PredicateClass.HEURISTIC
-    } == {PositionPredicate.MATERIAL_GAIN: PredicateClass.HEURISTIC}
+    } == {
+        PositionPredicate.MATERIAL_GAIN,
+        PositionPredicate.MATERIAL_CONCESSION,
+    }
     assert ADJUDICATED_PREDICATE_NAMES == tuple(
         sorted(predicate.value for predicate in PREDICATE_REGISTRY)
     )
+    # A name nothing registers would leave the predicate's rank declaring the
+    # direction the opportunity predicates declare, which is backwards for it.
+    assert set(ADJUDICATED_FAULT_PREDICATE_NAMES) <= set(ADJUDICATED_PREDICATE_NAMES)
+
+
+def test_material_concession_is_the_swing_one_decision_owns() -> None:
+    """Not every loss of material: the swing this decision is responsible for."""
+
+    cases = {
+        # Three squares a defender takes the queen on: d5 to the e6 pawn, d7
+        # and d8 to the king.
+        "4k3/8/4p3/8/8/8/8/3QK3 w - - 0 1": {"d1d5", "d1d7", "d1d8"},
+        # An even trade concedes nothing. The recapture wins material by the
+        # same criterion the capture did, so netting what the move took cancels
+        # it; without that, initiating any trade would read as a blunder.
+        "4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1": set(),
+        # Netting does not excuse a capture that loses more than it takes.
+        "4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1": {"d1d5"},
+        # The bishop already wins the rook, so no move here concedes it: what
+        # the opponent could take had the mover passed is priced out first.
+        "3bk3/8/8/R7/8/8/8/4K3 w - - 0 1": set(),
+    }
+
+    for fen, expected in cases.items():
+        observed = match_position_predicates(chess.Board(fen))
+        match = observed.get(PositionPredicate.MATERIAL_CONCESSION)
+        conceding = (
+            set()
+            if match is None
+            else {decode_move(action).uci() for action in match.successful_action_ids}
+        )
+        assert conceding == expected, fen
+
+
+def test_material_concession_leaves_out_check_and_available_mate() -> None:
+    """Both positions hold a concession, and neither is scored for one."""
+
+    # Blocking with the queen drops it to the rook, but a null move cannot
+    # price the baseline while the mover is in check.
+    in_check = chess.Board("4r2k/8/8/8/8/8/8/4K2Q w - - 0 1")
+    assert in_check.is_check()
+    assert PositionPredicate.MATERIAL_CONCESSION not in match_position_predicates(
+        in_check
+    )
+
+    # Qg6 drops the queen to a pawn and Qxh7 to the king. Ra8 is mate, so the
+    # material is not what this decision is about.
+    mating = match_position_predicates(
+        chess.Board("6k1/5ppp/8/8/8/3Q4/8/R5K1 w - - 0 1")
+    )
+    assert PositionPredicate.MATE_AVAILABLE in mating
+    assert PositionPredicate.MATERIAL_CONCESSION not in mating
 
 
 def test_mate_actions_include_promotion_and_en_passant() -> None:

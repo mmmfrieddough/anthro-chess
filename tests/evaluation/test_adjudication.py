@@ -77,7 +77,9 @@ def test_adjudication_reports_human_model_and_rating_band_rates(
 def test_no_realized_predicate_is_explicitly_unavailable(
     normalized_row: Callable[..., dict[str, Any]],
 ) -> None:
-    row = normalized_row(42, split="test", rating=1500, moves=("e2e4",))
+    # a3 rather than e4: after e4 the black pieces can already concede a pawn,
+    # and this needs a game whose positions realize nothing at all.
+    row = normalized_row(42, split="test", rating=1500, moves=("a2a3",))
     inputs = build_scoring_inputs(
         [row],
         split="test",

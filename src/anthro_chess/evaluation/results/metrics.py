@@ -958,10 +958,30 @@ HELD_OUT_MOVE_LOSS_BY_OPENING_TIER: Mapping[str, MetricDefinition] = {
 ADJUDICATED_PREDICATE_NAMES: tuple[str, ...] = (
     "mate_available",
     "mate_threatened",
+    "material_concession",
     "material_gain",
     "only_move",
     "stalemate_available",
 )
+
+#: Predicates whose successful actions are the fault rather than the
+#: opportunity. The paired rates and the mass read the same way for both, since
+#: each is the share of a named action set; the rank inverts, because a fault
+#: the policy ranks first is the bad case.
+ADJUDICATED_FAULT_PREDICATE_NAMES: tuple[str, ...] = ("material_concession",)
+
+#: What a successful action does, per predicate. Written out rather than
+#: derived from the name because one shared verb cannot describe both an
+#: opportunity taken and a fault committed, and a summary that reads backwards
+#: is worse than none.
+_ADJUDICATED_ACTION_PHRASES: Mapping[str, str] = {
+    "mate_available": "delivers the available mate",
+    "mate_threatened": "removes the threatened mate",
+    "material_concession": "concedes material",
+    "material_gain": "wins the available material",
+    "only_move": "plays the one legal move",
+    "stalemate_available": "forces the available stalemate",
+}
 
 
 def _adjudicated_metric(
@@ -990,8 +1010,9 @@ ADJUDICATED_HUMAN_RATE: Mapping[str, MetricDefinition] = {
         "human_rate",
         direction=MetricDirection.INFORMATIONAL,
         summary=(
-            f"Rate at which held-out humans handled {predicate.replace('_', ' ')} "
-            "positions, the reference for the model rather than a perfect-play target."
+            f"Rate at which held-out humans played an action that "
+            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}, the reference for the "
+            "model rather than a perfect-play target."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
@@ -1003,8 +1024,8 @@ ADJUDICATED_SELECTED_RATE: Mapping[str, MetricDefinition] = {
         "selected_rate",
         direction=MetricDirection.INFORMATIONAL,
         summary=(
-            f"Rate at which the model's legal greedy action handles "
-            f"{predicate.replace('_', ' ')} positions."
+            f"Rate at which the model's legal greedy action "
+            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
@@ -1016,8 +1037,8 @@ ADJUDICATED_POLICY_MASS: Mapping[str, MetricDefinition] = {
         "policy_mass",
         direction=MetricDirection.INFORMATIONAL,
         summary=(
-            f"Raw policy mass assigned to actions that handle "
-            f"{predicate.replace('_', ' ')} positions."
+            f"Raw policy mass assigned to every action that "
+            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
@@ -1029,9 +1050,10 @@ ADJUDICATED_HUMAN_GAP: Mapping[str, MetricDefinition] = {
         "human_gap",
         direction=MetricDirection.INFORMATIONAL,
         summary=(
-            f"Model selected-action rate minus the held-out human rate for "
-            f"{predicate.replace('_', ' ')} positions. Zero is a match; the sign "
-            "shows whether the model over- or under-converts."
+            f"Model selected-action rate minus the held-out human rate where an "
+            f"action {_ADJUDICATED_ACTION_PHRASES[predicate]}. Zero is a match, "
+            "and the sign says which way the model departs from the humans it "
+            "is read against."
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
@@ -1044,12 +1066,12 @@ ADJUDICATED_HUMAN_GAP_BY_RATING_BAND: Mapping[str, Mapping[str, MetricDefinition
             f"human_gap_{band}",
             direction=MetricDirection.INFORMATIONAL,
             summary=(
-                f"Model selected-action rate minus the held-out human rate for "
-                f"{predicate.replace('_', ' ')} positions whose mover is {band}, "
-                "referenced against the humans of that band rather than the "
-                "pool's. How the gap varies across bands is what separates a "
-                "dial that delivers a different player from one that delivers a "
-                "uniformly better one."
+                f"Model selected-action rate minus the held-out human rate "
+                f"where an action {_ADJUDICATED_ACTION_PHRASES[predicate]} and "
+                f"the mover is {band}, referenced against the humans of that "
+                "band rather than the pool's. How the gap varies across bands "
+                "is what separates a dial that delivers a different player from "
+                "one that delivers a uniformly better one."
             ),
         )
         for band in (*RATING_BAND_SLICE_NAMES, UNRATED_SLICE_NAME)
@@ -1061,12 +1083,22 @@ ADJUDICATED_BEST_RANK: Mapping[str, MetricDefinition] = {
     predicate: _adjudicated_metric(
         predicate,
         "best_rank",
-        direction=MetricDirection.LOWER_IS_BETTER,
+        direction=(
+            MetricDirection.HIGHER_IS_BETTER
+            if predicate in ADJUDICATED_FAULT_PREDICATE_NAMES
+            else MetricDirection.LOWER_IS_BETTER
+        ),
         summary=(
-            f"Mean legal-masked rank of the best action that handles a "
-            f"{predicate.replace('_', ' ')} position. One means the model "
-            "preferred it; a large rank distinguishes an absence from the near "
-            "miss the policy mass alone cannot separate."
+            f"Mean legal-masked rank of the best action that "
+            f"{_ADJUDICATED_ACTION_PHRASES[predicate]}. "
+            + (
+                "One means the model's first choice is the fault, which is why "
+                "this reads the other way from the ranks beside it."
+                if predicate in ADJUDICATED_FAULT_PREDICATE_NAMES
+                else "One means the model preferred it; a large rank "
+                "distinguishes an absence from the near miss the policy mass "
+                "alone cannot separate."
+            )
         ),
     )
     for predicate in ADJUDICATED_PREDICATE_NAMES
