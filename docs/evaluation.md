@@ -342,8 +342,8 @@ log, rather than being refused or carrying an assurance nobody earned.
 Which sliced series are **committed** is a deliberate, bounded choice, because
 only a committed series can be compared over the life of the project. Overall
 prediction and legality headlines are committed; so are move loss and mask
-penalty per phase, move loss per default rating band, and mask penalty per rule
-case. Phase is committed on the evidence that held-out mask penalty varies
+penalty per phase, move loss per default rating band, mask penalty per rule
+case, and the adjudicated human gap per default rating band. Phase is committed on the evidence that held-out mask penalty varies
 severalfold between opening, middlegame, and endgame positions: a pool-wide
 average sits between those populations, and a comparison that does not hold
 phase fixed reads a shift in game-length or phase composition as a legality
