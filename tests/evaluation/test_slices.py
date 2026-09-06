@@ -214,7 +214,7 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
         "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR w KQkq - 0 2": {
             PositionPredicate.MATE_THREATENED: 10,
             # b4, f4 and g5 each drop a pawn to a piece that already sees the
-            # square, which is what the heuristic predicate below scores.
+            # square.
             PositionPredicate.MATERIAL_CONCESSION: 3,
         },
         "8/8/8/r7/8/8/Q7/5k1K w - - 0 1": {
@@ -241,8 +241,7 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
 
     # Classification carries real weight in a report: a decidable predicate has
     # an answer exact chess logic supplies outright, while a heuristic one is
-    # readable only against a reference. The two material predicates are the
-    # heuristics, and neither may drift into the decidable class.
+    # readable only against a reference.
     assert {
         predicate
         for predicate, definition in PREDICATE_REGISTRY.items()
@@ -257,23 +256,17 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
 
 
 def test_material_concession_is_the_swing_one_decision_owns() -> None:
-    """Not every loss of material: the swing this decision is responsible for."""
-
     cases = {
         # Three squares a defender takes the queen on: d5 to the e6 pawn, d7
         # and d8 to the king.
         "4k3/8/4p3/8/8/8/8/3QK3 w - - 0 1": {"d1d5", "d1d7", "d1d8"},
-        # An even trade concedes nothing. The recapture wins material by the
-        # same criterion the capture did, so netting what the move took cancels
-        # it; without that, initiating any trade would read as a blunder.
+        # An even trade concedes nothing.
         "4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1": set(),
         # Netting does not excuse a capture that loses more than it takes.
         "4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1": {"d1d5"},
-        # The bishop already wins the rook, so no move here concedes it: what
-        # the opponent could take had the mover passed is priced out first.
+        # The bishop already wins the rook, so no move here concedes it.
         "3bk3/8/8/R7/8/8/8/4K3 w - - 0 1": set(),
-        # Promoting into a rook concedes the pawn, not the queen it becomes:
-        # only the pawn was ever the mover's to lose.
+        # Promoting into a rook concedes the pawn, not the queen it becomes.
         "7r/1P6/8/8/8/8/8/K6k w - - 0 1": {"b7b8q", "b7b8r", "b7b8b", "b7b8n"},
         # The rook already attacks b7, so queening it costs nothing at all.
         "7k/1P6/8/8/8/8/1r6/4K3 w - - 0 1": set(),
@@ -294,8 +287,7 @@ def test_material_concession_leaves_out_check_and_available_mate() -> None:
     """Both positions hold concessions, and neither is scored for one."""
 
     # The same pieces with the black rook one file over, so the only difference
-    # is the check. A null move cannot price the baseline against a position
-    # whose idle side is attacked, so the predicate does not resolve there.
+    # is the check.
     in_check = chess.Board("4r2k/8/8/8/8/8/8/4K2Q w - - 0 1")
     assert in_check.is_check()
     assert PositionPredicate.MATERIAL_CONCESSION not in match_position_predicates(
@@ -307,8 +299,7 @@ def test_material_concession_leaves_out_check_and_available_mate() -> None:
     assert PositionPredicate.MATERIAL_CONCESSION in unchecked
 
     # Qg6 drops the queen to a pawn and Qxh7 to the king. Ra8 is mate, so the
-    # material is not what this decision is about, and the derivation is asked
-    # directly to show that the mate is what drops them.
+    # material is not what this decision is about.
     mating = chess.Board("6k1/5ppp/8/8/8/3Q4/8/R5K1 w - - 0 1")
     observed = match_position_predicates(mating)
     assert PositionPredicate.MATE_AVAILABLE in observed

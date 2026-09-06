@@ -958,21 +958,18 @@ HELD_OUT_MOVE_LOSS_BY_OPENING_TIER: Mapping[str, MetricDefinition] = {
 
 @dataclass(frozen=True)
 class _AdjudicatedPredicate:
-    """How one predicate's five series read.
+    """How one predicate's metric summaries read.
 
-    ``action`` completes "an action that ...", written out rather than derived
-    from the name because one shared verb cannot describe both an opportunity
-    taken and a fault committed. ``scores_a_fault`` says which of those it is.
+    ``action`` completes "an action that ...".
     """
 
     action: str
     scores_a_fault: bool
 
 
-#: Written out rather than read from the predicate registry, which this module
-#: cannot see: metric identity is a contract, and a predicate renamed there has
-#: to break a test rather than quietly rename five series. A predicate missing
-#: here raises while the module loads.
+#: Predicate names are part of metric identity, so they are stated here rather
+#: than imported. A slice layer that renamed a predicate would end these
+#: series, which is the intended behavior.
 _ADJUDICATED_PREDICATES: Mapping[str, _AdjudicatedPredicate] = {
     "mate_available": _AdjudicatedPredicate(
         "delivers the available mate", scores_a_fault=False
@@ -1096,10 +1093,8 @@ ADJUDICATED_HUMAN_GAP_BY_RATING_BAND: Mapping[str, Mapping[str, MetricDefinition
 def _adjudicated_best_rank(predicate: str) -> MetricDefinition:
     """Return one predicate's rank series.
 
-    The only one of the five that a fault reads differently. Ranking a
-    concession low is an improvement for a model with no rating to answer to,
-    and this one is asked to play like a weak human at one end of its dial, so
-    the fault's rank explains movement rather than scoring it.
+    Ranking a fault low is an improvement only for a model with no rating to
+    answer to, so a fault's rank is informational rather than lower is better.
     """
 
     entry = _ADJUDICATED_PREDICATES[predicate]

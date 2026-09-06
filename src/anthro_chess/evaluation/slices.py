@@ -160,8 +160,7 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
 
 #: Material an exchange resolution has to clear to count as won, in either
 #: direction: a capture's own sequence, and the swing a concession hands the
-#: opponent. One pawn is the smallest gain worth calling a gain, and the two
-#: read the same quantity from opposite sides.
+#: opponent. One pawn is the smallest gain worth calling a gain.
 MATERIAL_GAIN_THRESHOLD = 1
 
 #: What the king is worth when choosing which attacker recaptures. Priced far
@@ -423,9 +422,8 @@ def match_position_predicates(
     human-referenced predicate needs. Neither is a claim that a move is
     objectively best or objectively a mistake.
 
-    Concession reads the same resolution from the other side, so it joins the
-    threat predicate behind the pass, and drops out where mate is available:
-    the material is not the point of a mating line.
+    Concession is left out where mate is available: the material is not the
+    point of a mating line.
     """
 
     moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
@@ -565,11 +563,9 @@ def _material_conceding_moves(
 ) -> tuple[chess.Move, ...]:
     """Return the moves that hand the opponent material it was not already owed.
 
-    The two-ply material swing one decision is responsible for: what the
-    opponent can win outright afterwards, less what the move put on the mover's
-    side of the ledger, less what a pass would have conceded anyway. Netting
-    the second keeps an even trade and a promotion from reading as blunders;
-    netting the third keeps an unanswered standing threat from reading as one.
+    Netting what the move itself took keeps an even trade and a promotion from
+    reading as blunders; netting what a pass would have conceded keeps an
+    unanswered standing threat from reading as one.
 
     The mover must not be in check. A null move cannot price the baseline
     there, and ``python-chess`` leaves undefined a position whose idle side is
@@ -596,12 +592,7 @@ def _material_conceding_moves(
 
 
 def _best_material_win(board: chess.Board) -> int:
-    """Return the most material the side to move wins outright, or zero.
-
-    Only captures resolve without an evaluation function, so the position's
-    captures are generated rather than its whole legal move list. The answer is
-    the same and the generation is most of what asking costs.
-    """
+    """Return the most material the side to move wins outright, or zero."""
 
     return max(
         (
@@ -618,8 +609,7 @@ def _promotion_value(move: chess.Move) -> int:
     """Return what promoting adds to the mover's material, zero for other moves.
 
     A queening pawn is a queen the opponent can then win, and charging that
-    whole queen as conceded would make every promotion a blunder. Only the pawn
-    was ever invested.
+    whole queen as conceded would make every promotion a blunder.
     """
 
     if move.promotion is None:
@@ -628,7 +618,11 @@ def _promotion_value(move: chess.Move) -> int:
 
 
 def _captured_value(board: chess.Board, move: chess.Move) -> int:
-    """Return what one move takes off the board, zero when it takes nothing."""
+    """Return what one move takes off the board, zero when it takes nothing.
+
+    En passant is priced separately because the captured pawn is not on the
+    square the move lands on.
+    """
 
     if not board.is_capture(move):
         return 0
@@ -641,9 +635,8 @@ def _exchange_value(piece_type: int | None) -> int:
     """Return one piece's worth inside an exchange resolution.
 
     Reads the shared material table so a pawn is worth the same here as in a
-    balance, with the king's ordering price applied on top. The argument is
-    optional because ``piece_type_at`` is; every call site reads a square that
-    holds a piece, and an empty one prices as a pawn rather than raising.
+    balance, with the king's ordering price applied on top. No caller can pass
+    ``None``: an empty square prices as a pawn rather than raising.
     """
 
     if piece_type is None:
@@ -680,9 +673,8 @@ def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -
     The least valuable attacker recaptures, with the move's own notation
     breaking ties so the resolution is deterministic.
 
-    Only the moves onto the square are generated. The square holds the piece
-    that just moved there, so every legal move to it is a recapture, and
-    generating the whole list to keep those is most of what a resolution costs.
+    The square holds the piece that just moved there, so every legal move onto
+    it is a recapture.
     """
 
     captures = list(board.generate_legal_moves(chess.BB_ALL, chess.BB_SQUARES[square]))
