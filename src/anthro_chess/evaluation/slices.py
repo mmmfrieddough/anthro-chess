@@ -98,6 +98,7 @@ class PositionPredicate(StrEnum):
     STALEMATE_AVAILABLE = "stalemate_available"
     ONLY_MOVE = "only_move"
     MATERIAL_GAIN = "material_gain"
+    MATERIAL_CONCESSION = "material_concession"
 
 
 @dataclass(frozen=True)
@@ -146,10 +147,20 @@ PREDICATE_REGISTRY: Mapping[PositionPredicate, PredicateDefinition] = {
             "successful moves are those captures."
         ),
     ),
+    PositionPredicate.MATERIAL_CONCESSION: PredicateDefinition(
+        predicate=PositionPredicate.MATERIAL_CONCESSION,
+        classification=PredicateClass.HEURISTIC,
+        summary=(
+            "A move leaves the opponent winning more material than it took or "
+            "than the mover could already have been made to lose; successful "
+            "moves are those concessions."
+        ),
+    ),
 }
 
-#: Material threshold a capture's exchange sequence has to clear to count as
-#: winning. One pawn is the smallest gain worth calling a gain.
+#: Material an exchange resolution has to clear to count as won, in either
+#: direction: a capture's own sequence, and the swing a concession hands the
+#: opponent. One pawn is the smallest gain worth calling a gain.
 MATERIAL_GAIN_THRESHOLD = 1
 
 #: What the king is worth when choosing which attacker recaptures. Priced far
@@ -404,12 +415,15 @@ def match_position_predicates(
     then one that removes every such immediate reply. Null moves are used only
     to derive a label; they are never exposed as model actions.
 
-    Material gain is the one heuristic predicate here, and it resolves the
-    exchange rather than counting the captured piece. Plain counting would
-    admit every capture of a defended piece, which is not a gain at all; the
-    exchange sequence is still deterministic and identically applied to both
-    sides, which is what a human-referenced predicate needs. It is not a claim
-    that the capture is objectively best.
+    The two heuristic predicates resolve the exchange rather than counting the
+    captured piece. Plain counting would admit every capture of a defended
+    piece, which is not a gain at all; the exchange sequence is still
+    deterministic and identically applied to both sides, which is what a
+    human-referenced predicate needs. Neither is a claim that a move is
+    objectively best or objectively a mistake.
+
+    Concession is left out where mate is available: the material is not the
+    point of a mating line.
     """
 
     moves = tuple(board.legal_moves) if legal_moves is None else tuple(legal_moves)
@@ -454,6 +468,11 @@ def match_position_predicates(
         matches[PositionPredicate.MATE_THREATENED] = PredicateMatch(
             predicate=PositionPredicate.MATE_THREATENED,
             successful_action_ids=frozenset(action_ids[move] for move in safe),
+        )
+    if not mates and (conceding := _material_conceding_moves(board, moves)):
+        matches[PositionPredicate.MATERIAL_CONCESSION] = PredicateMatch(
+            predicate=PositionPredicate.MATERIAL_CONCESSION,
+            successful_action_ids=frozenset(action_ids[move] for move in conceding),
         )
     return matches
 
@@ -538,13 +557,86 @@ def material_winning_moves(
     )
 
 
+def _material_conceding_moves(
+    board: chess.Board,
+    legal_moves: Sequence[chess.Move],
+) -> tuple[chess.Move, ...]:
+    """Return the moves that hand the opponent material it was not already owed.
+
+    Netting what the move itself took keeps an even trade and a promotion from
+    reading as blunders; netting what a pass would have conceded keeps an
+    unanswered standing threat from reading as one.
+
+    The mover must not be in check. A null move cannot price the baseline
+    there, and ``python-chess`` leaves undefined a position whose idle side is
+    attacked.
+    """
+
+    board.push(chess.Move.null())
+    try:
+        already_offered = _best_material_win(board)
+    finally:
+        board.pop()
+
+    conceding: list[chess.Move] = []
+    for move in legal_moves:
+        invested = _captured_value(board, move) + _promotion_value(move)
+        board.push(move)
+        try:
+            swing = _best_material_win(board) - invested - already_offered
+        finally:
+            board.pop()
+        if swing >= MATERIAL_GAIN_THRESHOLD:
+            conceding.append(move)
+    return tuple(conceding)
+
+
+def _best_material_win(board: chess.Board) -> int:
+    """Return the most material the side to move wins outright, or zero."""
+
+    return max(
+        (
+            gain
+            for _, gain in material_winning_moves(
+                board, tuple(board.generate_legal_captures())
+            )
+        ),
+        default=0,
+    )
+
+
+def _promotion_value(move: chess.Move) -> int:
+    """Return what promoting adds to the mover's material, zero for other moves.
+
+    A queening pawn is a queen the opponent can then win, and charging that
+    whole queen as conceded would make every promotion a blunder.
+    """
+
+    if move.promotion is None:
+        return 0
+    return MATERIAL_VALUES[move.promotion] - MATERIAL_VALUES[chess.PAWN]
+
+
+def _captured_value(board: chess.Board, move: chess.Move) -> int:
+    """Return what one move takes off the board, zero when it takes nothing.
+
+    En passant is priced separately because the captured pawn is not on the
+    square the move lands on.
+    """
+
+    if not board.is_capture(move):
+        return 0
+    if board.is_en_passant(move):
+        return MATERIAL_VALUES[chess.PAWN]
+    return _exchange_value(board.piece_type_at(move.to_square))
+
+
 def _exchange_value(piece_type: int | None) -> int:
     """Return one piece's worth inside an exchange resolution.
 
     Reads the shared material table so a pawn is worth the same here as in a
-    balance, with the king's ordering price applied on top. An empty square
-    resolves to a pawn, which only arises for an en-passant capture whose
-    target square holds nothing.
+    balance, with the king's ordering price applied on top. No caller can pass
+    ``None``: an empty square prices as a pawn rather than raising.
     """
 
     if piece_type is None:
@@ -565,11 +657,7 @@ def _exchange_gain(board: chess.Board, move: chess.Move) -> int:
     benchmark actually scores.
     """
 
-    captured = (
-        MATERIAL_VALUES[chess.PAWN]
-        if board.is_en_passant(move)
-        else _exchange_value(board.piece_type_at(move.to_square))
-    )
+    captured = _captured_value(board, move)
     board.push(move)
     try:
         at_risk = _exchange_value(board.piece_type_at(move.to_square))
@@ -584,13 +672,12 @@ def _continue_exchange(board: chess.Board, square: chess.Square, at_risk: int) -
     Standing pat is always available, so a side never continues into a loss.
     The least valuable attacker recaptures, with the move's own notation
     breaking ties so the resolution is deterministic.
+
+    The square holds the piece that just moved there, so every legal move onto
+    it is a recapture.
     """
 
-    captures = [
-        move
-        for move in board.legal_moves
-        if move.to_square == square and board.is_capture(move)
-    ]
+    captures = list(board.generate_legal_moves(chess.BB_ALL, chess.BB_SQUARES[square]))
     if not captures:
         return 0
     move = min(

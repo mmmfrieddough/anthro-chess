@@ -26,7 +26,7 @@ from anthro_chess.evaluation import (
     rating_band_name,
 )
 from anthro_chess.evaluation.results.metrics import ADJUDICATED_PREDICATE_NAMES
-from anthro_chess.evaluation.slices import position_labels
+from anthro_chess.evaluation.slices import _material_conceding_moves, position_labels
 
 
 def _phase(fen: str) -> GamePhase:
@@ -213,6 +213,9 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
         },
         "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR w KQkq - 0 2": {
             PositionPredicate.MATE_THREATENED: 10,
+            # b4, f4 and g5 each drop a pawn to a piece that already sees the
+            # square.
+            PositionPredicate.MATERIAL_CONCESSION: 3,
         },
         "8/8/8/r7/8/8/Q7/5k1K w - - 0 1": {
             # Qxa5 wins the undefended rook, so the heuristic predicate fires
@@ -238,15 +241,70 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
 
     # Classification carries real weight in a report: a decidable predicate has
     # an answer exact chess logic supplies outright, while a heuristic one is
-    # readable only against a reference. Material gain is the only heuristic.
+    # readable only against a reference.
     assert {
-        predicate: definition.classification
+        predicate
         for predicate, definition in PREDICATE_REGISTRY.items()
         if definition.classification is PredicateClass.HEURISTIC
-    } == {PositionPredicate.MATERIAL_GAIN: PredicateClass.HEURISTIC}
+    } == {
+        PositionPredicate.MATERIAL_GAIN,
+        PositionPredicate.MATERIAL_CONCESSION,
+    }
     assert ADJUDICATED_PREDICATE_NAMES == tuple(
         sorted(predicate.value for predicate in PREDICATE_REGISTRY)
     )
+
+
+def test_material_concession_is_the_swing_one_decision_owns() -> None:
+    cases = {
+        # Three squares a defender takes the queen on: d5 to the e6 pawn, d7
+        # and d8 to the king.
+        "4k3/8/4p3/8/8/8/8/3QK3 w - - 0 1": {"d1d5", "d1d7", "d1d8"},
+        # An even trade concedes nothing.
+        "4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1": set(),
+        # Netting does not excuse a capture that loses more than it takes.
+        "4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1": {"d1d5"},
+        # The bishop already wins the rook, so no move here concedes it.
+        "3bk3/8/8/R7/8/8/8/4K3 w - - 0 1": set(),
+        # Promoting into a rook concedes the pawn, not the queen it becomes.
+        "7r/1P6/8/8/8/8/8/K6k w - - 0 1": {"b7b8q", "b7b8r", "b7b8b", "b7b8n"},
+        # The rook already attacks b7, so queening it costs nothing at all.
+        "7k/1P6/8/8/8/8/1r6/4K3 w - - 0 1": set(),
+    }
+
+    for fen, expected in cases.items():
+        observed = match_position_predicates(chess.Board(fen))
+        match = observed.get(PositionPredicate.MATERIAL_CONCESSION)
+        conceding = (
+            set()
+            if match is None
+            else {decode_move(action).uci() for action in match.successful_action_ids}
+        )
+        assert conceding == expected, fen
+
+
+def test_material_concession_leaves_out_check_and_available_mate() -> None:
+    """Both positions hold concessions, and neither is scored for one."""
+
+    # The same pieces with the black rook one file over, so the only difference
+    # is the check.
+    in_check = chess.Board("4r2k/8/8/8/8/8/8/4K2Q w - - 0 1")
+    assert in_check.is_check()
+    assert PositionPredicate.MATERIAL_CONCESSION not in match_position_predicates(
+        in_check
+    )
+    unchecked = match_position_predicates(
+        chess.Board("5r1k/8/8/8/8/8/8/4K2Q w - - 0 1")
+    )
+    assert PositionPredicate.MATERIAL_CONCESSION in unchecked
+
+    # Qg6 drops the queen to a pawn and Qxh7 to the king. Ra8 is mate, so the
+    # material is not what this decision is about.
+    mating = chess.Board("6k1/5ppp/8/8/8/3Q4/8/R5K1 w - - 0 1")
+    observed = match_position_predicates(mating)
+    assert PositionPredicate.MATE_AVAILABLE in observed
+    assert PositionPredicate.MATERIAL_CONCESSION not in observed
+    assert _material_conceding_moves(mating, tuple(mating.legal_moves))
 
 
 def test_mate_actions_include_promotion_and_en_passant() -> None:
