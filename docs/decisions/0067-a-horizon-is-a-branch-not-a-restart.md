@@ -22,6 +22,11 @@ identity intact, so a test asserts the horizon separately.
 carries this record's cooldown fraction rather than fitting one, and states the
 warmup rule that sits inside this schedule family.
 
+`0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md` qualifies the
+consequence below that the final run stays extendable. Branching a further
+cooldown remains free, but the gain goes negative past a ceiling that record
+measures, so the option is worth exercising only up to it.
+
 ## Context
 
 Two schedule families are available, and the evidence in
