@@ -34,6 +34,10 @@ all landed after this one and all three move what an arm costs.
 fits the hyperparameter rules that have to reach the size this record derived,
 and states the parameter count they are expressed against.
 
+`0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md` leaves the
+horizon derived here unchanged and records that the step count it implies sits
+past the ceiling measured there.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and
