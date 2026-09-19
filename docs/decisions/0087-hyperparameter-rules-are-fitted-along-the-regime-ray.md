@@ -21,6 +21,10 @@ carried rather than fitted.
 dispersion every near-optimal band here is read against, and this record extends
 that measurement to two smaller widths.
 
+`0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md` puts a range on
+the weight-decay reading here, and records why the timescale this rule is stated
+over is the wrong invariant for the failure it found.
+
 ## Context
 
 `docs/scaling.md` requires a scale-dependent setting to be recorded as the rule

@@ -107,6 +107,24 @@ constraint is loose — a model this size answers in milliseconds. That argues f
 the smaller-and-longer end of the band rather than the compute-optimal point,
 which is chosen for a run that is never served.
 
+### The Horizon Has A Ceiling, Counted In Steps
+
+**A run stops improving and then degrades, and where that happens is a step
+count rather than a ratio of positions to parameters.** At the vehicle's width
+the loss minimum sits near 222,000 optimizer steps and the reading is clearly
+degraded by 347,000, on held-out loss and top-1 accuracy alike.
+
+Positions per parameter stays the right coordinate for the regime a model is
+trained in, which is what the vehicle is matched on. It is the wrong coordinate
+for this ceiling: two runs at one ratio and different widths differ in steps by
+the ratio of their parameter counts, so the vehicle at 69,466 steps and the
+target at 1,007,941 sit at one ratio and on opposite sides of the bound. **The
+vehicle therefore cannot detect this and is not expected to.**
+
+`docs/decisions/0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md`
+records the curve, the mechanism the evidence points at, and what it does not
+establish.
+
 ### The Target
 
 **The target is `model_dim` 512, about 20.6M parameters, trained on roughly

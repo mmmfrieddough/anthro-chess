@@ -26,6 +26,10 @@ it found.
 `0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
 fits the cross-scale rules this record's rate sweep is the top rung of.
 
+`0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md` records what
+this size cannot see: matching the target's regime matches the ratio and not the
+step count, and the ceiling it measures is counted in steps.
+
 ## Context
 
 `0071` derived the target and, in its Consequences, priced the vehicle at each
