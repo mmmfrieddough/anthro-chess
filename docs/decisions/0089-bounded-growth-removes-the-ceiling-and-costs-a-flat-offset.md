@@ -93,7 +93,7 @@ comparison below rests on.
 | 347,200 | 1.467248 | **1.444943** | 1.500206 | 0.534615 | **0.533473** |
 
 The control minimises at 222,208 and reads 2.09% worse by 347,200, a rise of
-0.0276 against a combined dispersion floor of 0.00084. **The 33,333-step arm has
+0.0301 against a combined dispersion floor of 0.00084. **The 33,333-step arm has
 no minimum inside the range read.** Its best reading on both metrics is its last,
 at the step where the control is clearly degraded, and no reading of it is worse
 than an earlier one by more than that pair's floor. The middle three steps are
@@ -164,9 +164,16 @@ instrument any future stability claim at this horizon should use.
 named is confirmed.** Bounding parameter growth removes the turnaround in both
 carrying metrics at the width and step count where the turnaround exists.
 
-**The rule is an absolute decay timescale in optimizer steps, 33,333 of them.**
-`anthro_chess.training.scaling_rules` states it that way and derives the
-coefficient a run takes from its own peak rate.
+**The rule is an absolute decay timescale in optimizer steps, 33,333 of them**,
+with the coefficient a run takes derived from its own peak rate.
+
+**No configuration in this repository adopts it, and that is the same decision
+twice rather than two.** `anthro_chess.training.scaling_rules` keeps producing
+no decay, because the longest run its fitted ranges can express is 73,242 steps
+and the bound sits past 222,000. Applying the rule there would pay the offset
+below at every scale the module can serve and collect none of the benefit. The
+timescale is therefore recorded here and applied by hand to a run configured
+past those ranges, which is what both arms above were.
 
 **The timescale-as-a-multiple-of-the-horizon form does not survive.** Its defect
 is what `0088` predicted and what these arms show directly: both equilibrated by
@@ -198,7 +205,7 @@ decided rather than deferred.
 `weight_decay` is inside `training_sha256`, so changing it invalidates the stored
 seed dispersion and every candidate arm read against it, which `0065` and `0076`
 price at five arms plus the loss of every prior comparison. What that buys the
-vehicle is nothing: it runs 69,465 steps, a fifth of the way to the observed
+vehicle is nothing: it runs 69,465 steps, a third of the way to the observed
 minimum, on the healthy side of a bound it cannot reach. A dial that does nothing
 at a configuration's horizon is not worth a configuration's history.
 
@@ -223,6 +230,16 @@ training-seed noise and the reading is not presented as though it were.
 reading. Whether a bounded run eventually recovers that is the question the
 ladder needs answered and this record does not answer it.
 
+**The timescale is realized only at the peak rate.** Decay shrinks by the
+scheduled rate times the coefficient, while the coefficient here is pinned to
+the peak, so a run spends its warmup and cooldown decaying more slowly than the
+stated timescale. Every arm behind this value was a constant-rate trunk that
+never entered a cooldown, which is what made the comparison legitimate and also
+means the one configuration the value was located at is the one with no
+schedule to complicate it. A run declaring its real horizon takes roughly a
+fifth of its steps at a reduced rate and receives correspondingly less decay
+than the number suggests.
+
 ## Consequences
 
 **The ladder can place rungs past the ceiling.** `0088` made the upper rungs of a
@@ -236,8 +253,10 @@ a size effect.
 
 **A long run is configured from the rule rather than from the vehicle.** The
 vehicle's `weight_decay = 0.0` is correct for the vehicle and wrong for anything
-that runs long enough to reach the bound. `anthro scale` is what produces the
-setting for a run that does.
+that runs long enough to reach the bound, and `anthro scale` says so by
+refusing: a run past the ceiling is past `POSITIONS_RANGE` too, so it asks for a
+rate the rules were never fitted for. Extending that range is the ladder's work
+and carries the rate question with it, not only this one.
 
 **Stability at this horizon is read on the per-interval record.** The cadence
 cannot resolve what separates these runs, and a claim of no instability that

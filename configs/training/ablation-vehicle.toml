@@ -38,10 +38,10 @@ cooldown_fraction = 0.2
 # Nothing repeats at this horizon: the corpus holds 138.7e9 plies against the
 # 1.14e9 positions an arm reads, so decay has no overfitting to prevent here.
 # What decay does bound is parameter growth over a long run, and 69,465 steps is
-# a fifth of the way to where that starts costing anything, so the rule
-# `anthro_chess.training.scaling_rules` now states would change nothing here at
-# the price of this configuration's whole recorded history. The decision record
-# beside this file owns that call.
+# a third of the way to where that starts costing anything, so enabling it would
+# change nothing this configuration measures at the price of its whole recorded
+# history. `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+# owns that call and the rule a run long enough to need one takes.
 weight_decay = 0.0
 
 # Relaxed rather than strict. Strict costs 3.24x on this shape, measured, and

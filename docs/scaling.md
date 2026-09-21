@@ -125,16 +125,22 @@ vehicle therefore cannot detect this and is not expected to.**
 records the curve, the mechanism the evidence points at, and what it does not
 establish.
 
-**Weight decay is what lifts the ceiling, and the rule is a decay timescale of
-33,333 optimizer steps held absolute.** Bounding parameter growth removes the
-turnaround at the width and step count where the turnaround exists: the arm
-improves at every step read out to 347,200, where the undecayed run is 2.09%
-degraded. It is not free. The arm runs about 0.9% above the undecayed run
-wherever that run is still healthy, so the two cross rather than one dominating,
-and a ladder whose rungs differ in whether decay binds would read that offset as
-a size effect. `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
-records both arms, why the timescale is held in steps rather than as a share of
-the horizon or as a coefficient, and why the vehicle does not adopt it.
+**Weight decay is what lifts the ceiling, and the rule is a decay timescale
+held absolute in optimizer steps.** Bounding parameter growth removes the
+turnaround at the width and step count where the turnaround exists: the decayed
+arm's best reading on both carrying metrics is its last, at the step where the
+undecayed run is 2.09% degraded. It is not free. The arm runs about 0.9% above
+the undecayed run wherever that run is still healthy, so the two cross rather
+than one dominating, and a ladder whose rungs differ in whether decay binds
+would read that offset as a size effect.
+
+**No configuration here adopts it, because none can reach the bound.** The
+longest run the fitted ranges can express is a third of the way to the ceiling,
+so the rules keep producing no decay and the timescale is applied by hand to a
+run configured past them.
+`docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+carries both arms, the timescale, and why it is held in steps rather than as a
+share of the horizon or as a coefficient.
 
 ### The Target
 
@@ -239,7 +245,7 @@ undo it.
 | **Peak learning rate** | **hard** | **hard** | **hard** | **hard** | soft | soft | **hard** | **hard** |
 | Batch size | soft | — | — | **hard** | soft | soft | — | soft |
 | Adam second-moment decay | — | — | **hard** | soft | — | — | — | **hard** |
-| Weight decay | recompute | — | recompute | soft | soft | — | — | **hard** |
+| Weight decay | recompute | — | recompute | recompute | **hard** | — | — | **hard** |
 | Warmup length | open | — | recompute | soft | — | soft | — | soft |
 | Learning-rate schedule | — | — | — | soft | — | — | — | — |
 | Selection filters | — | — | — | **hard** | **hard** | **hard** | — | — |

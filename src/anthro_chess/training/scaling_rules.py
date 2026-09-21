@@ -187,23 +187,6 @@ HORIZON_EXPONENT = 0.0
 #: slightly better, and a later session has nothing to gain by re-deriving it.
 WARMUP_FRACTION = 0.01
 
-#: The decay timescale, in optimizer steps, held absolute rather than as a share
-#: of the horizon and rather than as a coefficient.
-#:
-#: What decay bounds here is not overfitting, which a corpus repeating nothing
-#: cannot produce, but the parameter growth that costs a long run its response.
-#: That growth is per step and independent of width, so the quantity to hold
-#: fixed is a number of steps. Held as a share of the horizon the per-step rate
-#: weakens as a run lengthens, which gives least where the growth is worst; held
-#: as a coefficient the timescale drifts with width, because the rate rule above
-#: moves the peak rate with width.
-#:
-#: The value is the arm that was run rather than an optimum that was found. At
-#: width 128 this timescale removes the turnaround and is the most stable of the
-#: three runs compared, while 3,333 steps costs 4.4% and destabilizes. One decade
-#: separates them and nothing was run inside it, so the digits past the first
-#: describe the arm.
-WEIGHT_DECAY_STEPS = 33_333
 
 #: The span the second moment averages over, in positions, so that a batch
 #: change moves the constant rather than silently rescaling the average.
@@ -266,20 +249,33 @@ def warmup_positions(positions: int) -> int:
     return round(WARMUP_FRACTION * positions)
 
 
-def weight_decay(learning_rate: float) -> float:
-    """Return the coefficient that puts the decay timescale at its rule.
+def weight_decay() -> float:
+    """Return the decay coefficient these rules produce, which is none.
 
     Decoupled decay shrinks a weight by ``learning_rate * weight_decay`` each
-    step, so the coefficient means nothing on its own: what it sets is a
-    timescale of ``1 / (learning_rate * weight_decay)`` steps. The rule is
-    stated over that timescale, so the coefficient is whatever holds it at this
-    run's own peak rate.
+    step, so what a coefficient sets is a timescale of
+    ``1 / (learning_rate * weight_decay)`` steps rather than a strength on its
+    own.
 
-    A run shorter than the timescale is barely touched, which is correct rather
-    than a gap: growth has not accumulated far enough there to cost anything.
+    **None is a measured answer here rather than a missing rule.** What decay
+    bounds at these horizons is not overfitting, which a corpus repeating
+    nothing cannot produce, but the parameter growth that eventually costs a run
+    its response. That bound sits past 222,000 optimizer steps, and the longest
+    run these ranges can express is 73,242, so every run resolvable here is on
+    the healthy side of it and a coefficient would buy nothing while costing
+    what decay costs in a healthy range.
+
+    ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
+    measures both numbers and states the rule for a run configured past these
+    ranges by hand: an absolute decay timescale in optimizer steps. Growth is
+    per step and width independent, so a share of the horizon weakens exactly as
+    a run grows long enough to need it, and a fixed coefficient drifts with
+    width because the rate rule above moves the peak rate with width. The
+    timescale is deliberately not a constant in this module, because nothing
+    this module can serve would apply it.
     """
 
-    return 1.0 / (learning_rate * WEIGHT_DECAY_STEPS)
+    return 0.0
 
 
 def second_moment_decay(batch: int) -> float:
@@ -330,9 +326,8 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
     """Return every setting the rules produce at one scale.
 
     The order is forced rather than chosen: the batch follows from the horizon,
-    the rate needs the batch, and the two timescales need the rate and the
-    batch. Resolving in any other order would need a setting that does not
-    exist yet.
+    the rate needs the batch, and the second-moment timescale needs the batch.
+    Resolving in any other order would need a setting that does not exist yet.
     """
 
     parameters = scale.parameters
@@ -350,7 +345,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
         learning_rate=rate,
         warmup_positions=warmup_positions(positions),
         cooldown_fraction=COOLDOWN_FRACTION,
-        weight_decay=weight_decay(rate),
+        weight_decay=weight_decay(),
         second_moment_decay=second_moment_decay(batch),
     )
 
