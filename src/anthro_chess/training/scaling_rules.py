@@ -3,8 +3,8 @@
 ``docs/scaling.md`` says a hyperparameter that depends on scale is recorded as
 the rule that produces it rather than as the number the rule produced. This
 module is that record for the five settings a size or horizon change moves:
-the peak learning rate, the batch, the warmup, the weight-decay timescale, and
-the optimizer's second-moment decay.
+the peak learning rate, the batch, the warmup, the weight-decay coefficient,
+and the optimizer's second-moment decay.
 
 **Only the rate became a rule against scale.** The other four are held, each
 because the arms behind it said so rather than because it was skipped, and each
@@ -29,7 +29,7 @@ it stops holding, so the boundary has to be carried separately.
 
 ``docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md``
 records what was run, what each exponent came out at, and what the fit does not
-establish, except for the decay timescale, which
+establish, except for the decay setting, which
 ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
 settled at a horizon long enough for that dial to do anything.
 """
@@ -188,6 +188,17 @@ HORIZON_EXPONENT = 0.0
 WARMUP_FRACTION = 0.01
 
 
+#: No decay, which is a measured answer here rather than a missing rule.
+#:
+#: What decay bounds at these horizons is not overfitting, which a corpus
+#: repeating nothing can produce, but the parameter growth that eventually costs
+#: a run its response. That bound sits past every horizon the ranges below can
+#: express, so a coefficient here would pay what decay costs in a healthy range
+#: and collect none of the benefit.
+#: ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
+#: carries the arms, and the timescale a run configured past those ranges takes.
+WEIGHT_DECAY = 0.0
+
 #: The span the second moment averages over, in positions, so that a batch
 #: change moves the constant rather than silently rescaling the average.
 #:
@@ -247,35 +258,6 @@ def warmup_positions(positions: int) -> int:
     """
 
     return round(WARMUP_FRACTION * positions)
-
-
-def weight_decay() -> float:
-    """Return the decay coefficient these rules produce, which is none.
-
-    Decoupled decay shrinks a weight by ``learning_rate * weight_decay`` each
-    step, so what a coefficient sets is a timescale of
-    ``1 / (learning_rate * weight_decay)`` steps rather than a strength on its
-    own.
-
-    **None is a measured answer here rather than a missing rule.** What decay
-    bounds at these horizons is not overfitting, which a corpus repeating
-    nothing cannot produce, but the parameter growth that eventually costs a run
-    its response. That bound sits past 222,000 optimizer steps, and the longest
-    run these ranges can express is 73,242, so every run resolvable here is on
-    the healthy side of it and a coefficient would buy nothing while costing
-    what decay costs in a healthy range.
-
-    ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
-    measures both numbers and states the rule for a run configured past these
-    ranges by hand: an absolute decay timescale in optimizer steps. Growth is
-    per step and width independent, so a share of the horizon weakens exactly as
-    a run grows long enough to need it, and a fixed coefficient drifts with
-    width because the rate rule above moves the peak rate with width. The
-    timescale is deliberately not a constant in this module, because nothing
-    this module can serve would apply it.
-    """
-
-    return 0.0
 
 
 def second_moment_decay(batch: int) -> float:
@@ -345,7 +327,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
         learning_rate=rate,
         warmup_positions=warmup_positions(positions),
         cooldown_fraction=COOLDOWN_FRACTION,
-        weight_decay=weight_decay(),
+        weight_decay=WEIGHT_DECAY,
         second_moment_decay=second_moment_decay(batch),
     )
 
@@ -353,6 +335,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
 __all__ = [
     "POSITIONS_RANGE",
     "COOLDOWN_FRACTION",
+    "WEIGHT_DECAY",
     "MICRO_BATCH_POSITIONS",
     "MODEL_DIM_RANGE",
     "POSITIONS_PER_PARAMETER_RANGE",
@@ -366,5 +349,4 @@ __all__ = [
     "resolve",
     "second_moment_decay",
     "warmup_positions",
-    "weight_decay",
 ]

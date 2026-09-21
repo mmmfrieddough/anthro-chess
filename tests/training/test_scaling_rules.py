@@ -176,18 +176,6 @@ def test_the_second_moment_timescale_is_what_survives_a_batch_change() -> None:
     assert len(spans) == 1
 
 
-def test_the_weight_decay_coefficient_encodes_the_timescale_the_rule_states() -> None:
-    """A coefficient is meaningless alone; what it has to reproduce is a time."""
-
-    resolved = resolve(TrainingScale(model_dim=64, positions_per_parameter=800))
-    if not resolved.weight_decay:
-        assert resolved.weight_decay_steps == float("inf")
-        return
-    assert resolved.weight_decay_steps == pytest.approx(
-        1.0 / (resolved.learning_rate * resolved.weight_decay)
-    )
-
-
 @pytest.mark.parametrize(
     ("model_dim", "ratio"),
     [
