@@ -187,13 +187,12 @@ HORIZON_EXPONENT = 0.0
 #: slightly better, and a later session has nothing to gain by re-deriving it.
 WARMUP_FRACTION = 0.01
 
-
 #: No decay, which is a measured answer here rather than a missing rule.
 #:
-#: What decay bounds at these horizons is not overfitting, which a corpus
-#: repeating nothing can produce, but the parameter growth that eventually costs
-#: a run its response. That bound sits past every horizon the ranges below can
-#: express, so a coefficient here would pay what decay costs in a healthy range
+#: What decay bounds is not overfitting, since nothing repeats at these
+#: horizons, but the parameter growth that eventually costs a run its response.
+#: That bound sits past every horizon the fitted ranges above can express, so a
+#: coefficient here would pay the offset decay costs wherever a run is healthy
 #: and collect none of the benefit.
 #: ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
 #: carries the arms, and the timescale a run configured past those ranges takes.

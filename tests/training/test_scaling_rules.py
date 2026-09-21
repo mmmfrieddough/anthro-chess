@@ -107,10 +107,8 @@ def test_the_vehicle_comes_back_out_of_the_rules_that_were_fitted_through_it(
         vehicle.warmup_positions, rel=0.01
     )
     assert resolved.cooldown_fraction == vehicle.cooldown_fraction
-    # Exact rather than banded, and the one setting here whose drift would be
-    # silent: it is inside `training_sha256`, so a rung configured from these
-    # rules would match the vehicle's key on every other field and lose its
-    # recorded seed dispersion without anything saying so.
+    # Inside `training_sha256`, so drift here re-keys a rung away from the
+    # vehicle's stored seed dispersion.
     assert resolved.weight_decay == vehicle.weight_decay
 
 
