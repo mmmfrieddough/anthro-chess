@@ -19,6 +19,10 @@ Bears on `0071-the-target-is-the-size-the-published-ladder-flattens-at.md`: the
 target's horizon is unchanged, but the step count it implies sits past the
 ceiling below.
 
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+demonstrates the mechanism this record could only evidence, and records the
+condition under which the ceiling stops binding.
+
 ## Context
 
 Every checkpoint this project had read was stopped by a step bound while still

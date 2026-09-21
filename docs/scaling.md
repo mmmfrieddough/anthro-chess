@@ -109,10 +109,10 @@ which is chosen for a run that is never served.
 
 ### The Horizon Has A Ceiling, Counted In Steps
 
-**A run stops improving and then degrades, and where that happens is a step
-count rather than a ratio of positions to parameters.** At the vehicle's width
-the loss minimum sits near 222,000 optimizer steps and the reading is clearly
-degraded by 347,000, on held-out loss and top-1 accuracy alike.
+**An undecayed run stops improving and then degrades, and where that happens is
+a step count rather than a ratio of positions to parameters.** At the vehicle's
+width the loss minimum sits near 222,000 optimizer steps and the reading is
+clearly degraded by 347,000, on held-out loss and top-1 accuracy alike.
 
 Positions per parameter stays the right coordinate for the regime a model is
 trained in, which is what the vehicle is matched on. It is the wrong coordinate
@@ -124,6 +124,17 @@ vehicle therefore cannot detect this and is not expected to.**
 `docs/decisions/0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md`
 records the curve, the mechanism the evidence points at, and what it does not
 establish.
+
+**Weight decay is what lifts the ceiling, and the rule is a decay timescale of
+33,333 optimizer steps held absolute.** Bounding parameter growth removes the
+turnaround at the width and step count where the turnaround exists: the arm
+improves at every step read out to 347,200, where the undecayed run is 2.09%
+degraded. It is not free. The arm runs about 0.9% above the undecayed run
+wherever that run is still healthy, so the two cross rather than one dominating,
+and a ladder whose rungs differ in whether decay binds would read that offset as
+a size effect. `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+records both arms, why the timescale is held in steps rather than as a share of
+the horizon or as a coefficient, and why the vehicle does not adopt it.
 
 ### The Target
 
@@ -228,7 +239,7 @@ undo it.
 | **Peak learning rate** | **hard** | **hard** | **hard** | **hard** | soft | soft | **hard** | **hard** |
 | Batch size | soft | — | — | **hard** | soft | soft | — | soft |
 | Adam second-moment decay | — | — | **hard** | soft | — | — | — | **hard** |
-| Weight decay | recompute | — | recompute | recompute | **hard** | — | — | **hard** |
+| Weight decay | recompute | — | recompute | soft | soft | — | — | **hard** |
 | Warmup length | open | — | recompute | soft | — | soft | — | soft |
 | Learning-rate schedule | — | — | — | soft | — | — | — | — |
 | Selection filters | — | — | — | **hard** | **hard** | **hard** | — | — |

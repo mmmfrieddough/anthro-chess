@@ -16,6 +16,7 @@ from anthro_chess.training.scaling_rules import (
     REFERENCE_BATCH_POSITIONS,
     REFERENCE_PARAMETERS,
     REFERENCE_POSITIONS_PER_PARAMETER,
+    WEIGHT_DECAY_STEPS,
     OutsideFittedRange,
     TrainingScale,
     batch_positions,
@@ -181,6 +182,28 @@ def test_the_weight_decay_coefficient_encodes_the_timescale_the_rule_states() ->
     assert resolved.weight_decay_steps == pytest.approx(
         1.0 / (resolved.learning_rate * resolved.weight_decay)
     )
+
+
+def test_the_weight_decay_timescale_is_what_a_scale_change_leaves_alone() -> None:
+    """The invariant the ceiling reading picked, against the two it rejected.
+
+    Parameter growth is per step and width independent, so what is held fixed
+    has to be a number of steps. A share of the horizon weakens as a run
+    lengthens, and a fixed coefficient drifts with width because the rate rule
+    moves the peak rate with width. Both would satisfy a test written over the
+    coefficient alone, so this one asserts the coefficient moves.
+    """
+
+    scales = (
+        TrainingScale(model_dim=32, positions_per_parameter=1600),
+        TrainingScale(model_dim=64, positions_per_parameter=400),
+        TrainingScale(model_dim=128, positions_per_parameter=800),
+    )
+    resolutions = [resolve(scale) for scale in scales]
+    assert {round(run.weight_decay_steps) for run in resolutions} == {
+        WEIGHT_DECAY_STEPS
+    }
+    assert len({run.weight_decay for run in resolutions}) == len(resolutions)
 
 
 @pytest.mark.parametrize(

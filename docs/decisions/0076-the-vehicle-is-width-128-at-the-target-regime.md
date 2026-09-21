@@ -30,6 +30,10 @@ fits the cross-scale rules this record's rate sweep is the top rung of.
 this size cannot see: matching the target's regime matches the ratio and not the
 step count, and the ceiling it measures is counted in steps.
 
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` decides
+that this configuration does not adopt the decay it settles, and why that costs
+the vehicle nothing at its horizon.
+
 ## Context
 
 `0071` derived the target and, in its Consequences, priced the vehicle at each

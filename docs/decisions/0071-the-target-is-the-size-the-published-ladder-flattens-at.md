@@ -38,6 +38,9 @@ and states the parameter count they are expressed against.
 horizon derived here unchanged and records that the step count it implies sits
 past the ceiling measured there.
 
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` records
+what has to hold for a run at this size to reach its horizon without degrading.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and

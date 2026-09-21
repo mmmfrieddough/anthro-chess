@@ -29,7 +29,9 @@ it stops holding, so the boundary has to be carried separately.
 
 ``docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md``
 records what was run, what each exponent came out at, and what the fit does not
-establish.
+establish, except for the decay timescale, which
+``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
+settled at a horizon long enough for that dial to do anything.
 """
 
 from __future__ import annotations
@@ -185,14 +187,23 @@ HORIZON_EXPONENT = 0.0
 #: slightly better, and a later session has nothing to gain by re-deriving it.
 WARMUP_FRACTION = 0.01
 
-#: The decay timescale as a multiple of the horizon, or infinite for none.
-#: Swept at a quarter, one and four horizons against no decay at all: the best
-#: beat no decay by 0.42%, inside the seed dispersion, and the four-horizon arm
-#: read worse than no decay, which it cannot be. Nothing here resolves, which is
-#: what a corpus that never repeats at these horizons should give: there is no
-#: overfitting for decay to prevent. Recorded as a timescale anyway, because
-#: that is the half of the pair a horizon change leaves alone.
-WEIGHT_DECAY_HORIZONS = float("inf")
+#: The decay timescale, in optimizer steps, held absolute rather than as a share
+#: of the horizon and rather than as a coefficient.
+#:
+#: What decay bounds here is not overfitting, which a corpus repeating nothing
+#: cannot produce, but the parameter growth that costs a long run its response.
+#: That growth is per step and independent of width, so the quantity to hold
+#: fixed is a number of steps. Held as a share of the horizon the per-step rate
+#: weakens as a run lengthens, which gives least where the growth is worst; held
+#: as a coefficient the timescale drifts with width, because the rate rule above
+#: moves the peak rate with width.
+#:
+#: The value is the arm that was run rather than an optimum that was found. At
+#: width 128 this timescale removes the turnaround and is the most stable of the
+#: three runs compared, while 3,333 steps costs 4.4% and destabilizes. One decade
+#: separates them and nothing was run inside it, so the digits past the first
+#: describe the arm.
+WEIGHT_DECAY_STEPS = 33_333
 
 #: The span the second moment averages over, in positions, so that a batch
 #: change moves the constant rather than silently rescaling the average.
@@ -255,23 +266,20 @@ def warmup_positions(positions: int) -> int:
     return round(WARMUP_FRACTION * positions)
 
 
-def weight_decay(learning_rate: float, positions: int, batch: int) -> float:
+def weight_decay(learning_rate: float) -> float:
     """Return the coefficient that puts the decay timescale at its rule.
 
     Decoupled decay shrinks a weight by ``learning_rate * weight_decay`` each
     step, so the coefficient means nothing on its own: what it sets is a
-    timescale of ``1 / (learning_rate * weight_decay)`` steps, and a horizon
-    change moves the coefficient that holds that timescale. The rule is stated
-    over the timescale, which is the half of the pair a horizon change leaves
-    alone.
+    timescale of ``1 / (learning_rate * weight_decay)`` steps. The rule is
+    stated over that timescale, so the coefficient is whatever holds it at this
+    run's own peak rate.
 
-    Zero is a legitimate answer and is what an infinite timescale means.
+    A run shorter than the timescale is barely touched, which is correct rather
+    than a gap: growth has not accumulated far enough there to cost anything.
     """
 
-    if WEIGHT_DECAY_HORIZONS == float("inf"):
-        return 0.0
-    steps = positions / batch
-    return 1.0 / (learning_rate * WEIGHT_DECAY_HORIZONS * steps)
+    return 1.0 / (learning_rate * WEIGHT_DECAY_STEPS)
 
 
 def second_moment_decay(batch: int) -> float:
@@ -342,7 +350,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
         learning_rate=rate,
         warmup_positions=warmup_positions(positions),
         cooldown_fraction=COOLDOWN_FRACTION,
-        weight_decay=weight_decay(rate, positions, batch),
+        weight_decay=weight_decay(rate),
         second_moment_decay=second_moment_decay(batch),
     )
 
