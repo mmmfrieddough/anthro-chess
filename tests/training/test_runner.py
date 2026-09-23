@@ -48,7 +48,9 @@ from anthro_chess.training.runner import (
     _refuse_non_finite,
     _training_device,
     compatibility_record,
+    decay_parameter_groups,
 )
+from anthro_chess.training.scaling_rules import model_config_for_width
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
 from accelerators import (
@@ -2396,3 +2398,63 @@ def test_an_ordinary_step_record_is_left_alone() -> None:
         "optimizer_seconds": None,
     }
     _refuse_non_finite(record, 100)
+
+
+def test_decay_exempts_what_a_uniform_coefficient_would_erase() -> None:
+    """Thin-gradient parameters need exempting, not bounding.
+
+    Decoupled decay pulls every parameter by the same fraction whatever
+    gradient it receives, so a coefficient that bounds a weight matrix erases
+    a parameter the gradient barely reaches. The rating conditioning is the
+    worst case in this model and the one the product cannot lose.
+    """
+
+    model = MoveModel(model_config_for_width(128))
+    decayed, exempt = decay_parameter_groups(model, 0.01)
+    names = {id(parameter): name for name, parameter in model.named_parameters()}
+    decayed_names = {names[id(p)] for p in cast(Any, decayed["params"])}
+    exempt_names = {names[id(p)] for p in cast(Any, exempt["params"])}
+
+    assert decayed["weight_decay"] == 0.01
+    assert exempt["weight_decay"] == 0.0
+    assert decayed_names | exempt_names == set(names.values())
+    assert not decayed_names & exempt_names
+
+    rating = {name for name in names.values() if "rating_embedding" in name}
+    assert rating and rating <= exempt_names
+    assert {n for n in names.values() if n.endswith(".bias")} <= exempt_names
+    assert {n for n in names.values() if n.endswith("norm.weight")} <= exempt_names
+
+    shape = dict(model.named_parameters())
+    assert all(shape[name].dim() >= 2 for name in decayed_names)
+    assert all(shape[name].dim() < 2 for name in exempt_names)
+
+
+def test_grouping_changes_no_step_where_no_decay_is_configured() -> None:
+    """The grouping is inert for every run recorded before it existed.
+
+    Two groups at a zero coefficient have to be the single group they replaced,
+    or this change silently re-bases every stored reading rather than only the
+    runs that turn decay on.
+    """
+
+    def stepped(build: Callable[[MoveModel], torch.optim.Optimizer]) -> list[Any]:
+        torch.manual_seed(17)
+        model = MoveModel(model_config_for_width(32))
+        optimizer = build(model)
+        for parameter in model.parameters():
+            parameter.grad = torch.full_like(parameter, 0.01)
+        optimizer.step()
+        return [p.detach().clone() for p in model.parameters()]
+
+    grouped = stepped(
+        lambda m: torch.optim.AdamW(
+            decay_parameter_groups(m, 0.0), lr=1e-3, betas=(0.9, 0.999)
+        )
+    )
+    flat = stepped(
+        lambda m: torch.optim.AdamW(
+            m.parameters(), lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0
+        )
+    )
+    assert all(torch.equal(a, b) for a, b in zip(grouped, flat, strict=True))

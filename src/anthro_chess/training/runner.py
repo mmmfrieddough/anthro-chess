@@ -102,6 +102,35 @@ logger = logging.getLogger(__name__)
 _FIRST_MOMENT_DECAY = 0.9
 
 
+def decay_parameter_groups(
+    model: torch.nn.Module,
+    weight_decay: float,
+) -> list[dict[str, object]]:
+    """Split a model's parameters into the decayed group and the exempt one.
+
+    Decoupled decay pulls every parameter toward zero by the same fraction each
+    step, whatever gradient it is receiving. A parameter whose gradient is thin
+    has nothing to push back with, so a uniform coefficient does not bound it,
+    it erases it. The rating conditioning is three vectors against a whole board
+    representation and is the worst case in this model: measured at one
+    coefficient it reached 14% of its undecayed norm where the model as a whole
+    reached 25%, and the benchmarks that read the conditioning degraded with it.
+
+    Dimension is the standard separator and it is the right one here. Every
+    parameter this exempts is one that scales or offsets a representation
+    rather than mixing it: the rating embeddings, every bias, and every
+    normalization gain are all one-dimensional, while the matrices whose growth
+    decay is aimed at are not.
+    """
+
+    decayed = [p for p in model.parameters() if p.requires_grad and p.dim() >= 2]
+    exempt = [p for p in model.parameters() if p.requires_grad and p.dim() < 2]
+    return [
+        {"params": decayed, "weight_decay": weight_decay},
+        {"params": exempt, "weight_decay": 0.0},
+    ]
+
+
 class TrainingError(ValueError):
     """Raised when a configured training run cannot execute safely."""
 
@@ -402,10 +431,9 @@ def run_training(
             # and a break silently returns most of it.
             model.compile(fullgraph=True, mode=config.compilation)
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            decay_parameter_groups(model, config.weight_decay),
             lr=config.learning_rate,
             betas=(_FIRST_MOMENT_DECAY, config.second_moment_decay),
-            weight_decay=config.weight_decay,
             fused=_fused_optimizer(device),
         )
         code_record = code_provenance().as_record()
