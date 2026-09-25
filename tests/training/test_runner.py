@@ -12,6 +12,7 @@ import torch
 from tensorboard.backend.event_processing.event_accumulator import (  # type: ignore[import-untyped]
     EventAccumulator,
 )
+from tiny_models import tiny_model_config
 
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import ConfigError, load_config
@@ -50,7 +51,6 @@ from anthro_chess.training.runner import (
     compatibility_record,
     decay_parameter_groups,
 )
-from anthro_chess.training.scaling_rules import model_config_for_width
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
 from accelerators import (
@@ -497,6 +497,17 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     assert rescheduled != identity
     assert resized != identity
     assert retrained != identity
+
+    # Nonzero decay changed meaning when its grouping did, so it has to name
+    # the grouping; zero decay did not, so it has to keep its key.
+    decayed = compatibility_record(
+        config.model_copy(update={"weight_decay": 0.01}),
+        data=data,
+        model={"parameters": 276_002},
+    )
+    undecayed = compatibility_record(config, data=data, model={"parameters": 276_002})
+    assert "weight_decay_exemption" in cast(Any, decayed["training_config"])
+    assert "weight_decay_exemption" not in cast(Any, undecayed["training_config"])
 
 
 def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
@@ -2401,34 +2412,27 @@ def test_an_ordinary_step_record_is_left_alone() -> None:
 
 
 def test_decay_exempts_what_a_uniform_coefficient_would_erase() -> None:
-    """The rating conditioning is thin-gradient and was erased by uniform decay."""
+    """The thin-gradient rating conditioning is exempt; matrices are decayed."""
 
-    model = MoveModel(model_config_for_width(128))
+    model = MoveModel(tiny_model_config())
     decayed, exempt = decay_parameter_groups(model, 0.01)
-    names = {id(parameter): name for name, parameter in model.named_parameters()}
-    decayed_names = {names[id(p)] for p in decayed["params"]}
-    exempt_names = {names[id(p)] for p in exempt["params"]}
+    exempt_ids = {id(p) for p in exempt["params"]}
+    rating = [p for n, p in model.named_parameters() if "rating_embedding" in n]
 
     assert (decayed["weight_decay"], exempt["weight_decay"]) == (0.01, 0.0)
-    assert decayed_names | exempt_names == set(names.values())
-    assert not decayed_names & exempt_names
-    assert {n for n in names.values() if "rating_embedding" in n} <= exempt_names
-    parameters = dict(model.named_parameters())
-    assert all(parameters[n].dim() >= 2 for n in decayed_names)
-    assert all(parameters[n].dim() < 2 for n in exempt_names)
+    assert len(decayed["params"]) + len(exempt["params"]) == len(
+        list(model.parameters())
+    )
+    assert rating and all(id(p) in exempt_ids for p in rating)
+    assert all(p.dim() >= 2 for p in decayed["params"])
+    assert all(p.dim() < 2 for p in exempt["params"])
 
 
 def test_no_decay_is_the_single_group_every_earlier_checkpoint_holds() -> None:
-    """Zero decay has to stay one group, or no earlier run can resume.
+    """Zero decay stays one group, so a checkpoint written before still resumes."""
 
-    Every checkpoint written before the grouping existed stores one optimizer
-    group, and `load_state_dict` refuses a different count. The coefficient is
-    explicit because AdamW's own default is not zero.
-    """
-
-    model = MoveModel(model_config_for_width(32))
+    model = MoveModel(tiny_model_config())
     groups = decay_parameter_groups(model, 0.0)
-    assert len(groups) == 1
     assert groups[0]["weight_decay"] == 0.0
 
     earlier = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
@@ -2436,32 +2440,3 @@ def test_no_decay_is_the_single_group_every_earlier_checkpoint_holds() -> None:
         parameter.grad = torch.full_like(parameter, 0.01)
     earlier.step()
     torch.optim.AdamW(groups, lr=1e-3).load_state_dict(earlier.state_dict())
-
-
-def test_decay_enters_the_training_identity_and_zero_decay_does_not() -> None:
-    """Two meanings of one coefficient must not share a key.
-
-    A run at nonzero decay recorded before the grouping existed has the same
-    configuration as one recorded after it, so the grouping is named in the
-    identity wherever decay is on. At zero decay nothing changed, and the key
-    every stored reading is filed under has to stay what it was.
-    """
-
-    config = load_config(
-        TrainingConfig,
-        path=Path(__file__).parents[2] / "configs/training/ablation-vehicle.toml",
-    ).value
-    provenance = {
-        "manifest_sha256": "a" * 64,
-        "dataset_sha256": "c" * 64,
-        "loader_configuration_sha256": "d" * 64,
-    }
-    data = {"train": provenance, "validation": None}
-    none = compatibility_record(config, data=data, model={"parameters": 1})
-    some = compatibility_record(
-        config.model_copy(update={"weight_decay": 0.01}),
-        data=data,
-        model={"parameters": 1},
-    )
-    assert "weight_decay_exemption" not in cast(Any, none["training_config"])
-    assert cast(Any, some["training_config"])["weight_decay_exemption"]

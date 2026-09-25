@@ -103,11 +103,6 @@ logger = logging.getLogger(__name__)
 _FIRST_MOMENT_DECAY = 0.9
 
 
-#: How decay is spread across parameter groups, recorded in the training identity
-#: only where decay is on. Runs at zero decay predate it and must keep their key.
-DECAY_EXEMPTION = "exempt-one-dimensional"
-
-
 def decay_parameter_groups(
     model: torch.nn.Module,
     weight_decay: float,
@@ -1168,8 +1163,10 @@ def compatibility_record(
             "validation",
         },
     )
+    # Only where decay is on: zero decay kept its meaning and so keeps its key.
+    # The value changes if the exemption rule does.
     if config.weight_decay:
-        training_config["weight_decay_exemption"] = DECAY_EXEMPTION
+        training_config["weight_decay_exemption"] = "exempt-one-dimensional"
     return {
         "training_config": training_config,
         "data": {
