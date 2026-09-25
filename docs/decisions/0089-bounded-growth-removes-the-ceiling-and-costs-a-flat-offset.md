@@ -85,13 +85,17 @@ distance, by 156% on game length.
 than its control on the reference ladder and on every generated-play distance at
 both temperatures read, game length by 47.8%, and it has the lowest loss of any
 arm past the ceiling. It is worse at greedy play, where the ladder error rises
-from 286.9 to 329.5, so the dial improves where the engine samples and not where
-it plays its top move. Against the best reading either control ever reached, 1.431748
+from 286.9 to 329.5: its greedy seats play 307 points above their configured
+rating on average against the control's 238, stronger rather than weaker. Against the best reading either control ever reached, 1.431748
 at 1.5e-3 and step 222,208, it is 0.33% behind, so a decayed run still does not
 beat an undecayed one stopped at its peak.
 
-**The lower rate reads better at these horizons with or without decay**: 1.431748
-against 1.437198 at the undecayed peaks, and 1.436491 against 1.444759 decayed.
+**The reversal is mostly the lower-rate control degrading, not decay excelling.**
+On loss the lower rate is better with or without decay, 1.431748 against 1.437198
+at the undecayed peaks. On human-likeness it is worse: the undecayed run at 1.5e-3
+reads 21.93 on game length at step 347,200 against 2.60 at 3e-3, and decay
+recovers it only to 11.44. The most human-like games at that step still come from
+the undecayed run at the fitted rate.
 `0087` fitted the rate over horizons that stop short of the ceiling, where the two
 rates `0088` compared were within 0.024% of each other.
 
@@ -108,8 +112,10 @@ was not what cost the dial. `#566` carries that reading.
 **Weight decay is what bounds the horizon ceiling, and any run with decay uses the
 grouping `#566` introduced.** Uniform decay erases the rating conditioning.
 
-**The best configuration measured is a peak rate of 1.5e-3 with coefficient
-0.01**, a decay timescale of 66,667 optimizer steps. A run long enough to cross
+**The lowest loss past the ceiling came from a peak rate of 1.5e-3 with
+coefficient 0.01**, a decay timescale of 66,667 optimizer steps. It is not the
+best on every axis: the undecayed run at the fitted rate read more human-like at
+the same step. A run long enough to cross
 the ceiling starts from that, and **reads its rate and its decay strength at its
 own horizon rather than taking either from a rule fitted short of the bound.**
 

@@ -133,8 +133,9 @@ the rating embeddings, biases and normalization gains.
 
 **What it costs depends on the learning rate.** Past the ceiling, decay at the
 fitted rate read worse than no decay on the rating dial and on human-likeness,
-and at half that rate it read better on both. A decayed run still does not beat
-an undecayed one stopped at its peak. A run long enough to need decay therefore
+and at half that rate it read better than no decay at that same rate, mostly
+because the lower-rate undecayed run degraded further. A decayed run still does
+not beat an undecayed one stopped at its peak. A run long enough to need decay therefore
 reads its rate and decay strength at its own horizon rather than taking either
 from a rule fitted short of the bound.
 
