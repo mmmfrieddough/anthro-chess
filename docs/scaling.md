@@ -68,9 +68,8 @@ establish.
 
 ## Model Size Is Derived, Not Tuned
 
-**The target model size follows from the compute budget and the deployment
-envelope. It is not an experimental result and no experiment is run to choose
-it.**
+**The target model size follows from the training compute budget. It is not an
+experimental result and no experiment is run to choose it.**
 
 Compute is an input: the hardware, multiplied by the wall-clock the project will
 spend, multiplied by realized utilization. `docs/vision.md` bounds the second
@@ -102,10 +101,11 @@ few percent of optimal compute, which is below what any reading here can resolve
 A size within that band is not re-litigated. A size wrong by a factor of four is
 a real error and is fixed.
 
-This project serves far more inference than it spends training, and its serving
-constraint is loose — a model this size answers in milliseconds. That argues for
-the smaller-and-longer end of the band rather than the compute-optimal point,
-which is chosen for a run that is never served.
+**The target is the best model the training budget can buy.** Inference cost is
+a secondary constraint, weighed like any other rather than traded against
+training, so it is not a reason to move off that point toward a smaller model
+trained for longer. In practice that means a size whose best point lands near the
+end of the budget, rather than a smaller one trained past its peak.
 
 ### The Horizon Has A Ceiling, Counted In Steps
 
@@ -131,20 +131,13 @@ growth removes the turnaround at the width and step count where it exists.
 Decaying every parameter erases the rating conditioning, so the optimizer exempts
 the rating embeddings, biases and normalization gains.
 
-**What it costs depends on the learning rate.** Past the ceiling, decay at the
-fitted rate read worse than no decay on the rating dial and on human-likeness,
-and at half that rate it read better than no decay at that same rate, mostly
-because the lower-rate undecayed run degraded further. A decayed run still does
-not beat an undecayed one stopped at its peak. A run long enough to need decay therefore
-reads its rate and decay strength at its own horizon rather than taking either
-from a rule fitted short of the bound.
-
-**No configuration here adopts it, because none can reach the bound.** The
-longest run the fitted ranges can express is a third of the way to the ceiling,
-so the rules keep producing no decay and it is applied by hand to a run
-configured past them.
+**Nothing adopts it: a run is sized to end near its peak instead.** Stopping an
+undecayed run at its peak beat every decayed arm on every outcome measured. Decay
+only wins against a run left past its ceiling, and it costs fit without the
+overfitting benefit it normally buys, since nothing repeats at these horizons. A
+model that runs past its peak within its budget is too small for that budget.
 `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
-carries the arms and the configuration that read best.
+carries the arms.
 
 ### The Target
 

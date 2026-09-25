@@ -112,12 +112,20 @@ was not what cost the dial. `#566` carries that reading.
 **Weight decay is what bounds the horizon ceiling, and any run with decay uses the
 grouping `#566` introduced.** Uniform decay erases the rating conditioning.
 
-**The lowest loss past the ceiling came from a peak rate of 1.5e-3 with
-coefficient 0.01**, a decay timescale of 66,667 optimizer steps. It is not the
-best on every axis: the undecayed run at the fitted rate read more human-like at
-the same step. A run long enough to cross
-the ceiling starts from that, and **reads its rate and its decay strength at its
-own horizon rather than taking either from a rule fitted short of the bound.**
+**A run is sized to end near its peak, not given decay to survive past it.**
+Stopping an undecayed run at its peak beat every decayed arm on every outcome
+measured: best loss, and more human-like games than any decayed arm. Decay only
+won against an undecayed run left to run past its ceiling, which there is no
+reason to do. Decay costs fit and buys nothing here beyond the bound, because
+nothing repeats at these horizons and so there is no overfitting for it to
+prevent.
+
+**The premise that argued for over-training is withdrawn.** `docs/scaling.md`
+held that this project serves far more inference than it spends training, and
+so preferred a smaller model trained past the compute-optimal point. Inference
+cost is a secondary constraint here, weighed like any other, so the target is the
+best model the training budget can buy. A model too small for its budget is what
+runs past its peak, and the remedy for that is a larger model rather than decay.
 
 **The timescale is held in optimizer steps, and the horizon-multiple form does
 not survive.** Every decayed arm reached its equilibrium norm by step 111,104
@@ -125,7 +133,7 @@ against a declared horizon of 2,222,080, so the per-step rate set the bound and
 the run length did not. Held as a multiple of the horizon, the rate weakens as a
 run lengthens, which gives least where growth is worst.
 
-**Nothing in this repository adopts it yet.** `anthro_chess.training.scaling_rules`
+**Nothing in this repository adopts decay.** `anthro_chess.training.scaling_rules`
 keeps producing no decay, because the longest run its fitted ranges can express
 is a third of the way to the ceiling. The vehicle keeps `weight_decay = 0.0`: it
 runs 69,465 steps, short of the bound, and changing the setting would invalidate

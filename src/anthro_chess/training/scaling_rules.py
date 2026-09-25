@@ -195,7 +195,8 @@ WARMUP_FRACTION = 0.01
 #: coefficient here would pay the offset decay costs wherever a run is healthy
 #: and collect none of the benefit.
 #: ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
-#: carries the arms, and the timescale a run configured past those ranges takes.
+#: carries the arms, and why a run long enough to reach the bound stops near its
+#: peak instead of taking decay.
 WEIGHT_DECAY = 0.0
 
 #: The span the second moment averages over, in positions, so that a batch

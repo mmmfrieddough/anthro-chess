@@ -125,8 +125,6 @@ Different from Anthro Chess:
 
 - Assumes effectively unlimited training data, which holds here only because the
   corpus exceeds every horizon in the plausible range.
-- The compute-optimal point is chosen for a model that is trained once and never
-  served; this project serves far more than it trains.
 
 ### Resolving Discrepancies In Compute-Optimal Scaling Of Language Models
 
@@ -175,8 +173,6 @@ Key information:
 
 Applies to Anthro Chess:
 
-- The serving-to-training ratio here is high and the serving constraint is loose,
-  which argues for the smaller-and-longer end of the size band.
 - If the project intends to over-train, over-trained points belong in the ladder
   rather than being extrapolated to.
 

@@ -38,8 +38,9 @@ and states the parameter count they are expressed against.
 horizon derived here unchanged and records that the step count it implies sits
 past the ceiling measured there.
 
-`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` records
-what has to hold for a run at this size to reach its horizon without degrading.
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` withdraws
+the serving premise this record cites for going marginally past 713 positions per
+parameter. The size selected here did not rest on it.
 
 ## Context
 
