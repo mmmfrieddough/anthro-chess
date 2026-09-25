@@ -125,22 +125,25 @@ vehicle therefore cannot detect this and is not expected to.**
 records the curve, the mechanism the evidence points at, and what it does not
 establish.
 
-**Weight decay is what lifts the ceiling, and the rule is a decay timescale
-held absolute in optimizer steps.** Bounding parameter growth removes the
-turnaround at the width and step count where the turnaround exists: the decayed
-arm's best reading on both carrying metrics is its last, at the step where the
-undecayed run is 2.09% degraded. It is not free. The arm runs about 0.9% above
-the undecayed run wherever that run is still healthy, so the two cross rather
-than one dominating, and a ladder whose rungs differ in whether decay binds
-would read that offset as a size effect.
+**Weight decay is what lifts the ceiling, held as a timescale in optimizer
+steps, and only with one-dimensional parameters exempt.** Bounding parameter
+growth removes the turnaround at the width and step count where it exists.
+Decaying every parameter erases the rating conditioning, so the optimizer exempts
+the rating embeddings, biases and normalization gains.
+
+**What it costs depends on the learning rate.** Past the ceiling, decay at the
+fitted rate read worse than no decay on the rating dial and on human-likeness,
+and at half that rate it read better on both. A decayed run still does not beat
+an undecayed one stopped at its peak. A run long enough to need decay therefore
+reads its rate and decay strength at its own horizon rather than taking either
+from a rule fitted short of the bound.
 
 **No configuration here adopts it, because none can reach the bound.** The
 longest run the fitted ranges can express is a third of the way to the ceiling,
-so the rules keep producing no decay and the timescale is applied by hand to a
-run configured past them.
+so the rules keep producing no decay and it is applied by hand to a run
+configured past them.
 `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
-carries both arms, the timescale, and why it is held in steps rather than as a
-share of the horizon or as a coefficient.
+carries the arms and the configuration that read best.
 
 ### The Target
 
