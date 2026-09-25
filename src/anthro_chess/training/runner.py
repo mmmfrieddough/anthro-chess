@@ -110,7 +110,8 @@ def decay_parameter_groups(
     """Return the optimizer's parameter groups, exempting one-dimensional ones.
 
     A uniform coefficient erases thin-gradient parameters rather than bounding
-    them. At zero decay this is one group, so earlier checkpoints still resume.
+    them. At zero decay this is the single group plain `model.parameters()`
+    gives, so checkpoints saved from that shape still load.
     """
 
     parameters = [p for p in model.parameters() if p.requires_grad]
@@ -1163,8 +1164,9 @@ def compatibility_record(
             "validation",
         },
     )
-    # Only where decay is on: zero decay kept its meaning and so keeps its key.
-    # The value changes if the exemption rule does.
+    # Names the rule `decay_parameter_groups` applies; change the value with it.
+    # Omitted at zero decay, where the rule exempts nothing, so those identities
+    # match the ones recorded before the key existed.
     if config.weight_decay:
         training_config["weight_decay_exemption"] = "exempt-one-dimensional"
     return {

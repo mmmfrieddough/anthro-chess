@@ -498,8 +498,7 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     assert resized != identity
     assert retrained != identity
 
-    # Nonzero decay changed meaning when its grouping did, so it has to name
-    # the grouping; zero decay did not, so it has to keep its key.
+    # The decay grouping enters the identity only where decay is on.
     decayed = compatibility_record(
         config.model_copy(update={"weight_decay": 0.01}),
         data=data,
@@ -2428,15 +2427,15 @@ def test_decay_exempts_what_a_uniform_coefficient_would_erase() -> None:
     assert all(p.dim() < 2 for p in exempt["params"])
 
 
-def test_no_decay_is_the_single_group_every_earlier_checkpoint_holds() -> None:
-    """Zero decay stays one group, so a checkpoint written before still resumes."""
+def test_no_decay_loads_a_single_group_optimizer_state() -> None:
+    """Zero decay is one group, so a plain `model.parameters()` state loads."""
 
     model = MoveModel(tiny_model_config())
     groups = decay_parameter_groups(model, 0.0)
     assert groups[0]["weight_decay"] == 0.0
 
-    earlier = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
+    plain = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
     for parameter in model.parameters():
         parameter.grad = torch.full_like(parameter, 0.01)
-    earlier.step()
-    torch.optim.AdamW(groups, lr=1e-3).load_state_dict(earlier.state_dict())
+    plain.step()
+    torch.optim.AdamW(groups, lr=1e-3).load_state_dict(plain.state_dict())
