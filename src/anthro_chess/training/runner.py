@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.nn.utils import clip_grads_with_norm_
@@ -102,29 +103,29 @@ logger = logging.getLogger(__name__)
 _FIRST_MOMENT_DECAY = 0.9
 
 
+#: How decay is spread across parameter groups, recorded in the training identity
+#: only where decay is on. Runs at zero decay predate it and must keep their key.
+DECAY_EXEMPTION = "exempt-one-dimensional"
+
+
 def decay_parameter_groups(
     model: torch.nn.Module,
     weight_decay: float,
-) -> list[dict[str, object]]:
-    """Split a model's parameters into the decayed group and the exempt one.
+) -> list[dict[str, Any]]:
+    """Return the optimizer's parameter groups, exempting one-dimensional ones.
 
-    Decoupled decay pulls every parameter toward zero by the same fraction each
-    step, whatever gradient it is receiving. A parameter whose gradient is thin
-    has nothing to push back with, so a uniform coefficient does not bound it,
-    it erases it. The rating conditioning is three vectors against a whole board
-    representation and is the worst case in this model: measured at one
-    coefficient it reached 14% of its undecayed norm where the model as a whole
-    reached 25%, and the benchmarks that read the conditioning degraded with it.
-
-    Dimension is the standard separator and it is the right one here. Every
-    parameter this exempts is one that scales or offsets a representation
-    rather than mixing it: the rating embeddings, every bias, and every
-    normalization gain are all one-dimensional, while the matrices whose growth
-    decay is aimed at are not.
+    A uniform coefficient erases thin-gradient parameters rather than bounding
+    them. At zero decay this is one group, so earlier checkpoints still resume.
     """
 
-    decayed = [p for p in model.parameters() if p.requires_grad and p.dim() >= 2]
-    exempt = [p for p in model.parameters() if p.requires_grad and p.dim() < 2]
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    if not weight_decay:
+        # Explicit, because AdamW's own default coefficient is not zero.
+        return [{"params": parameters, "weight_decay": 0.0}]
+    decayed: list[torch.nn.Parameter] = []
+    exempt: list[torch.nn.Parameter] = []
+    for parameter in parameters:
+        (decayed if parameter.dim() >= 2 else exempt).append(parameter)
     return [
         {"params": decayed, "weight_decay": weight_decay},
         {"params": exempt, "weight_decay": 0.0},
@@ -1167,6 +1168,8 @@ def compatibility_record(
             "validation",
         },
     )
+    if config.weight_decay:
+        training_config["weight_decay_exemption"] = DECAY_EXEMPTION
     return {
         "training_config": training_config,
         "data": {

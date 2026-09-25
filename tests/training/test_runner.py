@@ -2401,60 +2401,67 @@ def test_an_ordinary_step_record_is_left_alone() -> None:
 
 
 def test_decay_exempts_what_a_uniform_coefficient_would_erase() -> None:
-    """Thin-gradient parameters need exempting, not bounding.
-
-    Decoupled decay pulls every parameter by the same fraction whatever
-    gradient it receives, so a coefficient that bounds a weight matrix erases
-    a parameter the gradient barely reaches. The rating conditioning is the
-    worst case in this model and the one the product cannot lose.
-    """
+    """The rating conditioning is thin-gradient and was erased by uniform decay."""
 
     model = MoveModel(model_config_for_width(128))
     decayed, exempt = decay_parameter_groups(model, 0.01)
     names = {id(parameter): name for name, parameter in model.named_parameters()}
-    decayed_names = {names[id(p)] for p in cast(Any, decayed["params"])}
-    exempt_names = {names[id(p)] for p in cast(Any, exempt["params"])}
+    decayed_names = {names[id(p)] for p in decayed["params"]}
+    exempt_names = {names[id(p)] for p in exempt["params"]}
 
-    assert decayed["weight_decay"] == 0.01
-    assert exempt["weight_decay"] == 0.0
+    assert (decayed["weight_decay"], exempt["weight_decay"]) == (0.01, 0.0)
     assert decayed_names | exempt_names == set(names.values())
     assert not decayed_names & exempt_names
-
-    rating = {name for name in names.values() if "rating_embedding" in name}
-    assert rating and rating <= exempt_names
-    assert {n for n in names.values() if n.endswith(".bias")} <= exempt_names
-    assert {n for n in names.values() if n.endswith("norm.weight")} <= exempt_names
-
-    shape = dict(model.named_parameters())
-    assert all(shape[name].dim() >= 2 for name in decayed_names)
-    assert all(shape[name].dim() < 2 for name in exempt_names)
+    assert {n for n in names.values() if "rating_embedding" in n} <= exempt_names
+    parameters = dict(model.named_parameters())
+    assert all(parameters[n].dim() >= 2 for n in decayed_names)
+    assert all(parameters[n].dim() < 2 for n in exempt_names)
 
 
-def test_grouping_changes_no_step_where_no_decay_is_configured() -> None:
-    """The grouping is inert for every run recorded before it existed.
+def test_no_decay_is_the_single_group_every_earlier_checkpoint_holds() -> None:
+    """Zero decay has to stay one group, or no earlier run can resume.
 
-    Two groups at a zero coefficient have to be the single group they replaced,
-    or this change silently re-bases every stored reading rather than only the
-    runs that turn decay on.
+    Every checkpoint written before the grouping existed stores one optimizer
+    group, and `load_state_dict` refuses a different count. The coefficient is
+    explicit because AdamW's own default is not zero.
     """
 
-    def stepped(build: Callable[[MoveModel], torch.optim.Optimizer]) -> list[Any]:
-        torch.manual_seed(17)
-        model = MoveModel(model_config_for_width(32))
-        optimizer = build(model)
-        for parameter in model.parameters():
-            parameter.grad = torch.full_like(parameter, 0.01)
-        optimizer.step()
-        return [p.detach().clone() for p in model.parameters()]
+    model = MoveModel(model_config_for_width(32))
+    groups = decay_parameter_groups(model, 0.0)
+    assert len(groups) == 1
+    assert groups[0]["weight_decay"] == 0.0
 
-    grouped = stepped(
-        lambda m: torch.optim.AdamW(
-            decay_parameter_groups(m, 0.0), lr=1e-3, betas=(0.9, 0.999)
-        )
+    earlier = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
+    for parameter in model.parameters():
+        parameter.grad = torch.full_like(parameter, 0.01)
+    earlier.step()
+    torch.optim.AdamW(groups, lr=1e-3).load_state_dict(earlier.state_dict())
+
+
+def test_decay_enters_the_training_identity_and_zero_decay_does_not() -> None:
+    """Two meanings of one coefficient must not share a key.
+
+    A run at nonzero decay recorded before the grouping existed has the same
+    configuration as one recorded after it, so the grouping is named in the
+    identity wherever decay is on. At zero decay nothing changed, and the key
+    every stored reading is filed under has to stay what it was.
+    """
+
+    config = load_config(
+        TrainingConfig,
+        path=Path(__file__).parents[2] / "configs/training/ablation-vehicle.toml",
+    ).value
+    provenance = {
+        "manifest_sha256": "a" * 64,
+        "dataset_sha256": "c" * 64,
+        "loader_configuration_sha256": "d" * 64,
+    }
+    data = {"train": provenance, "validation": None}
+    none = compatibility_record(config, data=data, model={"parameters": 1})
+    some = compatibility_record(
+        config.model_copy(update={"weight_decay": 0.01}),
+        data=data,
+        model={"parameters": 1},
     )
-    flat = stepped(
-        lambda m: torch.optim.AdamW(
-            m.parameters(), lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0
-        )
-    )
-    assert all(torch.equal(a, b) for a, b in zip(grouped, flat, strict=True))
+    assert "weight_decay_exemption" not in cast(Any, none["training_config"])
+    assert cast(Any, some["training_config"])["weight_decay_exemption"]
