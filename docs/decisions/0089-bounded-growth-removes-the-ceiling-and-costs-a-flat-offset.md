@@ -81,10 +81,12 @@ At matched step 347,200, past the ceiling:
 the grouped arm is worse on the reference ladder and on every generated-play
 distance, by 156% on game length.
 
-**At 1.5e-3 the same comparison reverses.** The grouped arm is better than its
-control on the reference ladder and on every generated-play distance at both
-temperatures read, game length by 47.8%, and it has the lowest loss of any arm
-past the ceiling. Against the best reading either control ever reached, 1.431748
+**At 1.5e-3 the same comparison mostly reverses.** The grouped arm is better
+than its control on the reference ladder and on every generated-play distance at
+both temperatures read, game length by 47.8%, and it has the lowest loss of any
+arm past the ceiling. It is worse at greedy play, where the ladder error rises
+from 286.9 to 329.5, so the dial improves where the engine samples and not where
+it plays its top move. Against the best reading either control ever reached, 1.431748
 at 1.5e-3 and step 222,208, it is 0.33% behind, so a decayed run still does not
 beat an undecayed one stopped at its peak.
 
