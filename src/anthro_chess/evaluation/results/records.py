@@ -448,7 +448,7 @@ class ResultEnvelope(ResultModel):
             )
         for measurement in self.measurements:
             try:
-                metric_definition(measurement.metric)
+                definition = metric_definition(measurement.metric)
             except MetricRegistryError as error:
                 if recording:
                     raise ResultRecordError(str(error)) from error
@@ -457,7 +457,12 @@ class ResultEnvelope(ResultModel):
             if expected != measurement.fingerprint and (
                 recording
                 or measurement.fingerprint
-                not in self._superseded_fingerprints(measurement.metric)
+                not in {
+                    self.expected_fingerprint(
+                        measurement.metric, definition_version=version
+                    )
+                    for version in range(1, definition.definition_version)
+                }
             ):
                 raise ResultRecordError(
                     f"result {self.result_id} records a fingerprint for "
@@ -512,13 +517,6 @@ class ResultEnvelope(ResultModel):
             return series_fingerprint(definition, component, workload)
         except FingerprintError as error:
             raise ResultRecordError(str(error)) from error
-
-    def _superseded_fingerprints(self, metric: str) -> set[str]:
-        current = metric_definition(metric).definition_version
-        return {
-            self.expected_fingerprint(metric, definition_version=version)
-            for version in range(1, current)
-        }
 
     def measurement(self, metric: str) -> Measurement | None:
         """Return one measurement by metric identifier."""
