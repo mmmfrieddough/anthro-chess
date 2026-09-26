@@ -12,6 +12,7 @@ import torch
 from tensorboard.backend.event_processing.event_accumulator import (  # type: ignore[import-untyped]
     EventAccumulator,
 )
+from tiny_models import tiny_model_config
 
 from anthro_chess.application_logging import configure_application_logging
 from anthro_chess.config import ConfigError, load_config
@@ -48,6 +49,7 @@ from anthro_chess.training.runner import (
     _refuse_non_finite,
     _training_device,
     compatibility_record,
+    decay_parameter_groups,
 )
 from anthro_chess.training.tensorboard import TENSORBOARD_DIRECTORY
 
@@ -495,6 +497,16 @@ def test_the_training_identity_holds_everything_but_the_seed_and_a_branch(
     assert rescheduled != identity
     assert resized != identity
     assert retrained != identity
+
+    # The decay grouping enters the identity only where decay is on.
+    decayed = compatibility_record(
+        config.model_copy(update={"weight_decay": 0.01}),
+        data=data,
+        model={"parameters": 276_002},
+    )
+    undecayed = compatibility_record(config, data=data, model={"parameters": 276_002})
+    assert "weight_decay_exemption" in cast(Any, decayed["training_config"])
+    assert "weight_decay_exemption" not in cast(Any, undecayed["training_config"])
 
 
 def test_matmul_precision_is_applied_for_the_run_and_restored_after_it(
@@ -2396,3 +2408,34 @@ def test_an_ordinary_step_record_is_left_alone() -> None:
         "optimizer_seconds": None,
     }
     _refuse_non_finite(record, 100)
+
+
+def test_decay_exempts_what_a_uniform_coefficient_would_erase() -> None:
+    """The thin-gradient rating conditioning is exempt; matrices are decayed."""
+
+    model = MoveModel(tiny_model_config())
+    decayed, exempt = decay_parameter_groups(model, 0.01)
+    exempt_ids = {id(p) for p in exempt["params"]}
+    rating = [p for n, p in model.named_parameters() if "rating_embedding" in n]
+
+    assert (decayed["weight_decay"], exempt["weight_decay"]) == (0.01, 0.0)
+    assert len(decayed["params"]) + len(exempt["params"]) == len(
+        list(model.parameters())
+    )
+    assert rating and all(id(p) in exempt_ids for p in rating)
+    assert all(p.dim() >= 2 for p in decayed["params"])
+    assert all(p.dim() < 2 for p in exempt["params"])
+
+
+def test_no_decay_loads_a_single_group_optimizer_state() -> None:
+    """Zero decay is one group, so a plain `model.parameters()` state loads."""
+
+    model = MoveModel(tiny_model_config())
+    groups = decay_parameter_groups(model, 0.0)
+    assert groups[0]["weight_decay"] == 0.0
+
+    plain = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.0)
+    for parameter in model.parameters():
+        parameter.grad = torch.full_like(parameter, 0.01)
+    plain.step()
+    torch.optim.AdamW(groups, lr=1e-3).load_state_dict(plain.state_dict())

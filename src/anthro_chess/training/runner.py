@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.nn.utils import clip_grads_with_norm_
@@ -100,6 +101,31 @@ RUN_ARTIFACT_VERSION = 7
 logger = logging.getLogger(__name__)
 
 _FIRST_MOMENT_DECAY = 0.9
+
+
+def decay_parameter_groups(
+    model: torch.nn.Module,
+    weight_decay: float,
+) -> list[dict[str, Any]]:
+    """Return the optimizer's parameter groups, exempting one-dimensional ones.
+
+    A uniform coefficient erases thin-gradient parameters rather than bounding
+    them. At zero decay this is the single group plain `model.parameters()`
+    gives, so checkpoints saved from that shape still load.
+    """
+
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    if not weight_decay:
+        # Explicit, because AdamW's own default coefficient is not zero.
+        return [{"params": parameters, "weight_decay": 0.0}]
+    decayed: list[torch.nn.Parameter] = []
+    exempt: list[torch.nn.Parameter] = []
+    for parameter in parameters:
+        (decayed if parameter.dim() >= 2 else exempt).append(parameter)
+    return [
+        {"params": decayed, "weight_decay": weight_decay},
+        {"params": exempt, "weight_decay": 0.0},
+    ]
 
 
 class TrainingError(ValueError):
@@ -402,10 +428,9 @@ def run_training(
             # and a break silently returns most of it.
             model.compile(fullgraph=True, mode=config.compilation)
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            decay_parameter_groups(model, config.weight_decay),
             lr=config.learning_rate,
             betas=(_FIRST_MOMENT_DECAY, config.second_moment_decay),
-            weight_decay=config.weight_decay,
             fused=_fused_optimizer(device),
         )
         code_record = code_provenance().as_record()
@@ -1139,6 +1164,11 @@ def compatibility_record(
             "validation",
         },
     )
+    # Names the rule `decay_parameter_groups` applies; change the value with it.
+    # Omitted at zero decay, where the rule exempts nothing, so those identities
+    # match the ones recorded before the key existed.
+    if config.weight_decay:
+        training_config["weight_decay_exemption"] = "exempt-one-dimensional"
     return {
         "training_config": training_config,
         "data": {
