@@ -431,9 +431,9 @@ class ResultEnvelope(ResultModel):
 
         Reading is deliberately more forgiving than recording. A metric that
         has since left the registry, or moved to a later definition version,
-        leaves a dead series, and decision 0013
-        expects those to stay readable and honestly labeled rather than to
-        make the surrounding history unloadable. The same applies to the size
+        leaves a dead series, and decision 0013 expects those to stay readable
+        and honestly labeled rather than to make the surrounding history
+        unloadable. The same applies to the size
         budget, which can only be exceeded by a record written when the budget
         was larger, and to the serialization it is measured over: ``json.loads``
         accepts literals the canonical writer refuses, so re-encoding on the way

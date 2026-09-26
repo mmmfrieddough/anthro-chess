@@ -244,7 +244,7 @@ def test_a_ply_the_human_ended_the_game_on_is_not_adjudicated(
 def test_a_human_who_moves_in_an_only_move_position_plays_it(
     normalized_row: Callable[..., dict[str, Any]],
 ) -> None:
-    """Human success over only-move positions is exactly one by construction.
+    """Human success over only-move positions is one once terminal actions go.
 
     Anything less is an action-encoding round trip disagreeing with the legal
     move the predicate derived, not a reading about the human.
