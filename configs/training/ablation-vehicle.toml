@@ -37,7 +37,10 @@ cooldown_fraction = 0.2
 
 # Nothing repeats at this horizon: the corpus holds 138.7e9 plies against the
 # 1.14e9 positions an arm reads, so decay has no overfitting to prevent here.
-# `#489` owns the timescale it would be set from.
+# What decay does bound is parameter growth, and this horizon stops short of
+# where that starts costing anything, so enabling it would change nothing here.
+# `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+# owns that call and the rule a longer run takes.
 weight_decay = 0.0
 
 # Relaxed rather than strict. Strict costs 3.24x on this shape, measured, and

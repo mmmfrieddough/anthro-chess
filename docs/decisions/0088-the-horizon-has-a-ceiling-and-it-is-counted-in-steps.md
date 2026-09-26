@@ -19,6 +19,14 @@ Bears on `0071-the-target-is-the-size-the-published-ladder-flattens-at.md`: the
 target's horizon is unchanged, but the step count it implies sits past the
 ceiling below.
 
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+demonstrates the mechanism this record could only evidence, and records the
+condition under which the ceiling stops binding. It also replaces the rule form
+the Consequences below describe: the decay timescale is held absolute in
+optimizer steps rather than as a multiple of the horizon, and
+`anthro_chess.training.scaling_rules` no longer carries a horizon multiple at
+all. Read that section as what was true when this was written.
+
 ## Context
 
 Every checkpoint this project had read was stopped by a step bound while still
@@ -150,7 +158,7 @@ coordinate for this failure, because two runs at one ratio and different widths
 differ in steps by the ratio of their parameter counts.
 
 **The vehicle cannot detect this and is not expected to.** At 800 positions per
-parameter it runs 69,466 steps, a fifth of the way to the observed minimum. The
+parameter it runs 69,466 steps, a third of the way to the observed minimum. The
 target at the same ratio runs 1,007,941 steps, which is 14.5 times the vehicle
 and nearly three times past where width 128 was visibly degraded.
 
