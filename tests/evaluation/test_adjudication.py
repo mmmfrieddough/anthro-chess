@@ -7,13 +7,22 @@ from typing import Any
 
 import pytest
 
-from anthro_chess.evaluation.adjudication import AdjudicationAccumulator, action_sets
+from anthro_chess.chess import is_terminal_action
+from anthro_chess.evaluation.adjudication import (
+    AdjudicationAccumulator,
+    action_sets,
+    adjudicated_positions,
+)
 from anthro_chess.evaluation.policy import ActionSetPolicy
 from anthro_chess.evaluation.results import DataComponent
 from anthro_chess.evaluation.scoring import build_scoring_inputs
 from anthro_chess.evaluation.slices import PositionPredicate
 
 FORCED_FEN = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
+
+#: Black to move; after b7b5+ White's only legal move is the en passant
+#: capture, the least ordinary move an only-move position can force.
+EN_PASSANT_ONLY_FEN = "8/1pb5/8/2P5/K7/8/8/1rb4k b - - 0 1"
 
 
 def test_adjudication_reports_human_model_and_rating_band_rates(
@@ -201,3 +210,84 @@ def test_the_human_gap_is_reported_per_rating_band(
         "adjudicated.mate_available_human_gap_1200_to_1599",
         "adjudicated.mate_available_human_gap_2000_plus",
     }
+
+
+def test_a_ply_the_human_ended_the_game_on_is_not_adjudicated(
+    normalized_row: Callable[..., dict[str, Any]],
+    fixture_game_id: Callable[[int], int],
+) -> None:
+    """A resignation is not a missed mate, whatever the position offered."""
+
+    row = normalized_row(
+        45,
+        split="test",
+        rating=1500,
+        initial_position=FORCED_FEN,
+        moves=(),
+        result="0-1",
+    )
+    inputs = build_scoring_inputs(
+        [row],
+        split="test",
+        batch_size=1,
+        length_bucket_width=None,
+        identity_sha256="d" * 64,
+    )
+    key = (fixture_game_id(45), 0)
+    assert is_terminal_action(inputs.plies[key].target_action_id)
+    assert PositionPredicate.MATE_AVAILABLE in inputs.labels(key).predicates
+
+    assert action_sets(inputs) == {}
+    assert adjudicated_positions((), inputs) == ()
+
+
+def test_a_human_who_moves_in_an_only_move_position_plays_it(
+    normalized_row: Callable[..., dict[str, Any]],
+) -> None:
+    """Human success over only-move positions is exactly one by construction.
+
+    Anything less is an action-encoding round trip disagreeing with the legal
+    move the predicate derived, not a reading about the human.
+    """
+
+    rows = [
+        normalized_row(
+            46,
+            split="test",
+            rating=1500,
+            initial_position=EN_PASSANT_ONLY_FEN,
+            moves=("b7b5", "c5b6"),
+        ),
+        normalized_row(
+            47,
+            split="test",
+            rating=1500,
+            initial_position=EN_PASSANT_ONLY_FEN,
+            moves=("b7b5",),
+            result="0-1",
+        ),
+    ]
+    inputs = build_scoring_inputs(
+        rows,
+        split="test",
+        batch_size=2,
+        length_bucket_width=None,
+        identity_sha256="f" * 64,
+    )
+
+    outcomes = [
+        (
+            is_terminal_action(ply.target_action_id),
+            ply.target_action_id
+            in inputs.labels(key)
+            .predicates[PositionPredicate.ONLY_MOVE]
+            .successful_action_ids,
+        )
+        for key, ply in inputs.plies.items()
+        if PositionPredicate.ONLY_MOVE in inputs.labels(key).predicates
+    ]
+    assert sorted(outcomes) == [(False, True), (True, False)]
+    assert all(
+        PositionPredicate.ONLY_MOVE not in subsets
+        for subsets in action_sets(inputs).values()
+    )

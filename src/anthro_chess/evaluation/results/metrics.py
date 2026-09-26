@@ -983,9 +983,6 @@ _ADJUDICATED_PREDICATES: Mapping[str, _AdjudicatedPredicate] = {
     "material_gain": _AdjudicatedPredicate(
         "wins the available material", scores_a_fault=False
     ),
-    "only_move": _AdjudicatedPredicate(
-        "plays the one legal move", scores_a_fault=False
-    ),
     "stalemate_available": _AdjudicatedPredicate(
         "forces the available stalemate", scores_a_fault=False
     ),
@@ -1006,7 +1003,7 @@ def _adjudicated_metric(
             identifier=f"adjudicated.{predicate}_{suffix}",
             family=ADJUDICATED_DECISIONS_FAMILY.identifier,
             direction=direction,
-            definition_version=1,
+            definition_version=2,
             summary=summary,
             cost=MetricCost.SINGLE_PASS,
             projection=MOVE_PREDICTION_PROJECTION.name,

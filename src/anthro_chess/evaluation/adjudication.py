@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
+from anthro_chess.chess import is_terminal_action
 from anthro_chess.evaluation.aggregation import UNRATED_SLICE
 from anthro_chess.evaluation.curves import (
     PairedRateObservation,
@@ -29,9 +30,16 @@ from anthro_chess.evaluation.slices import (
     PREDICATE_REGISTRY,
     PositionPredicate,
     PredicateClass,
+    PredicateMatch,
 )
 
-ADJUDICATION_VERSION = 1
+ADJUDICATION_VERSION = 2
+
+#: A human who moved at all played the one legal move, so its reference would
+#: be a constant rather than a rate.
+ADJUDICATED_PREDICATES: frozenset[PositionPredicate] = frozenset(PositionPredicate) - {
+    PositionPredicate.ONLY_MOVE
+}
 
 
 @dataclass(frozen=True)
@@ -295,7 +303,7 @@ def adjudicated_positions(
     by_key = {(item.game_id, item.ply_index, item.name): item for item in scored}
     positions: list[AdjudicatedPosition] = []
     for key in inputs.plies:
-        matches = inputs.labels(key).predicates
+        matches = _adjudicated_matches(inputs, key)
         ply = inputs.plies[key]
         rating_band = inputs.slices[key].rating_band or UNRATED_SLICE
         for predicate, match in matches.items():
@@ -321,6 +329,26 @@ def adjudicated_positions(
                 )
             )
     return tuple(positions)
+
+
+def _adjudicated_matches(
+    inputs: ScoringInputs,
+    key: PositionKey,
+) -> Mapping[PositionPredicate, PredicateMatch]:
+    """Return the predicates one position is adjudicated on.
+
+    A ply whose human action ended the game offers none: counting a
+    resignation as a missed decision would read resignation propensity as
+    move quality.
+    """
+
+    if is_terminal_action(inputs.plies[key].target_action_id):
+        return {}
+    return {
+        predicate: match
+        for predicate, match in inputs.labels(key).predicates.items()
+        if predicate in ADJUDICATED_PREDICATES
+    }
 
 
 def _game_totals(
@@ -396,7 +424,7 @@ def action_sets(
             for predicate, match in matches.items()
         }
         for key in (inputs.plies if keys is None else keys)
-        if (matches := inputs.labels(key).predicates)
+        if (matches := _adjudicated_matches(inputs, key))
     }
 
 
@@ -422,6 +450,7 @@ def merge_game_totals(
 
 
 __all__ = [
+    "ADJUDICATED_PREDICATES",
     "ADJUDICATION_VERSION",
     "AdjudicatedPosition",
     "AdjudicationAccumulator",
