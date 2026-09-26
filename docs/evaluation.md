@@ -1310,10 +1310,18 @@ already pushes probability toward legal moves because the target move is legal.
 
 Some decisions have an answer the deterministic chess layer supplies outright:
 mate available to the side to move, mate threatened against it on the reply,
-stalemate available to the side to move, and positions with one legal move. These are
-a tiny fraction of any pool, so a model that never converts a forced mate looks
-unremarkable in an aggregate move loss. Measuring them separately is the only
-way the failure becomes visible.
+and stalemate available to the side to move. These are a tiny fraction of any
+pool, so a model that never converts a forced mate looks unremarkable in an
+aggregate move loss. Measuring them separately is the only way the failure
+becomes visible.
+
+A decision is one the human made with a move. A ply where the recorded human
+action resigned or claimed a draw is not an opportunity for either side, since
+scoring it would read resignation propensity as move quality; resignation is
+read by the game-termination family instead. A position with one legal move is
+not adjudicated either: a human who moved played it, so the reference is a
+constant. The legality slice covers it instead, and a test holds the
+constant, since a departure from it is an action-encoding fault.
 
 The reference is **what humans at that rating actually do**, not perfect play.
 A model far below the human rate is the finding; matching a human rate that is
@@ -1528,7 +1536,8 @@ a single legal reply are overwhelmingly replies to a check. Over sixteen times
 the pool, full dose leaves 136 mate-available opportunities, 45
 mate-threatened, 1 only-move and no stalemate-available. No sample size reaches
 them, so this benchmark reports material gain alone and the others keep their
-sample over human positions in the adjudicated-decisions family.
+sample over human positions: only-move in the legality slices, the rest in the
+adjudicated-decisions family.
 
 Human rates exist only on the control arm, and the reference on a perturbed arm
 is the model's own control reading of the same quantity. The reading is a curve

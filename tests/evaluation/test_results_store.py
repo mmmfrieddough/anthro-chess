@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -694,3 +695,41 @@ def test_a_retired_metric_leaves_history_readable(
 
     stored = store.results()
     assert stored[0].measurement(probe.identifier) is not None
+
+
+def test_a_redefined_metric_leaves_history_readable(
+    tmp_path: Path,
+    recorded_result: ResultFactory,
+    move_prediction_component: Callable[..., DataComponent],
+) -> None:
+    """A version bump ends the old series without making the store unloadable."""
+
+    snapshot = registry_snapshot()
+    definition = MetricDefinition(
+        identifier="legality.redefined_probe",
+        family="legality",
+        direction=MetricDirection.LOWER_IS_BETTER,
+        definition_version=1,
+        summary="A metric whose meaning later changes.",
+        cost=MetricCost.SINGLE_PASS,
+        projection="move_prediction",
+    )
+    register_metric(definition)
+    component = move_prediction_component()
+    store = ResultsStore(tmp_path / "results")
+    store.append(
+        recorded_result(
+            measurements=[measurement(definition.identifier, 0.5, data=component)],
+            component=component,
+        )
+    )
+
+    restore_registry(snapshot)
+    register_metric(replace(definition, definition_version=2))
+    try:
+        stored = store.results()[0]
+        old = stored.measurement(definition.identifier)
+        assert old is not None
+        assert old.fingerprint != stored.expected_fingerprint(definition.identifier)
+    finally:
+        restore_registry(snapshot)

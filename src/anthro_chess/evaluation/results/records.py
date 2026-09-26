@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Annotated, Any
@@ -429,9 +430,10 @@ class ResultEnvelope(ResultModel):
         comparison, so this is checked rather than trusted.
 
         Reading is deliberately more forgiving than recording. A metric that
-        has since left the registry leaves a dead series, and decision 0013
-        expects those to stay readable and honestly labeled rather than to
-        make the surrounding history unloadable. The same applies to the size
+        has since left the registry, or moved to a later definition version,
+        leaves a dead series, and decision 0013 expects those to stay readable
+        and honestly labeled rather than to make the surrounding history
+        unloadable. The same applies to the size
         budget, which can only be exceeded by a record written when the budget
         was larger, and to the serialization it is measured over: ``json.loads``
         accepts literals the canonical writer refuses, so re-encoding on the way
@@ -446,13 +448,22 @@ class ResultEnvelope(ResultModel):
             )
         for measurement in self.measurements:
             try:
-                metric_definition(measurement.metric)
+                definition = metric_definition(measurement.metric)
             except MetricRegistryError as error:
                 if recording:
                     raise ResultRecordError(str(error)) from error
                 continue
             expected = self.expected_fingerprint(measurement.metric)
-            if expected != measurement.fingerprint:
+            if expected != measurement.fingerprint and (
+                recording
+                or measurement.fingerprint
+                not in {
+                    self.expected_fingerprint(
+                        measurement.metric, definition_version=version
+                    )
+                    for version in range(1, definition.definition_version)
+                }
+            ):
                 raise ResultRecordError(
                     f"result {self.result_id} records a fingerprint for "
                     f"{measurement.metric} that its own provenance does not "
@@ -468,13 +479,21 @@ class ResultEnvelope(ResultModel):
                 "stays small. Move bulk diagnostics to the detail tier."
             )
 
-    def expected_fingerprint(self, metric: str) -> str:
-        """Return the fingerprint this result's own provenance implies."""
+    def expected_fingerprint(
+        self, metric: str, *, definition_version: int | None = None
+    ) -> str:
+        """Return the fingerprint this result's own provenance implies.
+
+        ``definition_version`` asks what it implied under an earlier version of
+        the metric instead of the registered one.
+        """
 
         try:
             definition = metric_definition(metric)
         except MetricRegistryError as error:
             raise ResultRecordError(str(error)) from error
+        if definition_version is not None:
+            definition = replace(definition, definition_version=definition_version)
         component: DataComponent | None = None
         if definition.projection is not None:
             digest = self.data.component(definition.projection) if self.data else None

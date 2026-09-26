@@ -25,6 +25,7 @@ from anthro_chess.evaluation import (
     position_slices,
     rating_band_name,
 )
+from anthro_chess.evaluation.adjudication import ADJUDICATED_PREDICATES
 from anthro_chess.evaluation.results.metrics import ADJUDICATED_PREDICATE_NAMES
 from anthro_chess.evaluation.slices import _material_conceding_moves, position_labels
 
@@ -251,7 +252,7 @@ def test_forward_predicates_cover_exact_forced_outcomes() -> None:
         PositionPredicate.MATERIAL_CONCESSION,
     }
     assert ADJUDICATED_PREDICATE_NAMES == tuple(
-        sorted(predicate.value for predicate in PREDICATE_REGISTRY)
+        sorted(predicate.value for predicate in ADJUDICATED_PREDICATES)
     )
 
 
