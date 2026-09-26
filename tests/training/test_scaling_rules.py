@@ -107,6 +107,9 @@ def test_the_vehicle_comes_back_out_of_the_rules_that_were_fitted_through_it(
         vehicle.warmup_positions, rel=0.01
     )
     assert resolved.cooldown_fraction == vehicle.cooldown_fraction
+    # Inside `training_sha256`, so drift here re-keys a rung away from the
+    # vehicle's stored seed dispersion.
+    assert resolved.weight_decay == vehicle.weight_decay
 
 
 def test_a_resolved_run_declares_a_schedule_its_own_horizon_can_carry(
@@ -169,18 +172,6 @@ def test_the_second_moment_timescale_is_what_survives_a_batch_change() -> None:
     )
     spans = {round(batch / (1.0 - second_moment_decay(batch))) for batch in batches}
     assert len(spans) == 1
-
-
-def test_the_weight_decay_coefficient_encodes_the_timescale_the_rule_states() -> None:
-    """A coefficient is meaningless alone; what it has to reproduce is a time."""
-
-    resolved = resolve(TrainingScale(model_dim=64, positions_per_parameter=800))
-    if not resolved.weight_decay:
-        assert resolved.weight_decay_steps == float("inf")
-        return
-    assert resolved.weight_decay_steps == pytest.approx(
-        1.0 / (resolved.learning_rate * resolved.weight_decay)
-    )
 
 
 @pytest.mark.parametrize(

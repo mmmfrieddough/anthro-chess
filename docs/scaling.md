@@ -68,9 +68,8 @@ establish.
 
 ## Model Size Is Derived, Not Tuned
 
-**The target model size follows from the compute budget and the deployment
-envelope. It is not an experimental result and no experiment is run to choose
-it.**
+**The target model size follows from the training compute budget. It is not an
+experimental result and no experiment is run to choose it.**
 
 Compute is an input: the hardware, multiplied by the wall-clock the project will
 spend, multiplied by realized utilization. `docs/vision.md` bounds the second
@@ -102,17 +101,18 @@ few percent of optimal compute, which is below what any reading here can resolve
 A size within that band is not re-litigated. A size wrong by a factor of four is
 a real error and is fixed.
 
-This project serves far more inference than it spends training, and its serving
-constraint is loose — a model this size answers in milliseconds. That argues for
-the smaller-and-longer end of the band rather than the compute-optimal point,
-which is chosen for a run that is never served.
+**The target is the best model the training budget can buy.** Inference cost is
+a secondary constraint, weighed like any other rather than traded against
+training, so it is not a reason to move off that point toward a smaller model
+trained for longer. In practice that means a size whose best point lands near the
+end of the budget, rather than a smaller one trained past its peak.
 
 ### The Horizon Has A Ceiling, Counted In Steps
 
-**A run stops improving and then degrades, and where that happens is a step
-count rather than a ratio of positions to parameters.** At the vehicle's width
-the loss minimum sits near 222,000 optimizer steps and the reading is clearly
-degraded by 347,000, on held-out loss and top-1 accuracy alike.
+**An undecayed run stops improving and then degrades, and where that happens is
+a step count rather than a ratio of positions to parameters.** At the vehicle's
+width the loss minimum sits near 222,000 optimizer steps and the reading is
+clearly degraded by 347,000, on held-out loss and top-1 accuracy alike.
 
 Positions per parameter stays the right coordinate for the regime a model is
 trained in, which is what the vehicle is matched on. It is the wrong coordinate
@@ -124,6 +124,20 @@ vehicle therefore cannot detect this and is not expected to.**
 `docs/decisions/0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md`
 records the curve, the mechanism the evidence points at, and what it does not
 establish.
+
+**Weight decay is what lifts the ceiling, held as a timescale in optimizer
+steps, and only with one-dimensional parameters exempt.** Bounding parameter
+growth removes the turnaround at the width and step count where it exists.
+Decaying every parameter erases the rating conditioning, so the optimizer exempts
+the rating embeddings, biases and normalization gains.
+
+**Nothing adopts it: a run is sized to end near its peak instead.** Stopping an
+undecayed run at its peak beat every decayed arm on every outcome measured. Decay
+only wins against a run left past its ceiling, and it costs fit without the
+overfitting benefit it normally buys, since nothing repeats at these horizons. A
+model that runs past its peak within its budget is too small for that budget.
+`docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
+carries the arms.
 
 ### The Target
 

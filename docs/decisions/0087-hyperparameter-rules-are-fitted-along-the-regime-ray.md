@@ -25,6 +25,10 @@ that measurement to two smaller widths.
 the weight-decay reading here, and records why the timescale this rule is stated
 over is the wrong invariant for the failure it found.
 
+`0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` replaces
+the weight-decay rule this record left unresolved, at a horizon long enough for
+the dial to do anything.
+
 ## Context
 
 `docs/scaling.md` requires a scale-dependent setting to be recorded as the rule

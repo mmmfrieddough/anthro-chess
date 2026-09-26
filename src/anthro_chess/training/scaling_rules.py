@@ -3,8 +3,8 @@
 ``docs/scaling.md`` says a hyperparameter that depends on scale is recorded as
 the rule that produces it rather than as the number the rule produced. This
 module is that record for the five settings a size or horizon change moves:
-the peak learning rate, the batch, the warmup, the weight-decay timescale, and
-the optimizer's second-moment decay.
+the peak learning rate, the batch, the warmup, the weight-decay coefficient,
+and the optimizer's second-moment decay.
 
 **Only the rate became a rule against scale.** The other four are held, each
 because the arms behind it said so rather than because it was skipped, and each
@@ -29,7 +29,9 @@ it stops holding, so the boundary has to be carried separately.
 
 ``docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md``
 records what was run, what each exponent came out at, and what the fit does not
-establish.
+establish, except for the decay setting, which
+``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
+settled at a horizon long enough for that dial to do anything.
 """
 
 from __future__ import annotations
@@ -185,14 +187,17 @@ HORIZON_EXPONENT = 0.0
 #: slightly better, and a later session has nothing to gain by re-deriving it.
 WARMUP_FRACTION = 0.01
 
-#: The decay timescale as a multiple of the horizon, or infinite for none.
-#: Swept at a quarter, one and four horizons against no decay at all: the best
-#: beat no decay by 0.42%, inside the seed dispersion, and the four-horizon arm
-#: read worse than no decay, which it cannot be. Nothing here resolves, which is
-#: what a corpus that never repeats at these horizons should give: there is no
-#: overfitting for decay to prevent. Recorded as a timescale anyway, because
-#: that is the half of the pair a horizon change leaves alone.
-WEIGHT_DECAY_HORIZONS = float("inf")
+#: No decay, which is a measured answer here rather than a missing rule.
+#:
+#: What decay bounds is not overfitting, since nothing repeats at these
+#: horizons, but the parameter growth that eventually costs a run its response.
+#: That bound sits past every horizon the fitted ranges above can express, so a
+#: coefficient here would pay the offset decay costs wherever a run is healthy
+#: and collect none of the benefit.
+#: ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
+#: carries the arms, and why a run long enough to reach the bound stops near its
+#: peak instead of taking decay.
+WEIGHT_DECAY = 0.0
 
 #: The span the second moment averages over, in positions, so that a batch
 #: change moves the constant rather than silently rescaling the average.
@@ -255,25 +260,6 @@ def warmup_positions(positions: int) -> int:
     return round(WARMUP_FRACTION * positions)
 
 
-def weight_decay(learning_rate: float, positions: int, batch: int) -> float:
-    """Return the coefficient that puts the decay timescale at its rule.
-
-    Decoupled decay shrinks a weight by ``learning_rate * weight_decay`` each
-    step, so the coefficient means nothing on its own: what it sets is a
-    timescale of ``1 / (learning_rate * weight_decay)`` steps, and a horizon
-    change moves the coefficient that holds that timescale. The rule is stated
-    over the timescale, which is the half of the pair a horizon change leaves
-    alone.
-
-    Zero is a legitimate answer and is what an infinite timescale means.
-    """
-
-    if WEIGHT_DECAY_HORIZONS == float("inf"):
-        return 0.0
-    steps = positions / batch
-    return 1.0 / (learning_rate * WEIGHT_DECAY_HORIZONS * steps)
-
-
 def second_moment_decay(batch: int) -> float:
     """Return Adam's second-moment decay for a batch, from its timescale.
 
@@ -322,9 +308,8 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
     """Return every setting the rules produce at one scale.
 
     The order is forced rather than chosen: the batch follows from the horizon,
-    the rate needs the batch, and the two timescales need the rate and the
-    batch. Resolving in any other order would need a setting that does not
-    exist yet.
+    the rate needs the batch, and the second-moment timescale needs the batch.
+    Resolving in any other order would need a setting that does not exist yet.
     """
 
     parameters = scale.parameters
@@ -342,7 +327,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
         learning_rate=rate,
         warmup_positions=warmup_positions(positions),
         cooldown_fraction=COOLDOWN_FRACTION,
-        weight_decay=weight_decay(rate, positions, batch),
+        weight_decay=WEIGHT_DECAY,
         second_moment_decay=second_moment_decay(batch),
     )
 
@@ -350,6 +335,7 @@ def resolve(scale: TrainingScale) -> ResolvedRun:
 __all__ = [
     "POSITIONS_RANGE",
     "COOLDOWN_FRACTION",
+    "WEIGHT_DECAY",
     "MICRO_BATCH_POSITIONS",
     "MODEL_DIM_RANGE",
     "POSITIONS_PER_PARAMETER_RANGE",
@@ -363,5 +349,4 @@ __all__ = [
     "resolve",
     "second_moment_decay",
     "warmup_positions",
-    "weight_decay",
 ]
