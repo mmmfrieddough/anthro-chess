@@ -49,7 +49,7 @@ refined or superseded it, so the one you land on says where to go next.
 | preference-control work | `docs/preference-controls.md` |
 | a data, training, or evaluation choice wants prior art — never as background reading | `docs/research.md` |
 | picking up, claiming, or publishing an issue | `docs/issue-workflow.md` |
-| performing the GUI check | `docs/playable-uci.md` |
+| previewing a change on Lichess | `docs/playable-uci.md` |
 | sequencing work or refining a milestone | `docs/planning/roadmap.md` |
 | adding a config file | `configs/README.md` |
 | a benchmark writes results | `results/README.md` |
@@ -104,11 +104,6 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   labeled `execution: gpu-required` needs the GPU environment its body
   specifies. One labeled `verification: gpu-required` can be implemented without
   that environment and uses the documented handoff when the GPU check remains.
-- When a change alters what a chess GUI observes, offer a real GUI check without
-  being asked: point the maintainer's GUI at the working checkout with
-  `scripts/anthro-gui-target .` and say the engine is ready to test, what to
-  look at, and what a good result looks like. The GUI itself is configured once
-  and is never reconfigured per issue.
 - When a change adds or alters a benchmark, take a shakedown reading on two real
   checkpoints from one training run before the pull request is ready, using
   `--no-record` and a capped view rather than the declared size. Fixtures

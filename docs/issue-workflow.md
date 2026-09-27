@@ -444,34 +444,6 @@ capped reading or a change adopted for a reason no benchmark measured, say so
 beside the copy and leave it to review; a capped view names its realized size in
 the record, so the diff already shows which it is.
 
-## Offering A Real GUI Check
-
-Some changes are only convincing in a real chess GUI. Automated coverage proves
-protocol behavior, but command ordering, option presentation, and how a game
-actually feels belong to the maintainer.
-
-Offer a GUI check without being asked when a change alters what a GUI observes:
-move selection, sampling or seeding, rating or temperature controls, position
-synchronization, advertised options, protocol command handling, or engine
-lifecycle. Skip it for changes a GUI cannot see, such as data pipeline,
-training, evaluation, or documentation work.
-
-To offer one, point the GUI at the working checkout with
-`scripts/anthro-gui-target .`, and tell the maintainer the engine is ready to
-test, which behavior to look at, and what a good result looks like. The GUI
-itself is configured once and is never reconfigured per issue, so do not change
-its settings or edit anything under `.venv`. The mechanism is documented in
-`playable-uci.md`.
-
-Leave the pointer aimed at that checkout while the pull request is open. Clear
-it with `scripts/anthro-gui-target --clear` when abandoning the branch, and note
-in the issue that the maintainer should clear it after merge if the checkout is
-removed. A removed target fails loudly rather than silently serving stale code.
-
-Maintainer GUI observations belong in the issue as findings. Treat a GUI session
-as acceptance evidence, not as a substitute for automated coverage: whenever a
-GUI check finds a defect, add the regression test that would have caught it.
-
 ## Publishing
 
 Before marking a pull request ready, account for its size against the request
@@ -559,13 +531,12 @@ Before substantive changes:
 5. Keep roadmap/build-order edits in `docs/planning/`.
 6. Update affected docs when the change alters durable intent.
 7. Add a decision record only when the rationale has lasting value.
-8. Offer a real GUI check when the change alters what a GUI observes.
-9. Take a shakedown reading when the change adds or alters a benchmark.
-10. Read a model change against a control arm when the change decides what a
-    training run learns.
-11. Promote the treatment arm's records in the pull request adopting the model
+8. Take a shakedown reading when the change adds or alters a benchmark.
+9. Read a model change against a control arm when the change decides what a
+   training run learns.
+10. Promote the treatment arm's records in the pull request adopting the model
     change that produced them, when a control-arm reading decided it.
-12. Account for the diff's size and new surface before marking the pull request
+11. Account for the diff's size and new surface before marking the pull request
     ready.
-13. Account for anything the task left behind before the merge closes the issue:
+12. Account for anything the task left behind before the merge closes the issue:
     fixed here, filed as its own issue, or explained in the pull request.

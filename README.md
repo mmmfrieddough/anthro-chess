@@ -109,7 +109,8 @@ new-game reset, target-rating and temperature options, and terminal
 `bestmove 0000`. It deliberately does not provide analysis search, pondering,
 clock-aware timing, or portable resignation. See the
 [UCI playing guide](docs/playable-uci.md) for the real-checkpoint CPU smoke,
-GUI setup, final acceptance procedure, and current limitations. The detailed
+the engine options, previewing a checkout as a Lichess bot, and current
+limitations. The detailed
 protocol boundary lives in [`docs/interfaces.md`](docs/interfaces.md).
 
 ## Sample Data Path
