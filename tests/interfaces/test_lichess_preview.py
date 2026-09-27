@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -39,8 +42,10 @@ def test_start_is_refused_while_another_preview_runs(
     assert (tmp_path / "state" / STATE).is_file()
 
 
-def test_a_dead_preview_does_not_block_a_new_one(tmp_path: Path) -> None:
-    _record(tmp_path, _dead_pid(), "/elsewhere/issue-99")
+def test_a_recorded_pid_that_is_not_lichess_bot_is_ignored(
+    tmp_path: Path,
+) -> None:
+    _record(tmp_path, os.getpid(), "/elsewhere/issue-99")
 
     result = _run(tmp_path, ["start"])
 
@@ -66,24 +71,81 @@ def test_a_checkpoint_needs_its_run(tmp_path: Path) -> None:
     assert "--checkpoint names a file within --run" in result.stderr
 
 
+def test_forced_stop_ends_the_preview_without_asking_lichess(
+    tmp_path: Path, live_pid: int
+) -> None:
+    _record(tmp_path, live_pid, "/elsewhere/issue-99")
+
+    result = _run(tmp_path, ["stop", "--force"])
+
+    assert result.returncode == 0
+    assert "Stopped the preview of /elsewhere/issue-99" in result.stdout
+    assert not (tmp_path / "state" / STATE).exists()
+
+
+def test_stop_refuses_while_a_game_is_in_progress(
+    tmp_path: Path, live_pid: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preview = _load(tmp_path, monkeypatch)
+    _record(tmp_path, live_pid, "/elsewhere/issue-99")
+    monkeypatch.setattr(preview, "current_games", lambda account: ["abcd1234"])
+
+    with pytest.raises(preview.PreviewError, match="abcd1234"):
+        preview.stop(argparse.Namespace(force=False))
+    assert (tmp_path / "state" / STATE).is_file()
+
+
+@pytest.mark.parametrize(
+    ("title", "scopes", "message"),
+    [("BOT", "challenge:read", "bot:play"), (None, "bot:play", "not a BOT account")],
+)
+def test_the_token_must_belong_to_a_bot_able_to_play(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    title: str | None,
+    scopes: str,
+    message: str,
+) -> None:
+    preview = _load(tmp_path, monkeypatch)
+    account = {"username": "anthro-dev", "title": title}
+    monkeypatch.setattr(
+        preview,
+        "lichess_get",
+        lambda path, token: (account, {"X-OAuth-Scopes": scopes}),
+    )
+
+    with pytest.raises(preview.PreviewError, match=message):
+        preview.bot_account("token")
+
+
 @pytest.fixture
 def live_pid() -> Iterator[int]:
-    process = subprocess.Popen(["sleep", "60"])
+    # Named like lichess-bot, in its own session, as a started preview is.
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", "lichess-bot.py"],
+        start_new_session=True,
+    )
     yield process.pid
     process.kill()
     process.wait()
 
 
-def _dead_pid() -> int:
-    process = subprocess.Popen(["true"])
-    process.wait()
-    return process.pid
+def _load(root: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
+    spec = importlib.util.spec_from_file_location("lichess_preview", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _record(root: Path, pid: int, checkout: str) -> None:
     path = root / "state" / STATE
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"pid": pid, "checkout": checkout}))
+    path.write_text(
+        json.dumps({"pid": pid, "checkout": checkout, "account": "anthro-dev"})
+    )
 
 
 def _run(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:

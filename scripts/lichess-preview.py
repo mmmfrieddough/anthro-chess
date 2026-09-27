@@ -30,10 +30,8 @@ import urllib.request
 from pathlib import Path
 
 from anthro_chess.inference.config import LATEST_CHECKPOINT, ModelRunnerConfig
-from anthro_chess.inference.selection import (
-    ModelSelectionError,
-    resolve_model_selection,
-)
+from anthro_chess.inference.selection import resolve_model_selection
+from anthro_chess.interfaces.config import UCI_TEMPERATURE_SCALE
 from anthro_chess.machine import RUN_ROOT_VARIABLE, optional_root
 
 # lichess-bot is an application rather than a package, so it is fetched into
@@ -101,6 +99,8 @@ def lichess_get(path: str, token: str | None = None) -> tuple[object, dict[str, 
                 f"Lichess rejected {TOKEN_VARIABLE}. {SETUP_HINT}"
             ) from error
         raise PreviewError(f"Lichess answered {error.code} for {path}") from error
+    except urllib.error.URLError as error:
+        raise PreviewError(f"Lichess is unreachable: {error.reason}") from error
 
 
 def bot_account(token: str) -> str:
@@ -123,15 +123,25 @@ def current_games(account: str) -> list[str]:
     return [str(entry["playingId"]) for entry in status if entry.get("playingId")]
 
 
+def is_lichess_bot(pid: int) -> bool:
+    # A recorded pid can outlive its process and be reused, so the command line
+    # has to still be lichess-bot's before anything is signalled.
+    command = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    return "lichess-bot.py" in command
+
+
 def running_preview() -> dict[str, object] | None:
     """Return the recorded preview if its process is still alive."""
 
     if not STATE_FILE.is_file():
         return None
     record: dict[str, object] = json.loads(STATE_FILE.read_text())
-    try:
-        os.kill(int(str(record["pid"])), 0)
-    except ProcessLookupError:
+    if not is_lichess_bot(int(str(record["pid"]))):
         STATE_FILE.unlink()
         return None
     return record
@@ -217,12 +227,10 @@ def start(arguments: argparse.Namespace) -> None:
         )
     token = machine_value(TOKEN_VARIABLE)
     opponent = machine_value(OPPONENT_VARIABLE)
-    engine = shutil.which("anthro-uci")
-    if engine is None:
-        raise PreviewError(
-            "anthro-uci is not installed here. Run this through 'uv run'."
-        )
     checkout = Path(__file__).resolve().parent.parent
+    engine = checkout / ".venv" / "bin" / "anthro-uci"
+    if not engine.is_file():
+        raise PreviewError(f"{engine} does not exist. Run 'uv sync' in {checkout}.")
     try:
         selection = resolve_model_selection(
             ModelRunnerConfig(
@@ -231,7 +239,7 @@ def start(arguments: argparse.Namespace) -> None:
             ),
             run_root=optional_root(RUN_ROOT_VARIABLE),
         )
-    except ModelSelectionError as error:
+    except ValueError as error:
         raise PreviewError(f"No checkpoint to serve: {error}") from error
     account = bot_account(token)
     home = ensure_lichess_bot()
@@ -240,7 +248,9 @@ def start(arguments: argparse.Namespace) -> None:
     if arguments.rating is not None:
         uci_options |= {"UCI_LimitStrength": True, "UCI_Elo": arguments.rating}
     if arguments.temperature is not None:
-        uci_options["Anthro Temperature"] = round(arguments.temperature * 100)
+        uci_options["Anthro Temperature"] = round(
+            arguments.temperature * UCI_TEMPERATURE_SCALE
+        )
 
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     engine_config = STATE_ROOT / "engine.toml"
@@ -251,7 +261,7 @@ def start(arguments: argparse.Namespace) -> None:
     bot_config = STATE_ROOT / "config.yml"
     bot_config.write_text(
         json.dumps(
-            bot_configuration(Path(engine), engine_config, opponent, uci_options),
+            bot_configuration(engine, engine_config, opponent, uci_options),
             indent=2,
         )
     )
@@ -266,7 +276,8 @@ def start(arguments: argparse.Namespace) -> None:
             "--disable_auto_logging",
         ],
         cwd=home,
-        env={**os.environ, TOKEN_VARIABLE: token},
+        # A wide console keeps lichess-bot's readiness line from wrapping.
+        env={**os.environ, TOKEN_VARIABLE: token, "COLUMNS": "1000"},
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -327,8 +338,8 @@ def stop(arguments: argparse.Namespace) -> None:
     if record is None:
         print("No preview is running.")
         return
-    games = current_games(str(record["account"]))
-    if games and not arguments.force:
+    games = [] if arguments.force else current_games(str(record["account"]))
+    if games:
         urls = ", ".join(f"{LICHESS}/{game}" for game in games)
         raise PreviewError(
             f"A game is in progress ({urls}). "
@@ -338,9 +349,7 @@ def stop(arguments: argparse.Namespace) -> None:
     os.killpg(pid, signal.SIGINT)
     deadline = time.monotonic() + STOP_SECONDS
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not is_lichess_bot(pid):
             break
         time.sleep(1)
     else:

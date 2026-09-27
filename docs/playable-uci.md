@@ -139,8 +139,9 @@ default applies. `start` resolves the selection to one checkpoint before the bot
 goes online, and `status` reports the checkout, the checkpoint, the options, and
 any game in progress.
 
-The bot accepts casual standard games at any time control, from one Lichess
-account only. A machine has one bot account, so one preview runs at a time:
+The bot accepts casual standard games from one Lichess account only, at any time
+control Lichess lets a bot play: bullet through classical, correspondence, and
+unlimited. A machine has one bot account, so one preview runs at a time:
 `start` refuses while another is running and names the checkout it serves.
 Stopping mid-game abandons the game, so `stop` refuses while one is in progress
 unless given `--force`.
