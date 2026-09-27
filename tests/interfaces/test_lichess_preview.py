@@ -42,15 +42,14 @@ def test_start_is_refused_while_another_preview_runs(
     assert (tmp_path / "state" / STATE).is_file()
 
 
-def test_a_recorded_pid_that_is_not_lichess_bot_is_ignored(
-    tmp_path: Path,
-) -> None:
+def test_a_record_nobody_holds_the_lock_for_is_ignored(tmp_path: Path) -> None:
     _record(tmp_path, os.getpid(), "/elsewhere/issue-99")
 
     result = _run(tmp_path, ["start"])
 
     # Past the running-preview check, stopped by the next prerequisite.
     assert "LICHESS_BOT_TOKEN is not set" in result.stderr
+    assert _run(tmp_path, ["status"]).stdout.strip() == "No preview is running."
     assert not (tmp_path / "state" / STATE).exists()
 
 
@@ -119,12 +118,26 @@ def test_the_token_must_belong_to_a_bot_able_to_play(
 
 
 @pytest.fixture
-def live_pid() -> Iterator[int]:
-    # Named like lichess-bot, in its own session, as a started preview is.
+def live_pid(tmp_path: Path) -> Iterator[int]:
+    """A process holding the preview lock in its own session, as a running bot does."""
+
+    lock = tmp_path / "state" / STATE.parent / "preview.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = (
+        "import fcntl, os, sys, time\n"
+        f"descriptor = os.open({str(lock)!r}, os.O_RDWR | os.O_CREAT)\n"
+        "fcntl.flock(descriptor, fcntl.LOCK_EX)\n"
+        "print('locked', flush=True)\n"
+        "time.sleep(60)\n"
+    )
     process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)", "lichess-bot.py"],
+        [sys.executable, "-c", holder],
+        stdout=subprocess.PIPE,
+        text=True,
         start_new_session=True,
     )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
     yield process.pid
     process.kill()
     process.wait()
@@ -142,7 +155,7 @@ def _load(root: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 
 def _record(root: Path, pid: int, checkout: str) -> None:
     path = root / "state" / STATE
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"pid": pid, "checkout": checkout, "account": "anthro-dev"})
     )

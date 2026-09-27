@@ -18,6 +18,7 @@ the one-time setup.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
@@ -28,11 +29,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-
-from anthro_chess.inference.config import LATEST_CHECKPOINT, ModelRunnerConfig
-from anthro_chess.inference.selection import resolve_model_selection
-from anthro_chess.interfaces.config import UCI_TEMPERATURE_SCALE
-from anthro_chess.machine import RUN_ROOT_VARIABLE, optional_root
+from typing import Any
 
 # lichess-bot is an application rather than a package, so it is fetched into
 # machine state. Pinned because the generated configuration is written against
@@ -52,20 +49,25 @@ class PreviewError(RuntimeError):
     """A prerequisite is missing or the preview cannot do what was asked."""
 
 
-def _config_home() -> Path:
-    value = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    return Path(value).expanduser() if value else Path.home() / ".config"
+def _xdg_home(variable: str, fallback: Path) -> Path:
+    value = os.environ.get(variable, "").strip()
+    return Path(value).expanduser() if value else fallback
 
 
-def _state_home() -> Path:
-    value = os.environ.get("XDG_STATE_HOME", "").strip()
-    return Path(value).expanduser() if value else Path.home() / ".local" / "state"
-
-
-ENV_FILE = _config_home() / "anthro-chess" / "lichess-preview.env"
-STATE_ROOT = _state_home() / "anthro-chess" / "lichess-preview"
+ENV_FILE = (
+    _xdg_home("XDG_CONFIG_HOME", Path.home() / ".config")
+    / "anthro-chess"
+    / "lichess-preview.env"
+)
+STATE_ROOT = (
+    _xdg_home("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    / "anthro-chess"
+    / "lichess-preview"
+)
 STATE_FILE = STATE_ROOT / "preview.json"
+LOCK_FILE = STATE_ROOT / "preview.lock"
 LOG_FILE = STATE_ROOT / "lichess-bot.log"
+CONSOLE_FILE = STATE_ROOT / "console.log"
 
 
 def machine_value(name: str) -> str:
@@ -84,7 +86,7 @@ def machine_value(name: str) -> str:
     )
 
 
-def lichess_get(path: str, token: str | None = None) -> tuple[object, dict[str, str]]:
+def lichess_get(path: str, token: str | None = None) -> tuple[Any, dict[str, str]]:
     request = urllib.request.Request(
         LICHESS + path, headers={"Accept": "application/json"}
     )
@@ -105,8 +107,7 @@ def lichess_get(path: str, token: str | None = None) -> tuple[object, dict[str, 
 
 def bot_account(token: str) -> str:
     account, headers = lichess_get("/api/account", token)
-    assert isinstance(account, dict)
-    name = str(account["username"])
+    name: str = account["username"]
     scopes = {scope.strip() for scope in headers.get("X-OAuth-Scopes", "").split(",")}
     if "bot:play" not in scopes:
         raise PreviewError(
@@ -119,31 +120,37 @@ def bot_account(token: str) -> str:
 
 def current_games(account: str) -> list[str]:
     status, _ = lichess_get(f"/api/users/status?ids={account}&withGameIds=true")
-    assert isinstance(status, list)
-    return [str(entry["playingId"]) for entry in status if entry.get("playingId")]
+    return [
+        f"{LICHESS}/{entry['playingId']}" for entry in status if entry.get("playingId")
+    ]
 
 
-def is_lichess_bot(pid: int) -> bool:
-    # A recorded pid can outlive its process and be reused, so the command line
-    # has to still be lichess-bot's before anything is signalled.
-    command = subprocess.run(
-        ["ps", "-o", "command=", "-p", str(pid)],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout
-    return "lichess-bot.py" in command
+def take_lock() -> int | None:
+    """Return a descriptor holding the preview lock, or None if a bot holds it.
 
+    The running bot inherits the descriptor, so the lock is held for exactly as
+    long as that process lives, whatever happens to the command that started it.
+    """
 
-def running_preview() -> dict[str, object] | None:
-    """Return the recorded preview if its process is still alive."""
-
-    if not STATE_FILE.is_file():
+    STATE_ROOT.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
         return None
-    record: dict[str, object] = json.loads(STATE_FILE.read_text())
-    if not is_lichess_bot(int(str(record["pid"]))):
-        STATE_FILE.unlink()
+    return descriptor
+
+
+def running_preview() -> dict[str, Any] | None:
+    """Return the recorded preview if its bot is still running."""
+
+    descriptor = take_lock()
+    if descriptor is not None:
+        os.close(descriptor)
+        STATE_FILE.unlink(missing_ok=True)
         return None
+    record: dict[str, Any] = json.loads(STATE_FILE.read_text())
     return record
 
 
@@ -186,15 +193,18 @@ def ensure_lichess_bot() -> Path:
 
 
 def bot_configuration(
-    engine: Path, engine_config: Path, opponent: str, uci_options: dict[str, object]
-) -> dict[str, object]:
-    engine_section: dict[str, object] = {
+    engine: Path, checkpoint: Path, opponent: str, uci_options: dict[str, Any]
+) -> dict[str, Any]:
+    engine_section: dict[str, Any] = {
         "dir": str(engine.parent),
         "name": engine.name,
         "protocol": "uci",
-        # DEBUG logs every decision with its seed, which is what lets a
-        # previewed game be replayed and analyzed afterwards.
-        "engine_options": {"config": str(engine_config), "log-level": "DEBUG"},
+        "engine_options": {
+            "set": f'model.checkpoint_path="{checkpoint}"',
+            # DEBUG logs every decision with its seed, which is what lets a
+            # previewed game be replayed and analyzed afterwards.
+            "log-level": "DEBUG",
+        },
     }
     if uci_options:
         engine_section["uci_options"] = uci_options
@@ -219,10 +229,17 @@ def bot_configuration(
 
 
 def start(arguments: argparse.Namespace) -> None:
-    running = running_preview()
-    if running is not None:
+    lock = take_lock()
+    if lock is None:
+        # The record lags the lock by the length of a start, so a preview that
+        # is still starting has none yet.
+        checkout = (
+            json.loads(STATE_FILE.read_text())["checkout"]
+            if STATE_FILE.is_file()
+            else "another checkout, still starting"
+        )
         raise PreviewError(
-            f"A preview is already running for {running['checkout']}. "
+            f"A preview is already running for {checkout}. "
             "Stop it first with: uv run scripts/lichess-preview.py stop"
         )
     token = machine_value(TOKEN_VARIABLE)
@@ -231,10 +248,17 @@ def start(arguments: argparse.Namespace) -> None:
     engine = checkout / ".venv" / "bin" / "anthro-uci"
     if not engine.is_file():
         raise PreviewError(f"{engine} does not exist. Run 'uv sync' in {checkout}.")
+
+    # Imported here because they load torch, which status and stop never need.
+    from anthro_chess.inference.config import LATEST_CHECKPOINT, ModelRunnerConfig
+    from anthro_chess.inference.selection import resolve_model_selection
+    from anthro_chess.interfaces.config import UCI_TEMPERATURE_SCALE
+    from anthro_chess.machine import RUN_ROOT_VARIABLE, optional_root
+
     try:
         selection = resolve_model_selection(
             ModelRunnerConfig(
-                run_path=Path(arguments.run) if arguments.run else None,
+                run_path=arguments.run,
                 checkpoint=arguments.checkpoint or LATEST_CHECKPOINT,
             ),
             run_root=optional_root(RUN_ROOT_VARIABLE),
@@ -244,7 +268,7 @@ def start(arguments: argparse.Namespace) -> None:
     account = bot_account(token)
     home = ensure_lichess_bot()
 
-    uci_options: dict[str, object] = {}
+    uci_options: dict[str, Any] = {}
     if arguments.rating is not None:
         uci_options |= {"UCI_LimitStrength": True, "UCI_Elo": arguments.rating}
     if arguments.temperature is not None:
@@ -252,36 +276,32 @@ def start(arguments: argparse.Namespace) -> None:
             arguments.temperature * UCI_TEMPERATURE_SCALE
         )
 
-    STATE_ROOT.mkdir(parents=True, exist_ok=True)
-    engine_config = STATE_ROOT / "engine.toml"
-    engine_config.write_text(
-        f'[model]\ncheckpoint_path = "{selection.checkpoint_path}"\n'
-    )
     # JSON is valid YAML, which is what lichess-bot reads.
     bot_config = STATE_ROOT / "config.yml"
     bot_config.write_text(
         json.dumps(
-            bot_configuration(engine, engine_config, opponent, uci_options),
+            bot_configuration(engine, selection.checkpoint_path, opponent, uci_options),
             indent=2,
         )
     )
-
-    log = LOG_FILE.open("w")
+    LOG_FILE.unlink(missing_ok=True)
     process = subprocess.Popen(
         [
             str(home / ".venv/bin/python"),
             "lichess-bot.py",
             "--config",
             str(bot_config),
+            "--logfile",
+            str(LOG_FILE),
             "--disable_auto_logging",
         ],
         cwd=home,
-        # A wide console keeps lichess-bot's readiness line from wrapping.
-        env={**os.environ, TOKEN_VARIABLE: token, "COLUMNS": "1000"},
+        env={**os.environ, TOKEN_VARIABLE: token},
         stdin=subprocess.DEVNULL,
-        stdout=log,
+        stdout=CONSOLE_FILE.open("w"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        pass_fds=[lock],
     )
     record = {
         "pid": process.pid,
@@ -295,22 +315,22 @@ def start(arguments: argparse.Namespace) -> None:
     STATE_FILE.write_text(json.dumps(record, indent=2))
 
     deadline = time.monotonic() + STARTUP_SECONDS
-    while "awaiting challenges" not in LOG_FILE.read_text():
+    while not LOG_FILE.is_file() or "awaiting challenges" not in LOG_FILE.read_text():
         if process.poll() is not None or time.monotonic() > deadline:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
             STATE_FILE.unlink(missing_ok=True)
-            tail = "\n".join(LOG_FILE.read_text().splitlines()[-20:])
+            tail = "\n".join(CONSOLE_FILE.read_text().splitlines()[-20:])
             raise PreviewError(
-                f"lichess-bot did not come online. Last log lines:\n{tail}"
+                f"lichess-bot did not come online. Last console lines:\n{tail}"
             )
         time.sleep(1)
     describe(record)
     print(f"Challenge it (casual only): {LICHESS}/?user={account}#friend")
 
 
-def describe(record: dict[str, object]) -> None:
-    checkout = Path(str(record["checkout"]))
+def describe(record: dict[str, Any]) -> None:
+    checkout = Path(record["checkout"])
     print(f"Account:    {record['account']}, challengeable by {record['opponent']}")
     print(
         f"Checkout:   {checkout}{'' if checkout.is_dir() else '  (no longer exists)'}"
@@ -326,11 +346,8 @@ def status(arguments: argparse.Namespace) -> None:
         print("No preview is running.")
         return
     describe(record)
-    games = current_games(str(record["account"]))
-    print(
-        "Game:       "
-        + (", ".join(f"{LICHESS}/{game}" for game in games) or "none in progress")
-    )
+    games = current_games(record["account"])
+    print("Game:       " + (", ".join(games) or "none in progress"))
 
 
 def stop(arguments: argparse.Namespace) -> None:
@@ -338,22 +355,20 @@ def stop(arguments: argparse.Namespace) -> None:
     if record is None:
         print("No preview is running.")
         return
-    games = [] if arguments.force else current_games(str(record["account"]))
+    games = [] if arguments.force else current_games(record["account"])
     if games:
-        urls = ", ".join(f"{LICHESS}/{game}" for game in games)
         raise PreviewError(
-            f"A game is in progress ({urls}). "
+            f"A game is in progress ({', '.join(games)}). "
             "Stopping now abandons it; pass --force to stop anyway."
         )
-    pid = int(str(record["pid"]))
-    os.killpg(pid, signal.SIGINT)
+    os.killpg(record["pid"], signal.SIGINT)
     deadline = time.monotonic() + STOP_SECONDS
-    while time.monotonic() < deadline:
-        if not is_lichess_bot(pid):
-            break
-        time.sleep(1)
-    else:
-        os.killpg(pid, signal.SIGKILL)
+    while (lock := take_lock()) is None:
+        if time.monotonic() > deadline:
+            os.killpg(record["pid"], signal.SIGKILL)
+            deadline = float("inf")
+        time.sleep(0.2)
+    os.close(lock)
     STATE_FILE.unlink(missing_ok=True)
     print(f"Stopped the preview of {record['checkout']}.")
 
@@ -365,7 +380,7 @@ def main() -> int:
         "start", help="Bring the bot online serving this checkout."
     )
     start_parser.add_argument(
-        "--run", help="Retained run, relative to ANTHRO_CHESS_RUN_ROOT."
+        "--run", type=Path, help="Retained run, relative to ANTHRO_CHESS_RUN_ROOT."
     )
     start_parser.add_argument("--checkpoint", help="Checkpoint file within the run.")
     start_parser.add_argument(
