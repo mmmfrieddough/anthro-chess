@@ -143,7 +143,10 @@ def take_lock() -> int | None:
 
 
 def running_preview() -> dict[str, Any] | None:
-    """Return the recorded preview if its bot is still running."""
+    """Return the recorded preview if its bot still holds the lock.
+
+    A record left behind by a bot that has exited is deleted.
+    """
 
     descriptor = take_lock()
     if descriptor is not None:
@@ -199,6 +202,7 @@ def bot_configuration(
         "dir": str(engine.parent),
         "name": engine.name,
         "protocol": "uci",
+        # lichess-bot passes each of these to the engine as a --key=value argument.
         "engine_options": {
             "set": f'model.checkpoint_path="{checkpoint}"',
             # DEBUG logs every decision with its seed, which is what lets a
@@ -231,8 +235,8 @@ def bot_configuration(
 def start(arguments: argparse.Namespace) -> None:
     lock = take_lock()
     if lock is None:
-        # The record lags the lock by the length of a start, so a preview that
-        # is still starting has none yet.
+        # The lock is taken before the record is written, so a preview that is
+        # still starting has no record yet.
         checkout = (
             json.loads(STATE_FILE.read_text())["checkout"]
             if STATE_FILE.is_file()
