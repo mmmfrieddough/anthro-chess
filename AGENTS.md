@@ -104,10 +104,6 @@ repeat them. Where a request is broad, choose a scoped first slice and say which
   labeled `execution: gpu-required` needs the GPU environment its body
   specifies. One labeled `verification: gpu-required` can be implemented without
   that environment and uses the documented handoff when the GPU check remains.
-- When a change alters what a player observes, offer a Lichess preview without
-  being asked: start one from the working checkout with
-  `uv run scripts/lichess-preview.py start` and say the bot is ready to play,
-  what to look at, and what a good result looks like.
 - When a change adds or alters a benchmark, take a shakedown reading on two real
   checkpoints from one training run before the pull request is ready, using
   `--no-record` and a capped view rather than the declared size. Fixtures

@@ -444,33 +444,6 @@ capped reading or a change adopted for a reason no benchmark measured, say so
 beside the copy and leave it to review; a capped view names its realized size in
 the record, so the diff already shows which it is.
 
-## Offering A Lichess Preview
-
-Some changes are only convincing when played. Automated coverage proves protocol
-behavior, but how a game actually feels belongs to the maintainer.
-
-Offer a preview without being asked when a change alters what a player
-observes: move selection, sampling or seeding, rating or temperature controls,
-position synchronization, advertised options, protocol command handling, or
-engine lifecycle. Skip it for changes a player cannot see, such as data
-pipeline, training, evaluation, or documentation work.
-
-To offer one, start the preview from the working checkout with
-`uv run scripts/lichess-preview.py start`, naming the run, rating, or
-temperature the change needs, and tell the maintainer the bot is ready, which
-behavior to look at, and what a good result looks like. The mechanism and its
-one-time machine setup are documented in `playable-uci.md`.
-
-Only one preview runs at a time. If `start` reports another checkout's preview,
-ask the maintainer before stopping it rather than stopping it yourself. Stop your
-own when the maintainer is done with it or the branch is abandoned, and before
-removing the worktree it serves.
-
-Maintainer observations from a preview belong in the issue as findings. Treat a
-played game as acceptance evidence, not as a substitute for automated coverage:
-whenever a preview finds a defect, add the regression test that would have
-caught it.
-
 ## Publishing
 
 Before marking a pull request ready, account for its size against the request
@@ -558,13 +531,12 @@ Before substantive changes:
 5. Keep roadmap/build-order edits in `docs/planning/`.
 6. Update affected docs when the change alters durable intent.
 7. Add a decision record only when the rationale has lasting value.
-8. Offer a Lichess preview when the change alters what a player observes.
-9. Take a shakedown reading when the change adds or alters a benchmark.
-10. Read a model change against a control arm when the change decides what a
-    training run learns.
-11. Promote the treatment arm's records in the pull request adopting the model
+8. Take a shakedown reading when the change adds or alters a benchmark.
+9. Read a model change against a control arm when the change decides what a
+   training run learns.
+10. Promote the treatment arm's records in the pull request adopting the model
     change that produced them, when a control-arm reading decided it.
-12. Account for the diff's size and new surface before marking the pull request
+11. Account for the diff's size and new surface before marking the pull request
     ready.
-13. Account for anything the task left behind before the merge closes the issue:
+12. Account for anything the task left behind before the merge closes the issue:
     fixed here, filed as its own issue, or explained in the pull request.
