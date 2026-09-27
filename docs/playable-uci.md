@@ -37,9 +37,7 @@ instead: when it names a run, the engine needs no model arguments at all, and
 otherwise every command below takes an explicit selection.
 
 For a persistent setup, save a strict configuration file outside the
-repository. The GUI launcher reads it from `gui.toml` in the state directory
-described under [Connect A Chess GUI](#connect-a-chess-gui); any other location
-works for direct invocation:
+repository and pass it with `--config`:
 
 ```toml
 [model]
@@ -48,25 +46,25 @@ device = "cpu"
 ```
 
 Set only what the machine cannot infer. Every `[runtime]` setting has a
-code-owned default, and each one a GUI can reach is an advertised UCI option
+code-owned default, and each one a client can set is an advertised UCI option
 that overrides the file for the running process. Restating a default in the
 file gains nothing and invites the belief that the file is what the engine is
-actually using, so prefer the GUI option and leave the file alone.
+actually using, so prefer the UCI option and leave the file alone.
 
 Restating `runtime.temperature` is the trap worth naming: it sets the
 advertised `Anthro Temperature` default, so a file pinning it to zero makes
-every game from a position identical until the GUI raises the option. That is
+every game from a position identical until the client raises the option. That is
 sampling behavior, not a model property, and it is easy to mistake for one.
 
 `runtime.target_rating` is the one setting that does not take effect on its
 own. It seeds the advertised `UCI_Elo` default, but following UCI convention
-strength limiting is off until the GUI enables `UCI_LimitStrength`, and until
+strength limiting is off until the client enables `UCI_LimitStrength`, and until
 then the engine conditions on the code-owned maximum rating.
 
 Omitting `seed` uses fresh per-game randomness; set an explicit non-negative
 `seed` only to reproduce a game.
 
-An absolute `model.checkpoint_path` makes GUI startup independent of inherited
+An absolute `model.checkpoint_path` makes startup independent of inherited
 environment variables while still requiring the complete retained run around
 the checkpoint. Relative `model.run_path` selections are also supported and
 resolve beneath `ANTHRO_CHESS_RUN_ROOT`.
@@ -101,52 +99,10 @@ checkpoint compatibility; it does not assert playing strength. A checkpoint the
 current build cannot load fails here with a compatibility message, which is the
 cheapest way to find out that a run predates a vocabulary or encoding bump.
 
-## Connect A Chess GUI
+## Engine Options
 
-Configure the GUI's UCI engine command with the absolute path to
-`scripts/anthro-uci-gui` in the main checkout, and no arguments. The exact
-fields vary by GUI, but the GUI must launch that script directly and
-communicate through its standard input and output. Do not point it at
-`src/anthro_chess/interfaces/uci.py`, at a path inside `.venv`, or at a
-worktree.
-
-The launcher is a committed shell entry point, so it survives `uv sync`, branch
-switches, and worktree removal. It decides at launch which checkout serves the
-protocol, reports that decision and any failure on standard error, and leaves
-standard output to the engine alone.
-
-Its shared engine configuration lives outside every checkout, next to the
-target pointer, and is the file described under
-[Select The Engine And Checkpoint](#select-the-engine-and-checkpoint). Override
-its location with `ANTHRO_CHESS_GUI_CONFIG`, the state directory with
-`ANTHRO_CHESS_GUI_ROOT`, and log verbosity with `ANTHRO_CHESS_GUI_LOG_LEVEL`.
-Those variables are for manual runs from a terminal: a GUI started from a
-desktop launcher does not inherit a login shell environment, which is why the
-target is a file rather than an environment variable.
-
-## Point The GUI At A Branch
-
-The GUI is configured once. Which checkout it serves is a separate, switchable
-decision, so a change can be tried in a real GUI without touching GUI settings.
-
-```console
-scripts/anthro-gui-target            # print the current target
-scripts/anthro-gui-target .          # serve this checkout
-scripts/anthro-gui-target --clear    # fall back to the launcher's checkout
-```
-
-Run it from the checkout to be served, after that checkout's environment is
-initialized with `uv sync`. Restart the engine in the GUI to pick up the change;
-most GUIs reload it when a new game starts.
-
-With no pointer, the launcher serves the checkout it lives in, so the default is
-the main checkout and no configuration is needed for ordinary play.
-
-If a pointed-at worktree is removed, the launcher fails with a readable message
-naming the missing path instead of starting a stale or partial engine. Run
-`scripts/anthro-gui-target --clear` to recover.
-
-After the GUI completes the UCI handshake, it can set:
+After the UCI handshake, any client, including the Lichess preview below, can
+set:
 
 - `UCI_LimitStrength` to enable or disable the selected target rating;
 - `UCI_Elo` to choose the target rating while strength limiting is enabled;
@@ -163,15 +119,63 @@ reloading the model. The exact seed range and sentinel are owned by the UCI
 configuration module. See
 [`0010-separate-position-sync-from-randomness.md`](decisions/0010-separate-position-sync-from-randomness.md).
 
-For final Playable Proof acceptance:
+## Preview A Change On Lichess
 
-1. Start an untimed standard-chess game and confirm Anthro returns legal moves.
-2. Finish or deliberately adjudicate the game.
-3. Start a new game without restarting the engine configuration and confirm
-   Anthro moves again, including a game where Anthro takes the other color.
-4. Quit the GUI and confirm the engine process exits.
-5. Record the GUI name and version, operating system, completed-game outcome,
-   and successful new-game reset in issue #35.
+To try a change by playing it, put the checkout's engine on Lichess as a bot and
+challenge it from lichess.org or the Lichess app, from any device.
+`scripts/lichess-preview.py` does this for the checkout it is run from, so a
+worktree previews itself:
+
+```console
+uv run scripts/lichess-preview.py start [--run <run>] [--checkpoint <file>] [--rating <elo>] [--temperature <t>]
+uv run scripts/lichess-preview.py status
+uv run scripts/lichess-preview.py stop
+```
+
+Without `--run` it serves the machine's default model selection. Without
+`--rating` strength limiting stays off, as described under
+[Engine Options](#engine-options), and without `--temperature` the engine's
+default applies. `start` resolves the selection to one checkpoint before the bot
+goes online, and `status` reports the checkout, the checkpoint, the options, and
+any game in progress.
+
+The bot accepts casual standard games at any time control, from one Lichess
+account only. A machine has one bot account, so one preview runs at a time:
+`start` refuses while another is running and names the checkout it serves.
+Stopping mid-game abandons the game, so `stop` refuses while one is in progress
+unless given `--force`.
+
+The engine logs every decision at debug level, with the seed that drew it, to
+the application log [`interfaces.md`](interfaces.md) describes, so a previewed
+game can be replayed and analyzed afterwards.
+
+### One-Time Setup
+
+Each machine that serves previews needs:
+
+1. A Lichess account for the bot, created fresh. Lichess converts only an
+   account that has never played a game, and the conversion is permanent. Bot
+   accounts are labelled as bots, and their profiles and games are public.
+2. A personal API token for that account with the `bot:play` scope.
+3. The account converted to a bot, once, with that token:
+
+   ```console
+   curl -X POST -H "Authorization: Bearer <token>" https://lichess.org/api/bot/account/upgrade
+   ```
+
+4. The token and the one Lichess username allowed to challenge the bot, as
+   `LICHESS_BOT_TOKEN` and `ANTHRO_CHESS_PREVIEW_OPPONENT`. Set them in the
+   environment, or as `NAME=value` lines in
+   `~/.config/anthro-chess/lichess-preview.env` (beneath `XDG_CONFIG_HOME` when
+   that is set), which every checkout and worktree on the machine shares. The
+   environment wins where both are set. Keep the file readable only by its
+   owner.
+
+On first use the script fetches lichess-bot, the program that connects an
+engine to the Lichess bot API, at the revision the script pins. It lives beneath
+`~/.local/state/anthro-chess/lichess-preview/` (or `XDG_STATE_HOME`) with the
+preview's log and state. A missing value, a token without the scope, or an
+account that is not yet a bot fails `start` with a message pointing back here.
 
 ## Current Boundaries
 
@@ -191,7 +195,7 @@ showing weak separation across configured ratings and frequent deterministic
 repetition in generated games. Those are model-quality and rollout-evaluation
 findings, not claims established by the UCI integration test. Generated-game
 benchmarks should measure them across seeds, colors, temperatures, and frozen
-human prefixes rather than drawing conclusions from one GUI game.
+human prefixes rather than drawing conclusions from one played game.
 
 Detailed application diagnostics are written to a bounded rotating log. See
 [`interfaces.md`](interfaces.md) for the protocol boundary and logging

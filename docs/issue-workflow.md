@@ -444,33 +444,32 @@ capped reading or a change adopted for a reason no benchmark measured, say so
 beside the copy and leave it to review; a capped view names its realized size in
 the record, so the diff already shows which it is.
 
-## Offering A Real GUI Check
+## Offering A Lichess Preview
 
-Some changes are only convincing in a real chess GUI. Automated coverage proves
-protocol behavior, but command ordering, option presentation, and how a game
-actually feels belong to the maintainer.
+Some changes are only convincing when played. Automated coverage proves protocol
+behavior, but how a game actually feels belongs to the maintainer.
 
-Offer a GUI check without being asked when a change alters what a GUI observes:
-move selection, sampling or seeding, rating or temperature controls, position
-synchronization, advertised options, protocol command handling, or engine
-lifecycle. Skip it for changes a GUI cannot see, such as data pipeline,
-training, evaluation, or documentation work.
+Offer a preview without being asked when a change alters what a player
+observes: move selection, sampling or seeding, rating or temperature controls,
+position synchronization, advertised options, protocol command handling, or
+engine lifecycle. Skip it for changes a player cannot see, such as data
+pipeline, training, evaluation, or documentation work.
 
-To offer one, point the GUI at the working checkout with
-`scripts/anthro-gui-target .`, and tell the maintainer the engine is ready to
-test, which behavior to look at, and what a good result looks like. The GUI
-itself is configured once and is never reconfigured per issue, so do not change
-its settings or edit anything under `.venv`. The mechanism is documented in
-`playable-uci.md`.
+To offer one, start the preview from the working checkout with
+`uv run scripts/lichess-preview.py start`, naming the run, rating, or
+temperature the change needs, and tell the maintainer the bot is ready, which
+behavior to look at, and what a good result looks like. The mechanism and its
+one-time machine setup are documented in `playable-uci.md`.
 
-Leave the pointer aimed at that checkout while the pull request is open. Clear
-it with `scripts/anthro-gui-target --clear` when abandoning the branch, and note
-in the issue that the maintainer should clear it after merge if the checkout is
-removed. A removed target fails loudly rather than silently serving stale code.
+Only one preview runs at a time. If `start` reports another checkout's preview,
+ask the maintainer before stopping it rather than stopping it yourself. Stop your
+own when the maintainer is done with it or the branch is abandoned, and before
+removing the worktree it serves.
 
-Maintainer GUI observations belong in the issue as findings. Treat a GUI session
-as acceptance evidence, not as a substitute for automated coverage: whenever a
-GUI check finds a defect, add the regression test that would have caught it.
+Maintainer observations from a preview belong in the issue as findings. Treat a
+played game as acceptance evidence, not as a substitute for automated coverage:
+whenever a preview finds a defect, add the regression test that would have
+caught it.
 
 ## Publishing
 
@@ -559,7 +558,7 @@ Before substantive changes:
 5. Keep roadmap/build-order edits in `docs/planning/`.
 6. Update affected docs when the change alters durable intent.
 7. Add a decision record only when the rationale has lasting value.
-8. Offer a real GUI check when the change alters what a GUI observes.
+8. Offer a Lichess preview when the change alters what a player observes.
 9. Take a shakedown reading when the change adds or alters a benchmark.
 10. Read a model change against a control arm when the change decides what a
     training run learns.
