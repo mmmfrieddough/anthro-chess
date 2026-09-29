@@ -78,8 +78,8 @@ hours. Two trunks ran at once, one per card, at the rate one ran alone. Code at
 
 The rule's rate is best at both horizons on the pool, and each neighbour is
 worse by about four times the pool's own dispersion of 0.00058 at 50 positions per
-parameter. A parabola through the three pool losses at 50 puts the vertex within
-about a hundredth of an octave below the rule's rate.
+parameter. A parabola through the three pool losses at 50 puts the vertex about
+a hundredth of an octave below the rule's rate.
 
 The training tail, the mean of the last three logged intervals, which the three
 trunks share because they share a data order, agrees on the order and not on the
@@ -99,8 +99,8 @@ spike.
 Against twice the rate, the rule's rate is better on every held-out reading that
 clears its floor, on reference-ladder error at temperature 0.7, 210 against 223,
 and on the greedy dial slope, 0.401 against 0.373. Every generated-play distance
-to the human reference that carries a floor is within it. It is worse by a cleared margin on two
-readings: `dependency.rating_absent_degradation`, 0.043 against 0.051, and the
+to the human reference that carries a floor is within it. It is worse by a
+cleared margin on two readings: `dependency.rating_absent_degradation`, 0.043 against 0.051, and the
 legality margins.
 
 Against half the rate it is better on every held-out, legality and rating
