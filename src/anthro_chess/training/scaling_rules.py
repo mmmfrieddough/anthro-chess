@@ -32,7 +32,7 @@ records what was run, what each exponent came out at, and what the fit does not
 establish, except for the decay setting, which
 ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
 settled at a horizon long enough for that dial to do anything, and for the
-width range and the ratio floor, which
+width range, which
 ``docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md``
 extended to the target's width.
 """
@@ -92,15 +92,13 @@ MODEL_DIM_RANGE = FittedRange("model_dim", 32, 512)
 
 #: How long a run is, relative to its own capacity. The vehicle and the target
 #: both sit at 800, which is inside this rather than at its edge. The rate was
-#: swept at 100, 400, 800 and 1600 at width 32, and at 25 and 50 at width 512,
-#: and the horizon-independent rule lands inside every one of those rungs' bands.
-#: The floor below 100 is width 512's alone, so narrower widths answer there on
-#: the strength of a null measured at both ends rather than at their own width.
-POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 25, 1600)
+#: swept at 100, 400, 800 and 1600, and the horizon-independent rule lands inside
+#: every one of those four rungs' bands.
+POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 1600)
 
 #: The horizon in positions, spanned by the arms behind the rate rule. Its ends
-#: are width 32 at 100 positions per parameter and width 128 at 800. Width 512
-#: ran to 50, a little short of the top, and the target's own horizon is refused.
+#: are width 32 at 100 positions per parameter and width 128 at 800. At width 512
+#: every ratio above is past the top, so the target itself still resolves nowhere.
 POSITIONS_RANGE = FittedRange("positions", 1.4e7, 1.2e9)
 
 

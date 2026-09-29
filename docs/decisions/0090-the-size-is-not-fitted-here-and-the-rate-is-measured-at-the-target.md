@@ -126,17 +126,19 @@ width-512 model has seen a sixteenth of the vehicle's positions per parameter.
 
 **The target stays at width 512 and no size ladder is fitted.**
 
-**The rate rule holds at the target's width.** Its width range extends to 512 and
-its ratio range down to 25 positions per parameter, which the arms covered at
-width 512 only. The ranges are separate dials, so narrower widths now answer
-below 100 too, on a horizon null measured at width 32 above it and at width 512
-below it. The exponent stays where 0087 rounded it. A fit through the four rungs'
+**The rate rule holds at the target's width.** Its width range extends to 512
+and the exponent stays where 0087 rounded it. A fit through the four rungs'
 vertices, width 512's taken from the pool, returns -0.555, so the rung 14.5 times
 past the largest fitted count confirms the rule rather than moving it.
 
-**The target's full horizon is still refused.** The positions range stops at
-1.2e9 and the target runs about 1.6e10, which is the extrapolation `#491`
-exists to test.
+**The ratio range does not move.** The arms reached 25 and 50 positions per
+parameter at width 512 only, and the ranges are separate dials: lowering the
+floor would have let every narrower width answer there too, where nothing ran.
+
+**The target itself still resolves nowhere.** At width 512 every ratio inside
+the range is a horizon past the positions range, which stops at 1.2e9 against the
+target's 1.6e10. That is the extrapolation `#491` exists to test, and the range
+it extends.
 
 ## What This Gives Up, Deliberately
 
@@ -158,8 +160,9 @@ turn over. Whether the target turns over, and where, is not read here.
 
 ## Consequences
 
-**`anthro scale` answers at the target's width** up to the horizons the arms
-reached and refuses the target's own.
+**`anthro scale` answers between the vehicle's width and the target's**, on a
+rule with a measured point at each end, and refuses the target until `#491`
+extends the horizon.
 
 **`#491` reads the target's trunk for a turnover**, and `#569` is needed only if
 one appears within the target's horizon.

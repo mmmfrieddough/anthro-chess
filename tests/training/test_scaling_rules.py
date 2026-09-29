@@ -15,11 +15,13 @@ from anthro_chess.training.scaling_rules import (
     POSITIONS_RANGE,
     REFERENCE_BATCH_POSITIONS,
     REFERENCE_PARAMETERS,
+    REFERENCE_POSITIONS,
     REFERENCE_POSITIONS_PER_PARAMETER,
     OutsideFittedRange,
     TrainingScale,
     batch_positions,
     model_config_for_width,
+    peak_learning_rate,
     resolve,
     second_moment_decay,
 )
@@ -128,8 +130,8 @@ def test_a_resolved_run_declares_a_schedule_its_own_horizon_can_carry(
     """
 
     carried = 0
-    for model_dim in (32, 64, 96, 128, 512):
-        for ratio in (25, 50, 100, 400, 800):
+    for model_dim in (32, 64, 96, 128):
+        for ratio in (100, 400, 800):
             try:
                 resolved = resolve(
                     TrainingScale(model_dim=model_dim, positions_per_parameter=ratio)
@@ -210,17 +212,18 @@ def test_a_horizon_outside_the_measured_span_is_refused() -> None:
         batch_positions(int(POSITIONS_RANGE.low) // 4)
 
 
-def test_the_target_width_resolves_where_it_was_bracketed_and_not_past_it() -> None:
+def test_the_target_width_takes_the_rate_its_bracket_found_best() -> None:
     """The width reaches the target, and the horizon still stops short of its run.
 
-    The arms at width 512 ran to 50 positions per parameter, so the rules answer
-    there and refuse the target's own horizon, which no arm came near.
+    The rate has no horizon term, so the bracket's rate is what the rule gives at
+    any horizon; drift in the rule moves it off the arm that was measured.
     """
 
-    bracketed = resolve(TrainingScale(model_dim=512, positions_per_parameter=50))
-    assert bracketed.parameters == 20_642_630
-    # The rate the bracket found best; drift in the rule moves it off the arm.
-    assert bracketed.learning_rate == pytest.approx(6.89e-4, rel=0.01)
+    parameters = parameter_count(model_config_for_width(512))
+    assert parameters == 20_642_630
+    assert peak_learning_rate(parameters, REFERENCE_POSITIONS) == pytest.approx(
+        6.89e-4, rel=0.01
+    )
     with pytest.raises(OutsideFittedRange):
         resolve(TrainingScale(model_dim=512, positions_per_parameter=800))
 
