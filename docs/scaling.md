@@ -131,7 +131,7 @@ and is not expected to.**
 records the curve, the mechanism the evidence points at, and what it does not
 establish.
 
-**Weight decay is what lifts the ceiling, held as a timescale in optimizer
+**Weight decay is what removes the turnover, held as a timescale in optimizer
 steps, and only with one-dimensional parameters exempt.** Bounding parameter
 growth removes the turnaround at the width and step count where it exists.
 Decaying every parameter erases the rating conditioning, so the optimizer exempts
@@ -139,7 +139,7 @@ the rating embeddings, biases and normalization gains.
 
 **Nothing adopts it: a run that turns over stops near its peak instead.** Stopping an
 undecayed run at its peak beat every decayed arm on every outcome measured. Decay
-only wins against a run left past its ceiling, and it costs fit without the
+only wins against a run left past its turnover, and it costs fit without the
 overfitting benefit it normally buys, since nothing repeats at these horizons. A
 model that runs past its peak within its budget is too small for that budget.
 `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
@@ -257,7 +257,6 @@ undo it.
 | Warmup length | open | — | recompute | soft | — | soft | — | soft |
 | Learning-rate schedule | — | — | — | soft | — | — | — | — |
 | Selection filters | — | — | — | **hard** | **hard** | **hard** | — | — |
-| Allocation rule | — | — | — | — | **hard** | open | **hard** | soft |
 
 Three entries carry most of the weight.
 

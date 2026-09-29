@@ -211,7 +211,7 @@ a surprise, and is cheaper to find there than in the run itself.
 
 Distribution replicates the model rather than sharding it, so it buys throughput
 and not capacity, and the per-card memory ceiling still bounds how large a model
-this stage can select. That ceiling is a constraint on the target's size rather
+this stage can train. That ceiling is a constraint on the target's size rather
 than a separate decision: where it binds, size is not a free parameter at all.
 
 The data work that establishes the reference happens in stage 4, in an order

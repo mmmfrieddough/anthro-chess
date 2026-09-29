@@ -34,9 +34,10 @@ far beyond its rungs. Here the top rung was nearly the target.
 What it would have checked was already constrained. Chessformer's published
 ladder on this architecture and task is flat by 23M parameters.
 `docs/scaling.md` puts a sizing error within roughly 1.5x below what any reading
-here resolves. The one width outside that band, 768, gets about half the
-positions within the same budget, for a gain that curve prices near half a point
-of move matching. And the size did not rest on the serving premise
+here resolves. The nearest widths either side, 384 and 768, sit at about half
+and twice the parameters. Within the same budget 768 gets about half the
+positions, and Chessformer's curve prices the step from 23M to 79M near half a
+point of move matching. And the size did not rest on the serving premise
 `0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md` withdrew.
 
 What the run could not start without was a learning rate. The rules were fitted
@@ -78,7 +79,7 @@ hours. Two trunks ran at once, one per card, at the rate one ran alone. Code at
 The rule's rate is best at both horizons on the pool, and each neighbour is
 worse by about four times the pool's own dispersion of 0.00058 at 50 positions per
 parameter. A parabola through the three pool losses at 50 puts the vertex within
-a hundredth of an octave of the rule's rate.
+about a hundredth of an octave below the rule's rate.
 
 The training tail, the mean of the last three logged intervals, which the three
 trunks share because they share a data order, agrees on the order and not on the

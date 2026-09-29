@@ -128,8 +128,8 @@ def test_a_resolved_run_declares_a_schedule_its_own_horizon_can_carry(
     """
 
     carried = 0
-    for model_dim in (32, 64, 96, 128):
-        for ratio in (100, 400, 800):
+    for model_dim in (32, 64, 96, 128, 512):
+        for ratio in (25, 50, 100, 400, 800):
             try:
                 resolved = resolve(
                     TrainingScale(model_dim=model_dim, positions_per_parameter=ratio)
@@ -219,6 +219,8 @@ def test_the_target_width_resolves_where_it_was_bracketed_and_not_past_it() -> N
 
     bracketed = resolve(TrainingScale(model_dim=512, positions_per_parameter=50))
     assert bracketed.parameters == 20_642_630
+    # The rate the bracket found best; drift in the rule moves it off the arm.
+    assert bracketed.learning_rate == pytest.approx(6.89e-4, rel=0.01)
     with pytest.raises(OutsideFittedRange):
         resolve(TrainingScale(model_dim=512, positions_per_parameter=800))
 
