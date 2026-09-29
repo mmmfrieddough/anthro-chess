@@ -17,6 +17,10 @@ condition under which that stops being a defect.
 Leaves `0076-the-vehicle-is-width-128-at-the-target-regime.md` untouched on
 purpose. The vehicle does not adopt this, for the reason under **Decision**.
 
+`0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
+runs no ladder, so the rungs the Consequences below place past the turnover were
+never trained.
+
 ## Context
 
 `0088` found that a width-128 run reaches its loss minimum near 222,000

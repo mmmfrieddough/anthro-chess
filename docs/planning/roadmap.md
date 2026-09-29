@@ -178,26 +178,23 @@ scale rather than a value that was right once — for the learning rate, the bat
 size, the warmup length, and the weight-decay timescale — validated at one size
 not used in fitting it.
 
-**The size-versus-data question is one decision, not several.** Total training
-compute is about six times the parameter count times the tokens processed, so a
-fixed budget leaves the ratio between them as the only free quantity, and
-positions processed is steps times batch rather than a separate axis. A decision
-here is 64 square tokens rather than one, which `docs/scaling.md` owns and which
-is why the same rule stated over positions is wrong by about 60x. A ladder of
-several small sizes answers it once and the target's size and horizon follow
-arithmetically. The absolute size is not tuned here: it was derived in stage 4
-from budget and envelope, and outside work puts a sizing error within roughly 1.5x
-below what any reading here resolves.
+**The size-versus-data question is settled from published evidence rather than
+fitted here.** Total training compute is about six times the parameter count
+times the tokens processed, so a fixed budget leaves the ratio between them as the
+only free quantity. A decision here is 64 square tokens rather than one, which
+`docs/scaling.md` owns and which is why the same rule stated over positions is
+wrong by about 60x. The target's size was derived in stage 4 from budget and
+envelope against a published ladder on this architecture, and outside work puts
+a sizing error within roughly 1.5x below what any reading here resolves. What the
+run needs from this stage is a learning rate at the target width, which the fitted
+rules did not reach.
 
-The one thing the ladder needs that this project has not measured is where the
-current architecture stops improving. Every checkpoint read so far stopped on a
-step bound while still improving, so whether capacity or budget binds is unknown.
-It is now a two-way question rather than three: at the corpus stage 4 builds,
+The horizon half was read by holding the vehicle's width and extending its run.
+At that width an undecayed run turned over at a step count rather than
+plateauing, which is an observation at one width: a long run reads for it along
+its own trunk rather than being sized against it. At the corpus stage 4 builds,
 every size in the plausible range trains on well under one pass, so data is not
-the binding resource and does not need a run to rule out. Under a constant trunk
-with cooldowns the answer is one run branched at several horizons rather than
-several runs, which is what makes this the ladder's cheap half rather than a
-separate exercise.
+the binding resource and does not need a run to rule out.
 
 **Candidate changes are then arms against the vehicle**, one variable each,
 priced against the vehicle's seed floor rather than against the evaluation floor
@@ -214,7 +211,7 @@ a surprise, and is cheaper to find there than in the run itself.
 
 Distribution replicates the model rather than sharding it, so it buys throughput
 and not capacity, and the per-card memory ceiling still bounds how large a model
-this stage can select. That ceiling is a constraint on the allocation rule rather
+this stage can select. That ceiling is a constraint on the target's size rather
 than a separate decision: where it binds, size is not a free parameter at all.
 
 The data work that establishes the reference happens in stage 4, in an order

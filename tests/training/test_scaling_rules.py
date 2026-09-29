@@ -189,8 +189,7 @@ def test_a_scale_outside_the_fit_is_refused_rather_than_extrapolated(
     """The single condition that keeps a fitted rule from becoming a guess.
 
     Nothing in a fit's residuals says where it stops holding, so the boundary
-    is carried beside it and asking past it has to fail loudly. The target's
-    own width is outside this range on purpose: the ladder is what extends it.
+    is carried beside it and asking past it has to fail loudly.
     """
 
     with pytest.raises(OutsideFittedRange):
@@ -209,6 +208,19 @@ def test_a_horizon_outside_the_measured_span_is_refused() -> None:
         batch_positions(int(POSITIONS_RANGE.high) * 4)
     with pytest.raises(OutsideFittedRange):
         batch_positions(int(POSITIONS_RANGE.low) // 4)
+
+
+def test_the_target_width_resolves_where_it_was_bracketed_and_not_past_it() -> None:
+    """The width reaches the target, and the horizon still stops short of its run.
+
+    The arms at width 512 ran to 50 positions per parameter, so the rules answer
+    there and refuse the target's own horizon, which no arm came near.
+    """
+
+    bracketed = resolve(TrainingScale(model_dim=512, positions_per_parameter=50))
+    assert bracketed.parameters == 20_642_630
+    with pytest.raises(OutsideFittedRange):
+        resolve(TrainingScale(model_dim=512, positions_per_parameter=800))
 
 
 def test_the_batch_is_held_at_what_the_rate_rule_was_fitted_at() -> None:

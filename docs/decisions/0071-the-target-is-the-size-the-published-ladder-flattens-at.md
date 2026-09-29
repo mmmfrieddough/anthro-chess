@@ -42,6 +42,10 @@ past the ceiling measured there.
 the serving premise this record cites for going marginally past 713 positions per
 parameter. The size selected here did not rest on it.
 
+`0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md` keeps the size
+without the ladder fit this record expected `#54` to run, and measures the
+target's learning rate at its width.
+
 ## Context
 
 The size had to be written down before the vehicle could be designated, and

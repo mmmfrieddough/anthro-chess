@@ -2899,10 +2899,10 @@ def test_eval_seed_dispersion_refuses_arms_of_two_configurations(
     assert not (tmp_path / "characterizations").exists()
 
 
-def test_scale_refuses_a_width_the_rules_were_never_fitted_over(
+def test_scale_refuses_a_horizon_the_rules_were_never_fitted_over(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The target's own width is outside the fit, and saying so is the point.
+    """The target's own horizon is outside the fit, and saying so is the point.
 
     A rule that answered here would be extrapolating, and the caller would have
     no way to tell that from a fitted answer. The nonzero exit is what stops a

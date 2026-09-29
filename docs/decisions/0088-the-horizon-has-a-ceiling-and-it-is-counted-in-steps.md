@@ -27,6 +27,10 @@ optimizer steps rather than as a multiple of the horizon, and
 `anthro_chess.training.scaling_rules` no longer carries a horizon multiple at
 all. Read that section as what was true when this was written.
 
+`0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md` reads the
+turnover as an observation at this width rather than a bound on others, and
+drops the ladder the Consequences below place against it.
+
 ## Context
 
 Every checkpoint this project had read was stopped by a step bound while still

@@ -31,7 +31,10 @@ it stops holding, so the boundary has to be carried separately.
 records what was run, what each exponent came out at, and what the fit does not
 establish, except for the decay setting, which
 ``docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md``
-settled at a horizon long enough for that dial to do anything.
+settled at a horizon long enough for that dial to do anything, and for the
+width range, which
+``docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md``
+extended to the target's width.
 """
 
 from __future__ import annotations
@@ -83,19 +86,19 @@ class FittedRange:
             )
 
 
-#: Widths the arms spanned. The target is wider than this on purpose: the
-#: ladder is what extends the range, and until it runs a rule evaluated at the
-#: target would be an extrapolation wearing a fit's clothes.
-MODEL_DIM_RANGE = FittedRange("model_dim", 32, 128)
+#: Widths the arms spanned. The top is the target's width, where a bracket at
+#: half and twice the rule's rate found the rule's own rate best.
+MODEL_DIM_RANGE = FittedRange("model_dim", 32, 512)
 
 #: How long a run is, relative to its own capacity. The vehicle and the target
 #: both sit at 800, which is inside this rather than at its edge. The rate was
-#: swept at 100, 400, 800 and 1600, and the horizon-independent rule lands inside
-#: every one of those four rungs' bands.
-POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 1600)
+#: swept at 100, 400, 800 and 1600 at width 32, and at 25 and 50 at width 512,
+#: and the horizon-independent rule lands inside every one of those rungs' bands.
+POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 25, 1600)
 
 #: The horizon in positions, spanned by the arms behind the rate rule. Its ends
-#: are width 32 at 100 positions per parameter and width 128 at 800.
+#: are width 32 at 100 positions per parameter and width 128 at 800. Width 512
+#: at 50 sits just inside the top, so the target's own horizon is refused.
 POSITIONS_RANGE = FittedRange("positions", 1.4e7, 1.2e9)
 
 
@@ -169,7 +172,8 @@ LEARNING_RATE_AT_REFERENCE = 3.0e-3
 #: size rungs alone would allow -0.5, and the horizon rungs at width 32 reject
 #: it, because their lower band edges hold that width's rate above 1.01e-2 and
 #: an exponent shallower than -0.533 cannot reach it. Two figures is what the
-#: bands can tell apart and one is not.
+#: bands can tell apart and one is not. Width 512, 14.5 times the largest
+#: fitted count, was read afterwards and found no better rate than this rule's.
 SIZE_EXPONENT = -0.55
 
 #: How the rate moves with the horizon. Measured at -0.060 with a standard error
