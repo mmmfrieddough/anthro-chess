@@ -98,7 +98,8 @@ POSITIONS_PER_PARAMETER_RANGE = FittedRange("positions per parameter", 100, 1600
 
 #: The horizon in positions, spanned by the arms behind the rate rule. Its ends
 #: are width 32 at 100 positions per parameter and width 128 at 800. At width 512
-#: every ratio above is past the top, so the target itself still resolves nowhere.
+#: even 100 positions per parameter is past the top, so no run at that width
+#: resolves.
 POSITIONS_RANGE = FittedRange("positions", 1.4e7, 1.2e9)
 
 
@@ -172,8 +173,7 @@ LEARNING_RATE_AT_REFERENCE = 3.0e-3
 #: size rungs alone would allow -0.5, and the horizon rungs at width 32 reject
 #: it, because their lower band edges hold that width's rate above 1.01e-2 and
 #: an exponent shallower than -0.533 cannot reach it. Two figures is what the
-#: bands can tell apart and one is not. Width 512, 14.5 times the largest
-#: fitted count, was read afterwards and found no better rate than this rule's.
+#: bands can tell apart and one is not.
 SIZE_EXPONENT = -0.55
 
 #: How the rate moves with the horizon. Measured at -0.060 with a standard error

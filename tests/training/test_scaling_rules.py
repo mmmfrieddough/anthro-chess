@@ -213,7 +213,7 @@ def test_a_horizon_outside_the_measured_span_is_refused() -> None:
 
 
 def test_the_target_width_takes_the_rate_its_bracket_found_best() -> None:
-    """The width reaches the target, and the horizon still stops short of its run.
+    """The target width is inside the fit, but its run's horizon is not.
 
     The rate has no horizon term, so the bracket's rate is what the rule gives at
     any horizon; drift in the rule moves it off the arm that was measured.
