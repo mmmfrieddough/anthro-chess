@@ -127,8 +127,10 @@ width-512 model has seen a sixteenth of the vehicle's positions per parameter.
 **The target stays at width 512 and no size ladder is fitted.**
 
 **The rate rule holds at the target's width.** Its width range extends to 512 and
-its ratio range down to 25 positions per parameter, which the arms covered, and
-the exponent stays where 0087 rounded it. A fit through the four rungs'
+its ratio range down to 25 positions per parameter, which the arms covered at
+width 512 only. The ranges are separate dials, so narrower widths now answer
+below 100 too, on a horizon null measured at width 32 above it and at width 512
+below it. The exponent stays where 0087 rounded it. A fit through the four rungs'
 vertices, width 512's taken from the pool, returns -0.555, so the rung 14.5 times
 past the largest fitted count confirms the rule rather than moving it.
 
