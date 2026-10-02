@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 import platform
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -151,6 +151,8 @@ class StepTotals:
     active_positions: int
     window_active_positions: int
     probe_active_positions: int
+    #: Every position the interval's batches spanned, padding included.
+    padded_positions: int
     finite: bool
 
 
@@ -172,8 +174,16 @@ class DeferredStepTotals:
     exact one.
     """
 
-    def __init__(self, device: torch.device) -> None:
+    def __init__(
+        self,
+        device: torch.device,
+        *,
+        reduce: Callable[[Tensor], None] | None = None,
+    ) -> None:
         self._device = device
+        #: Sums a tensor across data-parallel ranks in place, so a drained
+        #: interval reports the whole step rather than one rank's share of it.
+        self._reduce = reduce
         #: MPS has no float64, so the widest accumulator a device supports is
         #: chosen rather than assumed. Losses are order-one values summed over
         #: a logging interval, so float32 is ample where that is the ceiling.
@@ -194,16 +204,6 @@ class DeferredStepTotals:
         """Start one optimizer step's own loss accumulator."""
 
         self._step_loss_sum = self._zero(self._float)
-
-    @property
-    def padded_positions(self) -> int:
-        """Return padded positions seen since the last drain.
-
-        Free of any synchronization: a batch's padded extent is its shape,
-        which the host already knows.
-        """
-
-        return self._padded_positions
 
     def observe(
         self,
@@ -252,19 +252,30 @@ class DeferredStepTotals:
         """
 
         counts = torch.stack(
-            [self._active, self._window_active, self._probe_active]
-        ).tolist()
+            [
+                self._active,
+                self._window_active,
+                self._probe_active,
+                torch.tensor(self._padded_positions, device=self._device),
+            ]
+        )
         values = torch.stack(
-            [self._loss_sum, self._step_loss_sum, self._finite.to(self._float)]
-        ).tolist()
+            [self._loss_sum, self._step_loss_sum, (~self._finite).to(self._float)]
+        )
+        if self._reduce is not None:
+            self._reduce(counts)
+            self._reduce(values)
+        read_counts = counts.tolist()
+        read_values = values.tolist()
         totals = StepTotals(
             steps=self._steps,
-            loss_sum=float(values[0]),
-            final_step_loss_sum=float(values[1]),
-            active_positions=int(counts[0]),
-            window_active_positions=int(counts[1]),
-            probe_active_positions=int(counts[2]),
-            finite=bool(values[2]),
+            loss_sum=float(read_values[0]),
+            final_step_loss_sum=float(read_values[1]),
+            active_positions=int(read_counts[0]),
+            window_active_positions=int(read_counts[1]),
+            probe_active_positions=int(read_counts[2]),
+            padded_positions=int(read_counts[3]),
+            finite=not read_values[2],
         )
         self._loss_sum = self._zero(self._float)
         self._step_loss_sum = self._zero(self._float)
@@ -574,7 +585,7 @@ class TrainingEfficiencyMonitor:
         self._interval_steps += 1
         self._sample_memory()
 
-    def close_interval(self, totals: StepTotals, *, padded_positions: int) -> None:
+    def close_interval(self, totals: StepTotals) -> None:
         """Fold one drained interval into the window or the probe arm."""
 
         if not self._interval_open:  # pragma: no cover - misuse
@@ -597,7 +608,7 @@ class TrainingEfficiencyMonitor:
         self._window_steps += steps
         self._window_seconds += seconds
         self._window_active_positions += totals.window_active_positions
-        self._window_padded_positions += padded_positions
+        self._window_padded_positions += totals.padded_positions
         per_step = seconds / steps
         if (
             self._minimum_interval_step_seconds is None
@@ -779,6 +790,7 @@ def coordinate_record(
     batch_size: int,
     batch_unit: BatchUnit,
     gradient_accumulation_steps: int,
+    world_size: int,
     determinism: str,
     matmul_precision: str,
     compilation: str,
@@ -802,6 +814,9 @@ def coordinate_record(
         "batch_unit": batch_unit,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "effective_batch_size": batch_size * gradient_accumulation_steps,
+        # How many cards shared that batch, which moves throughput and memory
+        # without changing what any step computes.
+        "world_size": world_size,
         "determinism": determinism,
         "matmul_precision": matmul_precision,
         "compilation": compilation,

@@ -60,6 +60,7 @@ def _coordinates(**overrides: object) -> dict[str, object]:
         "batch_size": 4,
         "batch_unit": "sequences",
         "gradient_accumulation_steps": 2,
+        "world_size": 1,
         "determinism": "relaxed",
         "matmul_precision": "highest",
         "compilation": "off",
@@ -108,6 +109,7 @@ def _totals(**overrides: object) -> StepTotals:
         "active_positions": 10,
         "window_active_positions": 10,
         "probe_active_positions": 0,
+        "padded_positions": 1,
         "finite": True,
     }
     values.update(overrides)
@@ -126,7 +128,6 @@ def test_deferred_totals_bucket_positions_without_reading_them_back() -> None:
     totals.observe(torch.tensor(3.5), mask, window=True, probe=False)
     totals.end_step()
 
-    assert totals.padded_positions == 18
     drained = totals.drain()
 
     assert drained.steps == 2
@@ -135,6 +136,7 @@ def test_deferred_totals_bucket_positions_without_reading_them_back() -> None:
     # takes nothing, so the three buckets partition the same micro-batches.
     assert drained.window_active_positions == 12
     assert drained.probe_active_positions == 0
+    assert drained.padded_positions == 18
     assert drained.loss_sum == pytest.approx(7.5)
     # The interval summed three micro-batches; the reported step summed two.
     assert drained.final_step_loss_sum == pytest.approx(6.0)
@@ -218,7 +220,7 @@ def test_warmup_steps_stay_outside_the_throughput_window() -> None:
         assert monitor.interval_in_window is (global_step >= 3)
         monitor.begin_step()
         monitor.end_step()
-        monitor.close_interval(_totals(active_positions=100), padded_positions=120)
+        monitor.close_interval(_totals(active_positions=100, padded_positions=120))
 
     summary = monitor.summary()
     assert summary.window_steps == 1
@@ -240,7 +242,7 @@ def test_warmup_offset_follows_a_resumed_starting_step() -> None:
     assert monitor.interval_in_window is False
     monitor.begin_step()
     monitor.end_step()
-    monitor.close_interval(_totals(), padded_positions=1)
+    monitor.close_interval(_totals())
 
     monitor.begin_interval(52)
     assert monitor.interval_in_window is True
@@ -266,8 +268,8 @@ def test_the_probe_arm_alternates_whole_intervals() -> None:
             _totals(
                 window_active_positions=0 if monitor.interval_probing else 10,
                 probe_active_positions=10 if monitor.interval_probing else 0,
+                padded_positions=12,
             ),
-            padded_positions=12,
         )
 
     assert arms == [False, True, False, True]
@@ -291,7 +293,7 @@ def test_a_disabled_probe_never_draws_the_synchronizing_arm() -> None:
         assert monitor.interval_probing is False
         monitor.begin_step()
         monitor.end_step()
-        monitor.close_interval(_totals(), padded_positions=1)
+        monitor.close_interval(_totals())
 
     assert monitor.summary().probe_steps == 0
 
@@ -327,7 +329,7 @@ def test_in_step_overhead_is_subtracted_and_between_step_overhead_is_not() -> No
     # being subtracted from a span that did not contain it.
     monitor.charge(2.0, kind="evaluation")
     monitor.charge(1.0, kind="checkpoint")
-    monitor.close_interval(_totals(), padded_positions=1)
+    monitor.close_interval(_totals())
 
     summary = monitor.summary()
     assert summary.instrumentation_seconds == pytest.approx(0.5)
@@ -358,7 +360,7 @@ def test_closing_without_an_open_interval_is_refused() -> None:
     monitor = TrainingEfficiencyMonitor(TrainingEfficiencyConfig(), device=CPU)
 
     with pytest.raises(TrainingEfficiencyError, match="no interval is open"):
-        monitor.close_interval(_totals(), padded_positions=1)
+        monitor.close_interval(_totals())
 
 
 def test_a_cpu_run_reports_no_device_memory() -> None:

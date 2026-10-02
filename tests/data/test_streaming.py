@@ -11,6 +11,7 @@ from anthro_chess.data import (
     DataLoadingError,
     SelectionConfig,
     SequenceBatch,
+    SequenceBatchSource,
     SequenceDataLoader,
     SequenceLoaderConfig,
     StreamingLoaderConfig,
@@ -60,6 +61,8 @@ def _loader(
     streaming: StreamingLoaderConfig | None = None,
     *,
     legal_actions: bool = True,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> StreamingSequenceDataLoader:
     shards, manifest_sha256 = corpus
     selection = resolve_sharded_selection(
@@ -74,6 +77,8 @@ def _loader(
         config,
         StreamingLoaderConfig() if streaming is None else streaming,
         legal_actions=legal_actions,
+        rank=rank,
+        world_size=world_size,
     )
 
 
@@ -693,6 +698,130 @@ def test_workers_produce_the_batches_the_plan_named(
     )
 
     assert shared == alone
+
+
+def _ranked_loader(
+    kind: str,
+    corpus: Corpus,
+    config: SequenceLoaderConfig,
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+) -> SequenceBatchSource:
+    if kind == "eager":
+        return SequenceDataLoader.from_parquet(
+            [shard.path for shard in corpus[0]],
+            config,
+            rank=rank,
+            world_size=world_size,
+        )
+    return _loader(
+        corpus,
+        config,
+        StreamingLoaderConfig(workers=2, prefetch_batches=2),
+        rank=rank,
+        world_size=world_size,
+    )
+
+
+@pytest.mark.parametrize("kind", ["eager", "shard-backed"])
+def test_ranks_split_one_process_order_and_share_its_cursor(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    kind: str,
+) -> None:
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 27), games_per_shard=8
+    )
+    config = SequenceLoaderConfig(
+        split="train", positions_per_batch=10, shuffle=True, seed="ranks"
+    )
+
+    alone = _ranked_loader(kind, corpus, config)
+    order: list[list[tuple[int, int]]] = []
+    cursors = [alone.state()]
+    for batch in alone:
+        order.append(_packed_keys(batch))
+        cursors.append(alone.state())
+    alone.close()
+    # Not a multiple of three, so the last group is partial and is dropped.
+    groups, tail = divmod(len(order), 3)
+    assert tail
+
+    ranks = [
+        _ranked_loader(kind, corpus, config, rank=rank, world_size=3)
+        for rank in range(3)
+    ]
+    taken: list[list[list[tuple[int, int]]]] = [[], [], []]
+    for group in range(groups):
+        for rank, loader in enumerate(ranks):
+            taken[rank].append(_packed_keys(next(loader)))
+            assert loader.state() == cursors[3 * (group + 1)]
+    for loader in ranks:
+        with pytest.raises(StopIteration):
+            next(loader)
+        loader.close()
+
+    for rank in range(3):
+        assert taken[rank] == order[rank : 3 * groups : 3]
+
+
+@pytest.mark.parametrize("kind", ["eager", "shard-backed"])
+def test_a_cursor_resumes_under_another_world_size(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    kind: str,
+) -> None:
+    corpus = _corpus(
+        write_corpus, tmp_path, _rows(normalized_row, 32), games_per_shard=8
+    )
+    config = SequenceLoaderConfig(split="train", positions_per_batch=10)
+
+    alone = _ranked_loader(kind, corpus, config)
+    order = [_packed_keys(batch) for batch in alone]
+    alone.close()
+
+    # Two ranks take three groups, and one process carries on from the cursor
+    # either of them saved.
+    pair = _ranked_loader(kind, corpus, config, rank=1, world_size=2)
+    for _ in range(3):
+        next(pair)
+    saved = pair.state().as_record()
+    pair.close()
+    single = _ranked_loader(kind, corpus, config)
+    single.load_state(saved)
+    assert [_packed_keys(batch) for batch in single] == order[6:]
+    single.close()
+
+    # And the other way round, from a cursor no group boundary would land on.
+    single = _ranked_loader(kind, corpus, config)
+    for _ in range(3):
+        next(single)
+    saved = single.state().as_record()
+    single.close()
+    first = _ranked_loader(kind, corpus, config, rank=0, world_size=2)
+    first.load_state(saved)
+    assert _packed_keys(next(first)) == order[3]
+    assert _packed_keys(next(first)) == order[5]
+    first.close()
+
+
+@pytest.mark.parametrize(("rank", "world_size"), [(2, 2), (-1, 2), (0, 0)])
+def test_a_rank_outside_its_world_is_refused(
+    tmp_path: Path,
+    normalized_row: Callable[..., dict[str, Any]],
+    write_corpus: Callable[..., tuple[Path, Path]],
+    rank: int,
+    world_size: int,
+) -> None:
+    corpus = _corpus(write_corpus, tmp_path, _rows(normalized_row, 8))
+    config = SequenceLoaderConfig(split="train", batch_size=2)
+
+    for kind in ("eager", "shard-backed"):
+        with pytest.raises(ValueError, match="rank|world_size"):
+            _ranked_loader(kind, corpus, config, rank=rank, world_size=world_size)
 
 
 def test_a_pool_larger_than_the_prefetch_depth_still_has_jobs_outstanding(

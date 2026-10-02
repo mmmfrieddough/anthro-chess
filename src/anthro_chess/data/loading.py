@@ -297,6 +297,14 @@ class SequenceBatchSource(Iterator[SequenceBatch], ABC):
     They differ in what they hold and not in what they promise: a deterministic
     epoch order, an exact next-batch cursor, and identities that tell a resumed
     run whether it is continuing the same work.
+
+    Both can also serve one rank of a data-parallel run. The epoch order is
+    unchanged and is cut into groups of ``world_size`` consecutive batches;
+    each rank takes its own member of every group and the cursor moves past the
+    whole group, so every rank's cursor names the same place in the one order a
+    single process would read, and a checkpoint taken from any of them resumes
+    under any world size. An epoch ending in a partial group drops it, since no
+    rank may take a batch the others cannot match.
     """
 
     config: SequenceLoaderConfig
@@ -468,7 +476,11 @@ class SequenceDataLoader(SequenceBatchSource):
         self,
         dataset: SequenceDataset,
         config: SequenceLoaderConfig,
+        *,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
+        require_rank(rank, world_size)
         if config.split != dataset.split:
             raise DataLoadingError("loader split does not match the sequence dataset")
         if config.chunk_length != dataset.chunk_length:
@@ -482,6 +494,8 @@ class SequenceDataLoader(SequenceBatchSource):
         self.dataset = dataset
         self.config = config
         self.configuration_sha256 = loader_configuration_sha256(config)
+        self._rank = rank
+        self._world_size = world_size
         self._epoch = 0
         self._position = 0
         self._batches = self._batches_for_epoch(self._epoch)
@@ -490,10 +504,11 @@ class SequenceDataLoader(SequenceBatchSource):
         return self
 
     def __next__(self) -> SequenceBatch:
-        if self._position >= len(self._batches):
+        end = self._position + self._world_size
+        if end > len(self._batches):
             raise StopIteration
-        batch = self._batches[self._position]
-        self._position += 1
+        batch = self._batches[self._position + self._rank]
+        self._position = end
         examples = tuple(self._sliced(cut) for cut in batch)
         width = self.config.positions_per_batch
         if width is None:
@@ -569,6 +584,8 @@ class SequenceDataLoader(SequenceBatchSource):
         *,
         legal_actions: bool = True,
         marked_digests: frozenset[int] | None = None,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> SequenceDataLoader:
         """Build a configured loader directly from normalized Parquet shards.
 
@@ -588,6 +605,8 @@ class SequenceDataLoader(SequenceBatchSource):
                 marked_digests=marked_digests,
             ),
             config,
+            rank=rank,
+            world_size=world_size,
         )
 
     def start_epoch(self, epoch: int) -> None:
@@ -667,6 +686,15 @@ def length_bucketed_batches(
                 continue
             batches.append(members)
     return tuple(batches)
+
+
+def require_rank(rank: int, world_size: int) -> None:
+    """Refuse a rank that is not one of ``world_size`` consecutive ones."""
+
+    if type(world_size) is not int or world_size < 1:
+        raise ValueError("world_size must be a positive integer")
+    if type(rank) is not int or not 0 <= rank < world_size:
+        raise ValueError(f"rank must be in [0, {world_size}), not {rank!r}")
 
 
 def packed_cuts(
