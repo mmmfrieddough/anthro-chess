@@ -15,11 +15,13 @@ from anthro_chess.training.scaling_rules import (
     POSITIONS_RANGE,
     REFERENCE_BATCH_POSITIONS,
     REFERENCE_PARAMETERS,
+    REFERENCE_POSITIONS,
     REFERENCE_POSITIONS_PER_PARAMETER,
     OutsideFittedRange,
     TrainingScale,
     batch_positions,
     model_config_for_width,
+    peak_learning_rate,
     resolve,
     second_moment_decay,
 )
@@ -189,8 +191,7 @@ def test_a_scale_outside_the_fit_is_refused_rather_than_extrapolated(
     """The single condition that keeps a fitted rule from becoming a guess.
 
     Nothing in a fit's residuals says where it stops holding, so the boundary
-    is carried beside it and asking past it has to fail loudly. The target's
-    own width is outside this range on purpose: the ladder is what extends it.
+    is carried beside it and asking past it has to fail loudly.
     """
 
     with pytest.raises(OutsideFittedRange):
@@ -209,6 +210,22 @@ def test_a_horizon_outside_the_measured_span_is_refused() -> None:
         batch_positions(int(POSITIONS_RANGE.high) * 4)
     with pytest.raises(OutsideFittedRange):
         batch_positions(int(POSITIONS_RANGE.low) // 4)
+
+
+def test_the_target_width_takes_the_rate_its_bracket_found_best() -> None:
+    """The target width is inside the fit, but its run's horizon is not.
+
+    The rate has no horizon term, so the bracket's rate is what the rule gives at
+    any horizon; drift in the rule moves it off the arm that was measured.
+    """
+
+    parameters = parameter_count(model_config_for_width(512))
+    assert parameters == 20_642_630
+    assert peak_learning_rate(parameters, REFERENCE_POSITIONS) == pytest.approx(
+        6.89e-4, rel=0.01
+    )
+    with pytest.raises(OutsideFittedRange):
+        resolve(TrainingScale(model_dim=512, positions_per_parameter=800))
 
 
 def test_the_batch_is_held_at_what_the_rate_rule_was_fitted_at() -> None:

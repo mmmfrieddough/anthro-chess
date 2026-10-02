@@ -76,8 +76,9 @@ spend, multiplied by realized utilization. `docs/vision.md` bounds the second
 term — iterations in days, a final run in weeks, on high-end consumer hardware.
 Total training compute is approximately six times the parameter count times the
 number of **tokens** processed, which leaves the ratio between those two as the
-only free quantity once the budget is fixed. That ratio is what a ladder
-measures. The absolute size is arithmetic.
+only free quantity once the budget is fixed. That ratio is taken from a
+published size ladder on this architecture rather than fitted here, and the
+absolute size is arithmetic.
 
 **A decision is 64 tokens, and the difference is not a detail.** The usual form
 of that rule counts one token per supervised prediction, which is what a language
@@ -107,44 +108,63 @@ training, so it is not a reason to move off that point toward a smaller model
 trained for longer. In practice that means a size whose best point lands near the
 end of the budget, rather than a smaller one trained past its peak.
 
-### The Horizon Has A Ceiling, Counted In Steps
+### An Undecayed Run Can Turn Over, Counted In Steps
 
-**An undecayed run stops improving and then degrades, and where that happens is
-a step count rather than a ratio of positions to parameters.** At the vehicle's
-width the loss minimum sits near 222,000 optimizer steps and the reading is
-clearly degraded by 347,000, on held-out loss and top-1 accuracy alike.
+**At the vehicle's width an undecayed run stopped improving and then degraded,
+at a step count rather than a ratio of positions to parameters.** The loss
+minimum sat near 222,000 optimizer steps and the reading was clearly degraded by
+347,000, on held-out loss and top-1 accuracy alike, at both rates read.
+
+**That is an observation at one width, not a bound on others.** Whether a run
+at another width or rate turns over, and where, is unmeasured. A long run reads
+held-out loss along its trunk instead, and the branched schedule lets it cool at
+its best point whatever that turns out to be.
 
 Positions per parameter stays the right coordinate for the regime a model is
 trained in, which is what the vehicle is matched on. It is the wrong coordinate
-for this ceiling: two runs at one ratio and different widths differ in steps by
-the ratio of their parameter counts, so the vehicle at 69,466 steps and the
-target at 1,007,941 sit at one ratio and on opposite sides of the bound. **The
-vehicle therefore cannot detect this and is not expected to.**
+for this turnover: two runs at one ratio and different widths differ in steps by
+the ratio of their parameter counts, so the vehicle runs 69,466 steps and the
+target 1,007,941 at the same ratio. **The vehicle therefore cannot detect this
+and is not expected to.**
 
 `docs/decisions/0088-the-horizon-has-a-ceiling-and-it-is-counted-in-steps.md`
 records the curve, the mechanism the evidence points at, and what it does not
 establish.
 
-**Weight decay is what lifts the ceiling, held as a timescale in optimizer
+**Weight decay is what removes the turnover, held as a timescale in optimizer
 steps, and only with one-dimensional parameters exempt.** Bounding parameter
 growth removes the turnaround at the width and step count where it exists.
 Decaying every parameter erases the rating conditioning, so the optimizer exempts
 the rating embeddings, biases and normalization gains.
 
-**Nothing adopts it: a run is sized to end near its peak instead.** Stopping an
-undecayed run at its peak beat every decayed arm on every outcome measured. Decay
-only wins against a run left past its ceiling, and it costs fit without the
-overfitting benefit it normally buys, since nothing repeats at these horizons. A
-model that runs past its peak within its budget is too small for that budget.
+**Nothing adopts it: a run that turns over stops near its peak instead.**
+Stopping an undecayed run at its peak beat every decayed arm on every outcome
+measured. Decay only wins against a run left past its turnover, and it costs fit
+without the overfitting benefit it normally buys, since nothing repeats at these
+horizons. A model that runs past its peak within its budget is too small for
+that budget.
 `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
 carries the arms.
 
 ### The Target
 
-**The target is `model_dim` 512, about 20.6M parameters, trained on roughly
-1.6e10 positions.** The confident band is 10M to 50M, which is widths 384 to 768.
+**The target is `model_dim` 512, about 20.6M parameters.** The confident band
+is 10M to 50M, which is widths 384 to 768.
 `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
 records how it was derived, what it rests on, and what would reopen it.
+
+**Its length is read rather than budgeted.** The budget buys about 2.4e10
+positions at measured throughput. The run branches cooldowns along its trunk and
+stops where the rating dial and generated play stop improving, or where held-out
+loss turns over. Stopping well inside the budget is the signal the rule above
+names: the model is smaller than the budget can feed, and the width reopens.
+
+**The rate rules reach the target's width, not its horizon.** A bracket at width
+512 found the rule's own rate best, and `anthro scale` refuses the target's full
+horizon because no arm came near it.
+`docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
+records the bracket, why no size ladder is fitted here, and why widths 768 and
+1024 were checked and not taken.
 
 ### Widths That Do Not Follow The Model Width
 
@@ -207,7 +227,9 @@ how its width, horizon, selection, and rate were derived. What "the regime the
 target occupies" resolved to is positions per parameter rather than parameter
 count: the vehicle is a small model trained the way the target will be trained,
 which removes one of the two ways a vehicle-scale reading misleads and leaves the
-other to the section below on what transfers.
+other to the section below on what transfers. The target's regime is read from
+its run rather than fixed in advance, so the match holds only while that
+run stops near the vehicle's ratio, and the run reports where it stopped.
 
 **Adopting a change does not advance the vehicle.** Promotions go to the
 canonical line, which is what
@@ -246,7 +268,6 @@ undo it.
 | Warmup length | open | — | recompute | soft | — | soft | — | soft |
 | Learning-rate schedule | — | — | — | soft | — | — | — | — |
 | Selection filters | — | — | — | **hard** | **hard** | **hard** | — | — |
-| Allocation rule | — | — | — | — | **hard** | open | **hard** | soft |
 
 Three entries carry most of the weight.
 
@@ -267,8 +288,8 @@ checked against.
 
 A mid-trunk checkpoint is not a cooled one. It sits at the full peak rate, so
 it reads as worse than the same compute properly cooled. A point standing for what
-a horizon achieved is therefore taken at the end of a cooldown, the ladder's data
-axis is a set of branches rather than a set of steps of one run, and branched and
+a horizon achieved is therefore taken at the end of a cooldown, a horizon sweep
+is a set of branches rather than a set of steps of one run, and branched and
 from-scratch points are not mixed in one fit. Comparing two uncooled checkpoints
 of one run is unaffected, since both sides sit at the same rate.
 `docs/decisions/0067-a-horizon-is-a-branch-not-a-restart.md` owns why, what the
@@ -350,11 +371,13 @@ a reading or a recorded decision rather than a judgement that enough was done.
    used in the fit.
    `docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
    records the arms behind each rule and the range outside which it refuses.
-6. **The allocation ladder.** Several small sizes spanning one to two decades,
-   yielding the size-versus-data rule and, with it, the target's data budget.
+6. **The target's own rate.** A bracket at the target width, since the rules
+   were fitted below it. No size ladder is fitted, and
+   `docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
+   records why.
 7. **Candidate changes, one arm each against the vehicle**, then the accepted set
    as one further arm.
-8. **Confirmation**, at the target size but a fraction of its horizon, which holds
+8. **Confirmation**, at the target size but a fraction of its budget, which holds
    the size term fixed and removes the hardest extrapolation.
 9. **The run.**
 
@@ -367,7 +390,8 @@ accumulates. Steps 5 onward are readings.
 work anchors what model sizes reach what playing strength on human games; nothing
 found says where the accuracy of a rating-conditioned move distribution stops
 improving. This project's target is the latter, so the anchor bounds the question
-without answering it, and the ladder is what answers it.
+without answering it. The rating dial's slope, read at three sizes, is the only
+reading here that bears on it.
 
 **Whether a candidate's benefit holds at the target.** Nothing here measures the
 rate at which vehicle-scale rankings survive a size gap, and no outside source

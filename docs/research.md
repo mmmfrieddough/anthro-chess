@@ -114,8 +114,9 @@ Key information:
 
 Applies to Anthro Chess:
 
-- The ladder in `docs/scaling.md` fits the same shape to decide the target's
-  split between capacity and training positions.
+- The shape is not fitted here. `docs/scaling.md` takes the target's split
+  between capacity and training positions from a published ladder on the same
+  architecture, and this is the method a fit here would use.
 - The flatness result is why a size within roughly 1.5x of the fitted optimum is
   not re-litigated.
 - Checking a fitted interval's width against the number of runs behind it is the
@@ -145,10 +146,10 @@ Key information:
 
 Applies to Anthro Chess:
 
-- A ladder here fixes all four before it is fitted, or it measures the protocol
-  rather than the model.
+- A size fit here would fix all four before fitting, or it would measure the
+  protocol rather than the model.
 - The output-head omission is the largest of the four and is worst at the
-  smallest sizes, which is exactly where a ladder's lower rungs sit.
+  smallest sizes, which is exactly where such a fit's lower rungs would sit.
 - It is the direct source of the rule in `docs/scaling.md` that a scale-dependent
   setting is recorded as a rule rather than as a number.
 
@@ -173,8 +174,9 @@ Key information:
 
 Applies to Anthro Chess:
 
-- If the project intends to over-train, over-trained points belong in the ladder
-  rather than being extrapolated to.
+- Its objective is not this project's. The target is the best model the
+  training budget buys, with inference weighed as a separate constraint, so no
+  run is over-trained on purpose.
 
 Different from Anthro Chess:
 

@@ -29,6 +29,10 @@ over is the wrong invariant for the failure it found.
 the weight-decay rule this record left unresolved, at a horizon long enough for
 the dial to do anything.
 
+`0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md` extends the
+width range to 512 with a bracket there, which is the extension the Consequences
+below expected a ladder to make.
+
 ## Context
 
 `docs/scaling.md` requires a scale-dependent setting to be recorded as the rule
