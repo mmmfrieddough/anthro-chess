@@ -43,8 +43,9 @@ the serving premise this record cites for going marginally past 713 positions pe
 parameter. The size selected here did not rest on it.
 
 `0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md` keeps the size
-without the ladder fit this record expected `#54` to run, and measures the
-target's learning rate at its width.
+without the ladder fit this record expected `#54` to run, checks it against
+widths 768 and 1024, measures the target's learning rate at its width, and
+replaces the horizon derived here with one read from the run.
 
 ## Context
 

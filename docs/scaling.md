@@ -147,15 +147,21 @@ carries the arms.
 
 ### The Target
 
-**The target is `model_dim` 512, about 20.6M parameters, trained on roughly
-1.6e10 positions.** The confident band is 10M to 50M, which is widths 384 to 768.
+**The target is `model_dim` 512, about 20.6M parameters.** The confident band
+is 10M to 50M, which is widths 384 to 768.
 `docs/decisions/0071-the-target-is-the-size-the-published-ladder-flattens-at.md`
 records how it was derived, what it rests on, and what would reopen it.
+
+**Its length is read rather than budgeted.** The budget buys about 2.4e10
+positions at measured throughput. The run branches cooldowns along its trunk and
+stops where the rating dial and generated play stop improving, or where held-out
+loss turns over.
 
 **The rate rules reach the target's width, not its horizon.** A bracket at width
 512 found the rule's own rate best, and `anthro scale` refuses the target's full
 horizon because no arm came near it. `docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
-records the bracket, and why no size ladder is fitted here.
+records the bracket, why no size ladder is fitted here, and why widths 768 and
+1024 were checked and not taken.
 
 ### Widths That Do Not Follow The Model Width
 
