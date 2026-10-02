@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import torch
 from torch.nn.utils import clip_grads_with_norm_
@@ -55,6 +55,7 @@ from anthro_chess.training.cadence import (
     CadenceError,
     CadenceReading,
     CadenceSchedule,
+    PreparedCadence,
     prepare_schedule,
 )
 from anthro_chess.training.checkpoints import (
@@ -905,133 +906,62 @@ def _optimize(
             if reported:
                 assert average_loss is not None  # a reported step always drains
                 report_started = time.perf_counter()
-                learning_rate = float(optimizer.param_groups[0]["lr"])
-                summary = monitor.summary(processed_positions=processed_positions)
-                record: dict[str, object] = {
-                    "record": "step",
-                    "global_step": global_step,
-                    "epoch": epoch,
-                    "move_loss": average_loss,
-                    "learning_rate": learning_rate,
-                    # The logging interval's active positions, not one step's.
-                    # A per-step count would need a device read-back on every
-                    # step, which is the cost the deferred totals exist to
-                    # avoid, so the field says which quantity it carries.
-                    "interval_active_positions": interval_positions,
-                    "processed_positions": processed_positions,
-                    # Steady state, so it is null until the window opens. The
-                    # figure that included warmup answered a different question
-                    # and drifted for the whole run.
-                    "positions_per_second": summary.active_positions_per_second,
-                    "elapsed_seconds": summary.run_seconds,
-                    "training_seconds": summary.training_seconds,
-                    "evaluation_seconds": summary.evaluation_seconds,
-                    "checkpoint_seconds": summary.checkpoint_seconds,
-                    "data_seconds": data_seconds if profile_phases else None,
-                    "transfer_seconds": (transfer_seconds if profile_phases else None),
-                    # Forward and backward only. The optimizer's own work is
-                    # reported beside it rather than inside it, because the two
-                    # scale with different things and a merged figure cannot
-                    # say which of them a slow step is spending its time in.
-                    "compute_seconds": compute_seconds if profile_phases else None,
-                    "optimizer_seconds": (
-                        optimizer_seconds if profile_phases else None
-                    ),
-                    "peak_allocated_memory_bytes": (
-                        monitor.peak_allocated_memory_bytes
-                    ),
-                    "peak_driver_memory_bytes": monitor.peak_driver_memory_bytes,
-                    "training_health": (
-                        health.as_record() if health is not None else None
-                    ),
-                    "health_instrumentation_seconds": (
-                        health_monitor.instrumentation_seconds
-                    ),
-                }
-                _refuse_non_finite(record, global_step)
-                metrics_file.write(
-                    json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
-                )
-                metrics_file.flush()
-                tensorboard.write_step(
+                _report_step(
                     global_step=global_step,
-                    move_loss=average_loss,
-                    learning_rate=learning_rate,
+                    epoch=epoch,
+                    average_loss=average_loss,
+                    learning_rate=float(optimizer.param_groups[0]["lr"]),
+                    interval_positions=interval_positions,
+                    processed_positions=processed_positions,
+                    monitor=monitor,
+                    phase_seconds={
+                        "data_seconds": data_seconds,
+                        "transfer_seconds": transfer_seconds,
+                        "compute_seconds": compute_seconds,
+                        "optimizer_seconds": optimizer_seconds,
+                    }
+                    if profile_phases
+                    else None,
                     health=health,
-                )
-                logger.info(
-                    f"step={global_step} move_loss={average_loss:.6f} "
-                    f"lr={learning_rate:.6g} positions={processed_positions} "
-                    f"positions_per_second="
-                    f"{_render_throughput(summary.active_positions_per_second)}"
+                    health_monitor=health_monitor,
+                    metrics_file=metrics_file,
+                    tensorboard=tensorboard,
                 )
                 monitor.charge(
                     time.perf_counter() - report_started,
                     kind="instrumentation",
                 )
             if due:
-                # One reference for every entry firing here: an in-training
-                # preview and the later canonical reading of these parameters
-                # have to agree on which checkpoint they describe.
-                measured = CheckpointReference(
-                    label=default_checkpoint_label(run_id, global_step),
-                    step=global_step,
+                cadence_readings, cadence_efficiency_paths = _run_due_cadences(
+                    due,
+                    schedule=schedule,
+                    model=model,
+                    device=device,
+                    global_step=global_step,
                     run_id=run_id,
-                    parameter_sha256=parameter_sha256(model),
                     training_sha256=training_sha256,
+                    processed_positions=processed_positions,
+                    health=health,
+                    efficiency=efficiency,
+                    metrics_file=metrics_file,
+                    tensorboard=tensorboard,
                 )
-                for entry in due:
-                    reading = schedule.run(
-                        entry,
-                        model,
-                        device=device,
-                        global_step=global_step,
-                        checkpoint=measured,
-                        health=health,
-                    )
-                    readings.append(reading)
-                    monitor.charge(reading.seconds, kind="evaluation")
-                    metrics_file.write(
-                        json.dumps(
-                            reading.as_record(),
-                            sort_keys=True,
-                            allow_nan=False,
-                        )
-                        + "\n"
-                    )
-                    metrics_file.flush()
-                    tensorboard.write_evaluation(reading)
-                if efficiency.record_at_cadence:
-                    # The budget point a quality-versus-time report joins to
-                    # the preview reading just taken, under the same label.
-                    efficiency_paths.extend(
-                        efficiency.record(
-                            checkpoint=measured,
-                            processed_positions=processed_positions,
-                        )
-                    )
+                readings.extend(cadence_readings)
+                efficiency_paths.extend(cadence_efficiency_paths)
             if saving:
                 checkpoint_started = time.perf_counter()
                 saved_step = global_step
-                saved_checkpoint = checkpoint_path(output_directory, global_step)
-                save_training_checkpoint(
-                    saved_checkpoint,
+                saved_checkpoint = _save_step_checkpoint(
+                    output_directory=output_directory,
                     global_step=global_step,
-                    counters={"processed_positions": processed_positions},
-                    model_state=model.state_dict(),
-                    optimizer_state=optimizer.state_dict(),
-                    scheduler_state=None,
-                    scaler_state=None,
-                    loader_state=loader.state().as_record(),
-                    compatibility=compatibility,
-                    metadata=checkpoint_metadata,
-                    device=device,
-                )
-                run_record.write(
-                    completed_steps=global_step,
                     processed_positions=processed_positions,
-                    checkpoint=saved_checkpoint,
-                    complete=False,
+                    model=model,
+                    optimizer=optimizer,
+                    loader=loader,
+                    compatibility=compatibility,
+                    checkpoint_metadata=checkpoint_metadata,
+                    device=device,
+                    run_record=run_record,
                 )
                 monitor.charge(
                     time.perf_counter() - checkpoint_started,
@@ -1048,6 +978,169 @@ def _optimize(
         instrumentation_seconds=health_monitor.instrumentation_seconds,
         efficiency_paths=tuple(efficiency_paths),
     )
+
+
+def _report_step(
+    *,
+    global_step: int,
+    epoch: int,
+    average_loss: float,
+    learning_rate: float,
+    interval_positions: int,
+    processed_positions: int,
+    monitor: TrainingEfficiencyMonitor,
+    phase_seconds: Mapping[str, float] | None,
+    health: StepHealth | None,
+    health_monitor: StepHealthMonitor,
+    metrics_file: TextIO,
+    tensorboard: TrainingTensorBoard,
+) -> None:
+    """Write one reported step to the metrics file, TensorBoard, and the log."""
+
+    summary = monitor.summary(processed_positions=processed_positions)
+    record: dict[str, object] = {
+        "record": "step",
+        "global_step": global_step,
+        "epoch": epoch,
+        "move_loss": average_loss,
+        "learning_rate": learning_rate,
+        # The logging interval's active positions, not one step's. A per-step
+        # count would need a device read-back on every step, which is the cost
+        # the deferred totals exist to avoid, so the field says which quantity
+        # it carries.
+        "interval_active_positions": interval_positions,
+        "processed_positions": processed_positions,
+        # Steady state, so it is null until the window opens. The figure that
+        # included warmup answered a different question and drifted for the
+        # whole run.
+        "positions_per_second": summary.active_positions_per_second,
+        "elapsed_seconds": summary.run_seconds,
+        "training_seconds": summary.training_seconds,
+        "evaluation_seconds": summary.evaluation_seconds,
+        "checkpoint_seconds": summary.checkpoint_seconds,
+        # Forward and backward are `compute_seconds` alone. The optimizer's own
+        # work is reported beside it rather than inside it, because the two
+        # scale with different things and a merged figure cannot say which of
+        # them a slow step is spending its time in.
+        "data_seconds": None,
+        "transfer_seconds": None,
+        "compute_seconds": None,
+        "optimizer_seconds": None,
+        **(phase_seconds or {}),
+        "peak_allocated_memory_bytes": monitor.peak_allocated_memory_bytes,
+        "peak_driver_memory_bytes": monitor.peak_driver_memory_bytes,
+        "training_health": health.as_record() if health is not None else None,
+        "health_instrumentation_seconds": health_monitor.instrumentation_seconds,
+    }
+    _refuse_non_finite(record, global_step)
+    metrics_file.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+    metrics_file.flush()
+    tensorboard.write_step(
+        global_step=global_step,
+        move_loss=average_loss,
+        learning_rate=learning_rate,
+        health=health,
+    )
+    logger.info(
+        f"step={global_step} move_loss={average_loss:.6f} "
+        f"lr={learning_rate:.6g} positions={processed_positions} "
+        f"positions_per_second="
+        f"{_render_throughput(summary.active_positions_per_second)}"
+    )
+
+
+def _run_due_cadences(
+    due: Sequence[PreparedCadence],
+    *,
+    schedule: CadenceSchedule,
+    model: MoveModel,
+    device: torch.device,
+    global_step: int,
+    run_id: str,
+    training_sha256: str,
+    processed_positions: int,
+    health: StepHealth | None,
+    efficiency: _EfficiencyRecorder,
+    metrics_file: TextIO,
+    tensorboard: TrainingTensorBoard,
+) -> tuple[list[CadenceReading], list[Path]]:
+    """Take every cadence reading due at one step, and the budget point beside them."""
+
+    # One reference for every entry firing here: an in-training preview and the
+    # later canonical reading of these parameters have to agree on which
+    # checkpoint they describe.
+    measured = CheckpointReference(
+        label=default_checkpoint_label(run_id, global_step),
+        step=global_step,
+        run_id=run_id,
+        parameter_sha256=parameter_sha256(model),
+        training_sha256=training_sha256,
+    )
+    readings: list[CadenceReading] = []
+    for entry in due:
+        reading = schedule.run(
+            entry,
+            model,
+            device=device,
+            global_step=global_step,
+            checkpoint=measured,
+            health=health,
+        )
+        readings.append(reading)
+        efficiency.monitor.charge(reading.seconds, kind="evaluation")
+        metrics_file.write(
+            json.dumps(reading.as_record(), sort_keys=True, allow_nan=False) + "\n"
+        )
+        metrics_file.flush()
+        tensorboard.write_evaluation(reading)
+    if not efficiency.record_at_cadence:
+        return readings, []
+    # The budget point a quality-versus-time report joins to the preview reading
+    # just taken, under the same label.
+    return readings, list(
+        efficiency.record(
+            checkpoint=measured,
+            processed_positions=processed_positions,
+        )
+    )
+
+
+def _save_step_checkpoint(
+    *,
+    output_directory: Path,
+    global_step: int,
+    processed_positions: int,
+    model: MoveModel,
+    optimizer: torch.optim.Optimizer,
+    loader: SequenceBatchSource,
+    compatibility: Mapping[str, object],
+    checkpoint_metadata: Mapping[str, object],
+    device: torch.device,
+    run_record: _RunRecordWriter,
+) -> Path:
+    """Save one step's checkpoint and point the run record at it."""
+
+    path = checkpoint_path(output_directory, global_step)
+    save_training_checkpoint(
+        path,
+        global_step=global_step,
+        counters={"processed_positions": processed_positions},
+        model_state=model.state_dict(),
+        optimizer_state=optimizer.state_dict(),
+        scheduler_state=None,
+        scaler_state=None,
+        loader_state=loader.state().as_record(),
+        compatibility=compatibility,
+        metadata=checkpoint_metadata,
+        device=device,
+    )
+    run_record.write(
+        completed_steps=global_step,
+        processed_positions=processed_positions,
+        checkpoint=path,
+        complete=False,
+    )
+    return path
 
 
 def _charge_instrumentation(
