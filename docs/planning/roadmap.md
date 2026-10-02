@@ -204,7 +204,7 @@ is what makes its improvement readable without spending a target-scale run on it
 Because arms against a frozen base yield no interaction terms, the accepted set
 runs together as one further arm before any of it reaches the canonical line.
 
-**A confirmation run then reads the target size at a fraction of its horizon**,
+**A confirmation run then reads the target size at a fraction of its budget**,
 which holds the size term fixed and removes the hardest extrapolation, before the
 full run. A confirmation that misses its predicted loss is a confound rather than
 a surprise, and is cheaper to find there than in the run itself.

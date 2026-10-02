@@ -102,8 +102,8 @@ Against twice the rate, the rule's rate is better on every held-out reading that
 clears its floor, on reference-ladder error at temperature 0.7, 210 against 223,
 and on the greedy dial slope, 0.401 against 0.373. Every generated-play distance
 to the human reference that carries a floor is within it. It is worse by a
-cleared margin on two readings: `dependency.rating_absent_degradation`, 0.043 against 0.051, and the
-legality margins.
+cleared margin on two readings: `dependency.rating_absent_degradation`, 0.043
+against 0.051, and the legality margins.
 
 Against half the rate it is better on every held-out, legality and rating
 dependency reading that clears its floor, and on puzzle solving. The dial is
@@ -145,9 +145,10 @@ and 512, puts all three within 0.2% of each other at this budget, and puts
 doubling the budget at 0.1% to 0.2%. Leaving any one width out of the fit
 reorders the three.
 
-Two trunks at width 768 at the rule's rate, 4.34e-4, and half of it, cooled at
-73,000 steps, 25 positions per parameter. The rule's arm was also branched at
-step 29,200 and cooled at 36,500. Each trunk took 60 hours on one card. The
+Two trunks ran at width 768, one at the rule's rate, 4.34e-4, and one at half
+of it. Each declared 73,000 steps, 25 positions per parameter, and cooled over its
+final fifth. The rule's arm was also branched at step 29,200 and cooled at
+36,500. Each trunk took 60 hours on one card. The
 rule's rate read 1.3715 on the pool against 1.3733 for half, so it holds on the
 side checked; twice the rate was not run.
 
@@ -161,16 +162,19 @@ temperatures 0, 0.7 and 1:
 | 512 | 1.03e9 | 1.3793 | 0.5498 | 0.401 / 0.420 / 0.375 |
 | 768 | 1.20e9 | 1.3715 | 0.5518 | 0.371 / 0.377 / 0.355 |
 
-Width 768 is about 0.6% lower on loss at both points. The dial does not follow.
-Width 512 gained 0.04 to 0.09 between its two points; width 768 did not move, and
-at about 1e9 positions width 512 leads it by a margin that clears the reading's
-floor at temperatures 0 and 0.7, with reference-ladder error 16 points better at
-0.7. The suite agrees: width 768 is worse on generated game length at both
-temperatures and reads its rating less, `dependency.rating_anchor_policy_divergence`
-0.430 against 0.451.
+Width 768 is about 0.6% lower on loss at both points, about a third of which its
+15% more positions would buy width 512 on its own curve. The dial does not
+follow. Width 768 led at the first point by 0.04 to 0.05, part of that again its
+extra data. Width 512 then gained 0.04 to 0.09 between its two points while
+width 768 did not move, and at about 1e9 positions width 512 leads it by a
+margin that clears the reading's floor at temperatures 0 and 0.7, with
+reference-ladder error 16 points better at 0.7. The suite agrees: width 768 is
+worse on generated game length at both temperatures and reads its rating less,
+`dependency.rating_anchor_policy_divergence` 0.430 against 0.451.
 
-Width 128 had already stopped on the dial: its slope read the same at 1.1e9 and
-4.6e9 positions. Width 512 has not reached that point at 1e9.
+Width 128 had already stopped on the dial: on its lower-rate arm the slope read
+within 0.004 at 1.1e9 and 4.6e9 positions at temperatures 0 and 0.7, and lower
+at 1. Width 512 has not reached that point at 1e9.
 
 The suite itself failed its generated-play and ladder steps at width 768 with a
 CUDA allocation error, and both completed when run alone. `#575` holds that.
@@ -178,14 +182,16 @@ CUDA allocation error, and both completed when run alone. `#575` holds that.
 ## Decision
 
 **The target stays at width 512 and no size ladder is fitted.** Wider models buy
-loss and not the readings the target is for: at matched data width 768 is 0.6%
-lower on loss and no better on the dial or on generated play, and the loss fit
-does not separate 1024 from either.
+loss and not the readings the target is for. At nearly matched data width 768 is
+0.6% lower on loss; on the dial it led at 6e8 positions, stalled, and was behind
+by 1e9, and it is worse on generated game length. The loss fit does not separate
+1024 from either. This is a trend over two single runs, not a level difference.
 
 **Its length is read rather than budgeted.** The budget buys about 2.4e10
 positions at measured throughput, and width 512's dial was still rising at 1e9.
-`#491` branches cooldowns along the target's trunk and stops where the dial and
-generated play stop improving.
+The run, `#494`, branches cooldowns along its trunk and stops where the dial and
+generated play stop improving. If that happens well inside the budget, the
+model is smaller than the budget can feed and the width reopens.
 
 **The rate rule holds at the target's width.** Its width range extends to 512
 and the exponent stays where 0087 rounded it. A fit through the four rungs'
@@ -198,8 +204,8 @@ floor would have let every narrower width answer there too, where nothing ran.
 
 **The target itself still resolves nowhere.** At width 512 every ratio inside
 the range is a horizon past the positions range, which stops at 1.2e9 against a
-target run an order of magnitude longer. That is the extrapolation `#491` exists to test, and the range
-it extends.
+target run an order of magnitude longer. That is the extrapolation `#491` exists
+to test, and the range it extends.
 
 ## What This Gives Up, Deliberately
 
@@ -220,8 +226,9 @@ are one and a half to two times the reading's own spread, and width 1024 was
 probed for throughput, never trained.
 
 **A short horizon.** These arms reach 50 positions per parameter against the
-target's 800, and they run 63,000 steps, far short of where 0088 saw width 128
-turn over. Whether the target turns over, and where, is not read here.
+roughly 1,180 the target's budget buys, and they run 63,000 steps, far short of
+where 0088 saw width 128 turn over. Whether the target turns over, and where, is
+not read here.
 
 ## Consequences
 

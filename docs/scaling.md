@@ -137,11 +137,12 @@ growth removes the turnaround at the width and step count where it exists.
 Decaying every parameter erases the rating conditioning, so the optimizer exempts
 the rating embeddings, biases and normalization gains.
 
-**Nothing adopts it: a run that turns over stops near its peak instead.** Stopping an
-undecayed run at its peak beat every decayed arm on every outcome measured. Decay
-only wins against a run left past its turnover, and it costs fit without the
-overfitting benefit it normally buys, since nothing repeats at these horizons. A
-model that runs past its peak within its budget is too small for that budget.
+**Nothing adopts it: a run that turns over stops near its peak instead.**
+Stopping an undecayed run at its peak beat every decayed arm on every outcome
+measured. Decay only wins against a run left past its turnover, and it costs fit
+without the overfitting benefit it normally buys, since nothing repeats at these
+horizons. A model that runs past its peak within its budget is too small for
+that budget.
 `docs/decisions/0089-bounded-growth-removes-the-ceiling-and-costs-a-flat-offset.md`
 carries the arms.
 
@@ -155,11 +156,13 @@ records how it was derived, what it rests on, and what would reopen it.
 **Its length is read rather than budgeted.** The budget buys about 2.4e10
 positions at measured throughput. The run branches cooldowns along its trunk and
 stops where the rating dial and generated play stop improving, or where held-out
-loss turns over.
+loss turns over. Stopping well inside the budget is the signal the rule above
+names: the model is smaller than the budget can feed, and the width reopens.
 
 **The rate rules reach the target's width, not its horizon.** A bracket at width
 512 found the rule's own rate best, and `anthro scale` refuses the target's full
-horizon because no arm came near it. `docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
+horizon because no arm came near it.
+`docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
 records the bracket, why no size ladder is fitted here, and why widths 768 and
 1024 were checked and not taken.
 
@@ -224,7 +227,9 @@ how its width, horizon, selection, and rate were derived. What "the regime the
 target occupies" resolved to is positions per parameter rather than parameter
 count: the vehicle is a small model trained the way the target will be trained,
 which removes one of the two ways a vehicle-scale reading misleads and leaves the
-other to the section below on what transfers.
+other to the section below on what transfers. The target's regime is read from
+its run rather than fixed in advance, so the match holds only while that
+run stops near the vehicle's ratio, and the run reports where it stopped.
 
 **Adopting a change does not advance the vehicle.** Promotions go to the
 canonical line, which is what
@@ -367,11 +372,12 @@ a reading or a recorded decision rather than a judgement that enough was done.
    `docs/decisions/0087-hyperparameter-rules-are-fitted-along-the-regime-ray.md`
    records the arms behind each rule and the range outside which it refuses.
 6. **The target's own rate.** A bracket at the target width, since the rules
-   were fitted below it. No size ladder is fitted: `docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
+   were fitted below it. No size ladder is fitted, and
+   `docs/decisions/0090-the-size-is-not-fitted-here-and-the-rate-is-measured-at-the-target.md`
    records why.
 7. **Candidate changes, one arm each against the vehicle**, then the accepted set
    as one further arm.
-8. **Confirmation**, at the target size but a fraction of its horizon, which holds
+8. **Confirmation**, at the target size but a fraction of its budget, which holds
    the size term fixed and removes the hardest extrapolation.
 9. **The run.**
 
