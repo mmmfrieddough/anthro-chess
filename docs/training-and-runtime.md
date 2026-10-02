@@ -716,6 +716,56 @@ artifacts through Hugging Face or another registry remains a later decision
 once checkpoint quality, packaging, and public compatibility expectations are
 stable.
 
+## Data-Parallel Training
+
+A run uses every card it is launched across, and the launch is what decides
+that. The configuration and the command are the ones a single card takes, under
+`torchrun` with one process per card:
+
+```console
+uv run torchrun --standalone --nproc-per-node=2 -m anthro_chess train \
+  --config configs/training/ablation-vehicle.toml
+```
+
+**The declared effective batch is the global batch.** Every rank takes an equal
+share of each optimizer step's micro-batches, so `gradient_accumulation_steps`
+has to divide by the number of ranks, and gradients are averaged across them
+once per step, after the last micro-batch. The learning-rate schedule and the
+training identity are therefore the same on one card as on several, and so are
+the batches each step trains on until an epoch ends on a batch count the ranks
+cannot share, which no run at the vehicle's scale reaches. The world size is
+recorded beside the run as execution provenance and as an efficiency coordinate
+rather than as anything a resume or a noise floor has to match. The weights are not bit-identical to a single card's,
+because the reduction sums partial gradients in a different order.
+`docs/decisions/0091-ranks-share-a-step-and-the-world-size-is-provenance.md`
+owns why the shared unit is the micro-batch and not the loader's batch, and
+holds the scaling measured on this project's two-card host.
+
+Each rank reads its share of the one order a single process would read, and
+every rank's cursor names the same place in it, so a checkpoint resumes under
+any number of ranks. `docs/data.md` owns how the loaders divide it. Every rank
+initializes from the run seed, so the replicas start identical; after that each
+non-primary rank draws from its own stream, so ranks do not apply the same
+history-dropout mask to different data. A checkpoint carries the primary rank's
+streams, and the other ranks reseed from the step they resumed at, so a resumed
+multi-rank run is not a bit-exact replay of an uninterrupted one.
+
+**One rank writes.** The primary rank alone writes the metrics stream,
+TensorBoard events, the run record, checkpoints, cadence readings, efficiency
+results, and final validation, and the others log only warnings. Reported loss
+and processed positions are summed across ranks, so a two-card run's records
+read like a one-card run's of the same configuration; throughput is the whole
+run's, and peak memory is the primary card's. When a rank fails, `torchrun`
+stops the others, and a checkpoint is written atomically by the one process
+that writes it, so a failed run leaves its last complete checkpoint and nothing
+that looks like a later one.
+
+Replication does not widen what fits. Each card holds a full copy of the model
+and its optimizer state, so the largest trainable configuration is what one card
+holds. CPU ranks run the same path over a host-memory backend, which is how the
+suite exercises it; MPS has no collective backend and refuses a multi-process
+launch. `anthro_chess.training.distributed` owns the launch contract.
+
 ## Training Evaluation
 
 Training should report a compact default set of validation metrics and preserve

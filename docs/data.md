@@ -846,6 +846,16 @@ groups and shuffles within them instead. Their identities differ accordingly,
 which is what stops a run from continuing across the two and training on an
 order it did not record.
 
+Either loader can serve one rank of a data-parallel run without changing its
+order. The single-process order is cut into groups as wide as the run has ranks,
+each rank takes its own member of every group, and the cursor moves past the
+whole group, so every rank's cursor names the same place a single process would
+be at and a checkpoint resumes under any number of ranks. A rank decodes only
+the batches it takes. An epoch ending in a partial group drops it, because a
+rank cannot take a batch the others have no partner for; a corpus whose epoch
+holds fewer batches than there are ranks therefore yields none.
+`docs/training-and-runtime.md` owns the training side.
+
 Decoding is the expensive half and it parallelizes, so the shard-backed loader
 can build batches in worker processes. Rows travel to a worker and a packed
 batch comes back, which keeps every Parquet read sequential in one process.

@@ -393,7 +393,12 @@ def run_training(
             f"rank takes an equal share of every step's micro-batches, which is "
             f"what keeps the effective batch the one the configuration declares"
         )
-    created_group = start_process_group(parallel, device)
+    try:
+        created_group = start_process_group(parallel, device)
+    except RuntimeError as error:
+        raise TrainingError(
+            f"cannot join the launch's process group: {error}"
+        ) from error
     try:
         return _train(
             resolved_config,
@@ -403,7 +408,9 @@ def run_training(
             output_directory=output_directory,
             store=store,
             detail=detail,
-            verify_data=verify_data,
+            # Every rank reads the same files, and a primary that finds one
+            # corrupt stops them all, so one rank hashing them is enough.
+            verify_data=verify_data and parallel.primary,
         )
     finally:
         if created_group:

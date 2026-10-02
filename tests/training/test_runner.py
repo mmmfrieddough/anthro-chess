@@ -1342,9 +1342,21 @@ def _launch_ranks(
     config: Path,
     output_directory: Path,
     ranks: int,
+    *,
+    results: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Train through the command line under `torchrun`, as a real launch does."""
 
+    recording = (
+        ["--no-record"]
+        if results is None
+        else [
+            "--store",
+            str(results / "store"),
+            "--detail-root",
+            str(results / "detail"),
+        ]
+    )
     launched = subprocess.run(
         [
             sys.executable,
@@ -1357,7 +1369,7 @@ def _launch_ranks(
             "train",
             "--config",
             str(config),
-            "--no-record",
+            *recording,
             "--output-directory",
             str(output_directory),
         ],
@@ -1406,14 +1418,25 @@ def test_two_ranks_train_what_one_process_trains_and_write_it_once(
     )
     config = _data_parallel_config(tmp_path / "config", prepared, steps=4)
 
+    alone_store = ResultsStore(tmp_path / "alone-results")
     alone = run_training(
         load_config(TrainingConfig, path=config),
         output_directory=tmp_path / "alone",
+        store=alone_store,
     )
-    launched = _launch_ranks(config, tmp_path / "pair", 2)
+    launched = _launch_ranks(config, tmp_path / "pair", 2, results=tmp_path)
 
     pair = tmp_path / "pair"
     assert launched.stdout.count("Completed 4 optimizer step(s).") == 1
+    recorded = ResultsStore(tmp_path / "store").results()
+    assert recorded
+    assert sorted(
+        (envelope.kind, envelope.checkpoint.label) for envelope in recorded
+    ) == sorted(
+        (envelope.kind, envelope.checkpoint.label.replace("alone", "pair"))
+        for envelope in alone_store.results()
+    )
+    assert len(list((tmp_path / "detail").rglob("*.json*"))) == 1
     assert sorted(path.name for path in (pair / "checkpoints").iterdir()) == [
         "latest.json",
         "step-00000002.pt",
