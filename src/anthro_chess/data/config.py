@@ -181,21 +181,6 @@ class PrepareConfig(ConfigModel):
         return self
 
 
-class RatingCompositionConfig(ConfigModel):
-    """How far a selection evens out the rating axis it draws from.
-
-    A game's decisions are weighted by ``(peak / density) ** strength`` over a
-    smooth density of mover ratings, so ``0`` takes the population as it comes
-    and ``1`` draws every rating equally often. ``maximum_weight`` clips that
-    weight relative to the commonest rating, and since a game is kept with
-    probability proportional to its weight it also bounds what is retained: at
-    least one game in ``maximum_weight`` survives.
-    """
-
-    strength: float = Field(ge=0.0, le=1.0)
-    maximum_weight: float = Field(gt=1.0)
-
-
 class SelectionConfig(ConfigModel):
     """Load-time selection within one prepared corpus.
 
@@ -239,11 +224,15 @@ class SelectionConfig(ConfigModel):
     so the one bounded by what a loader can hold; ``fraction`` cuts a rank space
     and is not.
 
-    ``rating_composition`` reweights rather than filters, by thinning each game
-    against a digest of its id that is independent of the subsample's. Rating
-    is the one axis that can be reweighted this way, because the model is
-    conditioned on it;
-    ``docs/decisions/0016-sampling-axes-versus-measured-distributions.md``
+    ``rating_balance`` reweights rather than filters. It is the most a rating
+    is drawn above its natural rate, relative to the commonest rating: every
+    rating at least ``1 / rating_balance`` as common as that one is drawn
+    equally often, and rarer ones at ``rating_balance`` times their own rate.
+    One leaves the population as it comes and the limit draws every rating
+    alike. Games are thinned against a digest of their id independent of the
+    subsample's, so at least one in ``rating_balance`` survives. Rating is the
+    one axis that can be reweighted this way, because the model is conditioned
+    on it; ``docs/decisions/0016-sampling-axes-versus-measured-distributions.md``
     closes the others.
     """
 
@@ -258,7 +247,7 @@ class SelectionConfig(ConfigModel):
     require_ratings: StrictBool = False
     fraction: float | None = Field(default=None, gt=0.0, le=1.0)
     maximum_games: int | None = Field(default=None, ge=1)
-    rating_composition: RatingCompositionConfig | None = None
+    rating_balance: float | None = Field(default=None, ge=1.0)
     seed: str = Field(default="anthro-training-selection-v1", min_length=1)
 
     @model_validator(mode="after")

@@ -15,13 +15,12 @@ from hashlib import sha256
 from typing import Any
 
 from anthro_chess.data.artifacts import DataLoadingError
-from anthro_chess.data.config import RatingCompositionConfig
 from anthro_chess.data.loading import _RANK_SPACE, _rank_key
 from anthro_chess.data.prepare import _rating_bucket
 
 #: Bumped when the fit or the thinning changes, so a run resumed under code that
 #: would compose differently is refused rather than drawing other games.
-RATING_COMPOSITION_VERSION = 1
+RATING_COMPOSITION_VERSION = 2
 
 #: Kernel width, in rating points, of the density the weight is taken against.
 #: Wide enough to absorb the spike a source puts at its provisional starting
@@ -44,7 +43,7 @@ class RatingComposition:
     ``acceptance`` is indexed by normalized rating.
     """
 
-    config: RatingCompositionConfig
+    balance: float
     acceptance: tuple[float, ...]
     #: What the fit sample says the composition does, for the run record.
     report: dict[str, Any]
@@ -57,9 +56,8 @@ class RatingComposition:
             json.dumps(
                 {
                     "version": RATING_COMPOSITION_VERSION,
-                    "config": self.config.model_dump(mode="json"),
+                    "balance": self.balance,
                     "acceptance": self.acceptance,
-                    "beyond": _OUTSIDE_FIT,
                 },
                 separators=(",", ":"),
             ).encode()
@@ -101,7 +99,7 @@ def fit_rating_composition(
     black: Sequence[int],
     length: Sequence[int],
     speed: Sequence[str],
-    config: RatingCompositionConfig,
+    balance: float,
     *,
     population_games: int,
 ) -> RatingComposition:
@@ -133,11 +131,9 @@ def fit_rating_composition(
     density = np.convolve(np.pad(histogram, _KERNEL_REACH), kernel, mode="valid")
     with np.errstate(divide="ignore"):
         ratio = density.max() / density
-    clip = config.maximum_weight
-    weight = np.minimum(clip, ratio**config.strength)
+    weight = np.minimum(balance, ratio)
     # Normalized by the heaviest rating anything was drawn at rather than by
-    # the clip, so a strength of zero keeps every game instead of thinning all
-    # of them alike.
+    # the balance, so a balance the data never reaches discards nothing for it.
     heaviest = float(weight[histogram > 0].max())
     # Capped where a rating between the fitted ones has a thinner density than
     # any of them, so no rating is kept more often than the heaviest one.
@@ -150,7 +146,12 @@ def fit_rating_composition(
     composed = decisions * kept
     drawn_total = decisions.sum()
     composed_total = composed.sum()
-    clipped = weight >= clip
+    clipped = weight >= balance
+    # The ratings drawn equally often: the run about the peak short of the limit.
+    peak = int(density.argmax())
+    equalized = np.flatnonzero(~clipped)
+    runs = np.split(equalized, np.flatnonzero(np.diff(equalized) != 1) + 1)
+    flat = next((run for run in runs if run.size and run[0] <= peak <= run[-1]), None)
     clipped_decisions = (
         white_decisions * kept * clipped[white_rating]
         + black_decisions * kept * clipped[black_rating]
@@ -162,6 +163,9 @@ def fit_rating_composition(
     rating_buckets = np.asarray([_rating_bucket(int(rating)) for rating in ratings])
     report = {
         "density_bandwidth": DENSITY_BANDWIDTH,
+        "equalized_ratings": (
+            None if flat is None or flat.size < 2 else [int(flat[0]), int(flat[-1])]
+        ),
         "fit_games": int(len(decisions)),
         "fit_decisions": int(drawn_total),
         "retained_game_share": float(kept.mean()),
@@ -183,7 +187,7 @@ def fit_rating_composition(
         "decision_share_by_speed": _shares_by(speed, decisions, kept),
     }
     return RatingComposition(
-        config=config,
+        balance=balance,
         acceptance=tuple(float(value) for value in acceptance),
         report=report,
     )

@@ -326,16 +326,21 @@ kept is never recorded, and how many only where no filter had to be applied
 row by row. The section on the two loaders below says which is which. Exact
 field names, axes, and defaults live in `anthro_chess.data` rather than here.
 
-The rating axis can also be composed rather than filtered. A strength dial sets
-how often each rating is drawn, from the population as it comes at zero to every
-rating equally often at one, against a smoothed density rather than bands, so
-the weight has no edges the data does not have. It thins games instead of
-weighting the loss, so nothing repeats and every kept decision counts once, and
-a clip on the weight bounds how much of the selection it discards. Only the
-shard-backed loader composes. It fits the density from a sample of the corpus
-when it opens, and the run records what the fit says the composition does: the
-share retained, the effective sample size, the share at the clip, and each
-rating bucket's share before and after.
+The rating axis can also be balanced rather than filtered, by one dial: the
+most a rating is drawn above its natural rate, relative to the commonest one.
+One leaves the population as it comes. Raising it draws a widening range of
+ratings about the peak equally often and lifts everything rarer by the dial's
+value, and its limit draws every rating alike. The weight is taken against a
+smoothed density rather than bands, so it has no edges the data does not have.
+It thins games instead of weighting the loss, so nothing repeats and every kept
+decision counts once; what it costs is data, since at least one game in the
+dial's value survives. That makes the selection's retained decisions, after
+every other filter, the ceiling on how far the dial can be raised: a run that
+reads more than its balanced selection holds repeats data and says so. Only
+the shard-backed loader balances. It fits the density from a sample of the
+corpus when it opens, and the run records what the fit says the balance does:
+the range drawn equally often, the share retained, the effective sample size,
+and each rating bucket's and speed's share before and after.
 
 Ply-count, result, and opening filters are deliberately absent. Benchmarks
 measure the model's own distribution over those, so narrowing training on them
@@ -832,9 +837,9 @@ footer per shard before the first batch and nothing else, because preparation
 already counted every split and a count it recorded is one nobody has to take
 again; opening a corpus of two billion games then costs what opening one of two
 thousand costs. A selection that filters has to look, and that pass is the one
-cost here that follows corpus size. A selection that composes its rating axis
+cost here that follows corpus size. A selection that balances its rating axis
 also reads a fixed sample of row groups at the open, to fit the density it
-composes against. Either way what a run pays to plan follows
+balances against. Either way what a run pays to plan follows
 what it reads, and what stays resident is one row group's projected columns, one
 entry per row group, and the batches in flight.
 A resumed run reaches its saved cursor by arithmetic over the epoch order and

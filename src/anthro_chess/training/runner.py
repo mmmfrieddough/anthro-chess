@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 import torch
 import torch.distributed as dist
@@ -25,6 +25,7 @@ from anthro_chess.config import ResolvedConfig
 from anthro_chess.data import (
     STREAMING_LOADER_NAME,
     DataLoadingError,
+    SelectionResolution,
     SequenceBatchSource,
     SequenceDataConfig,
     SequenceDataLoader,
@@ -467,6 +468,7 @@ def _train(
         )
     except (DataLoadingError, OSError, ValueError, json.JSONDecodeError) as error:
         raise TrainingError(str(error)) from error
+    _warn_of_repetition(config, train.loader.resolution)
 
     # Not `config.run_name`: `checkpoint_reference` reads a run's id back from
     # its directory, and a reading recorded under a different one would not join.
@@ -1329,6 +1331,31 @@ def _out_of_memory_message(  # pragma: no cover - needs a real device to raise
         f"gradient_accumulation_steps by the same factor to keep the effective "
         f"batch unchanged"
     )
+
+
+def _warn_of_repetition(
+    config: TrainingConfig,
+    resolution: SelectionResolution,
+) -> None:
+    """Say when a balanced selection holds fewer decisions than the run reads.
+
+    The balance is the one dial whose cost is counted in data, so it is the one
+    that can push a run past what its selection holds without anything else
+    changing. Only a packed batch fixes its size in decisions.
+    """
+
+    loader = config.train.loader
+    if resolution.composition is None or loader.batch_unit != "positions":
+        return
+    horizon = config.steps * config.gradient_accumulation_steps * loader.batch_extent
+    retained = cast(int, resolution.composition["estimated_retained_decisions"])
+    if retained < horizon:
+        logger.warning(
+            "The balanced selection holds about %.3g decisions against the %.3g "
+            "this run reads, so it will repeat data; lower the rating balance",
+            retained,
+            horizon,
+        )
 
 
 def _render_throughput(value: float | None) -> str:

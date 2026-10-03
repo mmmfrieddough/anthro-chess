@@ -21,8 +21,8 @@ Opening a corpus therefore reads nothing, as long as the selection rejects
 nothing: preparation counted every split when it wrote each shard, and the
 check that admitted the corpus carried those counts here. A selection that
 filters has to look, and that is the one pass here whose cost follows corpus
-size. A selection that composes its rating axis also reads a fixed sample of
-row groups at the open, to fit the density it composes against.
+size. A selection that balances its rating axis also reads a fixed sample of
+row groups at the open, to fit the density it balances against.
 
 A resumed run replays the plan to its saved cursor, which re-derives the row
 groups it passes over rather than decoding any game in them.
@@ -232,7 +232,7 @@ def resolve_sharded_selection(
     threshold = subsample_threshold(selection)
     composition = (
         None
-        if selection.rating_composition is None
+        if selection.rating_balance is None
         else _fit_composition(
             shards,
             row_groups,
@@ -336,7 +336,7 @@ def _filters_rows(
             selection.maximum_time_increment_ms is not None,
             selection.minimum_rating is not None,
             selection.maximum_rating is not None,
-            selection.rating_composition is not None,
+            selection.rating_balance is not None,
         )
     )
 
@@ -432,7 +432,7 @@ def _fit_composition(
     which draws uniformly and so leaves the density where it was.
     """
 
-    assert selection.rating_composition is not None
+    assert selection.rating_balance is not None
     stride = max(1, len(row_groups) // _COMPOSITION_FIT_ROW_GROUPS)
     sample = row_groups[::stride][:_COMPOSITION_FIT_ROW_GROUPS]
     in_split = 0
@@ -468,16 +468,17 @@ def _fit_composition(
         black,
         lengths,
         speeds,
-        selection.rating_composition,
+        selection.rating_balance,
         population_games=round(admitted * (selection.fraction or 1.0)),
     )
     composition = replace(
         composition, report={**composition.report, "fit_row_groups": len(sample)}
     )
     logger.info(
-        "Composing the rating axis at strength %s: keeps %.1f%% of decisions, "
-        "an effective sample of %.1f%%, about %.3g decisions retained",
-        selection.rating_composition.strength,
+        "Balancing the rating axis at %s, equal from %s: keeps %.1f%% of "
+        "decisions, an effective sample of %.1f%%, about %.3g decisions retained",
+        selection.rating_balance,
+        composition.report["equalized_ratings"],
         100 * composition.report["retained_decision_share"],
         100 * composition.report["effective_sample_share"],
         composition.report["estimated_retained_decisions"],

@@ -894,9 +894,9 @@ def _resolve_selection(
     """Decide which games in one split the configured selection keeps."""
 
     require_resolved_snapshot(selection, marked_digests)
-    if selection.rating_composition is not None:
+    if selection.rating_balance is not None:
         raise DataLoadingError(
-            "a rating composition is fitted and applied by the shard-backed "
+            "a rating balance is fitted and applied by the shard-backed "
             "loader; declare a streaming section to use one"
         )
     eligible: list[int] = []
@@ -1028,7 +1028,7 @@ def _exclusion_reason(
     if (
         selection.require_ratings
         or bounds_rating
-        or selection.rating_composition is not None
+        or selection.rating_balance is not None
     ) and any(rating is None for rating in ratings):
         return "missing_ratings"
 
@@ -1080,13 +1080,11 @@ def _identity_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     # The snapshot path is left out of every identity a resumed run is compared
     # against, and out of those alone: the recorded spec keeps it, because a
     # path is what a reader asking how a run was configured wants. An unset
-    # composition is left out so identities recorded without the field still
-    # match.
+    # balance is left out so identities recorded without the field still match.
     return {
         key: value
         for key, value in spec.items()
-        if key != "marked_accounts"
-        and not (key == "rating_composition" and value is None)
+        if key != "marked_accounts" and not (key == "rating_balance" and value is None)
     }
 
 

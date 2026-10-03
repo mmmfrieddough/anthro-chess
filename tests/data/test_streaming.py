@@ -25,7 +25,6 @@ from anthro_chess.data.artifacts import (
     normalized_shard_paths,
     validate_manifest_outputs,
 )
-from anthro_chess.data.config import RatingCompositionConfig
 from anthro_chess.data.schema import NormalizedColumn, row_game_id
 from anthro_chess.data.streaming import (
     ShardedSelection,
@@ -1222,13 +1221,8 @@ def _skewed_rows(
     ]
 
 
-def _composed(strength: float, **selection: Any) -> SelectionConfig:
-    return SelectionConfig(
-        rating_composition=RatingCompositionConfig(
-            strength=strength, maximum_weight=100.0
-        ),
-        **selection,
-    )
+def _composed(balance: float, **selection: Any) -> SelectionConfig:
+    return SelectionConfig(rating_balance=balance, **selection)
 
 
 def _games(corpus: Corpus, selection: SelectionConfig) -> set[int]:
@@ -1254,11 +1248,11 @@ def test_a_composition_thins_the_common_rating_and_keeps_the_rare_one(
         if row[NormalizedColumn.WHITE_NORMALIZED_RATING] == 2500
     }
 
-    composed = _games(corpus, _composed(1.0))
+    composed = _games(corpus, _composed(100.0))
 
     assert rare <= composed
     assert 0.05 < len(composed - rare) / 360 < 0.2
-    assert _games(corpus, _composed(0.0)) == _games(corpus, SelectionConfig())
+    assert _games(corpus, _composed(1.0)) == _games(corpus, SelectionConfig())
 
 
 def test_a_composition_thins_independently_of_a_subsample(
@@ -1272,9 +1266,9 @@ def test_a_composition_thins_independently_of_a_subsample(
         write_corpus, tmp_path, _skewed_rows(normalized_row), games_per_shard=50
     )
 
-    both = _games(corpus, _composed(1.0, fraction=0.5))
+    both = _games(corpus, _composed(100.0, fraction=0.5))
 
-    assert both == _games(corpus, _composed(1.0)) & _games(
+    assert both == _games(corpus, _composed(100.0)) & _games(
         corpus, SelectionConfig(fraction=0.5)
     )
 
@@ -1288,23 +1282,23 @@ def test_a_composed_cursor_resumes_only_under_the_same_composition(
         write_corpus, tmp_path, _skewed_rows(normalized_row), games_per_shard=50
     )
 
-    def config(strength: float) -> SequenceLoaderConfig:
+    def config(balance: float) -> SequenceLoaderConfig:
         return SequenceLoaderConfig(
-            split="train", batch_size=4, selection=_composed(strength)
+            split="train", batch_size=4, selection=_composed(balance)
         )
 
-    loader = _loader(corpus, config(1.0))
+    loader = _loader(corpus, config(100.0))
     next(loader)
     saved = loader.state()
     expected = _drain(loader)
     loader.close()
 
-    resumed = _loader(corpus, config(1.0))
+    resumed = _loader(corpus, config(100.0))
     resumed.load_state(saved)
     assert _drain(resumed) == expected
     resumed.close()
 
-    weaker = _loader(corpus, config(0.5))
+    weaker = _loader(corpus, config(3.0))
     with pytest.raises(DataLoadingError, match="different"):
         weaker.load_state(saved)
     weaker.close()
@@ -1319,7 +1313,7 @@ def test_the_resolution_records_what_the_composition_does(
         write_corpus, tmp_path, _skewed_rows(normalized_row), games_per_shard=50
     )
     loader = _loader(
-        corpus, SequenceLoaderConfig(split="train", selection=_composed(1.0))
+        corpus, SequenceLoaderConfig(split="train", selection=_composed(100.0))
     )
 
     record = loader.resolution.as_record()
@@ -1341,5 +1335,5 @@ def test_the_eager_loader_refuses_a_composition(
     with pytest.raises(DataLoadingError, match="shard-backed"):
         SequenceDataLoader.from_parquet(
             [shard.path for shard in corpus[0]],
-            SequenceLoaderConfig(split="train", selection=_composed(1.0)),
+            SequenceLoaderConfig(split="train", selection=_composed(4.0)),
         )

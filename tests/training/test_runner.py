@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 import tomllib
@@ -808,6 +809,41 @@ def test_shard_backed_training_runs_and_records_which_loader_read_the_corpus(
     assert run_record["data"]["train"]["normalized_paths"] == [
         str(prepared.normalized_path.resolve())
     ]
+
+
+def test_a_balanced_run_records_its_composition_and_warns_of_repetition(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The sample corpus is far smaller than this run, so it has to say so."""
+
+    prepared = prepare_pgn(
+        SAMPLE_PGN,
+        tmp_path / "data",
+        load_config(PrepareConfig, path=SAMPLE_DATA_CONFIG),
+    )
+    config_path = _write_training_config(
+        tmp_path,
+        normalized=prepared.normalized_path,
+        manifest=prepared.manifest_path,
+        run_name="run",
+        validation=False,
+        steps=4,
+        train_batch="positions_per_batch = 8",
+        train_selection="\n[train.loader.selection]\nrating_balance = 4.0\n",
+        train_streaming=_SHARD_BACKED,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = run_training(
+            load_config(TrainingConfig, path=config_path),
+            output_directory=tmp_path / "run",
+        )
+
+    run_record = json.loads(result.run_path.read_text(encoding="utf-8"))
+    composition = run_record["data"]["train"]["selection"]["rating_composition"]
+    assert composition["retained_decision_share"] <= 1.0
+    assert "will repeat data" in caplog.text
 
 
 def test_shard_backed_training_resumes_from_its_own_checkpoint(tmp_path: Path) -> None:
