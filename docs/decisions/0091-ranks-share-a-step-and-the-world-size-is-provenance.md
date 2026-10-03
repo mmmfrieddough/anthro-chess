@@ -65,6 +65,19 @@ one compiled node, every gradient arrives at once, and the reduction cannot
 overlap it. Compiling the wrapper instead is the change that would buy some of it
 back, and a second card that already returns 1.91 is not waiting on it.
 
+**A whole vehicle arm on both cards reads like one on a single card.** Seed
+17 at the full horizon took 3h06m at 103,821 positions per second. Its one-card
+replicate at the same seed had taken 6h06m sharing the host with a second arm.
+Both arms processed the same 1,137,548,814 positions and reached the same final
+training loss to five places, 1.44050. Their training-health readings sit inside
+the band the vehicle's own replicates span. The checkpoint suite scored both on
+one card each, on the same code, and the report found one training identity and
+applied the vehicle's seed floor. `held_out.move_loss` read 1.42839 against
+1.42802, inside both floors. Not one of the 265 directional rows moved. Among the
+640 rows the seed floor qualifies, one undirected rollout statistic cleared it,
+fewer than the 5% a floor of that width lets through between arms that differ in
+nothing.
+
 ## What This Gives Up
 
 **A configuration with accumulation one cannot run on two cards as declared.**
