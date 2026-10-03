@@ -200,11 +200,13 @@ class SelectionResolution:
     eligible_games: int | None
     selected_games: int | None
     excluded_games: dict[str, int] | None
+    #: What a rating composition's fit says it does to the draw.
+    composition: Mapping[str, object] | None = None
 
     def as_record(self) -> dict[str, object]:
         """Return the resolved-selection record stored in run artifacts."""
 
-        return {
+        record: dict[str, object] = {
             "version": SELECTION_SPEC_VERSION,
             "spec": dict(sorted(self.spec.items())),
             "eligible_games": self.eligible_games,
@@ -215,6 +217,9 @@ class SelectionResolution:
                 else dict(sorted(self.excluded_games.items()))
             ),
         }
+        if self.composition is not None:
+            record["rating_composition"] = dict(self.composition)
+        return record
 
     def as_identity_record(self) -> dict[str, object]:
         """Return the record a resumed run's identity is compared against.
@@ -229,6 +234,9 @@ class SelectionResolution:
 
         record = self.as_record()
         record["spec"] = _identity_spec(self.spec)
+        # Estimates read off a sample; the loader's own identity carries what
+        # the fit decided.
+        record.pop("rating_composition", None)
         return record
 
 
@@ -886,6 +894,11 @@ def _resolve_selection(
     """Decide which games in one split the configured selection keeps."""
 
     require_resolved_snapshot(selection, marked_digests)
+    if selection.rating_composition is not None:
+        raise DataLoadingError(
+            "a rating composition is fitted and applied by the shard-backed "
+            "loader; declare a streaming section to use one"
+        )
     eligible: list[int] = []
     excluded: dict[str, int] = {}
     columns = _SELECTION_COLUMNS + (_MARKED_COLUMNS if marked_digests else ())
@@ -1012,9 +1025,11 @@ def _exclusion_reason(
         bounds_time_increment and time_increment is None
     ):
         return "missing_time_control"
-    if (selection.require_ratings or bounds_rating) and any(
-        rating is None for rating in ratings
-    ):
+    if (
+        selection.require_ratings
+        or bounds_rating
+        or selection.rating_composition is not None
+    ) and any(rating is None for rating in ratings):
         return "missing_ratings"
 
     if selection.speed is not None:
@@ -1064,8 +1079,15 @@ def _exclusion_reason(
 def _identity_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     # The snapshot path is left out of every identity a resumed run is compared
     # against, and out of those alone: the recorded spec keeps it, because a
-    # path is what a reader asking how a run was configured wants.
-    return {key: value for key, value in spec.items() if key != "marked_accounts"}
+    # path is what a reader asking how a run was configured wants. An unset
+    # composition is left out so that identities recorded before it existed,
+    # the frozen vehicle's among them, still match.
+    return {
+        key: value
+        for key, value in spec.items()
+        if key != "marked_accounts"
+        and not (key == "rating_composition" and value is None)
+    }
 
 
 def require_resolved_snapshot(

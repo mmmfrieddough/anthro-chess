@@ -21,7 +21,8 @@ Opening a corpus therefore reads nothing, as long as the selection rejects
 nothing: preparation counted every split when it wrote each shard, and the
 check that admitted the corpus carried those counts here. A selection that
 filters has to look, and that is the one pass here whose cost follows corpus
-size.
+size. A selection that composes its rating axis also reads a fixed sample of
+row groups at the open, to fit the density it composes against.
 
 A resumed run replays the plan to its saved cursor, which re-derives the row
 groups it passes over rather than decoding any game in them.
@@ -50,6 +51,7 @@ from anthro_chess.data.artifacts import (
     row_group_column,
     take_rows,
 )
+from anthro_chess.data.composition import RatingComposition, fit_rating_composition
 from anthro_chess.data.config import (
     SelectionConfig,
     SequenceLoaderConfig,
@@ -115,6 +117,10 @@ _FILTER_COLUMNS = (
     NormalizedColumn.TIME_INITIAL_MS,
     NormalizedColumn.TIME_INCREMENT_MS,
 )
+#: How many row groups, spread evenly over the corpus, a rating composition is
+#: fitted from. About a million and a half games of the widened corpus, which
+#: holds its rarest 200-point band at thousands.
+_COMPOSITION_FIT_ROW_GROUPS = 32
 
 
 @dataclass(frozen=True)
@@ -191,6 +197,7 @@ class ShardedSelection:
     selection: SelectionConfig
     marked_digests: frozenset[int] | None
     subsample_threshold: int | None
+    composition: RatingComposition | None
     resolution: SelectionResolution
     identity_sha256: str
 
@@ -222,6 +229,18 @@ def resolve_sharded_selection(
     row_groups = _enumerate_row_groups(shards)
     filtered = _filters_rows(selection, marked_digests)
     threshold = subsample_threshold(selection)
+    composition = (
+        None
+        if selection.rating_composition is None
+        else _fit_composition(
+            shards,
+            row_groups,
+            split=split,
+            selection=selection,
+            marked_digests=marked_digests,
+            population_games=split_games,
+        )
+    )
     resolution = SelectionResolution(
         spec=selection.model_dump(mode="json"),
         # Counted only where the manifest already counted it. A filter is
@@ -231,8 +250,9 @@ def resolve_sharded_selection(
         eligible_games=None if filtered else split_games,
         selected_games=None if filtered or threshold is not None else split_games,
         excluded_games=None if filtered else {},
+        composition=None if composition is None else composition.report,
     )
-    identity = {
+    identity: dict[str, object] = {
         "version": STREAMING_IDENTITY_VERSION,
         "loader": STREAMING_LOADER_NAME,
         "split": split,
@@ -246,6 +266,8 @@ def resolve_sharded_selection(
         "subsample_threshold": threshold,
         "marked_accounts": _marked_accounts_sha256(marked_digests),
     }
+    if composition is not None:
+        identity["rating_composition"] = composition.sha256
     logger.info(
         "Opened the %s split of %s shard(s), %s game(s) before selection",
         split,
@@ -260,6 +282,7 @@ def resolve_sharded_selection(
         selection=selection,
         marked_digests=marked_digests,
         subsample_threshold=threshold,
+        composition=composition,
         resolution=resolution,
         identity_sha256=sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
@@ -312,6 +335,7 @@ def _filters_rows(
             selection.maximum_time_increment_ms is not None,
             selection.minimum_rating is not None,
             selection.maximum_rating is not None,
+            selection.rating_composition is not None,
         )
     )
 
@@ -324,22 +348,29 @@ def _scan_row_group(
     selection: SelectionConfig,
     marked_digests: frozenset[int] | None,
     threshold: int | None = None,
+    composition: RatingComposition | None = None,
     lengths: bool = False,
 ) -> Iterator[tuple[int, str | None, int]]:
     """Yield each row of one row group that is in the split, and its verdict.
 
     Both passes over a row group start the same way, and only one of them ever
     wants a game's length, so the projection follows what the caller asked for
-    rather than the union of the two.
+    rather than the union of the two. A game a composition thins out is not
+    yielded at all, as one outside a subsample is not: neither is a rejection.
     """
 
     filtered = _filters_rows(selection, marked_digests)
+    lengths = lengths or composition is not None
     columns = (
         _SPLIT_COLUMNS
         + (_LENGTH_COLUMNS if lengths else ())
         + (_FILTER_COLUMNS if filtered else ())
         + (_MARKED_COLUMNS if marked_digests else ())
-        + (_IDENTITY_COLUMNS if threshold is not None else ())
+        + (
+            _IDENTITY_COLUMNS
+            if threshold is not None or composition is not None
+            else ()
+        )
     )
     table = read_normalized_row_group(reader, group.row_group, columns)
     values = {column.value: row_group_column(table, column.value) for column in columns}
@@ -367,7 +398,89 @@ def _scan_row_group(
             yield position, reason, 0
             continue
         appended = terminal[position] == TerminalActionStatus.APPENDED
-        yield position, None, ply_counts[position] + (1 if appended else 0)
+        length = ply_counts[position] + (1 if appended else 0)
+        if composition is not None and not composition.keeps(
+            selection.seed,
+            row_game_id(row),
+            row[NormalizedColumn.WHITE_NORMALIZED_RATING],
+            row[NormalizedColumn.BLACK_NORMALIZED_RATING],
+            length,
+        ):
+            continue
+        yield position, None, length
+
+
+def _fit_composition(
+    shards: Sequence[ShardIdentity],
+    row_groups: Sequence[_RowGroup],
+    *,
+    split: str,
+    selection: SelectionConfig,
+    marked_digests: frozenset[int] | None,
+    population_games: int,
+) -> RatingComposition:
+    """Fit a selection's composition from row groups spread over the corpus.
+
+    Fitted against what the selection's filters admit, before its subsample,
+    which draws uniformly and so leaves the density where it was.
+    """
+
+    assert selection.rating_composition is not None
+    stride = max(1, len(row_groups) // _COMPOSITION_FIT_ROW_GROUPS)
+    sample = row_groups[::stride][:_COMPOSITION_FIT_ROW_GROUPS]
+    white: list[int] = []
+    black: list[int] = []
+    lengths: list[int] = []
+    columns = (
+        _SPLIT_COLUMNS
+        + _LENGTH_COLUMNS
+        + _FILTER_COLUMNS
+        + (_MARKED_COLUMNS if marked_digests else ())
+    )
+    for group in sample:
+        table = read_normalized_row_group(
+            open_normalized_shard(shards[group.shard].path),
+            group.row_group,
+            columns,
+        )
+        values = {
+            column.value: row_group_column(table, column.value) for column in columns
+        }
+        for position, game_split in enumerate(values[NormalizedColumn.SPLIT]):
+            if game_split != split:
+                continue
+            row = {
+                column: column_values[position]
+                for column, column_values in values.items()
+            }
+            if _exclusion_reason(row, selection, marked_digests) is not None:
+                continue
+            appended = (
+                row[NormalizedColumn.TERMINAL_ACTION_STATUS]
+                == TerminalActionStatus.APPENDED
+            )
+            white.append(row[NormalizedColumn.WHITE_NORMALIZED_RATING])
+            black.append(row[NormalizedColumn.BLACK_NORMALIZED_RATING])
+            lengths.append(row[NormalizedColumn.PLY_COUNT] + (1 if appended else 0))
+    composition = fit_rating_composition(
+        white,
+        black,
+        lengths,
+        selection.rating_composition,
+        population_games=population_games,
+    )
+    composition = replace(
+        composition, report={**composition.report, "fit_row_groups": len(sample)}
+    )
+    logger.info(
+        "Composing the rating axis at strength %s: keeps %.1f%% of decisions, "
+        "an effective sample of %.1f%%, about %.3g decisions retained",
+        selection.rating_composition.strength,
+        100 * composition.report["retained_decision_share"],
+        100 * composition.report["effective_sample_share"],
+        composition.report["estimated_retained_decisions"],
+    )
+    return composition
 
 
 def shard_loader_configuration_sha256(
@@ -614,6 +727,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
                 selection=self.corpus.selection,
                 marked_digests=self.corpus.marked_digests,
                 threshold=self.corpus.subsample_threshold,
+                composition=self.corpus.composition,
                 lengths=True,
             )
             if reason is None
