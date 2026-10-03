@@ -1,15 +1,9 @@
 """Reweighting how often a training selection draws each rating.
 
-The rating axis arrives with the population's shape, roughly normal about the
-corpus median, so the ratings the dial's endpoints ask for are the ones training
-sees least. A composition evens that out by thinning: each game is kept with
-probability proportional to a weight over its players' ratings, so a rare rating
-is drawn at its full rate and a common one at a share of its own. No example is
-repeated and none carries a loss weight. Discarding is what that costs, and a
-corpus many times the horizon can afford it.
-
-The weight is taken pointwise against a smoothed density rather than per band,
-so it has no edges the data does not have.
+A composition thins: each game is kept with probability proportional to a
+weight taken against a smoothed density of its players' ratings, so a rare
+rating is drawn at its full rate and a common one at a share of its own. No
+example is repeated and none carries a loss weight.
 """
 
 from __future__ import annotations
@@ -35,8 +29,8 @@ RATING_COMPOSITION_VERSION = 1
 DENSITY_BANDWIDTH = 50
 
 _KERNEL_REACH = 4 * DENSITY_BANDWIDTH
-#: What a rating the fit never saw is kept at. Its density is taken as nil, so
-#: its weight is the heaviest any rating can have.
+#: Acceptance for a rating past either end of the fit. Its density is taken as
+#: nil, so it is kept as often as the heaviest rating.
 _OUTSIDE_FIT = 1.0
 #: Precision the fitted acceptance is held at, so its digest does not move with
 #: the summation order of whichever array library computed it.
@@ -120,7 +114,7 @@ def fit_rating_composition(
     ``population_games`` is how many games the sample stands for.
     """
 
-    # Deferred for the reason `anthro_chess.data.loading` defers it.
+    # Deferred so this module still imports on an install carrying no extras.
     import numpy as np
 
     if not len(length):
@@ -172,10 +166,8 @@ def fit_rating_composition(
         "fit_decisions": int(drawn_total),
         "retained_game_share": float(kept.mean()),
         "retained_decision_share": retained,
-        # The Kish size, as a share of what was drawn from. Thinning gives every
-        # kept decision unit weight, so this is the effective size a loss
-        # weighted the same way would have had, and how far the draw sits from
-        # the population.
+        # Kish effective sample size as a share of what was drawn: the size a
+        # loss weighted by the same acceptance would have had.
         "effective_sample_share": float(
             composed_total**2 / (drawn_total * (decisions * kept**2).sum())
         ),

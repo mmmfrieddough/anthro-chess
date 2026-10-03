@@ -1080,8 +1080,8 @@ def _identity_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     # The snapshot path is left out of every identity a resumed run is compared
     # against, and out of those alone: the recorded spec keeps it, because a
     # path is what a reader asking how a run was configured wants. An unset
-    # composition is left out so that identities recorded before it existed,
-    # the frozen vehicle's among them, still match.
+    # composition is left out so identities recorded without the field still
+    # match.
     return {
         key: value
         for key, value in spec.items()
