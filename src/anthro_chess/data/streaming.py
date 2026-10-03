@@ -84,6 +84,7 @@ from anthro_chess.data.schema import (
     NormalizedColumn,
     row_game_id,
 )
+from anthro_chess.data.speed import UNCLASSIFIED_SPEED, speed_from_clock_ms
 from anthro_chess.data.termination import TerminalActionStatus
 
 #: Bumped when the shard-backed identity or plan changes shape, so a checkpoint
@@ -428,9 +429,11 @@ def _fit_composition(
     assert selection.rating_composition is not None
     stride = max(1, len(row_groups) // _COMPOSITION_FIT_ROW_GROUPS)
     sample = row_groups[::stride][:_COMPOSITION_FIT_ROW_GROUPS]
+    in_split = 0
     white: list[int] = []
     black: list[int] = []
     lengths: list[int] = []
+    speeds: list[str] = []
     columns = (
         _SPLIT_COLUMNS
         + _LENGTH_COLUMNS
@@ -449,6 +452,7 @@ def _fit_composition(
         for position, game_split in enumerate(values[NormalizedColumn.SPLIT]):
             if game_split != split:
                 continue
+            in_split += 1
             row = {
                 column: column_values[position]
                 for column, column_values in values.items()
@@ -462,12 +466,21 @@ def _fit_composition(
             white.append(row[NormalizedColumn.WHITE_NORMALIZED_RATING])
             black.append(row[NormalizedColumn.BLACK_NORMALIZED_RATING])
             lengths.append(row[NormalizedColumn.PLY_COUNT] + (1 if appended else 0))
+            speed = speed_from_clock_ms(
+                row[NormalizedColumn.TIME_INITIAL_MS],
+                row[NormalizedColumn.TIME_INCREMENT_MS],
+            )
+            speeds.append(UNCLASSIFIED_SPEED if speed is None else str(speed))
+    # What the composition draws from is what the filters admit and the
+    # subsample keeps, which the split's own count overstates.
+    admitted = population_games * len(lengths) / max(in_split, 1)
     composition = fit_rating_composition(
         white,
         black,
         lengths,
+        speeds,
         selection.rating_composition,
-        population_games=population_games,
+        population_games=round(admitted * (selection.fraction or 1.0)),
     )
     composition = replace(
         composition, report={**composition.report, "fit_row_groups": len(sample)}

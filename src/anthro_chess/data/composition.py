@@ -34,6 +34,9 @@ RATING_COMPOSITION_VERSION = 1
 DENSITY_BANDWIDTH = 50
 
 _KERNEL_REACH = 4 * DENSITY_BANDWIDTH
+#: What a rating the fit never saw is kept at. Its density is taken as nil, so
+#: its weight is the heaviest any rating can have.
+_OUTSIDE_FIT = 1.0
 _RANK_SPACE = 1 << 64
 #: Precision the fitted acceptance is held at, so its digest does not move with
 #: the summation order of whichever array library computed it.
@@ -44,14 +47,11 @@ _ACCEPTANCE_DIGITS = 9
 class RatingComposition:
     """A fitted composition: the share of decisions kept at each rating.
 
-    ``acceptance`` is indexed by normalized rating. A rating past its end was
-    absent from the fit, so the density there is taken as nil and the weight as
-    the clip.
+    ``acceptance`` is indexed by normalized rating.
     """
 
     config: RatingCompositionConfig
     acceptance: tuple[float, ...]
-    beyond: float
     #: What the fit sample says the composition does, for the run record.
     report: dict[str, Any]
 
@@ -65,7 +65,7 @@ class RatingComposition:
                     "version": RATING_COMPOSITION_VERSION,
                     "config": self.config.model_dump(mode="json"),
                     "acceptance": self.acceptance,
-                    "beyond": self.beyond,
+                    "beyond": _OUTSIDE_FIT,
                 },
                 separators=(",", ":"),
             ).encode()
@@ -99,22 +99,25 @@ class RatingComposition:
     def _at(self, rating: int) -> float:
         if 0 <= rating < len(self.acceptance):
             return self.acceptance[rating]
-        return self.beyond
+        return _OUTSIDE_FIT
 
 
 def fit_rating_composition(
     white: Sequence[int],
     black: Sequence[int],
     length: Sequence[int],
+    speed: Sequence[str],
     config: RatingCompositionConfig,
     *,
     population_games: int,
 ) -> RatingComposition:
     """Fit a composition from a sample of games the selection would draw.
 
-    Each game is its two ratings and its decision count, and the density is
-    over decisions by the rating of the player making them, because that is
-    the rating the model is conditioned on at each one.
+    Each game is its two ratings, its speed class, and its decision count, and
+    the density is over decisions by the rating of the player making them,
+    because that is the rating the model is conditioned on at each one. The
+    speed class is only reported on: thinning by rating moves that mix too.
+    ``population_games`` is how many games the sample stands for.
     """
 
     # Deferred for the reason `anthro_chess.data.loading` defers it.
@@ -143,10 +146,9 @@ def fit_rating_composition(
     # the clip, so a strength of zero keeps every game instead of thinning all
     # of them alike.
     heaviest = float(weight[histogram > 0].max())
-    acceptance = np.round(weight / heaviest, _ACCEPTANCE_DIGITS)
-    beyond = round(
-        (clip if config.strength > 0 else 1.0) / heaviest, _ACCEPTANCE_DIGITS
-    )
+    # Capped where a rating between the fitted ones has a thinner density than
+    # any of them, so no rating is kept more often than the heaviest one.
+    acceptance = np.round(np.minimum(1.0, weight / heaviest), _ACCEPTANCE_DIGITS)
 
     kept = np.minimum(
         1.0,
@@ -187,11 +189,11 @@ def fit_rating_composition(
             black_decisions,
             kept,
         ),
+        "decision_share_by_speed": _shares_by_speed(speed, decisions, kept),
     }
     return RatingComposition(
         config=config,
         acceptance=tuple(float(value) for value in acceptance),
-        beyond=beyond,
         report=report,
     )
 
@@ -228,3 +230,22 @@ def _shares_by_bucket(
         bucket["as_drawn"] += float(drawn_share)
         bucket["composed"] += float(composed_share)
     return dict(sorted(shares.items()))
+
+
+def _shares_by_speed(
+    speed: Sequence[str],
+    decisions: Any,
+    kept: Any,
+) -> dict[str, dict[str, float]]:
+    """Return each speed class's share of decisions, as drawn and composed."""
+
+    import numpy as np
+
+    classes, member = np.unique(np.asarray(speed), return_inverse=True)
+    drawn_at = np.bincount(member, weights=decisions) / decisions.sum()
+    composed = decisions * kept
+    composed_at = np.bincount(member, weights=composed) / composed.sum()
+    return {
+        str(name): {"as_drawn": float(drawn), "composed": float(share)}
+        for name, drawn, share in zip(classes, drawn_at, composed_at, strict=True)
+    }

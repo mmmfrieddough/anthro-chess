@@ -23,6 +23,7 @@ def _fit(
         ratings,
         ratings,
         [length] * len(ratings),
+        ["blitz"] * common + ["classical"] * rare,
         RatingCompositionConfig(strength=strength, maximum_weight=maximum_weight),
         population_games=len(ratings),
     )
@@ -72,10 +73,27 @@ def test_the_clip_bounds_the_weight_and_so_the_retained_share() -> None:
     )
 
 
-def test_a_rating_outside_the_fit_is_weighted_at_the_clip() -> None:
-    composition = _fit(1.0, maximum_weight=3.0)
+@pytest.mark.parametrize("maximum_weight", [3.0, 100.0])
+def test_no_rating_is_kept_more_often_than_the_heaviest_fitted_one(
+    maximum_weight: float,
+) -> None:
+    """Where the clip never binds, the heaviest rating is below it, not at it."""
 
-    assert composition.game_acceptance(3900, 3900, 40) == 1.0
+    composition = _fit(0.5, maximum_weight=maximum_weight)
+    rare = composition.game_acceptance(_RARE, _RARE, 40)
+
+    assert composition.game_acceptance(3900, 3900, 40) == rare
+    assert composition.game_acceptance(2000, 2000, 40) == rare
+    assert composition.game_acceptance(3900, _COMMON, 40) == pytest.approx(
+        composition.game_acceptance(_RARE, _COMMON, 40)
+    )
+
+
+def test_the_speed_mix_is_reported_as_it_moves() -> None:
+    shares = _fit(1.0).report["decision_share_by_speed"]
+
+    assert shares["classical"]["as_drawn"] == pytest.approx(0.1)
+    assert shares["classical"]["composed"] == pytest.approx(0.5, rel=1e-3)
 
 
 def test_a_game_is_weighted_by_whose_decisions_it_holds() -> None:
@@ -112,6 +130,7 @@ def test_thinning_keeps_the_share_its_acceptance_names() -> None:
 def test_a_fit_from_no_games_is_refused() -> None:
     with pytest.raises(DataLoadingError, match="needs games"):
         fit_rating_composition(
+            [],
             [],
             [],
             [],
