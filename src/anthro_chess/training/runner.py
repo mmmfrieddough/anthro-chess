@@ -11,7 +11,6 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, TextIO
@@ -84,7 +83,6 @@ from anthro_chess.training.distributed import (
     SINGLE_PROCESS,
     DataParallel,
     DistributedError,
-    all_reduce_sum,
     launched_parallelism,
     rank_device,
     rank_seed,
@@ -394,7 +392,8 @@ def run_training(
             f"what keeps the effective batch the one the configuration declares"
         )
     try:
-        created_group = start_process_group(parallel, device)
+        if parallel.distributed:
+            start_process_group(device)
     except RuntimeError as error:
         raise TrainingError(
             f"cannot join the launch's process group: {error}"
@@ -406,14 +405,15 @@ def run_training(
             device=device,
             run_started=run_started,
             output_directory=output_directory,
-            store=store,
+            # Every rank records the same run, so one of them does.
+            store=store if parallel.primary else None,
             detail=detail,
             # Every rank reads the same files, and a primary that finds one
             # corrupt stops them all, so one rank hashing them is enough.
             verify_data=verify_data and parallel.primary,
         )
     finally:
-        if created_group:
+        if parallel.distributed:
             dist.destroy_process_group()
 
 
@@ -614,7 +614,7 @@ def _train(
             config.evaluation,
             config.validation,
             configuration=configuration,
-            store=store if config.evaluation.record and parallel.primary else None,
+            store=store if config.evaluation.record else None,
             marked_digests=None if validation is None else validation.marked_digests,
         )
         efficiency_recorder = _EfficiencyRecorder(
@@ -639,7 +639,7 @@ def _train(
                 precision=config.precision,
             ),
             configuration=configuration,
-            store=store if config.efficiency.record and parallel.primary else None,
+            store=store if config.efficiency.record else None,
             record_at_cadence=config.efficiency.record_at_cadence,
         )
 
@@ -886,7 +886,7 @@ def _optimize(
     efficiency_paths: list[Path] = []
     totals = DeferredStepTotals(
         device,
-        reduce=partial(all_reduce_sum, parallel) if parallel.distributed else None,
+        reduce=dist.all_reduce if parallel.distributed else None,
     )
     interval_start_step = starting_step + 1
     interval_positions = 0
@@ -1538,7 +1538,7 @@ _EXECUTION_PROVENANCE_KEYS = (
 def _execution_record(
     config: TrainingConfig,
     device: torch.device,
-    parallel: DataParallel = SINGLE_PROCESS,
+    parallel: DataParallel,
 ) -> dict[str, object]:
     """Record how one run executed, in the two roles resume distinguishes.
 

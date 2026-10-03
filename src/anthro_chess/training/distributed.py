@@ -99,24 +99,14 @@ def rank_device(parallel: DataParallel, device: torch.device) -> torch.device:
     )
 
 
-def start_process_group(parallel: DataParallel, device: torch.device) -> bool:
-    """Join the launch's process group, returning whether this call created it."""
+def start_process_group(device: torch.device) -> None:
+    """Join the launch's process group over the backend ``device`` reduces on."""
 
-    if not parallel.distributed or dist.is_initialized():
-        return False
     dist.init_process_group(
         backend="nccl" if device.type == "cuda" else "gloo",
         timeout=COLLECTIVE_TIMEOUT,
         device_id=device if device.type == "cuda" else None,
     )
-    return True
-
-
-def all_reduce_sum(parallel: DataParallel, tensor: torch.Tensor) -> None:
-    """Sum one tensor across every rank in place."""
-
-    if parallel.distributed:
-        dist.all_reduce(tensor)
 
 
 def rank_seed(seed: int, rank: int, step: int) -> int:

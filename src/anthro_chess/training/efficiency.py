@@ -178,7 +178,7 @@ class DeferredStepTotals:
         self,
         device: torch.device,
         *,
-        reduce: Callable[[Tensor], None] | None = None,
+        reduce: Callable[[Tensor], object] | None = None,
     ) -> None:
         self._device = device
         #: Sums a tensor across data-parallel ranks in place, so a drained

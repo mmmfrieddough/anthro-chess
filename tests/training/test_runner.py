@@ -43,7 +43,7 @@ from anthro_chess.training.devices import (
     STRICT_DETERMINISM_BACKENDS,
     DeviceCapabilities,
 )
-from anthro_chess.training.distributed import DataParallel
+from anthro_chess.training.distributed import SINGLE_PROCESS, DataParallel
 from anthro_chess.training.runner import (
     _EXECUTION_COMPATIBILITY_KEYS,
     _EXECUTION_PROVENANCE_KEYS,
@@ -410,7 +410,7 @@ def test_every_recorded_execution_setting_has_exactly_one_declared_role(
         ),
     ).value
 
-    record = _execution_record(config, torch.device("cpu"))
+    record = _execution_record(config, torch.device("cpu"), SINGLE_PROCESS)
 
     compatibility = set(_EXECUTION_COMPATIBILITY_KEYS)
     provenance = set(_EXECUTION_PROVENANCE_KEYS)

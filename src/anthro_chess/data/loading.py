@@ -691,9 +691,9 @@ def length_bucketed_batches(
 def require_rank(rank: int, world_size: int) -> None:
     """Refuse a rank that is not one of ``world_size`` consecutive ones."""
 
-    if type(world_size) is not int or world_size < 1:
+    if world_size < 1:
         raise ValueError("world_size must be a positive integer")
-    if type(rank) is not int or not 0 <= rank < world_size:
+    if not 0 <= rank < world_size:
         raise ValueError(f"rank must be in [0, {world_size}), not {rank!r}")
 
 
