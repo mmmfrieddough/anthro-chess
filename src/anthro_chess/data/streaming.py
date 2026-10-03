@@ -445,8 +445,8 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
         self._reader_shard: int | None = None
         self._table: Any | None = None
         self._table_group: _RowGroup | None = None
-        #: Each own batch in flight, behind the plan ordinals of the whole group
-        #: it was taken from: the cursor has to pass the others' batches too.
+        #: This rank's batches in flight, each with the plan ordinals of its
+        #: whole group, since the cursor passes the other ranks' batches too.
         self._inflight: deque[tuple[tuple[int, ...], Future[SequenceBatch]]] = deque()
         self._epoch = 0
         self._position = 0
@@ -630,7 +630,6 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
             if len(group) < self._world_size:
                 return
             ordinals = tuple(ordinal for ordinal, _ in group)
-            # Only this rank's batch is decoded; the rest are planned and passed.
             self._inflight.append((ordinals, self._submit(group[self._rank][1])))
 
     def _submit(self, planned: _PlannedBatch) -> Future[SequenceBatch]:

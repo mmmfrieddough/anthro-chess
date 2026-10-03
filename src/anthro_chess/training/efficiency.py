@@ -259,6 +259,8 @@ class DeferredStepTotals:
                 torch.tensor(self._padded_positions, device=self._device),
             ]
         )
+        # Non-finiteness rather than finiteness, so a sum across ranks stays
+        # nonzero if any one of them saw a non-finite loss.
         values = torch.stack(
             [self._loss_sum, self._step_loss_sum, (~self._finite).to(self._float)]
         )
