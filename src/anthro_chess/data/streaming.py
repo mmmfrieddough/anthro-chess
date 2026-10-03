@@ -351,17 +351,17 @@ def _scan_row_group(
     threshold: int | None = None,
     composition: RatingComposition | None = None,
     lengths: bool = False,
-) -> Iterator[tuple[int, str | None, int]]:
+) -> Iterator[tuple[int, str | None, int, dict[str, Any] | None]]:
     """Yield each row of one row group that is in the split, and its verdict.
 
     Both passes over a row group start the same way, and only one of them ever
     wants a game's length, so the projection follows what the caller asked for
     rather than the union of the two. A game a composition thins out is not
     yielded at all, as one outside a subsample is not: neither is a rejection.
+    The row's projected values come with it wherever a filter had to read them.
     """
 
     filtered = _filters_rows(selection, marked_digests)
-    lengths = lengths or composition is not None
     columns = (
         _SPLIT_COLUMNS
         + (_LENGTH_COLUMNS if lengths else ())
@@ -382,6 +382,7 @@ def _scan_row_group(
         if splits[position] != split:
             continue
         reason = None
+        row = None
         if filtered or threshold is not None:
             row = {
                 column: column_values[position]
@@ -396,19 +397,24 @@ def _scan_row_group(
             ):
                 continue
         if not lengths or reason is not None:
-            yield position, reason, 0
+            yield position, reason, 0, row
             continue
         appended = terminal[position] == TerminalActionStatus.APPENDED
         length = ply_counts[position] + (1 if appended else 0)
-        if composition is not None and not composition.keeps(
-            selection.seed,
-            row_game_id(row),
-            row[NormalizedColumn.WHITE_NORMALIZED_RATING],
-            row[NormalizedColumn.BLACK_NORMALIZED_RATING],
-            length,
+        # A composing selection filters, so its rows were all read above.
+        if (
+            composition is not None
+            and row is not None
+            and not composition.keeps(
+                selection.seed,
+                row_game_id(row),
+                row[NormalizedColumn.WHITE_NORMALIZED_RATING],
+                row[NormalizedColumn.BLACK_NORMALIZED_RATING],
+                length,
+            )
         ):
             continue
-        yield position, None, length
+        yield position, None, length, row
 
 
 def _fit_composition(
@@ -434,38 +440,21 @@ def _fit_composition(
     black: list[int] = []
     lengths: list[int] = []
     speeds: list[str] = []
-    columns = (
-        _SPLIT_COLUMNS
-        + _LENGTH_COLUMNS
-        + _FILTER_COLUMNS
-        + (_MARKED_COLUMNS if marked_digests else ())
-    )
     for group in sample:
-        table = read_normalized_row_group(
+        for _, reason, length, row in _scan_row_group(
             open_normalized_shard(shards[group.shard].path),
-            group.row_group,
-            columns,
-        )
-        values = {
-            column.value: row_group_column(table, column.value) for column in columns
-        }
-        for position, game_split in enumerate(values[NormalizedColumn.SPLIT]):
-            if game_split != split:
-                continue
+            group,
+            split=split,
+            selection=selection,
+            marked_digests=marked_digests,
+            lengths=True,
+        ):
             in_split += 1
-            row = {
-                column: column_values[position]
-                for column, column_values in values.items()
-            }
-            if _exclusion_reason(row, selection, marked_digests) is not None:
+            if reason is not None or row is None:
                 continue
-            appended = (
-                row[NormalizedColumn.TERMINAL_ACTION_STATUS]
-                == TerminalActionStatus.APPENDED
-            )
             white.append(row[NormalizedColumn.WHITE_NORMALIZED_RATING])
             black.append(row[NormalizedColumn.BLACK_NORMALIZED_RATING])
-            lengths.append(row[NormalizedColumn.PLY_COUNT] + (1 if appended else 0))
+            lengths.append(length)
             speed = speed_from_clock_ms(
                 row[NormalizedColumn.TIME_INITIAL_MS],
                 row[NormalizedColumn.TIME_INCREMENT_MS],
@@ -733,7 +722,7 @@ class StreamingSequenceDataLoader(SequenceBatchSource):
 
         return [
             (position, length)
-            for position, reason, length in _scan_row_group(
+            for position, reason, length, _ in _scan_row_group(
                 self._shard_reader(group.shard),
                 group,
                 split=self.corpus.split,

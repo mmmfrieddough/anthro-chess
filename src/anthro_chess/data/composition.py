@@ -22,6 +22,7 @@ from typing import Any
 
 from anthro_chess.data.artifacts import DataLoadingError
 from anthro_chess.data.config import RatingCompositionConfig
+from anthro_chess.data.loading import _RANK_SPACE, _rank_key
 from anthro_chess.data.prepare import _rating_bucket
 
 #: Bumped when the fit or the thinning changes, so a run resumed under code that
@@ -37,7 +38,6 @@ _KERNEL_REACH = 4 * DENSITY_BANDWIDTH
 #: What a rating the fit never saw is kept at. Its density is taken as nil, so
 #: its weight is the heaviest any rating can have.
 _OUTSIDE_FIT = 1.0
-_RANK_SPACE = 1 << 64
 #: Precision the fitted acceptance is held at, so its digest does not move with
 #: the summation order of whichever array library computed it.
 _ACCEPTANCE_DIGITS = 9
@@ -76,7 +76,7 @@ class RatingComposition:
 
         white_decisions, black_decisions = _decisions_by_side(length)
         kept = white_decisions * self._at(white) + black_decisions * self._at(black)
-        return min(1.0, kept / max(length, 1))
+        return float(kept / max(length, 1))
 
     def keeps(
         self,
@@ -92,7 +92,7 @@ class RatingComposition:
         rank space says nothing about whether it survives this.
         """
 
-        key = sha256(f"{seed}\0rating-composition\0{game_id}".encode()).digest()
+        key = _rank_key(f"{seed}\0rating-composition", game_id)
         threshold = self.game_acceptance(white, black, length) * _RANK_SPACE
         return int.from_bytes(key[:8], "big") < threshold
 
@@ -128,8 +128,7 @@ def fit_rating_composition(
     white_rating = np.asarray(white, dtype=np.int64)
     black_rating = np.asarray(black, dtype=np.int64)
     decisions = np.asarray(length, dtype=np.int64)
-    white_decisions = (decisions + 1) // 2
-    black_decisions = decisions // 2
+    white_decisions, black_decisions = _decisions_by_side(decisions)
     size = int(max(white_rating.max(), black_rating.max())) + 1
     histogram = np.bincount(
         white_rating, weights=white_decisions, minlength=size
@@ -150,25 +149,27 @@ def fit_rating_composition(
     # any of them, so no rating is kept more often than the heaviest one.
     acceptance = np.round(np.minimum(1.0, weight / heaviest), _ACCEPTANCE_DIGITS)
 
-    kept = np.minimum(
-        1.0,
-        (
-            white_decisions * acceptance[white_rating]
-            + black_decisions * acceptance[black_rating]
-        )
-        / np.maximum(decisions, 1),
-    )
+    kept = (
+        white_decisions * acceptance[white_rating]
+        + black_decisions * acceptance[black_rating]
+    ) / np.maximum(decisions, 1)
     composed = decisions * kept
+    drawn_total = decisions.sum()
+    composed_total = composed.sum()
     clipped = weight >= clip
     clipped_decisions = (
         white_decisions * kept * clipped[white_rating]
         + black_decisions * kept * clipped[black_rating]
     ).sum()
-    retained = float(composed.sum() / decisions.sum())
+    retained = float(composed_total / drawn_total)
+    ratings, slot = np.unique(
+        np.concatenate([white_rating, black_rating]), return_inverse=True
+    )
+    rating_buckets = np.asarray([_rating_bucket(int(rating)) for rating in ratings])
     report = {
         "density_bandwidth": DENSITY_BANDWIDTH,
         "fit_games": int(len(decisions)),
-        "fit_decisions": int(decisions.sum()),
+        "fit_decisions": int(drawn_total),
         "retained_game_share": float(kept.mean()),
         "retained_decision_share": retained,
         # The Kish size, as a share of what was drawn from. Thinning gives every
@@ -176,20 +177,18 @@ def fit_rating_composition(
         # weighted the same way would have had, and how far the draw sits from
         # the population.
         "effective_sample_share": float(
-            composed.sum() ** 2 / (decisions.sum() * (decisions * kept**2).sum())
+            composed_total**2 / (drawn_total * (decisions * kept**2).sum())
         ),
-        "clipped_decision_share": float(clipped_decisions / composed.sum()),
+        "clipped_decision_share": float(clipped_decisions / composed_total),
         "estimated_retained_decisions": int(
             population_games * decisions.mean() * retained
         ),
-        "decision_share_by_rating": _shares_by_bucket(
-            white_rating,
-            black_rating,
-            white_decisions,
-            black_decisions,
-            kept,
+        "decision_share_by_rating": _shares_by(
+            rating_buckets[slot],
+            np.concatenate([white_decisions, black_decisions]),
+            np.concatenate([kept, kept]),
         ),
-        "decision_share_by_speed": _shares_by_speed(speed, decisions, kept),
+        "decision_share_by_speed": _shares_by(speed, decisions, kept),
     }
     return RatingComposition(
         config=config,
@@ -198,54 +197,26 @@ def fit_rating_composition(
     )
 
 
-def _decisions_by_side(length: int) -> tuple[int, int]:
+def _decisions_by_side(length: Any) -> tuple[Any, Any]:
     """Split a game's decisions between the side moving first and the other."""
 
     return (length + 1) // 2, length // 2
 
 
-def _shares_by_bucket(
-    white: Any,
-    black: Any,
-    white_decisions: Any,
-    black_decisions: Any,
-    kept: Any,
-) -> dict[str, dict[str, float]]:
-    """Return each rating bucket's share of decisions, as drawn and composed."""
-
-    import numpy as np
-
-    decisions = np.concatenate([white_decisions, black_decisions])
-    composed = decisions * np.concatenate([kept, kept])
-    ratings, slot = np.unique(np.concatenate([white, black]), return_inverse=True)
-    drawn_at = np.bincount(slot, weights=decisions) / decisions.sum()
-    composed_at = np.bincount(slot, weights=composed) / composed.sum()
-    shares: dict[str, dict[str, float]] = {}
-    for rating, drawn_share, composed_share in zip(
-        ratings, drawn_at, composed_at, strict=True
-    ):
-        bucket = shares.setdefault(
-            _rating_bucket(int(rating)), {"as_drawn": 0.0, "composed": 0.0}
-        )
-        bucket["as_drawn"] += float(drawn_share)
-        bucket["composed"] += float(composed_share)
-    return dict(sorted(shares.items()))
-
-
-def _shares_by_speed(
-    speed: Sequence[str],
+def _shares_by(
+    labels: Any,
     decisions: Any,
     kept: Any,
 ) -> dict[str, dict[str, float]]:
-    """Return each speed class's share of decisions, as drawn and composed."""
+    """Return each label's share of decisions, as drawn and composed."""
 
     import numpy as np
 
-    classes, member = np.unique(np.asarray(speed), return_inverse=True)
-    drawn_at = np.bincount(member, weights=decisions) / decisions.sum()
+    names, member = np.unique(np.asarray(labels), return_inverse=True)
     composed = decisions * kept
+    drawn_at = np.bincount(member, weights=decisions) / decisions.sum()
     composed_at = np.bincount(member, weights=composed) / composed.sum()
     return {
         str(name): {"as_drawn": float(drawn), "composed": float(share)}
-        for name, drawn, share in zip(classes, drawn_at, composed_at, strict=True)
+        for name, drawn, share in zip(names, drawn_at, composed_at, strict=True)
     }
